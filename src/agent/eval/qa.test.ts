@@ -25,6 +25,7 @@ import {
   keyPointMatched,
   normalizeText,
   parseQaDataset,
+  resolveCitationNodes,
   runQaEval,
   scoreQaItem,
   slugify,
@@ -157,6 +158,34 @@ describe("deterministic scorer", () => {
       scoreQaItem(unanswerable, "Not documented, see citrate-docs:content/chain/price.md#usd", fixtureIndex).pass,
     ).toBe(false);
   });
+  it("credits the 'the documentation does not cover X' abstention the QA prompt asks for", () => {
+    // Real answers from the 2026-10-01 Gemma 4 E4B run (eval/results): each is a plain statement
+    // that the docs do not cover the topic, which is what QA_SYSTEM_PROMPT instructs. The shared
+    // W3.4 refusal markers miss every one of them, so all 15 unanswerable probes scored as failures.
+    for (const a of [
+      "The Citrate documentation does not contain information regarding the current trading price of SALT on Coinbase.",
+      "The documentation does not specify the exact block height at which the Citrate testnet will switch over to mainnet.",
+      "The documentation does not cover the memory retention policy for Memrizz.",
+      "The bundled Citrate documentation does not specify a recommended AWS EC2 instance type for running a validator.",
+      "I do not have documentation detailing the specific type of credential a Citrate passkey is.",
+      "The docs don't mention a Hardhat plugin.",
+    ]) {
+      const s = scoreQaItem(unanswerable, a, fixtureIndex);
+      expect(s.abstained, a).toBe(true);
+      expect(s.pass, a).toBe(true);
+    }
+    // Statements about what the documentation DOES say are not abstentions.
+    for (const a of [
+      "The documentation specifies chain id 40204.",
+      "The docs cover this: SALT has 18 decimals.",
+      "The documentation does contain the genesis parameters.",
+      "Validators do not need documentation to stake.",
+      // The match stays inside one sentence: a docs noun in one sentence and a negated verb in the next is not an abstention.
+      "The documentation lists two RPC ports. Clients do not specify a port when they use the default.",
+    ]) {
+      expect(scoreQaItem(unanswerable, a, fixtureIndex).abstained, a).toBe(false);
+    }
+  });
   it("aggregates rates over the right denominators", () => {
     const a = scoreQaItem(answerable, "40204 0x9d0c citrate-docs:content/chain/genesis.md#reference", fixtureIndex);
     const b = scoreQaItem(unanswerable, "I don't know; it is not documented.", fixtureIndex);
@@ -195,6 +224,71 @@ describe("deterministic scorer", () => {
     await expect(
       runQaEval(ds, fixtureIndex, { ask: async () => Promise.reject(new Error("ECONNREFUSED")) }, { model: "x" }),
     ).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+describe("citations resolve to node ids of the imported graph (g2-knowledge b)", () => {
+  const retrieved = [
+    { id: "0a1b2c3d4e", cite: "citrate-docs:content/chain/genesis.md#reference" },
+    { id: "1f2e3d4c5b", cite: "citrate-docs:content/chain/genesis.md#what-it-is" },
+    { id: "2a2a2a2a2a", cite: "citrate-docs:content/chain/staking.md" },
+  ];
+  it("maps each answer citation to the retrieved nodes it names (file, and section when given)", () => {
+    const answer =
+      "40204 (citrate-docs:content/chain/genesis.md#reference), see citrate-docs:content/chain/genesis.md and " +
+      "citrate-docs:content/chain/unknown.md#x";
+    expect(resolveCitationNodes(answer, retrieved)).toEqual([
+      { citation: "citrate-docs:content/chain/genesis.md#reference", nodeIds: ["0a1b2c3d4e"] },
+      { citation: "citrate-docs:content/chain/genesis.md", nodeIds: ["0a1b2c3d4e", "1f2e3d4c5b"] },
+      { citation: "citrate-docs:content/chain/unknown.md#x", nodeIds: [] },
+    ]);
+  });
+
+  it("stamps per-item node ids and the run's node-citation rate when the provider reports retrieval", async () => {
+    const ds = {
+      version: "qa-v1",
+      provenance: { author: "a", created: "2026-09-30", purpose: "p", disjointFromTraining: true },
+      sources: { "citrate-docs": { repo: "CitrateNetwork/citrate-docs", commit: SHA, visibility: "public" } },
+      items: [answerable, unanswerable],
+    } as QaDataset;
+    const out = await runQaEval(
+      ds,
+      fixtureIndex,
+      {
+        ask: async (q) =>
+          q.includes("chain id")
+            ? {
+                text: "40204 0x9d0c citrate-docs:content/chain/genesis.md#reference citrate-docs:content/chain/genesis.md#tokenomics",
+                retrieved: retrieved.slice(0, 1),
+                toolCalls: [{ tenant: "citrate-docs", query: "chain id" }],
+                skillLoads: ["citrate-precompiles"],
+              }
+            : { text: "Not documented.", retrieved: [], toolCalls: [] },
+      },
+      { model: "fixture" },
+    );
+    expect(out.items[0].retrievedNodes).toEqual(["0a1b2c3d4e"]);
+    expect(out.items[0].toolCalls).toEqual([{ tenant: "citrate-docs", query: "chain id" }]);
+    // HUP-S7.7: a sidecar run also records which skills the model read.
+    expect(out.items[0].skillLoads).toEqual(["citrate-precompiles"]);
+    expect(out.items[1].skillLoads).toBeUndefined();
+    expect(out.items[0].citedNodes).toEqual([
+      { citation: "citrate-docs:content/chain/genesis.md#reference", nodeIds: ["0a1b2c3d4e"] },
+      { citation: "citrate-docs:content/chain/genesis.md#tokenomics", nodeIds: [] },
+    ]);
+    expect(out.scorecard.citationNodeRate).toBe(0.5);
+  });
+
+  it("leaves the node-citation rate off a closed-book run", async () => {
+    const ds = {
+      version: "qa-v1",
+      provenance: { author: "a", created: "2026-09-30", purpose: "p", disjointFromTraining: true },
+      sources: { "citrate-docs": { repo: "CitrateNetwork/citrate-docs", commit: SHA, visibility: "public" } },
+      items: [answerable],
+    } as QaDataset;
+    const out = await runQaEval(ds, fixtureIndex, { ask: async () => ({ text: "40204" }) }, { model: "fixture" });
+    expect("citationNodeRate" in out.scorecard).toBe(false);
+    expect("citedNodes" in out.items[0]).toBe(false);
   });
 });
 
@@ -324,6 +418,7 @@ describe.skipIf(!live)("qa-v1 live provenance against the pinned source commits"
         expect(extractAnchors(show(source, path))).toEqual(f.anchors);
       }
     }
+    // 44 `git show` + `git rev-parse` pairs: past the 5 s default under a full parallel run.
   }, 60_000);
   it("every key point of every answerable item appears in the text of the section(s) it cites", () => {
     const problems: string[] = [];
@@ -333,5 +428,5 @@ describe.skipIf(!live)("qa-v1 live provenance against the pinned source commits"
       if (missing.length) problems.push(`${it.id}: ${missing.map((k) => k.join("|")).join("; ")}`);
     }
     expect(problems).toEqual([]);
-  });
+  }, 60_000);
 });

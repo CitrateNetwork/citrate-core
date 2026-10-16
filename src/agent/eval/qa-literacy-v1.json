@@ -1,0 +1,658 @@
+{
+  "version": "qa-literacy-v1",
+  "provenance": {
+    "author": "Larry Klosowski + Claude Opus 5.5",
+    "created": "2026-10-01",
+    "purpose": "HUP-S7.7 paraconsensus and precompile literacy pack (US-7.5, US-9.2, D-26): 30 hand-authored questions on Belnap paraconsensus, the Citrate precompiles and the agent runtime's approval quorum, with key points and citations (source repo + repo-relative path + heading anchor) into public Citrate material pinned by commit. 3 are unanswerable probes. Same format and deterministic scorer as qa-v1 (src/agent/eval/qa.ts); no model-as-judge.",
+    "disjointFromTraining": true,
+    "note": "Planset 05 'Eval provenance': keep disjoint from any E9 training trajectories; never copy into training data. Public-tier sources only (citrate-docs, citrate-chain). The companion skills under src-tauri/skills/ teach the same material from code; the questions cite the docs and the chain's own architecture notes so they can be scored offline. To change an item, make qa-literacy-v2; do not edit v1 in place. node scripts/qa-anchors.mjs --dataset qa-literacy-v1 --check re-derives the anchor index and checks every key point against its cited section."
+  },
+  "sources": {
+    "citrate-docs": {
+      "repo": "CitrateNetwork/citrate-docs",
+      "commit": "73ea7c56bc2087058ecc58eae5dbf734c86da072",
+      "visibility": "public"
+    },
+    "citrate-chain": {
+      "repo": "CitrateNetwork/citrate-chain",
+      "commit": "0aab474b437389ccd54c41c26378f1b3197ec4e5",
+      "visibility": "public"
+    }
+  },
+  "items": [
+    {
+      "id": "qa-lit-knowledge-order",
+      "question": "In the Belnap bilattice Citrate implements, how are the four values arranged in the knowledge ordering?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Neither sits below True and False"
+        ],
+        [
+          "below Both"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-truth-order",
+      "question": "In the Belnap bilattice Citrate implements, how are the four values arranged in the truth ordering?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "False sits below Neither and Both"
+        ],
+        [
+          "below True"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-join-meet",
+      "question": "What do the join and meet operations do on Belnap values in Citrate's learning engine?",
+      "category": "paraconsensus-fl",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "combine information"
+        ],
+        [
+          "keep only what both inputs agree on"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-negation",
+      "question": "What does Belnap negation do to each of the four values?",
+      "category": "paraconsensus-fl",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "swap True and False"
+        ],
+        [
+          "leave Both and Neither unchanged"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-lattice-laws",
+      "question": "Which algebraic laws do the property tests check for the Belnap join and meet operations?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "commutative"
+        ],
+        [
+          "associative"
+        ],
+        [
+          "idempotent"
+        ],
+        [
+          "absorption"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-reduction",
+      "question": "How are the per-source Belnap classifications reduced to a single state vector, and when is the result Both?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "reduce_belnap_states"
+        ],
+        [
+          "split True against False"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-independent-outputs",
+      "question": "Why can a dimension of the aggregated embedding be numerically near zero and still be labelled Both?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "never read each other"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-in-circuit",
+      "question": "Is the verifiable, in-circuit form of the Belnap aggregation built yet?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "proposed but not built"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-it-maps-to-the-network"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-output-size",
+      "question": "How many bytes does the 0x0110 BELNAP_AGGREGATE precompile return for an input with dim dimensions, and what do they hold?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "dim * 9",
+          "9 * dim"
+        ],
+        [
+          "Belnap state"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "belnap-q16-lattice-aggregation"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-q16-repr",
+      "question": "In Citrate's Q16 fixed-point library, what is the underlying type and how is the real value recovered?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Q16(i64)"
+        ],
+        [
+          "inner / 2^16"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "belnap-q16-lattice-aggregation"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-q16-saturation",
+      "question": "What does Citrate's Q16 arithmetic do on overflow and on division by zero?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "saturates"
+        ],
+        [
+          "numerator's sign"
+        ],
+        [
+          "nothing panics"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "belnap-q16-lattice-aggregation"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-precompile-vs-reference",
+      "question": "Is the 0x0110 precompile output byte-identical to the off-chain f32 Belnap reference?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "semantic level"
+        ],
+        [
+          "not at byte equality"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "belnap-q16-lattice-aggregation"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-safety-invariant",
+      "question": "What does the learning safety invariant from Paper II section 7.1 guarantee about the state root?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "state root"
+        ],
+        [
+          "regardless of whether the learning pipeline is active"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-chain",
+          "path": "core/learning/ARCHITECTURE.md",
+          "anchor": "theorem-3-safety-invariant-paper-ii-71"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-learning-page",
+      "question": "Which address range does the Citrate precompile page for learning use?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0x0110 to 0x011F"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-signature-page",
+      "question": "Which precompile address range verifies signatures on Citrate, and for which signature scheme?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0x0120 to 0x012F"
+        ],
+        [
+          "Ed25519"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-x402-page",
+      "question": "Which address range holds the x402 payment precompiles, and which signature standards do they verify?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0x0200 to 0x0209"
+        ],
+        [
+          "EIP-712"
+        ],
+        [
+          "EIP-3009"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-how-to-call",
+      "question": "How does a contract call a Citrate precompile, and where should exact encodings come from?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "staticcall"
+        ],
+        [
+          "test vectors"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-x402-bad-sig",
+      "question": "What does an x402 verifier precompile return when the signature is bad?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "zero address"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "failure-modes"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-eip712-gas",
+      "question": "What is the gas cost of the 0x0200 EIP712_VERIFY precompile?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "3450"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "x402-payment-precompiles"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-batch-gas",
+      "question": "How is gas computed for the 0x0202 BATCH_PAYMENT_VERIFY precompile?",
+      "category": "devtools-contracts",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "2000"
+        ],
+        [
+          "3800"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "x402-payment-precompiles"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-tensor-format",
+      "question": "What ranks does the canonical tensor format accept, and why is the format frozen?",
+      "category": "devtools-contracts",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "rank 5 or more is rejected"
+        ],
+        [
+          "TENSOR_COMMIT"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "tensor-primitives"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-compute-ops",
+      "question": "Which six fixed-point operations do the 0x010A to 0x010F precompiles provide?",
+      "category": "ai-inference",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "matmul"
+        ],
+        [
+          "dot"
+        ],
+        [
+          "softmax"
+        ],
+        [
+          "relu"
+        ],
+        [
+          "linear"
+        ],
+        [
+          "transpose"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "deterministic-q1616-compute-0x010a-to-0x010f"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-hosted-receipt",
+      "question": "Does a hosted-inference precompile call in 0x0100 to 0x0106 return a proof that the output is correct?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "signed receipt"
+        ],
+        [
+          "attestation"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "hosted-inference-0x0100-to-0x0106"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-attestation-default",
+      "question": "What is the attestation gate's default behaviour on mainnet validator binaries?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "always-reject"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "attestation-gate"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-verify-trio",
+      "question": "What do the 0x0107, 0x0108 and 0x0109 precompiles each do?",
+      "category": "ai-inference",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Poseidon"
+        ],
+        [
+          "Halo2-KZG"
+        ],
+        [
+          "Merkle path"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "verification-0x0107-to-0x0109"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-approval-quorum",
+      "question": "How does a tool call's risk tier set how many signatures the agent runtime's approval gate needs?",
+      "category": "agentile-hic",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "low auto-approves"
+        ],
+        [
+          "medium needs one signer"
+        ],
+        [
+          "high needs two"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/agent-runtime.md",
+          "anchor": "the-approval-gate-approvalqueue"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-auditor-role",
+      "question": "Can the Auditor role approve an action in the agent runtime's approval gate?",
+      "category": "agentile-hic",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Auditor role can never approve"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/agent-runtime.md",
+          "anchor": "the-approval-gate-approvalqueue"
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-unans-hardening-height",
+      "question": "At which block height does the precompile hardening activation take effect on chain 40204?",
+      "category": "devtools-contracts",
+      "difficulty": "hard",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-lit-unans-belnap-call-count",
+      "question": "How many times has the 0x0110 Belnap precompile been called on chain 40204 so far?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-lit-unans-x402-volume",
+      "question": "What total SALT value has the x402 facilitator settled on chain 40204 to date?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    }
+  ]
+}

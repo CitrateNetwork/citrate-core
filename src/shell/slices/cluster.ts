@@ -10,7 +10,18 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import type { ClusterPeer, ClusterStatus, Group, PinRow } from "../../bridge/domains";
+import type {
+  ClusterMemberDevices,
+  ClusterPeer,
+  ClusterStatus,
+  DeviceLinks,
+  DeviceRevokePrepared,
+  Group,
+  MeshStatus,
+  PinRow,
+} from "../../bridge/domains";
+import { groupsSlice, reloadMessages } from "./groups";
+import { ingestDeviceLinkMessages, shareDeviceLinks } from "../../fleet/deviceLinkShare";
 
 export interface ClusterState {
   /** Your groups, for the picker. */
@@ -33,6 +44,16 @@ export interface ClusterState {
   sharing: string | null;
   /** The last user-facing error, or null when clear. */
   error: string | null;
+  /** HUP-S8.1: this machine's device key + the device links it knows (null until loaded). */
+  myDevices: DeviceLinks | null;
+  /** HUP-S8.1: the selected group's members with their linked devices (live). */
+  memberDevices: ClusterMemberDevices[];
+  /** HUP-S8.1: a device revoke is in flight (the device address), or null. */
+  revoking: string | null;
+  /** HUP-S8.4 prep: whether the cross-machine mesh transport is on, and why (null until loaded). */
+  mesh: MeshStatus | null;
+  /** A removal core prepared and the member has not confirmed yet. */
+  revokePrepared: DeviceRevokePrepared | null;
 }
 
 const initial: ClusterState = {
@@ -46,6 +67,11 @@ const initial: ClusterState = {
   joining: false,
   sharing: null,
   error: null,
+  myDevices: null,
+  memberDevices: [],
+  revoking: null,
+  mesh: null,
+  revokePrepared: null,
 };
 
 export const clusterSlice = createSlice<ClusterState>(initial);
@@ -78,6 +104,141 @@ export async function selectClusterGroup(groupId: string): Promise<void> {
     if (clusterSlice.get().selectedId === groupId) {
       clusterSlice.set({ loading: false, error: message(e) });
     }
+  }
+}
+
+/**
+ * HUP-S8.1 — load this machine's device key address and the links it knows. Never mints a key.
+ * Errors are caught into `error` (an un-provisioned keyring surfaces honestly).
+ */
+export async function loadMyDevices(): Promise<void> {
+  try {
+    const myDevices = await bridge.cluster.myDevices();
+    clusterSlice.set({ myDevices });
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+  }
+}
+
+/**
+ * HUP-S8.1 — load the selected group's members with their devices. A daemon that predates device
+ * links has no `devices` op: that is not an error for the rest of the surface, so it reads as an
+ * empty list (the peers list still shows every authorized address).
+ */
+export async function loadMemberDevices(groupId: string): Promise<void> {
+  try {
+    const memberDevices = await bridge.cluster.devices(groupId);
+    if (clusterSlice.get().selectedId === groupId) clusterSlice.set({ memberDevices });
+  } catch {
+    if (clusterSlice.get().selectedId === groupId) clusterSlice.set({ memberDevices: [] });
+  }
+}
+
+/** HUP-S8.1 — step 1 of removing one of your devices: core mints the confirmation for it. */
+export async function prepareRevokeDevice(device: string): Promise<void> {
+  clusterSlice.set({ error: null, revokePrepared: null });
+  try {
+    const revokePrepared = await bridge.cluster.revokeDevicePrepare(device);
+    clusterSlice.set({ revokePrepared });
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+  }
+}
+
+/** Drop a prepared removal without revoking anything. */
+export function cancelRevokeDevice(): void {
+  clusterSlice.set({ revokePrepared: null });
+}
+
+/** HUP-S8.1 — you confirmed: revoke the prepared device (permanent for that device key), then refresh. */
+export async function revokeMyDevice(): Promise<void> {
+  const prepared = clusterSlice.get().revokePrepared;
+  if (!prepared) return;
+  clusterSlice.set({ revoking: prepared.device, error: null, revokePrepared: null });
+  try {
+    const myDevices = await bridge.cluster.revokeDevice(prepared.confirmId);
+    clusterSlice.set({ myDevices, revoking: null });
+    // Tell the other members of your groups, so their nodes drop the device too.
+    void shareMyDeviceLinks();
+    const id = clusterSlice.get().selectedId;
+    if (id) await Promise.all([selectClusterGroup(id), loadMemberDevices(id)]);
+  } catch (e) {
+    clusterSlice.set({ revoking: null, error: message(e) });
+  }
+}
+
+/**
+ * HUP-S8.1 — add another of your own devices from the code it showed (pairing by copy/paste until
+ * the fleet wizard's QR pairing lands). Core verifies all three signatures and that the device is
+ * yours before storing it; the mesh picks it up on the next roster update.
+ */
+export async function importDeviceCode(code: string): Promise<boolean> {
+  clusterSlice.set({ error: null });
+  try {
+    const myDevices = await bridge.cluster.importDeviceLink(code.trim());
+    clusterSlice.set({ myDevices });
+    void shareMyDeviceLinks();
+    const id = clusterSlice.get().selectedId;
+    if (id) await loadMemberDevices(id);
+    return true;
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+    return false;
+  }
+}
+
+/** HUP-S8.1 — this machine's link code (to paste on another of your devices), or null + error. */
+export async function exportDeviceCode(): Promise<string | null> {
+  try {
+    return await bridge.cluster.exportDeviceLink();
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+    return null;
+  }
+}
+
+/**
+ * HUP-S8.1 follow-on: share your device links and revocations with every group you are in (a hidden
+ * control message over the end-to-end encrypted relay). Core sends nothing when you never linked a
+ * device, and nothing to a group that already has this exact set. Best effort; never throws.
+ */
+export async function shareMyDeviceLinks(): Promise<number> {
+  try {
+    const groups = await bridge.groups.list();
+    return await shareDeviceLinks(
+      groups.map((g) => g.id),
+      {
+        offer: (g) => bridge.cluster.deviceLinksShareOffer(g),
+        mark: (g, d) => bridge.cluster.deviceLinksMarkShared(g, d),
+        send: (g, body) => bridge.groups.send(g, body),
+      },
+    );
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * HUP-S8.1 follow-on: pick up other members' device links for a group. Drains the group's mailbox
+ * into its retained history (the same drain the Groups chat does, so no message is lost), then hands
+ * the newest share of each member to core, which verifies it. Best effort; never throws.
+ */
+export async function syncPeerDeviceLinks(groupId: string): Promise<{ links: number; revocations: number }> {
+  try {
+    await reloadMessages(groupId);
+    const history = groupsSlice.get().history[groupId] ?? [];
+    return await ingestDeviceLinkMessages(history, (sender, body) => bridge.cluster.deviceLinksIngest(sender, body));
+  } catch {
+    return { links: 0, revocations: 0 };
+  }
+}
+
+/** HUP-S8.4 prep: load the mesh transport status (honest: off until the operator or sign-off). */
+export async function loadMeshStatus(): Promise<void> {
+  try {
+    clusterSlice.set({ mesh: await bridge.cluster.meshStatus() });
+  } catch {
+    clusterSlice.set({ mesh: null });
   }
 }
 

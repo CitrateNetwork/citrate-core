@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "popout",
+  "description": "HUP-S5.4: pop-out windows. Least privilege: only the events of the typed message bridge to the main window. No app commands, no shell, no fs, no opener.",
+  "windows": ["popout-browser", "popout-contract", "popout-monitor", "popout-diff", "popout-media"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit-to"
+  ]
+}

@@ -11,6 +11,25 @@
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
 import type {
+  TemplateCatalog,
+  TemplateRenderInput,
+  TemplateRenderView,
+  ToolchainGateRequest,
+  ToolchainGateResult,
+  ToolchainStatus,
+} from "../agent/contractForge";
+import type {
+  DeployGateInputs,
+  DeployGateLookup,
+  DeployGateRecord,
+  ForkDryRunInput,
+  ForkDryRunRequest,
+} from "../agent/deployGate";
+import type { VerifiedSourceView } from "../agent/verifiedSource";
+import type { CheckpointList, UndoOutcome } from "../agent/fileChanges";
+import type { StepDiff } from "../popout/diffModel";
+import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
+import type {
   AppConfig,
   KeyringStatus,
   CustodyStatus,
@@ -76,6 +95,12 @@ export interface AuthDomain {
   status(): Promise<AuthStatus>;
   /** Run the loopback-PKCE sign-in; opens the system browser. Returns status. */
   login(): Promise<AuthStatus>;
+  /**
+   * rc.5 FIX 2 — abort the in-flight browser sign-in (the Cancel button). The pending
+   * `login()` then rejects with "auth: sign-in cancelled". Resolves true when an
+   * attempt was waiting.
+   */
+  cancelLogin(): Promise<boolean>;
   /** Live /userinfo entitlement re-check (the federation RP rule). */
   userinfo(): Promise<AuthStatus>;
   /** Silent refresh from the vaulted refresh token (survives restart). */
@@ -208,8 +233,33 @@ export interface NodeLogLine {
   line: string;
 }
 
+/**
+ * SCL-S0.6 — why the last node start was refused: another process holds the chain database or a
+ * node port. Mirrors the Rust `NodeBlocker` (serde camelCase). `message` names the holder (pid,
+ * path) and the action; it is what the UI shows.
+ */
+export interface NodeBlocker {
+  resource: "chainDatabase" | "port";
+  port?: number;
+  pid?: number;
+  path?: string;
+  message: string;
+}
+
+/** The `node_status` shape. */
+export interface NodeStatusView {
+  state: string;
+  peers: number;
+  height: number;
+  syncPct: number;
+  /** Set after a start reset the node's chain data for a new genesis (40204 reroll). */
+  notice?: string;
+  /** Set while the last start was refused by a holder of the chain database or a node port. */
+  blocked?: NodeBlocker;
+}
+
 export interface NodeDomain {
-  status(): Promise<{ state: string; peers: number; height: number; syncPct: number }>;
+  status(): Promise<NodeStatusView>;
   start(): Promise<void>;
   stop(): Promise<void>;
   /**
@@ -285,6 +335,9 @@ export interface ModelDomain {
   verify(): Promise<void>;
   /** Spawn the llama-server sidecar on the verified-Ready model (fails closed). */
   serveStart(): Promise<void>;
+  /** SCL-S7.5a: release the llama-server supervisor (graceful stop, idempotent). Used by
+   *  "Restart the local model" so a supervisor that is not running is started fresh. */
+  serveStop(): Promise<void>;
 }
 
 // The node-agent under the SidecarSupervisor (CORE-C1.2). `status` returns the
@@ -330,6 +383,10 @@ export interface MemoryHit {
   kind: string;
   title: string;
   status?: string;
+  /** HUP-S3.1: `<repo>:<path>[#<anchor>]` of a document passage (search with `passages`). */
+  cite?: string;
+  /** HUP-S3.1: the hit's text (search with `passages`). */
+  passage?: string;
 }
 export interface MemoryResult {
   tenant: string;
@@ -372,13 +429,51 @@ export interface SeedReport {
   /** "not-semantic" | "not-running" | "already-seeded" when nothing was authored. */
   skipped?: string;
 }
+/** HUP-S3.1 — one progress line from the first-run knowledge-corpus import (mirrors the Rust
+ *  `ImportLine`; the importer's JSON-lines contract lives in citrate-memories `mem_corpus::progress`). */
+export type KnowledgeImportLine =
+  | { event: "verified"; bundle_digest: string; tenants: number; nodes: number; edges: number }
+  | { event: "tenant_start"; tenant: string; nodes: number; edges: number }
+  | { event: "progress"; tenant: string; done: number; total: number }
+  | { event: "tenant_skipped"; tenant: string; reason: string }
+  | { event: "tenant_done"; tenant: string }
+  | {
+      event: "done";
+      bundle_digest: string;
+      embed_model: string;
+      nodes_added: number;
+      nodes_merged: number;
+      edges_added: number;
+      tenants_imported: string[];
+      tenants_skipped: string[];
+    }
+  | { event: "error"; stage: string; message: string };
+
+/** HUP-S3.1 — what the first-run knowledge import did. Counts come only from the importer. */
+export interface KnowledgeImportReport {
+  state: "imported" | "skipped" | "failed";
+  /** "no-bundle" | "not-semantic" | "already-imported" | "in-progress" when nothing ran. */
+  skipped?: string | null;
+  error?: string | null;
+  bundleDigest?: string | null;
+  embedModel?: string | null;
+  nodesAdded: number;
+  edgesAdded: number;
+  tenantsImported: string[];
+  tenantsSkipped: string[];
+  /** HUP-S3.1: nodes embedded on this machine, and nodes that took the release's precomputed vectors. */
+  nodesEmbedded?: number;
+  vectorsReused?: number;
+}
+
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
   stop(): Promise<void>;
   assert(fact: string): Promise<"approved" | "declined">;
   recall(tenant: string, budget?: number): Promise<MemoryResult>;
-  search(tenant: string, query: string, budget?: number): Promise<MemoryResult>;
+  /** `opts.passages` (HUP-S3.1): each hit also carries its text and citation. */
+  search(tenant: string, query: string, budget?: number, opts?: { passages?: boolean }): Promise<MemoryResult>;
   neighbors(tenant: string, idPrefix: string, budget?: number): Promise<MemoryNeighbor[]>;
   /** Recall the personal + chain-state tenants for the Storage constellation. */
   constellation(budget?: number): Promise<MemoryResult[]>;
@@ -387,6 +482,10 @@ export interface MemoryDomain {
   ingestDocs(): Promise<DocsIngestReport>;
   /** Seed the constellation tenants with real network/node/stake facts on daemon-connect. */
   seedContext(facts: SeedFacts): Promise<SeedReport>;
+  /** HUP-S3.1 — import the bundled knowledge corpus into the local store (first run; idempotent,
+   *  verified against its manifest in Rust). Must run while the daemon is stopped; Rust stops and
+   *  restarts a running daemon itself. `onProgress` receives each importer line. */
+  importKnowledge(onProgress?: (line: KnowledgeImportLine) => void): Promise<KnowledgeImportReport>;
 }
 
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
@@ -662,6 +761,24 @@ export interface PartialDownload {
   pct: number;
 }
 
+/** Whether a downloaded model can be deleted now (Rust `model_delete::DeleteState`). */
+export interface ModelDeleteState {
+  file: string;
+  sizeBytes: number;
+  deletable: boolean;
+  /** Why not (in use, shipped with the app, downloading), when not deletable. */
+  reason: string | null;
+}
+
+/** What a delete removed (Rust `model_delete::Deleted`). */
+export interface ModelDeleted {
+  file: string;
+  /** Bytes removed: the GGUF plus its side files. */
+  freedBytes: number;
+  /** The chat server had it selected; the selection fell back to the default. */
+  selectionCleared: boolean;
+}
+
 export interface ModelsCatalogDomain {
   /** Locally-present, verified models. */
   local(): Promise<ModelDescriptor[]>;
@@ -674,6 +791,11 @@ export interface ModelsCatalogDomain {
   download(id: string, onProgress?: (pct: number) => void): Promise<void>;
   /** Switch the active local model (restarts llama-server -m). */
   select(id: string): Promise<void>;
+  /** Which downloaded models can be deleted now, and why not. Member-only (Models screen). */
+  deleteStates(): Promise<ModelDeleteState[]>;
+  /** Delete one downloaded model by file name, after the member confirmed it. Refused while the
+   *  model is in use, downloading, or shipped with the app. Never an agent tool. */
+  deleteLocal(file: string): Promise<ModelDeleted>;
   /** Hermes WP0.2b — the models registered on-chain in the ModelRegistry (40204). A PURE
    *  read (getAllModelHashes + getModel); NOT-yet-local, so the router marks them
    *  "download to use". Honest empty list on an unwired/failed read (never fabricated). */
@@ -782,6 +904,48 @@ export interface GroupsDomain {
 export interface ClusterPeer {
   address: string;
   online: boolean;
+  /** HUP-S8.1: set when this peer is a linked device; the member it acts for. */
+  member?: string;
+}
+/** HUP-S8.1: one linked device under a member, as the cluster daemon admits it. */
+export interface ClusterDevice {
+  device: string;
+  index: number;
+  label: string;
+  issuedAt: number;
+  online: boolean;
+}
+/** HUP-S8.1: a cluster member with its linked devices. */
+export interface ClusterMemberDevices {
+  member: string;
+  role: string;
+  online: boolean;
+  devices: ClusterDevice[];
+}
+/** HUP-S8.1: a DeviceLink this machine knows (no signatures cross the bridge). */
+export interface DeviceLinkView {
+  device: string;
+  member: string;
+  wallet: string;
+  index: number;
+  label: string;
+  issuedAt: number;
+  thisDevice: boolean;
+}
+/** HUP-S8.1: this machine's device address (null before its key exists) + known links. */
+/** HUP-S8.1: a prepared device removal (mirrors Rust `device_link::RevokePrepared`). */
+export interface DeviceRevokePrepared {
+  confirmId: string;
+  /** Canonical device address (lowercase hex, no 0x). */
+  device: string;
+  statement: string;
+  confirmBy: number;
+}
+
+export interface DeviceLinks {
+  thisDevice: string | null;
+  links: DeviceLinkView[];
+  revoked: string[];
 }
 export interface ClusterStatus {
   groupId: string;
@@ -796,6 +960,82 @@ export interface ClusterDomain {
   /** Co-pin a CID across the Group roster. */
   shareFile(groupId: string, cid: string): Promise<void>;
   leave(groupId: string): Promise<void>;
+  /** HUP-S8.1: the group's members with their linked devices (live). */
+  devices(groupId: string): Promise<ClusterMemberDevices[]>;
+  /** HUP-S8.1: this machine's device key address + the links it knows. Never mints a key. */
+  myDevices(): Promise<DeviceLinks>;
+  /** HUP-S8.1: open the wallet ceremony that links THIS machine. Signs nothing. */
+  linkDeviceRequest(label: string): Promise<CeremonyView>;
+  /** HUP-S8.1: the person approved; complete + store the link. */
+  linkDeviceApprove(id: string, rawAck: boolean): Promise<DeviceLinks>;
+  /** HUP-S8.1: the person declined; nothing was signed. */
+  linkDeviceReject(id: string): Promise<void>;
+  /**
+   * HUP-S8.1: step 1 of removing a device of yours: what you confirm, and a one-shot id core
+   * minted for that device (valid for two minutes). Signs nothing.
+   */
+  revokeDevicePrepare(device: string): Promise<DeviceRevokePrepared>;
+  /** HUP-S8.1: you confirmed: revoke the device that `confirmId` names (permanent for that key). */
+  revokeDevice(confirmId: string): Promise<DeviceLinks>;
+  /** HUP-S8.1: this machine's signed link as a code to paste on another of YOUR devices. */
+  exportDeviceLink(): Promise<string>;
+  /** HUP-S8.1: add another of your own devices from its code (verified before it is stored). */
+  importDeviceLink(code: string): Promise<DeviceLinks>;
+  /**
+   * HUP-S8.1 follow-on: the group message that shares YOUR links and revocations with `groupId`, or
+   * null when there is nothing to share or this exact set was already sent there.
+   */
+  deviceLinksShareOffer(groupId: string): Promise<DeviceLinkShareOffer | null>;
+  /** Record that the set with `digest` was sent to `groupId`. */
+  deviceLinksMarkShared(groupId: string, digest: string): Promise<void>;
+  /** Accept another member's share message (verified in core before anything is stored). */
+  deviceLinksIngest(sender: string, body: string): Promise<DeviceLinkIngest>;
+  /** HUP-S8.4 prep: whether the cross-machine mesh transport is on, and why. */
+  meshStatus(): Promise<MeshStatus>;
+  /**
+   * HUP-S8.4: this machine's link (or QR text) for `groupId`: where another member's machine can
+   * reach it. Needs the cross-machine mesh; without it the daemon says so and nothing is invented.
+   */
+  groupSeed(groupId: string): Promise<ClusterGroupSeed>;
+  /**
+   * HUP-S8.4: dial the machines named in a group link another member shared. Resolves to how many
+   * addresses are being dialed. A link says where to knock, nothing more: each machine is still
+   * admitted only by the group's roster and DeviceLinks.
+   */
+  addGroupSeed(groupId: string, seed: string): Promise<number>;
+}
+
+/** HUP-S8.4: a group link (mirrors Rust `cluster::ClusterGroupSeedDto`). */
+export interface ClusterGroupSeed {
+  groupId: string;
+  /** `citrate-cluster://seed?v=1&g=...&a=...`, short enough for a QR code. Locations only. */
+  link: string;
+  /** The multiaddrs in the link, each ending in this machine's peer id. */
+  addrs: string[];
+}
+
+/** Group-message prefix of a DeviceLink share (a control message; never shown in chat). It starts
+ *  with U+0001, like the social-binding sentinel, so nothing a member types can match it. */
+export const DEVICE_LINKS_MSG_PREFIX = "\u0001cdlink1:";
+export interface DeviceLinkShareOffer {
+  body: string;
+  digest: string;
+}
+export interface DeviceLinkIngest {
+  links: number;
+  revocations: number;
+  refused: string[];
+}
+/** The cross-machine mesh transport policy (core `cluster_mesh.rs`). */
+export interface MeshStatus {
+  /** The cross-machine transport is on for this app run. */
+  on: boolean;
+  /** `operator`: CITRATE_CLUSTER_LISTEN is set; `default`: on by default after sign-off; `off`. */
+  source: "operator" | "default" | "off";
+  /** The CL-S4 transport sign-off is recorded in this build. */
+  signedOff: boolean;
+  /** Plain-language reason for the member. */
+  note: string;
 }
 
 // ── C-21 train-together: group federated training (lane s5) ──
@@ -819,6 +1059,172 @@ export interface TrainingDomain {
   reward(groupId: string): Promise<RewardInfo>;
   /** Claim the member's SALT reward — ceremony-gated (D-18/D-23). */
   claim(groupId: string): Promise<void>;
+}
+
+// ── HUP-S9.4: Hermes plans, explains and starts federated rounds; LoRA eval gate ──
+// Shapes mirror src-tauri/src/fl_rounds.rs (serde camelCase). Data source: the compute-pool
+// training-coordinator `GET /v1/status` at the configured URL; there is no default coordinator.
+export type FlCapability = "probe" | "federated" | "h01";
+export interface FlRoundProposal {
+  requires: FlCapability;
+  loraRank: number;
+  maxTrajectories: number;
+  leaseHours: number;
+  /** The round to join (0x + 64 hex, citrate-chain FL_ROUND_V1 round_id). With one, an approved
+   *  start also writes this device's consent for that round (D-29). */
+  roundId?: string;
+}
+export type FlSettlement = "shadow" | "live" | "unknown";
+export type FlPoolPhase = "noWork" | "open" | "running" | "complete";
+export interface FlCoordinatorStatus {
+  pending: number;
+  leased: number;
+  done: number;
+  quarantined: number;
+  workers: number;
+  settlement: FlSettlement;
+  phase: FlPoolPhase;
+}
+export type FlCoordinatorView =
+  | { state: "notConfigured" }
+  | { state: "unreachable"; url: string; reason: string }
+  | { state: "live"; url: string; status: FlCoordinatorStatus };
+export interface FlRoundExplanation {
+  data: string;
+  compute: string;
+  reward: string;
+  privacy: string;
+  status: string;
+}
+export interface FlRoundPlan {
+  planHash: string;
+  createdAtMs: number;
+  coordinator: FlCoordinatorView;
+  proposal: FlRoundProposal;
+  baseModel: string;
+  device: { tier: string | null; accelerator: boolean | null };
+  explain: FlRoundExplanation;
+  canStart: boolean;
+  blockers: string[];
+}
+export interface FlStartReceipt {
+  planHash: string;
+  coordinatorUrl: string;
+  authorizedAtMs: number;
+  /** Always false in this build: the device training worker is not bundled (HUP-S9.1/S9.2). */
+  trainingStarted: boolean;
+  note: string;
+  roundId: string | null;
+  /** Where the round consent was written (the worker's CITRATE_FL_CONSENT_FILE). */
+  consentFile: string | null;
+}
+export interface FlStartRecord {
+  planHash: string;
+  coordinatorUrl: string;
+  requires: FlCapability;
+  authorizedAtMs: number;
+  roundId?: string;
+  revokedAtMs?: number;
+}
+export interface FlCoordinatorConfig {
+  url: string | null;
+  source: "env" | "settings" | "invalid" | "none";
+  settingsUrl: string | null;
+  note: string | null;
+}
+export interface FlAdapterGateRequest {
+  adapterPath: string;
+  expectedSha256: string;
+  baseToolsPath: string;
+  candidateToolsPath: string;
+  baseQaPath?: string;
+  candidateQaPath?: string;
+  /** The round result (receipt) of the round that produced this adapter. */
+  roundResultPath?: string;
+}
+/** The round an adapter came from, as its round result file states it. Core checks that the file is
+ *  consistent (Accepted, chain, bundle and replay digests agree); it does not read the ledger. */
+export interface FlRoundBinding {
+  roundId: string;
+  recordDigest: string;
+  adapterSha256: string;
+  chainId: number;
+  ledger: string;
+  participants: number;
+}
+export interface FlMetricDelta {
+  metric: string;
+  base: number | null;
+  candidate: number | null;
+  improvement: number | null;
+}
+export interface FlAdapterGateRecord {
+  adapterSha256: string;
+  adapterPath: string;
+  baseModel: string;
+  decidedAtMs: number;
+  round: FlRoundBinding | null;
+  decision: {
+    verdict: "ACCEPT" | "REJECT";
+    reasons: string[];
+    metrics: FlMetricDelta[];
+    compositeBase: number;
+    compositeCandidate: number;
+  };
+}
+export interface FlOverview {
+  config: FlCoordinatorConfig;
+  starts: FlStartRecord[];
+  gates: FlAdapterGateRecord[];
+  activeAdapter: string | null;
+  /** The adapter put back after a restart (on the base it was loaded on). */
+  rememberedAdapter: { sha256: string; baseModel: string } | null;
+  restoreError: string | null;
+  /** The rounds this device consented to, as the device worker reads them, and that file. */
+  consentedRounds: string[];
+  consentFile: string | null;
+  consentError: string | null;
+  storeError: string | null;
+}
+export interface FlRoundsDomain {
+  overview(): Promise<FlOverview>;
+  /** Persist (or clear, with null) the coordinator base URL. Core validates it. */
+  setCoordinator(url: string | null): Promise<FlCoordinatorConfig>;
+  /** Read the coordinator and build the plan + plain-words explanation. Read-only. */
+  plan(proposal?: FlRoundProposal): Promise<FlRoundPlan>;
+  lookupPlan(planHash: string): Promise<FlRoundPlan>;
+  /** Record the member's HIC-1 approval of exactly this plan. Call only after the approval card. */
+  start(planHash: string): Promise<FlStartReceipt>;
+  gateAdapter(request: FlAdapterGateRequest): Promise<FlAdapterGateRecord>;
+  /** Load an ACCEPTED adapter into llama-server (`--lora`). Returns the served copy's path. */
+  loadAdapter(sha256: string): Promise<string>;
+  unloadAdapter(): Promise<void>;
+  /** Withdraw this device's consent for one round. Returns the rounds still consented. */
+  revokeConsent(roundId: string): Promise<string[]>;
+  /** HUP-S9.3: the "train on my verified conversations" switch (default off) and what is stored. */
+  trajectoryStatus(): Promise<FlTrajectoryStatus>;
+  /** Turn the switch on or off. Off deletes assembled training sets now (and, if asked, recordings). */
+  setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean): Promise<FlTrajectoryStatus>;
+  /** Assemble the newest verified conversations (at most `maxTrajectories`) into one training set.
+   *  Core refuses when the switch is off. */
+  buildTrainingSet(maxTrajectories: number): Promise<FlTrainingSet>;
+}
+/** HUP-S9.3 (core fl_trajectories.rs TrajectoryStatus). */
+export interface FlTrajectoryStatus {
+  settings: { enabled: boolean; changedAtMs: number | null };
+  recordedFiles: number;
+  datasets: number;
+  appliesOnRestart: boolean;
+  loadError: string | null;
+}
+/** HUP-S9.3 (core fl_trajectories.rs DatasetSummary). */
+export interface FlTrainingSet {
+  path: string;
+  sha256: string;
+  examples: number;
+  filesRead: number;
+  skippedLines: number;
+  overCap: number;
 }
 
 // ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──
@@ -855,6 +1261,86 @@ export interface RegistrySkill {
   owner: string;
 }
 
+/** HUP-S4.3 — which MCP servers Hermes may use (core writes the sidecar's allowlist). Mirrors the
+ *  Rust `McpSettings`. All default off (default pending owner sign-off). HUP-S4.1 adds `node`: this
+ *  node's own MCP server, through the stdio bridge with a connect token minted for Hermes. */
+export interface HermesMcpSettings {
+  mem: boolean;
+  scan: boolean;
+  node: boolean;
+}
+
+/** HUP-S4.1: one MCP server as the running sidecar reports it (`GET /mcp/servers`). Never carries
+ *  a URL, an environment value or the server's instructions text. */
+export interface McpRuntimeServer {
+  name: string;
+  transport: string;
+  /** "ready" | "failed" | "exited". */
+  state: string;
+  protocolVersion?: string;
+  /** "modern" (2026-07-28) | "legacy". */
+  era?: string;
+  serverName?: string;
+  tasks?: boolean;
+  /** Tools offered to Hermes. */
+  tools: number;
+  skipped: string[];
+  error?: string;
+  reconnects?: number;
+  relists?: number;
+  nextRetryMs?: number;
+}
+
+/** HUP-S4.1: the running sidecar's MCP servers, or `{running: false}`. */
+export interface McpRuntimeView {
+  running: boolean;
+  configured?: boolean;
+  servers?: McpRuntimeServer[];
+}
+
+/** HUP-S4.1: one MCP request the sidecar holds for the member (`GET /sessions/:id/mcp/pending`):
+ *  an effectful MCP call after the session read untrusted content (`tool_call`), or a server asking
+ *  the member to open a page (`open_url`, URL-mode elicitation; core opens it only on Allow). */
+export interface McpPendingView {
+  id: string;
+  kind: "tool_call" | "open_url";
+  callId: string;
+  server: string;
+  remoteTool: string;
+  tool: string;
+  hic: string;
+  /** What the decision must carry back: the exact arguments, or the URL. */
+  subject: string;
+  arguments?: string;
+  hints?: { readOnly: boolean; destructive: boolean; idempotent: boolean; openWorld: boolean };
+  /** Why the member is asked (tool_call), or the server's own message (open_url, untrusted). */
+  reason: string;
+  url?: string;
+  urlHost?: string;
+  warnings: string[];
+  expiresInSecs: number;
+}
+
+/** HUP-S4.3 — one server row (Rust `McpServerView`). */
+export interface HermesMcpServer {
+  name: string;
+  label: string;
+  transport: string;
+  enabled: boolean;
+  available: boolean;
+  detail: string;
+}
+
+/** HUP-S4.3 — the settings view (Rust `McpView`). */
+export interface HermesMcpView {
+  settings: HermesMcpSettings;
+  servers: HermesMcpServer[];
+  /** An allowlist file is in place for the next Hermes start. */
+  configWritten: boolean;
+  /** Hermes is running and reads the allowlist only at start. */
+  restartRequired: boolean;
+}
+
 export interface AgentHarnessDomain {
   /** Sidecar a Hermes agent (keyless; every chain effect stays ceremony-gated). */
   start(): Promise<void>;
@@ -883,13 +1369,18 @@ export interface AgentHarnessDomain {
   /** HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar). Open a session on the LOCAL
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */
-  sessionOpen(systemPrompt: string, toolsJson: string): Promise<string>;
+  sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
   sessionSend(id: string, text: string): Promise<void>;
   /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
   /** Hand back a core-hosted tool's result after core's own gates ran it. */
   sessionToolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   sessionStop(id: string): Promise<void>;
+  /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
+   *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string): Promise<string>;
+  /** HUP-S10.3 — close a session (a finished daemon run). */
+  sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
    *  gates). Rejects when the sidecar isn't running. */
   tracks(): Promise<InterviewTrack[]>;
@@ -900,6 +1391,180 @@ export interface AgentHarnessDomain {
   /** HUP-S1.4 — validate a member-edited brief against its track (required gates and the workflow
    *  can't be edited away). A refusal rejects with `BRIEF_REFUSED: <reason>`. */
   briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
+  /** HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan). Rejects outside the app. */
+  mcpSettings(): Promise<HermesMcpView>;
+  /** HUP-S4.3 — save the member's choice; takes effect at the next Hermes start. */
+  mcpSet(settings: HermesMcpSettings): Promise<HermesMcpView>;
+  /** HUP-S2.9 — the agent session's checkpointed file changes (newest first). `enabled: false`
+   *  with a note when the sidecar cannot undo. Rejects when the sidecar isn't running. */
+  checkpoints(id: string): Promise<CheckpointList>;
+  /** HUP-S2.9 — undo one agent file change. A refusal (a file changed since, a pruned step) resolves
+   *  with `ok: false` and the reason; nothing was restored. */
+  undoStep(id: string, seq: number): Promise<UndoOutcome>;
+  /** HUP-S2.9 — undo every change of the session not undone yet (all or nothing). */
+  undoSession(id: string): Promise<UndoOutcome>;
+  /** HUP-S5.4 — what one agent file change did, path by path, for the Code and diff pop-out
+   *  (read-only). A refusal (pruned, not found, undo not enabled) resolves with `ok: false`. */
+  checkpointDiff(id: string, seq: number): Promise<StepDiff>;
+  /** HUP-S2.6 — record the member's answer on an approval card or a wallet review in core's HIC
+   *  outbox (then in the decision records the nightly anchor covers). Resolves with the record id,
+   *  or null in a build that keeps no decision records (web/dev); rejects when it could not be
+   *  written. */
+  recordDecision(kind: "ceremony.approval" | "agent.tool_approval", decision: "approved" | "denied", subject: string, reason: string): Promise<number | null>;
+  /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
+  workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
+  /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */
+  workflowStatus(sessionId: string, runId: string): Promise<WorkflowRunView>;
+  /** HUP-S3.4 — whether learning is on in the sidecar, and whether publishing is. */
+  learnStatus(): Promise<LearnStatus>;
+  /** HUP-S3.4 — proposals waiting for the member (`all`: every kept one). */
+  learnProposals(all?: boolean): Promise<LearnProposal[]>;
+  /** HUP-S3.4 — propose a skill or memory from a VERIFIED run of that session. */
+  learnPropose(sessionId: string, runId: string, content: LearnContent): Promise<LearnProposal>;
+  /** HUP-S3.4 — accept (HIC-1, recorded first). `acknowledged` names the conflicts accepted anyway.
+   *  A refusal rejects with a message starting `LEARN_REFUSED: `. */
+  learnAccept(id: string, acknowledged: string[]): Promise<LearnAcceptResult>;
+  /** HUP-S3.4 — reject (recorded, final). */
+  learnReject(id: string, reason: string): Promise<void>;
+  /** HUP-S3.4 — the learned-memory ledger, with each memory's place in the memory graph. */
+  learnMemories(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — store learned memories that are still waiting for the memory store. */
+  learnStorePending(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — resolve a contradiction: keep one learned memory, set aside another (HIC-1; the
+   *  sidecar records the decision before anything changes). Returns the updated ledger. A refusal
+   *  rejects with a message starting `LEARN_REFUSED: `. */
+  learnResolve(keep: string, retract: string): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
+   *  `PUBLISH_DISABLED: ` while publishing is off. */
+  learnPublish(id: string, version: string): Promise<void>;
+  /** HUP-S3.3 + S3.7 — the shipped personas with their prompt fragments (names owner-approved
+   *  2026-10-01; `name_pending_sign_off` marks any that are not). Rejects when the sidecar isn't running. */
+  personas(): Promise<HermesPersona[]>;
+  /** HUP-S3.3 — the sidecar validates a member-defined persona and renders its fragment. A refusal
+   *  rejects with a message starting `PERSONA_REFUSED: `. */
+  personaCheck(persona: CustomPersonaInput): Promise<HermesPersona>;
+  /** HUP-S3.3 — every track's workflow family, with `needs_tools` and, when this sidecar cannot
+   *  run one, `unavailable` (why). */
+  workflows(): Promise<TrackWorkflow[]>;
+  /** HUP-S3.3 (US-3.3 AC2) — run a track's catalog workflow in a session by id. Rejects with a
+   *  message starting `WORKFLOW_REFUSED: ` (unknown workflow, or a tool the session lacks). Read
+   *  the run with `workflowStatus`. */
+  trackWorkflowRun(sessionId: string, workflowId: string): Promise<TrackWorkflowStart>;
+  /** HUP-S2.2 — the `shell_run` commands the sidecar holds for the member's decision in a session. */
+  shellPending(sessionId: string): Promise<ShellPendingView[]>;
+  /** HUP-S2.2 — allow or decline one held command. The decision carries the exact argv and folder
+   *  the member was shown; the sidecar refuses it (rejects with `SHELL_DECISION_REFUSED: `) when
+   *  they differ from what is waiting or nothing with that id waits any more. */
+  shellDecide(sessionId: string, id: string, allow: boolean, argv: string[], cwd: string): Promise<void>;
+  /** HUP-S4.1: the MCP requests the sidecar holds for the member's decision in a session. */
+  mcpPending(sessionId: string): Promise<McpPendingView[]>;
+  /** HUP-S4.1: allow or decline one held MCP request, bound to the subject shown. Rejects with
+   *  `MCP_DECISION_REFUSED: ` when it no longer matches what is waiting. On Allow of an `open_url`
+   *  request, core opens the address the sidecar holds in the system browser. */
+  mcpDecide(sessionId: string, id: string, allow: boolean, subject: string): Promise<void>;
+  /** HUP-S4.1: the running sidecar's MCP servers (connected / failed / tools). */
+  mcpRuntime(): Promise<McpRuntimeView>;
+}
+
+/** HUP-S2.2 — the OS sandbox a held command would run in, as the sidecar describes it. */
+export interface ShellSandboxSummary {
+  /** "seatbelt" | "bwrap" | "none". */
+  backend: string;
+  enforced: boolean;
+  /** "denied" | "allowed". */
+  network: string;
+  writable: string[];
+  readable_extra: string[];
+  /** One line for people. */
+  summary: string;
+}
+
+/** HUP-S2.2 — one `shell_run` command waiting for the member (`GET /sessions/:id/shell/pending`). */
+export interface ShellPendingView {
+  id: string;
+  callId: string;
+  tool: string;
+  hic: string;
+  /** Exactly as proposed: the program name first, one entry per argument. */
+  argv: string[];
+  resolvedProgram: string;
+  /** The canonical folder it runs in. */
+  cwd: string;
+  timeoutSecs: number;
+  sandbox: ShellSandboxSummary;
+  expiresInSecs: number;
+}
+
+/** HUP-S3.3 — the persona a sidecar session applies (skill allowlist + tool emphasis): a shipped
+ *  persona by id, or a member-defined one. */
+export type SessionPersonaChoice = { persona: string } | { customPersona: CustomPersonaInput };
+
+/** HUP-S3.3 — what `POST /sessions/:id/track_workflows` answers. */
+export interface TrackWorkflowStart {
+  run_id: string;
+  workflow_id: string;
+  track: string;
+  evidence: string;
+}
+
+// HUP-S3.3 + S3.7 — persona and track-workflow wire shapes. These mirror the sidecar's
+// `agent-loop::personas` / `agent-loop::workflows` views verbatim (snake_case).
+export interface HermesPersona {
+  id: string;
+  role: string;
+  name: string;
+  name_status: string;
+  summary: string;
+  voice: string;
+  tone: string;
+  style_rules: string[];
+  default_track: string;
+  default_workflow: string;
+  tool_emphasis: string[];
+  skills: string[];
+  /** Optional voice id for the existing speech engine; null = the system voice. */
+  tts_voice?: string | null;
+  /** What the chat appends to its system prompt while this persona is active. */
+  prompt_fragment: string;
+  /** True while the shipped name is a placeholder (the UI says so). */
+  name_pending_sign_off: boolean;
+  custom: boolean;
+  /** Allowlisted skills this sidecar has installed (absent for a custom persona's check). */
+  skills_installed?: string[];
+}
+export interface CustomPersonaInput {
+  id: string;
+  name: string;
+  summary: string;
+  voice: string;
+  tone: string;
+  style_rules: string[];
+  default_track: string;
+  tool_emphasis: string[];
+  skills: string[];
+  tts_voice: string | null;
+}
+export interface TrackWorkflowStep {
+  id: string;
+  instruction: string;
+  max_attempts: number;
+  verifier_names: string[];
+}
+export interface TrackWorkflow {
+  id: string;
+  track: string;
+  title: string;
+  summary: string;
+  is_default: boolean;
+  /** "tool-report" (a tool's own report decides) or "answer-shape" (the answer's structure). */
+  evidence: "tool-report" | "answer-shape" | string;
+  tools: string[];
+  /** Tools a passing run must call. */
+  needs_tools?: string[];
+  /** Why this sidecar cannot run the workflow (e.g. the toolchain is off); null = it can. */
+  unavailable?: string | null;
+  verifier_names: string[];
+  steps: TrackWorkflowStep[];
 }
 
 // HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types
@@ -951,6 +1616,8 @@ export interface SessionEventsPage {
   events: { seq: number; event: Record<string, unknown> }[];
   lastSeq: number;
   busy: boolean;
+  /** HUP-S1.1: core-hosted calls the session is still waiting on (newer sidecars only). */
+  pendingCoreCalls?: string[];
 }
 
 // ── Local instruction-skills (Hermes "write & run skills"). A skill is a markdown playbook the agent
@@ -975,6 +1642,15 @@ export interface AgentSkillsDomain {
   read(name: string): Promise<string>;
   /** Remove an authored skill (idempotent). */
   remove(name: string): Promise<void>;
+  /** HUP-S3.2: convert skills saved in the older flat-file format to SKILL.md, and say what happened. */
+  migrate(): Promise<SkillMigrationReport>;
+}
+/** HUP-S3.2: what converting older flat-file skills to SKILL.md did (skills_local.rs). */
+export interface SkillMigrationReport {
+  /** Slugs now saved as SKILL.md skills. */
+  converted: string[];
+  /** Old files left in place, each with the reason. */
+  failed: { file: string; reason: string }[];
 }
 
 // ── Social identity (Connections · social discovery). Privacy model: ADR-2026-08-30. ──
@@ -1157,13 +1833,114 @@ export interface ContractDeployInput {
   gas?: number;
 }
 
+/** HUP-S6.4 — what `contract_deploy` returns: the pending ceremony view plus the READY D-4
+ *  gate record core checked for exactly this init code. */
+export type DeployProposalView = CeremonyView & { gate: DeployGateRecord };
+
 export interface ContractsDomain {
   /** Hermes P3 / WP3.2 — propose deploying a compiled contract. Assembles the init code
    *  and submits a PENDING SignatureCeremony carrying the `to`-less creation tx (Rule 3 —
    *  the human approves + broadcasts via signing.broadcast(view.id); nothing signs here).
    *  Returns the decoded CeremonyView (a "contract creation") for the review modal. Empty
-   *  bytecode rejects. */
-  deploy(input: ContractDeployInput): Promise<CeremonyView>;
+   *  bytecode rejects. HUP-S6.4: rejects with the honest refusal (naming the failing gate
+   *  items) unless the D-4 deploy gate is READY for exactly this init code. */
+  deploy(input: ContractDeployInput): Promise<DeployProposalView>;
+  /** HUP-S6.4 — the init-code hash a deploy would carry and its gate record (null if none). */
+  gateLookup(bytecodeHex: string, constructorArgsHex?: string): Promise<DeployGateLookup>;
+  /** HUP-S6.4 — hand verifier outputs to core; core parses them and stores the verdict. */
+  gateSubmit(inputs: DeployGateInputs): Promise<DeployGateRecord>;
+  /** HUP-S6.10 — run the gate's fork step on the Citrate-aware fork; returns `forkDryRun` for
+   *  `gateSubmit`. Read-only (reads chain state, signs and sends nothing). */
+  gateForkDryRun(request: ForkDryRunRequest): Promise<ForkDryRunInput>;
+  /** HUP-S4.3 — a contract's verified source/ABI/compiler from CitrateScan (read-only). Rejects
+   *  only when the lookup itself fails; "not verified" is a normal answer. */
+  verifiedSource(address: string): Promise<VerifiedSourceView>;
+  /** HUP-S6.7 — CitrateScan's verified source and ABI for an address (`contract_source`). */
+  source(address: string): Promise<ContractSourceView>;
+  /** HUP-S6.7 — deployed code size at `address` on `target` ("citrate" or a loopback fork URL). */
+  codeSize(target: string, address: string): Promise<number>;
+  /** HUP-S6.7 — a read-only eth_call; resolves with the raw `0x` return data. */
+  viewCall(target: string, address: string, calldata: string): Promise<string>;
+  /** HUP-S6.7 — a write call on 40204 as a PENDING SignatureCeremony (nothing signs here). */
+  proposeWrite(address: string, calldata: string, valueWei: string): Promise<CeremonyView>;
+  /** HUP-S6.6 — where a hello-mint project stands after its deploy (local reads). */
+  postdeployStatus(projectDir: string): Promise<PostDeployStatus>;
+  /** HUP-S6.6 — the deploy tx's receipt on 40204; null while pending. */
+  postdeployReceipt(txHash: string): Promise<DeployReceiptView | null>;
+  /** HUP-S6.6 — submit the project contract's source to CitrateScan's verifier. */
+  postdeployVerify(projectDir: string, address: string, constructorArgsHex?: string): Promise<VerifyOutcomeView>;
+  /** HUP-S6.6 — point the page at chain 40204 and the deployed contract. */
+  postdeploySwitchSite(projectDir: string, address: string): Promise<{ envPath: string; address: string; decodedCalls?: boolean; decodeNote?: string }>;
+  /** HUP-S6.6 — pin the built page to the app's IPFS daemon. */
+  postdeployPinSite(projectDir: string): Promise<SitePinView>;
+  /** HUP-S6.6 — write the Vercel-ready export folder (no account actions). */
+  postdeployVercelExport(projectDir: string): Promise<VercelExportView>;
+  /** HUP-S6.2 / US-6.4 — the bundled contract templates with their parameter forms, the tier in
+   *  effect and its Medusa budget. Read-only. */
+  templateList(): Promise<TemplateCatalog>;
+  /** HUP-S6.2 / US-6.4 — render a template into a folder granted for writing (core validates
+   *  every parameter and refuses before writing anything). */
+  templateRender(input: TemplateRenderInput): Promise<TemplateRenderView>;
+  /** HUP-S6.3 — the toolchain switch (off by default; applies when Hermes next starts). */
+  toolchainSettings(): Promise<ToolchainStatus>;
+  toolchainSetEnabled(enabled: boolean): Promise<ToolchainStatus>;
+  /** HUP-S6.3 → S6.4 — run the deploy gate on a Hermes session's toolchain reports for one
+   *  forge artifact; core re-parses the raw reports and stores the verdict. */
+  gateFromToolchain(request: ToolchainGateRequest): Promise<ToolchainGateResult>;
+}
+
+/** HUP-S6.7 — what CitrateScan says about an address. Mirrors Rust `contract_reader::VerifiedSource`. */
+export interface ContractSourceView {
+  status: "verified" | "partial" | "unverified" | "notContract";
+  isContract: boolean;
+  codeSize: number | null;
+  contractName: string | null;
+  compilerVersion: string | null;
+  abi: unknown[] | null;
+  source: string | null;
+  note: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::PostDeployStatus`. */
+export interface PostDeployStatus {
+  contractName: string;
+  siteContract: string | null;
+  built: boolean;
+  exportDir: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::DeployReceipt`. */
+export interface DeployReceiptView {
+  txHash: string;
+  blockNumber: number;
+  status: number | null;
+  contractAddress: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::VerifyOutcome`. */
+export interface VerifyOutcomeView {
+  status: "verified" | "partial" | "failed" | "unavailable";
+  guid: string | null;
+  matchType: string | null;
+  contractName: string | null;
+  message: string;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::SitePin`. */
+export interface SitePinView {
+  cid: string;
+  files: number;
+  bytes: number;
+  localGatewayUrl: string;
+  publicGatewayUrl: string;
+  note: string;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::VercelExport`. */
+export interface VercelExportView {
+  dir: string;
+  files: number;
+  commands: string[];
 }
 
 /** A scrubbed diagnostic bundle (Telemetry WP-T.2/T.3). Mirrors the Rust DiagnosticBundle. */
@@ -1236,17 +2013,231 @@ export interface TierDomain {
   setOverride(tier: TierId | null): Promise<TierId | null>;
 }
 
+// ---- HUP-S1.5 — the escalation router (US-1.5). Mirrors Rust `escalation.rs`. ----
+// Amounts are integer micro-USD. Prices are member-entered (per 1M tokens) and unverified.
+
+export interface EscalationEndpointInput {
+  label: string;
+  baseUrl: string;
+  model: string;
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+}
+
+/** A member endpoint. Never carries the key (it is sealed in the OS keyring by core). */
+export interface EscalationEndpoint extends EscalationEndpointInput {
+  id: string;
+  /** "label · host" — what every price card names. */
+  destination: string;
+}
+
+export type EscalationMode = "budget" | "confirmed";
+
+export interface EscalationSpendRecord {
+  escalationId: string;
+  endpointId: string;
+  destination: string;
+  quotedMicros: number;
+  chargedMicros: number;
+  mode: EscalationMode;
+  outcome: "answered" | "not_sent" | "failed" | "unknown";
+  usageReported: boolean;
+  exceededQuote: boolean;
+  atMs: number;
+}
+
+export interface EscalationBudget {
+  capMicros: number;
+  usedMicros: number;
+  remainingMicros: number;
+  /** Member-confirmed (HIC-1) spend today, outside the cap. */
+  confirmedMicros: number;
+  periodStartMs: number;
+  periodEndMs: number;
+  maxCapMicros: number;
+  /** The ledger file could not be read: every escalation asks until the cap is set again. */
+  unreadable: boolean;
+  history: EscalationSpendRecord[];
+}
+
+/** The price card shown before an escalation runs. */
+export interface EscalationQuote {
+  quoteId: string;
+  endpointId: string;
+  destination: string;
+  model: string;
+  costMicros: number;
+  costLabel: string;
+  withinBudget: boolean;
+  remainingMicros: number;
+  capMicros: number;
+  maxTokens: number;
+  promptBytes: number;
+  expiresMs: number;
+}
+
+/** Core's one-shot confirmation id for one shown quote and price. */
+export interface EscalationConfirmation {
+  confirmId: string;
+  quoteId: string;
+  costMicros: number;
+  expiresMs: number;
+}
+
+export interface EscalationRun {
+  escalationId: string;
+  content: string;
+  destination: string;
+  mode: EscalationMode;
+  chargedMicros: number;
+  chargedLabel: string;
+  usageReported: boolean;
+  exceededQuote: boolean;
+  remainingMicros: number;
+}
+
+export interface EscalationRegistryStatus {
+  /** The HIC-1 registry route can run (an InferenceRouter is pinned for 40204). */
+  enabled: boolean;
+  reason: string;
+  missing: string[];
+  /** The pinned InferenceRouter, when there is one. */
+  router: string | null;
+  /** How a registry request is paid: native SALT, one approval per request. */
+  payment: "native-salt-hic1";
+  /** Budgeted x402 payment (ADR B-2). Off in this build. */
+  x402Enabled: boolean;
+}
+
+/** HUP-S1.5 registry quote. Mirrors Rust `inference_router::RegistryQuote`. Amounts are wei strings. */
+export interface EscalationRegistryQuote {
+  router: string;
+  modelHash: string;
+  maxPriceWei: string;
+  maxPriceSalt: string;
+  inputBytes: number;
+  eligibleProviders: number;
+  cheapestMinPriceWei: string | null;
+  /** Always true: the router stores the input on chain. */
+  inputIsPublic: boolean;
+}
+
+export type EscalationRouterStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
+
+/** HUP-S1.5 one router request. Mirrors Rust `inference_router::RegistryResultView`. */
+export interface EscalationRegistryResult {
+  requestId: number;
+  status: EscalationRouterStatus;
+  modelHash: string;
+  pricePaidWei: string;
+  /** The provider's answer: untrusted data. */
+  output: string | null;
+  outputTruncated: boolean;
+  outputIsHex: boolean;
+}
+
+/** HUP-S1.5 the member's router requests. Mirrors Rust `inference_router::RegistryMineView`. */
+export interface EscalationRegistryMine {
+  router: string;
+  requestIds: number[];
+  refundOwedWei: string;
+}
+
+export interface EscalationDomain {
+  endpoints(): Promise<EscalationEndpoint[]>;
+  /** The key goes to core once and is sealed in the OS keyring; it is never returned. */
+  addEndpoint(input: EscalationEndpointInput, apiKey: string): Promise<EscalationEndpoint>;
+  removeEndpoint(id: string): Promise<void>;
+  budget(): Promise<EscalationBudget>;
+  setBudget(capMicros: number): Promise<EscalationBudget>;
+  quote(endpointId: string, prompt: string, system?: string | null, maxTokens?: number | null): Promise<EscalationQuote>;
+  /**
+   * The member's approval card is opening for a shown quote: core mints the one-shot confirmation
+   * id a confirmed run needs. A run cannot be approved by a flag.
+   */
+  confirmPrepare(quoteId: string, shownCostMicros: number): Promise<EscalationConfirmation>;
+  /**
+   * Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. `confirmId`
+   * is the id from `confirmPrepare` once the member approved, else null (within budget only).
+   */
+  run(quoteId: string, shownCostMicros: number, confirmId: string | null, tainted: boolean): Promise<EscalationRun>;
+  registryStatus(): Promise<EscalationRegistryStatus>;
+  /** Quote a registry request from the model's live route (off until a router is pinned). */
+  registryQuote(modelHash: string, input: string, maxPriceWei: string): Promise<EscalationRegistryQuote>;
+  /** Raise the HIC-1 approval (a pending signature ceremony) for one registry request. */
+  registryRequest(modelHash: string, input: string, maxPriceWei: string, shownMaxPriceWei: string): Promise<void>;
+  registryResult(requestId: number): Promise<EscalationRegistryResult>;
+  registryMine(): Promise<EscalationRegistryMine>;
+  /** Raise the HIC-1 approval to withdraw the refund the router credited back. */
+  registryClaimRefund(): Promise<void>;
+  /** Raise the HIC-1 approval to expire one of your requests its provider never answered (after 1 hour). */
+  registryExpire(requestId: number): Promise<void>;
+}
+
+// ---- HUP-S5.5 / S6.1 — signed first-run components. Mirrors Rust `components.rs`. ----
+
+export interface ComponentsInstalled {
+  name: string;
+  version: string;
+  previous: string | null;
+  installedAt: number;
+}
+
+export interface ComponentsBundleTool {
+  name: string;
+  version: string;
+  license: string;
+  /** Platforms with a measured hash. */
+  measuredPlatforms: string[];
+  /** This machine's entry: measured | to_be_measured | to_be_built | upstream_unavailable | none. */
+  thisPlatform: string;
+}
+
+export interface ComponentsStatus {
+  /** false until the component signing key is set at the key ceremony; updates refuse until then. */
+  keyConfigured: boolean;
+  keyFingerprint: string | null;
+  keyNote: string;
+  platform: string | null;
+  freshness: "never_checked" | "fresh" | "stale" | "expired";
+  manifestAgeSecs: number | null;
+  browserMayOpenWeb: boolean;
+  installed: ComponentsInstalled[];
+  bundle: ComponentsBundleTool[];
+  libraries: { name: string; sha256: string }[];
+  sla: {
+    criticalHours: number;
+    highDays: number;
+    mediumDays: number;
+    lowDays: number;
+    staleAfterDays: number;
+    pendingOwnerSignoff: boolean;
+  };
+  manifestUrl: string;
+}
+
+export interface ComponentsDomain {
+  /** Read-only. null = no component store here (web preview), never an invented one. */
+  status(): Promise<ComponentsStatus | null>;
+  /** Verify-then-swap update of one component. Refuses while the key is not configured. */
+  update(name: string): Promise<string>;
+  rollback(name: string): Promise<string>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
+  escalation: EscalationDomain;
   telemetry: TelemetryDomain;
   storage: StorageDomain;
   groups: GroupsDomain;
   cluster: ClusterDomain;
   training: TrainingDomain;
+  flRounds: FlRoundsDomain;
   agentHarness: AgentHarnessDomain;
   agentSkills: AgentSkillsDomain;
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
+  components: ComponentsDomain;
 }

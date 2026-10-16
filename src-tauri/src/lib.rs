@@ -23,48 +23,132 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
+    abi_book, ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
 };
 
 mod activity;
 mod addresses;
 mod agent;
+mod agent_grants;
+mod agent_precompiles;
+mod agent_sbt;
 mod ai;
+mod anchor_proof;
+mod benchmark_share;
 mod blocking;
+mod capsule_pins;
+mod chain_agent;
+mod components;
 mod connections;
 mod contract_deploy;
+mod daemons;
+// HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
+mod contract_reader;
+mod deploy_gate;
+// HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
+mod deploy_gate_toolchain;
+// HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
+mod faucet;
+mod fl_rounds;
+mod fl_trajectories;
+// HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
+mod forge_toolchain;
+mod fork_dry_run;
+// HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
+mod hic_records;
+mod inference_router;
+mod web_budgets;
+mod web_signin;
+// HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod device_link;
+mod device_link_share;
 mod docs_ingest;
 mod earnings;
+mod escalation;
+mod fleet;
+mod fleet_mdns;
+mod fleet_pairing;
+mod fleet_tailscale;
+mod google_workspace;
 mod grant_status;
+mod hermes_mcp;
+mod hermes_schedule;
+mod hf_auth;
 mod ipc_name;
 mod ipfs;
+mod journal_export;
+mod local_data;
+mod mcp_servers;
+mod media;
+pub mod mem_mcp_bridge;
 mod membership;
 mod memory;
+// HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
+mod knowledge_import;
 mod model;
 mod model_register;
 mod model_registry;
 mod node;
+mod node_genesis;
+mod node_holder;
+// SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
+mod owned_cleanup;
+// HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
+mod postdeploy;
+// HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
+mod node_mcp;
+mod node_mcp_approvals;
+mod node_mcp_hermes;
+mod node_mcp_http;
+mod node_mcp_live;
+mod node_mcp_protocol;
+mod node_mcp_token;
+mod node_mcp_tools;
+mod startup_barrier;
+// HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
+mod grant_deny;
+mod popout;
+mod popout_contract;
+// HUP-S5.1 + S5.6 — the member's controls for Hermes's browser (the sidecar runs it).
+mod browser;
 mod provisioning;
+mod recovery_kit;
 mod sbt_art;
 mod seam;
 mod serve;
+mod serve_plan;
 mod shell;
 mod skill_registry;
 mod skills_local;
 mod staking;
 mod telemetry;
+// HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
+mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
+mod verified_source;
+mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
 // command names once here + in generate_handler! below; each lane fills in its own module's
 // bodies (never this file). See .agentile/cx-ownership.map.
 mod cluster;
+mod cluster_mesh;
 mod comms;
+mod embed_serve;
 mod hermes;
+// SCL-S0.3: the managed browser does not outlive the Hermes sidecar.
+mod hermes_headless;
+mod hermes_learn;
+mod hermes_web;
+mod owned_browser;
+// Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
+mod hermes_terminal;
+// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
 mod model_catalog;
+mod model_delete;
 mod social;
 mod storage;
 mod training;
@@ -74,19 +158,28 @@ mod training;
 mod invoke_secret_scan_tests;
 #[cfg(test)]
 mod main_thread_tripwire;
+// HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
+#[cfg(test)]
+mod privacy_contract_tests;
+// HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
+#[cfg(test)]
+mod hello_mint_e2e_tests;
+// SCL-S0.5: shutdown coverage (embedding server stops with Hermes; workers exit on stdin close).
+#[cfg(test)]
+mod shutdown_coverage_tests;
+// SCL-S0.7: the Windows installer's pre-install hook (inputs checked on every OS).
+#[cfg(test)]
+mod windows_installer_hook_tests;
 
 use tauri::Manager;
 
-/// Kill orphaned sidecars left by a crashed previous instance (they'd hold the node LOCK / bound
-/// sockets). Matches ONLY processes whose command line references this bundle's binary directory,
-/// and never our own pid. Best-effort + macOS/Linux only (uses `pgrep`/`kill`); a no-op if `pgrep`
-/// is unavailable. Runs once at startup, before any sidecar is spawned, so there is nothing of ours
-/// to catch — every match is an orphan.
-/// The sidecar binaries we own. An orphan of ANY of these holds a data-dir LOCK (RocksDB node store,
-/// ipfs datastore, mem-mcp store) or a UDS socket, so a fresh launch can't open its own → the pinwheel
-/// / "Resource temporarily unavailable" seen when a previous copy crashed or was run from a mounted DMG.
+/// The sidecar binaries we own. A leftover of ANY of these from a crashed run holds a data-dir LOCK
+/// (RocksDB node store, ipfs datastore, mem-mcp store) or a UDS socket, so a fresh launch can't open
+/// its own. Each name resolves through the same resolver the app launches it with
+/// ([`resolve_owned_sidecar`]); `owned_cleanup` tests pin this list against the bundle configs.
 const OWNED_SIDECARS: &[&str] = &[
     "citrate",
+    "node-agent",
     "ipfs",
     "mem-mcp",
     "comms-member-daemon",
@@ -94,82 +187,47 @@ const OWNED_SIDECARS: &[&str] = &[
     "hermes",
 ];
 
-/// Reap orphaned sidecars from a PREVIOUS/other instance before we spawn our own. The supervisor kills
-/// its children on graceful teardown, but a crash (SIGKILL) can't run Drop — leaving an orphan that
-/// holds the store LOCK. Single-instance stops the double-LAUNCH; this stops the crash-orphan case.
-///
-/// TWO passes:
-///   1. Anything under THIS bundle's binary dir (covers a plain crash-restart, incl. dev builds).
-///   2. Any process whose executable is one of OUR sidecars launched from *any* `Citrate Core.app`
-///      bundle — INCLUDING a different path such as a still-mounted `/Volumes/Citrate Core*` DMG. Pass 1
-///      missed those (they don't share our dir), so a DMG-run copy's orphaned node/ipfs/mem kept the
-///      locks and the /Applications launch pinwheeled. We target only the known sidecar BASENAMES under
-///      a Citrate bundle, so unrelated processes (and foreign MAIN-app processes — single-instance's
-///      job) are never touched. At startup our own sidecars aren't spawned yet, so every match is an
-///      orphan. Never kills self.
-fn sweep_orphan_sidecars() {
-    let self_pid = std::process::id();
-    let mut victims: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
-
-    // Pass 1 — processes under our own binary dir.
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        if let Ok(out) = std::process::Command::new("pgrep")
-            .arg("-f")
-            .arg(dir.to_string_lossy().as_ref())
-            .output()
-        {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if let Ok(pid) = line.trim().parse::<u32>() {
-                    victims.insert(pid);
-                }
-            }
-        } else {
-            return; // no pgrep (or not Unix) — skip the sweep entirely
-        }
-    }
-
-    // Pass 2 — our sidecars launched from ANY Citrate bundle (foreign path / mounted DMG). Match the
-    // sidecar running under a `Citrate Core.app/Contents/MacOS/<sidecar>` path, then confirm the
-    // process's executable basename is one we own (so a foreign MAIN-app binary is left alone).
-    if let Ok(out) = std::process::Command::new("pgrep")
-        .arg("-f")
-        .arg("Citrate Core.app/Contents/MacOS/")
-        .output()
-    {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let pid = match line.trim().parse::<u32>() {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            // The process's own executable name (argv[0] basename), not its arguments.
-            let comm = std::process::Command::new("ps")
-                .args(["-o", "comm=", "-p", &pid.to_string()])
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-            let base = std::path::Path::new(&comm)
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or(comm);
-            if OWNED_SIDECARS.iter().any(|s| base == *s) {
-                victims.insert(pid);
-            }
-        }
-    }
-
-    for pid in victims {
-        if pid != self_pid {
-            let _ = std::process::Command::new("kill")
-                .arg("-9")
-                .arg(pid.to_string())
-                .status();
-        }
+/// Resolve one owned sidecar's executable path with the resolver its manager launches it with.
+fn resolve_owned_sidecar<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+) -> std::result::Result<std::path::PathBuf, String> {
+    match name {
+        "citrate" => node::resolve_node_bin(app),
+        "node-agent" => agent::resolve_agent_bin(app),
+        "ipfs" => ipfs::resolve_ipfs_bin(app),
+        "mem-mcp" => memory::resolve_mem_mcp_bin(app),
+        "comms-member-daemon" => comms::resolve_comms_member_bin(app),
+        "cluster-daemon" => cluster::resolve_cluster_daemon_bin(app),
+        "hermes" => hermes::resolve_hermes_bin(app),
+        other => Err(format!("not an owned sidecar: {other}")),
     }
 }
+
+/// Stop leftover sidecars of THIS installation from a crashed previous run before we spawn our own
+/// (SCL-S0.1). The supervisor stops its children on graceful teardown, but a crash (SIGKILL) can't
+/// run Drop. Single-instance stops the double-LAUNCH; this stops the crash-leftover case.
+///
+/// Matches only processes whose executable is exactly one of our resolved sidecar paths and whose
+/// parent is not a live instance of this app; see [`owned_cleanup`] for the full rules. Runs once
+/// at startup, before any sidecar is spawned.
+fn sweep_orphan_sidecars<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let owned: Vec<std::path::PathBuf> = OWNED_SIDECARS
+        .iter()
+        .filter_map(|name| resolve_owned_sidecar(app, name).ok())
+        .collect();
+    let main_exe = std::env::current_exe().ok();
+    let _ = owned_cleanup::cleanup(&owned, main_exe.as_deref());
+}
+
+/// HUP-S4.2 — `citrate-core --mcp-stdio`: the stdio shim for the citrate-node MCP server. Runs
+/// without starting the app; forwards stdin JSON-RPC to the running app's loopback endpoint.
+pub fn node_mcp_stdio_main() -> i32 {
+    node_mcp_http::stdio_main()
+}
+
+/// The flag `main` checks for the stdio shim (shared with Hermes's built-in `node` entry).
+pub const NODE_MCP_STDIO_FLAG: &str = node_mcp_http::STDIO_FLAG;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -214,17 +272,38 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // W2.4 — relaunch into the freshly-installed version.
         .plugin(tauri_plugin_process::init())
+        // HUP-S10.3 — widget documents (`citrate-widget://localhost/<id>`), served from the widget
+        // store with a strict CSP, to the main window only. See widgets.rs.
+        .register_asynchronous_uri_scheme_protocol(widgets::SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let label = ctx.webview_label().to_string();
+            std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
+        })
         .setup(|app| {
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
             // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,
             // so the fresh node fails with "Resource temporarily unavailable". Single-instance (above)
             // stops the double-LAUNCH case; this sweep stops the crash-orphan case. Only processes
-            // under THIS bundle's binary dir are touched, never us.
-            sweep_orphan_sidecars();
+            // running one of THIS installation's sidecar binaries (exact path) are touched.
+            //
+            // SCL-S8.5a: the cleanup runs through the startup barrier. No node spawn is admitted
+            // (NodeManager::start waits on it) until the cleanup has returned; a panicking
+            // cleanup leaves it closed. The barrier does not depend on what the cleanup does.
+            let handle = app.handle();
+            startup_barrier::StartupBarrier::global().run_cleanup(|| sweep_orphan_sidecars(handle));
+            // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
+            // profile removed, from the record this app kept (never from anything the sidecar wrote).
+            hermes::clean_leftover_browser(handle);
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());
+            // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
+            // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
+            chain_agent::start_nightly_if_ready(app.handle().clone());
+            // HUP-S7.5 (D-27) — meter Hermes's own transactions (gas, SALT) once mined. Installs an
+            // observer only; nothing is signed or sent by it.
+            chain_agent::spend::install(app.handle().clone());
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
@@ -266,12 +345,24 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             app.manage(ceremony::build_ceremony_state());
+            // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
+            app.manage(deploy_gate::DeployGateState::default());
+            app.manage(popout_contract::ContractInbox::default());
+            // HUP-S9.4 — federated rounds: coordinator setting, start authorizations, eval-gate records.
+            app.manage(fl_rounds::build_state(app.handle()));
+            // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
+            app.manage(escalation::EscalationState::default());
+            // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
+            app.manage(web_budgets::build_web_budget_state(app.handle()));
+            app.manage(faucet::build_faucet_state(app.handle()));
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
             // address, which no key can spend from — so the membership money path
             // would bond-fund an address the member cannot reach.
             app.manage(wallet_link::build_link_state());
+            // HUP-S8.1 — pending DeviceLink approvals, keyed by ceremony id.
+            app.manage(device_link::build_device_link_state());
             // Social verify (ADR-2026-08-30): the pending-verification table, keyed by ceremony id.
             app.manage(social::build_social_bind_state());
             // #61 — in-flight directory publish/revoke ceremonies (bounded by open ceremonies).
@@ -330,6 +421,13 @@ pub fn run() {
             // pin/add/ls (block production does NOT need it). Repo lives in the app
             // data dir; started on demand via ipfs_start (alongside the node).
             app.manage(ipfs::build_ipfs_state(&app.handle().clone())?);
+            // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
+            // Settings; loopback only; every request needs a connect token; writes need approval.
+            app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
+            // HUP-S1.1 (US-1.1 AC3): answer core-hosted tool calls of sessions the chat view is not
+            // watching (turns from the node MCP server or the CLI), instead of leaving them to the
+            // sidecar's 300 s deadline. Idle while the Hermes sidecar is not running.
+            hermes_headless::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -356,6 +454,8 @@ pub fn run() {
             // command returns a token (ADV-8 boundary; see oidc::tests).
             oidc::auth_status,
             oidc::auth_login,
+            // FIX 2 (rc.5): abort the in-flight system-browser sign-in (Cancel button).
+            oidc::auth_login_cancel,
             oidc::auth_userinfo,
             oidc::auth_refresh,
             oidc::auth_logout,
@@ -448,9 +548,87 @@ pub fn run() {
             // HUP-S1.6 — hardware tier recommendation + persisted override (local only).
             tier::tier_recommend,
             tier::tier_set_override,
+            // HUP-S8.2/S8.3 — fleet wizard: probe, opt-in mDNS, link/QR pairing, Tailscale (read-only).
+            fleet::fleet_probe,
+            fleet::fleet_set_label,
+            fleet::fleet_roster,
+            fleet::fleet_discovery_set,
+            fleet::fleet_discovery_browse,
+            fleet::fleet_pair_create,
+            fleet::fleet_pair_inspect,
+            fleet::fleet_pair_join,
+            fleet::fleet_tailscale,
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
+            // HUP-S4.3 — get_verified_source (read-only CitrateScan lookup).
+            verified_source::contract_verified_source,
+            // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
+            deploy_gate::deploy_gate_submit,
+            deploy_gate::deploy_gate_lookup,
+            // HUP-S6.3 → S6.4 — a Hermes session's toolchain reports into the gate (A27).
+            deploy_gate_toolchain::deploy_gate_submit_toolchain,
+            // HUP-S6.2 / US-6.4 — contract templates (render into a granted folder).
+            template_forge::template_list,
+            template_forge::template_render,
+            fork_dry_run::deploy_gate_fork_dry_run,
+            // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
+            fl_rounds::fl_overview,
+            fl_rounds::fl_coordinator_set,
+            fl_rounds::fl_round_plan,
+            fl_rounds::fl_round_plan_lookup,
+            fl_rounds::fl_round_start,
+            fl_rounds::fl_round_consent_revoke,
+            fl_rounds::fl_adapter_gate,
+            fl_rounds::fl_adapter_load,
+            fl_rounds::fl_adapter_unload,
+            // HUP-S9.3 — the member's opt-in for training on verified conversations (default off).
+            fl_trajectories::trajectories_settings_get,
+            fl_trajectories::trajectories_settings_set,
+            fl_trajectories::trajectories_dataset_build,
+            // HUP-S6.6 — post-deploy steps for a hello-mint project.
+            postdeploy::postdeploy_status,
+            postdeploy::postdeploy_receipt,
+            postdeploy::postdeploy_verify,
+            postdeploy::postdeploy_switch_site,
+            postdeploy::postdeploy_pin_site,
+            postdeploy::postdeploy_vercel_export,
+            // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
+            contract_reader::contract_source,
+            contract_reader::contract_code_size,
+            contract_reader::contract_view_call,
+            contract_reader::contract_write_propose,
+            // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
+            // spend budget, quote-then-run, and the registry route's (disabled) status.
+            escalation::escalation_endpoints,
+            escalation::escalation_endpoint_add,
+            escalation::escalation_endpoint_remove,
+            escalation::escalation_budget,
+            escalation::escalation_budget_set,
+            escalation::escalation_quote,
+            escalation::escalation_confirm_prepare,
+            escalation::escalation_run,
+            hic_records::hic_record_decision,
+            escalation::escalation_registry_status,
+            inference_router::escalation_registry_quote,
+            inference_router::escalation_registry_request,
+            inference_router::escalation_registry_result,
+            inference_router::escalation_registry_mine,
+            inference_router::escalation_registry_claim_refund,
+            inference_router::escalation_registry_expire,
+            web_budgets::web_budget_status,
+            web_budgets::web_budget_grant,
+            web_budgets::web_budget_revoke,
+            web_budgets::web_budget_revoke_all,
+            web_budgets::web_budget_reset,
+            web_budgets::web_signing_request,
+            web_budgets::web_signing_approve,
+            web_budgets::web_signing_reject,
+            faucet::faucet_status,
+            faucet::faucet_grant,
+            faucet::faucet_revoke,
+            faucet::faucet_request,
+            faucet::faucet_open_challenge,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
@@ -475,6 +653,22 @@ pub fn run() {
             cluster::cluster_peers,
             cluster::cluster_share_file,
             cluster::cluster_leave,
+            cluster::cluster_devices,
+            cluster::cluster_group_seed,
+            cluster::cluster_add_seed,
+            device_link::device_link_request,
+            device_link::device_link_approve,
+            device_link::device_link_reject,
+            device_link::device_links,
+            device_link::device_link_revoke_prepare,
+            device_link::device_link_revoke,
+            device_link::device_link_export,
+            device_link::device_link_import,
+            device_link_share::device_links_share_offer,
+            device_link_share::device_links_mark_shared,
+            device_link_share::device_links_ingest,
+            cluster_mesh::cluster_mesh_status,
+            cluster_mesh::cluster_mesh_set_enabled,
             training::training_start,
             training::training_status,
             training::training_contribute,
@@ -491,11 +685,53 @@ pub fn run() {
             hermes::hermes_session_events,
             hermes::hermes_session_tool_result,
             hermes::hermes_session_stop,
+            // HUP-S10.3 — daemon runs: unattended sessions, closed when the run ends.
+            hermes::hermes_session_open_unattended,
+            hermes::hermes_session_close,
+            hermes::undo::hermes_checkpoints,
+            hermes::undo::hermes_undo_step,
+            hermes::undo::hermes_undo_session,
+            // HUP-S5.4 — one step's diff for the Code and diff pop-out (read-only).
+            hermes::undo::hermes_checkpoint_diff,
             hermes::hermes_tracks,
             hermes::hermes_brief_create,
             hermes::hermes_brief_check,
+            hermes::personas::hermes_personas,
+            hermes::personas::hermes_workflows,
+            hermes::personas::hermes_persona_check,
+            hermes::personas::hermes_track_workflow_run,
+            // HUP-S2.2: the member decides each shell_run command the sidecar holds.
+            hermes::shell::hermes_shell_pending,
+            hermes::mcp_cards::hermes_mcp_pending,
+            hermes::mcp_cards::hermes_mcp_decide,
+            hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
+            hermes_mcp::hermes_mcp_settings,
+            hermes_mcp::hermes_mcp_set,
+            hermes::workers::hermes_workers,
+            hermes::decide::hermes_decide_stats,
+            hermes_learn::hermes_workflow_run,
+            hermes_learn::hermes_workflow_status,
+            hermes_learn::hermes_learn_status,
+            hermes_learn::hermes_learn_proposals,
+            hermes_learn::hermes_learn_propose,
+            hermes_learn::hermes_learn_accept,
+            hermes_learn::hermes_learn_reject,
+            hermes_learn::hermes_learn_memories,
+            hermes_learn::hermes_learn_store_pending,
+            hermes_learn::hermes_learn_resolve,
+            hermes_learn::hermes_learn_publish,
+            hermes_web::hermes_web_settings_get,
+            hermes_web::hermes_web_settings_set,
+            hermes_terminal::hermes_terminal_get,
+            hermes_terminal::hermes_terminal_set,
+            model_delete::model_delete_states,
+            model_delete::model_delete,
+            // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
+            forge_toolchain::toolchain_settings_get,
+            forge_toolchain::toolchain_settings_set,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an
@@ -563,6 +799,9 @@ pub fn run() {
             // Seed the constellation tenants (chain-state + personal) with real network/node/stake
             // facts on daemon-connect, so the graph has content on open (gated + idempotent).
             memory::memory_seed_context,
+            // HUP-S3.1 — first-run import of the bundled knowledge corpus (verified by the
+            // importer against its manifest; idempotent; progress on memory://knowledge-import-progress).
+            knowledge_import::memory_import_knowledge,
             memory::memory_constellation,
             // seam domains — honest Unavailable until each later phase (A1.3).
             // memory_assert stays a seam stub: the assert WRITE path routes
@@ -621,6 +860,76 @@ pub fn run() {
             skills_local::skills_local_write,
             skills_local::skills_local_read,
             skills_local::skills_local_delete,
+            skills_local::skills_local_migrate,
+            // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
+            journal_export::journal_export_encrypted,
+            journal_export::journal_import_encrypted,
+            // HUP-S10.3 — daemons: scheduled Hermes tasks inside a budget.
+            daemons::daemons_list,
+            daemons::daemon_save,
+            daemons::daemon_set_paused,
+            daemons::daemons_set_all_paused,
+            daemons::daemon_delete,
+            daemons::daemons_claim_due,
+            daemons::daemons_finish_run,
+            daemons::daemon_runs_between,
+            // HUP-S10.3 — widgets: sandboxed tiles with a read-only bridge.
+            widgets::widgets_list,
+            widgets::widget_save,
+            widgets::widget_delete,
+            widgets::widget_source,
+            // HUP-S2.1 — Hermes folder grants (store in app data; sent to agent sessions on change).
+            agent_grants::agent_grants_view,
+            agent_grants::agent_grants_add_folder,
+            agent_grants::agent_grants_revoke,
+            agent_grants::agent_grants_full_access_prepare,
+            agent_grants::agent_grants_full_access_confirm,
+            agent_grants::agent_grants_reset,
+            // HUP-S10.2 — Hermes's own schedule (local), shown as a calendar.
+            hermes_schedule::hermes_schedule_list,
+            hermes_schedule::hermes_schedule_add,
+            hermes_schedule::hermes_schedule_remove,
+            hermes_schedule::hermes_schedule_set_enabled,
+            hermes_schedule::hermes_schedule_reset,
+            hermes_schedule::hermes_schedule_due,
+            // HUP-S10.2 — Google Sheets + Calendar through Connections (disabled until configured).
+            google_workspace::google_workspace_status,
+            google_workspace::gsheets_read,
+            google_workspace::gsheets_append,
+            google_workspace::gcal_list,
+            google_workspace::gcal_create,
+            // HUP-S10.1 — media generation tiers, gallery, and the Media pop-out's data.
+            media::media_options,
+            media::media_set_settings,
+            media::media_generate_image,
+            media::media_gallery,
+            media::media_read,
+            media::media_save_copy,
+            // HUP-S5.5 — signed first-run components. Update refuses until the component key is set.
+            components::components_status,
+            components::components_update,
+            components::components_rollback,
+            // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
+            // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
+            mcp_servers::mcp_servers_list,
+            mcp_servers::mcp_server_save,
+            mcp_servers::mcp_server_remove,
+            mcp_servers::mcp_server_disable,
+            mcp_servers::mcp_server_review,
+            mcp_servers::mcp_server_enable,
+            mcp_servers::mcp_servers_runtime,
+            // HUP-S10.5 — device-key recovery kit + "delete my local data".
+            recovery_kit::recovery_kit_status,
+            recovery_kit::recovery_kit_save_phrase,
+            recovery_kit::recovery_kit_save_file,
+            recovery_kit::recovery_kit_restore_phrase,
+            recovery_kit::recovery_kit_restore_file,
+            local_data::local_data_plan,
+            local_data::local_data_delete,
+            // HUP-S7.4 — Hermes identity: AgentSBT status read + the onboarding mint (a pending
+            // SignatureCeremony; signs nothing here).
+            agent_sbt::agent_sbt_status,
+            agent_sbt::agent_sbt_mint,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable
@@ -657,6 +966,37 @@ pub fn run() {
             seam::membership_entitlement,
             seam::commissary_catalog,
             seam::comms_connections,
+            popout::popout_open,
+            popout_contract::popout_contract_send,
+            popout_contract::popout_contract_take,
+            popout::popout_monitor_facts,
+            browser::hermes_browser_status,
+            browser::hermes_browser_frame,
+            browser::hermes_browser_stop,
+            browser::hermes_browser_resume,
+            browser::hermes_browser_attach,
+            browser::hermes_browser_detach,
+            browser::hermes_browser_origin,
+            browser::hermes_browser_decide,
+            // HUP-S7.3 + S7.5 — nightly anchor (off until AnchorRegistry is deployed; the anchor
+            // key signs only inside the anchor ceremony) + the daily metering report.
+            chain_agent::hermes_chain_status,
+            chain_agent::hermes_chain_settings_set,
+            chain_agent::hermes_metering_daily,
+            chain_agent::hermes_anchor_approve,
+            chain_agent::hermes_anchor_reject,
+            // HUP-S7.3 + S7.5 (rest): prove a past decision (core checks the proof and reads
+            // AnchorRegistry itself) and opt-in benchmark sharing (one wallet card per metric).
+            anchor_proof::hermes_anchor_records,
+            anchor_proof::hermes_anchor_proof,
+            benchmark_share::hermes_benchmark_share,
+            // HUP-S4.2 — citrate-node MCP server (Settings, API endpoints & keys).
+            node_mcp::node_mcp_status,
+            node_mcp::node_mcp_set_enabled,
+            node_mcp::node_mcp_token_create,
+            node_mcp::node_mcp_token_revoke,
+            node_mcp::node_mcp_requests,
+            node_mcp::node_mcp_decide,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -679,8 +1019,12 @@ pub fn run() {
 /// SidecarSupervisor via `.0.stop()`; the lazily-started daemons expose a module `shutdown()`. Every
 /// stop is idempotent and a no-op when that sidecar was never started, so this is safe to call once
 /// on exit regardless of what the session actually launched.
-fn shutdown_all_sidecars(app: &tauri::AppHandle) {
+pub(crate) fn shutdown_all_sidecars(app: &tauri::AppHandle) {
     use tauri::Manager;
+    // v0.5.0 C3: the knowledge importer (`mem-mcp import-corpus`) is a one-shot child, not a
+    // supervised sidecar. Stop it first (it holds the memory store's RocksDB LOCK), which also
+    // closes the import registry so no import starts and the memory daemon is not restarted.
+    knowledge_import::shutdown();
     if let Some(s) = app.try_state::<node::NodeState>() {
         s.0.stop();
     }
@@ -888,6 +1232,7 @@ mod tests {
         for cmd in [
             "auth_status",
             "auth_login",
+            "auth_login_cancel",
             "auth_userinfo",
             "auth_refresh",
             "auth_logout",

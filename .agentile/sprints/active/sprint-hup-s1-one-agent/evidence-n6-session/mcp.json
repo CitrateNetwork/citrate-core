@@ -1,0 +1,416 @@
+{
+  "mcp_list": {
+    "sessions": [
+      {
+        "busy": false,
+        "id": "s1-18db5b1e7d3f21a0",
+        "lastSeq": 48,
+        "model": "gemma-4-E4B-it-Q4_0.gguf",
+        "pendingCoreCalls": [],
+        "persona": null
+      }
+    ]
+  },
+  "mcp_events": {
+    "busy": false,
+    "events": [
+      {
+        "event": {
+          "step": 1,
+          "type": "step_start"
+        },
+        "seq": 1
+      },
+      {
+        "event": {
+          "call": {
+            "arguments": "withheld over MCP",
+            "id": "6Y7HCtgn2dhmGPZ7uMM9JdzW6zKMCBgv",
+            "name": "chain_head"
+          },
+          "host": "core",
+          "step": 1,
+          "type": "tool_call"
+        },
+        "seq": 2
+      },
+      {
+        "event": {
+          "call_id": "6Y7HCtgn2dhmGPZ7uMM9JdzW6zKMCBgv",
+          "content": "withheld over MCP",
+          "status": "ok",
+          "step": 1,
+          "type": "tool_result"
+        },
+        "seq": 3
+      },
+      {
+        "event": {
+          "step": 1,
+          "type": "step_end"
+        },
+        "seq": 4
+      },
+      {
+        "event": {
+          "step": 2,
+          "type": "step_start"
+        },
+        "seq": 5
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": "The",
+          "type": "assistant_delta"
+        },
+        "seq": 6
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " current Citrate",
+          "type": "assistant_delta"
+        },
+        "seq": 7
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " chain height",
+          "type": "assistant_delta"
+        },
+        "seq": 8
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " is 1",
+          "type": "assistant_delta"
+        },
+        "seq": 9
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": "32",
+          "type": "assistant_delta"
+        },
+        "seq": 10
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": "33",
+          "type": "assistant_delta"
+        },
+        "seq": 11
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": "5.",
+          "type": "assistant_delta"
+        },
+        "seq": 12
+      },
+      {
+        "event": {
+          "content": "The current Citrate chain height is 132335.",
+          "type": "final"
+        },
+        "seq": 13
+      },
+      {
+        "event": {
+          "outcome": "answered",
+          "type": "done"
+        },
+        "seq": 14
+      },
+      {
+        "event": {
+          "step": 1,
+          "type": "step_start"
+        },
+        "seq": 15
+      },
+      {
+        "event": {
+          "call": {
+            "arguments": "withheld over MCP",
+            "id": "Vbsad8IJZr9ONqEDG2DiZl1PWVyKBemB",
+            "name": "chain_head"
+          },
+          "host": "core",
+          "step": 1,
+          "type": "tool_call"
+        },
+        "seq": 16
+      },
+      {
+        "event": {
+          "call_id": "Vbsad8IJZr9ONqEDG2DiZl1PWVyKBemB",
+          "content": "withheld over MCP",
+          "status": "error",
+          "step": 1,
+          "type": "tool_result"
+        },
+        "seq": 17
+      },
+      {
+        "event": {
+          "step": 1,
+          "type": "step_end"
+        },
+        "seq": 18
+      },
+      {
+        "event": {
+          "step": 2,
+          "type": "step_start"
+        },
+        "seq": 19
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": "I",
+          "type": "assistant_delta"
+        },
+        "seq": 20
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " was unable",
+          "type": "assistant_delta"
+        },
+        "seq": 21
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " to check",
+          "type": "assistant_delta"
+        },
+        "seq": 22
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " the chain",
+          "type": "assistant_delta"
+        },
+        "seq": 23
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " height right",
+          "type": "assistant_delta"
+        },
+        "seq": 24
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " now due",
+          "type": "assistant_delta"
+        },
+        "seq": 25
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " to an",
+          "type": "assistant_delta"
+        },
+        "seq": 26
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " interruption.",
+          "type": "assistant_delta"
+        },
+        "seq": 27
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " Please try",
+          "type": "assistant_delta"
+        },
+        "seq": 28
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " asking again",
+          "type": "assistant_delta"
+        },
+        "seq": 29
+      },
+      {
+        "event": {
+          "step": 2,
+          "text": " later.",
+          "type": "assistant_delta"
+        },
+        "seq": 30
+      },
+      {
+        "event": {
+          "content": "I was unable to check the chain height right now due to an interruption. Please try asking again later.",
+          "type": "final"
+        },
+        "seq": 31
+      },
+      {
+        "event": {
+          "outcome": "answered",
+          "type": "done"
+        },
+        "seq": 32
+      },
+      {
+        "event": {
+          "step": 1,
+          "type": "step_start"
+        },
+        "seq": 33
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": "Hello",
+          "type": "assistant_delta"
+        },
+        "seq": 34
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": ", this",
+          "type": "assistant_delta"
+        },
+        "seq": 35
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": " is Hermes",
+          "type": "assistant_delta"
+        },
+        "seq": 36
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": ", your",
+          "type": "assistant_delta"
+        },
+        "seq": 37
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": " Citrate agent",
+          "type": "assistant_delta"
+        },
+        "seq": 38
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": ".",
+          "type": "assistant_delta"
+        },
+        "seq": 39
+      },
+      {
+        "event": {
+          "content": "Hello, this is Hermes, your Citrate agent.",
+          "type": "final"
+        },
+        "seq": 40
+      },
+      {
+        "event": {
+          "outcome": "answered",
+          "type": "done"
+        },
+        "seq": 41
+      },
+      {
+        "event": {
+          "step": 1,
+          "type": "step_start"
+        },
+        "seq": 42
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": "READY",
+          "type": "assistant_delta"
+        },
+        "seq": 43
+      },
+      {
+        "event": {
+          "step": 1,
+          "text": ".",
+          "type": "assistant_delta"
+        },
+        "seq": 44
+      },
+      {
+        "event": {
+          "content": "READY.",
+          "type": "final"
+        },
+        "seq": 45
+      },
+      {
+        "event": {
+          "outcome": "answered",
+          "type": "done"
+        },
+        "seq": 46
+      },
+      {
+        "event": {
+          "detail": "",
+          "name": "answer mentions \"READY\"",
+          "passed": true,
+          "step": "ready",
+          "type": "verifier"
+        },
+        "seq": 47
+      },
+      {
+        "event": {
+          "detail": "",
+          "name": "chain_head not called",
+          "passed": true,
+          "step": "ready",
+          "type": "verifier"
+        },
+        "seq": 48
+      }
+    ],
+    "lastSeq": 48,
+    "more": false,
+    "nextAfter": 48,
+    "session": "s1-18db5b1e7d3f21a0",
+    "waitingOnAppTools": 0
+  },
+  "mcp_send": {
+    "next": "The member must approve this in Citrate Core (Settings, API endpoints & keys, Node MCP server). Nothing happens until they do. Poll request_status with this requestId.",
+    "requestId": "mcpr-1",
+    "state": "pending",
+    "summary": "Send this message to Hermes session s1-18db5b1e7d3f21a0, which starts a turn there: \"Hello from an MCP client.\""
+  }
+}

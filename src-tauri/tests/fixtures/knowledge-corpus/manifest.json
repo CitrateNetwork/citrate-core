@@ -1,0 +1,214 @@
+{
+  "format": "citrate-corpus/2",
+  "name": "fixture-knowledge",
+  "source_date_ms": 1790000000000,
+  "builder": "mem-corpus 0.0.1",
+  "spec_sha256": "1c37d85f235336badd7ef1fc4c18dc2d0c4d071fa053089aa65083544edbe354",
+  "skills_lock_sha256": "6f0fd2d3b53fedcc3a830f06b89acd5a573eb2c52df4ca8849f0d3d1d4404b74",
+  "sources": [
+    {
+      "id": "citrate-docs",
+      "tenant": "citrate-docs",
+      "repo": "citrate-docs",
+      "repo_path": "content",
+      "upstream": "https://github.com/CitrateNetwork/citrate-docs",
+      "commit": "2222222222222222222222222222222222222222",
+      "license": "Apache-2.0",
+      "licence_cleared": true,
+      "licence_note": null,
+      "attribution": null,
+      "included": true,
+      "excluded_reason": null,
+      "files": [
+        {
+          "path": "chain/consensus.md",
+          "sha256": "ac86e0af6f722795dc3375ba935ec24a821d92e6f6aa016092a1b0f59c101941",
+          "bytes": 456,
+          "chunks": 3
+        },
+        {
+          "path": "chain/precompiles.md",
+          "sha256": "d9008641a4db4f294a6ca7cd8cde679ff829f6a034ad9fedc613e6a65bd1224f",
+          "bytes": 131,
+          "chunks": 1
+        }
+      ],
+      "skipped": [
+        {
+          "path": "chain/internal-ops.md",
+          "reason": "frontmatter tier = \"internal\", required \"public\""
+        }
+      ]
+    },
+    {
+      "id": "gradient-papers",
+      "tenant": "citrate-docs",
+      "repo": "gradient-papers",
+      "repo_path": "",
+      "upstream": "Citrate Inc. (first party)",
+      "commit": "3333333333333333333333333333333333333333",
+      "license": "Citrate Inc. (first party)",
+      "licence_cleared": true,
+      "licence_note": null,
+      "attribution": null,
+      "included": true,
+      "excluded_reason": null,
+      "files": [
+        {
+          "path": "No2_Paraconsistent_Consensus.md",
+          "sha256": "49145bc78f59a9742baa4174a70e8b014bc8f59845f2d71f52981dc41bef33f5",
+          "bytes": 229,
+          "chunks": 2
+        }
+      ],
+      "skipped": []
+    },
+    {
+      "id": "agentile",
+      "tenant": "methodology",
+      "repo": "agentile",
+      "repo_path": "",
+      "upstream": "Citrate Inc. (first party)",
+      "commit": "4444444444444444444444444444444444444444",
+      "license": "Apache-2.0",
+      "licence_cleared": true,
+      "licence_note": null,
+      "attribution": null,
+      "included": true,
+      "excluded_reason": null,
+      "files": [
+        {
+          "path": "AGENTILE.md",
+          "sha256": "0c4d274bf870cf27f54e112f3fa554a00baf76d634df3d8ff6c68158f0e95699",
+          "bytes": 96,
+          "chunks": 1
+        }
+      ],
+      "skipped": []
+    },
+    {
+      "id": "demo-skills",
+      "tenant": "skills",
+      "repo": "demo-skills",
+      "repo_path": "",
+      "upstream": "https://example.invalid/demo-skills",
+      "commit": "1111111111111111111111111111111111111111",
+      "license": "Apache-2.0",
+      "licence_cleared": true,
+      "licence_note": null,
+      "attribution": "Demo skills, fixture authors",
+      "included": true,
+      "excluded_reason": null,
+      "files": [
+        {
+          "path": "plugins/demo/skills/demo-skill/SKILL.md",
+          "sha256": "d6420ceb0e61e32654de6496c67458be834639228dddb1f56580f3e629f4db83",
+          "bytes": 260,
+          "chunks": 2
+        },
+        {
+          "path": "plugins/demo/skills/demo-skill/references/guide.md",
+          "sha256": "63510c8ebe163899d1b23c74b2381fa4ed3b0ab2e35344fe8cfa1af7aaf4f727",
+          "bytes": 52,
+          "chunks": 1
+        }
+      ],
+      "skipped": [
+        {
+          "path": "plugins/demo/skills/held-skill/SKILL.md",
+          "reason": "skills.lock verdict \"exclude\""
+        }
+      ]
+    },
+    {
+      "id": "openzeppelin",
+      "tenant": "refs",
+      "repo": "openzeppelin",
+      "repo_path": "",
+      "upstream": "https://github.com/OpenZeppelin/openzeppelin-contracts",
+      "commit": "5555555555555555555555555555555555555555",
+      "license": "MIT",
+      "licence_cleared": true,
+      "licence_note": null,
+      "attribution": null,
+      "included": true,
+      "excluded_reason": null,
+      "files": [
+        {
+          "path": "access-control.adoc",
+          "sha256": "104bb7ff64d7b78fb996030b4abd9e2f16f4ca4a03f4250f11db2b3e2d099fb8",
+          "bytes": 161,
+          "chunks": 2
+        }
+      ],
+      "skipped": []
+    },
+    {
+      "id": "agpl-tool-docs",
+      "tenant": "refs",
+      "repo": "agpl-tool-docs",
+      "repo_path": "",
+      "upstream": "https://example.invalid/agpl-tool",
+      "commit": "unpinned",
+      "license": "AGPL-3.0",
+      "licence_cleared": false,
+      "licence_note": "fixture: pending owner sign-off",
+      "attribution": null,
+      "included": false,
+      "excluded_reason": "licence not cleared for redistribution (pending owner sign-off)",
+      "files": [],
+      "skipped": []
+    },
+    {
+      "id": "absent-book",
+      "tenant": "refs",
+      "repo": "absent-book",
+      "repo_path": "",
+      "upstream": "https://example.invalid/book",
+      "commit": "unpinned",
+      "license": "MIT OR Apache-2.0",
+      "licence_cleared": true,
+      "licence_note": null,
+      "attribution": null,
+      "included": false,
+      "excluded_reason": "source not present on the build host",
+      "files": [],
+      "skipped": []
+    }
+  ],
+  "tenants": [
+    {
+      "tenant": "citrate-docs",
+      "file": "tenants/citrate-docs.corpus.json",
+      "sha256": "e3f111794abe1391b9337f29d0d665fe1b42272730dece0ee00a287e7ffb22aa",
+      "nodes": 9,
+      "edges": 6,
+      "vectors": null
+    },
+    {
+      "tenant": "methodology",
+      "file": "tenants/methodology.corpus.json",
+      "sha256": "6b287bd0a95a823b50d2481664077a0211b334fbfda0da56b904dd6116acd1c0",
+      "nodes": 2,
+      "edges": 1,
+      "vectors": null
+    },
+    {
+      "tenant": "refs",
+      "file": "tenants/refs.corpus.json",
+      "sha256": "5117826d3da6520647ccf4b004f9c8051b6572c35c05e1893a3c347de449fdbf",
+      "nodes": 3,
+      "edges": 2,
+      "vectors": null
+    },
+    {
+      "tenant": "skills",
+      "file": "tenants/skills.corpus.json",
+      "sha256": "b755f5efc93facbeab50dfcb21e7d21ebe9aa322e6556d2c93ae63105367b61e",
+      "nodes": 5,
+      "edges": 4,
+      "vectors": null
+    }
+  ],
+  "bundle_digest": "ab4e8407b2bcf76090b8d2952ae0f81d48b6e6ab8f35d6d874bce036607283b8"
+}

@@ -7,17 +7,25 @@
 // view over it. Nothing here signs or fabricates a reply (Rule 1/3) — the send path routes
 // through the store's honest provider selection.
 // =====================================================================
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderMark } from "./LoaderMark";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { InterviewCard, looksLikeBuildAsk } from "./InterviewCard";
+import { FileChangeCard } from "./FileChangeCard";
+import { agentUndo, undoChange } from "../shell/slices/agentUndo";
 import { bridge } from "../bridge";
+import { openDiff, openPopout } from "../popout/appHost";
+import { BrowserControls } from "./BrowserControls";
+import { tauriBrowserApi } from "../popout/browserApi";
+import { BRIDGE_MODE } from "../bridge/mode";
 import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
 import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
+import { LocalModelAsk } from "./LocalModelAsk";
+import { shouldFollow, useFitToViewport } from "./chatLayout";
 
 const SUGGESTIONS = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
 
@@ -28,7 +36,11 @@ const DOT_FOR_KIND: Record<string, string> = { local: "#37d67a", real: "#37d67a"
 
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const models = modelsSlice.use();
-  const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
+  const undo = agentUndo.use();
+  // HUP-S2.3: sign-in requests from the managed browser go to core by id (stable handler).
+  const signInHandler = useCallback((id: string) => void store.handleWebSignIn(id), [store]);
+  // SCL-S7.5a: a message held for the local model shows its question instead of a spinner.
+  const chatThinking = (s.chatStatus === "thinking" || s.chatStatus === "tool") && !s.chatRouteHold;
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
   const showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === "ready";
@@ -58,9 +70,19 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const [buildAsk, setBuildAsk] = useState(false);
   const openPlan = () => setPlanGoal(store.chatInputEl ? store.chatInputEl.value.trim() : "");
 
+  // rc.5 FIX 4: the pane fits the window (composer always visible); only the list scrolls.
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const paneHeight = useFitToViewport(paneRef);
+  // Follow new messages unless the member scrolled up; sending always jumps back to the latest.
+  const follow = useRef(true);
+  const send = (text: string) => {
+    follow.current = true;
+    return store.sendChat(text);
+  };
+
   const onSend = () => {
     setBuildAsk(false);
-    void store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");
+    void send(store.chatInputEl ? store.chatInputEl.value : "");
   };
 
   // WP4.1 — on-device browser dictation; honest fallback elsewhere.
@@ -90,17 +112,22 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     else { d.start(); setMicOn(true); }
   };
 
-  // Post-commit auto-scroll (keyed on chatMsgs) so the stream follows; gated on near-bottom.
+  // Post-commit auto-scroll (keyed on chatMsgs) so the stream follows, unless the member has
+  // scrolled up to read (tracked on scroll, so a long streamed chunk does not drop the follow).
   useEffect(() => {
     const el = store.chatScrollEl;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 160) el.scrollTop = el.scrollHeight;
+    if (!el || !follow.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [s.chatMsgs, store]);
 
   return (
-    <div className="surface" style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden", flex: 1 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+    <div
+      ref={paneRef}
+      className="surface"
+      data-testid="agent-chat"
+      style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden", flex: "none", height: paneHeight }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
         <span style={{ fontSize: 14, fontWeight: 500 }}>Agent</span>
         <span style={{ flex: 1 }}></span>
         <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)", display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -113,6 +140,16 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
           </span>
         )}
+        {/* HUP-S7.6: the Activity monitor pop-out ("why am I waiting", Stop). */}
+        <button
+          className="mono"
+          data-testid="open-activity-monitor"
+          onClick={() => void openPopout("monitor")}
+          title="Open the Activity monitor in its own window"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer" }}
+        >
+          Monitor
+        </button>
         <button
           className="mono"
           data-testid="model-chip"
@@ -125,12 +162,23 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           <span aria-hidden style={{ color: "var(--tx-3)" }}>{pickerOpen ? "▴" : "▾"}</span>
         </button>
       </div>
+      {/* HUP-S5.1 + S5.6: Hermes's browser controls. Render nothing while the browser is off (the default). */}
+      {BRIDGE_MODE === "tauri" && (
+        <div style={{ flexShrink: 0 }}>
+          <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} onSignInRequest={signInHandler} />
+        </div>
+      )}
       {pickerOpen && (
-        <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
+        <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
           <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />
         </div>
       )}
-      <div ref={(el) => { store.chatScrollEl = el; }} style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div
+        ref={(el) => { store.chatScrollEl = el; }}
+        data-testid="chat-messages"
+        onScroll={(e) => { follow.current = shouldFollow(e.currentTarget); }}
+        style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}
+      >
         {s.chatMsgs.map((m) => (
           <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: m.who === "You" ? "var(--tx-3)" : "var(--accent-text)" }}>
@@ -148,9 +196,43 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             </div>
             {m.error && (
               <span role="alert" style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--danger)" }}>
-                <span style={{ flex: 1, minWidth: 0 }}>The agent didn't finish this reply: {m.error}</span>
+                <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-line" }}>The agent didn't finish this reply: {m.error}</span>
+                {m.toolchainHelp && (
+                  <button className="btn btn-sm" data-testid="open-toolchain-settings" onClick={() => store.openToolchainSettings()}>
+                    Open toolchain settings
+                  </button>
+                )}
                 <button className="btn btn-sm" onClick={() => void store.retryChat(m.id)}>
                   Retry
+                </button>
+              </span>
+            )}
+            {/* SCL-S7.5a: the local model is not running; ask before this message goes anywhere. */}
+            {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
+              <LocalModelAsk phase={s.chatRouteHold.phase} onChoose={(c) => store.answerLocalModelAsk(c)} />
+            )}
+            {/* HUP-S2.9: the files the agent changed in this reply, each with Undo. */}
+            {undo.cards
+              .filter((c) => c.msgId === m.id)
+              .map((c) => (
+                <FileChangeCard
+                  key={c.session + ":" + c.seq}
+                  card={c}
+                  onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)}
+                  onDiff={BRIDGE_MODE === "tauri" ? (session, seq) => void openDiff(session, seq) : undefined}
+                />
+              ))}
+            {/* HUP-S3.3: a saved brief's workflow runs from its card (sidecar loop; its checks decide). */}
+            {m.brief && (
+              <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  data-testid="brief-run-workflow"
+                  disabled={chatBusy}
+                  onClick={() => void store.runBriefWorkflow(m.brief!)}
+                  title="Run this brief's workflow; only each step's checks decide the result"
+                >
+                  Run {m.brief.workflow}
                 </button>
               </span>
             )}
@@ -180,12 +262,15 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
       </div>
+      {/* rc.5 FIX 4: suggestions and the plan card share one bounded area that scrolls on its own,
+          so a tall card can never push the composer out of the pane. */}
+      <div data-testid="chat-extras" style={{ flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
       {showSuggestions && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 16px 10px" }}>
           {SUGGESTIONS.map((label) => (
             <button
               key={label}
-              onClick={() => store.sendChat(label)}
+              onClick={() => void send(label)}
               style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--tx-2)", background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "5px 12px", cursor: "pointer" }}
             >
               {label}
@@ -209,7 +294,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           />
         </div>
       )}
-      <div style={{ display: "flex", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--line-1)", alignItems: "center" }}>
+      </div>
+      <div data-testid="chat-composer" style={{ display: "flex", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--line-1)", alignItems: "center", flexShrink: 0 }}>
         <span style={{ flex: 1, position: "relative", display: "flex" }}>
           <input
             ref={(el) => { store.chatInputEl = el; }}
@@ -220,7 +306,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 setBuildAsk(false);
-                store.sendChat((e.target as HTMLInputElement).value);
+                void send((e.target as HTMLInputElement).value);
               }
             }}
             style={{ flex: 1 }}

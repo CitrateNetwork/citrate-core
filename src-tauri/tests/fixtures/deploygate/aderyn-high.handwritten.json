@@ -1,0 +1,17 @@
+{
+  "files_summary": { "total_source_units": 2, "total_sloc": 22 },
+  "files_details": { "files_details": [ { "file_path": "src/HelloMint.sol", "n_sloc": 14 }, { "file_path": "src/Drain.sol", "n_sloc": 8 } ] },
+  "issue_count": { "high": 1, "low": 0 },
+  "high_issues": {
+    "issues": [
+      {
+        "title": "Functions send eth away from contract but performs no checks on any address.",
+        "description": "Consider introducing checks for `msg.sender` to ensure the recipient of the money is as intended.",
+        "detector_name": "send-ether-no-checks",
+        "instances": [ { "contract_path": "src/Drain.sol", "line_no": 5, "src": "74:96", "src_char": "74:96" } ]
+      }
+    ]
+  },
+  "low_issues": { "issues": [] },
+  "detectors_used": [ "send-ether-no-checks" ]
+}

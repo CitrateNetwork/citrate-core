@@ -340,15 +340,36 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     );
 }
 
-/// Return `src` with any top-level `#[cfg(test)] mod tests { ... }` block removed
-/// so a call-site scan sees only non-test code. Our test modules are the terminal
-/// `mod tests { include!(...) }` form, so truncating at that marker is exact.
+/// Return `src` with the terminal `#[cfg(test)] mod tests { ... }` block removed so a
+/// call-site scan sees only non-test code. Our test modules are the terminal
+/// `mod tests { include!(...) }` form, so truncating at the LAST such marker is exact. An inner
+/// `#[cfg(test)]` item (a test-only helper) does not end the scan: everything after it is still
+/// production code (HUP-S2.3: the budgeted path and the command surface follow one).
 fn strip_test_module(src: &str) -> String {
-    if let Some(idx) = src.find("#[cfg(test)]") {
-        src[..idx].to_string()
-    } else {
-        src.to_string()
+    match src.rfind("#[cfg(test)]\nmod tests") {
+        Some(idx) => src[..idx].to_string(),
+        None => src.to_string(),
     }
+}
+
+/// The signer tripwires must scan everything before the terminal test module. ceremony.rs has an
+/// earlier `#[cfg(test)]` helper; code after it (reject, the budgeted SIWE path, the command
+/// surface) is production code and must stay in scope.
+#[test]
+fn strip_test_module_keeps_code_after_an_inner_cfg_test_helper() {
+    let src = include_str!("ceremony.rs");
+    let non_test = strip_test_module(src);
+    for needle in [
+        "pub fn reject(",
+        "pub fn request_siwe_budgeted(",
+        "pub fn sign_reject_sync(",
+    ] {
+        assert!(non_test.contains(needle), "{needle} must be scanned");
+    }
+    assert!(!non_test.contains("include!(\"ceremony_tests.rs\")"));
+    let synthetic = "fn a() {}\n#[cfg(test)]\nfn helper() {}\nfn b() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+    let cut = strip_test_module(synthetic);
+    assert!(cut.contains("fn b()") && !cut.contains("fn t()"));
 }
 
 // =========================================================================
@@ -1653,12 +1674,124 @@ fn b1_5_f2_from_mismatch_error_is_secret_free() {
 // extraction, so a registry check there can see it (here it could only see the
 // kit's own lib.rs). No coverage lost.
 
+/// HUP-S7.5 (D-27): the broadcast result carries the mined receipt's gas, the price paid, the
+/// value sent, the recipient and the origin, so Hermes's spend can be metered from it.
+#[test]
+fn d27_broadcast_result_carries_gas_price_value_and_origin() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let mut intent = tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x2a");
+    intent.origin = "agent:hermes".to_string();
+    let view = c.request(intent);
+    let tx_hash = "0xabc0000000000000000000000000000000000000000000000000000000000abd";
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String(tx_hash.into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1", "gasUsed": "0x5208", "effectiveGasPrice": "0x77359400" })),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let r = c
+        .approve_and_broadcast(&v, &client, &view.id, false, bcfg(2))
+        .expect("broadcast");
+    assert_eq!(r.status, Some(1));
+    assert_eq!(r.gas_used, Some(21_000));
+    assert_eq!(r.effective_gas_price_wei.as_deref(), Some("2000000000"));
+    assert_eq!(r.value_wei.as_deref(), Some("42"));
+    assert_eq!(r.to.as_deref(), Some("0x3535353535353535353535353535353535353535"));
+    assert_eq!(r.origin, "agent:hermes");
+    let j = serde_json::to_value(&r).unwrap();
+    assert_eq!(j["gasUsed"], 21_000);
+    assert_eq!(j["effectiveGasPriceWei"], "2000000000");
+
+    // A receipt without gas facts leaves them unknown, never zero.
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x0"));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x8".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String(tx_hash.into())),
+        ok(serde_json::json!({ "blockNumber": "0x65", "status": "0x1" })),
+    ]);
+    let r = c
+        .approve_and_broadcast(&v, &RpcClient::with_transport(mock), &view.id, false, bcfg(2))
+        .expect("broadcast");
+    assert_eq!((r.gas_used, r.effective_gas_price_wei), (None, None));
+}
+
+/// HUP-S7.5 (D-27), review fix: the production broadcast path tells the installed observer about
+/// every broadcast it sends (that is how Hermes's gas and SALT reach metering), passes the result
+/// back unchanged, and tells it nothing when nothing was sent.
+#[test]
+fn d27_the_broadcast_path_tells_the_observer_and_returns_the_same_result() {
+    static SEEN: StdMutex<Vec<(String, String, Option<u64>)>> = StdMutex::new(Vec::new());
+    assert!(set_broadcast_observer(Box::new(|r: &BroadcastResult| {
+        SEEN.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((r.tx_hash.clone(), r.origin.clone(), r.gas_used));
+    })));
+    assert!(
+        !set_broadcast_observer(Box::new(|_: &BroadcastResult| {})),
+        "a second observer is refused"
+    );
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let mut intent = tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x0");
+    intent.origin = "agent:hermes".to_string();
+    let view = c.request(intent);
+    let tx_hash = "0xd270000000000000000000000000000000000000000000000000000000000d27";
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String(tx_hash.into())),
+        ok(serde_json::json!({ "blockNumber": "0x66", "status": "0x1", "gasUsed": "0x5208", "effectiveGasPrice": "0x77359400" })),
+    ]);
+    let r = approve_broadcast_and_notify(
+        &c,
+        &v,
+        &RpcClient::with_transport(mock),
+        &view.id,
+        false,
+        bcfg(2),
+    )
+    .expect("broadcast");
+    assert_eq!(r.tx_hash, tx_hash);
+    let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        seen.contains(&(tx_hash.to_string(), "agent:hermes".to_string(), Some(21_000))),
+        "{seen:?}"
+    );
+    // A consumed (or unknown) ceremony sends nothing, so the observer hears nothing.
+    let again = approve_broadcast_and_notify(
+        &c,
+        &v,
+        &RpcClient::with_transport(MockRpc::new(vec![])),
+        &view.id,
+        false,
+        bcfg(2),
+    );
+    assert!(again.is_err());
+    let after = SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        after.iter().filter(|(h, _, _)| h == tx_hash).count(),
+        1,
+        "told once, for the one broadcast"
+    );
+}
+
 #[test]
 fn b1_4_broadcast_result_is_serialize_and_secret_free() {
     // BroadcastResult crosses the bridge as PUBLIC facts only (hash + block).
     let br = BroadcastResult {
         tx_hash: "0xabc".into(),
         block_number: Some(100),
+        status: None,
+        gas_used: None,
+        effective_gas_price_wei: None,
+        value_wei: None,
+        to: None,
+        origin: String::new(),
     };
     let j = serde_json::to_string(&br).expect("BroadcastResult is Serialize");
     assert!(
@@ -1917,6 +2050,11 @@ fn a_zero_op_budget_covers_nothing() {
 /// reachable, so it is the only place wiring the budget into auto-approve can take effect — and
 /// scoping avoids false positives from unrelated `.consume(` calls elsewhere. To lift this gate,
 /// wire the budget AND update this test in the same reviewed change.
+///
+/// HUP-S2.3 note: the SIWE-only `WebSigningBudget` path (`request_siwe_budgeted`, ADR-2026-09-30,
+/// accepted) is a separate, closed-list mechanism with its own tripwire
+/// (`budget_tripwire_the_budget_modules_never_reach_a_signer`). It does not use `SessionBudget`,
+/// which stays dormant and is still guarded here.
 #[test]
 fn core_g2_session_budget_is_not_wired_into_the_production_signer() {
     let ceremony_non_test = strip_test_module(include_str!("ceremony.rs"));
@@ -1933,5 +2071,25 @@ fn core_g2_session_budget_is_not_wired_into_the_production_signer() {
         !ceremony_non_test.contains(&consume_call),
         "CORE-G2 tripwire: SessionBudget::consume is CALLED from production ceremony code. \
          Auto-approve must stay unwired until ADR-2026-08-29 + a fresh @rule8 sign-off."
+    );
+}
+
+/// HUP-S2.3: the call-site tripwires above must scan ALL production code in ceremony.rs,
+/// including what follows an inner `#[cfg(test)]` item (the budgeted path, reject, the command
+/// surface). Cutting at the first `#[cfg(test)]` silently skipped them.
+#[test]
+fn the_tripwire_scan_covers_the_whole_production_ceremony_module() {
+    let scanned = strip_test_module(include_str!("ceremony.rs"));
+    for f in [
+        "fn request_siwe_budgeted(",
+        "fn siwe_fall_through(",
+        "fn sign_reject_sync(",
+        "fn approve_and_broadcast",
+    ] {
+        assert!(scanned.contains(f), "the scan must include `{f}`");
+    }
+    assert!(
+        !scanned.contains("include!(\"ceremony_tests.rs\")"),
+        "the terminal test module is still cut off"
     );
 }

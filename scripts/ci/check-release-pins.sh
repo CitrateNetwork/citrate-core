@@ -30,7 +30,8 @@ grep -q 'verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS\[@
 # Self-test: the verifier fails closed on unpinned / tampered assets and passes a good pin.
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 printf 'good bytes' > "$T/a.bin"
-printf '# comment\n' > "$T/m"
+printf 'corpus' > "$T/knowledge-corpus.tar.gz"
+( cd "$T" && printf '# comment\n' && shasum -a 256 knowledge-corpus.tar.gz ) > "$T/m"
 if "$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/m" "$T" a.bin >/dev/null 2>&1; then fail "verifier accepted an UNPINNED asset"; fi
 ( cd "$T" && shasum -a 256 a.bin ) >> "$T/m"
 "$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/m" "$T" a.bin >/dev/null 2>&1 || fail "verifier rejected a correctly pinned asset"
@@ -39,4 +40,23 @@ cat "$T/m" "$T/m" > "$T/m2"
 if "$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/m2" "$T" a.bin >/dev/null 2>&1; then fail "verifier accepted a DUPLICATE pin"; fi
 printf 'tampered' > "$T/a.bin"
 if "$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/m" "$T" a.bin >/dev/null 2>&1; then fail "verifier accepted a TAMPERED asset"; fi
+# The knowledge corpus fails closed (a README-only knowledge-corpus/ still matches the bundle glob):
+# the verifier refuses a manifest without a knowledge-corpus.tar.gz pin, and a call that stages a
+# mem-mcp without the corpus it imports.
+printf 'good bytes' > "$T/a.bin"; printf 'mem' > "$T/mem-mcp-x"; printf 'corpus' > "$T/knowledge-corpus.tar.gz"
+( cd "$T" && shasum -a 256 a.bin mem-mcp-x ) > "$T/nocorpus"
+if "$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/nocorpus" "$T" a.bin >/dev/null 2>&1; then fail "verifier accepted a manifest with no knowledge-corpus.tar.gz pin"; fi
+( cd "$T" && shasum -a 256 a.bin mem-mcp-x knowledge-corpus.tar.gz ) > "$T/full"
+"$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/full" "$T" a.bin >/dev/null 2>&1 || fail "verifier rejected a good manifest that pins the corpus"
+if "$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/full" "$T" mem-mcp-x >/dev/null 2>&1; then fail "verifier staged a mem-mcp without knowledge-corpus.tar.gz"; fi
+"$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/full" "$T" mem-mcp-x knowledge-corpus.tar.gz >/dev/null 2>&1 || fail "verifier rejected mem-mcp + corpus"
+rm "$T/knowledge-corpus.tar.gz"
+if "$ROOT/scripts/ci/verify-runtime-deps.sh" "$T/full" "$T" mem-mcp-x knowledge-corpus.tar.gz >/dev/null 2>&1; then fail "verifier accepted a missing corpus download"; fi
+# release.yml stages the corpus in the runtime-deps step and checks it is staged before bundling.
+grep -qE '^ +knowledge-corpus\.tar\.gz$' "$WF" || fail "release.yml's runtime-deps ASSETS do not include knowledge-corpus.tar.gz"
+check_line="$(grep -n 'check-staged-corpus.mjs' "$WF" | head -1 | cut -d: -f1)"
+[ -n "$check_line" ] || fail "release.yml never runs scripts/check-staged-corpus.mjs (README-only corpus would ship)"
+grep -q 'check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256' "$WF" || fail "check-staged-corpus.mjs runs without --pins"
+build_line="$(grep -nF 'tauri-apps/tauri-action' "$WF" | head -1 | cut -d: -f1)"
+[ "$check_line" -lt "$build_line" ] || fail "check-staged-corpus.mjs (line $check_line) runs after the bundle build (line $build_line)"
 echo "release pin tripwire: OK"

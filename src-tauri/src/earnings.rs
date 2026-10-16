@@ -43,10 +43,12 @@
 // full connector round-trip lands (mirrors rpc.rs/agent.rs staged consumers).
 #![allow(dead_code)]
 
-/// The `ContributionAccounting` contract on 40204 (canonical address book:
-/// `citrate-node-agent/crates/chainio/src/generated/addresses.json`). Lowercase
-/// `0x`-hex; the `eth_call` target for `claimable` and the claim `to`.
-pub const CONTRIBUTION_ACCOUNTING: &str = "0xcdd2477387279c7d44a1053f44db5dac0fd8faef";
+/// The `ContributionAccounting` contract on 40204, from the generated address book
+/// (`crate::addresses`, synced from citrate-chain `contracts/addresses/40204.json`).
+/// Lowercase `0x`-hex; the `eth_call` target for `claimable` and the claim `to`.
+pub fn contribution_accounting() -> &'static str {
+    crate::addresses::contribution_accounting()
+}
 
 /// 4-byte selector for `claimable(address)` — the first four bytes of
 /// `keccak256("claimable(address)")`. GROUNDED + PINNED against the node-agent's
@@ -165,7 +167,7 @@ fn encode_claimable_calldata(addr: &str) -> Vec<u8> {
 fn claimable_call(wallet_address: &str) -> serde_json::Value {
     let calldata = encode_claimable_calldata(wallet_address);
     serde_json::json!({
-        "to": CONTRIBUTION_ACCOUNTING,
+        "to": contribution_accounting(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -210,7 +212,7 @@ pub fn read_claimable<T: crate::rpc::RpcTransport>(
     Ok(EarningsSnapshot {
         claimable_wei: claimable_wei.to_string(),
         wallet_address: addr,
-        contract: CONTRIBUTION_ACCOUNTING.to_string(),
+        contract: contribution_accounting().to_string(),
     })
 }
 
@@ -328,7 +330,7 @@ pub async fn wallet_balances(
 /// are released through `MemberBond.claimRewards()` (see `user_claim_request_to`
 /// and its caller in `agent::user_claim`).
 pub fn user_claim_request(claimable_wei: u128) -> crate::agent::AgentSignatureRequest {
-    user_claim_request_to(claimable_wei, CONTRIBUTION_ACCOUNTING)
+    user_claim_request_to(claimable_wei, contribution_accounting())
 }
 
 #[cfg(test)]

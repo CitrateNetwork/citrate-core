@@ -1545,3 +1545,35 @@ fn ensure_auto_unlocked_rejects_tampered_passphrase() {
         .expect_err("a malformed passphrase entry is tamper, not a reissue trigger");
     assert_eq!(err, CustodyError::Corrupt);
 }
+
+// --- HUP-S10.4: the D-A2-1 passphrase KDF exposed for passphrase-sealed exports ----------
+
+#[test]
+fn passphrase_kdf_is_the_vault_kdf() {
+    // The public entry point must be the SAME Argon2id derivation the vault uses
+    // (D-A2-1 params), not a second implementation.
+    let salt = [7u8; PASSPHRASE_SALT_LEN];
+    let public = derive_passphrase_key(b"correct horse battery", &salt).unwrap();
+    let vault = CustodyVault::derive_key(b"correct horse battery", &salt).unwrap();
+    assert_eq!(*public, *vault);
+    assert_eq!(
+        PASSPHRASE_KDF_PARAMS,
+        (ARGON_M_COST, ARGON_T_COST, ARGON_P_COST)
+    );
+    assert_eq!(PASSPHRASE_KDF_PARAMS, (65536, 3, 1));
+}
+
+#[test]
+fn passphrase_kdf_separates_salts_and_passphrases() {
+    let a = derive_passphrase_key(b"pass-one-long", &[1u8; PASSPHRASE_SALT_LEN]).unwrap();
+    let b = derive_passphrase_key(b"pass-one-long", &[2u8; PASSPHRASE_SALT_LEN]).unwrap();
+    let c = derive_passphrase_key(b"pass-two-long", &[1u8; PASSPHRASE_SALT_LEN]).unwrap();
+    assert_ne!(*a, *b);
+    assert_ne!(*a, *c);
+}
+
+#[test]
+fn passphrase_kdf_rejects_a_too_short_salt() {
+    // argon2 requires >= 8 salt bytes; the error is a clean Err, never a panic.
+    assert!(derive_passphrase_key(b"pass", &[0u8; 4]).is_err());
+}

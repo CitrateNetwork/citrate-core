@@ -34,9 +34,11 @@ import type {
   GrantStatus,
   ModelStatus,
   NodeLogLine,
+  NodeStatusView,
   ConnectionInfo,
 } from "../domains";
 import { Unavailable } from "../types";
+import { tauriImportKnowledge } from "./knowledge";
 
 function unavailable(domain: string, op: string): never {
   throw new Unavailable(domain, op);
@@ -97,6 +99,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async login(): Promise<AuthStatus> {
         return invoke<AuthStatus>("auth_login");
+      },
+      async cancelLogin(): Promise<boolean> {
+        return invoke<boolean>("auth_login_cancel");
       },
       async userinfo(): Promise<AuthStatus> {
         return invoke<AuthStatus>("auth_userinfo");
@@ -221,7 +226,7 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
     // encrypted data dir (@rule8 keyring storage key); stop releases the
     // supervisor (no orphan). No secret ever crosses this boundary.
     node: {
-      async status(): Promise<{ state: string; peers: number; height: number; syncPct: number }> {
+      async status(): Promise<NodeStatusView> {
         return invoke("node_status");
       },
       async start() {
@@ -278,6 +283,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async serveStart(): Promise<void> {
         await invoke("model_serve_start");
+      },
+      // SCL-S7.5a: data source = the model_serve_stop command (serve.rs, the llama supervisor).
+      async serveStop(): Promise<void> {
+        await invoke("model_serve_stop");
       },
     },
     // ---- agent: the node-agent under the SidecarSupervisor (C1.2) ----
@@ -338,8 +347,11 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async recall(tenant: string, budget?: number) {
         return invoke<MemoryResult>("memory_recall", { tenant, budget });
       },
-      async search(tenant: string, query: string, budget?: number) {
-        return invoke<MemoryResult>("memory_search", { tenant, query, budget });
+      async search(tenant: string, query: string, budget?: number, opts?: { passages?: boolean }) {
+        return invoke<MemoryResult>(
+          "memory_search",
+          opts?.passages ? { tenant, query, budget, passages: true } : { tenant, query, budget },
+        );
       },
       async neighbors(tenant: string, idPrefix: string, budget?: number) {
         return invoke<MemoryNeighbor[]>("memory_neighbors", { tenant, idPrefix, budget });
@@ -354,6 +366,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // Seed the constellation tenants with real network/node/stake facts (gated + idempotent in Rust).
       async seedContext(facts: SeedFacts) {
         return invoke<SeedReport>("memory_seed_context", { facts });
+      },
+      // HUP-S3.1 — first-run knowledge-corpus import (verified + idempotent in Rust).
+      importKnowledge(onProgress) {
+        return tauriImportKnowledge(onProgress);
       },
     },
     // ---- chat: REAL OpenAI-compatible inference, key sealed in Rust (AI1) ----

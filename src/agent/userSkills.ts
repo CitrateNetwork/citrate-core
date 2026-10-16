@@ -47,7 +47,7 @@ export function validateNewSkill(
   name: string,
   instruction: string,
   description: string,
-  existing: readonly UserSkill[],
+  existing: readonly Pick<UserSkill, "name">[],
 ): AddSkillResult {
   const n = (name ?? "").trim();
   const instr = (instruction ?? "").trim();
@@ -77,4 +77,52 @@ export function validateNewSkill(
  */
 export function runPrompt(skill: Pick<UserSkill, "name" | "instruction">): string {
   return `Run my "${skill.name}" skill:\n\n${skill.instruction}`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// HUP-S3.2 (US-3.2 AC2): one format, one loader.
+//
+// A member's skills are now agentskills.io SKILL.md files on this device
+// (src-tauri/src/skills_local.rs, the same files skill_write saves), which the Hermes sidecar's
+// one loader reads and ranks per turn with every other skill. The skills earlier builds kept in
+// app state (`userSkills`) move there once. A skill that cannot move stays in app state with the
+// reason, so nothing is lost silently.
+// ---------------------------------------------------------------------------------------------
+
+/** The part of the agentSkills bridge the migration uses. */
+export interface SkillFiles {
+  write(name: string, description: string, instructions: string, overwrite?: boolean): Promise<unknown>;
+  read(name: string): Promise<string>;
+}
+
+export interface LegacyMigrationResult {
+  /** Names now saved as SKILL.md skills. */
+  moved: string[];
+  /** Skills left in app state, each with the reason. */
+  kept: { skill: UserSkill; reason: string }[];
+}
+
+/**
+ * Save each legacy skill as a SKILL.md skill (create-only; never overwrites). A skill already
+ * saved under that name with the same instructions counts as moved (a migration that ran before);
+ * one saved with different instructions is kept, so the member decides.
+ */
+export async function migrateLegacyUserSkills(legacy: readonly UserSkill[], files: SkillFiles): Promise<LegacyMigrationResult> {
+  const out: LegacyMigrationResult = { moved: [], kept: [] };
+  for (const skill of legacy) {
+    try {
+      await files.write(skill.name, skill.description, skill.instruction, false);
+      out.moved.push(skill.name);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!msg.startsWith("SKILL_EXISTS")) {
+        out.kept.push({ skill, reason: msg });
+        continue;
+      }
+      const saved = await files.read(skill.name).catch(() => null);
+      if (saved !== null && saved.trim() === skill.instruction.trim()) out.moved.push(skill.name);
+      else out.kept.push({ skill, reason: `a saved skill named "${skill.name}" already exists with different instructions` });
+    }
+  }
+  return out;
 }

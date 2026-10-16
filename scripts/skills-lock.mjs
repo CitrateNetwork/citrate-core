@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { INTAKE_REWRITE, flattenFrontmatter } from "./skill-intake-rewrite.mjs";
 
 // ---------------------------------------------------------------------------------------------
 // Loader limits (mirror agent-loop/src/skills.rs)
@@ -481,6 +482,10 @@ export function loadIntake(file) {
       if (typeof s[k] !== "string" || !s[k]) throw new Error(`intake source missing '${k}'`);
     }
     if (!/^[0-9a-f]{40}$/.test(s.commit)) throw new Error(`source ${s.label}: commit must be a full sha`);
+    // HUP-S3.2: the only intake rewrite is the frontmatter flattening (skill-intake-rewrite.mjs).
+    if (s.intake_rewrite !== undefined && s.intake_rewrite !== INTAKE_REWRITE) {
+      throw new Error(`source ${s.label}: unknown intake_rewrite '${s.intake_rewrite}' (only '${INTAKE_REWRITE}')`);
+    }
   }
   intake.decisions ??= {};
   return intake;
@@ -520,11 +525,29 @@ export function reviewSkill(src, root, dir) {
     notes: new Set(),
     scriptNet: [],
     scriptProc: [],
+    intakeRewrite: null,
+    shippedSkillMdSha256: null,
   };
   const text = readText(skillMd);
   try {
     if (text === null) throw new SkillError("NotUtf8", "SKILL.md is not UTF-8 text");
-    const { fm, body } = parseSkillMd(text);
+    let parsed;
+    try {
+      parsed = parseSkillMd(text);
+    } catch (e) {
+      // HUP-S3.2: the loader stays strict; a source marked for it is rewritten once, here.
+      if (!(e instanceof SkillError) || src.intake_rewrite !== INTAKE_REWRITE) throw e;
+      let rewritten;
+      try {
+        rewritten = flattenFrontmatter(text);
+      } catch (re) {
+        throw new SkillError(e.kind, `${e.message}; ${re.message}`);
+      }
+      parsed = parseSkillMd(rewritten);
+      sk.intakeRewrite = INTAKE_REWRITE;
+      sk.shippedSkillMdSha256 = createHash("sha256").update(rewritten, "utf8").digest("hex");
+    }
+    const { fm, body } = parsed;
     if (fm.name !== sk.dirName) throw new SkillError("Name", `name '${fm.name}' does not match its directory '${sk.dirName}'`);
     sk.name = fm.name;
     sk.license = fm.license;
@@ -662,6 +685,10 @@ export function renderLock(lock) {
     if (sk.capsule) out.push(`capsule = ${q(sk.capsule)}`);
     if (sk.reason) out.push(`reason = ${q(sk.reason)}`);
     out.push(`skill_md_sha256 = ${q(sk.skillMdSha256)}`);
+    if (sk.intakeRewrite && sk.verdict !== "exclude") {
+      out.push(`intake_rewrite = ${q(sk.intakeRewrite)}`);
+      out.push(`shipped_skill_md_sha256 = ${q(sk.shippedSkillMdSha256)}`);
+    }
     if (sk.refs.length) {
       out.push("refs = [");
       for (const r of sk.refs) out.push(`  { path = ${q(r.path)}, sha256 = ${q(r.sha256)} },`);

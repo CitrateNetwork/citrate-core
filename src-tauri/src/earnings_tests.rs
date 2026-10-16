@@ -173,14 +173,14 @@ fn read_claimable_calls_eth_call_and_decodes() {
     let snap = read_claimable(&rpc, VAULT_ADDR).expect("read claimable");
     assert_eq!(snap.claimable_wei, claimable.to_string());
     assert_eq!(snap.wallet_address, VAULT_ADDR);
-    assert_eq!(snap.contract, CONTRIBUTION_ACCOUNTING);
+    assert_eq!(snap.contract, contribution_accounting());
 
     // The request was an eth_call to the contract with the right calldata + tag.
     let reqs = rpc.transport().requests();
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0]["method"], "eth_call");
     let call = &reqs[0]["params"][0];
-    assert_eq!(call["to"], CONTRIBUTION_ACCOUNTING);
+    assert_eq!(call["to"], contribution_accounting());
     let data = call["data"].as_str().unwrap();
     assert!(data.starts_with("0x402914f5"), "claimable selector: {data}");
     assert_eq!(reqs[0]["params"][1], "latest", "block tag pinned to latest");
@@ -231,7 +231,7 @@ fn user_claim_request_is_the_node_agent_shape() {
     let claimable = 9410000000000000000u128;
     let req = user_claim_request(claimable);
     assert_eq!(req.intent, "claimRewards");
-    assert_eq!(req.to, CONTRIBUTION_ACCOUNTING);
+    assert_eq!(req.to, contribution_accounting());
     assert_eq!(req.value_wei, "0", "the claim tx sends no SALT (the contract pays)");
     assert_eq!(req.chain_id, 40204);
     assert!(req.is_pending());
@@ -275,7 +275,7 @@ fn user_claim_request_bridges_to_a_legible_ceremony_intent() {
         display.action
     );
     assert!(
-        display.destination.eq_ignore_ascii_case(CONTRIBUTION_ACCOUNTING),
+        display.destination.eq_ignore_ascii_case(contribution_accounting()),
         "destination is the accounting contract: {}",
         display.destination
     );

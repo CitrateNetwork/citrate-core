@@ -1,0 +1,15 @@
+{
+  "id": "erc721",
+  "kind": "contract",
+  "title": "ERC-721 paid mint (OpenZeppelin)",
+  "description": "An OpenZeppelin v5.7.0 ERC-721 with a fixed supply cap, a fixed per-token price in wei, at most 10 per transaction, an owner-set base URI and an owner-only withdraw. This is the hello-mint contract.",
+  "layers": ["foundry", "erc721-properties"],
+  "params": {
+    "name": {},
+    "symbol": {},
+    "supply": { "default": "500", "min": 1, "max": 1000000 },
+    "price": { "default": "0" },
+    "owner": {}
+  },
+  "medusa": true
+}

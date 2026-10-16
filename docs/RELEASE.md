@@ -78,13 +78,163 @@ gh release create runtime-deps --prerelease --title "Runtime deps (bundle inputs
   src-tauri/binaries/citrate-aarch64-apple-darwin \
   src-tauri/binaries/mem-mcp-aarch64-apple-darwin \
   src-tauri/binaries/node-agent-aarch64-apple-darwin \
-  src-tauri/binaries/llama-server-aarch64-apple-darwin \
   src-tauri/models/gemma-4-E4B-it-Q4_0.gguf
-# llama dylibs as one tarball:
-tar -czf /tmp/llama-runtime-arm64.tar.gz -C src-tauri/llama .
-gh release upload runtime-deps /tmp/llama-runtime-arm64.tar.gz
 ```
+
+#### The llama runtime (`llama-server` + dylibs), built with the web UI off (v0.5.0-rc.4)
+
+The macOS llama runtime is llama.cpp **b10909** (commit `a2878d30d`) built from source with the
+options of upstream's `macos-arm64` release job (its `.github/workflows/release.yml` at that tag)
+plus the web UI switched off. llama-server's built-in web UI is an npm bundle with no notices;
+the app never serves it (`--no-webui`), so it is not shipped at all. At b10909
+`-DLLAMA_BUILD_WEBUI=OFF` alone is not enough: the default `LLAMA_USE_PREBUILT_UI=ON` downloads
+the prebuilt UI and embeds it, so turn that off too. The build must say `UI: embedded 0 assets`.
+
+```bash
+git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp && git checkout b10909
+# full history: the build number (10909) is `git rev-list --count HEAD`
+cmake -B build \
+  -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+  -DCMAKE_INSTALL_RPATH='@loader_path' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+  -DLLAMA_FATAL_WARNINGS=ON -DLLAMA_BUILD_BORINGSSL=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON \
+  -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON \
+  -DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+  -DGGML_MACHINE_SUPPORTS_i8mm=OFF -DGGML_MACHINE_SUPPORTS_sve=OFF -DGGML_MACHINE_SUPPORTS_sme=OFF
+cmake --build build --config Release -j "$(sysctl -n hw.logicalcpu)"
+```
+
+The three `GGML_MACHINE_SUPPORTS_*=OFF` pin ggml's native CPU probe to what upstream's M1 runner
+found (dotprod, no i8mm, SVE or SME). Built natively on an M2 or later the probe adds i8mm, and
+the library then crashes on M1 Macs; the SVE probe also hangs on some Macs. Check with
+`otool -tv build/bin/libggml-cpu.0.dylib | grep -cw smmla` (must be 0).
+
+Package the flat dependency closure of llama-server (what `scripts/prune-llama-runtime.mjs`
+keeps) and a sidecar copy with the app's rpath, each Developer ID signed:
+
+```bash
+ID="Developer ID Application: Larry Klosowski (DDHUG44QC7)"
+mkdir -p rt && cp build/bin/llama-server rt/ && cp LICENSE rt/LICENSE-llama.cpp.txt
+for f in libllama-server-impl.dylib libllama-common.0.dylib libmtmd.0.dylib libllama.0.dylib \
+  libggml.0.dylib libggml-cpu.0.dylib libggml-blas.0.dylib libggml-metal.0.dylib \
+  libggml-rpc.0.dylib libggml-base.0.dylib; do cp -L "build/bin/$f" rt/; done
+for f in rt/*.dylib rt/llama-server; do codesign --force --options runtime --timestamp --sign "$ID" "$f"; done
+(cd rt && shasum -a 256 $(ls | sort) > llama-server.sha256)
+cp build/bin/llama-server llama-server-aarch64-apple-darwin-b10909-nowebui
+install_name_tool -add_rpath @loader_path/../Resources/llama llama-server-aarch64-apple-darwin-b10909-nowebui
+codesign --force --options runtime --timestamp --sign "$ID" llama-server-aarch64-apple-darwin-b10909-nowebui
+# a reproducible tarball (sorted entries, fixed mtime, uid/gid 0, gzip mtime 0) of rt/ as
+# llama-runtime-arm64-b10909-nowebui.tar.gz, then upload both under NEW names and pin them:
+gh release upload runtime-deps llama-runtime-arm64-b10909-nowebui.tar.gz \
+  llama-server-aarch64-apple-darwin-b10909-nowebui -R CitrateNetwork/citrate-core
+```
+
+A local build stages them as release.yml does: extract the tarball into `src-tauri/llama/` and
+copy the sidecar to `src-tauri/binaries/llama-server-aarch64-apple-darwin`. Before pinning, check
+with a small model in a scratch directory that `GET /health` answers, a chat completion returns
+text, `GET /` returns 404 (no UI even without `--no-webui`) and `--list-devices` shows Metal.
+Windows builds llama-server from source at the same tag with `-DLLAMA_BUILD_WEBUI=OFF
+-DLLAMA_USE_PREBUILT_UI=OFF` and upstream's `windows-cpu` x64 options (docs/RELEASE_WINDOWS.md);
+the Linux build (b9438) is already web-UI-free.
+
+A runtime packed from a whole CMake install tree (as before rc.4) carries each dylib three times
+(`libggml.dylib`, `libggml.0.dylib`, `libggml.0.23.0.dylib`) plus llama.cpp tool libraries
+llama-server never loads; the rc.4 tarball is already the closure. Before a build,
+`node scripts/prune-llama-runtime.mjs --dir src-tauri/llama` keeps only llama-server's dependency
+closure (read with `otool -L`; it refuses if a needed library is missing) and saves about 34 MB.
+release.yml runs it after extracting the tarball; run it on a local staging too (HUP-S11.0).
+`scripts/build-hermes.sh` installs the Hermes sidecar with `strip -x` (about 4 MB; `--no-strip`
+keeps the symbols for debugging).
 Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
+
+#### The BGE embedding GGUF (`bge-base-en-v1.5-f16.gguf`, HUP-S1.2 / US-1.4)
+
+Hermes ranks the tools it offers per request, and the skills it surfaces per turn, with a second
+loopback `llama-server` the app starts in embedding mode (`--embeddings --pooling cls`, its own
+API key; `src-tauri/src/embed_serve.rs`). It loads the same BGE weights as `models/bge-base-en-v1.5`,
+converted to GGUF. The conversion is deterministic and checked against the pin (already in
+`src-tauri/runtime-deps.sha256`, pending owner sign-off):
+
+```bash
+# a llama.cpp checkout at tag b8640, with its converter's Python packages installed
+LLAMA_CPP_DIR=/tmp/llama.cpp scripts/build-bge-gguf.sh /tmp/bge-base-en-v1.5 /tmp/bge-gguf
+gh release upload runtime-deps /tmp/bge-gguf/bge-base-en-v1.5-f16.gguf --clobber -R CitrateNetwork/citrate-core
+```
+
+Without it (for example a lite bundle) the app still runs: Hermes sessions rank lexically and say so.
+
+#### The Hermes knowledge corpus (`knowledge-corpus.tar.gz`, HUP-S3.1)
+
+The corpus Hermes imports on first run is built in citrate-memories from the
+federation checkouts (format `citrate-corpus/2`; spec `corpus/hermes-knowledge.toml`):
+
+```bash
+cd ../citrate-memories
+scripts/fetch-corpus-refs.sh ..                 # Solady + Foundry book at pinned commits
+# EMBED_BGE_DIR = the exact BGE files the release bundles (extract bge-base-en-v1.5.tar.gz):
+# every node is embedded once here, so members do not embed it on their CPU.
+EMBED_BGE_DIR=/tmp/bge-base-en-v1.5 \
+  scripts/build-corpus.sh .. /tmp/knowledge-corpus   # deterministic; verifies before exit
+tar -czf /tmp/knowledge-corpus.tar.gz -C /tmp knowledge-corpus
+gh release upload runtime-deps /tmp/knowledge-corpus.tar.gz --clobber -R CitrateNetwork/citrate-core
+```
+
+Pin it like every other asset. Ship it together with a `mem-mcp` built from
+citrate-memories with `import-corpus` (`--features rocksdb,transformer`): the
+release step runs `scripts/stage-knowledge-corpus.mjs`, which refuses an older
+`mem-mcp` and any corpus that does not match its own manifest. A local build stages
+the same way:
+
+```bash
+node scripts/stage-knowledge-corpus.mjs /tmp/knowledge-corpus \
+  --bge-dir src-tauri/models/bge-base-en-v1.5 \
+  --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
+```
+
+Build the release corpus from clean checkouts. mem-corpus records a source whose work tree had
+local changes as `<commit>-dirty` and a source outside any git work tree as `unpinned`; the stager
+refuses a corpus with either on an included source (its text and NOTICE cannot be reproduced from
+the recorded commit); `--allow-dirty` stages it for a dev build, with a warning.
+
+The corpus depends on the bundled BGE model, so `--bge-dir` is required. The stager
+refuses a missing or partial model (the first-run import would be skipped as
+`not-semantic`) and any tenant whose vectors were not made with exactly the bundled
+`model.safetensors` (the importer would ignore them and embed every node on the
+member's CPU, about two hours for the full corpus on an Apple M2 Max). A dev build may
+pass `--allow-unembedded`; the stager then warns how many nodes members will embed.
+
+Without a staged corpus `tauri build` itself still succeeds (the committed
+`src-tauri/knowledge-corpus/README.md` keeps the resource glob valid) and the app reports
+`skipped: no-bundle` on first run, so a release build must not rely on the build failing. The
+release path fails closed instead:
+
+- `scripts/ci/verify-runtime-deps.sh` refuses a pins manifest without a
+  `knowledge-corpus.tar.gz` pin, and any call that stages a `mem-mcp` without the corpus.
+- The stager writes a record beside the directory (`src-tauri/knowledge-corpus.staged.json`,
+  git-ignored: bundle digest, node count, the input asset's sha256). Right before bundling,
+  on every platform, run
+
+  ```bash
+  node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+  ```
+
+  It refuses a README-only directory, a corpus the stager did not record or that changed after
+  staging (digest, node count, file hashes), a dev-staged corpus (`--allow-dirty`,
+  `--allow-unembedded`; pass `--allow-dev` for a dev build), and one not staged from the pinned
+  `knowledge-corpus.tar.gz`. release.yml runs it before `tauri-action`, and
+  `scripts/ci/check-release-pins.sh` fails CI if that step is removed or moved after the build.
+  Linux and Windows: [`RELEASE_LINUX.md`](RELEASE_LINUX.md) and
+  [`RELEASE_WINDOWS.md`](RELEASE_WINDOWS.md) step 2b.
+
+For a local Mac DMG, stage from the pinned asset exactly as release.yml does:
+
+```bash
+gh release download runtime-deps -p knowledge-corpus.tar.gz -D /tmp/rd -R CitrateNetwork/citrate-core
+node scripts/stage-knowledge-corpus.mjs /tmp/rd/knowledge-corpus.tar.gz \
+  --bge-dir src-tauri/models/bge-base-en-v1.5 \
+  --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
+node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+```
 
 ## Cutting a release
 1. Bump `version` in `src-tauri/tauri.conf.json` **and** `src-tauri/Cargo.toml`
@@ -98,6 +248,29 @@ Refresh this release whenever a sidecar or the model changes (e.g. a DGX node re
 4. Verify: an older installed build shows the **Update available** card within its
    check interval (or on next launch), downloads with real byte progress, and
    restarts into the new version.
+5. Size gate (HUP-S11.0): on the machine that built the bundle, run
+   `node scripts/size-budget.mjs` (reads `target/release/bundle`, compares with
+   `release/budgets.json`, exits 1 when anything is over budget). In CI it is manual only:
+   dispatch `release` with `size_gate: true` and the release stays a draft unless the gate
+   passes; tag pushes never run it. See [`release/README.md`](../release/README.md).
+6. Licence check (gate g3-licence): `node scripts/licence-inventory.mjs --corpus
+   src-tauri/knowledge-corpus` must pass (every sidecar, resource, tool, library, skills and
+   corpus source has a licence entry and its texts ship in `licenses/`). Before the first
+   public 0.5.0 release add `--require-sign-off`, which fails until the owner signs
+   [`LICENCE_REVIEW.md`](LICENCE_REVIEW.md).
+7. Third-party notices (g3-licence, LICENCE_REVIEW 4.7): with the sidecar sources checked out at
+   the revisions the bundled sidecars were built from, regenerate the notices of every crate and Go
+   module compiled into the app, the sidecars and Kubo, then check them:
+   ```sh
+   cargo install cargo-about --locked --features cli            # once; 0.9.2 used 2026-10-04
+   go install github.com/google/go-licenses/v2@v2.0.1           # once
+   node scripts/third-party-notices.mjs collect --federation-root ..   # about 5 min per Rust component
+   node scripts/third-party-notices.mjs render                  # writes src-tauri/licenses/THIRD-PARTY-NOTICES.txt
+   node scripts/third-party-notices.mjs check
+   node scripts/licence-inventory.mjs --require-notices
+   ```
+   `render` refuses a third-party package under a licence outside its permissive list, so a new
+   copyleft dependency is a reviewed change. What is scanned is `release/notices.json`.
 
 ### Distribution — the DO Space is the public origin
 

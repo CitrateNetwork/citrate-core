@@ -1,0 +1,570 @@
+From 03babededf0fd472707eb6706bf7259f66c1dffb Mon Sep 17 00:00:00 2001
+From: Larry Klosowski <larryklosowski@proton.me>
+Date: Sun, 4 Oct 2026 16:16:41 -0700
+Subject: [PATCH] feat(tier,fleet): take the hardware read and tier rule from
+ citrate-sizeup (F-10)
+
+LOCAL ONLY, NOT PUSHED: depends on citrate-sizeup through a sibling path,
+because CitrateNetwork/citrate-sizeup does not exist yet. Exported as
+.agentile/sprints/active/sprint-hup-s8-fleet/n7-sizeup-library.patch on
+hup/n7-sizeup-library.
+
+tier::probe reads a sizeup receipt (library::probe) and recommend_tier asks
+library::recommend for the tier; the sysctl / meminfo / nvidia-smi /
+PowerShell readers and the threshold constants are deleted. NODE_RESERVE_BYTES
+is sizeup's constant (7 GiB pin test kept). fleet::role_for maps through
+library::Role. Tests: -6 parser tests, +8 library tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Lqmrq4rH9YBGCDmmemAG8H
+---
+ Cargo.lock                   |   5 +
+ src-tauri/Cargo.toml         |   4 +
+ src-tauri/src/fleet.rs       |  13 +-
+ src-tauri/src/fleet_tests.rs |  12 ++
+ src-tauri/src/tier.rs        | 238 ++++++++++++-----------------------
+ src-tauri/src/tier_tests.rs  | 106 +++++++++++-----
+ 6 files changed, 182 insertions(+), 196 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 27adf34..95dab80 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -875,6 +875,7 @@ dependencies = [
+  "serde_json",
+  "sha2",
+  "sha3",
++ "sizeup-core",
+  "socket2",
+  "tauri",
+  "tauri-build",
+@@ -4677,6 +4678,10 @@ version = "1.0.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
+ 
++[[package]]
++name = "sizeup-core"
++version = "0.1.0"
++
+ [[package]]
+ name = "slab"
+ version = "0.4.12"
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index 087f615..84eff07 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -21,6 +21,10 @@ citrate-core-kit = { path = "../kit" }
+ citrate-components = { path = "../components" }
+ # HUP-S6.2 / S6.9 — the contract template renderer and per-tier Medusa budgets (workspace crate).
+ citrate-templates = { path = "../templates/renderer" }
++# HUP F-10 / WP-S8.2 — the hardware read + tier rule (citrate-sizeup's stable library API,
++# `citrate.sizeup.library/1`). Zero third-party crates (sizeup D-2). Rule 12: the [[drift]]
++# entry core -> sizeup lands in citrate-federation/manifest.toml first.
++sizeup-core = { path = "../../citrate-sizeup/crates/sizeup-core" }
+ tauri = { version = "2", features = [] }
+ tauri-plugin-dialog = "2"
+ tauri-plugin-opener = "2"
+diff --git a/src-tauri/src/fleet.rs b/src-tauri/src/fleet.rs
+index f66a322..dc8b53e 100644
+--- a/src-tauri/src/fleet.rs
++++ b/src-tauri/src/fleet.rs
+@@ -67,15 +67,12 @@ pub fn now_secs() -> u64 {
+         .unwrap_or(0)
+ }
+ 
+-/// The role a tier suggests. DEFAULT PENDING OWNER SIGN-OFF (names and mapping):
+-/// T0 = light (chat, small jobs), T1 = worker, T2 = heavy (serves the larger models).
++/// The role a tier suggests: citrate-sizeup's `library::Role::for_tier`. DEFAULT PENDING OWNER
++/// SIGN-OFF (names and mapping): T0 = light (chat, small jobs), T1 = worker, T2 = heavy (serves
++/// the larger models). Anything but a tier id is "unknown".
+ pub fn role_for(tier: Option<&str>) -> &'static str {
+-    match tier {
+-        Some("T0") => "light",
+-        Some("T1") => "worker",
+-        Some("T2") => "heavy",
+-        _ => "unknown",
+-    }
++    tier.and_then(sizeup_core::library::Tier::parse)
++        .map_or("unknown", |t| sizeup_core::library::Role::for_tier(t).id())
+ }
+ 
+ fn tier_ok(t: &Option<String>) -> bool {
+diff --git a/src-tauri/src/fleet_tests.rs b/src-tauri/src/fleet_tests.rs
+index 825168c..288d9bd 100644
+--- a/src-tauri/src/fleet_tests.rs
++++ b/src-tauri/src/fleet_tests.rs
+@@ -34,6 +34,18 @@ fn roles_follow_the_tier() {
+     assert_eq!(role_for(Some("T7")), "unknown");
+ }
+ 
++#[test]
++fn roles_are_sizeups_and_parse_strictly() {
++    // HUP F-10: the mapping is citrate-sizeup's `library::Role::for_tier`, not a local copy.
++    for id in ["T0", "T1", "T2"] {
++        let lib = sizeup_core::library::Tier::parse(id).map(sizeup_core::library::Role::for_tier);
++        assert_eq!(lib.map(|r| r.id()), Some(role_for(Some(id))));
++    }
++    assert_eq!(role_for(Some("t1")), "unknown");
++    assert_eq!(role_for(Some(" T1")), "unknown");
++    assert_eq!(role_for(Some("")), "unknown");
++}
++
+ // ---- roster file ----------------------------------------------------------------------------
+ 
+ #[test]
+diff --git a/src-tauri/src/tier.rs b/src-tauri/src/tier.rs
+index 519a1e5..3f2fef6 100644
+--- a/src-tauri/src/tier.rs
++++ b/src-tauri/src/tier.rs
+@@ -13,25 +13,22 @@
+ //! UI recommends planner escalation. The concrete model picks are placeholders until the S1.7
+ //! eval gate finalizes them; the thresholds are the planset's.
+ //!
+-//! **This is a subset of a citrate-sizeup receipt, not sizeup itself.** Sizeup
+-//! (`citrate-sizeup/crates/sizeup-core`) reads far more (per-DIMM SMBIOS, GGUF-header fit,
+-//! measured bandwidth, the macOS `iogpu.wired_limit_mb` GPU budget, posture). Taking it as a
+-//! Cargo dependency needs a Rule-12 `[[drift]]` entry in `citrate-federation/manifest.toml`
+-//! first, so full sizeup integration is a FOLLOW-UP. What we read here, per OS:
++//! **The hardware read and the tier rule are citrate-sizeup's** (HUP F-10, WP-S8.2): this module
++//! calls the stable library API `sizeup_core::library` (`citrate.sizeup.library/1`). [`probe`]
++//! takes a sealed sizeup receipt of this machine (`library::probe`, the same collector the
++//! `sizeup-probe` binary uses: sysctl + the Metal GPU on macOS, `/proc/meminfo` + NVML or
++//! `nvidia-smi` on Linux, the Windows FFI backend on Windows; no hostname, nothing written or
++//! sent) and maps its host summary onto [`HardwareFacts`]. [`recommend_tier`] asks
++//! `library::recommend` for the tier; this module only adds the profile table, the plain-language
++//! rationale and the persisted override. Free disk is still read here, for the app data dir
++//! (where models land), with `statvfs` on unix; Windows: unknown.
+ //!
+-//! - **macOS:** `sysctl hw.memsize hw.optional.arm64` (total RAM; Apple Silicon ⇒ the GPU shares
+-//!   that unified memory). Dedicated VRAM is not read (Intel-Mac discrete GPUs stay unknown).
+-//! - **Linux:** `/proc/meminfo` `MemTotal`; `nvidia-smi --query-gpu=memory.total` if present
+-//!   (other vendors' VRAM stays unknown).
+-//! - **Windows:** PowerShell `Win32_ComputerSystem.TotalPhysicalMemory`; `nvidia-smi` if present.
+-//! - **All unix:** `statvfs` free space in the app data dir. (Windows: unknown.)
++//! Anything that cannot be read is `None` and is shown as unknown, never guessed (Rule 1).
+ //!
+-//! Anything that cannot be read is `None` and is shown as unknown — never guessed (Rule 1).
+-//!
+-//! **Usable memory** = total RAM minus [`NODE_RESERVE_BYTES`], the RAM of sizeup's pinned Citrate
+-//! daemon set (`budget::DAEMON_SET`: citrate 4 GiB + node-agent 1 + mem-mcp 1 + ipfs 1). This is
+-//! sizeup's "daemons first" budget idea: a model is only offered against what is left after the
+-//! node stack it runs beside.
++//! **Usable memory** = total RAM minus [`NODE_RESERVE_BYTES`], which IS sizeup's
++//! `library::NODE_RESERVE_BYTES` (the RAM of the pinned daemon set `budget::DAEMON_SET`:
++//! citrate 4 GiB + node-agent 1 + mem-mcp 1 + ipfs 1). A model is only offered against what is
++//! left after the node stack it runs beside.
+ //!
+ //! The user's override is persisted in the existing app config store (`config.json`, key
+ //! [`OVERRIDE_KEY`]) as the tier id ONLY — no hardware details are stored. No network.
+@@ -41,16 +38,10 @@ use serde::Serialize;
+ /// One GiB. Tier thresholds are in GiB (the unit `sysctl`/`/proc/meminfo` report).
+ pub const GIB: u64 = 1024 * 1024 * 1024;
+ 
+-/// RAM set aside for the node + its daemons before a model is sized — the RAM column of
+-/// citrate-sizeup `budget::DAEMON_SET` (4 + 1 + 1 + 1 GiB). Re-pin when that set changes.
+-pub const NODE_RESERVE_BYTES: u64 = 7 * GIB;
+-
+-/// Usable memory at or above which a host is T1.
+-const T1_USABLE: u64 = 12 * GIB;
+-/// Usable memory at or above which a host is T2.
+-const T2_USABLE: u64 = 24 * GIB;
+-/// Dedicated GPU memory at or above which a host is T2 regardless of system RAM.
+-const T2_VRAM: u64 = 16 * GIB;
++/// RAM set aside for the node + its daemons before a model is sized: citrate-sizeup's
++/// `library::NODE_RESERVE_BYTES`, the RAM column of `budget::DAEMON_SET` (4 + 1 + 1 + 1 GiB).
++/// Linked, not copied (Rule 9); the pin test keeps the 7 GiB visible here.
++pub const NODE_RESERVE_BYTES: u64 = sizeup_core::library::NODE_RESERVE_BYTES;
+ 
+ /// The config-store file (shared with `config::AppConfig`) and the key the override lives under.
+ const STORE_FILE: &str = "config.json";
+@@ -75,11 +66,16 @@ impl Tier {
+ 
+     /// Strict parse of a tier id. Anything but exactly `T0`/`T1`/`T2` is rejected.
+     pub fn parse(s: &str) -> Option<Tier> {
+-        match s {
+-            "T0" => Some(Tier::T0),
+-            "T1" => Some(Tier::T1),
+-            "T2" => Some(Tier::T2),
+-            _ => None,
++        sizeup_core::library::Tier::parse(s).map(Tier::from)
++    }
++}
++
++impl From<sizeup_core::library::Tier> for Tier {
++    fn from(t: sizeup_core::library::Tier) -> Tier {
++        match t {
++            sizeup_core::library::Tier::T0 => Tier::T0,
++            sizeup_core::library::Tier::T1 => Tier::T1,
++            sizeup_core::library::Tier::T2 => Tier::T2,
+         }
+     }
+ }
+@@ -183,13 +179,27 @@ pub(crate) fn fmt_gb(bytes: u64) -> String {
+     }
+ }
+ 
+-/// **The pure decision.** Deterministic over `facts`.
++/// The facts as the sizeup library's host summary (the tier rule's input).
++pub(crate) fn summary_of(facts: &HardwareFacts) -> sizeup_core::library::HostSummary {
++    sizeup_core::library::HostSummary {
++        os_family: facts.os.clone(),
++        arch: facts.arch.clone(),
++        total_ram_bytes: facts.total_ram_bytes,
++        unified_memory: facts.unified_memory,
++        dedicated_vram_bytes: facts.gpu_vram_bytes,
++        disk_free_bytes: facts.disk_free_bytes,
++    }
++}
++
++/// **The pure decision.** Deterministic over `facts`. The tier is citrate-sizeup's
++/// (`library::recommend`); this adds the profile and the plain-language rationale.
+ pub fn recommend_tier(facts: &HardwareFacts) -> TierRecommendation {
++    use sizeup_core::library::{recommend, Basis};
++    let rec = recommend(&summary_of(facts));
++    let tier = Tier::from(rec.tier);
++    let usable = rec.usable_ram_bytes;
+     let mut why = Vec::new();
+ 
+-    let usable = facts
+-        .total_ram_bytes
+-        .map(|t| t.saturating_sub(NODE_RESERVE_BYTES));
+     match facts.total_ram_bytes {
+         Some(total) => {
+             let unified = if facts.unified_memory == Some(true) {
+@@ -200,7 +210,7 @@ pub fn recommend_tier(facts: &HardwareFacts) -> TierRecommendation {
+             why.push(format!("{} GB{unified}", fmt_gb(total)));
+             why.push(format!(
+                 "{} GB kept for the node and its helpers, leaving {} GB for a model",
+-                fmt_gb(NODE_RESERVE_BYTES),
++                fmt_gb(rec.reserve_bytes),
+                 fmt_gb(usable.unwrap_or(0))
+             ));
+         }
+@@ -216,28 +226,16 @@ pub fn recommend_tier(facts: &HardwareFacts) -> TierRecommendation {
+         (None, _) => why.push("Dedicated GPU memory: unknown".to_string()),
+     }
+ 
+-    let vram_t2 = facts.gpu_vram_bytes.is_some_and(|v| v >= T2_VRAM);
+-    let tier = if vram_t2 {
+-        why.push("16 GB or more of dedicated GPU memory → T2".to_string());
+-        Tier::T2
+-    } else {
+-        match usable {
+-            Some(u) if u >= T2_USABLE => {
+-                why.push("24 GB or more usable → T2".to_string());
+-                Tier::T2
+-            }
+-            Some(u) if u >= T1_USABLE => {
+-                why.push("12–24 GB usable → T1".to_string());
+-                Tier::T1
+-            }
+-            Some(_) => {
+-                why.push("Under 12 GB usable → T0".to_string());
+-                Tier::T0
+-            }
+-            None => Tier::T0,
++    match (rec.basis, tier) {
++        (Basis::DedicatedVram, _) => {
++            why.push("16 GB or more of dedicated GPU memory → T2".to_string())
+         }
+-    };
+-    let guided = tier == Tier::T0;
++        (Basis::UsableRam, Tier::T2) => why.push("24 GB or more usable → T2".to_string()),
++        (Basis::UsableRam, Tier::T1) => why.push("12–24 GB usable → T1".to_string()),
++        (Basis::UsableRam, Tier::T0) => why.push("Under 12 GB usable → T0".to_string()),
++        (Basis::UnknownRam, _) => {}
++    }
++    let guided = rec.guided();
+     if guided {
+         why.push(
+             "T0 is the guided tier: a small local model, with bigger planning jobs escalated to a larger model you choose"
+@@ -302,58 +300,9 @@ pub fn parse_override_arg(arg: Option<String>) -> Result<Option<Tier>, String> {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// OS readers — pure parsers (fixture-tested) + thin I/O wrappers.
++// The hardware read: citrate-sizeup's library probe + the app-data-dir free space.
+ // ---------------------------------------------------------------------------
+ 
+-/// `sysctl hw.memsize hw.optional.arm64` stdout → (total RAM bytes, Apple Silicon?).
+-pub fn parse_macos_sysctl(out: &str) -> (Option<u64>, Option<bool>) {
+-    let mut ram = None;
+-    let mut arm = None;
+-    for line in out.lines() {
+-        let Some((k, v)) = line.split_once(':') else {
+-            continue;
+-        };
+-        match k.trim() {
+-            "hw.memsize" => ram = v.trim().parse::<u64>().ok(),
+-            "hw.optional.arm64" => {
+-                arm = match v.trim() {
+-                    "1" => Some(true),
+-                    "0" => Some(false),
+-                    _ => None,
+-                }
+-            }
+-            _ => {}
+-        }
+-    }
+-    (ram, arm)
+-}
+-
+-/// `/proc/meminfo` → `MemTotal` in bytes.
+-pub fn parse_meminfo_total(text: &str) -> Option<u64> {
+-    let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
+-    let kib: u64 = line
+-        .trim_start_matches("MemTotal:")
+-        .split_whitespace()
+-        .next()?
+-        .parse()
+-        .ok()?;
+-    kib.checked_mul(1024)
+-}
+-
+-/// `nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits` (MiB per GPU) → the
+-/// largest GPU's memory in bytes.
+-pub fn parse_nvidia_smi_mib(out: &str) -> Option<u64> {
+-    out.lines()
+-        .filter_map(|l| l.trim().parse::<u64>().ok())
+-        .max()
+-        .and_then(|mib| mib.checked_mul(1024 * 1024))
+-}
+-
+-/// PowerShell `(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory` → bytes.
+-pub fn parse_windows_total_memory(out: &str) -> Option<u64> {
+-    out.trim().parse().ok()
+-}
+-
+ /// Combine raw readings into facts. `apple_silicon` comes from `hw.optional.arm64`, so a
+ /// Rosetta-translated build still reports the host as `aarch64` with unified memory.
+ pub fn facts_from_parts(
+@@ -379,26 +328,23 @@ pub fn facts_from_parts(
+     }
+ }
+ 
+-/// Run a short read-only command and return its stdout (whatever the exit status — `sysctl`
+-/// exits non-zero when one of several keys is absent but still prints the others). `None` when
+-/// the program is missing.
+-fn run_stdout(program: &str, args: &[&str]) -> Option<String> {
+-    std::process::Command::new(program)
+-        .args(args)
+-        .stdin(std::process::Stdio::null())
+-        .stderr(std::process::Stdio::null())
+-        .output()
+-        .ok()
+-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+-}
+-
+-fn nvidia_vram() -> Option<u64> {
+-    run_stdout(
+-        "nvidia-smi",
+-        &["--query-gpu=memory.total", "--format=csv,noheader,nounits"],
++/// Facts from a sizeup host summary. `os`/`arch` are this build's (`std::env::consts`); the
++/// unified-memory flag comes from sizeup (Apple Silicon host, Rosetta included), and
++/// [`facts_from_parts`] normalizes the arch to the host's.
++pub fn facts_from_summary(
++    os: &str,
++    arch: &str,
++    host: &sizeup_core::library::HostSummary,
++    disk_free_bytes: Option<u64>,
++) -> HardwareFacts {
++    facts_from_parts(
++        os,
++        arch,
++        host.total_ram_bytes,
++        host.unified_memory,
++        host.dedicated_vram_bytes,
++        disk_free_bytes,
+     )
+-    .as_deref()
+-    .and_then(parse_nvidia_smi_mib)
+ }
+ 
+ /// Free bytes available to this user on the filesystem holding `dir` (or its nearest existing
+@@ -426,42 +372,16 @@ fn disk_free(_dir: &std::path::Path) -> Option<u64> {
+     None
+ }
+ 
+-/// Read this machine. Blocking (spawns `sysctl` / `nvidia-smi` / PowerShell) — call it only via
+-/// [`crate::blocking::off_main`].
++/// Read this machine through citrate-sizeup (`library::probe`, no bandwidth benchmark). Blocking
++/// (reads the OS; may spawn `nvidia-smi`), so call it only via [`crate::blocking::off_main`].
++/// When sizeup produces no receipt (an unsupported platform), every hardware fact is unknown.
+ pub fn probe(data_dir: &std::path::Path) -> HardwareFacts {
+     let os = std::env::consts::OS;
+     let arch = std::env::consts::ARCH;
+     let disk = disk_free(data_dir);
+-    match os {
+-        "macos" => {
+-            let (ram, arm) = run_stdout("sysctl", &["hw.memsize", "hw.optional.arm64"])
+-                .as_deref()
+-                .map(parse_macos_sysctl)
+-                .unwrap_or((None, None));
+-            facts_from_parts(os, arch, ram, arm, None, disk)
+-        }
+-        "linux" => {
+-            let ram = std::fs::read_to_string("/proc/meminfo")
+-                .ok()
+-                .as_deref()
+-                .and_then(parse_meminfo_total);
+-            facts_from_parts(os, arch, ram, None, nvidia_vram(), disk)
+-        }
+-        "windows" => {
+-            let ram = run_stdout(
+-                "powershell",
+-                &[
+-                    "-NoProfile",
+-                    "-NonInteractive",
+-                    "-Command",
+-                    "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+-                ],
+-            )
+-            .as_deref()
+-            .and_then(parse_windows_total_memory);
+-            facts_from_parts(os, arch, ram, None, nvidia_vram(), disk)
+-        }
+-        _ => facts_from_parts(os, arch, None, None, None, disk),
++    match sizeup_core::library::probe(&sizeup_core::library::ProbeOptions::default()) {
++        Ok(receipt) => facts_from_summary(os, arch, receipt.host(), disk),
++        Err(_) => facts_from_parts(os, arch, None, None, None, disk),
+     }
+ }
+ 
+diff --git a/src-tauri/src/tier_tests.rs b/src-tauri/src/tier_tests.rs
+index 91a3e4d..fe01bd7 100644
+--- a/src-tauri/src/tier_tests.rs
++++ b/src-tauri/src/tier_tests.rs
+@@ -198,53 +198,101 @@ fn parse_override_arg_validates_before_anything_is_stored() {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// OS readers — pure parsers over fixture text.
++// HUP F-10 — the hardware read and the tier rule come from citrate-sizeup's library.
+ // ---------------------------------------------------------------------------
+ 
++fn summary(
++    os: &str,
++    ram: Option<u64>,
++    unified: Option<bool>,
++    vram: Option<u64>,
++) -> sizeup_core::library::HostSummary {
++    sizeup_core::library::HostSummary {
++        os_family: os.into(),
++        arch: "x86_64".into(),
++        total_ram_bytes: ram,
++        unified_memory: unified,
++        dedicated_vram_bytes: vram,
++        disk_free_bytes: None,
++    }
++}
++
+ #[test]
+-fn parses_macos_sysctl_memsize_and_arm64() {
+-    let out = "hw.memsize: 34359738368\nhw.optional.arm64: 1\n";
+-    let (ram, arm) = parse_macos_sysctl(out);
+-    assert_eq!(ram, Some(32 * G));
+-    assert_eq!(arm, Some(true));
++fn the_reserve_is_sizeups_library_constant() {
++    assert_eq!(NODE_RESERVE_BYTES, sizeup_core::library::NODE_RESERVE_BYTES);
++    assert_eq!(sizeup_core::library::LIBRARY_API, "citrate.sizeup.library/1");
+ }
+ 
+ #[test]
+-fn macos_sysctl_on_intel_has_no_arm64_key() {
+-    // An Intel Mac prints only memsize (hw.optional.arm64 is absent → stderr, not stdout).
+-    let (ram, arm) = parse_macos_sysctl("hw.memsize: 17179869184\n");
+-    assert_eq!(ram, Some(16 * G));
+-    assert_eq!(arm, None);
+-    assert_eq!(parse_macos_sysctl("hw.optional.arm64: 0\n").1, Some(false));
++fn an_apple_silicon_summary_maps_to_unified_aarch64_facts() {
++    // Rosetta: this build says x86_64, sizeup says the host is Apple Silicon.
++    let f = facts_from_summary(
++        "macos",
++        "x86_64",
++        &summary("macos", Some(32 * G), Some(true), None),
++        Some(100 * G),
++    );
++    assert_eq!(f.arch, "aarch64");
++    assert_eq!(f.unified_memory, Some(true));
++    assert_eq!(f.total_ram_bytes, Some(32 * G));
++    assert_eq!(f.gpu_vram_bytes, None);
++    assert_eq!(f.disk_free_bytes, Some(100 * G));
+ }
+ 
+ #[test]
+-fn macos_sysctl_garbage_is_unknown() {
+-    assert_eq!(parse_macos_sysctl("hw.memsize: lots\n"), (None, None));
+-    assert_eq!(parse_macos_sysctl(""), (None, None));
++fn a_cuda_summary_maps_dedicated_vram() {
++    let f = facts_from_summary(
++        "linux",
++        "x86_64",
++        &summary("linux", Some(16 * G), None, Some(24 * G)),
++        None,
++    );
++    assert_eq!(f.gpu_vram_bytes, Some(24 * G));
++    assert_eq!(f.unified_memory, None);
++    assert_eq!(recommend_tier(&f).tier, Tier::T2);
+ }
+ 
+ #[test]
+-fn parses_linux_meminfo_total() {
+-    let text = "MemTotal:       65843212 kB\nMemFree:         1234 kB\nMemAvailable: 999 kB\n";
+-    assert_eq!(parse_meminfo_total(text), Some(65_843_212 * 1024));
+-    assert_eq!(parse_meminfo_total("MemFree: 1 kB\n"), None);
+-    assert_eq!(parse_meminfo_total("MemTotal: x kB\n"), None);
++fn an_unknown_summary_stays_unknown() {
++    let f = facts_from_summary("windows", "x86_64", &summary("windows", None, None, None), None);
++    assert_eq!(f.total_ram_bytes, None);
++    assert_eq!(f.gpu_vram_bytes, None);
++    let r = recommend_tier(&f);
++    assert_eq!(r.tier, Tier::T0);
++    assert!(r.guided);
+ }
+ 
+ #[test]
+-fn parses_nvidia_smi_memory_total_taking_the_largest_gpu() {
+-    assert_eq!(parse_nvidia_smi_mib("8192\n24564\n"), Some(24_564 * 1024 * 1024));
+-    assert_eq!(parse_nvidia_smi_mib(" 16384 \r\n"), Some(16 * G));
+-    assert_eq!(parse_nvidia_smi_mib(""), None);
+-    assert_eq!(parse_nvidia_smi_mib("[N/A]\n"), None);
++fn summary_of_round_trips_the_facts_the_rule_reads() {
++    let f = facts_from_parts("linux", "x86_64", Some(20 * G), None, Some(8 * G), Some(G));
++    let h = summary_of(&f);
++    assert_eq!(h.total_ram_bytes, f.total_ram_bytes);
++    assert_eq!(h.dedicated_vram_bytes, f.gpu_vram_bytes);
++    assert_eq!(h.unified_memory, f.unified_memory);
++    assert_eq!(h.disk_free_bytes, f.disk_free_bytes);
+ }
+ 
+ #[test]
+-fn parses_windows_total_physical_memory() {
+-    assert_eq!(parse_windows_total_memory("34359738368\r\n"), Some(32 * G));
+-    assert_eq!(parse_windows_total_memory(""), None);
+-    assert_eq!(parse_windows_total_memory("n/a"), None);
++fn the_tier_is_sizeups_across_a_grid() {
++    // Core's tier and sizeup's tier agree for every RAM / VRAM combination on the grid.
++    for ram_gib in [0u64, 4, 8, 16, 18, 19, 24, 30, 31, 32, 64] {
++        for vram in [None, Some(8 * G), Some(16 * G - 1), Some(16 * G)] {
++            let f = facts_from_parts("linux", "x86_64", Some(ram_gib * G), None, vram, None);
++            let lib = sizeup_core::library::recommend(&summary_of(&f));
++            let r = recommend_tier(&f);
++            assert_eq!(r.tier, Tier::from(lib.tier), "ram {ram_gib} GiB, vram {vram:?}");
++            assert_eq!(r.usable_bytes, lib.usable_ram_bytes);
++            assert_eq!(r.guided, lib.guided());
++        }
++    }
++}
++
++#[test]
++fn tier_ids_agree_with_sizeups() {
++    for t in [Tier::T0, Tier::T1, Tier::T2] {
++        let lib = sizeup_core::library::Tier::parse(t.id()).map(Tier::from);
++        assert_eq!(lib, Some(t));
++    }
+ }
+ 
+ #[test]
+-- 
+2.39.5 (Apple Git-154)
+

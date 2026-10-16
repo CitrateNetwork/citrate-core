@@ -171,7 +171,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
                         </svg>
                         <span style={{ flex: 1 }}>{label}</span>
                         {badge > 0 && (
-                          <span className="mono tabular" style={{ fontSize: 9.5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, background: "var(--citrate-yellow)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+                          <span className="mono tabular" style={{ fontSize: 9.5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
                             {badge}
                           </span>
                         )}
@@ -200,7 +200,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
             // offline fallback. Non-members keep initials.
             <OnChainSbtEmblem sub={P.sub} seed={s.walletAddr} size={28} title="Your membership identity emblem" />
           ) : (
-            <span style={{ width: 28, height: 28, borderRadius: 999, background: "var(--citrate-green)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 11, flexShrink: 0 }}>
+            <span style={{ width: 28, height: 28, borderRadius: 999, background: "var(--citrate-green)", color: "var(--on-accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 11, flexShrink: 0 }}>
               {P.initials}
             </span>
           )}

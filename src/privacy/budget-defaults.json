@@ -1,0 +1,25 @@
+{
+  "format": "citrate-budget-defaults",
+  "version": 1,
+  "status": "placeholder-pending-owner-sign-off",
+  "note": "Conservative placeholder values, pending owner sign-off (ADR-2026-09-30-rule3-budgetable-signatures, O-2). A default only pre-fills a budget grant card. No budget exists until the member grants one through an HIC-1 ceremony, so these values change nothing on their own.",
+  "siwe": {
+    "maxCount": 20,
+    "expiresDays": 7
+  },
+  "x402": {
+    "perSignatureMaxSalt": "0.1",
+    "perRecipientWindowMaxSalt": "1",
+    "globalWindowMaxSalt": "2",
+    "windowHours": 24,
+    "maxCount": 20,
+    "validityMaxMinutes": 10,
+    "expiresDays": 1
+  },
+  "daemons": {
+    "maxRunsPerDay": 4,
+    "maxMinutesPerRun": 10,
+    "maxModelTokensPerRun": 20000
+  },
+  "medusaBudgets": "templates/medusa-budgets.json"
+}

@@ -1,5 +1,6 @@
 // CORE-A1 A1.5 — sim adapter contract. The sim adapter must delegate to the
 // bound host's live state (the prototype Store) so the 1:1 UI is preserved.
+import book from "../../src-tauri/addresses/40204.json";
 import { describe, it, expect } from "vitest";
 import { createSimBridge, type SimHost } from "./sim";
 import type { AppState } from "../shell/state";
@@ -139,7 +140,8 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     // 9.41 SALT → wei string.
     expect(e.claimableWei).toBe("9410000000000000000");
     expect(e.walletAddress).toBe("0xabc");
-    expect(e.contract).toBe("0xcdd2477387279c7d44a1053f44db5dac0fd8faef");
+    // The contract is the generated 40204 book's ContributionAccounting, never a literal.
+    expect(e.contract).toBe(book.addresses.ContributionAccounting.toLowerCase());
     expect(Object.keys(e).sort()).toEqual(["claimableWei", "contract", "walletAddress"]);
   });
 

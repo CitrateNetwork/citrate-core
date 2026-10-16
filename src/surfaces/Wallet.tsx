@@ -17,6 +17,7 @@ import { makeAddr, short, PERSONAS, fmtSaltFromWei } from "../shell/state";
 import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -568,7 +569,9 @@ export function Wallet({ store, s }: SurfaceProps) {
 
           <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
             <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Registered agents</div>
-            {agentsEmpty && (
+            {/* HUP-S7.4 (US-7.1 AC2) — a real member sees the AgentSBTs read from chain 40204. */}
+            {agentsEmpty && BRIDGE_MODE === "tauri" && s.signedIn && <RegisteredAgents />}
+            {agentsEmpty && !(BRIDGE_MODE === "tauri" && s.signedIn) && (
               <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: "14px 16px" }}>
                 No agents registered. AgentSBTs parent to your member SBT — the on-chain primitive others can build on.
               </p>

@@ -319,7 +319,12 @@ fn short_sock(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() % 100_000_000)
         .unwrap_or(0);
-    PathBuf::from(format!("/tmp/ctz-{tag}-{n}.sock"))
+    let name = format!("ctz-{tag}-{n}.sock");
+    if cfg!(windows) {
+        std::env::temp_dir().join(name)
+    } else {
+        PathBuf::from("/tmp").join(name)
+    }
 }
 
 // The UDS JSON client: bearer handshake + one request/response against a stub socket server.

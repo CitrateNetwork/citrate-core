@@ -1,0 +1,30 @@
+$ citrate-agent hermes sessions
+s1-18db5b1e7d3f21a0  gemma-4-E4B-it-Q4_0.gguf  idle  seq 32
+[exit 0]
+
+$ citrate-agent hermes events --session s1-18db5b1e7d3f21a0 --after 14
+  → chain_head (runs in the app, behind its approvals)
+  ← Vbsad8IJZr9ONqEDG2DiZl1PWVyKBemB (error)
+I was unable to check the chain height right now due to an interruption. Please try asking again later.
+[answered]
+[exit 0]
+
+$ citrate-agent hermes send --session s1-18db5b1e7d3f21a0 "Without calling any tool, say hello in five words."
+[exit 0]
+
+$ citrate-agent hermes events --session s1-18db5b1e7d3f21a0 --after 32 --follow
+Hello, this is Hermes, your Citrate agent.
+[answered]
+[exit 0]
+
+$ citrate-agent hermes run wf-say-ready.json --session s1-18db5b1e7d3f21a0 --follow
+READY.
+[answered]
+  ✓ answer mentions "READY"
+  ✓ chain_head not called
+[say-ready: verified]
+[exit 0]
+
+$ citrate-agent hermes run hello-mint --session s1-18db5b1e7d3f21a0
+hermes: sidecar answered HTTP 422: {"error":"this workflow needs the contract toolchain (aderyn_scan, forge_test, medusa_fuzz, slither_scan), which is off in this app","missing_tools":["aderyn_scan","forge_test","medusa_fuzz","slither_
+[exit 1]

@@ -1,0 +1,149 @@
+[1m[32m⇾[0m[0m [1mReading the configuration file at: [1m/work/hello-mint/contracts/medusa.json[0m[0m
+⇾ Compiling targets with crytic-compile
+⇾ Running command:
+/work/bin/crytic-compile . --export-format solc --foundry-compile-all
+⇾ Finished compiling targets in 40s
+⇾ artifacts: Medusa is running against a new set of build artifacts
+⇾ Using cached Slither results found at slither_results.json
+⇾ Running with a timeout of 900 seconds
+⇾ Setting up test chain
+⇾ Finished setting up test chain
+⇾ Creating corpus...
+⇾ Fuzzing with 4 workers
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_wrong_payment_never_accepted()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_price_is_fixed()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_supply_never_exceeds_cap()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_minted_tokens_are_held()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_only_owner_withdraws()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_owner_is_stable()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_payments_are_accounted()
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.transferOwnershipAsStranger(address)
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.withdrawAsStranger()
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.mint(uint256)
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.mintPastTheCap()
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.mintWithWrongValue(uint256,uint256)
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.onERC721Received(address,address,uint256,bytes)
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.withdrawAsOwner()
+⇾ fuzz: elapsed:       0s, calls:          0 (     0/sec), seq/s:      0, branches:     35, corpus:     0, failures: 0/0, gas/s:            0
+⇾ [Worker 3] Shrinking call sequence for Property Test: LemonDropsProperties.property_payments_are_accounted() with 2 call(s)
+⇾ [Worker 2] Shrinking call sequence for Property Test: LemonDropsProperties.property_wrong_payment_never_accepted() with 2 call(s)
+⇾ [Worker 0] Shrinking call sequence for Property Test: LemonDropsProperties.property_payments_are_accounted() with 4 call(s)
+⇾ [Worker 2] Shrinking complete after 3 attempts (limit: 5000)
+⇾ [Worker 3] Shrinking complete after 10 attempts (limit: 5000)
+⇾ [Worker 1] Shrinking call sequence for Property Test: LemonDropsProperties.property_wrong_payment_never_accepted() with 5 call(s)
+⇾ [Worker 0] Shrinking complete after 5 attempts (limit: 5000)
+⇾ [Worker 2] Shrinking call sequence for Property Test: LemonDropsProperties.property_payments_are_accounted() with 2 call(s)
+⇾ [Worker 3] Shrinking call sequence for Property Test: LemonDropsProperties.property_wrong_payment_never_accepted() with 2 call(s)
+⇾ [Worker 1] Shrinking complete after 12 attempts (limit: 5000)
+⇾ [Worker 0] Shrinking call sequence for Property Test: LemonDropsProperties.property_wrong_payment_never_accepted() with 4 call(s)
+⇾ [Worker 2] Shrinking complete after 6 attempts (limit: 5000)
+⇾ [Worker 3] Shrinking complete after 11 attempts (limit: 5000)
+⇾ [Worker 0] Shrinking complete after 16 attempts (limit: 5000)
+⇾ [Worker 1] Shrinking call sequence for Property Test: LemonDropsProperties.property_payments_are_accounted() with 5 call(s)
+⇾ [Worker 1] Shrinking complete after 17 attempts (limit: 5000)
+⇾ Fuzzer stopped, test results follow below ...
+⇾ [PASSED] Assertion Test: LemonDropsProperties.mint(uint256)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.mintPastTheCap()
+⇾ [PASSED] Assertion Test: LemonDropsProperties.mintWithWrongValue(uint256,uint256)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.onERC721Received(address,address,uint256,bytes)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.transferOwnershipAsStranger(address)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.withdrawAsOwner()
+⇾ [PASSED] Assertion Test: LemonDropsProperties.withdrawAsStranger()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_minted_tokens_are_held()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_only_owner_withdraws()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_owner_is_stable()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_price_is_fixed()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_supply_never_exceeds_cap()
+⇾ [FAILED] Property Test: LemonDropsProperties.property_payments_are_accounted()
+Test for method "LemonDropsProperties.property_payments_are_accounted()" failed after the following call sequence:
+[Call Sequence]
+1) LemonDropsProperties.mintWithWrongValue(uint256,uint256)(22703394313757786582954322476659339747403091118953086904720238667588414173398, 22736136254234802989104492129058626024784894724638435695884398670868392005757) (block=20, time=20, gas=12500000, gasprice=0, value=0, sender=0x30000)
+[Execution Trace]
+ => [call] LemonDropsProperties.mintWithWrongValue(uint256,uint256)(22703394313757786582954322476659339747403091118953086904720238667588414173398, 22736136254234802989104492129058626024784894724638435695884398670868392005757) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x30000)
+	 => [call] LemonDrops.MAX_PER_TX()() (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=<nil>, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [return (10)]
+	 => [call] LemonDrops.PRICE()() (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=<nil>, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [return (5000000000000000000)]
+	 => [call] StdCheats.deal(address,uint256)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 45398670868392005758) (addr=0x7109709ECfa91a80626fF3989D68f67F5b1DD12D, value=0, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [return ()]
+	 => [call] LemonDrops.mint(uint256)(9) (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=45398670868392005758, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 1)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 1, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 2)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 2, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 3)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 3, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 4)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 4, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 5)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 5, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 6)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 6, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 7)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 7, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 8)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 8, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 9)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 9, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [return ()]
+	 => [return ()]
+
+[Property Test Execution Trace]
+[Execution Trace]
+ => [call] LemonDropsProperties.property_payments_are_accounted()() (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x10000)
+	 => [return (false)]
+
+⇾ [FAILED] Property Test: LemonDropsProperties.property_wrong_payment_never_accepted()
+Test for method "LemonDropsProperties.property_wrong_payment_never_accepted()" failed after the following call sequence:
+[Call Sequence]
+1) LemonDropsProperties.mintWithWrongValue(uint256,uint256)(52106261983611208734625571819668763560926205737607192208342112017139743579666, 57896044618658097711785492504343953926634992332820282019728792003956564819936) (block=20, time=20, gas=12500000, gasprice=0, value=0, sender=0x20000)
+[Execution Trace]
+ => [call] LemonDropsProperties.mintWithWrongValue(uint256,uint256)(52106261983611208734625571819668763560926205737607192208342112017139743579666, 57896044618658097711785492504343953926634992332820282019728792003956564819936) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x20000)
+	 => [call] LemonDrops.MAX_PER_TX()() (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=<nil>, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [return (10)]
+	 => [call] LemonDrops.PRICE()() (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=<nil>, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [return (5000000000000000000)]
+	 => [call] StdCheats.deal(address,uint256)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 35792003956564819937) (addr=0x7109709ECfa91a80626fF3989D68f67F5b1DD12D, value=0, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [return ()]
+	 => [call] LemonDrops.mint(uint256)(7) (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=35792003956564819937, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 1)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 1, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 2)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 2, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 3)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 3, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 4)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 4, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 5)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 5, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 6)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 6, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [event] Transfer(0x0, 0xA647ff3c36cFab592509E13860ab8c4F28781a66, 7)
+		 => [call] LemonDropsProperties.onERC721Received(address,address,uint256,bytes)(0xA647ff3c36cFab592509E13860ab8c4F28781a66, 0x0, 7, ) (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+			 => [return (150b7a02)]
+		 => [return ()]
+	 => [return ()]
+
+[Property Test Execution Trace]
+[Execution Trace]
+ => [call] LemonDropsProperties.property_wrong_payment_never_accepted()() (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x10000)
+	 => [return (false)]
+
+⇾ Test summary: 12 test(s) passed, 2 test(s) failed
+⇾ html report(s) saved to: medusa-corpus/coverage/coverage_report.html
+⇾ lcov report(s) saved to: medusa-corpus/coverage/lcov.info

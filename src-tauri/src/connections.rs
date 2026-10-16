@@ -50,6 +50,10 @@ pub enum Service {
     /// Hugging Face — model downloads (public need no token; gated/private need `read-repos`).
     /// Added for Commons CX-S1 (model catalog). Standard OAuth2 + PKCE; loopback redirect OK.
     HuggingFace,
+    /// HUP-S10.2: Google Sheets (read ranges, append rows). Same Google OAuth client as Drive.
+    GoogleSheets,
+    /// HUP-S10.2: Google Calendar (list events, create an event). Same Google OAuth client.
+    GoogleCalendar,
 }
 
 impl Service {
@@ -59,6 +63,8 @@ impl Service {
             Service::GoogleDrive => "gdrive",
             Service::Notion => "notion",
             Service::HuggingFace => "hf",
+            Service::GoogleSheets => "gsheets",
+            Service::GoogleCalendar => "gcal",
         }
     }
 
@@ -68,6 +74,8 @@ impl Service {
             "gdrive" => Some(Service::GoogleDrive),
             "notion" => Some(Service::Notion),
             "hf" => Some(Service::HuggingFace),
+            "gsheets" => Some(Service::GoogleSheets),
+            "gcal" => Some(Service::GoogleCalendar),
             _ => None,
         }
     }
@@ -76,7 +84,9 @@ impl Service {
     pub fn authorize_endpoint(self) -> &'static str {
         match self {
             Service::GitHub => "https://github.com/login/oauth/authorize",
-            Service::GoogleDrive => "https://accounts.google.com/o/oauth2/v2/auth",
+            Service::GoogleDrive | Service::GoogleSheets | Service::GoogleCalendar => {
+                "https://accounts.google.com/o/oauth2/v2/auth"
+            }
             Service::Notion => "https://api.notion.com/v1/oauth/authorize",
             Service::HuggingFace => "https://huggingface.co/oauth/authorize",
         }
@@ -86,7 +96,9 @@ impl Service {
     pub fn token_endpoint(self) -> &'static str {
         match self {
             Service::GitHub => "https://github.com/login/oauth/access_token",
-            Service::GoogleDrive => "https://oauth2.googleapis.com/token",
+            Service::GoogleDrive | Service::GoogleSheets | Service::GoogleCalendar => {
+                "https://oauth2.googleapis.com/token"
+            }
             Service::Notion => "https://api.notion.com/v1/oauth/token",
             Service::HuggingFace => "https://huggingface.co/oauth/token",
         }
@@ -99,7 +111,11 @@ impl Service {
     /// hosted https bounce, which returns the browser to the same loopback listener.
     pub fn redirect_uri(self) -> &'static str {
         match self {
-            Service::GitHub | Service::GoogleDrive | Service::HuggingFace => OAUTH_REDIRECT_URI,
+            Service::GitHub
+            | Service::GoogleDrive
+            | Service::GoogleSheets
+            | Service::GoogleCalendar
+            | Service::HuggingFace => OAUTH_REDIRECT_URI,
             Service::Notion => HOSTED_REDIRECT_URI,
         }
     }
@@ -115,6 +131,8 @@ impl Service {
             Service::GoogleDrive => &["https://www.googleapis.com/auth/drive.readonly"],
             Service::Notion => &[],
             Service::HuggingFace => &["read-repos"],
+            Service::GoogleSheets => &["https://www.googleapis.com/auth/spreadsheets"],
+            Service::GoogleCalendar => &["https://www.googleapis.com/auth/calendar.events"],
         }
     }
 }
@@ -201,7 +219,7 @@ pub fn authorize_url(service: Service, client_id: &str, state: &str, challenge: 
         q.push(("scope".into(), scopes.join(" ")));
     }
     match service {
-        Service::GoogleDrive => {
+        Service::GoogleDrive | Service::GoogleSheets | Service::GoogleCalendar => {
             q.push(("access_type".into(), "offline".into()));
             q.push(("prompt".into(), "consent".into()));
         }
@@ -276,11 +294,13 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 /// The three MCP services, for status enumeration.
-const ALL_SERVICES: [Service; 4] = [
+const ALL_SERVICES: [Service; 6] = [
     Service::GitHub,
     Service::GoogleDrive,
     Service::Notion,
     Service::HuggingFace,
+    Service::GoogleSheets,
+    Service::GoogleCalendar,
 ];
 
 /// Errors surfaced by the connection flow. Mapped to a `String` at the command
@@ -357,6 +377,8 @@ fn env_prefix(service: Service) -> &'static str {
         Service::GoogleDrive => "GOOGLE",
         Service::Notion => "NOTION",
         Service::HuggingFace => "HF",
+        // HUP-S10.2: one Google OAuth client (Desktop app type) serves Drive, Sheets and Calendar.
+        Service::GoogleSheets | Service::GoogleCalendar => "GOOGLE",
     }
 }
 
@@ -636,6 +658,33 @@ struct ConnMeta {
     connected_at: Option<u64>,
 }
 
+/// HUP-S0.3b: the token fields of the SAME sealed record, for in-process request auth only.
+#[derive(Deserialize)]
+struct SealedToken {
+    access_token: String,
+    #[serde(default)]
+    expires_at: Option<u64>,
+}
+
+/// HUP-S0.3b: a connected service's access token, read from the vault for an in-process request
+/// (the Hugging Face download path attaches it to Hugging Face origins only; see `hf_auth.rs`).
+/// `None` when the service is not connected, the vault is locked (a read never forces an unlock),
+/// the record is unreadable, or the provider's stated expiry has passed (an expired token is never
+/// sent). I-2: crate-private and NEVER reachable from a `#[tauri::command]` return value.
+pub(crate) fn sealed_access_token(
+    service: Service,
+    vault: &CustodyVault,
+) -> Option<Zeroizing<String>> {
+    let bytes = vault.custody_get(&slot(service)).ok()?;
+    let rec: SealedToken = serde_json::from_slice(&bytes).ok()?;
+    // Moved (not copied) into a wiping buffer before any early return can drop it.
+    let token = Zeroizing::new(rec.access_token);
+    if rec.expires_at.is_some_and(|exp| exp <= now_unix()) || token.is_empty() {
+        return None;
+    }
+    Some(token)
+}
+
 /// The claim-free connection status crossing the invoke boundary — NO token.
 #[derive(Serialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -684,6 +733,12 @@ impl ConnectionManager {
             client_id: id,
             client_secret: Zeroizing::new(secret),
         })
+    }
+
+    /// HUP-S10.2: whether this service's OAuth client id and secret are configured (without them
+    /// the flow cannot start, and the UI keeps Connect disabled with that reason).
+    pub(crate) fn is_configured(&self, service: Service) -> bool {
+        self.creds(service).is_ok()
     }
 
     /// Run the full connect flow: bind the fixed loopback, mint PKCE + state, open
@@ -1373,5 +1428,64 @@ mod tests {
                 .unwrap()
                 .connected
         );
+    }
+
+    // HUP-S0.3b: the download path reads the sealed Hugging Face token IN-PROCESS.
+
+    fn hf_mgr(response: &str) -> ConnectionManager {
+        let fake = Arc::new(FakeHttp {
+            last_url: StdMutex::new(None),
+            last_form: StdMutex::new(Vec::new()),
+            response: response.to_string(),
+        });
+        ConnectionManager::new(Box::new(SharedHttp(fake)), PathBuf::from("unused"))
+    }
+
+    fn hf_creds() -> ClientCreds {
+        ClientCreds {
+            client_id: "hf_id".to_string(),
+            client_secret: Zeroizing::new("hf_secret".to_string()),
+        }
+    }
+
+    #[test]
+    fn hup_s0_3b_sealed_access_token_reads_the_connected_hf_token() {
+        let vault = fresh_vault();
+        hf_mgr(r#"{"access_token":"hf_oauth_tok","scope":"read-repos","expires_in":3600}"#)
+            .exchange_and_store(Service::HuggingFace, &hf_creds(), &vault, "c", "v")
+            .unwrap();
+        let tok = sealed_access_token(Service::HuggingFace, &vault).expect("token");
+        assert_eq!(tok.as_str(), "hf_oauth_tok");
+        // Another service's slot is not read for HF.
+        assert!(sealed_access_token(Service::GitHub, &vault).is_none());
+    }
+
+    #[test]
+    fn hup_s0_3b_sealed_access_token_is_none_when_absent_locked_or_expired() {
+        let vault = fresh_vault();
+        assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
+
+        // expires_in 0 -> expires_at == now -> already expired: never sent.
+        hf_mgr(r#"{"access_token":"hf_stale","expires_in":0}"#)
+            .exchange_and_store(Service::HuggingFace, &hf_creds(), &vault, "c", "v")
+            .unwrap();
+        assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
+
+        // A token with no expiry stays usable; a locked vault reads as absent (no forced unlock).
+        hf_mgr(r#"{"access_token":"hf_no_expiry"}"#)
+            .exchange_and_store(Service::HuggingFace, &hf_creds(), &vault, "c", "v")
+            .unwrap();
+        assert!(sealed_access_token(Service::HuggingFace, &vault).is_some());
+        vault.lock();
+        assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
+    }
+
+    #[test]
+    fn hup_s0_3b_sealed_access_token_is_none_for_an_empty_token() {
+        let vault = fresh_vault();
+        let rec = serde_json::json!({ "access_token": "", "expires_at": null });
+        let mut bytes = serde_json::to_vec(&rec).unwrap();
+        vault.put(&slot(Service::HuggingFace), &mut bytes).unwrap();
+        assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
     }
 }

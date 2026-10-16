@@ -27,6 +27,14 @@ import {
   type RuntimeId,
 } from "../shell/slices/agent";
 import type { AgentApproval } from "../bridge/domains";
+import type { DeployGateLookup } from "../agent/deployGate";
+import { DeployGateCard } from "../shell/DeployGateCard";
+import { HermesMcpPanel } from "../components/HermesMcpCard";
+import { PostDeployPanel } from "../shell/PostDeployPanel";
+import { ContractForgePanel } from "../shell/ContractForgePanel";
+import { bridge } from "../bridge";
+import { openContractReader } from "../popout/appHost";
+import { LearnedPanel } from "../shell/LearnedPanel";
 
 type Tab = "overview" | "contracts";
 
@@ -46,10 +54,23 @@ const CONTRACT_KINDS: { id: string; name: string; desc: string }[] = [
 export function Agent({ store, s }: SurfaceProps) {
   const st = agentSlice.use();
   const [tab, setTab] = useState<Tab>("overview");
+  // rc.5 FIX 5: the chat's "Open toolchain settings" asks for the Contracts tab; consume it once
+  // and bring the toolchain step into view.
+  useEffect(() => {
+    const want = s.agentTabRequest;
+    if (!want) return;
+    setTab(want);
+    store.setState({ agentTabRequest: null });
+    if (want === "contracts") {
+      setTimeout(() => document.getElementById("contract-toolchain")?.scrollIntoView({ block: "start" }), 0);
+    }
+  }, [s.agentTabRequest, store]);
   const [attachOpen, setAttachOpen] = useState(false);
   const [openSkill, setOpenSkill] = useState<string | null>(null);
   const skillArg = useRef<HTMLInputElement>(null);
   const [ctKind, setCtKind] = useState<string>("treasury");
+  // HUP-S6.4 — the D-4 gate verdict for the last refused deploy (null: nothing to show).
+  const [gateRefusal, setGateRefusal] = useState<DeployGateLookup | null>(null);
   const ctName = useRef<HTMLInputElement>(null);
   const ctBytecode = useRef<HTMLTextAreaElement>(null);
   const ctArgs = useRef<HTMLInputElement>(null);
@@ -58,12 +79,12 @@ export function Agent({ store, s }: SurfaceProps) {
   const uskName = useRef<HTMLInputElement>(null);
   const uskInstr = useRef<HTMLTextAreaElement>(null);
   const addUserSkill = () => {
-    const ok = store.addUserSkill(uskName.current?.value ?? "", uskInstr.current?.value ?? "");
-    if (ok) {
+    void store.addUserSkill(uskName.current?.value ?? "", uskInstr.current?.value ?? "").then((ok) => {
+      if (!ok) return;
       if (uskName.current) uskName.current.value = "";
       if (uskInstr.current) uskInstr.current.value = "";
       setAddSkillOpen(false);
-    }
+    });
   };
 
   useEffect(() => {
@@ -120,9 +141,15 @@ export function Agent({ store, s }: SurfaceProps) {
     const argsHex = (ctArgs.current?.value ?? "").trim();
     const kind = CONTRACT_KINDS.find((k) => k.id === ctKind)!;
     noteRun(`deploy ${kind.name}`, name, "awaiting");
+    setGateRefusal(null);
     void store
       .deployContract({ bytecodeHex: bytecode, constructorArgsHex: argsHex || undefined })
-      .then(() => {
+      .then((r) => {
+        if (!r.ok) {
+          // Refused (D-4 gate not READY, or no node): keep the inputs and show the verdict card.
+          if (r.gate) setGateRefusal(r.gate);
+          return;
+        }
         if (ctName.current) ctName.current.value = "";
         if (ctBytecode.current) ctBytecode.current.value = "";
         if (ctArgs.current) ctArgs.current.value = "";
@@ -222,9 +249,8 @@ export function Agent({ store, s }: SurfaceProps) {
             <>
               {/* #62 — the chat, front and center on the Agent surface (same shared pane as the
                   Dashboard). Talk to the agent here; skills/approvals/registry sit below. */}
-              <div style={{ display: "flex", height: 460, minHeight: 0 }}>
-                <AgentChat store={store} s={s} />
-              </div>
+              {/* rc.5 FIX 4: the pane fits the window itself (was a fixed 460 px box). */}
+              <AgentChat store={store} s={s} />
               {/* status */}
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -289,6 +315,9 @@ export function Agent({ store, s }: SurfaceProps) {
                 )}
               </div>
 
+              {/* HUP-S4.3 + S4.2 — MCP servers Hermes may use (memory graph, CitrateScan, this node); all off by default. */}
+              <HermesMcpPanel />
+
               {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
                   These are the skills published on-chain (SkillRegistry 0x896cd293…); Hermes ships
                   WITH them. Rule 1: read straight from the registry, honest-empty on RPC failure. */}
@@ -331,7 +360,7 @@ export function Agent({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>Your skills</span>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)", marginRight: 10 }}>
-                    {s.userSkills.length} yours
+                    {s.localSkills.length} yours
                   </span>
                   <button className="btn btn-ghost btn-sm" onClick={() => setAddSkillOpen((v) => !v)}>
                     {addSkillOpen ? "Close" : "Add skill"}
@@ -349,23 +378,26 @@ export function Agent({ store, s }: SurfaceProps) {
                     </div>
                   </div>
                 )}
-                {s.userSkills.length === 0 && !addSkillOpen ? (
+                {s.localSkills.length === 0 && !addSkillOpen ? (
                   <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
                     None yet. Add a prompt-skill — a named instruction you run against your active model. It's saved on this device and lists here.
                   </p>
                 ) : (
-                  s.userSkills.map((sk) => (
-                    <div key={sk.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  s.localSkills.map((sk) => (
+                    <div key={sk.slug} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{sk.name}</span>
-                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sk.description || sk.instruction}</span>
+                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sk.description}</span>
                       </span>
-                      <button className="btn btn-primary btn-sm" onClick={() => store.runUserSkill(sk.id)}>Run</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => store.removeUserSkill(sk.id)} title="Remove skill">✕</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => void store.runUserSkill(sk.slug)}>Run</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => void store.removeUserSkill(sk.slug)} title="Remove skill">✕</button>
                     </div>
                   ))
                 )}
               </div>
+
+              {/* HUP-S3.4 — what Hermes proposes to keep, with the verifier evidence; you decide. */}
+              <LearnedPanel store={store} running={running} />
 
               {/* recent runs */}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
@@ -420,10 +452,32 @@ export function Agent({ store, s }: SurfaceProps) {
                   </span>
                   <button className="btn btn-primary btn-sm" onClick={deploy}>Deploy</button>
                 </div>
+                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                  deploys need a READY deploy gate for this exact bytecode: forge tests pass, Slither and Aderyn report no High findings, a Medusa campaign passes its call budget, and a fork dry run succeeds
+                </span>
+                {gateRefusal && <DeployGateCard record={gateRefusal.record} initcodeHash={gateRefusal.initcodeHash} />}
               </div>
+              {/* HUP-S6.2 / S6.3 / S6.9 — templates, the toolchain switch, and the gate from Hermes's runs. */}
+              <ContractForgePanel
+                ops={bridge.contracts}
+                restartHermes={async () => {
+                  await stopRuntime("hermes");
+                  await startRuntime("hermes");
+                }}
+              />
+              {/* HUP-S6.6 — after the deploy: verify, switch the site to 40204, pin, export. */}
+              <PostDeployPanel
+                ops={bridge.contracts}
+                lastDeployTx={s.activity.find((a) => a.kind === "Deploy contract")?.hash ?? null}
+                openReader={(address) => void openContractReader(address)}
+              />
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>On the network</span>
+                  {/* HUP-S6.7 — read any 40204 contract in its own window. */}
+                  <button className="btn btn-sm btn-ghost" data-testid="open-contract-reader" style={{ marginLeft: 10 }} onClick={() => void openContractReader()}>
+                    Contract reader
+                  </button>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>owned by your wallet</span>
                 </div>
                 <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
@@ -440,7 +494,7 @@ export function Agent({ store, s }: SurfaceProps) {
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
               <span style={{ fontSize: 13.5, fontWeight: 500 }}>Awaiting your review</span>
               {st.approvals.length > 0 && (
-                <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+                <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
                   {st.approvals.length}
                 </span>
               )}

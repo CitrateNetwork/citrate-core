@@ -1,0 +1,65 @@
+# created: 2026-10-05 | branch: scl/s0.5-s0.7-s1.6a
+# author: Larry Klosowski + Claude Opus 5.5 (SCL-S1.6a)
+# status: active
+#
+# SCL-S1.6a: the minimal hosted Windows job. It builds the S0.7 NSIS pre-install hook into a
+# small installer and runs its script-level test (real processes: this installation's own
+# sidecars are stopped, the same names elsewhere are not). It runs only when the hook, its
+# script, the Windows bundle config or this file change; the rest of the Windows lane (kit,
+# src-tauri lifecycle and runtime tests) is SCL-S1.6, after v0.5.0.
+name: windows-installer-hook
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src-tauri/windows/**"
+      - "src-tauri/tauri.bundle-windows.conf.json"
+      - ".github/workflows/windows-installer-hook.yml"
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "src-tauri/windows/**"
+      - "src-tauri/tauri.bundle-windows.conf.json"
+      - ".github/workflows/windows-installer-hook.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-hook-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nsis-hook:
+    name: windows installer hook (NSIS build + test)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Locate NSIS (install it if the image lacks it)
+        shell: pwsh
+        run: |
+          $candidates = @(
+            (Get-Command makensis.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) }
+          if (-not $candidates) {
+            choco install nsis -y --no-progress
+            $candidates = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe") | Where-Object { Test-Path $_ }
+          }
+          if (-not $candidates) { throw "makensis.exe not found" }
+          $m = @($candidates)[0]
+          & $m -VERSION
+          "MAKENSIS=$m" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Windows PowerShell 5.1: the shell the installer itself runs the stop step with.
+      - name: Build the hook and run its test
+        shell: powershell
+        run: |
+          & .\src-tauri\windows\tests\test-stop-own-sidecars.ps1 -MakeNsis $env:MAKENSIS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

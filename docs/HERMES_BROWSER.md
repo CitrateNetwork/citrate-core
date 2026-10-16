@@ -1,0 +1,89 @@
+---
+created: 2026-10-01T14:00:00Z
+branch: hup/n4-browser (updated on hup/n6-web-browse and hup/n7-components-unpack-searxng, 2026-10-04)
+author: Larry Klosowski + Claude Opus 5.5
+status: implemented behind a Settings switch (default off); the managed Chromium is measured as a component, its install waits for the signed manifest (HUP-S5.5)
+wp: HUP-S5.1, HUP-S5.6
+---
+
+# Hermes's browser: the Browser pop-out and attach-to-Chrome
+
+US-5.1 "Watch it browse" (planset `2026-09-30-hermes-upskill`, epic E5). The browser runs in the
+Hermes sidecar (citrate-agent-runtime crate `citrate-agent-browser`; its README describes the
+worker, the tools and the sidecar routes). This page covers citrate-core's side.
+
+## Off by default
+
+The sidecar offers the browser only when it starts with `CITRATE_HERMES_BROWSER=1`. The member
+turns it on in Settings, "Web search & decisions", card "Hermes's browser" (off by default);
+core stores the choice in `<app local data>/hermes/web-settings.json` (`browserEnabled`) and passes
+the variable when it next starts Hermes (`src-tauri/src/hermes_web.rs`, on `SIDECAR_ENV_KEYS`).
+Off, the sidecar answers `enabled: false`, the main window's browser controls render nothing, and
+nothing about a member's app changes. Attaching to the member's own Chrome is never a setting: it
+stays a per-session consent in the Browser pop-out.
+
+The sidecar prefers the managed Chromium: when the signed `chromium` component is installed
+(`components/toolchain-bundle.json`, Chrome for Testing 154.0.8037.92, measured on macOS arm64),
+core passes its executable as `CITRATE_BROWSER_CHROMIUM`. Until then the sidecar uses a
+Chromium-family browser already installed, and says "not installed" when there is none; the
+Settings card says which. Installing it needs the external component-key ceremony and a published
+signed manifest. The updater unpacks the Chrome for Testing zip, with its five app-bundle links
+kept inside the tree (`components/src/extract.rs`, 2026-10-04).
+
+## What the member sees
+
+- **Browser controls** (`src/components/BrowserControls.tsx`, in the Agent pane, only while the
+  browser is on): the mode, Stop or Resume, Watch (opens the pop-out), the action that is waiting
+  for a decision (Allow once / Deny), an origin waiting for consent, attach and detach.
+- **The Browser pop-out** (`src/popout/BrowserPopout.tsx`): the screencast with the element
+  Hermes is about to act on outlined (amber while it waits for the member, green once done), the
+  page address, the mode, and an always-visible Stop. It holds no app commands: decisions and
+  consent are taken in the main window only, and its Stop goes over the bridge.
+
+## The safety model
+
+| Rule | Where |
+|---|---|
+| Every page is untrusted; its text reaches the model fenced as data and taints the session | sidecar (`tools.rs`), loop taint downgrade (HUP-S2.7) |
+| After taint, opening an address, clicking or typing waits for the member's explicit decision; no decision within 120 s, Stop, or a session stop means no action | sidecar (`approvals.rs`), main-window controls |
+| Stop closes the browser at once, denies any waiting action, and latches until Resume; the global e-stop also stops the browser | sidecar (`service.rs`, `/stop`) |
+| Attach needs the member's consent for this session and an unprivileged loopback port | `browser.rs` here, then the sidecar again |
+| In attach mode every origin needs consent; banking, email and health origins are excluded by default and need a separate include tick for that one site | sidecar (`scope.rs`, `data/sensitive-origins.toml`), main-window controls |
+| Frames of an origin without consent are withheld | sidecar |
+| Hermes drives only the tab it opened; detach closes that tab, forgets every consent and never closes the member's browser | sidecar |
+| Only http(s) pages; `file:`, `chrome:`, `javascript:`, `data:` are refused | sidecar, and origin checks here |
+| No key, no signature: nothing here signs | n/a |
+
+## Commands (main window only)
+
+`hermes_browser_status`, `hermes_browser_frame`, `hermes_browser_stop`, `hermes_browser_resume`,
+`hermes_browser_attach`, `hermes_browser_detach`, `hermes_browser_origin`, `hermes_browser_decide`
+(`src-tauri/src/browser.rs`). Each runs off the main thread and is listed in
+`permissions/main-window.toml`; pop-outs cannot call any of them.
+
+## Data sources (Rule 7)
+
+| Field | Source |
+|---|---|
+| Status, mode, consent, waiting action | sidecar `GET /browser/status` |
+| Screencast frame, element outline | sidecar `GET /browser/frame?after=N` (CDP `Page.screencastFrame` in the sidecar) |
+| Chromium found or not | sidecar, from the configured managed path and the usual install locations |
+
+## Pending owner sign-off (shipped with conservative defaults)
+
+- The sensitive-origins list (`data/sensitive-origins.toml` in the runtime crate).
+- The 120 s wait for a decision before an action is denied.
+- One decision per action after taint (no per-origin budget); a HIC-2 style budget for low-risk
+  browsing is the owner's call.
+- 9222 as the suggested attach port.
+
+## Not done here
+
+- Installing the managed Chromium: the component entry is measured, but the component-key
+  ceremony, a signed manifest on the CDN, and the owner's decision on re-hosting Google's builds
+  are still open (zip unpacking in the updater is built).
+- Sign-in with the member's wallet is the sign-in bridge (HUP-S2.3,
+  `docs/WEB_SIGNING_BUDGETS.md`): the managed browser's page provider asks, core decides.
+- The console and network tools and the `decide()` picker (`browser_pick`) live in the sidecar
+  (citrate-agent-runtime `agent-browser`); this app does not show their output separately yet.
+- A packaged-app run of the Browser pop-out with the switch on (QA).

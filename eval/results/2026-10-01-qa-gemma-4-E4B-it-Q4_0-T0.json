@@ -1,0 +1,3093 @@
+{
+  "scorecard": {
+    "datasetVersion": "qa-v1",
+    "model": "gemma-4-E4B-it-Q4_0",
+    "startedAt": "2026-10-01T18:21:44.680Z",
+    "n": 150,
+    "passRate": 0.1,
+    "keyPointCoverage": 0.0024691358024691358,
+    "citationHitRate": 0,
+    "citationValidity": null,
+    "abstentionRate": 1,
+    "falseAbstentionRate": 0.9925925925925926,
+    "byCategory": {
+      "chain-basics": {
+        "n": 15,
+        "passRate": 0.13333333333333333
+      },
+      "staking-validators": {
+        "n": 15,
+        "passRate": 0.06666666666666667
+      },
+      "wallet": {
+        "n": 15,
+        "passRate": 0.06666666666666667
+      },
+      "node-ops": {
+        "n": 15,
+        "passRate": 0.06666666666666667
+      },
+      "ai-inference": {
+        "n": 15,
+        "passRate": 0.13333333333333333
+      },
+      "memory": {
+        "n": 15,
+        "passRate": 0.13333333333333333
+      },
+      "agentile-hic": {
+        "n": 15,
+        "passRate": 0.06666666666666667
+      },
+      "devtools-contracts": {
+        "n": 15,
+        "passRate": 0.13333333333333333
+      },
+      "paraconsensus-fl": {
+        "n": 15,
+        "passRate": 0.13333333333333333
+      },
+      "governance": {
+        "n": 15,
+        "passRate": 0.06666666666666667
+      }
+    },
+    "failures": [
+      "qa-chain-chain-id",
+      "qa-chain-native-token",
+      "qa-chain-ghostdag-k",
+      "qa-chain-blue-score",
+      "qa-chain-max-parents",
+      "qa-chain-finality-status",
+      "qa-chain-checkpoint-params",
+      "qa-chain-block-time",
+      "qa-chain-genesis-params",
+      "qa-chain-mainnet-target",
+      "qa-chain-lvm-hardfork",
+      "qa-chain-state-root",
+      "qa-chain-p2p-noise",
+      "qa-stake-min-validator-stake",
+      "qa-stake-reward-pools",
+      "qa-stake-pool-percentages",
+      "qa-stake-halving",
+      "qa-stake-institutional-slashing",
+      "qa-stake-slash-deactivation",
+      "qa-stake-nematocyst-tiers",
+      "qa-stake-correlation-multiplier",
+      "qa-stake-provider-min-stake",
+      "qa-stake-producer-today",
+      "qa-stake-vrf",
+      "qa-stake-validator-registry-env",
+      "qa-stake-reputation",
+      "qa-stake-core-grant-stake",
+      "qa-wallet-keyring-standard",
+      "qa-wallet-passkey-validator",
+      "qa-wallet-counterfactual",
+      "qa-wallet-guardians-range",
+      "qa-wallet-guardian-timelock",
+      "qa-wallet-paymaster-categories",
+      "qa-wallet-paymaster-caps",
+      "qa-wallet-gas-sponsorship",
+      "qa-wallet-edu-forwarder",
+      "qa-wallet-ext-eth-sign",
+      "qa-wallet-ext-encryption",
+      "qa-wallet-ext-chain-fixed",
+      "qa-wallet-core-keys",
+      "qa-wallet-ext-typed-data",
+      "qa-node-rpc-ports",
+      "qa-node-p2p-port",
+      "qa-node-metrics-addr",
+      "qa-node-operator-token",
+      "qa-node-producer-memory",
+      "qa-node-circuit-breaker",
+      "qa-node-mismatched-binary",
+      "qa-node-linux-blank",
+      "qa-node-node-log",
+      "qa-node-mining-flag",
+      "qa-node-rust-pin",
+      "qa-node-docker-testnet-ports",
+      "qa-node-bootstrap",
+      "qa-node-node-agent-supervision",
+      "qa-ai-models",
+      "qa-ai-embedding-cap",
+      "qa-ai-hosted-receipt",
+      "qa-ai-attestation-default",
+      "qa-ai-proof-verify",
+      "qa-ai-tensor-commit",
+      "qa-ai-q16-ops",
+      "qa-ai-gateway-modes",
+      "qa-ai-gateway-paid",
+      "qa-ai-gateway-retries",
+      "qa-ai-pool-epoch",
+      "qa-ai-pool-member-select",
+      "qa-ai-node-agent-keys",
+      "qa-mem-memrizz-what",
+      "qa-mem-memrizz-planes",
+      "qa-mem-memrizz-read-tools",
+      "qa-mem-memrizz-write-tools",
+      "qa-mem-memrizz-encryption",
+      "qa-mem-memrizz-operator",
+      "qa-mem-memrizz-mcp-endpoint",
+      "qa-mem-memrizz-oidc",
+      "qa-mem-memrizz-review-center",
+      "qa-mem-core-storage",
+      "qa-mem-memrizz-audit",
+      "qa-mem-core-journal",
+      "qa-mem-memrizz-provenance",
+      "qa-agentile-rule-count",
+      "qa-agentile-rule1",
+      "qa-agentile-rule5-frontmatter",
+      "qa-agentile-rule10",
+      "qa-agentile-rule12-drift",
+      "qa-agentile-rule4",
+      "qa-agentile-sprint-close",
+      "qa-agentile-adr-path",
+      "qa-agentile-hic-meaning",
+      "qa-agentile-ceremony-rules",
+      "qa-agentile-agent-cannot-sign",
+      "qa-agentile-approval-tiers",
+      "qa-agentile-break-glass",
+      "qa-agentile-skills-integrity",
+      "qa-dev-sdk-canonical",
+      "qa-dev-sdk-deprecated",
+      "qa-dev-python-sdk",
+      "qa-dev-kyc-required",
+      "qa-dev-cli-defaults",
+      "qa-dev-cli-faucet",
+      "qa-dev-cli-abi",
+      "qa-dev-governance-precompile",
+      "qa-dev-x402-precompile",
+      "qa-dev-facilitator-fee",
+      "qa-dev-paywall-ttl",
+      "qa-dev-foundry-pins",
+      "qa-dev-rpc-namespaces",
+      "qa-fl-belnap-values",
+      "qa-fl-both-meaning",
+      "qa-fl-trust-weights",
+      "qa-fl-ooda",
+      "qa-fl-macro-phases",
+      "qa-fl-learning-root",
+      "qa-fl-learning-quorum",
+      "qa-fl-learning-defaults",
+      "qa-fl-inv4",
+      "qa-fl-mentor-constants",
+      "qa-fl-mentor-adapter",
+      "qa-fl-belnap-precompile",
+      "qa-fl-gradient-thesis",
+      "qa-gov-four-contracts",
+      "qa-gov-proposal-threshold",
+      "qa-gov-periods",
+      "qa-gov-quorum",
+      "qa-gov-emergency",
+      "qa-gov-two-step",
+      "qa-gov-dispute-timeout",
+      "qa-gov-dispute-deadline",
+      "qa-gov-trust-tiers",
+      "qa-gov-specregistry",
+      "qa-gov-voting-power",
+      "qa-gov-exec-types",
+      "qa-gov-cli-governance",
+      "qa-gov-constitution-paper"
+    ],
+    "failureReasons": {
+      "qa-chain-chain-id": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-native-token": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-ghostdag-k": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-blue-score": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-max-parents": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-finality-status": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-checkpoint-params": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-block-time": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-genesis-params": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-mainnet-target": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-lvm-hardfork": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-state-root": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-chain-p2p-noise": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-min-validator-stake": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-reward-pools": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-pool-percentages": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-halving": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-institutional-slashing": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-slash-deactivation": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-nematocyst-tiers": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-correlation-multiplier": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-provider-min-stake": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-producer-today": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-vrf": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-validator-registry-env": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-reputation": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-stake-core-grant-stake": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-keyring-standard": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-passkey-validator": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-counterfactual": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-guardians-range": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-guardian-timelock": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-paymaster-categories": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-paymaster-caps": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-gas-sponsorship": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-edu-forwarder": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-ext-eth-sign": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-ext-encryption": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-ext-chain-fixed": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-core-keys": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-wallet-ext-typed-data": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-rpc-ports": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-p2p-port": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-metrics-addr": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-operator-token": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-producer-memory": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-circuit-breaker": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-mismatched-binary": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-linux-blank": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-node-log": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-mining-flag": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-rust-pin": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-docker-testnet-ports": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-bootstrap": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-node-node-agent-supervision": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-models": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-embedding-cap": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-hosted-receipt": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-attestation-default": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-proof-verify": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-tensor-commit": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-q16-ops": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-gateway-modes": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-gateway-paid": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-gateway-retries": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-pool-epoch": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-pool-member-select": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-ai-node-agent-keys": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-what": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-planes": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-read-tools": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-write-tools": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-encryption": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-operator": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-mcp-endpoint": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-oidc": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-review-center": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-core-storage": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-audit": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-core-journal": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-mem-memrizz-provenance": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-rule-count": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-rule1": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-rule5-frontmatter": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-rule10": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-rule12-drift": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-rule4": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-sprint-close": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-adr-path": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-hic-meaning": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-ceremony-rules": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-agent-cannot-sign": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-approval-tiers": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-break-glass": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-agentile-skills-integrity": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-sdk-canonical": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-sdk-deprecated": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-python-sdk": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-kyc-required": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-cli-defaults": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-cli-faucet": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-cli-abi": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-governance-precompile": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-x402-precompile": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-facilitator-fee": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-paywall-ttl": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-foundry-pins": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-dev-rpc-namespaces": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-belnap-values": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-both-meaning": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-trust-weights": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-ooda": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-macro-phases": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-learning-root": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-learning-quorum": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-learning-defaults": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-inv4": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-mentor-constants": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-mentor-adapter": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-belnap-precompile": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-fl-gradient-thesis": [
+        "key-point coverage 0.33 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-four-contracts": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-proposal-threshold": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-periods": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-quorum": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-emergency": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-two-step": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-dispute-timeout": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-dispute-deadline": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-trust-tiers": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-specregistry": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-voting-power": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-exec-types": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-cli-governance": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-gov-constitution-paper": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ]
+    },
+    "tier": "T0"
+  },
+  "items": [
+    {
+      "id": "qa-chain-chain-id",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the bundled Citrate documentation does not contain information regarding the Citrate Network chain ID or the specific value returned by `eth_chainId` for this network."
+    },
+    {
+      "id": "qa-chain-native-token",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the native token, its decimals, or its total supply cap."
+    },
+    {
+      "id": "qa-chain-ghostdag-k",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which consensus protocol orders the Citrate BlockDAG, nor does it state the default $k$ (k-cluster width)."
+    },
+    {
+      "id": "qa-chain-blue-score",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the ordering key for blocks instead of height, nor does it detail which field of `citrate_getDagStats` indicates the head."
+    },
+    {
+      "id": "qa-chain-max-parents",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the total number of parents a Citrate block may have, nor does it specify a limit on how many of those parents can be merge parents."
+    },
+    {
+      "id": "qa-chain-finality-status",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I cannot determine if the Citrate testnet has protocol finality today, as this specific operational status is not documented in the provided materials."
+    },
+    {
+      "id": "qa-chain-checkpoint-params",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the committee size, quorum threshold, or checkpoint interval for the designed committee checkpoint finality."
+    },
+    {
+      "id": "qa-chain-block-time",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the block time set for the Citrate testnet configuration, nor does it detail the block interval that is actually measured."
+    },
+    {
+      "id": "qa-chain-genesis-params",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the base fee per gas or the gas limit in the Citrate genesis block."
+    },
+    {
+      "id": "qa-chain-mainnet-target",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify when Citrate mainnet is targeted, nor does it detail whether the chain ID changes between testnet and mainnet."
+    },
+    {
+      "id": "qa-chain-lvm-hardfork",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which EVM hardfork specification the Citrate LVM runs, nor does it detail what this enables for Solidity 0.8.25+."
+    },
+    {
+      "id": "qa-chain-state-root",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The provided Citrate documentation does not specify whether it uses a Merkle-Patricia trie for world state, nor does it detail how the state root is computed."
+    },
+    {
+      "id": "qa-chain-p2p-noise",
+      "category": "chain-basics",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the protocol used for encrypting and authenticating Citrate peer-to-peer connections or the transport layer."
+    },
+    {
+      "id": "qa-chain-unans-salt-price",
+      "category": "chain-basics",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The Citrate documentation does not contain information regarding the current trading price of SALT on Coinbase."
+    },
+    {
+      "id": "qa-chain-unans-mainnet-height",
+      "category": "chain-basics",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify the exact block height at which the Citrate testnet will switch over to mainnet."
+    },
+    {
+      "id": "qa-stake-min-validator-stake",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The minimum validator stake on Citrate is not documented."
+    },
+    {
+      "id": "qa-stake-reward-pools",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the names of the four bonus pools."
+    },
+    {
+      "id": "qa-stake-pool-percentages",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the default share of the base block reward that goes to the validator performance pool or the AI contribution pool."
+    },
+    {
+      "id": "qa-stake-halving",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how often the Citrate base block reward halves."
+    },
+    {
+      "id": "qa-stake-institutional-slashing",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the share of stake that is slashed for equivocation, an invalid state transition, or transaction censorship under the institutional penalty schedule."
+    },
+    {
+      "id": "qa-stake-slash-deactivation",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the cumulative slash at which an institutional operator is deactivated, nor does it state whether downtime is considered a slashable offense for institutional operators."
+    },
+    {
+      "id": "qa-stake-nematocyst-tiers",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the three NematocystSlashing tiers or their base penalties."
+    },
+    {
+      "id": "qa-stake-correlation-multiplier",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the `NematocystSlashing` correlation multiplier, its window, floor, or cap."
+    },
+    {
+      "id": "qa-stake-provider-min-stake",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the minimum stake required to become a slashable provider in NematocystSlashing."
+    },
+    {
+      "id": "qa-stake-producer-today",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify who produces blocks on the public Citrate testnet today, nor does it provide the current operational status of whether stake-gated proposer eligibility is switched on."
+    },
+    {
+      "id": "qa-stake-vrf",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which verifiable random function Citrate uses for proposer eligibility, nor does it mention the defining RFC."
+    },
+    {
+      "id": "qa-stake-validator-registry-env",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify a configuration setting to turn on stake-gated proposer eligibility on a Citrate node."
+    },
+    {
+      "id": "qa-stake-reputation",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover how an operator's reputation is expressed on Citrate, nor does it specify when the node-agent raises an alert regarding operator reputation."
+    },
+    {
+      "id": "qa-stake-core-grant-stake",
+      "category": "staking-validators",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify what happens to a grant that membership releases during Citrate Core onboarding."
+    },
+    {
+      "id": "qa-stake-unans-apy",
+      "category": "staking-validators",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not contain information regarding the annual percentage yield (APY) paid to validators for staking SALT."
+    },
+    {
+      "id": "qa-wallet-keyring-standard",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the account standard and account implementation of Citrate Keyring."
+    },
+    {
+      "id": "qa-wallet-passkey-validator",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I do not have documentation detailing the specific type of credential a Citrate passkey is, nor is there information regarding which on-chain validator verifies it."
+    },
+    {
+      "id": "qa-wallet-counterfactual",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify when a Citrate Keyring smart account is deployed or how its address is known in advance."
+    },
+    {
+      "id": "qa-wallet-guardians-range",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how many guardians a person can nominate for Citrate Keyring recovery, nor does it state whether Citrate itself can be nominated as a guardian."
+    },
+    {
+      "id": "qa-wallet-guardian-timelock",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover whether the GuardianRecoveryModule imposes a timelock on recovery."
+    },
+    {
+      "id": "qa-wallet-paymaster-categories",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the three sponsorship categories of the Citrate paymaster."
+    },
+    {
+      "id": "qa-wallet-paymaster-caps",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the shipped default `dailyCap` and `firstOpCap` of CitratePaymaster."
+    },
+    {
+      "id": "qa-wallet-gas-sponsorship",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I cannot answer this question as the provided Citrate documentation does not contain information regarding native gas-sponsorship operations or how gas is sponsored for Keyring accounts."
+    },
+    {
+      "id": "qa-wallet-edu-forwarder",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not cover the mechanism that sponsors student actions in the education stack, as opposed to the ERC-4337 paymaster."
+    },
+    {
+      "id": "qa-wallet-ext-eth-sign",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify whether the Citrate Keyring browser extension supports `eth_sign`."
+    },
+    {
+      "id": "qa-wallet-ext-encryption",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how the Citrate Keyring extension encrypt the local account key at rest."
+    },
+    {
+      "id": "qa-wallet-ext-chain-fixed",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover whether the Citrate Keyring extension can switch to another network."
+    },
+    {
+      "id": "qa-wallet-core-keys",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I cannot answer this question as the provided documentation does not contain information regarding where Citrate Core keeps account keys."
+    },
+    {
+      "id": "qa-wallet-ext-typed-data",
+      "category": "wallet",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify whether the Citrate Keyring extension supports `eth_signTypedData_v4`."
+    },
+    {
+      "id": "qa-wallet-unans-hardware",
+      "category": "wallet",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify which Ledger and Trezor hardware wallet models the Citrate Keyring extension supports."
+    },
+    {
+      "id": "qa-node-rpc-ports",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The default JSON-RPC and WebSocket bind addresses of a Citrate node are not documented."
+    },
+    {
+      "id": "qa-node-p2p-port",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which outbound port must be reachable for a Citrate Core node to find peers."
+    },
+    {
+      "id": "qa-node-metrics-addr",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the default Prometheus metrics address of a Citrate node or the variable used to set it."
+    },
+    {
+      "id": "qa-node-operator-token",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "It is not documented."
+    },
+    {
+      "id": "qa-node-producer-memory",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify what resident memory is healthy for a producing Citrate node, nor does it define the level at which you should trip the circuit-breaker."
+    },
+    {
+      "id": "qa-node-circuit-breaker",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I cannot answer this question as the provided Citrate documentation does not contain information regarding how to trip the producer memory circuit-breaker or the subsequent behavior of the node."
+    },
+    {
+      "id": "qa-node-mismatched-binary",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The provided Citrate documentation does not contain information regarding why you should never replace the Citrate Core node binary with one copied from elsewhere."
+    },
+    {
+      "id": "qa-node-linux-blank",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the provided Citrate documentation does not contain information regarding a fix for Citrate Core opening a blank window on Linux."
+    },
+    {
+      "id": "qa-node-node-log",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify where Citrate Core writes the node log that the Node surface tails."
+    },
+    {
+      "id": "qa-node-mining-flag",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am unable to answer this question as the provided Citrate documentation does not contain information regarding whether Citrate Core's shipped node configuration turns on the local `[mining]` flag, nor does it detail how the node validates instead."
+    },
+    {
+      "id": "qa-node-rust-pin",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which Rust toolchain version `citrate-chain` pins for building the node."
+    },
+    {
+      "id": "qa-node-docker-testnet-ports",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which host ports the testnet Docker compose profile maps for RPC and WebSocket."
+    },
+    {
+      "id": "qa-node-bootstrap",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how many testnet bootstrap nodes ship in the node configuration, nor does it provide the public RPC hostname."
+    },
+    {
+      "id": "qa-node-node-agent-supervision",
+      "category": "node-ops",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the node-agent's default supervision bind address or its heartbeat frequency."
+    },
+    {
+      "id": "qa-node-unans-ec2",
+      "category": "node-ops",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The bundled Citrate documentation does not specify a recommended AWS EC2 instance type for running a validator."
+    },
+    {
+      "id": "qa-ai-models",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which embedding model backs `citrate_getTextEmbedding`, nor does it state the default chat model."
+    },
+    {
+      "id": "qa-ai-embedding-cap",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the maximum number of inputs for a single `citrate_getTextEmbedding` call, nor does it detail the specific error returned when a larger batch is provided."
+    },
+    {
+      "id": "qa-ai-hosted-receipt",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify whether a call to the `hosted-inference` precompiles (0x0100 to 0x0106) returns a cryptographic proof that the output is correct."
+    },
+    {
+      "id": "qa-ai-attestation-default",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the attestation gate's default behaviour on mainnet validator binaries."
+    },
+    {
+      "id": "qa-ai-proof-verify",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover which precompile verifies an inference proof or the associated proof system."
+    },
+    {
+      "id": "qa-ai-tensor-commit",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the commitment produced by the `0x0107 TENSOR_COMMIT` precompile."
+    },
+    {
+      "id": "qa-ai-q16-ops",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the names of the six deterministic Q16.16 compute primitives located at addresses 0x010A to 0x010F."
+    },
+    {
+      "id": "qa-ai-gateway-modes",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the two run modes of the Citrate Inference Gateway."
+    },
+    {
+      "id": "qa-ai-gateway-paid",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify whether the released inference gateway binary serves the x402-paid routes."
+    },
+    {
+      "id": "qa-ai-gateway-retries",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how many providers the gateway tries for a paid request before returning a 503."
+    },
+    {
+      "id": "qa-ai-pool-epoch",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the length of a coordinator epoch in the compute pool."
+    },
+    {
+      "id": "qa-ai-pool-member-select",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how the compute-pool coordinator chooses which member serves a job."
+    },
+    {
+      "id": "qa-ai-node-agent-keys",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The provided Citrate documentation does not specify whether the node-agent holds signing keys, nor does it detail the mechanism by which on-chain writes are made."
+    },
+    {
+      "id": "qa-ai-unans-gpt4-price",
+      "category": "ai-inference",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify the per-token price in SALT for GPT-4 inference on the Citrate gateway."
+    },
+    {
+      "id": "qa-ai-unans-embedding-fee",
+      "category": "ai-inference",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify the cost in SALT for a single `citrate_getTextEmbedding` call."
+    },
+    {
+      "id": "qa-mem-memrizz-what",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation for Citrate does not contain information about Memrizz or how agents connect to it."
+    },
+    {
+      "id": "qa-mem-memrizz-planes",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not contain information regarding the two planes of the Memrizz memory store."
+    },
+    {
+      "id": "qa-mem-memrizz-read-tools",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the read tools exposed by the Memrizz MCP server."
+    },
+    {
+      "id": "qa-mem-memrizz-write-tools",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover Memrizz MCP tools."
+    },
+    {
+      "id": "qa-mem-memrizz-encryption",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover how Memrizz memory content is encrypted at rest."
+    },
+    {
+      "id": "qa-mem-memrizz-operator",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover whether the Memrizz platform operator role can read an Org's memory content."
+    },
+    {
+      "id": "qa-mem-memrizz-mcp-endpoint",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not contain information regarding the Streamable-HTTP endpoint for the Memrizz MCP server."
+    },
+    {
+      "id": "qa-mem-memrizz-oidc",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which signing algorithm is pinned for Memrizz OIDC tokens or where that algorithm is read from."
+    },
+    {
+      "id": "qa-mem-memrizz-review-center",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not contain information about the Memrizz Review Center."
+    },
+    {
+      "id": "qa-mem-core-storage",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the definition of the Storage surface in Citrate Core."
+    },
+    {
+      "id": "qa-mem-memrizz-audit",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover how Memrizz records reads, writes, and denials."
+    },
+    {
+      "id": "qa-mem-core-journal",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the purpose of the Journal surface in Citrate Core."
+    },
+    {
+      "id": "qa-mem-memrizz-provenance",
+      "category": "memory",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover what every Memrizz MCP response carries alongside the content."
+    },
+    {
+      "id": "qa-mem-unans-retention",
+      "category": "memory",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not cover the memory retention policy for Memrizz."
+    },
+    {
+      "id": "qa-mem-unans-max-orgs",
+      "category": "memory",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify the maximum number of Orgs a single Memrizz deployment supports."
+    },
+    {
+      "id": "qa-agentile-rule-count",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not contain information regarding \"Agentile rules.\""
+    },
+    {
+      "id": "qa-agentile-rule1",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover Agentile Rule 1."
+    },
+    {
+      "id": "qa-agentile-rule5-frontmatter",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the required frontmatter fields for Agentile documents."
+    },
+    {
+      "id": "qa-agentile-rule10",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover Agentile Rule 10 or the requirements for a force-push, delete, or rotation."
+    },
+    {
+      "id": "qa-agentile-rule12-drift",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the process of adding a cross-repo dependency under Agentile."
+    },
+    {
+      "id": "qa-agentile-rule4",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover where a workstream's status lives under Agentile."
+    },
+    {
+      "id": "qa-agentile-sprint-close",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover how an Agentile sprint is closed."
+    },
+    {
+      "id": "qa-agentile-adr-path",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover where Agentile architectural decision records go or how they are named."
+    },
+    {
+      "id": "qa-agentile-hic-meaning",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify what HIC stands for in Citrate Core, nor does it detail the single approval path that every signature goes through."
+    },
+    {
+      "id": "qa-agentile-ceremony-rules",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the rules enforced by the SignatureCeremony."
+    },
+    {
+      "id": "qa-agentile-agent-cannot-sign",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify whether the on-device agent in Citrate Core can sign a transaction by itself."
+    },
+    {
+      "id": "qa-agentile-approval-tiers",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how many signers each risk tier needs in the agent runtime's ApprovalQueue."
+    },
+    {
+      "id": "qa-agentile-break-glass",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the constraints that apply to the agent runtime's break-glass path."
+    },
+    {
+      "id": "qa-agentile-skills-integrity",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not contain information regarding how the agentile-skills marketplace prevents changes to `SKILL.md` content without review."
+    },
+    {
+      "id": "qa-agentile-unans-velocity",
+      "category": "agentile-hic",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not cover the story-point velocity target set by Agentile."
+    },
+    {
+      "id": "qa-dev-sdk-canonical",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the canonical JavaScript/TypeScript SDK package for Citrate."
+    },
+    {
+      "id": "qa-dev-sdk-deprecated",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify whether a new project should use `@citratelabs/citrate-js`."
+    },
+    {
+      "id": "qa-dev-python-sdk",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Python SDK package for Citrate is called `citrate-python`.\n\nIt is documented as the canonical Python SDK for Citrate.\n\n<source>:citrate-docs/installation/python.md#python-sdk-name\n<source>:citrate-docs/overview/sdk.md#canonical-status"
+    },
+    {
+      "id": "qa-dev-kyc-required",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover which SDK-driven actions require KYC on Citrate or under which entitlement tier."
+    },
+    {
+      "id": "qa-dev-cli-defaults",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the default RPC endpoint or keystore location for the Citrate CLI."
+    },
+    {
+      "id": "qa-dev-cli-faucet",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover whether the testnet faucet is a subcommand of the Citrate CLI."
+    },
+    {
+      "id": "qa-dev-cli-abi",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the types supported by the Citrate CLI's built-in ABI encoder."
+    },
+    {
+      "id": "qa-dev-governance-precompile",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I cannot answer this question as the provided documentation does not contain information regarding the address of the governance precompile that Citrate governance encodes calls to."
+    },
+    {
+      "id": "qa-dev-x402-precompile",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the address or the gas cost for the `x402 EIP712_VERIFY` precompile."
+    },
+    {
+      "id": "qa-dev-facilitator-fee",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the maximum fee that X402Facilitator can charge."
+    },
+    {
+      "id": "qa-dev-paywall-ttl",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the default access window granted by X402Paywall after a payment."
+    },
+    {
+      "id": "qa-dev-foundry-pins",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which `solc` version and `EVM` version `citrate-chain`'s Foundry contracts are pinned to."
+    },
+    {
+      "id": "qa-dev-rpc-namespaces",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "It is not documented."
+    },
+    {
+      "id": "qa-dev-unans-hardhat",
+      "category": "devtools-contracts",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not contain information regarding the npm package name of Citrate's official Hardhat plugin."
+    },
+    {
+      "id": "qa-dev-unans-rust-sdk",
+      "category": "devtools-contracts",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify the `crates.io` package name of the official Citrate Rust SDK."
+    },
+    {
+      "id": "qa-fl-belnap-values",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the four Belnap values used in paraconsistent aggregation within Citrate."
+    },
+    {
+      "id": "qa-fl-both-meaning",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the meaning of the Belnap value \"Both\" in Citrate's paraconsistent aggregation."
+    },
+    {
+      "id": "qa-fl-trust-weights",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover how trust weights for learning sources are derived in paraconsistent aggregation."
+    },
+    {
+      "id": "qa-fl-ooda",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the four phases of the Citrate Orchard learning cycle."
+    },
+    {
+      "id": "qa-fl-macro-phases",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the network-wide learning macro-phases."
+    },
+    {
+      "id": "qa-fl-learning-root",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover which hash produces the `learning_root` or whether the block hash includes it."
+    },
+    {
+      "id": "qa-fl-learning-quorum",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover what the learning orchestrator records when a checkpoint is below quorum."
+    },
+    {
+      "id": "qa-fl-learning-defaults",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the citrate-learning defaults for embedding dimension, minimum participants, and LoRA rank."
+    },
+    {
+      "id": "qa-fl-inv4",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which invariant guarantees that learning can never alter the ledger state, nor does it identify the corresponding TLA+ specification that checks this invariant."
+    },
+    {
+      "id": "qa-fl-mentor-constants",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the definitions of `MIN_ACCURACY_GAP` and `MAX_MENTEES_PER_MENTOR` in mentor matching."
+    },
+    {
+      "id": "qa-fl-mentor-adapter",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the concept of a mentor producing something for a mentee in a mentorship protocol."
+    },
+    {
+      "id": "qa-fl-belnap-precompile",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the provided Citrate documentation does not contain information regarding a precompile that aggregates Belnap-q16 contributions or its gas cost."
+    },
+    {
+      "id": "qa-fl-gradient-thesis",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0.3333333333333333,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.33 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not cover the thesis of the Gradient Papers."
+    },
+    {
+      "id": "qa-fl-unans-dp-epsilon",
+      "category": "paraconsensus-fl",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify a differential-privacy epsilon value applied by Citrate Orchard when publishing embeddings."
+    },
+    {
+      "id": "qa-fl-unans-alf-rounds",
+      "category": "paraconsensus-fl",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not contain information regarding the number of federated learning rounds completed by the ALF cooperative."
+    },
+    {
+      "id": "qa-gov-four-contracts",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the documentation does not specify which four contracts make up the Citrate governance surface."
+    },
+    {
+      "id": "qa-gov-proposal-threshold",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how much voting power is needed to open a TreasuryGovernor proposal."
+    },
+    {
+      "id": "qa-gov-periods",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the voting period or execution delay for `TreasuryGovernor`."
+    },
+    {
+      "id": "qa-gov-quorum",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify the quorum and approval thresholds used by `TreasuryGovernor`."
+    },
+    {
+      "id": "qa-gov-emergency",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the extra requirement for emergency proposals in `TreasuryGovernor`."
+    },
+    {
+      "id": "qa-gov-two-step",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the provided Citrate documentation does not contain information regarding how governance authority is handed over in the `Governable` mixin."
+    },
+    {
+      "id": "qa-gov-dispute-timeout",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the provided Citrate documentation does not contain information regarding what happens if a party stalls in a DisputeResolution dispute."
+    },
+    {
+      "id": "qa-gov-dispute-deadline",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the default round deadline for DisputeResolution."
+    },
+    {
+      "id": "qa-gov-trust-tiers",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the trust tiers derived by AgentDecisionRegistry or how the trust score is computed."
+    },
+    {
+      "id": "qa-gov-specregistry",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "It is not documented."
+    },
+    {
+      "id": "qa-gov-voting-power",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how voting power is computed in `TreasuryGovernor`."
+    },
+    {
+      "id": "qa-gov-exec-types",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the documentation does not specify which TreasuryGovernor proposal types execute on-chain or what happens to the others."
+    },
+    {
+      "id": "qa-gov-cli-governance",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the subcommands offered by citrate governance."
+    },
+    {
+      "id": "qa-gov-constitution-paper",
+      "category": "governance",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover which Gradient Paper sets out the constitutional law of the Citrate organization or through what it is enforced."
+    },
+    {
+      "id": "qa-gov-unans-proposals-passed",
+      "category": "governance",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not contain information regarding the number of treasury proposals that have passed on the Citrate testnet."
+    }
+  ]
+}

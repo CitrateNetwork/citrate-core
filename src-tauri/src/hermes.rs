@@ -38,6 +38,20 @@ const CITRATE_CHAIN_ID: u64 = 40204;
 // new module needs no `mod` line in the (s0-owned) lib.rs; the file is still `agent_tools.rs`.
 #[path = "agent_tools.rs"]
 pub mod agent_tools;
+/// HUP-S2.9: undo for agent file changes (the sidecar's `/checkpoints` routes).
+#[path = "hermes_undo.rs"]
+pub mod undo;
+// HUP-S7.3/S7.5: the sidecar's metering + anchor routes (core side).
+#[path = "hermes_chain.rs"]
+pub mod chain;
+
+// HUP-S1.9 — the sidecar's worker processes (GET /workers), read for the Activity monitor.
+#[path = "hermes_workers.rs"]
+pub mod workers;
+
+// HUP-S5.3 — the decide() slot's per-backend metering (GET /decide/stats), for the Activity monitor.
+#[path = "hermes_decide.rs"]
+pub mod decide;
 
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
@@ -61,6 +75,8 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
 const HERMES_HEALTHY_AFTER: Duration = Duration::from_secs(30);
 /// Startup grace before a failing probe counts as a crash.
 const HERMES_START_GRACE: Duration = Duration::from_secs(20);
+/// How long a restart waits for the old child's control port to be released.
+const RESTART_PORT_WAIT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Errors — coarse, secret-free (NEVER carry the bearer token).
@@ -148,6 +164,26 @@ pub struct ControlResp {
 pub trait HermesControl: Send + Sync {
     fn get(&self, url: &str, bearer: &str) -> Result<ControlResp>;
     fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp>;
+    /// HUP-S10.3: `DELETE` (closing a session). Transports that predate it refuse honestly.
+    fn delete(&self, url: &str, bearer: &str) -> Result<ControlResp> {
+        let _ = (url, bearer);
+        Err(HermesError::Transport(
+            "this control transport cannot close sessions".into(),
+        ))
+    }
+
+    /// HUP-S1.5: a POST whose answer may take longer than [`HERMES_CONTROL_TIMEOUT`] (one escalation
+    /// to a remote model). Transports without their own deadline handling use `post`.
+    fn post_with_timeout(
+        &self,
+        url: &str,
+        bearer: &str,
+        body: &str,
+        timeout: Duration,
+    ) -> Result<ControlResp> {
+        let _ = timeout;
+        self.post(url, bearer, body)
+    }
 }
 
 /// Production control transport over blocking `ureq`. A non-2xx is returned as a normal response
@@ -172,7 +208,36 @@ impl UreqControl {
 /// wedged sidecar: fail the call instead of hanging the command.
 pub(crate) const HERMES_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// HUP-S1.5 — deadline for `POST /escalations` (the sidecar allows 120 s for the remote model plus
+/// up to 10 s waiting for a slot).
+pub(crate) const HERMES_ESCALATION_TIMEOUT: Duration = Duration::from_secs(150);
+
 impl HermesControl for UreqControl {
+    fn post_with_timeout(
+        &self,
+        url: &str,
+        bearer: &str,
+        body: &str,
+        timeout: Duration,
+    ) -> Result<ControlResp> {
+        match ureq::post(url)
+            .config()
+            .timeout_global(Some(timeout))
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &format!("Bearer {bearer}"))
+            .header("Content-Type", "application/json")
+            .send(body)
+        {
+            Ok(resp) => Self::read(resp),
+            Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
+                status: code,
+                body: String::new(),
+            }),
+            Err(e) => Err(HermesError::Transport(e.to_string())),
+        }
+    }
+
     fn get(&self, url: &str, bearer: &str) -> Result<ControlResp> {
         match ureq::get(url)
             .config()
@@ -201,6 +266,24 @@ impl HermesControl for UreqControl {
             .header("Authorization", &format!("Bearer {bearer}"))
             .header("Content-Type", "application/json")
             .send(body)
+        {
+            Ok(resp) => Self::read(resp),
+            Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
+                status: code,
+                body: String::new(),
+            }),
+            Err(e) => Err(HermesError::Transport(e.to_string())),
+        }
+    }
+
+    fn delete(&self, url: &str, bearer: &str) -> Result<ControlResp> {
+        match ureq::delete(url)
+            .config()
+            .timeout_global(Some(HERMES_CONTROL_TIMEOUT))
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &format!("Bearer {bearer}"))
+            .call()
         {
             Ok(resp) => Self::read(resp),
             Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
@@ -281,7 +364,35 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S4.3: the MCP allowlist file (`hermes_mcp.rs`). Passed as `CITRATE_HERMES_MCP` only while
+    /// the file exists, so with no MCP server enabled the child runs no MCP at all.
+    mcp_config_path: Option<PathBuf>,
+    /// HUP-S2.9: the undo checkpoint store passed to the child as `CITRATE_HERMES_CHECKPOINTS`.
+    checkpoints_dir: Option<PathBuf>,
+    /// HUP-S3.4: the learn data folder and the member's skills folder, passed to the child as
+    /// `CITRATE_HERMES_LEARN_DIR` / `CITRATE_HERMES_LEARN_SKILLS_DIR` (and the skills folder as
+    /// `CITRATE_HERMES_SKILLS`, so accepted skills load in later sessions). `None` = learning off.
+    learn_dirs: Option<(PathBuf, PathBuf)>,
+    /// HUP-S3.2: the other skill sources for the sidecar's one SKILL.md loader (the member's saved
+    /// skills, Citrate's bundled skills, the reviewed third-party skills). `None` = learned only.
+    skill_sources: Option<crate::hermes_learn::SkillSources>,
+    /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
+    /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
+    mcp_allowlist: Option<PathBuf>,
+    /// HUP-S7.3/S7.5: the base folder for the sidecar's metering log, decision records and anchor
+    /// ledger (see `hermes_chain`). `None` (tests) leaves those env vars unset.
+    chain_data_dir: Option<PathBuf>,
+    /// HUP-S5.2/S5.3: extra child environment from the member's web opt-ins, computed at each
+    /// start. Only keys on `hermes_web::SIDECAR_ENV_KEYS` pass. `None` = nothing extra.
+    env_source: Option<crate::hermes_web::EnvSource>,
+    /// HUP-S1.2 / US-1.4: the loopback BGE embedding server the sidecar ranks tools and skills
+    /// with. Started before the sidecar; its URL and key FILE are passed only while it runs.
+    /// `None` (tests, or no bundled model) = sessions rank lexically and report it.
+    embed: Option<crate::embed_serve::EmbedServer>,
     health_interval: Duration,
+    /// SCL-S0.3: where core records the sidecar's managed browsers (see `owned_browser`). A
+    /// core-only folder that is never passed to the sidecar; `None` = next to the crash log.
+    browser_record: Option<PathBuf>,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
     /// The current session bearer (minted on start; wiped on drop). Held for control calls (S6.2+).
@@ -301,6 +412,19 @@ pub struct HermesManager {
     /// that effect; otherwise a later identical effect would find the stale decided entry and never
     /// bridge again.
     bridged_by_call: Mutex<HashMap<String, String>>,
+    /// HUP-S2.1: agent sessions opened with the member's folder-grant document; each change to the
+    /// document is sent to every one of them (`POST /sessions/:id/grants`).
+    grant_sessions: Mutex<std::collections::BTreeSet<String>>,
+}
+
+/// HUP-S2.1: how sending a changed grant document to the open agent sessions went.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantsPushOutcome {
+    /// Sessions that now use the new document.
+    pub updated: usize,
+    /// One line per session that refused it or could not be reached.
+    pub failed: Vec<String>,
 }
 
 impl HermesManager {
@@ -312,7 +436,16 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            mcp_config_path: None,
+            checkpoints_dir: None,
+            learn_dirs: None,
+            skill_sources: None,
+            mcp_allowlist: None,
+            chain_data_dir: None,
+            env_source: None,
+            embed: None,
             health_interval: HEALTH_INTERVAL,
+            browser_record: None,
             #[cfg(test)]
             spawn_args_override: None,
             token: Mutex::new(None),
@@ -320,7 +453,23 @@ impl HermesManager {
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
             bridged_by_call: Mutex::new(HashMap::new()),
+            grant_sessions: Mutex::new(std::collections::BTreeSet::new()),
         }
+    }
+
+    /// SCL-S0.3: keep the managed-browser record at `path` (a core-only folder the sidecar is never
+    /// told about) instead of next to the crash log.
+    pub fn with_browser_record(mut self, path: PathBuf) -> Self {
+        self.browser_record = Some(path);
+        self
+    }
+
+    /// SCL-S0.3: the managed-browser record file core keeps for this sidecar.
+    fn browser_record_path(&self) -> PathBuf {
+        self.browser_record.clone().unwrap_or_else(|| {
+            self.crash_record_path
+                .with_file_name(crate::owned_browser::RECORD_FILE)
+        })
     }
 
     /// Point the child at a capsule (skill) directory (`CITRATE_HERMES_CAPSULES`). Prod calls this
@@ -328,6 +477,59 @@ impl HermesManager {
     /// catalog. Absent → the env is not set (unchanged default behavior).
     pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
         self.capsules_dir = Some(dir);
+        self
+    }
+
+    /// HUP-S4.3: name the MCP allowlist file. The env is set at spawn only if the file exists then.
+    pub fn with_mcp_config_path(mut self, path: PathBuf) -> Self {
+        self.mcp_config_path = Some(path);
+        self
+    }
+
+    /// HUP-S3.4: turn on verified self-learning in the child (see `learn_dirs`).
+    pub fn with_learn_dirs(mut self, learn_dir: PathBuf, skills_dir: PathBuf) -> Self {
+        self.learn_dirs = Some((learn_dir, skills_dir));
+        self
+    }
+
+    /// HUP-S3.2: offer these skill sources to the child (see `skill_sources`).
+    pub fn with_skill_sources(mut self, sources: crate::hermes_learn::SkillSources) -> Self {
+        self.skill_sources = Some(sources);
+        self
+    }
+
+    /// HUP-S3.4: a bearer-authed `GET` on the control plane, for `hermes_learn`. `path` starts with
+    /// `/` and is built from validated ids only.
+    pub(crate) fn control_get(&self, path: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .get(&format!("{}{path}", self.control_url()), &bearer)
+    }
+
+    /// HUP-S3.4: a bearer-authed `POST` on the control plane, for `hermes_learn`.
+    pub(crate) fn control_post(&self, path: &str, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .post(&format!("{}{path}", self.control_url()), &bearer, body)
+    }
+
+    /// HUP-S4.4: the member's MCP allowlist file (joined with the built-in one, see
+    /// [`crate::hermes_mcp::effective_allowlist`]).
+    pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
+        self.mcp_allowlist = Some(path);
+        self
+    }
+
+    /// HUP-S1.2 / US-1.4: start this embedding server with the sidecar and pass its URL and key
+    /// file (`CITRATE_HERMES_EMBED_URL`, `CITRATE_HERMES_EMBED_KEY_FILE`) while it runs.
+    pub fn with_embed(mut self, embed: crate::embed_serve::EmbedServer) -> Self {
+        self.embed = Some(embed);
+        self
+    }
+
+    /// HUP-S5.2/S5.3: add the member's web opt-ins to the child environment at each start.
+    pub fn with_env_source(mut self, src: crate::hermes_web::EnvSource) -> Self {
+        self.env_source = Some(src);
         self
     }
 
@@ -400,13 +602,90 @@ impl HermesManager {
                 dir.to_string_lossy().to_string(),
             ));
         }
+        // HUP-S4.3 + S4.4: hand the child one MCP allowlist (built-in servers and the member's
+        // reviewed servers, joined when both are on), and only when one is written (default: none).
+        if let Some(path) = crate::hermes_mcp::effective_allowlist(
+            self.mcp_config_path.as_deref(),
+            self.mcp_allowlist.as_deref(),
+        ) {
+            spec.env.push((
+                crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
+        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
+        if let Some(allow) = &self.mcp_allowlist {
+            spec.env.push((
+                crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
+                allow
+                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
+                    .to_string_lossy()
+                    .to_string(),
+            ));
+        }
+        if let Some(dir) = &self.checkpoints_dir {
+            spec.env.push((
+                undo::HERMES_CHECKPOINTS_ENV.to_string(),
+                dir.to_string_lossy().to_string(),
+            ));
+        }
+        if let Some((learn, skills)) = &self.learn_dirs {
+            spec.env
+                .extend(crate::hermes_learn::learn_env(learn, skills));
+        }
+        if let Some(sources) = &self.skill_sources {
+            // HUP-S3.2: one CITRATE_HERMES_SKILLS listing every source, replacing the learned-only one.
+            let learned = self.learn_dirs.as_ref().map(|(_, s)| s.as_path());
+            let extra = crate::hermes_learn::skills_env(learned, sources);
+            spec.env.retain(|(k, _)| !extra.iter().any(|(e, _)| e == k));
+            spec.env.extend(extra);
+        }
+        if let Some(base) = &self.chain_data_dir {
+            for (k, dir) in chain::data_dirs(base) {
+                spec.env
+                    .push((k.to_string(), dir.to_string_lossy().to_string()));
+            }
+        }
+        // HUP-S1.2 / US-1.4: embedding retrieval, only while the embedding server runs (otherwise
+        // the sidecar tries its own chat server and reports lexical ranking with the reason).
+        if let Some(embed) = self.embed.as_ref().filter(|e| e.is_started()) {
+            spec.env.extend(embed.sidecar_env());
+        }
+        if let Some(src) = &self.env_source {
+            spec.env.extend(src().into_iter().filter(|(k, _)| {
+                crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::fl_trajectories::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
+            }));
+        }
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
             grace: HERMES_START_GRACE,
             probe: std::sync::Arc::new(move || http_health_ok(&health_url)),
         });
+        // SCL-S0.3: record the sidecar's managed browsers while it runs, clean them up after it
+        // ends (including core's hard kill after the stop grace).
+        spec.child_watch = crate::owned_browser::watch(self.browser_record_path());
         spec
+    }
+
+    /// Test hook: the embedding server, to start it in the wiring proof.
+    #[cfg(test)]
+    pub fn embed_for_test(&self) -> Option<&crate::embed_serve::EmbedServer> {
+        self.embed.as_ref()
+    }
+
+    /// Test hook: the sidecar child's pid while the supervisor holds one (SCL-S0.5 coverage).
+    #[cfg(test)]
+    pub fn sidecar_pid_for_test(&self) -> Option<u32> {
+        self.sup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|s| s.status().pid)
     }
 
     /// Test hook: expose the spec env for the wiring proof (addr + token-file path, never a token).
@@ -426,6 +705,9 @@ impl HermesManager {
         if !self.bin.exists() {
             return Err(HermesError::BinaryNotFound(self.bin.display().to_string()));
         }
+        // SCL-S0.3: a managed browser an earlier sidecar left behind (it ended while this app was
+        // not running, or this app was killed) is stopped and its profile removed first.
+        crate::owned_browser::apply(&self.browser_record_path());
         // PBA-L7b-009: every control call carries the session bearer to the fixed loopback port. If
         // another process already holds it, refuse to start instead of handing it the bearer.
         if let Some(port) = self
@@ -437,13 +719,31 @@ impl HermesManager {
                 return Err(HermesError::PortInUse(port));
             }
         }
+        // HUP-S1.2 / US-1.4: best effort. Without it the sessions rank lexically and say why.
+        if let Some(embed) = &self.embed {
+            if let Err(e) = embed.ensure_started() {
+                eprintln!("hermes: embedding retrieval stays off: {e}");
+            }
+        }
         let token = mint_bearer();
-        persist_bearer(&self.token_path, &token)?;
-        let spec = self.build_spec();
-        let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
-        config.backoff = BackoffPolicy::new();
-        config.healthy_after = HERMES_HEALTHY_AFTER;
-        let sup = Supervisor::start(config).map_err(|e| HermesError::Spawn(e.to_string()))?;
+        let started = persist_bearer(&self.token_path, &token).and_then(|()| {
+            let spec = self.build_spec();
+            let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+            config.backoff = BackoffPolicy::new();
+            config.healthy_after = HERMES_HEALTHY_AFTER;
+            Supervisor::start(config).map_err(|e| HermesError::Spawn(e.to_string()))
+        });
+        let sup = match started {
+            Ok(sup) => sup,
+            Err(e) => {
+                // SCL-S0.5: the embedding server lives and dies with Hermes. A Hermes that did not
+                // start must not leave it running until the app quits.
+                if let Some(embed) = &self.embed {
+                    embed.stop();
+                }
+                return Err(e);
+            }
+        };
         *guard = Some(sup);
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
         Ok(())
@@ -459,6 +759,9 @@ impl HermesManager {
             sup.stop();
             drop(sup);
         }
+        if let Some(embed) = &self.embed {
+            embed.stop();
+        }
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // A new session starts with a clean dedup map.
         self.bridged
@@ -466,6 +769,10 @@ impl HermesManager {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
         self.bridged_by_call
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.grant_sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
@@ -486,6 +793,25 @@ impl HermesManager {
             state: state.to_string(),
             control_url: self.control_url(),
             healthy,
+        }
+    }
+
+    /// Whether the sidecar was started and not stopped (running, starting or restarting).
+    pub fn is_started(&self) -> bool {
+        self.sup.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    /// [`Self::start`] right after [`Self::stop`]: the old child's control port can take a moment
+    /// to be released, so a port still held is retried for up to [`RESTART_PORT_WAIT`].
+    pub fn start_after_restart(&self) -> Result<()> {
+        let deadline = std::time::Instant::now() + RESTART_PORT_WAIT;
+        loop {
+            match self.start() {
+                Err(HermesError::PortInUse(_)) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                other => return other,
+            }
         }
     }
 
@@ -520,6 +846,21 @@ impl HermesManager {
             });
         }
         serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))
+    }
+
+    /// HUP-S5.1: a raw bearer-authed GET of `path` (e.g. `/browser/status`). The caller maps the
+    /// status (see `browser.rs`).
+    pub(crate) fn control_get_path(&self, path: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .get(&format!("{}{path}", self.control_url()), &bearer)
+    }
+
+    /// HUP-S5.1: a raw bearer-authed POST of `body` to `path`.
+    pub(crate) fn control_post_path(&self, path: &str, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
     /// `GET /status` — the sidecar's running/skills/pending snapshot.
@@ -566,6 +907,42 @@ impl HermesManager {
         Self::decode(resp)
     }
 
+    // --- HUP-S4.4 user-added MCP servers ----------------------------------------------------------
+
+    /// `POST /mcp/probe` — the sidecar's dry-run check of one server entry (the runtime's
+    /// `[[servers]]` shape). 422 = the sidecar's field errors; 200 = the probe report (which may
+    /// itself say the server could not be reached). Registers nothing.
+    pub fn mcp_probe(&self, entry: &serde_json::Value) -> Result<crate::mcp_servers::ProbeOutcome> {
+        let bearer = self.bearer()?;
+        let resp = self.control.post(
+            &format!("{}/mcp/probe", self.control_url()),
+            &bearer,
+            &entry.to_string(),
+        )?;
+        if resp.status == 422 {
+            #[derive(Deserialize)]
+            struct Invalid {
+                #[serde(default)]
+                errors: Vec<crate::mcp_servers::FieldError>,
+            }
+            let inv: Invalid =
+                serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))?;
+            return Ok(crate::mcp_servers::ProbeOutcome::Invalid(inv.errors));
+        }
+        Ok(crate::mcp_servers::ProbeOutcome::Report(Self::decode(
+            resp,
+        )?))
+    }
+
+    /// `GET /mcp/servers` — the servers the running sidecar loaded (never URLs or env).
+    pub fn mcp_servers_status(&self) -> Result<serde_json::Value> {
+        let bearer = self.bearer()?;
+        let resp = self
+            .control
+            .get(&format!("{}/mcp/servers", self.control_url()), &bearer)?;
+        Self::decode(resp)
+    }
+
     // --- HUP-S1.1c agent sessions (ADR loop-in-sidecar) -----------------------------------------
 
     fn check(resp: ControlResp) -> Result<ControlResp> {
@@ -594,7 +971,88 @@ impl HermesManager {
             .unwrap_or_default()
             .to_string();
         valid_session_id(&id).map_err(HermesError::Decode)?;
+        let with_grants = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|b| b.get("grants").is_some());
+        if with_grants {
+            self.grant_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.clone());
+        }
         Ok(id)
+    }
+
+    /// HUP-S2.1: send `doc` (the whole grant document) to every session opened with grants. A
+    /// session the sidecar no longer has (404) is forgotten; any other refusal is reported. With no
+    /// sidecar running there is nothing to send to.
+    pub fn push_grants(&self, doc: &crate::agent_grants::GrantState) -> GrantsPushOutcome {
+        let mut out = GrantsPushOutcome::default();
+        let ids: Vec<String> = self
+            .grant_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        if ids.is_empty() {
+            return out;
+        }
+        let Ok(bearer) = self.bearer() else {
+            self.grant_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            return out;
+        };
+        let body = match serde_json::to_string(doc) {
+            Ok(b) => b,
+            Err(e) => {
+                out.failed.push(format!("could not encode the grants: {e}"));
+                return out;
+            }
+        };
+        for id in ids {
+            let url = format!("{}/sessions/{id}/grants", self.control_url());
+            match self.control.post(&url, &bearer, &body) {
+                Ok(r) if (200..300).contains(&r.status) => out.updated += 1,
+                Ok(r) if r.status == 404 => {
+                    self.grant_sessions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
+                }
+                Ok(r) => {
+                    let msg: String = serde_json::from_str::<serde_json::Value>(&r.body)
+                        .ok()
+                        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+                        .unwrap_or_else(|| format!("status {}", r.status))
+                        .chars()
+                        .take(200)
+                        .collect();
+                    out.failed.push(format!(
+                        "a Hermes conversation refused the new grants ({msg}), so it has no folder access now"
+                    ));
+                }
+                Err(e) => out
+                    .failed
+                    .push(format!("a Hermes conversation could not be reached ({e})")),
+            }
+        }
+        out
+    }
+
+    /// HUP-S1.5 — `POST /escalations` with a body from `escalation::sidecar_body` (it carries the
+    /// endpoint key for this one request; it is never logged). Returns the raw status + body: the
+    /// caller reads the sidecar's `sent` flag to settle the spend reservation.
+    pub fn escalate(&self, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control.post_with_timeout(
+            &format!("{}/escalations", self.control_url()),
+            &bearer,
+            body,
+            HERMES_ESCALATION_TIMEOUT,
+        )
     }
 
     /// `POST /sessions/:id/messages` — start one turn (the sidecar answers 409 while busy).
@@ -674,6 +1132,20 @@ impl HermesManager {
             &bearer,
             "{}",
         )?)?;
+        Ok(())
+    }
+
+    /// HUP-S10.3: `DELETE /sessions/:id` — close a session (daemon runs close theirs when done).
+    pub fn session_close(&self, id: &str) -> Result<()> {
+        valid_session_id(id).map_err(|m| HermesError::Control {
+            status: 400,
+            msg: m,
+        })?;
+        let bearer = self.bearer()?;
+        Self::check(
+            self.control
+                .delete(&format!("{}/sessions/{id}", self.control_url()), &bearer)?,
+        )?;
         Ok(())
     }
 
@@ -954,36 +1426,22 @@ fn http_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Seed the per-session capsule dir from the bundled starter capsules (first run only). Each bundled
-/// skill dir is copied into `dest` ONLY if a skill of that name is absent — a user's own capsules are
-/// never clobbered. Best-effort: a missing bundled dir or a copy error is skipped, never fatal — the
-/// agent still starts, honestly reporting however many skills it actually has (Rule 1). Returns the
-/// number of skill dirs present in `dest` afterwards (0 is a legitimate, honest outcome).
+/// Seed the per-session capsule dir from the bundled starter capsules. HUP-S2.5: only a capsule whose
+/// `.cps` matches the digest pinned in this build is installed (`capsule_pins`), a seeded copy that no
+/// longer matches is replaced by the verified one, and the member's own capsules are never touched. The
+/// sidecar then verifies each `.cps` signature and content hash again at load. Best-effort: a refused
+/// or failed copy is logged with the reason, never fatal; the agent still starts, honestly reporting
+/// however many skills it actually has (Rule 1). Returns the number of skill dirs present in `dest`
+/// afterwards (0 is a legitimate, honest outcome).
 fn seed_starter_capsules(bundled: &Path, dest: &Path) -> usize {
-    let _ = std::fs::create_dir_all(dest);
-    if let Ok(entries) = std::fs::read_dir(bundled) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let target = dest.join(entry.file_name());
-            if target.exists() {
-                continue; // never overwrite an existing (possibly user-added) skill
-            }
-            if std::fs::create_dir_all(&target).is_ok() {
-                if let Ok(files) = std::fs::read_dir(entry.path()) {
-                    for f in files.flatten() {
-                        if f.path().is_file() {
-                            let _ = std::fs::copy(f.path(), target.join(f.file_name()));
-                        }
-                    }
-                }
-            }
-        }
+    let report = crate::capsule_pins::seed_verified(bundled, dest);
+    for (name, why) in &report.refused {
+        eprintln!("[hermes] starter capsule {name} not installed: {why}");
     }
-    std::fs::read_dir(dest)
-        .map(|e| e.flatten().filter(|x| x.path().is_dir()).count())
-        .unwrap_or(0)
+    for name in &report.repaired {
+        eprintln!("[hermes] starter capsule {name} did not match its pin; replaced with the verified copy");
+    }
+    report.present
 }
 
 /// Resolve the bundled `hermes` binary (env override → resource dir), honest error if absent.
@@ -1038,6 +1496,16 @@ use std::sync::OnceLock;
 /// binary + the 0600 bearer/crash paths); one instance for the process lifetime.
 static HERMES: OnceLock<HermesManager> = OnceLock::new();
 
+/// HUP-S4.3: whether this session's Hermes sidecar is running (false if never started).
+pub fn sidecar_running() -> bool {
+    HERMES.get().is_some_and(|m| m.is_running())
+}
+
+/// HUP-S1.1 (US-1.1 AC3): the manager, only while its sidecar is running (the headless dispatcher).
+pub(crate) fn running_manager() -> Option<&'static HermesManager> {
+    HERMES.get().filter(|m| m.is_running())
+}
+
 /// Stop the hermes sidecar if this session started it (called on graceful app teardown). Idempotent
 /// and a no-op if it was never started.
 pub fn shutdown() {
@@ -1046,10 +1514,76 @@ pub fn shutdown() {
     }
 }
 
+/// Restart Hermes so a changed spawn setting applies (the terminal-commands switch). A Hermes that
+/// is not started stays stopped (`Ok(false)`) and picks the setting up when it starts. Open
+/// conversations end with the old sidecar; the chat opens a fresh one.
+pub(crate) fn restart_if_running<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<bool, String> {
+    let Some(m) = HERMES.get() else {
+        return Ok(false);
+    };
+    if !m.is_started() {
+        return Ok(false);
+    }
+    m.stop();
+    if let Err(e) = crate::hermes_mcp::sync_for_app(app) {
+        eprintln!("hermes: MCP allowlist not updated: {e}");
+    }
+    m.start_after_restart().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// The embedding server's model file while it runs (the Models screen refuses to delete it).
+pub(crate) fn embed_model_in_use() -> Option<PathBuf> {
+    HERMES
+        .get()
+        .and_then(|m| m.embed.as_ref())
+        .filter(|e| e.is_started())
+        .map(|e| e.model_path().to_path_buf())
+}
+
+/// HUP-S2.1: send the grant document to every open agent session, if the manager exists.
+pub(crate) fn push_grants_to_sessions(doc: &crate::agent_grants::GrantState) -> GrantsPushOutcome {
+    match HERMES.get() {
+        Some(m) => m.push_grants(doc),
+        None => GrantsPushOutcome::default(),
+    }
+}
+
+/// SCL-S0.3: the managed-browser record core keeps for the Hermes sidecar, in a core-only folder
+/// of the app's data that is never passed to the sidecar.
+fn browser_record_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("core-lifecycle")
+        .join(crate::owned_browser::RECORD_FILE))
+}
+
+/// SCL-S0.3: at app launch, stop a managed browser an earlier Hermes sidecar left behind and
+/// remove its profile (the sidecar or this app ended without cleaning it up).
+pub(crate) fn clean_leftover_browser<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Ok(path) = browser_record_path(app) {
+        crate::owned_browser::apply(&path);
+    }
+}
+
+/// HUP-S5.1 + S4.4: the Hermes manager for sibling modules (`browser.rs`, `mcp_servers.rs`).
+pub(crate) fn manager_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<&'static HermesManager, String> {
+    manager(app)
+}
+
 /// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
 /// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
 /// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
-fn manager<R: tauri::Runtime>(
+pub(crate) fn manager<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<&'static HermesManager, String> {
     if let Some(h) = HERMES.get() {
@@ -1068,13 +1602,94 @@ fn manager<R: tauri::Runtime>(
     // instead of an empty catalog (the "running but does nothing" bug). Best-effort; a resolve/copy
     // failure just means fewer skills, honestly reported — never a start failure.
     let capsules_dir = base.join("capsules");
-    if let Ok(res) = app.path().resource_dir() {
+    let resources = app.path().resource_dir().ok();
+    if let Some(res) = &resources {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    // HUP-S3.2: the sidecar's one SKILL.md loader reads the member's saved skills, Citrate's own
+    // bundled skills and the reviewed third-party skills (checked against skills.lock).
+    let skill_sources = crate::hermes_learn::SkillSources {
+        authored: crate::skills_local::authored_skills_dir(
+            &app.path().app_local_data_dir().map_err(|e| e.to_string())?,
+        ),
+        first_party: resources.as_ref().map(|r| r.join("skills")),
+        third_party: resources.as_ref().map(|r| {
+            (
+                r.join("skills-bundle").join("skills.lock"),
+                r.join("skills-bundle"),
+            )
+        }),
+    };
+    // HUP-S3.4: verified self-learning. Proposals and the HIC decision log live under
+    // `hermes/learn`, accepted skills under `hermes/skills`. Nothing is learned unless the member
+    // accepts a proposal backed by a verified workflow run.
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_browser_record(browser_record_path(app)?)
+        .with_capsules_dir(capsules_dir)
+        .with_mcp_config_path(crate::hermes_mcp::config_path(&base))
+        .with_checkpoints_dir(base.join("checkpoints"))
+        .with_learn_dirs(base.join("learn"), base.join("skills"))
+        .with_skill_sources(skill_sources)
+        .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
+        .with_chain_data_dir(base.clone())
+        .with_env_source({
+            // HUP-S5.2/S5.3 web opt-ins and HUP-S6.3 the toolchain switch, read at each start.
+            let web = crate::hermes_web::file_env_source(
+                base.clone(),
+                crate::components::components_root(app).ok(),
+            );
+            let toolchain = crate::forge_toolchain::file_env_source(
+                base.clone(),
+                crate::forge_toolchain::places_for(app)?,
+            );
+            // HUP-S9.3: verified-trajectory recording, only when the member turned it on.
+            let trajectories = crate::fl_trajectories::file_env_source(base.clone());
+            // Terminal commands (shell_run): `1` when the member's switch is on (the default),
+            // pinned empty when off.
+            let terminal = crate::hermes_terminal::file_env_source(base.clone());
+            std::sync::Arc::new(move || {
+                let mut env = web();
+                env.extend(toolchain());
+                env.extend(trajectories());
+                env.extend(terminal());
+                env
+            })
+        });
+    // HUP-S1.2 / US-1.4: the bundled BGE model on a second, embedding-only llama-server. Only
+    // when both the model and the llama-server binary are present; the pin is checked at start.
+    let mgr = match (
+        crate::embed_serve::resolve_model(resources.as_deref()),
+        crate::serve::resolve_llama_bin(app).ok(),
+    ) {
+        (Some(model), Some(llama)) if model.exists() && llama.exists() => {
+            mgr.with_embed(crate::embed_serve::EmbedServer::new(
+                llama,
+                model,
+                crate::embed_serve::EMBED_PORT,
+                base.join("embed.key"),
+                base.join("embed-crashes.log"),
+            ))
+        }
+        _ => mgr,
+    };
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
+}
+
+/// HUP-S1.5 — run one escalation through the sidecar. `Err(false)`: nothing reached the sidecar
+/// (it is not running), so nothing was sent; `Err(true)`: the call failed in flight, so the request
+/// may have reached the provider.
+pub(crate) fn sidecar_escalate<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    body: &str,
+) -> std::result::Result<(u16, String), bool> {
+    let mgr = manager(app).map_err(|_| false)?;
+    match mgr.escalate(body) {
+        Ok(r) => Ok((r.status, r.body)),
+        Err(HermesError::NotRunning) => Err(false),
+        Err(_) => Err(true),
+    }
 }
 
 /// Start the sidecar (idempotent). Returns the local lifecycle status.
@@ -1087,6 +1702,11 @@ pub async fn hermes_start(app_h: tauri::AppHandle) -> std::result::Result<Hermes
 /// Blocking body of [`hermes_start`]; reached only through [`crate::blocking::off_main`].
 pub fn hermes_start_sync(app: tauri::AppHandle) -> std::result::Result<HermesStatus, String> {
     let m = manager(&app)?;
+    // HUP-S4.3: bring the MCP allowlist in line with the member's settings before the child reads
+    // it. A write failure means no MCP this session (logged), never a failed start.
+    if let Err(e) = crate::hermes_mcp::sync_for_app(&app) {
+        eprintln!("hermes: MCP allowlist not updated: {e}");
+    }
     m.start().map_err(|e| e.to_string())?;
     Ok(m.status())
 }
@@ -1475,12 +2095,14 @@ fn session_tool_annotations(
 /// untrusted content) resolves only through the member's explicit Approve/Decline click, with no
 /// automatic or budget route (pinned by `src/shell/hicApproval.test.ts`). Any future budget path
 /// (HUP-S2.3) must keep refusing hic-required calls, or this flag must come off.
+/// `context_tokens` is the running llama-server's planned `--ctx-size` (HUP-S1.6).
 pub fn build_session_body(
     system_prompt: &str,
     tools_json: &str,
     base_url: &str,
     bearer: &str,
     model: &str,
+    context_tokens: u32,
 ) -> std::result::Result<String, String> {
     let raw: serde_json::Value =
         serde_json::from_str(tools_json).map_err(|_| "tools must be a JSON array".to_string())?;
@@ -1528,10 +2150,93 @@ pub fn build_session_body(
         // HUP-S1.2: the sidecar offers only the relevant tools per request and keeps every prompt
         // inside the local model's real context window (llama-server --ctx-size).
         "maxToolsPerRequest": 8,
-        "contextTokens": crate::serve::DEFAULT_CTX_SIZE,
+        "contextTokens": context_tokens,
+        // HUP-S1.6: the same per-turn reply cap as direct chat, never more than a quarter of the
+        // window so a small window still leaves room for the prompt.
+        "maxTokens": crate::ai::AI_MAX_TOKENS.min(context_tokens / 4),
         "hicAware": true,
     })
     .to_string())
+}
+
+/// HUP-S10.3 — the body for a DAEMON run's session: exactly the chat body plus `unattended: true`,
+/// so the sidecar starts the session in the HIC downgrade (every effectful call needs the member's
+/// explicit decision from the first step). A sidecar that predates the flag ignores it; core marks
+/// every effectful daemon call HIC-required on its own as well (`src/daemons/runner.ts`).
+pub fn build_daemon_session_body(
+    system_prompt: &str,
+    tools_json: &str,
+    base_url: &str,
+    bearer: &str,
+    model: &str,
+    context_tokens: u32,
+) -> std::result::Result<String, String> {
+    let body = build_session_body(
+        system_prompt,
+        tools_json,
+        base_url,
+        bearer,
+        model,
+        context_tokens,
+    )?;
+    let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("unattended".into(), serde_json::Value::Bool(true));
+    }
+    Ok(v.to_string())
+}
+
+/// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
+type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
+
+/// Open a session on the local model with the body `build` makes (chat or daemon).
+fn open_local_session(
+    app: &tauri::AppHandle,
+    system_prompt: &str,
+    tools_json: &str,
+    build: SessionBodyFn,
+) -> std::result::Result<String, String> {
+    let serve = tauri::Manager::try_state::<crate::serve::ServeState>(app)
+        .ok_or("internal: serve state unavailable")?;
+    if !serve.0.is_running() {
+        return Err(
+            "the local model isn't running yet. Start it from Models, then try again.".into(),
+        );
+    }
+    let key = serve.0.api_key();
+    let body = build(
+        system_prompt,
+        tools_json,
+        &serve.0.base_url(),
+        key.as_str(),
+        &serve.0.current_model_file(),
+        serve.0.ctx_size(),
+    )?;
+    manager(app)?.session_open(&body).map_err(|e| e.to_string())
+}
+
+/// **hermes_session_open_unattended** — open a sidecar session for a scheduled daemon run, on the
+/// LOCAL model only (a daemon's spend budget is 0).
+#[tauri::command]
+pub async fn hermes_session_open_unattended(
+    app: tauri::AppHandle,
+    system_prompt: String,
+    tools_json: String,
+) -> std::result::Result<String, String> {
+    crate::blocking::off_main(move || {
+        open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
+    })
+    .await
+}
+
+/// **hermes_session_close** — close a sidecar session (a finished daemon run).
+#[tauri::command]
+pub async fn hermes_session_close(
+    app: tauri::AppHandle,
+    id: String,
+) -> std::result::Result<(), String> {
+    crate::blocking::off_main(move || manager(&app)?.session_close(&id).map_err(|e| e.to_string()))
+        .await
 }
 
 /// **hermes_session_open** — open a sidecar agent session on the LOCAL model. The endpoint + key are
@@ -1541,6 +2246,10 @@ pub async fn hermes_session_open(
     app: tauri::AppHandle,
     system_prompt: String,
     tools_json: String,
+    // HUP-S3.3: the member's persona (a shipped id, or a member-defined one). Absent = none, and
+    // the body is unchanged.
+    persona: Option<String>,
+    custom_persona: Option<personas::CustomPersonaInput>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app)
@@ -1557,10 +2266,18 @@ pub async fn hermes_session_open(
             &serve.0.base_url(),
             key.as_str(),
             &serve.0.current_model_file(),
+            serve.0.ctx_size(),
         )?;
-        manager(&app)?
-            .session_open(&body)
-            .map_err(|e| e.to_string())
+        let body =
+            personas::with_session_persona(&body, persona.as_deref(), custom_persona.as_ref())?;
+        // HUP-S2.1: the member's folder grants travel with the session (an unreadable grant file
+        // sends an empty document: no folder access). Opened under the grant store's lock, so a
+        // change saved meanwhile is still sent to this session.
+        let store = crate::agent_grants::GrantStore::for_app(&app)?;
+        let m = manager(&app)?;
+        crate::agent_grants::open_with_grants(&store, &body, |b| {
+            m.session_open(b).map_err(|e| e.to_string())
+        })
     })
     .await
 }
@@ -1580,7 +2297,8 @@ pub async fn hermes_session_send(
     .await
 }
 
-/// **hermes_session_events** — long-poll the session's event log after `after`.
+/// **hermes_session_events** — long-poll the session's event log after `after` (the chat view's
+/// read: it renews the view's lease on the session, see `hermes_headless`).
 #[tauri::command]
 pub async fn hermes_session_events(
     app: tauri::AppHandle,
@@ -1589,9 +2307,12 @@ pub async fn hermes_session_events(
     wait_ms: u64,
 ) -> std::result::Result<serde_json::Value, String> {
     crate::blocking::off_main(move || {
-        manager(&app)?
+        let page = manager(&app)?
             .session_events(&id, after, wait_ms)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // HUP-S1.1 (US-1.1 AC3): the view is watching this session; calls it is shown are its own,
+        // and a call the headless dispatcher already answered is marked so the view skips it.
+        Ok(crate::hermes_headless::LEASES.view_page(&id, page, std::time::Instant::now()))
     })
     .await
 }
@@ -1606,6 +2327,9 @@ pub async fn hermes_session_tool_result(
     content: String,
 ) -> std::result::Result<(), String> {
     crate::blocking::off_main(move || {
+        // HUP-S1.1 (US-1.1 AC3): the view is still driving this session. Renewed BEFORE the post,
+        // so the next call the result unblocks stays the view's (the lease is fresh when it lands).
+        crate::hermes_headless::LEASES.view_answered(&id, &call_id, std::time::Instant::now());
         manager(&app)?
             .session_tool_result(&id, &call_id, &status, &content)
             .map_err(|e| e.to_string())
@@ -1623,6 +2347,20 @@ pub async fn hermes_session_stop(
         .await
 }
 
+// HUP-S3.3 + S3.7: personas + track workflows (child module: reuses the bearer-authed control).
+#[path = "hermes_personas.rs"]
+pub mod personas;
+
+// HUP-S2.2: the member's decision on a `shell_run` command the sidecar holds (child module: reuses
+// the bearer-authed control).
+#[path = "hermes_shell.rs"]
+pub mod shell;
+
+// HUP-S4.1: the member's decision on an MCP card the sidecar holds (child module: reuses the
+// bearer-authed control).
+#[path = "hermes_mcp_cards.rs"]
+pub mod mcp_cards;
+
 #[cfg(test)]
 mod brief_tests {
     include!("hermes_brief_tests.rs");
@@ -1636,4 +2374,14 @@ mod session_tests {
 #[cfg(test)]
 mod tests {
     include!("hermes_tests.rs");
+}
+
+#[cfg(test)]
+mod daemon_session_tests {
+    include!("hermes_daemon_tests.rs");
+}
+
+#[cfg(all(test, unix))]
+mod browser_cleanup_tests {
+    include!("hermes_browser_tests.rs");
 }

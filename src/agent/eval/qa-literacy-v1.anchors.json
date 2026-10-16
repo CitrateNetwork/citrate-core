@@ -1,0 +1,137 @@
+{
+  "version": "qa-literacy-v1",
+  "sources": {
+    "citrate-docs": {
+      "repo": "CitrateNetwork/citrate-docs",
+      "commit": "73ea7c56bc2087058ecc58eae5dbf734c86da072",
+      "files": {
+        "content/chain/precompiles-zkp.md": {
+          "blob": "ab54b2a85bc899800c2911a87c86167a646dd3c1",
+          "anchors": [
+            "what-it-is",
+            "verification-0x0107-to-0x0109",
+            "hosted-inference-0x0100-to-0x0106",
+            "deterministic-q1616-compute-0x010a-to-0x010f",
+            "attestation-gate",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/precompiles.md": {
+          "blob": "4d4d3cf0f43a3b60225c06a1bfcb44ad83bc0c9e",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "tensor-primitives",
+            "x402-payment-precompiles",
+            "belnap-q16-lattice-aggregation",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/compute/agent-runtime.md": {
+          "blob": "a987035d3035356cc7edb15ca59361b97bb1969a",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "the-diagnostic-citrate-agent-doctor",
+            "the-recorder-recorderclient",
+            "the-approval-gate-approvalqueue",
+            "the-cron-daemon-and-tripwires",
+            "the-capsule-loader",
+            "environment-variables",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/research/paraconsistent.md": {
+          "blob": "5dc8cc29ba1b89b8f99f33eb387471060cd97777",
+          "anchors": [
+            "what-it-is",
+            "the-four-values",
+            "how-the-implementation-works",
+            "how-it-maps-to-the-network",
+            "reference",
+            "design-rationale",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        }
+      }
+    },
+    "citrate-chain": {
+      "repo": "CitrateNetwork/citrate-chain",
+      "commit": "0aab474b437389ccd54c41c26378f1b3197ec4e5",
+      "files": {
+        "core/learning/ARCHITECTURE.md": {
+          "blob": "5b444180da156d476c9c2f2eec4c4d3ff154fe2a",
+          "anchors": [
+            "paraconsensus-architecture-document",
+            "1-executive-summary",
+            "2-canonical-protocol-parameters",
+            "21-consensus-parameters-inherited-from-paper-i",
+            "22-learning-protocol-parameters-paper-ii-table-a2",
+            "23-current-config-implementation-vs-paper",
+            "3-formal-definitions-paper-ii-3",
+            "definition-1-belnap-four-bilattice",
+            "definition-2-embedding-space",
+            "definition-3-similarity-metric",
+            "definition-4-knowledge-state",
+            "definition-5-classification-function-φ-paper-ii-31",
+            "definition-6-aggregation-rule-paper-ii-32",
+            "definition-7-routing-function-paper-ii-42",
+            "4-algorithms-paper-ii-3-5",
+            "algorithm-1-paraconsistent-aggregation",
+            "algorithm-2-routing",
+            "algorithm-3-three-phase-learning-protocol-paper-ii-43",
+            "algorithm-4-adapter-creation-paper-ii-5",
+            "algorithm-5-adapter-verification",
+            "5-theorems",
+            "theorem-1-bounded-regression-under-perfect-routing-paper-ii-53",
+            "theorem-2-adapter-composition-paper-ii-52",
+            "theorem-3-safety-invariant-paper-ii-71",
+            "6-extended-block--checkpoint-structure-paper-ii-61-41",
+            "61-extended-block-fields-optional",
+            "62-extended-checkpoint-fields",
+            "7-integration-points-with-existing-codebase",
+            "71-consensus--learning-read-only",
+            "72-learning--consensus-write--must-preserve-safety",
+            "73-learning--node-integration",
+            "8-sprint-plan-cross-check",
+            "81-gaps-identified",
+            "82-sprint-by-sprint-validation",
+            "sprint-l-paraconsensus-foundation-44-pts",
+            "sprint-m-aggregation--checkpoints-37-pts",
+            "sprint-n-routing--phase-transitions-44-pts",
+            "sprint-o-adapters--verification-55-pts",
+            "9-recommended-sprint-amendments",
+            "amendment-1-add-wp-l7--belnap-classification-function-φ-3-pts--applied",
+            "amendment-2-extend-wp-m1--dual-output-aggregation-3-pts--applied",
+            "amendment-3-add-wp-m2b--block--checkpoint-learning-fields-5-pts--applied",
+            "amendment-4-extend-wp-n1--router-takes-state-vector-3-pts--applied",
+            "amendment-5-add-wp-n2b--macro-phase-state-machine-3-pts--applied",
+            "amendment-6-fix-config-default-0-pts--trivial--applied",
+            "lora--confidence-gating-gap-8--additional--applied",
+            "10-data-flow-architecture",
+            "11-safety-architecture",
+            "111-critical-invariant",
+            "112-defense-in-depth",
+            "113-failure-modes",
+            "12-file-map",
+            "13-verification-plan",
+            "131-test-categories",
+            "132-experimental-hypotheses-paper-ii-8"
+          ]
+        }
+      }
+    }
+  }
+}

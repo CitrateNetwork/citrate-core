@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "note": "Pinned Solidity dependencies for the HUP templates. Recorded here and in every rendered citrate-template.lock.json; the renderer never fetches them. The toolchain bundle (HUP-S6.1) vendors these exact commits; scripts/verify-templates.sh fetches them for the template gate and checks each commit.",
+  "solc": "0.8.36",
+  "evm_version": "cancun",
+  "deps": {
+    "openzeppelin-contracts": {
+      "url": "https://github.com/OpenZeppelin/openzeppelin-contracts",
+      "tag": "v5.7.0",
+      "commit": "cab19933c33c2ad1d4c7a84864a3601dddfd16f3",
+      "license": "MIT",
+      "dir": "lib/openzeppelin-contracts"
+    },
+    "solady": {
+      "url": "https://github.com/Vectorized/solady",
+      "tag": "v0.1.26",
+      "commit": "acd959aa4bd04720d640bf4e6a5c71037510cc4b",
+      "license": "MIT",
+      "dir": "lib/solady"
+    },
+    "forge-std": {
+      "url": "https://github.com/foundry-rs/forge-std",
+      "tag": "v1.17.0",
+      "commit": "f3dae6e6ee381f25eb6a246f7da9b85c91a68219",
+      "license": "MIT OR Apache-2.0",
+      "dir": "lib/forge-std"
+    }
+  }
+}

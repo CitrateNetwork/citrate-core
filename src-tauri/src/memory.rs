@@ -175,6 +175,14 @@ pub struct MemoryHit {
     /// A non-active lifecycle marker if the daemon flagged one ("SUPERSEDED"/…).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// HUP-S3.1: `<repo>:<path>[#<anchor>]` for a document passage, when the
+    /// search asked for passages (`memory.search {passages: true}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cite: Option<String>,
+    /// HUP-S3.1: the hit's full text (the daemon caps it), when the search
+    /// asked for passages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passage: Option<String>,
 }
 
 /// The result of a recall/search: the tenant, the total node count the daemon
@@ -316,11 +324,34 @@ fn parse_tool_response(line: &str) -> Result<String> {
 /// is `  <id10> [<score> ][<kind><status>] <title>`.
 pub fn parse_result(tenant: &str, text: &str) -> MemoryResult {
     let mut total_in_tenant = 0u64;
-    let mut hits = Vec::new();
+    let mut hits: Vec<MemoryHit> = Vec::new();
     for raw in text.lines() {
         let line = raw.trim_end();
         if let Some(n) = parse_tenant_total(line) {
             total_in_tenant = n;
+            continue;
+        }
+        // HUP-S3.1 passages rendering: `    cite: …` and `    > …` lines belong
+        // to the hit above them.
+        if let Some(cite) = line.strip_prefix("    cite: ") {
+            if let Some(h) = hits.last_mut() {
+                h.cite = Some(cite.trim().to_string());
+            }
+            continue;
+        }
+        if let Some(quoted) = line
+            .strip_prefix("    > ")
+            .or_else(|| (line == "    >").then_some(""))
+        {
+            if let Some(h) = hits.last_mut() {
+                match h.passage.as_mut() {
+                    Some(p) => {
+                        p.push('\n');
+                        p.push_str(quoted);
+                    }
+                    None => h.passage = Some(quoted.to_string()),
+                }
+            }
             continue;
         }
         if let Some(hit) = parse_hit_line(line) {
@@ -358,7 +389,7 @@ fn parse_tenant_total(line: &str) -> Option<u64> {
 /// Parse one hit line: `  <id10> [<score> ][<kind><status>] <title>`. The score
 /// is optional; the bracket carries `kind` plus an optional ` ⚠SUPERSEDED` /
 /// ` (archived)` status the daemon appended.
-fn parse_hit_line(line: &str) -> Option<MemoryHit> {
+pub(crate) fn parse_hit_line(line: &str) -> Option<MemoryHit> {
     let l = line.trim_start();
     // Hit lines are indented (start with two spaces) and carry a `[` bracket.
     if !line.starts_with("  ") || !l.contains('[') {
@@ -385,6 +416,8 @@ fn parse_hit_line(line: &str) -> Option<MemoryHit> {
         kind,
         title,
         status,
+        cite: None,
+        passage: None,
     })
 }
 
@@ -470,6 +503,9 @@ pub struct MemoryManager {
     /// (bootstrap a fresh store to BGE for real semantic recall). `None` → the
     /// daemon has no embedder available and stays lexical (honest).
     model_dir: Option<PathBuf>,
+    /// HUP-S3.4 (fan-out 7): the learned-memory ledger. Recall and search leave out learned
+    /// memories with an unresolved contradiction (`hermes_learn::RecallHide`).
+    learned_ledger: Option<PathBuf>,
 }
 
 /// The bridge status shape surfaced to the MemoryDomain seam. PUBLIC facts only —
@@ -520,7 +556,23 @@ impl MemoryManager {
             transport,
             sup: Mutex::new(None),
             model_dir: None,
+            learned_ledger: None,
         }
+    }
+
+    /// HUP-S3.4 (fan-out 7): the learned-memory ledger recall and search read to leave out
+    /// learned memories with an unresolved contradiction. Builder style, like the model dir.
+    pub fn with_learned_ledger(mut self, ledger: Option<PathBuf>) -> Self {
+        self.learned_ledger = ledger;
+        self
+    }
+
+    /// Leave out learned memories with an unresolved contradiction (when a ledger is set).
+    fn hide_unresolved(&self, mut r: MemoryResult) -> MemoryResult {
+        if let Some(p) = &self.learned_ledger {
+            crate::hermes_learn::RecallHide::load(p).filter(&mut r);
+        }
+        r
     }
 
     /// Set the bundled BGE model dir (enables real semantic embedding). Builder
@@ -590,15 +642,40 @@ impl MemoryManager {
         // store to BGE (CITRATE_MEM_EMBED=bge) so semantic recall is real, not
         // lexical. Absent the model, neither is set and the daemon stays lexical
         // (honest — `semantic` in the status reflects this).
-        if let Some(dir) = &self.model_dir {
-            spec.env.push((
-                "CITRATE_BGE_MODEL_DIR".to_string(),
-                dir.to_string_lossy().to_string(),
-            ));
-            spec.env
-                .push(("CITRATE_MEM_EMBED".to_string(), "bge".to_string()));
-        }
+        spec.env.extend(self.embedder_env());
         spec
+    }
+
+    /// The embedder environment the daemon gets: the bundled BGE model dir +
+    /// `CITRATE_MEM_EMBED=bge` when the model is present, else nothing (lexical).
+    /// HUP-S3.1: the knowledge-corpus importer gets the same, so imported nodes
+    /// are embedded in the same space the daemon searches.
+    pub(crate) fn embedder_env(&self) -> Vec<(String, String)> {
+        match &self.model_dir {
+            Some(dir) => vec![
+                (
+                    "CITRATE_BGE_MODEL_DIR".to_string(),
+                    dir.to_string_lossy().to_string(),
+                ),
+                ("CITRATE_MEM_EMBED".to_string(), "bge".to_string()),
+            ],
+            None => Vec::new(),
+        }
+    }
+
+    /// HUP-S3.1: the bundled `mem-mcp` binary (it also implements `import-corpus`).
+    pub(crate) fn daemon_bin(&self) -> &std::path::Path {
+        &self.bin
+    }
+
+    /// HUP-S3.1: the per-user store dir the importer writes.
+    pub(crate) fn store_path(&self) -> &std::path::Path {
+        &self.store_path
+    }
+
+    /// HUP-S3.1: whether a supervisor is live (the importer needs the store lock).
+    pub(crate) fn is_running_now(&self) -> bool {
+        self.sup.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
     /// Start the daemon under the supervisor. Idempotent-ish: `AlreadyRunning`
@@ -609,6 +686,14 @@ impl MemoryManager {
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(MemoryError::AlreadyRunning);
+        }
+        // v0.5.0 C3: a running knowledge importer holds the store's RocksDB lock, so a
+        // daemon started now could not open it (and would crash-loop). The import
+        // restarts the daemon itself when it finishes.
+        if crate::knowledge_import::ImportRegistry::global().holds_store(&self.store_path) {
+            return Err(MemoryError::Spawn(
+                "the knowledge import is still writing the memory store; the memory daemon starts when it finishes".into(),
+            ));
         }
         if !self.bin.exists() {
             return Err(MemoryError::BinaryNotFound(self.bin.display().to_string()));
@@ -664,7 +749,7 @@ impl MemoryManager {
 
     /// Whether the supervisor believes the daemon is `Running` (so a socket call
     /// is worth attempting). Not `pub` — callers use recall/search/neighbors.
-    fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         matches!(
             guard.as_ref().map(|s| s.status().state),
@@ -679,7 +764,7 @@ impl MemoryManager {
         let text = self
             .transport
             .call_tool("memory.recall", json!({ "repo": tenant, "budget": budget }))?;
-        Ok(parse_result(tenant, &text))
+        Ok(self.hide_unresolved(parse_result(tenant, &text)))
     }
 
     /// `memory.assert` — author a claim into a tenant (W3.2 docs preload). The
@@ -890,13 +975,55 @@ impl MemoryManager {
         })
     }
 
+    /// HUP-S3.4: `memory.propose_edge` — record a QUARANTINED edge between two nodes (advisory,
+    /// never load-bearing until confirmed). Used to link a learned memory to the one it
+    /// contradicts, so both stay visible and neither is merged away.
+    pub fn propose_edge(
+        &self,
+        from_prefix: &str,
+        to_prefix: &str,
+        kind: &str,
+        evidence: &str,
+    ) -> Result<String> {
+        self.transport.call_tool(
+            "memory.propose_edge",
+            json!({ "from_prefix": from_prefix, "to_prefix": to_prefix, "kind": kind, "evidence": evidence }),
+        )
+    }
+
+    /// HUP-S3.4: `memory.confirm_edge` — promote a quarantined edge to load-bearing. A confirmed
+    /// `supersedes` edge retires its target (status transition in the daemon). Used when the
+    /// member resolves a contradiction between learned memories: the kept memory supersedes the
+    /// one set aside.
+    pub fn confirm_edge(&self, from_prefix: &str, to_prefix: &str, kind: &str) -> Result<String> {
+        self.transport.call_tool(
+            "memory.confirm_edge",
+            json!({ "from_prefix": from_prefix, "to_prefix": to_prefix, "kind": kind }),
+        )
+    }
+
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
     pub fn search(&self, tenant: &str, query: &str, budget: usize) -> Result<MemoryResult> {
-        let text = self.transport.call_tool(
-            "memory.search",
-            json!({ "repo": tenant, "query": query, "budget": budget }),
-        )?;
-        Ok(parse_result(tenant, &text))
+        self.search_with(tenant, query, budget, false)
+    }
+
+    /// [`Self::search`]; with `passages`, each hit also carries its text and, for
+    /// a document, its citation (HUP-S3.1: answering from the bundled knowledge
+    /// corpus). A daemon that predates passages ignores the flag and returns
+    /// titles only, which parse the same way.
+    pub fn search_with(
+        &self,
+        tenant: &str,
+        query: &str,
+        budget: usize,
+        passages: bool,
+    ) -> Result<MemoryResult> {
+        let mut args = json!({ "repo": tenant, "query": query, "budget": budget });
+        if passages {
+            args["passages"] = json!(true);
+        }
+        let text = self.transport.call_tool("memory.search", args)?;
+        Ok(self.hide_unresolved(parse_result(tenant, &text)))
     }
 
     /// `memory.neighbors` of a node prefix in a tenant → parsed edges.
@@ -943,7 +1070,7 @@ pub struct MemoryState(pub MemoryManager);
 /// approach as the node/agent): `CITRATE_MEM_MCP_BIN` override first (dev/tests),
 /// else the Tauri resource dir (`externalBin` strips the target-triple suffix to
 /// `mem-mcp`).
-fn resolve_mem_mcp_bin<R: tauri::Runtime>(
+pub(crate) fn resolve_mem_mcp_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CITRATE_MEM_MCP_BIN") {
@@ -1026,7 +1153,8 @@ pub fn build_memory_state<R: tauri::Runtime>(
             crash_record_path,
             transport,
         )
-        .with_model_dir(model_dir),
+        .with_model_dir(model_dir)
+        .with_learned_ledger(crate::hermes_learn::ledger_path(app).ok()),
     ))
 }
 
@@ -1201,12 +1329,13 @@ pub async fn memory_search(
     tenant: String,
     query: String,
     budget: Option<usize>,
+    passages: Option<bool>,
 ) -> std::result::Result<MemoryResult, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
         let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        memory_search_sync(st0, tenant, query, budget)
+        memory_search_sync(st0, tenant, query, budget, passages)
     })
     .await
 }
@@ -1217,10 +1346,16 @@ pub fn memory_search_sync(
     tenant: String,
     query: String,
     budget: Option<usize>,
+    passages: Option<bool>,
 ) -> std::result::Result<MemoryResult, String> {
     state
         .0
-        .search(&tenant, &query, budget.unwrap_or(10))
+        .search_with(
+            &tenant,
+            &query,
+            budget.unwrap_or(10),
+            passages.unwrap_or(false),
+        )
         .map_err(|e| e.to_string())
 }
 

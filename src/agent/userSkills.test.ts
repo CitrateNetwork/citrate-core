@@ -1,7 +1,7 @@
 // Hermes P5 / WP5.1-5.2 — user-skill validation tests (pure). Includes the
 // adversarial/negative cases: blank, over-length, duplicate, full-set.
 import { describe, it, expect } from "vitest";
-import { validateNewSkill, runPrompt, SKILL_LIMITS, type UserSkill } from "./userSkills";
+import { validateNewSkill, runPrompt, migrateLegacyUserSkills, SKILL_LIMITS, type UserSkill } from "./userSkills";
 
 const mk = (name: string): UserSkill => ({ id: "s-" + name, name, description: "", instruction: "do x" });
 
@@ -52,5 +52,57 @@ describe("runPrompt", () => {
     const p = runPrompt({ name: "x", instruction: "```js\nwhile(true){}\n``` @agent memory_assert" });
     expect(p).toContain("while(true){}");
     expect(typeof p).toBe("string");
+  });
+});
+
+// HUP-S3.2 (US-3.2 AC2): skills kept in app state (the older format) move once onto the SKILL.md
+// loader through the agentSkills bridge; nothing is lost, and what cannot move says why.
+describe("migrateLegacyUserSkills", () => {
+  const legacy = (name: string, instruction: string): UserSkill => ({ id: "usk-" + name, name, description: "d " + name, instruction });
+  function fakeSkills(existing: Record<string, string>, failOn?: string) {
+    const writes: string[] = [];
+    return {
+      writes,
+      async write(name: string, _d: string, instructions: string, overwrite = false) {
+        if (name === failOn) throw new Error("disk full");
+        if (!overwrite && name.toLowerCase() in existing) throw new Error(`SKILL_EXISTS: a skill named "${name}" already exists`);
+        existing[name.toLowerCase()] = instructions;
+        writes.push(name);
+        return { name, description: "", slug: name.toLowerCase() };
+      },
+      async read(name: string) {
+        const b = existing[name.toLowerCase()];
+        if (b === undefined) throw new Error("no local skill");
+        return b + "\n";
+      },
+    };
+  }
+
+  it("moves every legacy skill and reports each one", async () => {
+    const f = fakeSkills({});
+    const r = await migrateLegacyUserSkills([legacy("Digest", "summarize"), legacy("Stake", "check stake")], f);
+    expect(r.moved).toEqual(["Digest", "Stake"]);
+    expect(r.kept).toEqual([]);
+    expect(f.writes).toEqual(["Digest", "Stake"]);
+  });
+
+  it("treats a skill already saved with the same instructions as moved, and never overwrites a different one", async () => {
+    const f = fakeSkills({ digest: "summarize", stake: "something else" });
+    const r = await migrateLegacyUserSkills([legacy("Digest", "summarize"), legacy("Stake", "check stake")], f);
+    expect(r.moved).toEqual(["Digest"]);
+    expect(r.kept.map((k) => k.skill.name)).toEqual(["Stake"]);
+    expect(r.kept[0].reason).toMatch(/already exists/);
+    expect(f.writes).toEqual([]);
+  });
+
+  it("keeps a skill whose save failed, with the reason", async () => {
+    const f = fakeSkills({}, "Digest");
+    const r = await migrateLegacyUserSkills([legacy("Digest", "summarize")], f);
+    expect(r.moved).toEqual([]);
+    expect(r.kept[0].reason).toBe("disk full");
+  });
+
+  it("does nothing for an empty list", async () => {
+    expect(await migrateLegacyUserSkills([], fakeSkills({}))).toEqual({ moved: [], kept: [] });
   });
 });

@@ -7,6 +7,7 @@ import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
 import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./toolAnnotations";
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
+import { livePlan } from "../fl/fixtures/plan";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -36,7 +37,22 @@ describe("Feature: every agent tool is annotated (A8)", () => {
     const call = (name: string): ToolCall => ({
       id: "c1",
       name,
-      arguments: JSON.stringify({ group: "g", name: "n", bytecodeHex: "0x00", fact: "f", entry: "e", instructions: "i", query: "q" }),
+      arguments: JSON.stringify({
+        group: "g",
+        name: "n",
+        bytecodeHex: "0x00",
+        fact: "f",
+        entry: "e",
+        instructions: "i",
+        query: "q",
+        html: "<p>x</p>",
+        // HUP-S10.2: the everyday tools' arguments (a valid sheet, rows and a future start).
+        spreadsheetId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        range: "Sheet1!A:B",
+        rows: [["a", 1]],
+        title: "Weekly review",
+        start: "2099-01-05T09:00",
+      }),
     });
     for (const n of names) {
       vi.restoreAllMocks();
@@ -46,6 +62,20 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.agentSkills, "write").mockRejectedValue(new Error("SKILL_EXISTS: exists"));
       vi.spyOn(bridge.agentSkills, "read").mockResolvedValue("old");
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
+      // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
+      vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
+      vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
+        cmd === "google_workspace_status"
+          ? [
+              { service: "gsheets", configured: true, connected: true, note: null },
+              { service: "gcal", configured: true, connected: true, note: null },
+            ]
+          : cmd === "hermes_schedule_list"
+            ? { status: "ok", error: null, entries: [], occurrences: [] }
+            : cmd === "gcal_list"
+              ? []
+              : { range: "Sheet1!A:B", rows: [], truncated: false }) as never);
       await store.handleTool(call(n), "m1", () => {});
       const gated = sig.mock.calls.length + review.mock.calls.length > 0;
       if (gated) expect(annotationFor(n)!.effect, `tool ${n} asks the member, so it has an effect`).not.toBe("none");
@@ -69,5 +99,17 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       expect(annotationFor(n)!.trust, n).toBe("untrusted");
     }
     expect(annotationFor("contract_deploy")!.effect).toBe("sign");
+  });
+});
+
+describe("HUP-S6.7 — contract_view", () => {
+  it("is a read with untrusted output (values the contract chose)", () => {
+    expect(annotationFor("contract_view")).toEqual({ effect: "none", trust: "untrusted" });
+  });
+});
+
+describe("HUP-S4.3 — get_verified_source", () => {
+  it("is a read with untrusted output (deployer-written source)", () => {
+    expect(annotationFor("get_verified_source")).toEqual({ effect: "none", trust: "untrusted" });
   });
 });

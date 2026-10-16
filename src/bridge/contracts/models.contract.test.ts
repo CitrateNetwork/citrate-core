@@ -61,6 +61,19 @@ describe("CX bridge — tauri modelsCatalog invokes the frozen commands (CX-S1.6
     expect(invokeMock).toHaveBeenCalledWith("model_catalog_select", { id: "github:owner/repo/m.gguf@v1.0" });
   });
 
+  it("deleteStates → model_delete_states (no args)", async () => {
+    invokeMock.mockResolvedValueOnce([]);
+    await tauriModelsCatalog.deleteStates();
+    expect(invokeMock).toHaveBeenCalledWith("model_delete_states");
+  });
+
+  it("deleteLocal → model_delete with { file }", async () => {
+    invokeMock.mockResolvedValueOnce({ file: "m.gguf", freedBytes: 5, selectionCleared: false });
+    const out = await tauriModelsCatalog.deleteLocal("m.gguf");
+    expect(invokeMock).toHaveBeenCalledWith("model_delete", { file: "m.gguf" });
+    expect(out.freedBytes).toBe(5);
+  });
+
   it("registry → models_registry_list (no args)", async () => {
     invokeMock.mockResolvedValueOnce([]);
     await tauriModelsCatalog.registry();

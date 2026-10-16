@@ -29,9 +29,12 @@
 //! seed to a 0600 file and forward `CITRATE_CLUSTER_SEED_FILE` + optional `CITRATE_CLUSTER_BOOTSTRAP`, so
 //! the daemon runs the real cross-machine libp2p mesh. This is OFF by default and stays operator-only
 //! until the two-machine soak + the Rule-8 transport sign-off (citrate-cluster Rule 8) — it must not be
-//! flipped on for real partner traffic pre-audit. NOTE: the CL-S1 libp2p transport is one-group-per-daemon
-//! (a per-group swarm reading the same listen addr), so use an ephemeral `/tcp/0` or one group per soak run;
-//! multi-group cross-machine fan-out from this single daemon is a documented follow-on.
+//! flipped on for real partner traffic pre-audit. HUP-S8.4: a cluster-daemon built from citrate-cluster
+//! `hup/n7-cluster-mesh-prereqs` or later serves every group from one process (one swarm per group, each
+//! on its own port derived from the listen address) unless the operator pins it with
+//! `CITRATE_CLUSTER_GROUP`. Machines find each other through group seeds (`cluster_group_seed` /
+//! `cluster_add_seed`, link or QR text) and, only when the operator sets `CITRATE_CLUSTER_MDNS=1`, mDNS
+//! on the local network. Neither admits anyone: the daemon's roster + DeviceLink check still decides.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -41,7 +44,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +65,8 @@ const ENV_SELF_ADDR: &str = "CITRATE_CLUSTER_SELF_ADDR";
 const ENV_LISTEN: &str = "CITRATE_CLUSTER_LISTEN"; // listen multiaddr; its presence SELECTS libp2p
 const ENV_SEED_FILE: &str = "CITRATE_CLUSTER_SEED_FILE"; // 0600 file: the comms secp256k1 seed (Noise id)
 const ENV_BOOTSTRAP: &str = "CITRATE_CLUSTER_BOOTSTRAP"; // optional comma-sep peer multiaddrs to dial
+/// HUP-S8.4: LAN discovery for every group (`1`), forwarded only when the operator sets it here.
+const ENV_MDNS: &str = "CITRATE_CLUSTER_MDNS";
 
 const TOKEN_LEN: usize = 32;
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -136,6 +141,10 @@ pub struct Libp2pOpts {
     /// The comms secp256k1 seed hex — the Noise/peer identity binds to this key (never the wallet).
     /// Written to a 0600 file at start; the daemon reads the PATH, so the secret never crosses env/argv.
     pub seed_hex: Zeroizing<String>,
+    /// HUP-S8.4: LAN discovery (mDNS) in the daemon. Off unless the operator sets
+    /// `CITRATE_CLUSTER_MDNS=1` for this app; mDNS tells the local network this device's PeerId.
+    /// PENDING OWNER SIGN-OFF for any default.
+    pub mdns: bool,
 }
 
 impl ClusterDaemonManager {
@@ -230,6 +239,9 @@ impl ClusterDaemonManager {
             ));
             if let Some(b) = &opts.bootstrap {
                 spec.env.push((ENV_BOOTSTRAP.to_string(), b.clone()));
+            }
+            if opts.mdns {
+                spec.env.push((ENV_MDNS.to_string(), "1".to_string()));
             }
         }
         let sock = self.socket_path.clone();
@@ -333,7 +345,9 @@ fn persist_secret_0600(path: &Path, secret: &str) -> Result<()> {
 }
 
 /// Resolve the bundled `cluster-daemon` binary (env override → resource dir).
-pub fn resolve_cluster_daemon_bin(app: &tauri::AppHandle) -> std::result::Result<PathBuf, String> {
+pub fn resolve_cluster_daemon_bin<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var(CLUSTER_DAEMON_BIN_ENV) {
         let path = PathBuf::from(p);
         if path.exists() {
@@ -359,6 +373,18 @@ enum Request {
     SetRoster {
         group: String,
         roster: Vec<(String, String)>,
+        /// HUP-S8.1: the signed DeviceLinks this machine knows (the daemon verifies them and adds
+        /// each allowed member's devices to the mesh). Omitted when empty, so an older daemon sees
+        /// the exact request it always did.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        devices: Vec<crate::device_link::DeviceLinkWire>,
+        /// HUP-S8.1: member-signed device revocations (sticky in the daemon).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        revocations: Vec<crate::device_link::RevocationWire>,
+    },
+    /// HUP-S8.1: members with their linked devices.
+    Devices {
+        group: String,
     },
     Join {
         group: String,
@@ -376,6 +402,16 @@ enum Request {
         group: String,
         cid: String,
     },
+    /// HUP-S8.4: this node's group seed (link/QR text naming where to dial it for this group).
+    Seed {
+        group: String,
+    },
+    /// HUP-S8.4: dial the peers in a seed another member shared (locations only; admission is still
+    /// the daemon's roster + DeviceLink check at identify).
+    AddSeed {
+        group: String,
+        seed: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -383,6 +419,30 @@ enum Request {
 struct PeerView {
     address: String,
     online: bool,
+    /// HUP-S8.1: the member a device peer acts for (absent for a member's own identity).
+    #[serde(default)]
+    member: Option<String>,
+}
+
+/// HUP-S8.1: one device under a member (mirrors cluster-daemon `DeviceViewWire`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterDeviceDto {
+    device: String,
+    index: u32,
+    label: String,
+    issued_at: u64,
+    online: bool,
+}
+
+/// HUP-S8.1: a member and its devices (mirrors cluster-daemon `MemberDevicesWire`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterMemberDevicesDto {
+    member: String,
+    role: String,
+    online: bool,
+    devices: Vec<ClusterDeviceDto>,
 }
 
 /// A response from the daemon. `type`-tagged; mirrors cluster-daemon::ipc::Response.
@@ -393,6 +453,13 @@ enum Response {
     Reconciled {
         #[allow(dead_code)]
         evicted: Vec<String>,
+        /// HUP-S8.1: links the daemon refused, one secret-free reason each.
+        #[serde(default)]
+        rejected: Vec<String>,
+    },
+    /// HUP-S8.1: answer to [`Request::Devices`].
+    Devices {
+        members: Vec<ClusterMemberDevicesDto>,
     },
     Status {
         online: usize,
@@ -404,6 +471,15 @@ enum Response {
     },
     Peers {
         peers: Vec<PeerView>,
+    },
+    /// HUP-S8.4: answer to [`Request::Seed`].
+    Seed {
+        seed: String,
+        addrs: Vec<String>,
+    },
+    /// HUP-S8.4: answer to [`Request::AddSeed`].
+    Seeded {
+        dialing: usize,
     },
     Error {
         message: String,
@@ -474,20 +550,86 @@ pub struct ClusterStatusDto {
 pub struct ClusterPeerDto {
     address: String,
     online: bool,
+    /// HUP-S8.1: set when this peer is a linked device; the member it acts for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
 // The lazy-start singleton + roster feed from comms.
 // ---------------------------------------------------------------------------
 
-static MANAGER: OnceLock<ClusterDaemonManager> = OnceLock::new();
-/// Serializes first-time manager init so `mgr.start()` (mint bearer → write the bearer file → spawn the
-/// daemon) happens for EXACTLY ONE manager. Without it, two concurrent first calls (e.g. the cluster
-/// tab opening + a roster/file load) each build + start their own manager, spawning two daemons and
-/// overwriting `cluster.bearer`; `get_or_init` then commits one manager whose in-memory bearer no
-/// longer matches the surviving daemon's file → the IPC handshake is rejected "unauthorized". Mirrors
-/// the comms.rs fix (device identity + bearer scheme is the same).
-static MANAGER_INIT: Mutex<()> = Mutex::new(());
+/// A process-wide value that is built once, shared, and can be replaced.
+///
+/// First-time init runs under the slot's lock, so `mgr.start()` (mint bearer → write the bearer file →
+/// spawn the daemon) happens for EXACTLY ONE manager. Without that, two concurrent first calls (e.g.
+/// the cluster tab opening + a roster/file load) each build + start their own manager, spawning two
+/// daemons and overwriting `cluster.bearer`, and the committed manager's bearer no longer matches the
+/// surviving daemon's file → "unauthorized". Mirrors the comms.rs fix.
+///
+/// HUP-S8.1 follow-on: unlike the `OnceLock` it replaces, the slot can be emptied
+/// ([`take_if`](Self::take_if)), so a new mesh identity (this machine just linked, or was removed)
+/// takes effect on the next cluster call instead of after an app restart.
+pub(crate) struct Slot<T> {
+    inner: Mutex<Option<Arc<T>>>,
+}
+
+impl<T> Slot<T> {
+    pub(crate) const fn new() -> Self {
+        Slot {
+            inner: Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Arc<T>>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The current value, if any.
+    pub(crate) fn get(&self) -> Option<Arc<T>> {
+        self.lock().clone()
+    }
+
+    /// The current value, or the one `init` builds (run at most once per empty slot, under the lock).
+    #[cfg(test)]
+    pub(crate) fn get_or_try_insert(
+        &self,
+        init: impl FnOnce() -> std::result::Result<T, String>,
+    ) -> std::result::Result<Arc<T>, String> {
+        self.get_or_try_insert_ensured(init, |_| Ok(()))
+    }
+
+    /// Like [`get_or_try_insert`](Self::get_or_try_insert), and `ensure` runs on the existing value
+    /// under the same lock (e.g. restart a daemon that died). A value [`take_if`](Self::take_if) has
+    /// taken out is therefore never handed to `ensure` again: a reload cannot race a restart of the
+    /// old manager.
+    pub(crate) fn get_or_try_insert_ensured(
+        &self,
+        init: impl FnOnce() -> std::result::Result<T, String>,
+        ensure: impl FnOnce(&T) -> std::result::Result<(), String>,
+    ) -> std::result::Result<Arc<T>, String> {
+        let mut g = self.lock();
+        if let Some(v) = g.as_ref() {
+            ensure(v)?;
+            return Ok(Arc::clone(v));
+        }
+        let v = Arc::new(init()?);
+        *g = Some(Arc::clone(&v));
+        Ok(v)
+    }
+
+    /// Empty the slot when `pred` holds for the current value; returns the value taken out.
+    pub(crate) fn take_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<Arc<T>> {
+        let mut g = self.lock();
+        if g.as_deref().is_some_and(pred) {
+            g.take()
+        } else {
+            None
+        }
+    }
+}
+
+static MANAGER: Slot<ClusterDaemonManager> = Slot::new();
 
 /// Stop the cluster-daemon if this session started it (called on graceful app teardown). Removes the
 /// seed file and drops the mesh cleanly. Idempotent and a no-op if the daemon was never started.
@@ -497,45 +639,99 @@ pub fn shutdown() {
     }
 }
 
-/// The opt-in libp2p transport config, read from citrate-core's OWN env, paired with the comms seed.
-/// `CITRATE_CLUSTER_LISTEN` present → real cross-machine mesh (CL-S3, soak-gated); absent → `None` =
-/// in-process. Kept env-driven (not a UI toggle) so it cannot be flipped on for partner traffic before
-/// the two-machine soak + the Rule-8 transport sign-off.
-fn libp2p_opts_from_env(seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
-    let listen = std::env::var(ENV_LISTEN)
-        .ok()
-        .filter(|s| !s.trim().is_empty())?;
+/// HUP-S8.1 follow-on: when the identity this machine should mesh as has changed (it was just linked,
+/// or its link was removed), stop the running daemon so the next cluster call starts it under the
+/// new identity. No restart of the app. Returns whether a daemon was stopped; a no-op when none runs
+/// or the identity is unchanged.
+pub(crate) fn reload_mesh_identity(app: &tauri::AppHandle) -> std::result::Result<bool, String> {
+    if MANAGER.get().is_none() {
+        return Ok(false);
+    }
+    let want = crate::device_link::mesh_identity(app, libp2p_requested(app))?;
+    match MANAGER.take_if(|m| m.self_addr != want.address) {
+        Some(old) => {
+            old.stop();
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// The opt-in libp2p transport config, paired with the mesh seed. The listen address comes from the
+/// mesh policy (`cluster_mesh::current`): today exactly the operator's `CITRATE_CLUSTER_LISTEN` (CL-S3,
+/// soak-gated), or `None` = in-process. The policy's on-by-default branch stays unreachable until the
+/// CL-S4 transport sign-off and a multi-group daemon are recorded in `cluster_mesh` (HUP-S8.4), so it
+/// cannot be flipped on for partner traffic before the soak + the Rule-8 transport sign-off.
+/// Whether the cross-machine transport is on for this app run.
+fn libp2p_requested(app: &tauri::AppHandle) -> bool {
+    crate::cluster_mesh::current(app).listen.is_some()
+}
+
+fn libp2p_opts(listen: Option<String>, seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
+    let listen = listen.filter(|s| !s.trim().is_empty())?;
     let bootstrap = std::env::var(ENV_BOOTSTRAP)
         .ok()
         .filter(|s| !s.trim().is_empty());
+    let mdns = mdns_requested(std::env::var(ENV_MDNS).ok().as_deref());
     Some(Libp2pOpts {
         listen,
         bootstrap,
         seed_hex,
+        mdns,
     })
+}
+
+/// HUP-S8.4: the operator's `CITRATE_CLUSTER_MDNS`: on only for `1`, `true` or `on` (anything else,
+/// including unset, is off, so a typo never turns discovery on).
+fn mdns_requested(v: Option<&str>) -> bool {
+    matches!(
+        v.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "on")
+    )
+}
+
+/// HUP-S8.4: the longest seed text core forwards (the daemon's own cap, `cluster_core::seed`).
+const MAX_SEED_TEXT: usize = 2048;
+
+/// The seed text as the daemon should see it: trimmed, non-empty, within the cap.
+fn seed_text(seed: &str) -> std::result::Result<String, String> {
+    let s = seed.trim();
+    if s.is_empty() {
+        return Err("Paste the group link first.".into());
+    }
+    if s.len() > MAX_SEED_TEXT {
+        return Err("That group link is too long.".into());
+    }
+    Ok(s.to_string())
+}
+
+/// Whether the cluster daemon is already running (never starts it). For callers that must not start
+/// a daemon as a side effect of a read, such as the node MCP server.
+pub fn is_daemon_running() -> bool {
+    MANAGER.get().is_some_and(|m| m.is_running())
 }
 
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton.
 fn ensure_started(
     app: &tauri::AppHandle,
-) -> std::result::Result<&'static ClusterDaemonManager, String> {
+) -> std::result::Result<Arc<ClusterDaemonManager>, String> {
+    // First-time init and any restart run under the slot's lock: only ONE thread builds + starts +
+    // commits the manager (the surviving daemon's bearer always matches the committed manager's), and
+    // a manager a mesh-identity reload took out is never restarted behind it.
+    MANAGER.get_or_try_insert_ensured(
+        || build_and_start(app),
+        |m| {
+            if !m.is_running() {
+                m.start().map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Build the manager for this machine's current mesh identity and start its daemon.
+fn build_and_start(app: &tauri::AppHandle) -> std::result::Result<ClusterDaemonManager, String> {
     use tauri::Manager;
-    if let Some(m) = MANAGER.get() {
-        if !m.is_running() {
-            m.start().map_err(|e| e.to_string())?;
-        }
-        return Ok(m);
-    }
-    // Serialize first-time init (double-checked): only ONE thread builds + starts + commits the
-    // manager, so the surviving daemon's bearer always matches the committed manager's (no
-    // "unauthorized"). A concurrent caller that lost the race re-reads the committed manager here.
-    let _init = MANAGER_INIT.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(m) = MANAGER.get() {
-        if !m.is_running() {
-            m.start().map_err(|e| e.to_string())?;
-        }
-        return Ok(m);
-    }
     let data_root = app
         .path()
         .app_data_dir()
@@ -543,8 +739,12 @@ fn ensure_started(
         .join("cluster");
     // Identity = the device-sealed COMMS key (comms.rs), NOT the wallet — the roster keys on the comms
     // address, so self_addr and (for libp2p) the Noise seed must be the comms identity to match it.
-    let identity = crate::comms::device_identity(app)?;
-    let libp2p = libp2p_opts_from_env(identity.seed_hex);
+    // HUP-S8.1: when the cross-machine transport is on AND this machine holds an active DeviceLink,
+    // mesh as this machine's own device key instead (its own PeerId; the daemon admits it through
+    // the link). Otherwise nothing changes.
+    let mesh = crate::cluster_mesh::current(app);
+    let identity = crate::device_link::mesh_identity(app, mesh.listen.is_some())?;
+    let libp2p = libp2p_opts(mesh.listen, identity.seed_hex);
     let bin = resolve_cluster_daemon_bin(app)?;
     let mut mgr = ClusterDaemonManager::new(
         bin,
@@ -558,7 +758,7 @@ fn ensure_started(
         mgr = mgr.with_libp2p(opts);
     }
     mgr.start().map_err(|e| e.to_string())?;
-    Ok(MANAGER.get_or_init(|| mgr))
+    Ok(mgr)
 }
 
 /// Route one request to the running daemon.
@@ -570,14 +770,36 @@ fn route(app: &tauri::AppHandle, req: Request) -> std::result::Result<Response, 
 /// reconciles the mesh. The cluster is a Group's cluster — no group/roster means no cluster.
 async fn feed_roster(app: &tauri::AppHandle, group: &str) -> std::result::Result<(), String> {
     let roster = crate::comms::groups_roster(app.clone(), group.to_string()).await?;
+    // HUP-S8.1: send the device links + revocations this machine knows with the roster, so a link
+    // and its revocation are applied in the same reconcile: our own first, then other members' links
+    // learned over the group relay (device_link_share), within the daemon's caps and IPC line. A
+    // missing store is empty; a corrupt one is an error (never silently dropped, which would lose
+    // revocations).
+    let own = crate::device_link::DeviceLinkStore::load(&crate::device_link::store_path(app)?)?;
+    let peers = crate::device_link_share::PeerLinkStore::load(
+        &crate::device_link_share::peer_store_path(app)?,
+    )?;
+    let (devices, revocations) = crate::device_link_share::roster_update(&own, &peers, &roster);
     match route(
         app,
         Request::SetRoster {
             group: group.to_string(),
             roster,
+            devices,
+            revocations,
         },
     )? {
-        Response::Reconciled { .. } | Response::Ok => Ok(()),
+        Response::Reconciled { rejected, .. } => {
+            if !rejected.is_empty() {
+                // Diagnostic only (addresses + reasons, never a signature or key).
+                eprintln!(
+                    "[cluster] daemon refused device links: {}",
+                    rejected.join("; ")
+                );
+            }
+            Ok(())
+        }
+        Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -636,8 +858,23 @@ pub async fn cluster_peers(
             .map(|p| ClusterPeerDto {
                 address: p.address,
                 online: p.online,
+                member: p.member,
             })
             .collect()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// **cluster_devices** (HUP-S8.1): the group's members with their linked devices and live state.
+#[tauri::command]
+pub async fn cluster_devices(
+    app: tauri::AppHandle,
+    group: String,
+) -> std::result::Result<Vec<ClusterMemberDevicesDto>, String> {
+    feed_roster(&app, &group).await?;
+    match route(&app, Request::Devices { group })? {
+        Response::Devices { members } => Ok(members),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -658,6 +895,60 @@ pub async fn cluster_share_file(
     cid: String,
 ) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::ShareFile { group, cid })?)
+}
+
+/// HUP-S8.4: this machine's group seed: link/QR text another member's machine can use to find
+/// this one for `group`, plus the addresses in it. The field is `link`, not `seed`: it holds
+/// locations only (never key material), and the invoke secret scan (PBA-L4-008) treats a `seed`
+/// field crossing invoke as secret-bearing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterGroupSeedDto {
+    group_id: String,
+    link: String,
+    addrs: Vec<String>,
+}
+
+/// **cluster_group_seed** (HUP-S8.4): this machine's link/QR text for a group. Needs the
+/// cross-machine mesh; without it the daemon says so (no address is invented).
+#[tauri::command]
+pub async fn cluster_group_seed(
+    app: tauri::AppHandle,
+    group: String,
+) -> std::result::Result<ClusterGroupSeedDto, String> {
+    feed_roster(&app, &group).await?;
+    match route(
+        &app,
+        Request::Seed {
+            group: group.clone(),
+        },
+    )? {
+        Response::Seed { seed, addrs } => Ok(ClusterGroupSeedDto {
+            group_id: group,
+            link: seed,
+            addrs,
+        }),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// **cluster_add_seed** (HUP-S8.4): dial the machines named in a group link another member
+/// shared. Returns how many addresses are being dialed. A link only says where to knock: each
+/// machine is still let in only if the group's roster and DeviceLinks admit it.
+#[tauri::command]
+pub async fn cluster_add_seed(
+    app: tauri::AppHandle,
+    group: String,
+    seed: String,
+) -> std::result::Result<usize, String> {
+    let seed = seed_text(&seed)?;
+    feed_roster(&app, &group).await?;
+    match route(&app, Request::AddSeed { group, seed })? {
+        Response::Seeded { dialing } => Ok(dialing),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
 
 /// **cluster_leave** — this node leaves the group's mesh.

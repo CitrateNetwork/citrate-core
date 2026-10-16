@@ -106,11 +106,13 @@ const BOND_WORD: &str = "0x00000000000000000000000000000000000000000000000000000
 /// (220 bytes) while the previous pin `0x04c32967…` returns `0x`.
 ///
 /// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (vault = the ERC1967 PROXY, 109 bytes; its implementation slot reads 0x72035977…).
+///
+/// Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (vault = the ERC1967 PROXY, 109 bytes; implementation slot 0x72035977…); `0x` at the previous pin.
 #[test]
 fn membership_stake_vault_is_the_canonical_40204_value() {
     assert_eq!(
         membership_stake_vault(),
-        "0x4c0f8b27c509cba4a32e1cd2bc5709bbd2699024"
+        "0xa93f7f688a8f212e0cad59edbd1f7d3592151751"
     );
 }
 
@@ -124,11 +126,13 @@ fn membership_stake_vault_is_the_canonical_40204_value() {
 /// bytes here, `0x` at the previous pin.
 ///
 /// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (10,219 bytes).
+///
+/// Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (10,219 bytes); `0x` at the previous pin.
 #[test]
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0xa24aa35fba269f8755c2173779cc3dbc9690c4c9"
+        "0xf8ad11f6d3aefa605e2ebf7c81ed08a2b38b3a3c"
     );
 }
 

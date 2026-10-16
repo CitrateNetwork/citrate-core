@@ -46,6 +46,10 @@ struct Addresses {
     citrate_wallet_factory: String,
     #[serde(rename = "LiquidStakingPool")]
     liquid_staking_pool: String,
+    /// Reroll fan-out (2026-10-05): the contribution claim target, previously a literal in
+    /// `earnings.rs` that drifted from the book.
+    #[serde(rename = "ContributionAccounting")]
+    contribution_accounting: String,
     #[serde(rename = "IPFSIncentivesV3")]
     ipfs_incentives_v3: String,
     #[serde(rename = "PatronageLedger", default)]
@@ -57,6 +61,14 @@ struct Addresses {
     model_registry: String,
     #[serde(rename = "SkillRegistry", default)]
     skill_registry: String,
+    /// HUP-S1.5: absent from the book until the post-reroll redeploy pins it (federation F-4).
+    #[serde(rename = "InferenceRouter", default)]
+    inference_router: String,
+    /// HUP-S7.4: optional. Absent or empty means "not available in this build".
+    #[serde(rename = "AgentSBT", default)]
+    agent_sbt: String,
+    #[serde(rename = "OrganizationSBT", default)]
+    organization_sbt: String,
 }
 
 fn book() -> &'static Book {
@@ -80,9 +92,14 @@ fn book() -> &'static Book {
         b.addresses.citrate_wallet_factory =
             b.addresses.citrate_wallet_factory.to_ascii_lowercase();
         b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
+        b.addresses.contribution_accounting =
+            b.addresses.contribution_accounting.to_ascii_lowercase();
         b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
         b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
         b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
+        b.addresses.inference_router = b.addresses.inference_router.to_ascii_lowercase();
+        b.addresses.agent_sbt = b.addresses.agent_sbt.to_ascii_lowercase();
+        b.addresses.organization_sbt = b.addresses.organization_sbt.to_ascii_lowercase();
         b.genesis_hash = b.genesis_hash.to_ascii_lowercase();
         b
     })
@@ -128,6 +145,11 @@ pub fn liquid_staking_pool() -> &'static str {
     &book().addresses.liquid_staking_pool
 }
 
+/// `ContributionAccounting`: the `claimable` read and the contribution `claimRewards` target.
+pub fn contribution_accounting() -> &'static str {
+    &book().addresses.contribution_accounting
+}
+
 /// `ModelRegistry` — the on-chain model registry (a backbone of the app layer): models are
 /// registered + identified here (`getAllModelHashes`/`getModel`, `ModelRegistered` event).
 /// Read by the Hermes ModelRouter's registry source (Hermes WP0.2b).
@@ -141,6 +163,31 @@ pub fn model_registry() -> &'static str {
 #[allow(dead_code)]
 pub fn skill_registry() -> &'static str {
     &book().addresses.skill_registry
+}
+
+/// `InferenceRouter` — the registry escalation route (HUP-S1.5). `None` while the book has no pin
+/// (it is not deployed on the current chain yet); the escalation router then reports the registry
+/// route as disabled.
+pub fn inference_router() -> Option<&'static str> {
+    let a = book().addresses.inference_router.as_str();
+    (!a.is_empty()).then_some(a)
+}
+
+/// Optional pin: `None` when the book has no entry (an older or partial book), never a guess.
+fn optional(a: &'static str) -> Option<&'static str> {
+    (!a.is_empty()).then_some(a)
+}
+
+/// `AgentSBT` — Hermes's on-chain identity (HUP-S7.4). Optional: the onboarding identity step
+/// stays off when the book has no entry.
+pub fn agent_sbt() -> Option<&'static str> {
+    optional(&book().addresses.agent_sbt)
+}
+
+/// `OrganizationSBT` — the parent organization registry AgentSBT checks at mint. Optional.
+#[allow(dead_code)]
+pub fn organization_sbt() -> Option<&'static str> {
+    optional(&book().addresses.organization_sbt)
 }
 
 /// `IPFSIncentivesV3` — the model-storage bond contract (CX-S2.2 `registerModel`). REROLL-SENSITIVE:
@@ -209,6 +256,80 @@ mod tests {
                 "accessors must return lowercase"
             );
         }
+    }
+
+    /// HUP-S7.4: the optional AgentSBT pins are well formed, lowercase, distinct from every
+    /// required pin, and `None` (never "") when absent.
+    #[test]
+    fn optional_agent_pins_are_well_formed_when_present() {
+        for a in [agent_sbt(), organization_sbt()].into_iter().flatten() {
+            assert!(is_address(a), "not an address: {a}");
+            assert_eq!(a, a.to_ascii_lowercase());
+            for req in [
+                citrate_member_sbt(),
+                membership_stake_vault(),
+                validator_registry(),
+                citrate_wallet_factory(),
+                liquid_staking_pool(),
+            ] {
+                assert_ne!(
+                    a, req,
+                    "an optional pin shares an address with a required one"
+                );
+            }
+        }
+        if let (Some(a), Some(o)) = (agent_sbt(), organization_sbt()) {
+            assert_ne!(a, o);
+        }
+        assert_eq!(optional(""), None);
+        assert_eq!(optional("0xab"), Some("0xab"));
+    }
+
+    /// Reroll fan-out tripwire (2026-10-05): no non-test module carries its own copy of a
+    /// contract address. Every pin comes from this generated book, so one sync moves them all.
+    /// The precompile and zero-prefixed sentinel forms (`0x000…`) are not book addresses.
+    #[test]
+    fn no_module_hard_codes_a_contract_address() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !name.ends_with(".rs") || name.contains("tests") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("read");
+            let body = src.split("#[cfg(test)]").next().unwrap_or("");
+            for (i, line) in body.lines().enumerate() {
+                let mut rest = line;
+                while let Some(pos) = rest.find("\"0x") {
+                    let lit = &rest[pos + 1..];
+                    let hex: String = lit[2..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_hexdigit())
+                        .collect();
+                    if hex.len() == 40 && !hex.starts_with("0000000000") {
+                        offenders.push(format!("{name}:{}: 0x{hex}", i + 1));
+                    }
+                    rest = &lit[2..];
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "hard-coded contract addresses (read them from crate::addresses): {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn contribution_accounting_is_pinned_from_the_book() {
+        let a = contribution_accounting();
+        assert!(is_address(a), "{a}");
+        assert_eq!(a, a.to_ascii_lowercase());
     }
 
     #[test]

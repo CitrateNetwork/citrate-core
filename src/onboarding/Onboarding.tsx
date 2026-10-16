@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
 import { TierPanel } from "./TierPanel";
+import { PersonaPicker } from "../components/PersonaPicker";
+import { bridge } from "../bridge";
+import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 
@@ -162,7 +165,7 @@ function S1({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S1 · Sign in</div>
       <div style={h1}>Sign in with your Citrate identity</div>
       <p style={body}>
-        This app never shows credential fields. Your system browser opens auth.citrate.ai — passkey, email, Google, or sign-in-with-Ethereum. That is the anti-phishing
+        This app never shows credential fields. Your system browser opens auth.citrate.ai: passkey, email, Google, or sign-in-with-Ethereum. That is the anti-phishing
         posture, not a shortcut.
       </p>
       {s.s1 === "idle" && (
@@ -180,7 +183,7 @@ function S1({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 500 }}>Waiting for your browser…</div>
             <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              auth.citrate.ai · loopback PKCE · 127.0.0.1:49821
+              auth.citrate.ai · loopback PKCE
             </div>
           </div>
           <div style={{ flex: 1 }}></div>
@@ -980,6 +983,32 @@ function S6({ store, s }: { store: Store; s: AppState }) {
       {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && (
         <ModelStep store={store} s={s} />
       )}
+
+      {/* HUP-S7.4 (US-7.1) — give Hermes an on-chain identity (AgentSBT), approved in the
+          Signature Ceremony. Optional and never blocking: "Enter your dashboard" stays above. */}
+      {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && <AgentIdentityStep store={store} />}
+      {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && (
+        <PersonaStep store={store} s={s} />
+      )}
+    </div>
+  );
+}
+
+// HUP-S3.3 + S3.7 — optional: pick Hermes's voice. Skipping keeps the default voice (nothing
+// changes); the same picker lives in Settings, under App.
+export function PersonaStep({ store, s }: { store: Store; s: AppState }) {
+  return (
+    <div className="surface" data-testid="onboarding-persona-step" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8, marginTop: 14 }}>
+      <span className="eyebrow">Optional · Hermes's voice</span>
+      <PersonaPicker
+        compact
+        api={bridge.agentHarness}
+        chosen={s.hermesPersona}
+        custom={s.customPersonas}
+        onChoose={(p) => store.chooseHermesPersona(p)}
+        onAddCustom={(p) => store.addCustomPersona(p)}
+        onRemoveCustom={(id) => store.removeCustomPersona(id)}
+      />
     </div>
   );
 }

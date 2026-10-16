@@ -10,7 +10,8 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import type { ModelDescriptor, PartialDownload, RegistryModel } from "../../bridge/domains";
+import type { ModelDeleted, ModelDeleteState, ModelDescriptor, PartialDownload, RegistryModel } from "../../bridge/domains";
+import { refreshTier } from "./tier";
 
 export type ModelSourceId = "hf" | "github";
 
@@ -35,6 +36,11 @@ export interface ModelsState {
   selectingId: string | null;
   /** local() isn't wired/available yet — a pending WIRE, not a user-facing error. */
   localPending: boolean;
+  /** Whether each downloaded model can be deleted now, by file name (from core). A model with no
+   *  entry offers no Delete (web preview, or core could not say). */
+  deleteStates: Record<string, ModelDeleteState>;
+  /** The file being deleted, or null. One at a time. */
+  deletingFile: string | null;
   /** The last user-facing error (from any action), or null when clear. */
   error: string | null;
 }
@@ -50,6 +56,8 @@ const initial: ModelsState = {
   downloadPct: null,
   selectingId: null,
   localPending: false,
+  deleteStates: {},
+  deletingFile: null,
   error: null,
 };
 
@@ -80,6 +88,60 @@ export async function refreshLocalModels(): Promise<void> {
     modelsSlice.set({ localPending: true });
   }
   await refreshPartials();
+  await refreshDeleteStates();
+}
+
+/** Ask core which downloaded models can be deleted now. A failure offers no Delete at all. */
+export async function refreshDeleteStates(): Promise<void> {
+  try {
+    const list = await bridge.modelsCatalog.deleteStates();
+    modelsSlice.set({ deleteStates: Object.fromEntries(list.map((s) => [s.file, s])) });
+  } catch {
+    modelsSlice.set({ deleteStates: {} });
+  }
+}
+
+/** How a model row's Delete looks: hidden, enabled, or disabled with the reason as its tooltip. */
+export interface DeleteControl {
+  show: boolean;
+  disabled: boolean;
+  reason: string | null;
+}
+
+/** Pure: the Delete control for `file` from the slice state. Core's answer decides; while any
+ *  delete, download or switch is running every Delete waits. */
+export function deleteControl(st: ModelsState, file: string): DeleteControl {
+  const d = st.deleteStates[file];
+  if (!d) return { show: false, disabled: true, reason: null };
+  if (!d.deletable) return { show: true, disabled: true, reason: d.reason || "This model cannot be deleted right now" };
+  if (st.deletingFile) return { show: true, disabled: true, reason: "Another model is being deleted" };
+  if (st.downloadingId) return { show: true, disabled: true, reason: "Wait for the download to finish" };
+  if (st.selectingId) return { show: true, disabled: true, reason: "Wait for the model switch to finish" };
+  return { show: true, disabled: false, reason: null };
+}
+
+/** Delete a downloaded model the member confirmed. On success the lists and the machine's free
+ *  space are re-read and the result is returned; on a refusal the reason is the error and null
+ *  is returned. */
+export async function deleteLocalModel(file: string): Promise<ModelDeleted | null> {
+  if (modelsSlice.get().deletingFile) return null; // one at a time
+  modelsSlice.set({ deletingFile: file, error: null });
+  try {
+    const out = await bridge.modelsCatalog.deleteLocal(file);
+    modelsSlice.set((s) => ({
+      deletingFile: null,
+      activeId: s.activeId === `local:${out.file}` ? null : s.activeId,
+      local: s.local.filter((m) => m.file !== out.file),
+    }));
+    await refreshLocalModels();
+    // The tier report carries the free disk space; read it again now that space was freed.
+    await refreshTier();
+    return out;
+  } catch (e) {
+    modelsSlice.set({ deletingFile: null, error: message(e) });
+    await refreshDeleteStates();
+    return null;
+  }
 }
 
 /** HUP-S0.3 — load interrupted downloads. Honest-empty on failure (never an error banner). */

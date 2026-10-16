@@ -469,7 +469,9 @@ pub fn probe(data_dir: &std::path::Path) -> HardwareFacts {
 // Tauri commands (HUP-S0.1: async + off_main — they spawn processes and touch the store).
 // ---------------------------------------------------------------------------
 
-fn load_override<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Option<Tier>, String> {
+pub(crate) fn load_override<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<Tier>, String> {
     use tauri_plugin_store::StoreExt;
     let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
     Ok(decode_override(store.get(OVERRIDE_KEY)))

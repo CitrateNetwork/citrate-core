@@ -16,6 +16,8 @@ import { NetworkCompatGate } from "./shell/NetworkCompatGate";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
 // CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
+import { SignedForYou } from "./budgets/SignedForYou";
+import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
 
 const queryClient = new QueryClient();
 
@@ -82,29 +84,12 @@ function HubTabs({ route }: { route: string }) {
 function Shell({ s }: { s: AppState }) {
   const reg = REGISTER[s.route] || "charter";
 
-  // banner (entitlement)
-  const bannerShow = s.entitlement !== "active";
-  let bannerBg = "";
-  let bannerBd = "";
-  let bannerFg = "";
-  let bannerText = "";
-  const bannerCta = s.entitlement !== "grace";
-  if (s.entitlement === "expiring") {
-    bannerBg = "var(--warn-bg)";
-    bannerBd = "var(--warn)";
-    bannerFg = "var(--warn)";
-    bannerText = "Membership renews in 14 days — 2026-07-25. Auto-renewal is off.";
-  } else if (s.entitlement === "grace") {
-    bannerBg = "var(--warn-bg)";
-    bannerBd = "var(--warn)";
-    bannerFg = "var(--warn)";
-    bannerText = "Cannot verify membership — offline. Paid features stay unlocked for 63 h more. Your node, local wallet, and local memory never lock.";
-  } else if (s.entitlement === "lapsed") {
-    bannerBg = "var(--danger-bg)";
-    bannerBd = "var(--danger)";
-    bannerFg = "var(--danger)";
-    bannerText = "Membership lapsed. Paid features are locked. Your node, local wallet, and local memory keep working — your keys are yours.";
-  }
+  // banner (entitlement): copy + tone are a pure, tested function (entitlementBanner.ts).
+  const banner = entitlementBanner(s);
+  const bannerShow = banner.show;
+  const { bg: bannerBg, bd: bannerBd, fg: bannerFg } = BANNER_TONE_TOKENS[banner.tone];
+  const bannerText = banner.text;
+  const bannerCta = banner.cta;
 
   const surface = (() => {
     switch (s.route) {
@@ -159,7 +144,7 @@ function Shell({ s }: { s: AppState }) {
             <span style={{ width: 7, height: 7, borderRadius: 999, background: bannerBd, flexShrink: 0 }}></span>
             <span style={{ fontSize: 12.5, color: bannerFg, flex: 1 }}>{bannerText}</span>
             {bannerCta && (
-              <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Renewal opens the checkout in your browser — flip entitlement back in the Prototype panel.")}>
+              <button className="btn btn-ghost btn-sm" onClick={() => void store.renewMembership()}>
                 Renew
               </button>
             )}
@@ -210,7 +195,7 @@ function AuthGate() {
           Sign in to continue
         </div>
         <p style={{ fontSize: 14.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
-          Citrate Core signs out on every launch. Confirm it's you — your system browser opens auth.citrate.ai
+          Citrate Core signs out on every launch. Confirm it's you: your system browser opens auth.citrate.ai
           (passkey, email, Google, or sign-in-with-Ethereum). Credentials never touch this app.
         </p>
       </div>
@@ -228,6 +213,11 @@ function AuthGate() {
             <div style={{ fontSize: 14, fontWeight: 500 }}>Waiting for your browser…</div>
             <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>auth.citrate.ai · loopback PKCE</div>
           </div>
+          {/* rc.5 FIX 2: the sign-in is in the system browser; closing that tab sends
+              nothing back, so Cancel ends the wait here. */}
+          <button className="btn btn-ghost btn-sm" onClick={() => void store.cancelSignIn()}>
+            Cancel
+          </button>
         </div>
       )}
       {err && <div style={{ fontSize: 12.5, color: "var(--danger)", maxWidth: 420 }}>{err}</div>}
@@ -294,6 +284,8 @@ function Root() {
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />
       <Toast s={s} />
+      {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
+      <SignedForYou />
       {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
       <NetworkCompatGate />
       {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}

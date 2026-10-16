@@ -7,8 +7,9 @@
 // only when it is actually connected (Rule 1 — never a fabricated peer); a lone node meshes with
 // no one yet.
 // =====================================================================
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SurfaceProps } from "./shared";
+import type { Store } from "../shell/store";
 import {
   clusterSlice,
   loadClusterGroups,
@@ -16,19 +17,200 @@ import {
   clusterGroupLabel,
   joinCluster,
   leaveCluster,
+  loadMyDevices,
+  loadMemberDevices,
+  revokeMyDevice,
+  prepareRevokeDevice,
+  cancelRevokeDevice,
+  importDeviceCode,
+  exportDeviceCode,
+  shareMyDeviceLinks,
+  syncPeerDeviceLinks,
+  loadMeshStatus,
 } from "../shell/slices/cluster";
+import { FleetWizard } from "../fleet/FleetWizard";
+import { linkStatusOf, tauriFleet, type FleetApi } from "../bridge/tauri/fleet";
+import { BRIDGE_MODE } from "../bridge/mode";
+import { bridge } from "../bridge";
+import { deviceNameError, deviceNameFrom, devicePanelModel } from "./clusterDevices";
 
 function shortAddr(a: string): string {
   if (!a) return "—";
   return a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-4)}` : a;
 }
 
-export function Cluster(_props: SurfaceProps) {
+/** Device addresses compare without `0x` and case. */
+const sameDevice = (a: string, b: string) => a.replace(/^0x/i, "").toLowerCase() === b.replace(/^0x/i, "").toLowerCase();
+
+/**
+ * HUP-S8.1 — "Your devices": this machine's own device key and the DeviceLinks you made. Linking
+ * opens the wallet ceremony (the review gate shows the exact text; nothing signs until you approve).
+ * Removing a device is permanent for that device's key.
+ */
+function YourDevices({ store }: { store: Store }) {
+  const st = clusterSlice.use();
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const model = devicePanelModel(st.myDevices);
+  const nameError = name ? deviceNameError(name) : null;
+  const refresh = () => {
+    void loadMyDevices();
+    // A new link (or none, if declined) is shared with your groups; core sends nothing unchanged.
+    void shareMyDeviceLinks();
+    if (st.selectedId) void loadMemberDevices(st.selectedId);
+  };
+  return (
+    <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "10px 16px", fontSize: 10.5, color: "var(--tx-3)", textTransform: "uppercase", letterSpacing: 0.4 }}>
+        Your devices · each machine meshes under its own key
+      </div>
+      <p style={{ padding: "0 16px", margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
+        Linking gives this machine its own key, tied to you by a link your wallet signs. The mesh can
+        then tell your machines apart, and you can remove one without the others. No funds move. Link
+        each of your machines: your links are shared with your groups so other members' nodes admit
+        them. Removing a machine revokes its device key; a machine that still holds your wallet can
+        still join your groups as you, so for a lost or stolen machine also move your funds to a new
+        wallet.
+      </p>
+      <p data-testid="cluster-mesh-note" style={{ padding: "6px 16px 0", margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
+        {st.mesh?.note ?? "Linked devices use their own key once the cross-machine mesh is on."}
+      </p>
+      {model.thisDeviceLinked ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", fontSize: 12.5, color: "var(--tx-2)" }}>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            This device is linked as <b>{model.thisDeviceLabel}</b>.
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            title="Copy this device's link code to add it on another of your machines"
+            onClick={async () => {
+              const c = await exportDeviceCode();
+              if (c && navigator.clipboard) {
+                await navigator.clipboard.writeText(c);
+                setCopied(true);
+              }
+            }}
+          >
+            {copied ? "Code copied" : "Copy link code"}
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px" }}>
+          <input
+            className="input"
+            aria-label="Name for this device"
+            placeholder="Name this device, e.g. Studio Mac"
+            value={name}
+            maxLength={48}
+            onChange={(e) => setName(e.target.value)}
+            style={{ fontSize: 12.5, flex: 1, minWidth: 0 }}
+          />
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={!name.trim() || nameError !== null}
+            onClick={() => void store.linkThisDevice(name.trim(), refresh)}
+          >
+            Link this device
+          </button>
+        </div>
+      )}
+      {nameError && (
+        <div role="alert" style={{ padding: "0 16px 8px", fontSize: 11, color: "var(--bad, #c0392b)" }}>
+          {nameError}
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 16px 10px" }}>
+        <input
+          className="input"
+          aria-label="Link code from another of your devices"
+          placeholder="Paste a link code from another of your devices"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          style={{ fontSize: 12, flex: 1, minWidth: 0 }}
+        />
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={!code.trim()}
+          onClick={async () => {
+            if (await importDeviceCode(code)) setCode("");
+          }}
+        >
+          Add device
+        </button>
+      </div>
+      {model.rows.map((row) => (
+        <div
+          key={row.device}
+          style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderTop: "1px solid var(--ln, rgba(0,0,0,0.06))" }}
+        >
+          <span style={{ fontSize: 12.5, flex: 1, minWidth: 0 }}>
+            {row.label}
+            {row.thisDevice ? " (this device)" : ""}
+          </span>
+          <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>{shortAddr(row.device)}</span>
+          {st.revokePrepared && sameDevice(st.revokePrepared.device, row.device) ? (
+            <>
+              <span role="note" style={{ fontSize: 11, color: "var(--tx-2)", maxWidth: 320 }}>
+                {st.revokePrepared.statement}
+              </span>
+              <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => cancelRevokeDevice()}>
+                Keep
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => void revokeMyDevice()}>
+                Confirm: remove for good
+              </button>
+            </>
+          ) : (
+            <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => void prepareRevokeDevice(row.device)}>
+              {st.revoking === row.device ? "Removing…" : "Remove"}
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function Cluster({ store, s }: SurfaceProps) {
   const st = clusterSlice.use();
 
   useEffect(() => {
     void loadClusterGroups();
+    void loadMyDevices();
+    void loadMeshStatus();
+    // HUP-S8.1 follow-on: share your links with your groups (nothing is sent when you have none or
+    // a group already has this exact set).
+    void shareMyDeviceLinks();
   }, []);
+
+  useEffect(() => {
+    const id = st.selectedId;
+    if (!id) return;
+    // Pick up other members' links from the group relay first, so the roster sent with the next
+    // cluster call admits their machines; then list the group's devices.
+    void syncPeerDeviceLinks(id).finally(() => void loadMemberDevices(id));
+  }, [st.selectedId]);
+
+  // The wizard links this machine through the same review gate as "Link this device".
+  const fleetApi = useMemo<FleetApi>(
+    () => ({
+      ...tauriFleet,
+      linkStatus: async () => linkStatusOf(await bridge.cluster.myDevices()),
+      linkThisDevice: (label: string) =>
+        new Promise<void>((resolve) => {
+          void store.linkThisDevice(deviceNameFrom(label), () => {
+            void loadMyDevices();
+            void shareMyDeviceLinks();
+            resolve();
+          });
+        }),
+    }),
+    [store],
+  );
+
+  const memberOfDevice = new Map<string, string>();
+  for (const m of st.memberDevices) for (const d of m.devices) memberOfDevice.set(d.device, d.label);
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 760 }}>
@@ -45,11 +227,21 @@ export function Cluster(_props: SurfaceProps) {
         actually connect; a lone node has no one to mesh with yet.
       </p>
 
+      {/* HUP-S8.2/S8.3 — "Connect my machines": probe, opt-in discovery, link/QR pairing, Tailscale help. */}
+      <FleetWizard
+        api={fleetApi}
+        available={BRIDGE_MODE === "tauri"}
+        initialLink={s.pendingPairLink}
+        onInitialLinkTaken={() => store.clearPendingPairLink()}
+      />
+
       {st.error && (
         <div className="surface" role="alert" style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--bad, #c0392b)", lineHeight: 1.5 }}>
           {st.error}
         </div>
       )}
+
+      <YourDevices store={store} />
 
       {/* group picker */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -128,7 +320,14 @@ export function Cluster(_props: SurfaceProps) {
                   key={p.address}
                   style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderTop: "1px solid var(--ln, rgba(0,0,0,0.06))" }}
                 >
-                  <span className="mono" style={{ fontSize: 12, flex: 1 }}>{shortAddr(p.address)}</span>
+                  <span className="mono" style={{ fontSize: 12, flex: 1 }}>
+                    {shortAddr(p.address)}
+                    {p.member && (
+                      <span style={{ fontFamily: "var(--font-body)", color: "var(--tx-3)", marginLeft: 8 }}>
+                        {memberOfDevice.get(p.address) ?? "device"} of {shortAddr(p.member)}
+                      </span>
+                    )}
+                  </span>
                   <span
                     style={{
                       fontSize: 10.5,

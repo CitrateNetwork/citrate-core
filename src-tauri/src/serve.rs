@@ -11,8 +11,10 @@
 //! by any web page the member visited.
 //!
 //! ## Grounded runtime facts
-//! - CLI: `llama-server -m <gguf> --host 127.0.0.1 --port <p> --ctx-size <n>`
+//! - CLI: `llama-server -m <gguf> --host 127.0.0.1 --port <p> --ctx-size <n> [-ngl <layers>]`
 //!   (llama.cpp). It exposes `/health` and `/v1/models` for a liveness probe.
+//! - HUP-S1.6: `--ctx-size` and `-ngl` come from the [`crate::serve_plan::ServePlan`] computed
+//!   from the effective hardware tier at each start (see serve_plan.rs).
 //! - Loopback-only bind (`127.0.0.1`) — the sidecar is LOCAL; nothing remote.
 //! - `llama-server` is a SPAWNED binary, NOT a cargo dep. No llama.cpp bindings /
 //!   heavy crates enter the src-tauri tree (SCOPE.md lean-tree gate).
@@ -49,9 +51,9 @@ use crate::supervisor::{
 /// the node RPC (8545) and the node-agent supervision port (19600).
 pub const DEFAULT_LLAMA_PORT: u16 = 18080;
 
-/// The default context window (`--ctx-size`). A modest window keeps memory
-/// bounded on member hardware; the real value can be tuned in a later WP.
-pub(crate) const DEFAULT_CTX_SIZE: u32 = 8192;
+/// The context window (`--ctx-size`) before a hardware plan is computed, and the plan's floor
+/// and fallback (HUP-S1.6: [`crate::serve_plan::MIN_CTX`]).
+pub(crate) const DEFAULT_CTX_SIZE: u32 = crate::serve_plan::MIN_CTX;
 
 /// How often the liveness probe checks the server's `/health` while Running.
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -129,6 +131,19 @@ pub struct ServeStatus {
     /// Whether the supervisor currently reports the child Running (a coarse
     /// health signal; the periodic `/health` probe restarts a wedged server).
     pub healthy: bool,
+    /// HUP-S1.6: the `--ctx-size` of the current plan.
+    #[serde(rename = "ctxTokens", default = "default_ctx_tokens")]
+    pub ctx_tokens: u32,
+    /// HUP-S1.6: the `-ngl` of the current plan (`None` = the flag is not passed).
+    #[serde(rename = "gpuLayers", default)]
+    pub gpu_layers: Option<u32>,
+    /// HUP-S1.6: why the plan is what it is, in plain language.
+    #[serde(rename = "planNotes", default)]
+    pub plan_notes: Vec<String>,
+}
+
+fn default_ctx_tokens() -> u32 {
+    DEFAULT_CTX_SIZE
 }
 
 /// Map a [`SupervisorState`] to the bridge vocabulary (same mapping as node.rs).
@@ -177,6 +192,11 @@ pub struct LlamaServerManager {
     sup: Mutex<Option<Supervisor>>,
     /// PBA-L7b-001: the per-session API key (256-bit, hex).
     api_key: Zeroizing<String>,
+    /// HUP-S1.6: the serve plan (`--ctx-size`, `-ngl`) the server is (or will be) started with.
+    plan: Mutex<crate::serve_plan::ServePlan>,
+    /// HUP-S9.4: a LoRA adapter passed as `--lora`. Set only through `fl_rounds` after the eval
+    /// gate accepted that exact file; cleared whenever the base model changes.
+    lora: Mutex<Option<PathBuf>>,
 }
 
 impl LlamaServerManager {
@@ -194,6 +214,8 @@ impl LlamaServerManager {
             spawn_args_override: None,
             sup: Mutex::new(None),
             api_key: mint_api_key(),
+            plan: Mutex::new(crate::serve_plan::ServePlan::not_sized()),
+            lora: Mutex::new(None),
         }
     }
 
@@ -234,11 +256,59 @@ impl LlamaServerManager {
         self.port
     }
 
+    /// HUP-S1.6: replace the serve plan. Takes effect at the next (re)spawn.
+    pub fn set_plan(&self, plan: crate::serve_plan::ServePlan) {
+        *self.plan.lock().unwrap_or_else(|e| e.into_inner()) = plan;
+    }
+
+    /// HUP-S1.6: the current serve plan.
+    pub fn plan(&self) -> crate::serve_plan::ServePlan {
+        self.plan.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// HUP-S9.4: set (or clear) the LoRA adapter. Takes effect at the next (re)spawn.
+    pub fn set_lora(&self, path: Option<PathBuf>) {
+        *self.lora.lock().unwrap_or_else(|e| e.into_inner()) = path;
+    }
+
+    /// HUP-S9.4: set the adapter only if `expected_model_file` (the base model the eval gate
+    /// authorized it for) is still the selected model, checked under the model lock so a model
+    /// switch cannot slip in between the check and the set.
+    pub fn set_lora_for_model(
+        &self,
+        path: PathBuf,
+        expected_model_file: &str,
+    ) -> std::result::Result<(), String> {
+        let guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+        let current = guard
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if current != expected_model_file {
+            return Err(format!(
+                "the selected model changed to {current} while the adapter was being loaded; nothing was loaded"
+            ));
+        }
+        self.set_lora(Some(path));
+        Ok(())
+    }
+
+    /// HUP-S9.4: the LoRA adapter the server is (or will be) started with.
+    pub fn lora(&self) -> Option<PathBuf> {
+        self.lora.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// HUP-S1.6: the `--ctx-size` of the current plan: the real context window of the server.
+    pub fn ctx_size(&self) -> u32 {
+        self.plan.lock().unwrap_or_else(|e| e.into_inner()).ctx_size
+    }
+
     /// The grounded `llama-server` argv: `-m <model> --host 127.0.0.1 --port <p>
-    /// --ctx-size <n>`. Loopback-only bind.
+    /// --ctx-size <n> [-ngl <layers>]`. Loopback-only bind.
     fn spawn_args(&self) -> Vec<String> {
+        let plan = self.plan();
         let model_path = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
-        vec![
+        let mut args = vec![
             "-m".to_string(),
             model_path.to_string_lossy().to_string(),
             "--host".to_string(),
@@ -246,7 +316,7 @@ impl LlamaServerManager {
             "--port".to_string(),
             self.port.to_string(),
             "--ctx-size".to_string(),
-            DEFAULT_CTX_SIZE.to_string(),
+            plan.ctx_size.to_string(),
             // HUP-S0.5: use the model's native chat/tool-call template, and extract thinking into
             // `reasoning_content` so it never lands in the visible reply.
             "--jinja".to_string(),
@@ -256,7 +326,19 @@ impl LlamaServerManager {
             // them off so a drive-by page has less surface even before the key check.
             "--no-webui".to_string(),
             "--no-slots".to_string(),
-        ]
+        ];
+        // HUP-S1.6: offload to the GPU only when the plan says so (Apple Silicon, or a probed GPU
+        // the model fits in). Otherwise no flag: the existing CPU behaviour.
+        if let Some(n) = plan.gpu_layers {
+            args.push("-ngl".to_string());
+            args.push(n.to_string());
+        }
+        // HUP-S9.4: an eval-gated LoRA adapter, when one is loaded.
+        if let Some(lora) = self.lora() {
+            args.push("--lora".to_string());
+            args.push(lora.to_string_lossy().to_string());
+        }
+        args
     }
 
     /// The argv actually handed to the supervisor. Production is always the
@@ -304,6 +386,24 @@ impl LlamaServerManager {
     /// injected so this stays a pure spawn primitive testable without BC-3.1's
     /// filesystem. Fails CLOSED on either gate; idempotent (`AlreadyRunning`).
     pub fn start_if_ready(&self, model_ready: bool) -> Result<()> {
+        self.start_inner(model_ready, None)
+    }
+
+    /// HUP-S1.6: [`Self::start_if_ready`] with a fresh serve plan. The plan is applied only once
+    /// every gate has passed, so a refused start leaves the previous plan in place.
+    pub fn start_with_plan(
+        &self,
+        model_ready: bool,
+        plan: crate::serve_plan::ServePlan,
+    ) -> Result<()> {
+        self.start_inner(model_ready, Some(plan))
+    }
+
+    fn start_inner(
+        &self,
+        model_ready: bool,
+        plan: Option<crate::serve_plan::ServePlan>,
+    ) -> Result<()> {
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(ServeError::AlreadyRunning);
@@ -318,6 +418,9 @@ impl LlamaServerManager {
         // otherwise send the member's chat context (and the session key) to it.
         if !loopback_port_is_free(self.port) {
             return Err(ServeError::PortInUse(self.port));
+        }
+        if let Some(plan) = plan {
+            self.set_plan(plan);
         }
         let spec = self.build_spec();
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
@@ -350,16 +453,57 @@ impl LlamaServerManager {
     /// not-ready target leaves the currently-serving model untouched (no half-applied switch).
     /// Once gated, it stops the old server, swaps the path, and starts on the new model.
     pub fn select_model(&self, new_path: PathBuf, model_ready: bool) -> Result<()> {
+        self.select_inner(new_path, model_ready, None)
+    }
+
+    /// HUP-S1.6: [`Self::select_model`] with the new model's serve plan (its context depends on
+    /// the model's size and header). A not-ready target leaves both the model and the plan as
+    /// they were.
+    pub fn select_model_planned(
+        &self,
+        new_path: PathBuf,
+        model_ready: bool,
+        plan: crate::serve_plan::ServePlan,
+    ) -> Result<()> {
+        self.select_inner(new_path, model_ready, Some(plan))
+    }
+
+    fn select_inner(
+        &self,
+        new_path: PathBuf,
+        model_ready: bool,
+        plan: Option<crate::serve_plan::ServePlan>,
+    ) -> Result<()> {
         if !model_ready {
             return Err(ServeError::ModelNotReady);
         }
         self.stop();
         {
             let mut guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+            // HUP-S9.4: an adapter belongs to the base model it was trained on.
+            if *guard != new_path {
+                self.set_lora(None);
+            }
             *guard = new_path;
         }
         // Already gated on readiness above; start re-checks the binary + idempotency.
-        self.start_if_ready(true)
+        self.start_inner(true, plan)
+    }
+
+    /// The model at `deleted` was removed from disk: when it is the selected model, select
+    /// `fallback` instead (without starting anything) and drop any adapter, so nothing points at
+    /// the missing file. Returns whether `deleted` was the selected model. When `deleted` is the
+    /// fallback itself the path stays (it then reads as not downloaded).
+    pub fn forget_model_if(&self, deleted: &std::path::Path, fallback: PathBuf) -> bool {
+        let mut guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_path() != deleted {
+            return false;
+        }
+        if *guard != fallback {
+            self.set_lora(None);
+            *guard = fallback;
+        }
+        true
     }
 
     /// The active model GGUF path (the current `-m` target).
@@ -391,10 +535,14 @@ impl LlamaServerManager {
             None => "stopped",
         };
         let healthy = matches!(sup_state, Some(SupervisorState::Running));
+        let plan = self.plan();
         ServeStatus {
             state: state.to_string(),
             base_url: self.base_url(),
             healthy,
+            ctx_tokens: plan.ctx_size,
+            gpu_layers: plan.gpu_layers,
+            plan_notes: plan.notes,
         }
     }
 
@@ -409,7 +557,7 @@ impl LlamaServerManager {
 }
 
 /// PBA-L7b-001: mint a fresh 256-bit API key (hex) for one llama-server session.
-fn mint_api_key() -> Zeroizing<String> {
+pub(crate) fn mint_api_key() -> Zeroizing<String> {
     use rand::RngCore;
     let mut b = Zeroizing::new([0u8; 32]);
     rand::rngs::OsRng.fill_bytes(&mut b[..]);
@@ -427,7 +575,7 @@ pub(crate) fn loopback_port_is_free(port: u16) -> bool {
 /// A best-effort HTTP GET liveness probe: `true` iff the URL answers 2xx quickly.
 /// Bounded so a wedged server does not stall the probe (the supervisor's off-
 /// thread probe runner also bounds it). Uses the existing `ureq` client.
-fn http_health_ok(url: &str) -> bool {
+pub(crate) fn http_health_ok(url: &str) -> bool {
     ureq::get(url)
         .config()
         .timeout_global(Some(Duration::from_secs(3)))
@@ -444,7 +592,7 @@ pub struct ServeState(pub LlamaServerManager);
 /// as node.rs/memory.rs): `CITRATE_LLAMA_SERVER_BIN` override first (dev/tests),
 /// else the Tauri resource dir (`externalBin` strips the target-triple suffix to
 /// `llama-server`). Honest error if neither is present (the WO-2 packaging gap).
-fn resolve_llama_bin<R: tauri::Runtime>(
+pub(crate) fn resolve_llama_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
     use tauri::Manager;
@@ -466,12 +614,17 @@ fn resolve_llama_bin<R: tauri::Runtime>(
         .resource_dir()
         .map_err(|e| e.to_string())?
         .join("llama")
-        // On Windows the bundled binary is `llama-server.exe`; `EXE_SUFFIX` is ""
-        // on macOS/Linux, so the existing `llama/llama-server` path there is
-        // unchanged. Without the suffix the packaged Windows app reports
-        // "llama-server binary not bundled" even though it ships in `llama/`.
-        .join(format!("llama-server{}", std::env::consts::EXE_SUFFIX));
+        .join(llama_server_file_name(std::env::consts::EXE_SUFFIX));
     Ok(resource)
+}
+
+/// The bundled llama-server's file name inside `llama/` for a platform `exe_suffix`
+/// (`std::env::consts::EXE_SUFFIX`). On Windows the binary is `llama-server.exe`; on
+/// macOS/Linux the suffix is "" and the existing `llama/llama-server` path is unchanged.
+/// Without the suffix the packaged Windows app reports "llama-server binary not bundled"
+/// even though it ships in `llama/` (main #178).
+fn llama_server_file_name(exe_suffix: &str) -> String {
+    format!("llama-server{exe_suffix}")
 }
 
 /// Build the managed serve state from a live app handle: the bundled
@@ -512,7 +665,15 @@ pub async fn model_serve_start(app_h: tauri::AppHandle) -> std::result::Result<(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let st1 = tauri::Manager::try_state::<crate::model::ModelState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        model_serve_start_sync(st0, st1)
+        // HUP-S9.4: put back the LoRA adapter the member loaded before a restart, if the eval
+        // gate still allows it on this base (never fails the start).
+        crate::fl_rounds::reapply_before_start(&app_h);
+        // HUP-S1.6: size the context + GPU offload for the effective tier and the active model.
+        let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(
+            &app_h,
+            &st0.0.current_model_path(),
+        ));
+        model_serve_start_sync(st0, st1, plan)
     })
     .await
 }
@@ -521,9 +682,13 @@ pub async fn model_serve_start(app_h: tauri::AppHandle) -> std::result::Result<(
 pub fn model_serve_start_sync(
     serve: State<'_, ServeState>,
     model: State<'_, crate::model::ModelState>,
+    plan: crate::serve_plan::ServePlan,
 ) -> std::result::Result<(), String> {
     let ready = model.0.is_ready();
-    serve.0.start_if_ready(ready).map_err(|e| e.to_string())
+    serve
+        .0
+        .start_with_plan(ready, plan)
+        .map_err(|e| e.to_string())
 }
 
 /// **Command — model_serve_stop.** Release the supervisor (SIGTERM→grace→SIGKILL,
@@ -568,7 +733,8 @@ pub fn model_serve_status_sync(
 }
 
 /// **Command — model_inference_state.** The HONEST inference-routing state the
-/// frontend renders: LOCAL (`ready`) → gateway (`gatewayOnly`/`localFallback`) →
+/// frontend renders: LOCAL (`ready`) → ask first (`local-stopped`, SCL-S7.5a) → gateway
+/// (`gateway-only`, no local model) →
 /// downloading → demo. Computed from the real model status + serve health + the
 /// gateway-key presence. `gateway_configured` is passed from the frontend's
 /// providerStatus read (the gateway provider is configured iff a cgk_ key is

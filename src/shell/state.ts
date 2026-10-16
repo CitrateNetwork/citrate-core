@@ -10,12 +10,13 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { Brief, PendingWithdrawal } from "../bridge/domains";
+import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
 import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
+import type { DeployGateRecord } from "../agent/deployGate";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
@@ -130,6 +131,8 @@ export interface ChatMsg {
   error?: string;
   /** HUP-S0.7 — the user text to resend on Retry. */
   retryText?: string;
+  /** rc.5 FIX 5 — the error is the contract-toolchain refusal: offer "Open toolchain settings". */
+  toolchainHelp?: boolean;
   /** HUP-S1.4 — an accepted brief, shown as a card in the thread (text holds its markdown). */
   brief?: Brief;
 }
@@ -217,12 +220,18 @@ export interface CerSpec {
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke";
+  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
   /** True once the user has ticked the raw-mode ack (undecodable calldata). */
   rawAck: boolean;
+  /**
+   * True from the moment Approve hands the ceremony to the signer until the signer returns.
+   * While set, the review cannot be declined (Reject / Escape are no-ops) and the modal shows
+   * a signing state: the outcome is reported only once it is known, never assumed.
+   */
+  approving?: boolean;
   /**
    * Called after the review resolves (approved=true on a successful broadcast, false on
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
@@ -232,6 +241,8 @@ export interface WalletReview {
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
+  /** HUP-S6.4 — for a contract deploy: the READY D-4 gate record core checked for this bytecode. */
+  deployGate?: DeployGateRecord;
 }
 
 export interface AppState {
@@ -300,6 +311,19 @@ export interface AppState {
    * the chain; it never re-opens checkout, so it can never double-charge).
    */
   s3PollExhausted: boolean;
+  /**
+   * v0.5.0-rc.5 FIX 1c: the on-chain grant is in flight (SBT minted or stake attributed)
+   * while the `/userinfo` tier claim has not landed yet. The banner shows a neutral
+   * "Membership activating" notice instead of the red lapse. Never unlocks paid
+   * features (entitlement stays as the claim says). Not persisted: re-derived from a
+   * live chain read every session.
+   */
+  membershipActivating: boolean;
+  /**
+   * rc.5 FIX 5: a one-shot request for the Agent surface to open a tab (the chat's "Open toolchain
+   * settings" asks for "contracts"). The Agent surface consumes and clears it. Not persisted.
+   */
+  agentTabRequest: "overview" | "contracts" | null;
   s5: "idle" | "verifying" | "settling" | "settled";
   s5c: number;
   s5n: number;
@@ -345,6 +369,12 @@ export interface AppState {
    * auto-start WITHOUT overriding a deliberate stop.
    */
   nodeIntent: "run" | "stopped";
+  /**
+   * SCL-S0.6 — set while the node start is refused because another process holds the chain
+   * database or a node port: the holder (pid, path) and the action, from `node_status.blocked`.
+   * Observed state, never persisted.
+   */
+  nodeBlocked: string | null;
   syncPct: number;
   hb: number;
   cpu: number;
@@ -399,6 +429,11 @@ export interface AppState {
   walletReview: WalletReview | null;
   chatMsgs: ChatMsg[];
   chatStatus: "ready" | "thinking" | "streaming" | "tool";
+  /** SCL-S7.5a (D-16 extended) — a chat message held because the local model is configured but
+   *  its server is not running. `waiting`: the app's own startup start is pending (bounded wait);
+   *  `ask`: the member chooses, for this message only, to restart the local model or send it to
+   *  the gateway; `restarting`: the member chose restart. Null when nothing is held. */
+  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting" } | null;
   chatBackend: "gateway" | "local";
   /** Honest live label for the CURRENT chat provider (set by rebuildProvider from provider.label).
    *  Reflects what actually answers — local llama-server, the gateway, or the built-in demo. */
@@ -474,8 +509,12 @@ export interface AppState {
   deviceId: string;
   s1c: number;
   pins: Pin[];
-  /** Hermes P5 — the member's own prompt-skills (persisted locally, run against the active model). */
+  /** Hermes P5: prompt-skills kept in app state by earlier builds. HUP-S3.2 moves them to SKILL.md
+   *  files on this device (`localSkills`) on launch; one that cannot move stays here with a notice. */
   userSkills: UserSkill[];
+  /** HUP-S3.2: the member's saved skills, read from the SKILL.md files the sidecar's one loader also
+   *  reads (skills_local.rs). Not persisted here; the files are the record. */
+  localSkills: LocalSkill[];
   jPages: JournalPage[];
   jSel: string | null;
   jEditing: boolean;
@@ -491,10 +530,34 @@ export interface AppState {
    * Whether a route is actually usable is read live via bridge.chat.providerStatus.
    */
   aiDefault: string;
-  /** HUP-S1.1c — run Hermes's loop in the sidecar (preview; off until the S1.9 parity suite passes). */
+  /** HUP-S1.1c — run Hermes's loop in the sidecar. On by default (owner decision 2026-10-01); the
+   * app falls back to its own loop whenever the sidecar is not running. */
   hermesSidecarLoop: boolean;
+  /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
+   * After that, the member's own choice is kept. */
+  hermesSidecarLoopDefaultApplied: boolean;
+  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). On by default (owner
+   * decision 2026-10-04). Every command still needs the member's approval, runs in the OS sandbox,
+   * and only in folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
+  hermesTerminal: boolean;
+  /** One-time migration marker: the 2026-10-04 default (terminal commands on) has been applied to
+   * this install. After that, the member's own choice is kept. */
+  hermesTerminalDefaultApplied: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
+  /** HUP-S3.3 + S3.7 — the chosen Hermes persona (its sidecar view, fragment included), or null for
+   *  the default voice (the default: nothing about the prompt changes). Persisted. */
+  hermesPersona: HermesPersona | null;
+  /** HUP-S3.3 (US-3.3 AC3) — member-defined personas, each checked by the sidecar. Persisted. */
+  customPersonas: HermesPersona[];
+  /** HUP-S3.7 — read Hermes's replies aloud with the persona's voice (the system speech engine).
+   *  Off by default. Persisted. */
+  hermesReadAloud: boolean;
+  /** HUP-S10.4 (US-10.4 AC1) — write today's Hermes summary into the journal automatically once a
+   *  day. Off by default; the member turns it on in the Journal. Persisted. */
+  journalAutoSummary: boolean;
+  /** The journal day (UTC `YYYY-MM-DD`) the automatic summary last ran for, or null. Persisted. */
+  journalAutoSummaryDay: string | null;
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -534,6 +597,12 @@ export interface AppState {
    * goal) and the raw link; Groups renders a banner and, for a full invite-token link, redeems it.
    * Cleared once consumed. Null when no deep-link is pending.
    */
+  /**
+   * HUP-S8.2 — a `citrate://pair?…` fleet pairing link opened from a QR code or another app
+   * (transient, not persisted). The Cluster surface's wizard fills it in; nothing pairs until the
+   * member presses "Pair". Null when none is pending.
+   */
+  pendingPairLink: string | null;
   pendingInvite: {
     url: string;
     clusterId?: string;
@@ -574,6 +643,22 @@ export interface AppState {
   memDaemonError: string | null;
   memSocketPath: string | null;
   memSemantic: boolean;
+  /**
+   * HUP-S3.1 runtime state of the first-run knowledge-corpus import (NOT persisted). `done`/`total`
+   * are the importer's own per-tenant progress counts; `message` is the skip reason or the failure
+   * text, shown as-is. Counts are never fabricated: they come only from the importer.
+   */
+  knowledgeImport: KnowledgeImportState;
+}
+
+/** HUP-S3.1 — see `AppState.knowledgeImport`. */
+export interface KnowledgeImportState {
+  state: "idle" | "running" | "imported" | "skipped" | "failed";
+  tenant: string | null;
+  done: number;
+  total: number;
+  nodesAdded: number;
+  message: string | null;
 }
 
 /** One tenant's real node count + its parsed nodes, from the memory daemon. */
@@ -649,6 +734,8 @@ export function freshState(pid: string): AppState {
     s2: "none",
     s3: "idle",
     s3PollExhausted: false,
+    membershipActivating: false,
+    agentTabRequest: null,
     s5: "idle",
     s5c: 0,
     s5n: 0,
@@ -671,6 +758,7 @@ export function freshState(pid: string): AppState {
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
+    nodeBlocked: null,
     syncPct: 0,
     hb: 4,
     cpu: 0,
@@ -699,6 +787,7 @@ export function freshState(pid: string): AppState {
     walletReview: null,
     chatMsgs: [],
     chatStatus: "ready",
+    chatRouteHold: null,
     chatBackend: "gateway",
     chatProviderLabel: "starting…",
     chatProviderKind: "demo",
@@ -739,6 +828,7 @@ export function freshState(pid: string): AppState {
     s1c: 0,
     pins: [],
     userSkills: [],
+    localSkills: [],
     jPages: [],
     jSel: null,
     jEditing: false,
@@ -749,8 +839,16 @@ export function freshState(pid: string): AppState {
     // AI provider KEYS live in the OS keyring (Rust), never in AppState. Only the
     // non-secret default route id is kept here (AI1, invariant 2).
     aiDefault: "gateway",
-    hermesSidecarLoop: false,
+    hermesSidecarLoop: true,
+    hermesSidecarLoopDefaultApplied: true,
+    hermesTerminal: true,
+    hermesTerminalDefaultApplied: true,
     hermesBrief: null,
+    hermesPersona: null,
+    customPersonas: [],
+    hermesReadAloud: false,
+    journalAutoSummary: false,
+    journalAutoSummaryDay: null,
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -761,11 +859,13 @@ export function freshState(pid: string): AppState {
     peopleState: "loading",
     myGroups: [],
     pendingInvite: null,
+    pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",
     memDaemonError: null,
     memSocketPath: null,
     memSemantic: false,
+    knowledgeImport: { state: "idle", tenant: null, done: 0, total: 0, nodesAdded: 0, message: null },
   };
   const today = new Date().toISOString().slice(0, 10);
   if (P.fresh) {
@@ -895,7 +995,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {
@@ -906,6 +1006,19 @@ export function loadState(): AppState {
     saved = null;
   }
   const base = freshState((saved && saved.persona) || "p1");
-  if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready" });
+  if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
+  // Owner decision 2026-10-01: the sidecar agent loop is on for members. Installs that saved the
+  // old default (off) are switched on once; a member who turns it off afterwards stays off.
+  if (saved && saved.hermesSidecarLoopDefaultApplied !== true) {
+    base.hermesSidecarLoop = true;
+    base.hermesSidecarLoopDefaultApplied = true;
+  }
+  // Owner decision 2026-10-04: Hermes may run terminal commands (each one approved by the member,
+  // sandboxed, in shared folders only). Existing installs are switched on once; a member who turns
+  // it off afterwards stays off.
+  if (saved && saved.hermesTerminalDefaultApplied !== true) {
+    base.hermesTerminal = true;
+    base.hermesTerminalDefaultApplied = true;
+  }
   return base;
 }

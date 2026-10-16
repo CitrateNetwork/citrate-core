@@ -1,0 +1,421 @@
+{
+  "success": true,
+  "error": null,
+  "results": {
+    "detectors": [
+      {
+        "elements": [
+          {
+            "type": "function",
+            "name": "sweep",
+            "source_mapping": {
+              "start": 78,
+              "length": 95,
+              "filename_relative": "src/Drain.sol",
+              "filename_absolute": "/work/hello-mint/src/Drain.sol",
+              "filename_short": "src/Drain.sol",
+              "is_dependency": false,
+              "lines": [
+                5,
+                6,
+                7
+              ],
+              "starting_column": 5,
+              "ending_column": 6
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "contract",
+                "name": "Drain",
+                "source_mapping": {
+                  "start": 57,
+                  "length": 152,
+                  "filename_relative": "src/Drain.sol",
+                  "filename_absolute": "/work/hello-mint/src/Drain.sol",
+                  "filename_short": "src/Drain.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9
+                  ],
+                  "starting_column": 1,
+                  "ending_column": 2
+                }
+              },
+              "signature": "sweep(address)"
+            }
+          },
+          {
+            "type": "node",
+            "name": "to.transfer(address(this).balance)",
+            "source_mapping": {
+              "start": 132,
+              "length": 34,
+              "filename_relative": "src/Drain.sol",
+              "filename_absolute": "/work/hello-mint/src/Drain.sol",
+              "filename_short": "src/Drain.sol",
+              "is_dependency": false,
+              "lines": [
+                6
+              ],
+              "starting_column": 9,
+              "ending_column": 43
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "function",
+                "name": "sweep",
+                "source_mapping": {
+                  "start": 78,
+                  "length": 95,
+                  "filename_relative": "src/Drain.sol",
+                  "filename_absolute": "/work/hello-mint/src/Drain.sol",
+                  "filename_short": "src/Drain.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    5,
+                    6,
+                    7
+                  ],
+                  "starting_column": 5,
+                  "ending_column": 6
+                },
+                "type_specific_fields": {
+                  "parent": {
+                    "type": "contract",
+                    "name": "Drain",
+                    "source_mapping": {
+                      "start": 57,
+                      "length": 152,
+                      "filename_relative": "src/Drain.sol",
+                      "filename_absolute": "/work/hello-mint/src/Drain.sol",
+                      "filename_short": "src/Drain.sol",
+                      "is_dependency": false,
+                      "lines": [
+                        4,
+                        5,
+                        6,
+                        7,
+                        8,
+                        9
+                      ],
+                      "starting_column": 1,
+                      "ending_column": 2
+                    }
+                  },
+                  "signature": "sweep(address)"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Drain.sweep(address) (src/Drain.sol#5-7) sends eth to arbitrary user\n\tDangerous calls:\n\t- to.transfer(address(this).balance) (src/Drain.sol#6)\n",
+        "markdown": "[Drain.sweep(address)](src/Drain.sol#L5-L7) sends eth to arbitrary user\n\tDangerous calls:\n\t- [to.transfer(address(this).balance)](src/Drain.sol#L6)\n",
+        "first_markdown_element": "src/Drain.sol#L5-L7",
+        "id": "db9881228fbc5a9ae7157ad4a619bbdd58e0a5fc7e2f6fdd738e0b128dd6b0ec",
+        "check": "arbitrary-send-eth",
+        "impact": "High",
+        "confidence": "Medium",
+        "reference": "https://github.com/crytic/slither/wiki/Detector-Documentation#functions-that-send-ether-to-arbitrary-destinations"
+      },
+      {
+        "elements": [
+          {
+            "type": "variable",
+            "name": "to",
+            "source_mapping": {
+              "start": 93,
+              "length": 18,
+              "filename_relative": "src/Drain.sol",
+              "filename_absolute": "/work/hello-mint/src/Drain.sol",
+              "filename_short": "src/Drain.sol",
+              "is_dependency": false,
+              "lines": [
+                5
+              ],
+              "starting_column": 20,
+              "ending_column": 38
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "function",
+                "name": "sweep",
+                "source_mapping": {
+                  "start": 78,
+                  "length": 95,
+                  "filename_relative": "src/Drain.sol",
+                  "filename_absolute": "/work/hello-mint/src/Drain.sol",
+                  "filename_short": "src/Drain.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    5,
+                    6,
+                    7
+                  ],
+                  "starting_column": 5,
+                  "ending_column": 6
+                },
+                "type_specific_fields": {
+                  "parent": {
+                    "type": "contract",
+                    "name": "Drain",
+                    "source_mapping": {
+                      "start": 57,
+                      "length": 152,
+                      "filename_relative": "src/Drain.sol",
+                      "filename_absolute": "/work/hello-mint/src/Drain.sol",
+                      "filename_short": "src/Drain.sol",
+                      "is_dependency": false,
+                      "lines": [
+                        4,
+                        5,
+                        6,
+                        7,
+                        8,
+                        9
+                      ],
+                      "starting_column": 1,
+                      "ending_column": 2
+                    }
+                  },
+                  "signature": "sweep(address)"
+                }
+              }
+            }
+          },
+          {
+            "type": "node",
+            "name": "to.transfer(address(this).balance)",
+            "source_mapping": {
+              "start": 132,
+              "length": 34,
+              "filename_relative": "src/Drain.sol",
+              "filename_absolute": "/work/hello-mint/src/Drain.sol",
+              "filename_short": "src/Drain.sol",
+              "is_dependency": false,
+              "lines": [
+                6
+              ],
+              "starting_column": 9,
+              "ending_column": 43
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "function",
+                "name": "sweep",
+                "source_mapping": {
+                  "start": 78,
+                  "length": 95,
+                  "filename_relative": "src/Drain.sol",
+                  "filename_absolute": "/work/hello-mint/src/Drain.sol",
+                  "filename_short": "src/Drain.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    5,
+                    6,
+                    7
+                  ],
+                  "starting_column": 5,
+                  "ending_column": 6
+                },
+                "type_specific_fields": {
+                  "parent": {
+                    "type": "contract",
+                    "name": "Drain",
+                    "source_mapping": {
+                      "start": 57,
+                      "length": 152,
+                      "filename_relative": "src/Drain.sol",
+                      "filename_absolute": "/work/hello-mint/src/Drain.sol",
+                      "filename_short": "src/Drain.sol",
+                      "is_dependency": false,
+                      "lines": [
+                        4,
+                        5,
+                        6,
+                        7,
+                        8,
+                        9
+                      ],
+                      "starting_column": 1,
+                      "ending_column": 2
+                    }
+                  },
+                  "signature": "sweep(address)"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Drain.sweep(address).to (src/Drain.sol#5) lacks a zero-check on :\n\t\t- to.transfer(address(this).balance) (src/Drain.sol#6)\n",
+        "markdown": "[Drain.sweep(address).to](src/Drain.sol#L5) lacks a zero-check on :\n\t\t- [to.transfer(address(this).balance)](src/Drain.sol#L6)\n",
+        "first_markdown_element": "src/Drain.sol#L5",
+        "id": "3728cdb90c22966bc80cb547028f000e6552670c23058d6b89dbbf357cd1075b",
+        "check": "missing-zero-check",
+        "impact": "Low",
+        "confidence": "Medium",
+        "reference": "https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation"
+      },
+      {
+        "elements": [
+          {
+            "type": "variable",
+            "name": "owner_",
+            "source_mapping": {
+              "start": 213,
+              "length": 14,
+              "filename_relative": "src/HelloMint.sol",
+              "filename_absolute": "/work/hello-mint/src/HelloMint.sol",
+              "filename_short": "src/HelloMint.sol",
+              "is_dependency": false,
+              "lines": [
+                9
+              ],
+              "starting_column": 17,
+              "ending_column": 31
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "function",
+                "name": "constructor",
+                "source_mapping": {
+                  "start": 201,
+                  "length": 59,
+                  "filename_relative": "src/HelloMint.sol",
+                  "filename_absolute": "/work/hello-mint/src/HelloMint.sol",
+                  "filename_short": "src/HelloMint.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    9,
+                    10,
+                    11
+                  ],
+                  "starting_column": 5,
+                  "ending_column": 6
+                },
+                "type_specific_fields": {
+                  "parent": {
+                    "type": "contract",
+                    "name": "HelloMint",
+                    "source_mapping": {
+                      "start": 57,
+                      "length": 384,
+                      "filename_relative": "src/HelloMint.sol",
+                      "filename_absolute": "/work/hello-mint/src/HelloMint.sol",
+                      "filename_short": "src/HelloMint.sol",
+                      "is_dependency": false,
+                      "lines": [
+                        4,
+                        5,
+                        6,
+                        7,
+                        8,
+                        9,
+                        10,
+                        11,
+                        12,
+                        13,
+                        14,
+                        15,
+                        16,
+                        17,
+                        18
+                      ],
+                      "starting_column": 1,
+                      "ending_column": 2
+                    }
+                  },
+                  "signature": "constructor(address)"
+                }
+              }
+            }
+          },
+          {
+            "type": "node",
+            "name": "owner = owner_",
+            "source_mapping": {
+              "start": 239,
+              "length": 14,
+              "filename_relative": "src/HelloMint.sol",
+              "filename_absolute": "/work/hello-mint/src/HelloMint.sol",
+              "filename_short": "src/HelloMint.sol",
+              "is_dependency": false,
+              "lines": [
+                10
+              ],
+              "starting_column": 9,
+              "ending_column": 23
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "function",
+                "name": "constructor",
+                "source_mapping": {
+                  "start": 201,
+                  "length": 59,
+                  "filename_relative": "src/HelloMint.sol",
+                  "filename_absolute": "/work/hello-mint/src/HelloMint.sol",
+                  "filename_short": "src/HelloMint.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    9,
+                    10,
+                    11
+                  ],
+                  "starting_column": 5,
+                  "ending_column": 6
+                },
+                "type_specific_fields": {
+                  "parent": {
+                    "type": "contract",
+                    "name": "HelloMint",
+                    "source_mapping": {
+                      "start": 57,
+                      "length": 384,
+                      "filename_relative": "src/HelloMint.sol",
+                      "filename_absolute": "/work/hello-mint/src/HelloMint.sol",
+                      "filename_short": "src/HelloMint.sol",
+                      "is_dependency": false,
+                      "lines": [
+                        4,
+                        5,
+                        6,
+                        7,
+                        8,
+                        9,
+                        10,
+                        11,
+                        12,
+                        13,
+                        14,
+                        15,
+                        16,
+                        17,
+                        18
+                      ],
+                      "starting_column": 1,
+                      "ending_column": 2
+                    }
+                  },
+                  "signature": "constructor(address)"
+                }
+              }
+            }
+          }
+        ],
+        "description": "HelloMint.constructor(address).owner_ (src/HelloMint.sol#9) lacks a zero-check on :\n\t\t- owner = owner_ (src/HelloMint.sol#10)\n",
+        "markdown": "[HelloMint.constructor(address).owner_](src/HelloMint.sol#L9) lacks a zero-check on :\n\t\t- [owner = owner_](src/HelloMint.sol#L10)\n",
+        "first_markdown_element": "src/HelloMint.sol#L9",
+        "id": "84f53ae65ba34042beac435e87363b62e0ed38a55b1129ca6a82fb96e25e0513",
+        "check": "missing-zero-check",
+        "impact": "Low",
+        "confidence": "Medium",
+        "reference": "https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation"
+      }
+    ]
+  }
+}

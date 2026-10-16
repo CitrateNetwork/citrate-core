@@ -18,7 +18,7 @@ export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?:
   if (!enabled) {
     return (
       <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
-        Turn on “crash reports only” above to prepare and send a diagnostic report. It’s never sent
+        Turn on crash reports above to prepare and send a diagnostic report. It’s never sent
         without your explicit review + send.
       </span>
     );

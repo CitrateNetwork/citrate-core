@@ -625,6 +625,12 @@ pub fn storage_pin_sync(
     Ok(())
 }
 
+/// HUP-S4.2 (`pin_add` over the citrate-node MCP server, after the member approved it): keep a CID
+/// on THIS node only. No storage bond and no transaction (the bonded path is [`storage_pin`]).
+pub fn storage_pin_local_sync(app: tauri::AppHandle, cid: &str) -> std::result::Result<(), String> {
+    build_manager(&app)?.pin(cid, "").map_err(|e| e.to_string())
+}
+
 /// **Command — storage_list.** The pinning file store (index ∪ live pins).
 #[tauri::command]
 pub async fn storage_list(app_h: tauri::AppHandle) -> std::result::Result<Vec<PinRow>, String> {

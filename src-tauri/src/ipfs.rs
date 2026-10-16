@@ -151,7 +151,7 @@ pub struct IpfsState(pub IpfsManager);
 
 /// Resolve the bundled `ipfs` (kubo) binary: `CITRATE_IPFS_BIN` override first
 /// (dev/tests), else the Tauri resource dir (externalBin, target-triple stripped).
-fn resolve_ipfs_bin<R: tauri::Runtime>(
+pub(crate) fn resolve_ipfs_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CITRATE_IPFS_BIN") {

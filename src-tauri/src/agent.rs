@@ -849,7 +849,7 @@ pub struct AgentState(pub AgentManager);
 /// approach as the node): `CITRATE_NODE_AGENT_BIN` override first (dev/tests),
 /// else the Tauri resource dir (`externalBin` strips the target-triple suffix to
 /// `node-agent`).
-fn resolve_agent_bin<R: tauri::Runtime>(
+pub(crate) fn resolve_agent_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CITRATE_NODE_AGENT_BIN") {
@@ -1029,7 +1029,7 @@ pub async fn user_claim(
             .claimable_wei
             .parse()
             .map_err(|_| "earnings: claimable is not a u128 wei value".to_string())?;
-        (crate::earnings::CONTRIBUTION_ACCOUNTING.to_string(), wei)
+        (crate::earnings::contribution_accounting().to_string(), wei)
     };
 
     // Bridge the REAL claim into a pending ceremony (honest 0 → NoPending error).

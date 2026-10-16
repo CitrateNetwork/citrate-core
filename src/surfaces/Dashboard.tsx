@@ -6,6 +6,9 @@ import { AppState, nodeLabel } from "../shell/state";
 import { citrate } from "../chain";
 import { TUTORIALS } from "../data/seed";
 import { federationUrl } from "../data/links";
+import { WidgetsPanel } from "../widgets/WidgetsPanel";
+import { DaemonsPanel } from "../daemons/DaemonsPanel";
+import { appWidgetSources } from "../widgets/appSources";
 
 const RANK: Record<string, number> = { free: 0, pilot: 1, enterprise: 2 };
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -171,12 +174,17 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 316px", gap: 16, flex: 1, minHeight: 420 }}>
+      {/* rc.5 FIX 4: items align to the start, so the chat sizes itself to the window instead of
+          stretching to the right rail's height (which pushed the composer below the fold). */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 316px", gap: 16, alignItems: "start" }}>
         {/* chat pane — shared component, also mounted on the Agent surface (#62) */}
         <AgentChat store={store} s={s} />
 
         {/* right rail */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0, overflow: "auto" }}>
+          {/* HUP-S10.3 — widgets (sandboxed tiles) and daemons (scheduled tasks inside a budget) */}
+          <WidgetsPanel sources={appWidgetSources} />
+          <DaemonsPanel />
           <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
               <span style={{ fontSize: 13.5, fontWeight: 500 }}>Recent transactions</span>

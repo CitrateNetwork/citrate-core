@@ -9,6 +9,7 @@
     "opener:default",
     "updater:default",
     "process:default",
-    "deep-link:default"
+    "deep-link:default",
+    "main-window-commands"
   ]
 }

@@ -30,7 +30,8 @@
       "commit": "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37",
       "license": "MIT",
       "local": "testing-hermes-design/skills",
-      "pin_method": "git-checkout"
+      "pin_method": "git-checkout",
+      "intake_rewrite": "flatten-frontmatter"
     },
     {
       "label": "hermes-optional",
@@ -38,7 +39,8 @@
       "commit": "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37",
       "license": "MIT",
       "local": "testing-hermes-design/optional-skills",
-      "pin_method": "git-checkout"
+      "pin_method": "git-checkout",
+      "intake_rewrite": "flatten-frontmatter"
     }
   ],
   "decisions": {
@@ -111,6 +113,106 @@
     "trailofbits/plugins/zeroize-audit/skills/zeroize-audit": {
       "verdict": "exclude",
       "reason": "25 bundled executables under tools/ drive the workflow (compiler emit and diff steps); stripped, its steps cannot run; revisit as a native toolset"
+    },
+    "hermes-skills/autonomous-ai-agents/claude-code": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/autonomous-ai-agents/codex": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/autonomous-ai-agents/hermes-agent": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell, safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/computer-use": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/email/himalaya": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/github/github-auth": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/github/github-code-review": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/github/github-issues": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/github/github-pr-workflow": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/github/github-repo-management": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/mlops/huggingface-hub": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/productivity/notion": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-skills/social-media/xurl": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/autonomous-ai-agents/antigravity-cli": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell, safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/autonomous-ai-agents/blackbox": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/autonomous-ai-agents/grok": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell, safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/autonomous-ai-agents/openhands": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/creative/kanban-video-orchestrator": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/mlops/training/axolotl": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/mlops/training/unsloth": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path, pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/research/darwinian-evolver": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/research/parallel-cli": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/security/oss-forensics": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/security/web-pentest": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: red flag exfil-endpoint not content-reviewed yet; stays out until the owner reviews it"
+    },
+    "hermes-optional/creative/hyperframes": {
+      "verdict": "exclude",
+      "reason": "HUP-S3.2 intake rewrite pass: the name collides with the admitted frontend-skills hyperframes skill; one loader source cannot hold two skills of one name"
     }
   }
 }

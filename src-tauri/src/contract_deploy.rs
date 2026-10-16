@@ -11,12 +11,26 @@
 //! ships bespoke contract bytecode. The caller supplies compiled, audited init code
 //! (e.g. from `forge`/`solc`, or an agent that compiled + fork-simulated a contract).
 //! Empty bytecode is rejected up-front so the ceremony never carries a no-op creation.
+//!
+//! HUP-S6.4 (D-4): the deploy is REFUSED unless the deploy gate (`crate::deploy_gate`) holds a
+//! READY record for exactly this init code. The refusal names the failing items. On success the
+//! ceremony view is returned together with the gate record, so the review shows the verdict
+//! and the bytecode hash the member is approving.
 use serde_json::json;
+
+/// What `contract_deploy` returns: the pending ceremony (flattened, so it reads as a
+/// `CeremonyView`) plus the READY gate record it was checked against.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeployProposal {
+    #[serde(flatten)]
+    pub ceremony: crate::ceremony::CeremonyView,
+    pub gate: crate::deploy_gate::GateRecord,
+}
 
 /// Default gas for a contract creation when the caller does not supply an estimate.
 /// A calldata/creation tx MUST carry explicit gas; a fork-sim estimate is preferred,
 /// this is a generous fallback so a modest contract does not run out of gas.
-const DEFAULT_DEPLOY_GAS: u64 = 2_000_000;
+pub(crate) const DEFAULT_DEPLOY_GAS: u64 = 2_000_000;
 
 /// Assemble the deployment init code: the compiled deploy bytecode followed by the
 /// ABI-encoded constructor arguments (empty when the constructor takes none). This is
@@ -57,6 +71,7 @@ fn encode_deploy_tx_json(from: &str, initcode: &[u8], value_wei: u128, gas: u64)
 /// PENDING SignatureCeremony carrying the `to`-less creation tx (Rule 3 — the human
 /// approves + broadcasts; nothing signs here). The bytecode is caller-supplied + audited
 /// — the app never invents contract code (Rule 1). Empty bytecode is rejected up-front.
+/// HUP-S6.4: refused unless the D-4 deploy gate is READY for exactly this init code.
 #[tauri::command]
 pub async fn contract_deploy(
     app_h: tauri::AppHandle,
@@ -64,35 +79,40 @@ pub async fn contract_deploy(
     constructor_args_hex: Option<String>,
     value_wei: Option<String>,
     gas: Option<u64>,
-) -> std::result::Result<crate::ceremony::CeremonyView, String> {
+) -> std::result::Result<DeployProposal, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
         let st0 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let st1 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        contract_deploy_sync(st0, st1, bytecode_hex, constructor_args_hex, value_wei, gas)
+        let st2 = tauri::Manager::try_state::<crate::deploy_gate::DeployGateState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        contract_deploy_sync(
+            &st0.0,
+            &st1.0,
+            &st2.0,
+            bytecode_hex,
+            constructor_args_hex,
+            value_wei,
+            gas,
+        )
     })
     .await
 }
 
 /// Blocking body of [`contract_deploy`]; reached only through [`crate::blocking::off_main`].
+/// Takes the managed states' inner values so the local hello-mint end-to-end test drives this
+/// same body (HUP-S6, `hello_mint_e2e_tests.rs`).
 pub fn contract_deploy_sync(
-    custody: tauri::State<'_, crate::custody::CustodyState>,
-    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    custody: &crate::custody::CustodyVault,
+    ceremony: &crate::ceremony::SignatureCeremony,
+    gate: &crate::deploy_gate::GateStore,
     bytecode_hex: String,
     constructor_args_hex: Option<String>,
     value_wei: Option<String>,
     gas: Option<u64>,
-) -> std::result::Result<crate::ceremony::CeremonyView, String> {
-    let bytecode = parse_hex(&bytecode_hex, "bytecode")?;
-    if bytecode.is_empty() {
-        return Err("contract bytecode is required to deploy".into());
-    }
-    let args = match &constructor_args_hex {
-        Some(a) => parse_hex(a, "constructor args")?,
-        None => Vec::new(),
-    };
+) -> std::result::Result<DeployProposal, String> {
     let value: u128 = match value_wei.as_deref() {
         None | Some("") => 0,
         Some(v) => v
@@ -100,8 +120,46 @@ pub fn contract_deploy_sync(
             .parse()
             .map_err(|_| "value must be a decimal wei amount".to_string())?,
     };
+    propose_deploy(
+        custody,
+        ceremony,
+        gate,
+        "local-user",
+        &bytecode_hex,
+        constructor_args_hex.as_deref(),
+        value,
+        gas,
+    )
+}
+
+/// The one deploy-proposal path, shared by the app (`contract_deploy`, origin `local-user`) and
+/// the citrate-node MCP server (`deploy_propose`, origin `mcp:<token> via <client>`). Refused
+/// unless the D-4 gate is READY for exactly this init code; opens a PENDING ceremony; signs nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn propose_deploy(
+    custody: &crate::custody::CustodyVault,
+    ceremony: &crate::ceremony::SignatureCeremony,
+    gate: &crate::deploy_gate::GateStore,
+    origin: &str,
+    bytecode_hex: &str,
+    constructor_args_hex: Option<&str>,
+    value: u128,
+    gas: Option<u64>,
+) -> std::result::Result<DeployProposal, String> {
+    let bytecode = parse_hex(bytecode_hex, "bytecode")?;
+    if bytecode.is_empty() {
+        return Err("contract bytecode is required to deploy".into());
+    }
+    let args = match constructor_args_hex {
+        Some(a) => parse_hex(a, "constructor args")?,
+        None => Vec::new(),
+    };
     let initcode = deploy_initcode(&bytecode, &args);
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    // D-4: no READY gate for exactly these bytes → refuse, naming what fails, before touching
+    // the wallet. The ceremony below carries this same `initcode`, so what was gated is what
+    // gets signed; `open_ceremony` re-checks under the store lock.
+    gate.require_ready(&initcode)?;
+    let wallet = crate::wallet::address_auto_unlocked(custody).map_err(|e| e.to_string())?;
     let raw = encode_deploy_tx_json(
         &wallet.address,
         &initcode,
@@ -109,14 +167,25 @@ pub fn contract_deploy_sync(
         gas.unwrap_or(DEFAULT_DEPLOY_GAS),
     );
     let intent = crate::ceremony::SignatureIntent {
-        origin: "local-user".to_string(),
+        origin: origin.to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
         chain_id: 40204,
         raw,
     };
     // Return the decoded view so the UI drives signing.broadcast(view.id) (the money-path
-    // pattern) — nothing signs here (Rule 3).
-    Ok(ceremony.0.request(intent))
+    // pattern) — nothing signs here (Rule 3). The gate record rides along for the review card.
+    // An already-decided ceremony cannot be rejected again; that error is expected and moot.
+    let (gate_record, view) = gate.open_ceremony(
+        &initcode,
+        || Ok(ceremony.request(intent)),
+        |id| {
+            let _ = ceremony.reject(id);
+        },
+    )?;
+    Ok(DeployProposal {
+        ceremony: view,
+        gate: gate_record,
+    })
 }
 
 #[cfg(test)]

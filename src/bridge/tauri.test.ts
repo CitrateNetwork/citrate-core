@@ -80,6 +80,9 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "auth_logout":
     case "kyc_start":
       return undefined;
+    // rc.5 FIX 2 — abort the in-flight system-browser sign-in; true = one was waiting.
+    case "auth_login_cancel":
+      return true;
     // CORE-D3.C — membership_checkout opens the checkout popup and returns void.
     // The money + grant are server-side; the store polls /userinfo for the grant.
     case "membership_checkout":
@@ -154,6 +157,7 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "model_download":
     case "model_verify":
     case "model_serve_start":
+    case "model_serve_stop":
       return undefined;
     // CORE-C1.2 node-agent — under the SidecarSupervisor. status returns the
     // supervisor state + whether a bearer session exists (NEVER the token);
@@ -568,6 +572,12 @@ describe("tauri adapter — auth domain invokes real OIDC commands (A3.3)", () =
     expect(invokeMock).toHaveBeenCalledWith("auth_logout", undefined);
     expect(invokeMock).toHaveBeenCalledWith("kyc_start", undefined);
   });
+
+  it("cancelLogin invokes auth_login_cancel (rc.5 FIX 2: the browser sign-in has no window to close)", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.auth.cancelLogin()).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("auth_login_cancel", undefined);
+  });
 });
 
 // CORE-B1.2 B1.2.1 — the signing domain invokes the real SignatureCeremony
@@ -764,6 +774,9 @@ describe("tauri adapter — memory domain is wired to the real mcp_serve daemon 
     expect(r.hits[0].title).toBe("LiquidStakingPool");
     await bridge.memory.search("personal", "telemetry");
     expect(invokeMock).toHaveBeenCalledWith("memory_search", { tenant: "personal", query: "telemetry", budget: undefined });
+    // HUP-S3.1: knowledge passages ride the same command, only when asked for.
+    await bridge.memory.search("citrate-docs", "chain id", 5, { passages: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("memory_search", { tenant: "citrate-docs", query: "chain id", budget: 5, passages: true });
   });
 
   it("neighbors + constellation invoke real commands and never fabricate a graph", async () => {
@@ -961,6 +974,12 @@ describe("tauri adapter — model domain is wired to the real download+verify+se
     expect(invokeMock).toHaveBeenCalledWith("model_download", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_verify", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_serve_start", undefined);
+  });
+
+  it("SCL-S7.5a: serveStop invokes model_serve_stop and returns void", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.model.serveStop()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("model_serve_stop", undefined);
   });
 });
 

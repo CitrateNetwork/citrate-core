@@ -19,10 +19,27 @@
 // store.setState. onJNew / onJEdit / onJPin are inline handlers in the
 // design's view derivation, reproduced here 1:1 against existing state.
 // =====================================================================
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { LoaderMark } from "../components/LoaderMark";
 import { SurfaceProps } from "./shared";
 import { JournalPage } from "../shell/state";
+import { ensureDailyEntry } from "../journal/dailyEntry";
+import { JournalVaultPanel } from "../journal/JournalVaultPanel";
+import { desktopJournalIo } from "../journal/encryptedExport";
+import { SchedulePanel } from "../agent/schedule/SchedulePanel";
+import { SheetsPanel } from "../agent/sheets/SheetsPanel";
+import { AgentSheetChanges } from "../agent/sheets/AgentSheetChanges";
+import { agentUndo, undoChange } from "../shell/slices/agentUndo";
+import { bridge } from "../bridge";
+import { desktopScheduleIo } from "../agent/schedule/schedule";
+import { HermesDailyReport } from "../journal/HermesDailyReport";
+import { BRIDGE_MODE } from "../bridge/mode";
+import { invoke as bridgeInvoke } from "../bridge/tauri/invoke";
+import { LocalModelAsk } from "../components/LocalModelAsk";
+
+// HUP-S7.3: approving an anchor waits for its receipt (up to about a minute), so that one command
+// gets a longer UI deadline than the default.
+const reportInvoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> => bridgeInvoke<T>(cmd, args, cmd === "hermes_anchor_approve" ? 120_000 : undefined);
 
 // ---------- dictation (ported from design initSpeech/toggleMic) ----------
 // The design keeps a single SpeechRecognition instance on the logic
@@ -125,6 +142,14 @@ export function Journal({ store, s }: SurfaceProps) {
   // instance; here they are component-local refs since store.ts is frozen.
   const jTextRef = useRef<HTMLTextAreaElement | null>(null);
   const jTitleRef = useRef<HTMLInputElement | null>(null);
+  // HUP-S10.4 — which passphrase panel is open (component-local; never persisted).
+  const [vault, setVault] = useState<null | "export" | "import">(null);
+  // HUP-S10.2: Hermes's schedule (and Google Calendar when connected), shown as a week calendar.
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [showSheets, setShowSheets] = useState(false);
+  // HUP-S10.2 follow-up: sheets Hermes wrote this session, each with Undo (the chat's undo path).
+  const undo = agentUndo.use();
+  const [reportOpen, setReportOpen] = useState(false);
 
   const jPages = s.jPages || [];
   const jSelPage: JournalPage | null = jPages.find((p) => p.id === s.jSel) || jPages[0] || null;
@@ -196,6 +221,25 @@ export function Journal({ store, s }: SurfaceProps) {
     store.setState({ jPages: jPages.concat([{ id, title: "Untitled", kind: "page", pinned: false, blocks: [""] }]), jSel: id, jEditing: true });
   };
 
+  // HUP-S10.4 — the one-per-day entry: select today's page, creating it once.
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const onJToday = () => {
+    const st = store.state;
+    const r = ensureDailyEntry(st.jPages || [], todayStr());
+    if (r.created) store.setState({ jPages: r.pages, jSel: r.id, jEditing: false });
+    else store.setState({ jSel: r.id, jEditing: false });
+    store.save();
+  };
+  // HUP-S10.4 — "what Hermes did today", from records on this device only.
+  const isTodayEntry = !!jSelPage && jSelPage.kind === "daily" && jSelPage.id === "d-" + todayStr();
+  // US-10.4 AC1: also the day's metering, daemon runs and recent personal memory (store.writeDailySummary).
+  const onJSummary = () => {
+    void store
+      .writeDailySummary(todayStr())
+      .then((n) => store.toast(n ? "Summary added from local records. Edit it like any bullet." : "Nothing recorded today; the entry says so."))
+      .catch((e) => store.toast("The summary could not be written: " + (e instanceof Error ? e.message : String(e))));
+  };
+
   const jPinDisabled = !jSelPage || jSelPage.pinned || s.jEditing;
   const jPinLabel = jSelPage && jSelPage.pinned ? "Pinned" : "Pin securely";
   // Pinning is NOT wired to a real pin daemon / bond tx yet — the old path
@@ -254,6 +298,23 @@ export function Journal({ store, s }: SurfaceProps) {
     { label: "Plain text", ext: ".txt", go: () => store.exportJournal("txt") },
     { label: "PDF (print)", ext: ".pdf", go: () => store.exportJournal("pdf") },
     { label: "Word", ext: ".doc", go: () => store.exportJournal("doc") },
+    // HUP-S10.4 — the whole journal, sealed with a passphrase (desktop app).
+    {
+      label: "Encrypted file",
+      ext: ".citrate-journal",
+      go: () => {
+        store.setState({ jExportOpen: false });
+        setVault("export");
+      },
+    },
+    {
+      label: "Import encrypted file",
+      ext: "open",
+      go: () => {
+        store.setState({ jExportOpen: false });
+        setVault("import");
+      },
+    },
   ];
 
   // capture & chat panel
@@ -274,7 +335,8 @@ export function Journal({ store, s }: SurfaceProps) {
   }));
   const jMsgs = msgs.slice(-6);
   const jMsgsEmpty = msgs.length === 0;
-  const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
+  // SCL-S7.5a: a message held for the local model shows its question instead of a spinner.
+  const chatThinking = (s.chatStatus === "thinking" || s.chatStatus === "tool") && !s.chatRouteHold;
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
 
@@ -290,8 +352,17 @@ export function Journal({ store, s }: SurfaceProps) {
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, flex: 1 }}>Journal</span>
+          <button data-testid="j-today" className="btn btn-ghost btn-sm" onClick={onJToday} title="Open today's entry (one per day)">
+            Today
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={onJNew}>
             + Page
+          </button>
+          <button data-testid="j-schedule" className="btn btn-ghost btn-sm" aria-pressed={showSchedule} onClick={() => setShowSchedule((v) => !v)} title="Hermes's schedule as a calendar">
+            Schedule
+          </button>
+          <button data-testid="j-sheets" className="btn btn-ghost btn-sm" aria-pressed={showSheets} onClick={() => setShowSheets((v) => !v)} title="Read and add rows to your Google spreadsheets">
+            Sheets
           </button>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -328,7 +399,7 @@ export function Journal({ store, s }: SurfaceProps) {
         </div>
         <div style={{ flex: 1 }}></div>
         <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
-          Local and off-chain — stored locally on this device (browser localStorage). Agents and the harness write here only with your approval. Encrypted data-dir persistence and PIN-daemon snapshots are not wired yet.
+          Local and off-chain — stored locally on this device (browser localStorage). Agents and the harness write here only with your approval. A copy leaves this device only when you make an encrypted export with your own passphrase. Encrypted data-dir persistence and PIN-daemon snapshots are not wired yet.
         </p>
       </div>
 
@@ -366,6 +437,17 @@ export function Journal({ store, s }: SurfaceProps) {
               </span>
             )}
           </span>
+          <label data-testid="j-auto-summary" style={{ fontSize: 11.5, color: "var(--tx-2)", display: "inline-flex", alignItems: "center", gap: 4 }} title="Off by default. Once a day, late in the journal day (UTC), Hermes writes today's summary from records on this device.">
+            <input type="checkbox" checked={s.journalAutoSummary} onChange={(e) => store.setJournalAutoSummary(e.target.checked)} /> Daily summary
+          </label>
+          {isTodayEntry && jViewing && (
+            <button data-testid="j-summary" className="btn btn-ghost btn-sm" onClick={onJSummary} title="Summarize today from records on this device">
+              Hermes summary
+            </button>
+          )}
+          <button data-testid="j-hermes-report" className="btn btn-ghost btn-sm" onClick={() => setReportOpen((o) => !o)} title="Hermes's measured day and the on-chain anchor state">
+            Hermes report
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={onJPin} disabled={jPinDisabled}>
             {jPinLabel}
           </button>
@@ -373,6 +455,45 @@ export function Journal({ store, s }: SurfaceProps) {
             {jEditLabel}
           </button>
         </div>
+
+        {showSchedule && (
+          <div style={{ paddingTop: 14 }} id="journal-schedule">
+            <SchedulePanel io={desktopScheduleIo} />
+          </div>
+        )}
+
+        {showSheets && (
+          <div style={{ paddingTop: 14 }} id="journal-sheets">
+            <SheetsPanel io={desktopScheduleIo} />
+            <div style={{ paddingTop: 14 }}>
+              <AgentSheetChanges cards={undo.cards} onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)} />
+            </div>
+          </div>
+        )}
+
+        {reportOpen && (
+          <div style={{ padding: "14px 20px 0" }}>
+            <HermesDailyReport mode={BRIDGE_MODE} invoke={reportInvoke} now={() => new Date()} />
+          </div>
+        )}
+
+        {vault && (
+          <div style={{ paddingTop: 14 }}>
+            <JournalVaultPanel
+              key={vault}
+              kind={vault}
+              pages={jPages}
+              io={desktopJournalIo}
+              now={() => new Date()}
+              onImported={(pages) => {
+                store.setState({ jPages: pages });
+                store.save();
+              }}
+              onDone={(m) => store.toast(m)}
+              onClose={() => setVault(null)}
+            />
+          </div>
+        )}
 
         {jViewing && (
           <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "18px 20px", display: "flex", flexDirection: "column", gap: 2 }}>
@@ -451,6 +572,9 @@ export function Journal({ store, s }: SurfaceProps) {
                 {m.text}
                 {m.streaming && <span style={{ display: "inline-block", width: 6, height: 12, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
               </span>
+              {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
+                <LocalModelAsk compact phase={s.chatRouteHold.phase} onChoose={(c) => store.answerLocalModelAsk(c)} />
+              )}
             </div>
           ))}
           {chatThinking && (

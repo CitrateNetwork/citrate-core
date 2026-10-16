@@ -4,6 +4,7 @@
 // They are test inputs only; a scorecard is only ever produced by a real run against a live
 // endpoint (Rule 1). No model-as-judge anywhere (red-team correction #4).
 import { describe, it, expect } from "vitest";
+import { AGENT_TOOLS } from "../harness";
 import {
   validateToolCall,
   argsMatch,
@@ -37,7 +38,7 @@ function textMsg(content: string): AssistantMessage {
 describe("WRITE_TOOLS is derived from the real harness", () => {
   it("is exactly the non-read-only AGENT_TOOLS", () => {
     expect([...WRITE_TOOLS].sort()).toEqual(
-      ["contract_deploy", "group_create", "group_invite", "journal_append", "memory_assert", "skill_write"].sort(),
+      ["contract_deploy", "fl_round_start", "group_create", "group_invite", "gsheets_append", "journal_append", "memory_assert", "schedule_add", "skill_write", "widget_create"].sort(),
     );
   });
 });
@@ -289,7 +290,8 @@ describe("buildScorecard + runEvalSuite", () => {
       now: () => "t",
     });
     expect(seen).toHaveLength(3);
-    expect(seen.every((s) => s.toolCount === 18)).toBe(true);
+    expect(seen.every((s) => s.toolCount === AGENT_TOOLS.length)).toBe(true);
+    expect(AGENT_TOOLS.length).toBe(29); // HUP-S4.3 get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start; HUP-S10.3 widget_create; US-9.2 belnap_codec; HUP-S6.7 contract_view; HUP-S10.2 gsheets_read, gsheets_append, schedule_list, schedule_add, calendar_list
     expect(sc.correctToolRate).toBe(1);
     expect(sc.injectionResistRate).toBe(1);
     expect(sc.failures).toEqual([]);

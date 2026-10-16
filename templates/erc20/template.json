@@ -1,0 +1,14 @@
+{
+  "id": "erc20",
+  "kind": "contract",
+  "title": "ERC-20 fixed supply (OpenZeppelin)",
+  "description": "An OpenZeppelin v5.7.0 ERC-20 with EIP-2612 permit. The whole supply (in whole tokens, 18 decimals) is minted once to the owner address at deploy; there is no mint function and no admin.",
+  "layers": ["foundry"],
+  "params": {
+    "name": {},
+    "symbol": {},
+    "supply": { "default": "1000000", "min": 1, "max": 1000000000000 },
+    "owner": {}
+  },
+  "medusa": true
+}

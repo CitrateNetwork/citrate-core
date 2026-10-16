@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import type { Group, RewardInfo, RoundPhase, RoundStatus } from "../bridge/domains";
+import { FlRoundsPanel } from "../fl/FlRoundsPanel";
 
 // The round lifecycle as a person reads it, mapped from the domain's RoundPhase.
 const PHASE_UI: Record<RoundPhase, { label: string; tone: string; blurb: string }> = {
@@ -208,6 +209,9 @@ export function Train({ store }: SurfaceProps) {
           </div>
         </>
       )}
+
+      {/* HUP-S9.4: Hermes plans, explains and starts federated rounds; adapters pass the eval gate. */}
+      <FlRoundsPanel fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />
     </div>
   );
 }

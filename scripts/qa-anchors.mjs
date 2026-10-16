@@ -2,13 +2,14 @@
 // =====================================================================
 // citrate-core — Citrate QA eval set: anchor index build + provenance check (HUP-S3.5)
 //
-//   node scripts/qa-anchors.mjs [--check | --write] [--sources-root <dir>]
+//   node scripts/qa-anchors.mjs [--check | --write] [--sources-root <dir>] [--dataset <qa-v1 | qa-<pack>-vN>]
 //
-// For every file src/agent/eval/qa-v1.json cites, reads it from the LOCAL clone of its public
+// For every file the QA set cites (default src/agent/eval/qa-v1.json; HUP-S7.7 --dataset picks another set), reads it from the LOCAL clone of its public
 // source repo at the pinned commit (`git show <commit>:<path>`; nothing is fetched), records the
 // git blob id and every heading anchor, and checks that each answer key point appears in the text
 // of the section it cites. --write regenerates src/agent/eval/qa-v1.anchors.json; --check (the
 // default) fails when the committed index differs or a key point is not found in its source.
+// The index of set <name> is src/agent/eval/<name>.anchors.json.
 //
 // Source repos are looked up as <sources-root>/<source name> (default: the parent directory of
 // this repo, i.e. the citrate-labs workspace; or $QA_SOURCES_ROOT). Requires Node >= 22.18 / 23.6
@@ -20,22 +21,24 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractAnchors, extractSection, parseQaDataset, ungroundedKeyPoints } from "../src/agent/eval/qa.ts";
+import { qaDatasetFiles } from "../src/agent/eval/qaCliArgs.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DATASET = "src/agent/eval/qa-v1.json";
-const INDEX = "src/agent/eval/qa-v1.anchors.json";
-const USAGE = "usage: node scripts/qa-anchors.mjs [--check | --write] [--sources-root <dir>]";
+const USAGE = "usage: node scripts/qa-anchors.mjs [--check | --write] [--sources-root <dir>] [--dataset <name>]";
 
 function parseArgs(argv) {
   let mode = "check";
   let sourcesRoot = process.env.QA_SOURCES_ROOT ?? resolve(ROOT, "..");
+  let dataset = "qa-v1";
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--check" || a === "--write") mode = a.slice(2);
     else if (a === "--sources-root" && argv[i + 1]) sourcesRoot = resolve(argv[++i]);
+    else if (a === "--dataset" && argv[i + 1]) dataset = argv[++i];
     else throw new Error(`unknown argument ${JSON.stringify(a)}\n${USAGE}`);
   }
-  return { mode, sourcesRoot };
+  const files = qaDatasetFiles(dataset);
+  return { mode, sourcesRoot, dataset: files.dataset, index: files.index };
 }
 
 function git(dir, args) {
@@ -50,6 +53,8 @@ async function main() {
     console.error(e.message);
     process.exit(2);
   }
+  const DATASET = args.dataset;
+  const INDEX = args.index;
   const ds = parseQaDataset(JSON.parse(await readFile(join(ROOT, DATASET), "utf8")));
 
   const index = { version: ds.version, sources: {} };
@@ -117,7 +122,7 @@ async function main() {
     console.error(`${problems.length} problem(s)`);
     process.exit(1);
   }
-  console.log(`qa-v1 provenance OK: ${ds.items.length} items, ${paths.length} cited files, every key point grounded`);
+  console.log(`${ds.version} provenance OK: ${ds.items.length} items, ${paths.length} cited files, every key point grounded`);
 }
 
 main();

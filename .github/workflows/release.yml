@@ -34,6 +34,14 @@ on:
       tag:
         description: "Version tag to build (e.g. v0.2.0)"
         required: true
+      size_gate:
+        # HUP-S11.0 (gate g5-size), manual only: tag pushes never run it. When true, the release
+        # is created as a DRAFT, scripts/size-budget.mjs checks the bundle against
+        # release/budgets.json, and the draft is published only if that passes.
+        description: "Run the installer size gate; publish only if within budget"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -71,11 +79,33 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # ── HUP-S3.2: the reviewed third-party skills (src-tauri/skills-bundle/). Built from the
+      #    source checkouts with `node scripts/stage-skills-bundle.mjs build`, packed as
+      #    skills-bundle.tar.gz in the `runtime-deps` prerelease and pinned in
+      #    src-tauri/runtime-deps.sha256 like every other asset. The stager then refuses an asset
+      #    that does not match this repo's skills.lock file for file (no extra file, no script,
+      #    no symlink), so only reviewed, pinned skills ship.
+      - name: Stage reviewed third-party skills (skills.lock)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/skills-bundle-dl"
+          rm -rf "$DL" && mkdir -p "$DL"
+          # Same shape as the runtime-deps step below, so the PBA-L7b-005 pin tripwire
+          # (scripts/ci/check-release-pins.sh) sees every download go through the verified list.
+          ASSETS=(skills-bundle.tar.gz)
+          for a in "${ASSETS[@]}"; do
+            gh release download runtime-deps -p "$a" -D "$DL" --clobber
+          done
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
+          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+
       # ── Stage the runtime artifacts the bundle needs but git does not carry:
       #    the three sidecars (target-triple suffixed), the llama runtime dylibs,
       #    and the Gemma model. Pulled from the `runtime-deps` prerelease so a
       #    build is reproducible and does not rebuild 4 cross-repo binaries here.
-      - name: Stage runtime deps (sidecars · llama · models · BGE embedder)
+      - name: Stage runtime deps (sidecars · llama · models · BGE embedder · knowledge corpus)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -89,10 +119,12 @@ jobs:
             citrate-aarch64-apple-darwin
             mem-mcp-aarch64-apple-darwin
             node-agent-aarch64-apple-darwin
-            llama-server-aarch64-apple-darwin
-            llama-runtime-arm64.tar.gz
+            llama-server-aarch64-apple-darwin-b10909-nowebui
+            llama-runtime-arm64-b10909-nowebui.tar.gz
             gemma-4-E4B-it-Q4_0.gguf
             bge-base-en-v1.5.tar.gz
+            bge-base-en-v1.5-f16.gguf
+            knowledge-corpus.tar.gz
           )
           for a in "${ASSETS[@]}"; do
             gh release download runtime-deps -p "$a" -D "$DL" --clobber
@@ -101,12 +133,19 @@ jobs:
 
           mkdir -p src-tauri/binaries src-tauri/llama src-tauri/models
           # Sidecars (Apple Silicon target triple).
-          for b in citrate mem-mcp node-agent llama-server; do
+          for b in citrate mem-mcp node-agent; do
             cp "$DL/$b-aarch64-apple-darwin" src-tauri/binaries/
           done
+          # llama.cpp b10909 built with the web UI off (v0.5.0-rc.4, runtime-deps.sha256).
+          cp "$DL/llama-server-aarch64-apple-darwin-b10909-nowebui" src-tauri/binaries/llama-server-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
           # llama runtime dylibs (packed as a tarball asset) + the model.
-          tar -xzf "$DL/llama-runtime-arm64.tar.gz" -C src-tauri/llama
+          tar -xzf "$DL/llama-runtime-arm64-b10909-nowebui.tar.gz" -C src-tauri/llama
+          # HUP-S11.0 (g5-size): keep only llama-server's dependency closure. The tarball holds
+          # each dylib three times (dereferenced version symlinks) plus unused tool libraries,
+          # about 34 MB the loader never opens. Refuses (fails the job) if a needed library is
+          # missing, so the prune can never ship a runtime that does not start.
+          node scripts/prune-llama-runtime.mjs --dir src-tauri/llama
           cp "$DL/gemma-4-E4B-it-Q4_0.gguf" src-tauri/models/
           # BGE embedder (Hermes P1): the mem-mcp semantic ingest is GATED on this model
           # being bundled at models/bge-base-en-v1.5/ — without it first-run ingest skips
@@ -126,7 +165,36 @@ jobs:
             test -s "src-tauri/models/bge-base-en-v1.5/$f" \
               || { echo "::error::BGE embedder missing $f" && exit 1; }
           done
-          echo "staged:" && ls -la src-tauri/binaries src-tauri/llama src-tauri/models src-tauri/models/bge-base-en-v1.5
+          # HUP-S1.2 / US-1.4: the same BGE weights as GGUF, for the embedding llama-server Hermes
+          # ranks tools and skills with (embed_serve.rs re-checks the pinned digest at start).
+          mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+          cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
+          # HUP-S3.1: the Hermes knowledge corpus (built in citrate-memories, format
+          # citrate-corpus/2). The stager re-checks it against its own manifest (digest,
+          # tenant hashes, exact file set) and refuses a mem-mcp without `import-corpus`,
+          # so a corpus never ships beside a memory binary that cannot import it. It also
+          # binds the corpus to the BGE model staged above: offline import needs that model
+          # (else it is skipped as not-semantic), and every tenant's precomputed vectors must
+          # come from exactly those weights (else members embed ~21k nodes on their CPU).
+          node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
+            --bge-dir src-tauri/models/bge-base-en-v1.5 \
+            --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
+          echo "staged:" && ls -la src-tauri/binaries src-tauri/llama src-tauri/models src-tauri/models/bge-base-en-v1.5 src-tauri/models/bge-base-en-v1.5-gguf src-tauri/knowledge-corpus
+
+      # ── Fail closed on the knowledge corpus right before bundling: the overlays' resource glob
+      #    `knowledge-corpus/**/*` also matches the committed README.md, so without this check a
+      #    build that never staged the corpus would ship README-only. The staged directory must be
+      #    the corpus the stager recorded (bundle digest, node count), re-verify file by file, and
+      #    come from the pinned knowledge-corpus.tar.gz.
+      - name: Knowledge corpus staged (pre-bundle check)
+        run: node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+
+      # ── g3-licence: the bundled third-party notices must cover every program the app ships
+      #    (generated on the release Mac by scripts/third-party-notices.mjs; docs/RELEASE.md step 7).
+      - name: Third-party notices present
+        run: |
+          node scripts/third-party-notices.mjs check
+          node scripts/licence-inventory.mjs --require-notices
 
       - name: Build · sign · notarize · publish updater artifacts
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
@@ -150,8 +218,22 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Citrate Core ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: "See CHANGELOG. Installs update in-app via the signed release feed."
-          releaseDraft: false
+          # A manual run with size_gate drafts the release; the size gate below publishes it.
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate == true }}
           prerelease: true
           # Generate + upload latest.json (the feed the app polls). Default true;
           # explicit here because it is the whole point of W2.
           includeUpdaterJson: true
+
+      # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md).
+      # Exit 1 (over budget) fails the job and leaves the release a draft for review.
+      - name: Size gate (manual, size_gate input)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+        run: node scripts/size-budget.mjs --bundle-dir target/aarch64-apple-darwin/release/bundle --arch aarch64 --markdown "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the draft release (size gate passed)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: gh release edit "$TAG" --draft=false

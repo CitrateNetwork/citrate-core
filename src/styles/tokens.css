@@ -21,20 +21,29 @@
   --srf-inset: #f1efe8;        /* wells, code, rails       */
   --tx-1: #0e0f0c;             /* primary text             */
   --tx-2: #555851;             /* secondary                */
-  --tx-3: #84867f;             /* tertiary / captions      */
+  --tx-3: #6b6d67;             /* tertiary / captions (HUP-S10.6: was #84867f, 3.3:1; now AA) */
   --line-1: #d9dad4;           /* hairlines                */
   --line-2: #c3c4be;           /* form fields, dividers    */
   --line-strong: #0e0f0c;      /* document rules           */
 
   --accent: #8ecc09;           /* the consequential moment */
   --accent-deep: #5a8205;
-  --accent-text: #5a8205;      /* AA accent text on paper  */
+  --accent-text: #517505;      /* AA accent text on paper (HUP-S10.6: was #5a8205, 4.0:1 on --srf-0) */
   --accent-wash: #e8f3c6;
 
-  --ok: #4f8a05;      --ok-bg: #ecf5d4;
-  --warn: #b07b00;    --warn-bg: #fff1c4;
+  /* HUP-S10.6: --ok and --warn darkened to AA on their washes (were #4f8a05 3.7:1, #b07b00 3.3:1).
+     The four darkened charter values here are pending owner sign-off; the test pins the AA floor. */
+  --ok: #467904;      --ok-bg: #ecf5d4;
+  --warn: #8f6400;    --warn-bg: #fff1c4;
   --danger: #a72414;  --danger-bg: #f6e1de;
   --info: #1b4965;    --info-bg: #dbe7ef;
+
+  /* rc.5 FIX 3: the text colour for each fill, per register. Text on a fill uses ONLY these
+     (onColor.contrast.test.ts checks AA for every pair and lints components for it). */
+  --on-accent: #0e0f0c;        /* on --accent / --citrate-green (lime)  */
+  --on-accent-deep: #ffffff;   /* on --accent-deep (dark olive here)    */
+  --on-highlight: #0e0f0c;     /* on --citrate-yellow                   */
+  --on-danger: #ffffff;        /* on --danger (deep red here)           */
 
   --focus-ring: 0 0 0 3px rgba(142,204,9,.35);
 }
@@ -60,6 +69,12 @@
   --warn: #ffbd10;    --warn-bg: rgba(255,189,16,.12);
   --danger: #dd7259;  --danger-bg: rgba(167,36,20,.22);
   --info: #4cc3d5;    --info-bg: rgba(76,195,213,.12);
+
+  /* rc.5 FIX 3: on-fill text colours. Every fill here is light, so all take dark ink. */
+  --on-accent: #0e0f0c;
+  --on-accent-deep: #0e0f0c;   /* --accent-deep is the LIGHTER lime on dark */
+  --on-highlight: #0e0f0c;
+  --on-danger: #0e0f0c;        /* --danger is a light coral on dark (white was 3.2:1) */
 
   --focus-ring: 0 0 0 3px rgba(142,204,9,.4);
 
@@ -115,6 +130,9 @@ button { font: inherit; }
   border-radius: var(--r-1);
   font-family: var(--font-sans); font-weight: 500; font-size: 13px;
   white-space: nowrap; cursor: pointer; border: 1px solid transparent;
+  /* rc.5 FIX 3: a bare .btn is legible in both registers. Without these the UA's
+     buttonface/buttontext (light grey + black) applied, whatever the register. */
+  background: transparent; color: var(--tx-1);
   transition: background var(--dur-fast) var(--ease-standard),
               color var(--dur-fast) var(--ease-standard),
               border-color var(--dur-fast) var(--ease-standard),
@@ -123,9 +141,8 @@ button { font: inherit; }
 .btn:active { transform: translateY(1px); }
 .btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
-.btn-primary { background: var(--accent); color: #0e0f0c; border-color: var(--accent); }
-.btn-primary:hover { background: var(--accent-deep); color: #0e0f0c; border-color: var(--accent-deep); }
-[data-register="charter"] .btn-primary:hover { color: #ffffff; }
+.btn-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-deep); color: var(--on-accent-deep); border-color: var(--accent-deep); }
 .btn-secondary { background: var(--tx-1); color: var(--srf-0); border-color: var(--tx-1); }
 .btn-secondary:hover { opacity: .88; }
 .btn-ghost { background: transparent; color: var(--tx-1); border-color: var(--line-2); }
@@ -204,4 +221,10 @@ button { font: inherit; }
     transition-duration: .01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* HUP-S10.6 — text for screen readers only (state words that the visuals show by colour). */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }

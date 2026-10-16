@@ -19,6 +19,7 @@
 // =====================================================================
 
 import { admitsUncertainty } from "../eval.ts";
+import type { CorpusCitationIndex } from "./corpusCitations.ts";
 
 export const QA_CATEGORIES = [
   "chain-basics",
@@ -167,7 +168,10 @@ function isObj(x: unknown): x is Record<string, unknown> {
 /** Validate the dataset shape. Throws with a readable reason on the first defect. */
 export function parseQaDataset(raw: unknown): QaDataset {
   if (!isObj(raw)) fail("not an object");
-  if (typeof raw.version !== "string" || !/^qa-v\d+$/.test(raw.version)) fail("version must look like qa-vN");
+  // HUP-S7.7: a named pack (`qa-<pack>-vN`, e.g. qa-literacy-v1) is a separate set, not a revision of qa-v1.
+  if (typeof raw.version !== "string" || !/^qa(-[a-z0-9]+)*-v\d+$/.test(raw.version)) {
+    fail("version must look like qa-vN or qa-<pack>-vN");
+  }
   const p = raw.provenance;
   if (!isObj(p)) fail("missing provenance");
   for (const k of ["author", "created", "purpose"]) {
@@ -305,11 +309,43 @@ export function extractCitations(answer: string): CitedRef[] {
   return out;
 }
 
-/** A cited ref is valid when its file is in the index and its anchor (if any) is a real heading. */
-export function citationValid(ref: CitedRef, index: AnchorIndex): boolean {
+/**
+ * A cited ref is valid when its file is in the index and its anchor (if any) is a real heading.
+ * HUP-S3.1: in a retrieval run, a ref that resolves to a node of the bundled corpus (its file,
+ * and one of that file's section anchors when an anchor is given) is valid too.
+ */
+export function citationValid(ref: CitedRef, index: AnchorIndex, corpus?: CorpusCitationIndex): boolean {
   const f = index.sources[ref.source]?.files[ref.path];
-  if (!f) return false;
-  return ref.anchor === undefined || f.anchors.includes(ref.anchor);
+  if (f && (ref.anchor === undefined || f.anchors.includes(ref.anchor))) return true;
+  const c = corpus?.files.get(`${ref.source}:${ref.path}`);
+  if (!c) return false;
+  return ref.anchor === undefined || c.has(ref.anchor);
+}
+
+// ------------------------------------------------------------------ abstention
+
+/**
+ * "The documentation does not cover / specify / contain ... X" and "I do not have documentation":
+ * the plain not-documented statement QA_SYSTEM_PROMPT asks for. The shared W3.4 refusal markers
+ * (`admitsUncertainty`) only match the literal "not documented", so the first live run
+ * (2026-10-01) scored every one of these abstentions as a failure. Bounded to one sentence; a
+ * statement of what the docs DO say ("the documentation specifies 40204") does not match.
+ */
+const NOT_DOCUMENTED_RE = new RegExp(
+  [
+    // "<the (bundled) docs / documentation / materials / sources> ... does not | do not | doesn't | don't <verb>"
+    String.raw`\b(?:documentation|docs|documents|materials|sources)\b[^.!?\n]{0,40}?\b(?:does not|do not|doesn't|don't|did not|didn't)\s+` +
+      String.raw`(?:contain|cover|specify|mention|include|provide|state|describe|say|list|detail|give|document|address|define|discuss)\b`,
+    // "I do not have (any) documentation", "there is no documentation"
+    String.raw`\b(?:do not|don't) have (?:any )?(?:documentation|docs|information)\b`,
+    String.raw`\bthere (?:is|are) no (?:documentation|docs|information)\b`,
+  ].join("|"),
+  "i",
+);
+
+/** True when the answer says the topic is not documented (W3.4 markers, or the QA phrasings above). */
+export function admitsNotDocumented(answer: string): boolean {
+  return admitsUncertainty(answer) || NOT_DOCUMENTED_RE.test(answer.replace(/[‘’]/g, "'"));
 }
 
 export interface QaItemScore {
@@ -330,6 +366,8 @@ export interface QaItemScore {
 export interface QaScoreOptions {
   /** Minimum key-point coverage for an answerable item to pass (default 0.6). */
   coverageThreshold?: number;
+  /** HUP-S3.1: citations may also resolve to the bundled corpus (retrieval runs). */
+  corpus?: CorpusCitationIndex;
 }
 
 /** Score one answer. `extraCitations` are structured citations a provider returned out-of-band. */
@@ -342,9 +380,9 @@ export function scoreQaItem(
 ): QaItemScore {
   const threshold = opts.coverageThreshold ?? 0.6;
   const cited = [...extractCitations(answer), ...extraCitations];
-  const citedValid = cited.filter((r) => citationValid(r, index)).length;
+  const citedValid = cited.filter((r) => citationValid(r, index, opts.corpus)).length;
   const citedInvalid = cited.length - citedValid;
-  const abstained = admitsUncertainty(answer);
+  const abstained = admitsNotDocumented(answer);
   const reasons: string[] = [];
   if (citedInvalid > 0) reasons.push(`${citedInvalid} citation(s) do not resolve`);
 
@@ -366,7 +404,7 @@ export function scoreQaItem(
 
   const coverage = keyPointCoverage(answer, item.keyPoints);
   const citationHit = item.citations.some((req) =>
-    cited.some((r) => r.source === req.source && r.path === req.path && citationValid(r, index)),
+    cited.some((r) => r.source === req.source && r.path === req.path && citationValid(r, index, opts.corpus)),
   );
   if (coverage < threshold) reasons.push(`key-point coverage ${coverage.toFixed(2)} < ${threshold}`);
   if (!citationHit) reasons.push("no required citation cited");
@@ -404,6 +442,37 @@ export interface QaScorecard {
   byCategory: Record<string, { n: number; passRate: number }>;
   failures: string[];
   failureReasons: Record<string, string[]>;
+  /**
+   * g2-knowledge (US-3.1 AC2, "citations resolving to bundled nodes"): of the citations in the
+   * answers of a retrieval run, the share that name a node the run's searches returned from the
+   * imported graph (null when nothing was cited). Absent on a closed-book run.
+   */
+  citationNodeRate?: number | null;
+  /**
+   * HUP-S3.1 / g2-knowledge: the run answered from passages retrieved from the bundled corpus
+   * (`memory.search` with passages over these tenants, k per tenant). Absent = closed-book.
+   */
+  retrieval?: {
+    /**
+     * "memory_search tool": the model called the app's memory_search tool itself (what the app
+     * does; src/agent/eval/toolLoop.ts). "memory.search passages": the harness retrieved passages
+     * before the question (retrieve-then-answer).
+     */
+    mode: "memory_search tool" | "memory.search passages" | "memory_search tool via sidecar";
+    tenants: string[];
+    k: number;
+    /** Tool mode: model requests per question (the app's AGENT_MAX_TURNS). */
+    maxTurns?: number;
+    corpusDigest?: string;
+    /** Citations were also accepted when they resolve to a node of the bundled corpus. */
+    citationsResolveToCorpus?: boolean;
+    /**
+     * HUP-S7.7: "memory_search tool via sidecar" runs. The skill directories the sidecar loaded
+     * (repo-relative where possible), whether the reviewed third-party skills were loaded too, and
+     * the context and reply sizes the sessions were opened with.
+     */
+    sidecar?: { skills: string[]; reviewedThirdParty: boolean; contextTokens: number; maxTokens: number };
+  };
 }
 
 const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -450,9 +519,71 @@ export const QA_SYSTEM_PROMPT =
   "example citrate-docs:content/chain/genesis.md#reference. If the documentation does not cover the " +
   "question, say plainly that it is not documented and do not guess.";
 
+/** A node a retrieval run's search returned: the id prefix the daemon printed and its citation. */
+export interface RetrievedNodeRef {
+  id: string;
+  cite?: string;
+}
+
+/** One answer citation and the retrieved node ids it names (empty when it names none). */
+export interface CitationNodes {
+  citation: string;
+  nodeIds: string[];
+}
+
+function splitCite(cite: string): CitedRef | null {
+  const colon = cite.indexOf(":");
+  if (colon <= 0) return null;
+  const rest = cite.slice(colon + 1);
+  const hash = rest.indexOf("#");
+  const ref: CitedRef = { source: cite.slice(0, colon), path: hash < 0 ? rest : rest.slice(0, hash) };
+  if (hash >= 0) ref.anchor = rest.slice(hash + 1).toLowerCase();
+  return ref;
+}
+
+/**
+ * Resolve each citation in `answer` to the retrieved nodes it names: same repo and path, and the
+ * same section anchor when the citation gives one. Node ids are in retrieval order, de-duplicated.
+ */
+export function resolveCitationNodes(answer: string, retrieved: RetrievedNodeRef[]): CitationNodes[] {
+  const nodes = retrieved.flatMap((n) => {
+    const ref = n.cite ? splitCite(n.cite) : null;
+    return ref ? [{ id: n.id, ref }] : [];
+  });
+  return extractCitations(answer).map((c) => {
+    const ids: string[] = [];
+    for (const n of nodes) {
+      if (n.ref.source !== c.source || n.ref.path !== c.path) continue;
+      if (c.anchor !== undefined && n.ref.anchor !== c.anchor) continue;
+      if (!ids.includes(n.id)) ids.push(n.id);
+    }
+    return { citation: `${c.source}:${c.path}${c.anchor === undefined ? "" : `#${c.anchor}`}`, nodeIds: ids };
+  });
+}
+
+export interface QaAnswer {
+  text: string;
+  /** Structured citations a provider returned out-of-band. */
+  citations?: CitedRef[];
+  /** Retrieval runs: the nodes the run's searches returned for this question. */
+  retrieved?: RetrievedNodeRef[];
+  /** Tool runs: the memory_search calls the model made. */
+  toolCalls?: { tenant: string; query: string }[];
+  /** Sidecar runs (HUP-S7.7): the skills the model read with skill_load, in order. */
+  skillLoads?: string[];
+}
+
+export type QaItemResult = QaItemScore & {
+  answer: string;
+  retrievedNodes?: string[];
+  toolCalls?: { tenant: string; query: string }[];
+  skillLoads?: string[];
+  citedNodes?: CitationNodes[];
+};
+
 export interface QaRunDeps {
-  /** Ask the model one question; return the final answer text (and optional structured citations). */
-  ask: (question: string) => Promise<{ text: string; citations?: CitedRef[] }>;
+  /** Ask the model one question; return the final answer text (and what the run retrieved). */
+  ask: (question: string) => Promise<QaAnswer>;
   onProgress?: (id: string, pass: boolean) => void;
 }
 
@@ -466,16 +597,30 @@ export async function runQaEval(
   deps: QaRunDeps,
   meta: { model: string; tier?: string; startedAt?: string },
   opts: QaScoreOptions = {},
-): Promise<{ scorecard: QaScorecard; items: (QaItemScore & { answer: string })[] }> {
+): Promise<{ scorecard: QaScorecard; items: QaItemResult[] }> {
   const startedAt = meta.startedAt ?? new Date().toISOString();
-  const items: (QaItemScore & { answer: string })[] = [];
+  const items: QaItemResult[] = [];
+  let retrievalRun = false;
+  let cited = 0;
+  let citedToNodes = 0;
   for (const it of ds.items) {
     const res = await deps.ask(it.question);
     const s = scoreQaItem(it, res.text, index, res.citations ?? [], opts);
-    items.push({ ...s, answer: res.text });
+    const item: QaItemResult = { ...s, answer: res.text };
+    if (res.retrieved !== undefined) {
+      retrievalRun = true;
+      item.retrievedNodes = res.retrieved.map((n) => n.id);
+      if (res.toolCalls !== undefined) item.toolCalls = res.toolCalls;
+      if (res.skillLoads !== undefined) item.skillLoads = res.skillLoads;
+      item.citedNodes = resolveCitationNodes(res.text, res.retrieved);
+      cited += item.citedNodes.length;
+      citedToNodes += item.citedNodes.filter((c) => c.nodeIds.length > 0).length;
+    }
+    items.push(item);
     deps.onProgress?.(it.id, s.pass);
   }
   const card = aggregateQa(items, { datasetVersion: ds.version, model: meta.model, tier: meta.tier, startedAt });
+  if (retrievalRun) card.citationNodeRate = cited ? citedToNodes / cited : null;
   return { scorecard: card, items };
 }
 

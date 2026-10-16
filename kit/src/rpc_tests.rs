@@ -151,6 +151,27 @@ fn receipt_null_is_pending_then_mined_yields_block() {
     assert_eq!(reqs[0]["params"][0], tx_hash);
 }
 
+/// HUP-S7.5 (D-27): the receipt's gas used and effective price are read when present.
+#[test]
+fn receipt_reports_gas_used_and_the_price_paid_when_the_node_gives_them() {
+    let tx_hash = "0xdeadbeef00000000000000000000000000000000000000000000000000000001";
+    let mock = MockTransport::new(vec![
+        ok_result(serde_json::json!({
+            "blockNumber": "0x1",
+            "status": "0x1",
+            "gasUsed": "0xbb80",
+            "effectiveGasPrice": "0x3b9aca00",
+        })),
+        ok_result(serde_json::json!({ "blockNumber": "0x2", "status": "0x0", "gasUsed": "nope" })),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let r = client.transaction_receipt(tx_hash).unwrap().unwrap();
+    assert_eq!(r.gas_used, Some(48_000));
+    assert_eq!(r.effective_gas_price, Some(1_000_000_000));
+    let r = client.transaction_receipt(tx_hash).unwrap().unwrap();
+    assert_eq!((r.status, r.gas_used, r.effective_gas_price), (Some(0), None, None));
+}
+
 #[test]
 fn receipt_poll_times_out_when_never_mined() {
     let tx_hash = "0xfeed000000000000000000000000000000000000000000000000000000000000";
@@ -233,4 +254,46 @@ fn missing_0x_prefix_quantity_is_a_field_error() {
         matches!(client.gas_price(), Err(RpcError::MissingField(_))),
         "a non-0x quantity is rejected, not silently mis-parsed"
     );
+}
+
+/// A loopback RPC target must not be able to send the request somewhere else: the HTTP transport
+/// never follows a redirect (the fork-RPC guard checks the URL it was given, not where a 3xx goes).
+#[test]
+fn the_http_transport_never_follows_a_redirect() {
+    for code in ["301 Moved Permanently", "302 Found", "303 See Other", "307 Temporary Redirect", "308 Permanent Redirect"] {
+        redirect_case(code);
+    }
+}
+
+fn redirect_case(status: &'static str) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+    let elsewhere_addr = elsewhere.local_addr().unwrap();
+    elsewhere.set_nonblocking(true).unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let first = TcpListener::bind("127.0.0.1:0").unwrap();
+    let first_addr = first.local_addr().unwrap();
+    let t = std::thread::spawn(move || {
+        if let Ok((mut s, _)) = first.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nLocation: http://{elsewhere_addr}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+    let t2 = HttpTransport::new(format!("http://{first_addr}/"));
+    let r = t2.call(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}));
+    let _ = t.join();
+    // Anything that reached the second listener would be waiting in its accept queue.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    if elsewhere.accept().is_ok() {
+        hits.fetch_add(1, Ordering::SeqCst);
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "{status}: the redirect was followed");
+    assert!(r.is_err(), "{status}: a redirect is an error, not an answer: {r:?}");
 }

@@ -33,10 +33,13 @@ const SECTIONS: AppState["sSec"][] = [
   "account",
   "connections",
   "ai",
+  "mcp",
   "node",
   "api",
   "keys",
+  "budgets",
   "billing",
+  "privacy",
   "app",
 ];
 

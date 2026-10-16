@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Citrate Core",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "identifier": "ai.citrate.core",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://auth.citrate.ai https://rpc.citrate.ai https://infer.citrate.ai; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://auth.citrate.ai https://rpc.citrate.ai https://infer.citrate.ai; frame-src citrate-widget: http://citrate-widget.localhost https://citrate-widget.localhost; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
     }
   },
   "plugins": {
@@ -35,6 +35,19 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "resources": [
+      "skills/**/*",
+      "capsules/hello/*",
+      "capsules/echo-chain/*",
+      "../templates/*.json",
+      "../templates/_common/**/*",
+      "../templates/erc1155/**/*",
+      "../templates/erc20/**/*",
+      "../templates/erc721/**/*",
+      "../templates/erc721-solady/**/*",
+      "../templates/governor/**/*",
+      "../templates/hello-mint/**/*"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

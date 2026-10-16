@@ -131,8 +131,13 @@ Copy-Item target\$TRIPLE\release\citrate-agent-sidecar.exe "..\citrate-core\src-
 Third-party binaries — fetch the Windows x64 builds and copy them in:
 
 ```powershell
-# llama-server — llama.cpp Windows x64 (ggml-org/llama.cpp releases). Match the
-# version bundled on Mac (see citrate-core\src-tauri\llama\ for the pinned sha256).
+# llama-server — llama.cpp Windows x64, built FROM SOURCE at the tag bundled on Mac (b10909 for
+# v0.5.0-rc.4) with the web UI off: upstream's windows-cpu x64 options (.github/workflows/release.yml
+# at that tag: clang toolchain cmake/x64-windows-llvm.cmake, LLAMA_BUILD_BORINGSSL=ON,
+# GGML_NATIVE=OFF, GGML_BACKEND_DL=ON, GGML_CPU_ALL_VARIANTS=ON, GGML_OPENMP=ON) plus
+# -DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF, and no tools/ui/dist in the tree. The
+# configure/build log must say "UI: embedded 0 assets". Do not use the upstream
+# llama-*-bin-win-cpu-x64.zip: it embeds the web UI (docs/LICENCE_REVIEW.md 9.3 a).
 Copy-Item path\to\llama-server.exe "citrate-core\src-tauri\binaries\llama-server-$TRIPLE.exe"
 
 # ipfs — kubo for windows-amd64 (https://dist.ipfs.tech/kubo). Same major as the
@@ -159,10 +164,77 @@ validates every sidecar path. That is the honesty gate, not a bug to work around
 - rocksdb (mem-mcp) on MSVC needs the C++ toolchain from Step 0; if it can't find
   a compiler, the VS Build Tools workload is incomplete.
 
+### Stage the Hermes resources (skills bundle, BGE embedding GGUF)
+
+The Windows config bundles `skills-bundle/**/*` and `models/bge-base-en-v1.5-gguf/*` (the embedding
+model Hermes ranks tools and skills with; `src-tauri/src/embed_serve.rs` pins its digest). Pull both
+from `runtime-deps` into a scratch dir and verify them against the reviewed pins before staging,
+exactly as `.github/workflows/release.yml` does:
+
+```bash
+# Git Bash (or WSL with the same checkout)
+DL="$(mktemp -d)"
+for a in skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf; do
+  gh release download runtime-deps -R CitrateNetwork/citrate-core -p "$a" -D "$DL" --clobber
+done
+scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf
+node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
+```
+
+A missing GGUF fails `npx tauri build` (the resource glob matches nothing); do not drop the line
+from the config to get a build, Hermes would ship without embedding retrieval.
+
+## 2b. Stage the BGE embedder and the Hermes knowledge corpus (fails closed)
+
+Every bundle overlay ships `knowledge-corpus/**/*`, and the committed
+`src-tauri\knowledge-corpus\README.md` always matches that glob, so a build that skips this
+step still packages, with a README-only corpus (first run: `skipped: no-bundle`). Stage the
+pinned corpus against **this platform's** `mem-mcp`, then run the pre-bundle check; both refuse
+anything that is not the pinned, verified corpus.
+
+The `mem-mcp` built above must implement `import-corpus` (citrate-memories `0e9d488` or later,
+features `rocksdb,transformer`); the stager refuses an older one. Windows 10/11 ship `tar.exe`,
+which the stager uses to unpack the asset.
+
+```powershell
+cd citrate-core
+$DL = Join-Path $env:TEMP "runtime-deps-corpus"
+New-Item -ItemType Directory -Force $DL | Out-Null
+foreach ($a in "bge-base-en-v1.5.tar.gz", "knowledge-corpus.tar.gz") {
+  gh release download runtime-deps -p $a -D $DL --clobber -R CitrateNetwork/citrate-core
+}
+# digest check against the committed pins (each must match its line in src-tauri\runtime-deps.sha256;
+# under Git Bash, run scripts/ci/verify-runtime-deps.sh exactly as on Linux instead)
+foreach ($a in "bge-base-en-v1.5.tar.gz", "knowledge-corpus.tar.gz") {
+  $want = (Select-String -Path src-tauri\runtime-deps.sha256 -Pattern "^([0-9a-f]{64})  $([regex]::Escape($a))$").Matches[0].Groups[1].Value
+  $got  = (Get-FileHash (Join-Path $DL $a) -Algorithm SHA256).Hash.ToLower()
+  if (-not $want -or $got -ne $want) { throw "$a does not match its pin ($got vs $want)" }
+}
+
+# BGE embedder: the corpus vectors were made with exactly these weights
+New-Item -ItemType Directory -Force (Join-Path $DL "bge"), src-tauri\models\bge-base-en-v1.5 | Out-Null
+tar -xzf (Join-Path $DL "bge-base-en-v1.5.tar.gz") -C (Join-Path $DL "bge")
+$bge = (Get-ChildItem (Join-Path $DL "bge") -Recurse -Filter config.json | Select-Object -First 1).DirectoryName
+Copy-Item "$bge\*" src-tauri\models\bge-base-en-v1.5\ -Force
+
+node scripts\stage-knowledge-corpus.mjs (Join-Path $DL "knowledge-corpus.tar.gz") `
+  --bge-dir src-tauri\models\bge-base-en-v1.5 `
+  --mem-mcp "src-tauri\binaries\mem-mcp-$TRIPLE.exe"
+
+# pre-bundle check: refuses README-only, a changed corpus, or one not from the pinned asset
+node scripts\check-staged-corpus.mjs --pins src-tauri\runtime-deps.sha256
+```
+
+Run `check-staged-corpus.mjs` again immediately before `npx tauri build` if anything touched
+`src-tauri\` in between.
+
 ## 3. Package the NSIS installer
 
 ```powershell
 cd citrate-core
+node scripts\check-staged-corpus.mjs --pins src-tauri\runtime-deps.sha256   # fails closed (step 2b)
 npx tauri build --config src-tauri\tauri.bundle-windows.conf.json
 ```
 

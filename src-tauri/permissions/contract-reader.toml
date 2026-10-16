@@ -1,0 +1,8 @@
+# HUP-S6.7 — the one app command a pop-out holds: the Contract reader hands a request to Rust,
+# which accepts it only from the `popout-contract` window (a Tauri event carries no sender, so
+# the main window cannot check one). Granted by `capabilities/popout-contract.json` only.
+
+[[permission]]
+identifier = "contract-reader-relay"
+description = "The Contract reader's request relay (popout-contract window only)."
+commands.allow = ["popout_contract_send"]

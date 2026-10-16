@@ -27,6 +27,7 @@ import type {
 import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
+import book from "../../../src-tauri/addresses/40204.json";
 import { GRAPH, NODE_LOG_TEMPLATES } from "../../data/seed";
 
 // The sim MemoryDomain maps the prototype seed GRAPH into the SAME contract the
@@ -261,6 +262,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // The prototype "signs in" by advancing its own onboarding state; the
         // shim just reflects the current persona claim.
         return simAuthStatus(s());
+      },
+      async cancelLogin(): Promise<boolean> {
+        assertSimAllowed("auth.cancelLogin");
+        // The sim sign-in is a timer the Store cancels itself; nothing waits here.
+        return false;
       },
       async userinfo(): Promise<AuthStatus> {
         assertSimAllowed("auth.userinfo");
@@ -499,6 +505,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // No llama-server in the web preview — the real spawn is Tauri-only. This
         // resolves so the sim flow proceeds; it never claims a running local model.
       },
+      async serveStop(): Promise<void> {
+        assertSimAllowed("model.serveStop");
+        // No llama-server in the web preview: nothing to stop.
+      },
     },
 
     agent: {
@@ -524,7 +534,8 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         return {
           claimableWei: wei,
           walletAddress: st.walletAddr,
-          contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
+          // The generated 40204 book's ContributionAccounting, the same pin core reads.
+          contract: book.addresses.ContributionAccounting.toLowerCase(),
         };
       },
       // CORE-C2-F-1 — the Claim button in web-dev. HONEST (Rule 1): the sim holds
@@ -608,6 +619,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async seedContext() {
         assertSimAllowed("memory.seedContext");
         return { authored: 0, skipped: "not-running" };
+      },
+      // HUP-S3.1 — the web preview bundles no knowledge corpus: honest skip, never a fake import.
+      async importKnowledge() {
+        assertSimAllowed("memory.importKnowledge");
+        return { state: "skipped", skipped: "no-bundle", nodesAdded: 0, edgesAdded: 0, tenantsImported: [], tenantsSkipped: [] };
       },
     },
 

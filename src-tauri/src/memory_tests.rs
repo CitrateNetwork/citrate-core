@@ -476,7 +476,9 @@ fn restart_is_safe_with_a_leftover_socket_file() {
     // endpoint before staying alive, so this asserts the supervised start returns
     // Ok past the stale path without changing production process spawning.
     mgr.start().expect("start 2 must survive a leftover socket file");
-    for _ in 0..20 {
+    // Bounded at 5 s: under a parallel test run the fixture shell can take longer
+    // than 500 ms to start (this was flaky on the release branch before v0.5.0-rc.3).
+    for _ in 0..200 {
         if !sock.exists() {
             break;
         }
@@ -739,5 +741,145 @@ fn ingest_skips_when_tenant_is_nonempty_but_the_sidecar_seen_set_is_missing() {
     assert_eq!(report.chunks, 0, "no chunks authored");
     assert_eq!(recorded.lock().unwrap().len(), before, "nothing re-authored (no dupes)");
     mgr.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// HUP-S3.1: knowledge passages (`memory.search {passages: true}`)
+// ---------------------------------------------------------------------------
+
+/// The mem-mcp passages rendering (citrate-memories `render_passages`): the
+/// default header and hit lines, then a `cite:` line and the quoted text.
+fn fixture_passages_text() -> String {
+    "freshness: (no watermark)\n\
+     tenant 'citrate-docs' — 1688 nodes, showing 2:\n\
+    \x20 0a1b2c3d4e 0.812 [doc] Genesis › What it is\n\
+    \x20   cite: citrate-docs:content/chain/genesis.md#what-it-is\n\
+    \x20   > Genesis › What it is\n\
+    \x20   >\n\
+    \x20   > The chain id is 40204; eth_chainId returns 0x9d0c.\n\
+    \x20 1f2e3d4c5b 0.640 [doc] Staking\n\
+    \x20   cite: citrate-docs:content/chain/staking.md\n\
+    \x20   > Staking\n"
+        .to_string()
+}
+
+#[test]
+fn passages_parse_into_cite_and_text_per_hit() {
+    let r = parse_result("citrate-docs", &fixture_passages_text());
+    assert_eq!(r.total_in_tenant, 1688);
+    assert_eq!(r.hits.len(), 2, "cite and quote lines are not hits");
+    assert_eq!(r.hits[0].id, "0a1b2c3d4e");
+    assert_eq!(r.hits[0].kind, "doc");
+    assert_eq!(
+        r.hits[0].cite.as_deref(),
+        Some("citrate-docs:content/chain/genesis.md#what-it-is")
+    );
+    assert_eq!(
+        r.hits[0].passage.as_deref(),
+        Some("Genesis › What it is\n\nThe chain id is 40204; eth_chainId returns 0x9d0c.")
+    );
+    assert_eq!(
+        r.hits[1].cite.as_deref(),
+        Some("citrate-docs:content/chain/staking.md")
+    );
+    assert_eq!(r.hits[1].passage.as_deref(), Some("Staking"));
+}
+
+#[test]
+fn the_default_rendering_has_no_passages() {
+    let r = parse_result("personal", &fixture_recall_text());
+    assert!(r.hits.iter().all(|h| h.cite.is_none() && h.passage.is_none()));
+    // Serialized without the new keys, so the TS contract is unchanged for old hits.
+    let v = serde_json::to_value(&r.hits[0]).unwrap();
+    assert!(v.get("cite").is_none() && v.get("passage").is_none());
+}
+
+/// Records the arguments of each tool call.
+struct RecordingTransport {
+    calls: Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    text: String,
+}
+impl MemoryTransport for RecordingTransport {
+    fn call_tool(&self, tool: &str, args: Value) -> Result<String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((tool.to_string(), args));
+        Ok(self.text.clone())
+    }
+}
+
+#[test]
+fn search_asks_for_passages_only_when_requested() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dir = tmp_dir("passages");
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash-records.jsonl"),
+        Box::new(RecordingTransport {
+            calls: calls.clone(),
+            text: fixture_passages_text(),
+        }),
+    );
+    let r = mgr
+        .search_with("citrate-docs", "chain id", 4, true)
+        .expect("search parses");
+    assert_eq!(r.hits.len(), 2);
+    mgr.search("personal", "telemetry", 6).expect("plain search");
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls[0].0, "memory.search");
+    assert_eq!(calls[0].1["passages"], true);
+    assert_eq!(calls[0].1["repo"], "citrate-docs");
+    assert_eq!(calls[0].1["budget"], 4);
+    assert!(calls[1].1.get("passages").is_none(), "plain search unchanged");
+}
+
+// ---------------------------------------------------------------------------
+// HUP-S3.4 (fan-out 7, L02): recall and search leave out learned memories with an unresolved
+// contradiction, read from the learned-memory ledger on every call.
+// ---------------------------------------------------------------------------
+
+fn ledger_with(node: &str, belnap: &str) -> crate::hermes_learn::Ledger {
+    crate::hermes_learn::Ledger {
+        entries: vec![crate::hermes_learn::LearnedMemory {
+            proposal_id: "lp-000000000000000000000001".into(),
+            key: "deploy chain".into(),
+            value: "1".into(),
+            belnap: belnap.into(),
+            contradicts: if belnap == "both" { vec!["memory:mem-7".into()] } else { vec![] },
+            content_sha256: "ab".into(),
+            workflow_id: "check".into(),
+            accepted_by: "0xm".into(),
+            accepted_at_ms: 1,
+            decision_seq: 1,
+            graph: crate::hermes_learn::GraphState { state: "stored".into(), node_id: Some(node.into()), detail: None },
+            retracted_for: None,
+            resolved_seq: None,
+            supersede_nodes: vec![],
+        }],
+    }
+}
+
+#[test]
+fn recall_and_search_leave_out_an_unresolved_learned_memory_until_it_is_resolved() {
+    let (mgr, _fake, dir) = stub_manager("recall-hide");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ledger = dir.join("learned-memories.json");
+    let mgr = mgr.with_learned_ledger(Some(ledger.clone()));
+    // The fixture's first hit (0a1b2c3d4e) is a learned memory that is `both`.
+    ledger_with("0a1b2c3d4e00", "both").save(&ledger).unwrap();
+    let r = mgr.recall("personal", 15).unwrap();
+    assert_eq!(r.hits.len(), 2, "{:?}", r.hits);
+    assert!(r.hits.iter().all(|h| h.id != "0a1b2c3d4e"));
+    let s = mgr.search("personal", "telemetry", 15).unwrap();
+    assert!(s.hits.iter().all(|h| h.id != "0a1b2c3d4e"));
+    // Resolved (settled `true`): the next call shows it again.
+    ledger_with("0a1b2c3d4e00", "true").save(&ledger).unwrap();
+    let r = mgr.recall("personal", 15).unwrap();
+    assert_eq!(r.hits.len(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }

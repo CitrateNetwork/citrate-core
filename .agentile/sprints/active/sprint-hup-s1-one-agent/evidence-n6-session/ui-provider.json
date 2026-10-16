@@ -1,0 +1,325 @@
+{
+  "sessionId": "s1-18db5b1e7d3f21a0",
+  "model": "gemma-4-E4B-it-Q4_0.gguf",
+  "turn1": {
+    "answer": "The current Citrate chain height is 132335.",
+    "streamedText": "The current Citrate chain height is 132335."
+  },
+  "savedAtTeardown": {
+    "v": 1,
+    "id": "s1-18db5b1e7d3f21a0",
+    "lastSeq": 16,
+    "inFlight": [
+      "Vbsad8IJZr9ONqEDG2DiZl1PWVyKBemB"
+    ]
+  },
+  "reattach": {
+    "kind": "resumed",
+    "sessionId": "s1-18db5b1e7d3f21a0",
+    "content": "I was unable to check the chain height right now due to an interruption. Please try asking again later.",
+    "interrupted": 1,
+    "failure": null
+  },
+  "viewBText": "I was unable to check the chain height right now due to an interruption. Please try asking again later.",
+  "toolRuns": [
+    "A:chain_head",
+    "A:chain_head"
+  ],
+  "notices": [
+    "The app reloaded while Hermes was waiting on a tool call. It was reported to Hermes as interrupted, with an unknown outcome."
+  ],
+  "events": [
+    {
+      "who": "view-A",
+      "seq": 1,
+      "event": {
+        "type": "step_start",
+        "step": 1
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 2,
+      "event": {
+        "type": "tool_call",
+        "step": 1,
+        "call": {
+          "id": "6Y7HCtgn2dhmGPZ7uMM9JdzW6zKMCBgv",
+          "name": "chain_head",
+          "arguments": "{}"
+        },
+        "host": "core"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 3,
+      "event": {
+        "type": "tool_result",
+        "step": 1,
+        "call_id": "6Y7HCtgn2dhmGPZ7uMM9JdzW6zKMCBgv",
+        "status": "ok",
+        "content": "{\"chainId\":40204,\"height\":132335,\"source\":\"public-rpc\"}"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 4,
+      "event": {
+        "type": "step_end",
+        "step": 1
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 5,
+      "event": {
+        "type": "step_start",
+        "step": 2
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 6,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": "The"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 7,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " current Citrate"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 8,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " chain height"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 9,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " is 1"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 10,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": "32"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 11,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": "33"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 12,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": "5."
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 13,
+      "event": {
+        "type": "final",
+        "content": "The current Citrate chain height is 132335."
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 14,
+      "event": {
+        "type": "done",
+        "outcome": "answered"
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 15,
+      "event": {
+        "type": "step_start",
+        "step": 1
+      }
+    },
+    {
+      "who": "view-A",
+      "seq": 16,
+      "event": {
+        "type": "tool_call",
+        "step": 1,
+        "call": {
+          "id": "Vbsad8IJZr9ONqEDG2DiZl1PWVyKBemB",
+          "name": "chain_head",
+          "arguments": "{}"
+        },
+        "host": "core"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 17,
+      "event": {
+        "type": "tool_result",
+        "step": 1,
+        "call_id": "Vbsad8IJZr9ONqEDG2DiZl1PWVyKBemB",
+        "status": "error",
+        "content": "tool error: interrupted: the app reloaded while this call was in progress, so its outcome is unknown. Check before retrying it."
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 18,
+      "event": {
+        "type": "step_end",
+        "step": 1
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 19,
+      "event": {
+        "type": "step_start",
+        "step": 2
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 20,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": "I"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 21,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " was unable"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 22,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " to check"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 23,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " the chain"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 24,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " height right"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 25,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " now due"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 26,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " to an"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 27,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " interruption."
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 28,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " Please try"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 29,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " asking again"
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 30,
+      "event": {
+        "type": "assistant_delta",
+        "step": 2,
+        "text": " later."
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 31,
+      "event": {
+        "type": "final",
+        "content": "I was unable to check the chain height right now due to an interruption. Please try asking again later."
+      }
+    },
+    {
+      "who": "view-B",
+      "seq": 32,
+      "event": {
+        "type": "done",
+        "outcome": "answered"
+      }
+    }
+  ]
+}

@@ -61,7 +61,7 @@ work/
 ├── citrate-core            # this repo
 ├── citrate-chain           # → citrate node   (bin: citrate)
 ├── citrate-node-agent      # → node-agent
-├── citrate-memories        # → mem-mcp   (branch ff12cab, features rocksdb,transformer)
+├── citrate-memories        # → mem-mcp   (0e9d488 or later: implements import-corpus; features rocksdb,transformer)
 ├── citrate-comms           # → comms-member-daemon
 ├── citrate-cluster         # → cluster-daemon
 └── citrate-agent-runtime   # → hermes (agent-sidecar)
@@ -101,7 +101,7 @@ DEST=citrate-core/src-tauri/binaries
 ( cd ../citrate-node-agent && cargo build --release --bin node-agent )
 cp ../citrate-node-agent/target/release/node-agent "$DEST/node-agent-$TRIPLE"
 
-# mem-mcp — from citrate-memories @ ff12cab, rocksdb+transformer features
+# mem-mcp — from citrate-memories @ 0e9d488 or later (import-corpus), rocksdb+transformer features
 ( cd ../citrate-memories && cargo build --release -p mem-mcp --bin mem-mcp --features rocksdb,transformer )
 cp ../citrate-memories/target/release/mem-mcp "$DEST/mem-mcp-$TRIPLE"
 
@@ -125,10 +125,69 @@ ls src-tauri/binaries/*-x86_64-unknown-linux-gnu    # expect 8 files
 Missing any → `npx tauri build` fails honestly (the overlay validates every
 `externalBin` path at packaging time). That is the intended behaviour, not a bug.
 
+### Stage the Hermes resources (skills bundle, BGE embedding GGUF)
+
+The Linux config bundles `skills-bundle/**/*` and `models/bge-base-en-v1.5-gguf/*` (the embedding
+model Hermes ranks tools and skills with; `src-tauri/src/embed_serve.rs` pins its digest). Pull both
+from `runtime-deps` into a scratch dir and verify them against the reviewed pins before staging,
+exactly as `.github/workflows/release.yml` does:
+
+```bash
+DL="$(mktemp -d)"
+for a in skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf; do
+  gh release download runtime-deps -R CitrateNetwork/citrate-core -p "$a" -D "$DL" --clobber
+done
+scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf
+node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
+```
+
+A missing GGUF fails `npx tauri build` (the resource glob matches nothing); do not drop the line
+from the config to get a build, Hermes would ship without embedding retrieval.
+
+## 2b. Stage the BGE embedder and the Hermes knowledge corpus (fails closed)
+
+Every bundle overlay ships `knowledge-corpus/**/*`, and the committed
+`src-tauri/knowledge-corpus/README.md` always matches that glob, so a build that skips this
+step still packages, with a README-only corpus (first run: `skipped: no-bundle`). Stage the
+pinned corpus against **this platform's** `mem-mcp`, then run the pre-bundle check; both refuse
+anything that is not the pinned, verified corpus.
+
+The `mem-mcp` built above must implement `import-corpus` (citrate-memories `0e9d488` or later,
+features `rocksdb,transformer`); the stager refuses an older one.
+
+```bash
+cd citrate-core
+DL="$(mktemp -d)"
+for a in bge-base-en-v1.5.tar.gz knowledge-corpus.tar.gz; do
+  gh release download runtime-deps -p "$a" -D "$DL" -R CitrateNetwork/citrate-core
+done
+# digest check against the committed pins (same script release.yml runs)
+scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" \
+  bge-base-en-v1.5.tar.gz knowledge-corpus.tar.gz
+
+# BGE embedder: the corpus vectors were made with exactly these weights
+mkdir -p "$DL/bge" src-tauri/models/bge-base-en-v1.5
+tar -xzf "$DL/bge-base-en-v1.5.tar.gz" -C "$DL/bge"
+cp -R "$(dirname "$(find "$DL/bge" -name config.json | head -1)")"/. src-tauri/models/bge-base-en-v1.5/
+
+node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
+  --bge-dir src-tauri/models/bge-base-en-v1.5 \
+  --mem-mcp "src-tauri/binaries/mem-mcp-$TRIPLE"
+
+# pre-bundle check: refuses README-only, a changed corpus, or one not from the pinned asset
+node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+```
+
+Run `check-staged-corpus.mjs` again immediately before `npx tauri build` if anything touched
+`src-tauri/` in between.
+
 ## 3. Package the AppImage + deb
 
 ```bash
 cd citrate-core
+node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256   # fails closed (step 2b)
 npx tauri build --config src-tauri/tauri.bundle-linux.conf.json
 ```
 

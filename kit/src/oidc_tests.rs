@@ -1560,6 +1560,178 @@ fn d3_0_sign_in_cancelled_error_is_secret_free_and_distinct() {
     assert_eq!(s, "auth: sign-in cancelled");
 }
 
+// ===========================================================================
+// v0.5.0-rc.5 FIX 2 — sign-in in the SYSTEM browser (passkeys).
+//
+// macOS blocks WebAuthn inside an embedded WKWebView, so passkeys (and wallet
+// extensions) failed in the in-app popup. The authorize URL now opens in the
+// user's default browser through the `SystemBrowser` seam (tauri-plugin-opener in
+// production, a recording mock here), and the SAME loopback listener completes
+// the code+PKCE flow. With no window to close, the user's abort is the explicit
+// `cancel_login` (the app's Cancel button) or a fresh attempt superseding the old
+// one; the 300 s timeout still bounds an abandoned browser tab.
+// ===========================================================================
+
+/// A recording `SystemBrowser`: remembers every URL it was asked to open and then
+/// runs `then` (drive the mock authority, deliver a tampered callback, or nothing).
+struct RecordingBrowser<F: Fn(&str) -> Result<()> + Send + Sync> {
+    opened: StdMutex<Vec<String>>,
+    then: F,
+}
+
+impl<F: Fn(&str) -> Result<()> + Send + Sync> RecordingBrowser<F> {
+    fn new(then: F) -> Self {
+        RecordingBrowser {
+            opened: StdMutex::new(Vec::new()),
+            then,
+        }
+    }
+    fn opened(&self) -> Vec<String> {
+        self.opened.lock().unwrap().clone()
+    }
+}
+
+impl<F: Fn(&str) -> Result<()> + Send + Sync> super::SystemBrowser for RecordingBrowser<F> {
+    fn open_url(&self, url: &str) -> Result<()> {
+        self.opened.lock().unwrap().push(url.to_string());
+        (self.then)(url)
+    }
+}
+
+#[test]
+fn fix2_system_browser_receives_the_authorize_url_and_the_loopback_completes_login() {
+    let auth = MockAuthority::start();
+    auth.set_claim("tier", json!("pilot"));
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let browser = RecordingBrowser::new(|u: &str| auth.drive_browser(u));
+
+    let cancel = mgr.begin_login_attempt();
+    let st = mgr
+        .login_with_cancel(&vault, &cancel, |u| {
+            super::present_in_system_browser(&browser, u)
+        })
+        .expect("a system-browser sign-in completes over the loopback");
+    mgr.end_login_attempt(&cancel);
+
+    assert!(st.signed_in);
+    assert_eq!(st.tier.as_deref(), Some("pilot"));
+    let opened = browser.opened();
+    assert_eq!(opened.len(), 1, "exactly one browser open per attempt");
+    let url = &opened[0];
+    assert!(url.starts_with(&auth.endpoints().authorization), "opens the discovered authorize endpoint");
+    assert!(url.contains("code_challenge_method=S256"));
+    assert!(url.contains("state=") && url.contains("nonce="));
+    assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A"), "the loopback redirect is unchanged");
+    assert!(!url.contains("code_verifier"), "the PKCE verifier never leaves the app");
+    assert!(vault.list().unwrap().iter().any(|s| s.name == REFRESH_SLOT));
+}
+
+#[test]
+fn fix2_system_browser_path_still_rejects_a_state_mismatch() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let browser = RecordingBrowser::new(|u: &str| {
+        let loc = location_of(u);
+        deliver_callback(replace_query(&loc, "state", "attacker-state"));
+        Ok(())
+    });
+    let cancel = mgr.begin_login_attempt();
+    let r = mgr.login_with_cancel(&vault, &cancel, |u| {
+        super::present_in_system_browser(&browser, u)
+    });
+    mgr.end_login_attempt(&cancel);
+    assert_eq!(r.unwrap_err(), AuthError::StateMismatch);
+    assert!(!mgr.status().signed_in);
+    assert!(!vault.list().unwrap().iter().any(|s| s.name == REFRESH_SLOT));
+}
+
+#[test]
+fn fix2_opener_failure_returns_promptly_without_a_session() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let browser = RecordingBrowser::new(|_u: &str| Err(AuthError::Network));
+    let start = std::time::Instant::now();
+    let cancel = mgr.begin_login_attempt();
+    let r = mgr.login_with_cancel(&vault, &cancel, |u| {
+        super::present_in_system_browser(&browser, u)
+    });
+    mgr.end_login_attempt(&cancel);
+    assert_eq!(r.unwrap_err(), AuthError::Network);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "no wait for a callback that cannot come");
+    assert!(!mgr.status().signed_in);
+}
+
+#[test]
+fn fix2_present_refuses_a_non_web_url_and_never_calls_the_opener() {
+    let browser = RecordingBrowser::new(|_u: &str| Ok(()));
+    for bad in ["file:///etc/passwd", "javascript:alert(1)", "citrate://x", "not a url"] {
+        assert!(super::present_in_system_browser(&browser, bad).is_err(), "{bad}");
+    }
+    assert!(browser.opened().is_empty());
+}
+
+#[test]
+fn fix2_cancel_login_aborts_a_waiting_browser_sign_in() {
+    // The user closed the browser tab: nothing will ever hit the loopback. The
+    // app's Cancel button calls `cancel_login`, which must end the wait promptly
+    // with SignInCancelled and no partial session.
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let browser = RecordingBrowser::new(|_u: &str| Ok(())); // opens, user walks away
+    let start = std::time::Instant::now();
+    let r = std::thread::scope(|sc| {
+        let cancel = mgr.begin_login_attempt();
+        sc.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            assert!(mgr.cancel_login(), "an attempt was in flight");
+        });
+        let r = mgr.login_with_cancel(&vault, &cancel, |u| {
+            super::present_in_system_browser(&browser, u)
+        });
+        mgr.end_login_attempt(&cancel);
+        r
+    });
+    assert_eq!(r.unwrap_err(), AuthError::SignInCancelled);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    assert!(!mgr.status().signed_in);
+    assert!(!vault.list().unwrap().iter().any(|s| s.name == REFRESH_SLOT));
+    // Nothing left in flight afterwards.
+    assert!(!mgr.cancel_login());
+}
+
+#[test]
+fn fix2_a_new_attempt_supersedes_the_prior_one() {
+    // Clicking "Continue in your browser" again (after closing the first tab) must
+    // not leave the first attempt waiting on its loopback for 300 s.
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let first = mgr.begin_login_attempt();
+    let second = mgr.begin_login_attempt();
+    assert!(first.is_cancelled(), "the superseded attempt is cancelled");
+    assert!(!second.is_cancelled());
+    // Ending the FIRST (late) must not clear the second's registration.
+    mgr.end_login_attempt(&first);
+    assert!(mgr.cancel_login(), "the second attempt is still registered");
+    assert!(second.is_cancelled());
+    mgr.end_login_attempt(&second);
+    assert!(!mgr.cancel_login());
+}
+
+#[test]
+fn fix2_sign_in_no_longer_uses_an_embedded_webview() {
+    // Structural guard: the production command presents through the system
+    // browser; no embedded sign-in WebviewWindow exists (macOS blocks WebAuthn there).
+    let src = include_str!("oidc.rs");
+    let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+    assert!(!prod.contains(&["Webview", "WindowBuilder"].concat()));
+    assert!(!prod.contains(&["auth", "-popup"].concat()));
+    assert!(prod.contains("present_in_system_browser(&browser"));
+}
+
 // --- small query-string editors used by the CSRF tests --------------------
 
 fn replace_query(u: &str, key: &str, val: &str) -> String {

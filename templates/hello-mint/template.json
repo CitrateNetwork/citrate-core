@@ -1,0 +1,14 @@
+{
+  "id": "hello-mint",
+  "kind": "dapp",
+  "title": "hello mint (ERC-721 + mint page)",
+  "description": "The hello-mint project: the erc721 contract template under contracts/ and a vite + React + wagmi + viem mint page under app/. The page targets a local anvil fork of chain 40204 or chain 40204 itself by configuration, and reads the contract address from configuration set after deploy.",
+  "params": {
+    "name": {},
+    "symbol": {},
+    "supply": { "default": "500", "min": 1, "max": 1000000 },
+    "price": { "default": "0" },
+    "owner": {}
+  },
+  "includes": [{ "template": "erc721", "into": "contracts" }]
+}

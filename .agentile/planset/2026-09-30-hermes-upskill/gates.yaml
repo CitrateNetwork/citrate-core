@@ -1,11 +1,11 @@
-# created: 2026-09-30T00:00:00Z · branch: release/0.5.0-hermes-upskill · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed 2026-09-30)
+# created: 2026-09-30T00:00:00Z · updated: 2026-10-06 (g1-approval-audit re-run met for v0.5.0; g3-licence prepared for the owner's signature; S7.5a back in v0.5.0, #267) · 2026-10-05 (g5-scl: owner decision, v0.5.0 requires only SCL release v0.5.0 criteria; D-41 amended for one v0.5.1; third set: D-41 amended again for one v0.5.1 and one v0.5.2) · branch: release/0.5.0-hermes-upskill · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed 2026-09-30)
 # (YAML files carry Rule-12 frontmatter as a comment header so the file stays valid YAML.)
 version: 1
 program: HUP
 gates:
   - id: gate0
     name: Theory locked
-    status: partial
+    status: met
     exit_criteria:
       - id: g0-decisions
         desc: 40 locked decisions recorded (owner interactive pass 2026-09-30)
@@ -32,43 +32,179 @@ gates:
           formal review is a recommended follow-up. O-1..O-5 accepted as proposed.
       - id: g0-formal
         desc: AgentLoop, FolderGrant, WebSigningBudget, SkillPersistence, DeployGate, SpendBudget, AnchorBatch, DeviceLink written and TLC-checked at small bounds (full proofs close with their WPs)
-        met: false
-        evidence: src-tauri/formal/
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s11-prove-it/EVIDENCE-g0-formal-2026-10-04.md
+        paths:
+          - citrate-core src-tauri/formal/AgentLoop.tla
+          - citrate-core src-tauri/formal/WebSigningBudget.tla
+          - citrate-core src-tauri/formal/DeployGate.tla
+          - citrate-core src-tauri/formal/SpendBudget.tla
+          - citrate-agent-runtime agent-grants/formal/FolderGrant.tla
+          - citrate-agent-runtime agent-learn/formal/SkillPersistence.tla
+          - citrate-agent-runtime agent-anchor/formal/AnchorBatch.tla
+          - citrate-cluster formal/DeviceLink.tla
         note: >-
-          Partial 2026-09-30: AgentLoop written + TLC-green (1,258 distinct states, mutation-checked;
-          scripts/run-tlc.sh AgentLoop). Remaining: FolderGrant, WebSigningBudget, SkillPersistence,
-          DeployGate, SpendBudget, AnchorBatch, DeviceLink.
+          Met 2026-10-04 (paperwork flip, HUP fan-out 7 lane L19). All eight specs are on
+          citrate-core hup/forward-merge-main-0.4.3 (not merged yet), citrate-agent-runtime main and
+          citrate-cluster main (DeviceLink's ADR-003 revision is on cluster PR #10, not merged), each
+          with a .cfg and a recorded TLC run with no error. AgentLoop
+          (1,258 distinct states), FolderGrant (153,484) and DeviceLink (8,248 on main, 21,456 on
+          the ADR-003 revision) were re-run with TLC 2.19 on 2026-10-04; the other five cite their
+          recorded runs (EVIDENCE file). Small bounds only; mutation
+          checks are recorded per spec in each formal/README.md. Owner is the listed reviewer.
     reviewers: [Larry Klosowski (owner)]
   - id: gate1
     name: Stable + one agent (S0, S1)
-    status: pending
+    status: partial
     exit_criteria:
-      - {id: g1-approval-audit, desc: "Every effectful chat tool routes through approval (enumeration test)", met: false}
+      - id: g1-approval-audit
+        desc: Every effectful chat tool routes through approval (enumeration test)
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s11-prove-it/EVIDENCE-g1-approval-audit-v050-2026-10-06.md
+        note: >-
+          Re-run 2026-10-06 for the v0.5.0 cut on release/0.5.0-hermes-upskill @ 144b4dc plus the
+          gate-prep branch, which adds terminal access (#236, shell_run on by default) and model
+          delete (#237). The enumeration tripwire (src/shell/agentToolGates.test.ts) and the
+          annotation tripwire (src/agent/toolAnnotations.test.ts) pass, with five new tests:
+          no tool is named for deleting a model, no agent tool reaches the delete command even with
+          every approval granted, only the Models screen names it, shell_run is not a core-hosted
+          tool, and a held shell_run runs only on an explicit Approve (fail closed). Rust:
+          model_delete_tests.rs checks the node MCP tool table by name. Five mutants killed, two of
+          them caught only by the new tests. vitest 2,444 passed; cargo test --workspace 2,355
+          passed. Runtime shell_run hold: agent-sidecar shell_run tests 26/26 and the taint suite
+          on runtime main 397a6b1; re-run on the runtime commit the 0.5.0 Hermes is built from
+          (checklist A7).
       - {id: g1-injection, desc: "Injection eval v1 scored per tier", met: false}
       - {id: g1-no-block, desc: "Tripwire covers all command files; no sync I/O commands", met: false}
-      - {id: g1-downloads, desc: "Download resilience tests (lock, idle-resume, 206, restart-resume, verify-not-redownload)", met: false}
+      - id: g1-downloads
+        desc: Download resilience tests (lock, idle-resume, 206, restart-resume, verify-not-redownload)
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s0-stabilize/EVIDENCE.md
+        note: >-
+          Met 2026-10-01 on release/0.5.0-hermes-upskill. S0.3 (model_tests.rs, model_catalog_tests.rs,
+          models.test.ts) covers the single-flight lock, resume from the exact byte after a failed
+          segment or a dropped connection, 206 required on resume, interrupted downloads listed after
+          restart, and verify-not-redownload. A stalled body is bounded by the 180 s per-segment
+          deadline and then resumes; there is no separate stall test. S0.3b (HF token for gated
+          repos, hf_auth_tests.rs, 25 tests) merged via PR #141. Not yet run against a live gated
+          Hugging Face repo.
       - {id: g1-render, desc: "Markdown golden tests + real SSE streaming", met: false}
       - {id: g1-sidebar, desc: "Sidebar per D-34 with nav tests", met: false}
-      - {id: g1-loop, desc: "Loop in sidecar; UI/CLI/MCP share a session", met: false}
+      - id: g1-loop
+        desc: "Loop in sidecar; UI/CLI/MCP share a session"
+        met: false
+        evidence: .agentile/sprints/active/sprint-hup-s1-one-agent/WP-S1.9-live-parity.md
+        note: >-
+          2026-10-04 evidence: the sidecar loop is on by default (owner decision 2026-10-01) and
+          parity-v1 passes 21/21 end to end against a packaged build (sidecarProvider.ts, the
+          control API as hermes.rs calls it, the bundled sidecar binary, a scripted model), with the
+          process split checked on the same binary (src/agent/parity/results/2026-10-04-live-packaged.json).
+          The CLI shares sessions (citrate-agent hermes events --session <id> --follow). Still open:
+          no MCP client can reach a Hermes session (the node MCP server has no session tools), a
+          webview reload does not reattach to a running session, and the turn cap (6 vs 8) is an
+          owner call before harness.ts can retire.
       - {id: g1-wallet-unlink, desc: "Wallet unlink (S1.11, #117) merged after identity#31 + primary_wallet fix deployed; unlink tests green", met: false}
       - {id: g1-eval, desc: "Per-tier eval on synthetic tool-call tasks: T1+ >=90% valid tool calls, >=80% step success; T0 guided-tier bar set from its baseline", met: false, evidence: eval/}
   - id: gate2
     name: Controlled + knowledgeable (S2, S3, S4)
-    status: pending
+    status: partial
     exit_criteria:
-      - {id: g2-hic, desc: "Folder grants, shell allowlist, SIWE budgets, capsule sandbox proven by tests + TLC", met: false}
-      - {id: g2-knowledge, desc: "Bundled graph imported offline; Citrate QA eval >= target with citations", met: false}
-      - {id: g2-personas, desc: ">=5 personas (owner-named) + 5 tracks with workflows", met: false}
-      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: false}
+      - id: g2-hic
+        desc: Folder grants, shell allowlist, SIWE budgets, capsule sandbox proven by tests + TLC
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-m2/M2_STATUS.md
+        note: >-
+          Met 2026-10-04 on hup/m2-runtime + hup/m2-core. Folder grants: FolderGrant TLC green and
+          agent-grants/traversal tests. Shell: agent-shell OS sandbox (Seatbelt, bubblewrap) and
+          shell_run with exact-command HIC approval, tests. SIWE budgets: kit web_budget and core
+          web_signin tests, WebSigningBudget TLC green. Capsule sandbox: per-session sandbox wired,
+          guest-capsule tests. Not yet: Linux and Windows proof runs (hardware), packaged-app QA
+          (S11); shell_run and the toolchain stay off by default pending owner sign-off.
+      - id: g2-knowledge
+        desc: "Bundled graph imported offline; Citrate QA eval >= target with citations"
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-m2/M2_STATUS.md
+        note: >-
+          Met 2026-10-04. Owner target (2026-10-04): T1 pass >= 75 % and citation hit rate >= 80 % on
+          qa-v1 through the memory_search tool. T1 run 2026-10-02: 77.3 % pass, 81.5 % citation hit,
+          99.7 % citation validity (eval/results/README.md, SCORECARD.md). Corpus format 2 staged in
+          every bundle config behind the BGE gate; first-run import tested. Release step: upload of the
+          corpus tarball and the import-corpus mem-mcp (A45, DGX team).
+      - id: g2-personas
+        desc: ">=5 personas (owner-named) + 5 tracks with workflows"
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-m2/M2_STATUS.md
+        note: >-
+          Met 2026-10-04 on hup/m2-runtime + hup/m2-core. Six personas with owner-approved names
+          (owner decision 2026-10-01, Operator ships); five tracks with ten workflows, runnable per
+          session and from chat. TTS voices and the Guide/Operator default tracks are shipped
+          defaults pending owner sign-off.
+      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: true, evidence: "docs/NODE_MCP_SERVER.md (Demo transcript parts 1-3: Claude Code and Hermes agent-mcp-host as clients, 2026-10-01; Claude Code and the read-only Hermes token, 2026-10-04)"}
   - id: gate3
     name: hello mint (S5, S6)
     status: pending
     exit_criteria:
       - {id: g3-updater, desc: "Signed component updater live w/ CVE SLA before the browser ships (@rule8)", met: false}
-      - {id: g3-licence, desc: "Licence review for bundled/first-run tools complete; source offer published", met: false}
-      - {id: g3-browser, desc: "Browser pop-out + search + decide() slot scored", met: false}
-      - {id: g3-gate, desc: "DeployGate TLC-green; injected-bug run yields NOT READY", met: false}
-      - {id: g3-e2e, desc: "hello-mint Gherkin passes on a T1 machine: deploy, verify, mint, IPFS pin", met: false}
+      - id: g3-licence
+        desc: Licence review for bundled/first-run tools complete; source offer published
+        met: false
+        evidence: docs/LICENCE_REVIEW.md (sections 9 and 10) + release/licences.json + src-tauri/licenses/THIRD-PARTY-NOTICES.txt
+        note: >-
+          Prepared 2026-10-06 for the owner's signature (owner decision 2026-10-06: signed for
+          0.5.0, not waived); not met until the owner signs LICENCE_REVIEW.md section 10 and the
+          source offer is published at citrate.ai/source-offer. The 0.5.0 re-check found and fixed
+          two gaps: the webview's bundled npm packages and fonts had no notices (new app-webview
+          entry; the notices generator now builds the webview and lists the 24 packages in its
+          output) and llama.cpp's vendored libraries had none (llama.cpp-vendored.LICENSE). Notices
+          regenerated from the release head and current federation mains; licence-inventory
+          --require-notices OK. Before the signature: build llama-server without its embedded web
+          UI (or generate its notices), regenerate the notices from the revisions actually
+          bundled (checklist B5), and run --corpus on the staged release corpus (A9). Open and not
+          attested: the node and Hermes binary licence (counsel), the frontend-skills LICENSE.
+      - id: g3-browser
+        desc: "Browser pop-out + search + decide() slot scored"
+        met: false
+        evidence: "runtime agent-browser (gate.rs, egress.rs, scope.rs, pick.rs); agent-loop/evals/runs/web-subset-v2-2026-10-04-t0-run{1,2}.json; agent-search/evals/live-run-2026-10-04.json; core hermes_decide.rs + src/popout/ActivityMonitor.decide.test.tsx"
+        note: >-
+          Proven in code and tests (2026-10-04): the Browser pop-out with screencast and element
+          highlight; the browser switch (default off); decide() in the browser scored locally on
+          web-subset-v2 with T0 Gemma 4 E4B (8 and 9 of 10 tasks over two runs), every outcome recorded through POST
+          /decide/outcomes; SearXNG live run. Attach-to-Chrome scoping (S5.6) is merged:
+          per-session consent, per-origin consent, banking, email and health origins excluded by
+          default, with unit, scope and live-Chrome tests that an excluded origin is refused even
+          with ordinary consent. hup/n7-browser-safety-decide adds: browserMayOpenWeb enforced in
+          the managed browser path (S5.5): when the last signed component manifest has expired or
+          none was checked, core passes CITRATE_BROWSER_OPEN_WEB=0 with the managed Chromium and
+          the browser reaches only developer-allowed origins on this machine (loopback: a site
+          preview or the anvil fork), at the DevTools request gate and the SOCKS5 egress gate
+          (gate, egress, service, live-Chrome and core tests; five mutants killed). The rule
+          follows the managed Chromium only, so no member is blocked while the component key
+          slot is empty. The per-backend decide() metering (GET /decide/stats) is shown in the
+          Activity monitor (hermes_decide_stats, vitest). Not met until the signed component
+          publish: the component key ceremony, the signed Chrome for Testing and SearXNG
+          manifest (g3-updater), then a packaged-app QA run with the switch on. T1 and Jev are
+          not scored; the recommended default (pending owner sign-off) ships Jev off as "not
+          offered", with local as the only backend.
+      - id: g3-gate
+        desc: "DeployGate TLC-green; injected-bug run yields NOT READY"
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s6-dapp-forge/EVIDENCE-n6-hellomint-e2e.md
+        note: >-
+          Met 2026-10-04 on hup/n6-hellomint-e2e. TLC DeployGate.cfg no error (3,378 distinct
+          states), Reach config violates NeverSigns as intended. scripts/e2e-hello-mint.sh: the
+          rendered hello-mint with its supply cap check removed, run through real forge, slither,
+          aderyn 0.6.8, medusa 1.5.1 and an anvil fork dry run, is NOT READY naming
+          test_mint_stops_at_the_cap, and contract_deploy opens no ceremony. Aderyn and medusa
+          came from the measured bundle archives (test-only config); a member install does not
+          have them yet (component key ceremony).
+      - id: g3-e2e
+        desc: "hello-mint Gherkin passes on a T1 machine: deploy, verify, mint, IPFS pin"
+        met: false
+        note: >-
+          Local half passes (2026-10-04, EVIDENCE-n6-hellomint-e2e.md): READY, ceremony deploy on
+          an anvil chain with chain id 40204, code check, mint through a ceremony, Vercel export
+          built, IPFS pin. Still needed: a member approving the deploy on 40204 in the packaged
+          app with funded SALT, CitrateScan verification, the faucet (S6.5).
   - id: gate4
     name: Chain-native + fleet + learning (S7, S8, S9)
     status: pending
@@ -83,7 +219,17 @@ gates:
     status: pending
     exit_criteria:
       - {id: g5-everyday, desc: "Media, office, widgets, daemons, journal export pass BDD", met: false}
-      - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false}
+      - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false, evidence: "release/README.md (macOS arm64 0.5.0-line build PASS 2026-10-04 at budgets pending owner sign-off; Linux and Windows not measured)"}
       - {id: g5-os, desc: "hello-mint e2e on macOS arm64, Linux x64, Windows x64 clean installs", met: false}
-      - {id: g5-redteam, desc: "Red-team pass: no open High", met: false}
-      - {id: g5-docs, desc: "Document pass + retro + essay", met: false}
+      - {id: g5-redteam, desc: "Red-team pass: no open High", met: false, note: "2026-10-06: the v0.5.0 slice (no open High for what 0.5.0 ships) was reviewed against the private registers; not met yet, with the open items and recommendations tracked privately. The open High on silent gateway fallback is closed by S7.5a (#267, merged 2026-10-06)."}
+      - {id: g5-scl, desc: "Owner decision 2026-10-05 (amended twice the same day, SCL D-2): the v0.5.0 release requires only the SCL (owned sidecar lifecycle) exit criteria with release v0.5.0 (SCL-S0 pre-cut safety incl. the Windows NSIS pre-install stop, the S8.5a startup barrier and #243 database-lock check, the S1.6a Windows CI job S0.7 needs, the S7.5a ask-first for a stopped local model); the SCL criteria with release v0.5.1 gate the one v0.5.1 that D-41 (amended 2026-10-05) allows; the rest finishes on the 0.5.x line; the 40204 reroll is not gated on SCL. Owner decision 2026-10-05 (third set): v0.5.0 is the minimum viable SCL content (SCL-S0, S1.6a, S8.5a); S7.5a moved to v0.5.1, so it is no longer required here; D-41 amended again allows one v0.5.1 and one v0.5.2, gated by the SCL criteria with release v0.5.1 and release v0.5.2 (the former 0.5.x remainder). Owner decision 2026-10-06: S7.5a is back in v0.5.0 to close a red-team High (#267), so it is required here again", met: false, evidence: ".agentile/planset/2026-10-05-sidecar-lifecycle/gates.yaml", note: "Superseded wording (kept for the record), newest first. (2) the v0.5.0 cut also requires every SCL exit criterion marked blocks_cut true to be met, not all SCL gates; the rest of SCL finishes on the 0.5.x line under the same planset. (1) the v0.5.0 cut also requires every SCL gate to be met."}
+      - id: g5-docs
+        desc: Document pass + retro + essay
+        met: false
+        note: >-
+          Drafted 2026-10-04 on branches (fan-out 7 lane L19), not merged: five Almanac pages in
+          citrate-docs content/core (hermes, node-mcp, skills, personas, fleet-wizard) on
+          hup/n7-docs-almanac-retro; in citrate-core on hup/n7-docs-almanac-retro the program
+          retro draft (.agentile/sprints/active/sprint-hup-s11-prove-it/RETRO.md) and the essay
+          docs/essays/off-by-default-and-the-verifier-says-done.md. Flips when those PRs merge
+          after the 0.5.0 stacks, and the retro's "at close" section is written at the release.

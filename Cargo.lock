@@ -817,7 +817,7 @@ dependencies = [
 [[package]]
 name = "citrate-commd"
 version = "0.1.0"
-source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=80c1781cc39c4edf2a7253a0adf08616c34d2215#80c1781cc39c4edf2a7253a0adf08616c34d2215"
+source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=2979a1576d12dc75375ae30be5c37a2cdd866c87#2979a1576d12dc75375ae30be5c37a2cdd866c87"
 dependencies = [
  "ark-bn254",
  "ark-crypto-primitives",
@@ -827,8 +827,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "citrate-components"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake2",
+ "ed25519-dalek",
+ "flate2",
+ "hex",
+ "lzma-rs",
+ "minisign-verify",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "ureq",
+ "zip",
+]
+
+[[package]]
 name = "citrate-core"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -836,22 +856,27 @@ dependencies = [
  "bip39",
  "blake3",
  "citrate-commd",
+ "citrate-components",
  "citrate-core-kit",
+ "citrate-templates",
  "citrate-wallet-core",
  "ed25519-dalek",
  "hex",
+ "hmac",
  "interprocess",
  "jsonwebtoken",
  "k256",
  "keyring",
  "libc",
  "p256",
+ "qrcode",
  "rand 0.8.7",
  "rlp",
  "serde",
  "serde_json",
  "sha2",
  "sha3",
+ "socket2",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
@@ -861,6 +886,8 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tauri-plugin-updater",
+ "tauri-utils",
+ "toml 0.9.12+spec-1.1.0",
  "ureq",
  "url",
  "windows-sys 0.61.2",
@@ -878,6 +905,7 @@ dependencies = [
  "citrate-wallet-core",
  "hex",
  "hkdf",
+ "hmac",
  "jsonwebtoken",
  "k256",
  "keyring",
@@ -897,9 +925,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "citrate-templates"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "sha3",
+]
+
+[[package]]
 name = "citrate-wallet-core"
 version = "0.4.0"
-source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=80c1781cc39c4edf2a7253a0adf08616c34d2215#80c1781cc39c4edf2a7253a0adf08616c34d2215"
+source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=2979a1576d12dc75375ae30be5c37a2cdd866c87#2979a1576d12dc75375ae30be5c37a2cdd866c87"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1086,6 +1124,21 @@ checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc32fast"
@@ -2899,6 +2952,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "lzma-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e"
+dependencies = [
+ "byteorder",
+ "crc",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3708,6 +3771,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4115,9 +4184,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -6848,6 +6917,7 @@ checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
 dependencies = [
  "arbitrary",
  "crc32fast",
+ "flate2",
  "indexmap 2.14.0",
  "memchr",
 ]

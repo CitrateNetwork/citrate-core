@@ -1,0 +1,232 @@
+//! HUP-S7.5 (US-7.3 AC3): core's recheck of the sidecar's BenchmarkRegistry payload.
+//!
+//! The fixture is the real sidecar's `POST /metering/benchmark` answer for a seeded day (agent id
+//! 7, registry `0x…b1`), captured 2026-10-01 from citrate-agent-runtime `hup/n5-anchor-rest`.
+//! Selector checked with `cast sig "record(uint256,bytes32,bytes32,uint256)"` = `0xfce25138`.
+
+use super::*;
+
+const FIXTURE: &str = include_str!("../tests/fixtures/anchor/sidecar-benchmark-payload.json");
+const REGISTRY: &str = "0x00000000000000000000000000000000000000b1";
+const DAY: &str = "2026-10-01";
+
+fn payload() -> Payload {
+    serde_json::from_str(FIXTURE).expect("fixture")
+}
+
+#[test]
+fn selector_and_capsule_label_match_cast() {
+    assert_eq!(hex::encode(record_selector()), "fce25138");
+    assert_eq!(
+        hex::encode(hermes_capsule_id()),
+        "9bf1a6295bf6cad36e6ad3a5defce3c880372fa75b99e42b64ad8c530c2f8850"
+    );
+}
+
+#[test]
+fn the_real_payload_is_accepted_and_rebuilt_call_for_call() {
+    let calls = validate(&payload(), REGISTRY, 7, DAY).expect("valid");
+    assert_eq!(calls.len(), 15);
+    assert_eq!(calls[0].metric, "hermes.daily.turns");
+    assert_eq!(calls[0].value, "3");
+    assert_eq!(calls[0].data.len(), 4 + 4 * 32);
+    // The registry address is matched without regard to case.
+    assert!(validate(
+        &payload(),
+        &REGISTRY.to_ascii_uppercase().replace("0X", "0x"),
+        7,
+        DAY
+    )
+    .is_ok());
+}
+
+fn refused(p: &Payload, registry: &str, agent: u128, day: &str, why: &str) {
+    match validate(p, registry, agent, day) {
+        Err(e) => assert!(e.contains(why), "{e} should mention {why}"),
+        Ok(_) => panic!("expected a refusal mentioning {why}"),
+    }
+}
+
+#[test]
+fn the_envelope_must_be_the_one_core_expects() {
+    let p = payload();
+    refused(
+        &p,
+        "0x00000000000000000000000000000000000000b2",
+        7,
+        DAY,
+        "pinned BenchmarkRegistry",
+    );
+    refused(&p, REGISTRY, 8, DAY, "another agent id");
+    refused(&p, REGISTRY, 7, "2026-09-30", "another day");
+    let mut q = p.clone();
+    q.chain_id = 1;
+    refused(&q, REGISTRY, 7, DAY, "chain");
+    let mut q = p.clone();
+    q.value = "1".into();
+    refused(&q, REGISTRY, 7, DAY, "no value");
+    let mut q = p.clone();
+    q.sent = true;
+    refused(&q, REGISTRY, 7, DAY, "already sent");
+    let mut q = p.clone();
+    q.function = "approve(address,uint256)".into();
+    refused(&q, REGISTRY, 7, DAY, "unexpected function");
+    let mut q = p.clone();
+    q.capsule_id = format!("0x{}", "00".repeat(32));
+    refused(&q, REGISTRY, 7, DAY, "capsule");
+    let mut q = p.clone();
+    q.calls.clear();
+    refused(&q, REGISTRY, 7, DAY, "no calls");
+    let mut q = p.clone();
+    while q.calls.len() <= MAX_CALLS {
+        let mut c = q.calls[0].clone();
+        c.metric = format!("hermes.daily.x{}", q.calls.len());
+        q.calls.push(c);
+    }
+    refused(&q, REGISTRY, 7, DAY, "more than");
+}
+
+#[test]
+fn each_call_is_rebuilt_and_must_match_byte_for_byte() {
+    let p = payload();
+    // Calldata that differs from core's own build (another value hidden in the bytes).
+    let mut q = p.clone();
+    let mut data = q.calls[0].data.clone();
+    data.replace_range(data.len() - 1.., "9");
+    q.calls[0].data = data;
+    refused(&q, REGISTRY, 7, DAY, "not the record call");
+    // A value core cannot read.
+    let mut q = p.clone();
+    q.calls[0].value = "-1".into();
+    refused(&q, REGISTRY, 7, DAY, "whole number");
+    // A metric outside the Hermes namespace, or with an odd name.
+    let mut q = p.clone();
+    q.calls[0].metric = "other.metric".into();
+    refused(&q, REGISTRY, 7, DAY, "unexpected metric");
+    let mut q = p.clone();
+    q.calls[0].metric = "hermes.daily.Turns".into();
+    refused(&q, REGISTRY, 7, DAY, "unexpected metric");
+    // A metric whose hash is not its name's.
+    let mut q = p.clone();
+    q.calls[0].metric_name = q.calls[1].metric_name.clone();
+    refused(&q, REGISTRY, 7, DAY, "does not match its name");
+    // The same metric twice.
+    let mut q = p.clone();
+    let dup = q.calls[0].clone();
+    q.calls.push(dup);
+    refused(&q, REGISTRY, 7, DAY, "appears twice");
+}
+
+#[test]
+fn record_calldata_is_selector_then_four_words() {
+    let cd = record_calldata(7, &[1u8; 32], &[2u8; 32], 5);
+    assert_eq!(&cd[..4], &record_selector());
+    assert_eq!(cd[4 + 31], 7);
+    assert_eq!(&cd[36..68], &[1u8; 32]);
+    assert_eq!(&cd[68..100], &[2u8; 32]);
+    assert_eq!(cd[100 + 31], 5);
+}
+
+#[test]
+fn the_agent_id_is_the_first_agent_sbt_and_none_means_no_sharing() {
+    let mut st = crate::agent_sbt::AgentSbtStatus {
+        contract: None,
+        member: "0x1111111111111111111111111111111111111111".into(),
+        did: None,
+        parent_org_id: None,
+        balance: None,
+        tokens: None,
+        tokens_note: None,
+        state: crate::agent_sbt::MintState::NotInBook,
+        available: false,
+        message: String::new(),
+    };
+    assert!(agent_id_of(&st).unwrap_err().contains("AgentSBT"));
+    st.tokens = Some(vec![]);
+    assert!(agent_id_of(&st).is_err());
+    st.tokens = Some(vec![crate::agent_sbt::AgentToken {
+        token_id: "12".into(),
+        parent_org_id: "0".into(),
+        did: String::new(),
+        pubkey_fingerprint: String::new(),
+        quarantined: false,
+    }]);
+    assert_eq!(agent_id_of(&st), Ok(12));
+}
+
+#[test]
+fn a_day_is_prepared_once_per_session_unless_released() {
+    let day = "1999-01-02";
+    assert!(reserve_day(day));
+    assert!(!reserve_day(day));
+    release_day(day);
+    assert!(reserve_day(day));
+    release_day(day);
+}
+
+/// Review follow-up: the command shares only a closed UTC day, so numbers that can still change are
+/// never put on chain (the Journal offers yesterday; the command enforces it too).
+#[test]
+fn only_a_closed_day_is_shared() {
+    assert!(is_closed_day("2026-10-03", "2026-10-04"));
+    assert!(is_closed_day("2025-12-31", "2026-01-01"));
+    assert!(!is_closed_day("2026-10-04", "2026-10-04"), "today is open");
+    assert!(
+        !is_closed_day("2026-10-05", "2026-10-04"),
+        "the future is open"
+    );
+    assert!(!is_closed_day("2026-1-03", "2026-10-04"), "shape-checked");
+    assert!(utc_today().is_some_and(|t| crate::hermes::chain::valid_day(&t)));
+    let src = include_str!("benchmark_share.rs");
+    let i = src
+        .find("pub async fn hermes_benchmark_share(")
+        .expect("command");
+    assert!(
+        src[i..].contains("is_closed_day(&day, &today)"),
+        "the command checks the day is closed"
+    );
+}
+
+/// HUP-S7.5 (D-27): the real sidecar's payload after a live Gemma 4 E4B session (2026-10-04,
+/// citrate-agent-runtime `hup/n7-metering-d27`) carries the new per-metric calls; core accepts
+/// and rebuilds each one, and still shares closed days only.
+const FIXTURE_D27: &str =
+    include_str!("../tests/fixtures/anchor/sidecar-benchmark-payload-d27.json");
+
+#[test]
+fn the_d27_metrics_are_picked_up_call_for_call_and_only_for_closed_days() {
+    let p: Payload = serde_json::from_str(FIXTURE_D27).expect("fixture");
+    let calls = validate(&p, REGISTRY, 7, "2026-10-04").expect("valid");
+    let names: Vec<&str> = calls.iter().map(|c| c.metric.as_str()).collect();
+    for m in [
+        "hermes.daily.ttft_p50_ms",
+        "hermes.daily.ttft_p95_ms",
+        "hermes.daily.tokens_per_s_milli",
+        "hermes.daily.cpu_peak_bps",
+        "hermes.daily.gpu_peak_bps",
+        "hermes.daily.ram_peak_mib",
+        "hermes.daily.energy_estimate_uwh",
+        "hermes.daily.self_review_opinion_pass",
+        "hermes.daily.self_review_opinion_fail",
+    ] {
+        assert!(names.contains(&m), "{m} missing from {names:?}");
+    }
+    assert!(
+        calls.len() > 15 && calls.len() <= MAX_CALLS,
+        "{}",
+        calls.len()
+    );
+    let ttft = calls
+        .iter()
+        .find(|c| c.metric == "hermes.daily.ttft_p50_ms")
+        .expect("ttft");
+    assert_eq!(ttft.value, "364", "the live session's first-token p50");
+    // No Hermes transaction that day: gas and SALT are omitted, never sent as zero.
+    assert!(!names.contains(&"hermes.daily.gas_used"));
+    assert!(!names.contains(&"hermes.daily.salt_spent_wei"));
+    // The day the numbers were taken is still open, so it is not shared; the next day it is.
+    assert!(!is_closed_day("2026-10-04", "2026-10-04"));
+    assert!(is_closed_day("2026-10-04", "2026-10-05"));
+    // The card count the member is told matches what a full day can carry.
+    assert!(PENDING_OWNER_SIGN_OFF[0].contains("up to twenty-six a day"));
+}

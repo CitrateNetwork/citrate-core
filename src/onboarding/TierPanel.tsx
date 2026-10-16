@@ -94,6 +94,10 @@ export function TierView({
           {report.overrideTier ? `Using ${report.effective} (your choice)` : `Using ${report.effective}`} · {eff.modelHint} · {ctxLabel(eff.ctxTokens)}
         </div>
       )}
+      <div style={note} data-testid="tier-ctx-note">
+        The context size is the tier's target. It is set the next time the local model starts, capped by what the model file supports
+        and by the memory free beside the node.
+      </div>
       {(rec.guided || report.effective === "T0") && (
         <div style={note}>
           T0 is the guided tier: a small model runs here, and bigger planning jobs are best escalated to a larger model you choose.

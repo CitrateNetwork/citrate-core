@@ -1,0 +1,26 @@
+{
+  "added": "2026-10-04",
+  "by": "US-9.2 AC2 (belnap_codec, lane N5-eval2)",
+  "note": "The decode task uses the output bytes chain 40204 returned for the worked example in src-tauri/skills/citrate-belnap-aggregate/SKILL.md; src/agent/belnap.test.ts checks the tool's answer for those bytes (True, Both, Neither, True).",
+  "tasks": [
+    {
+      "id": "tc-belnap-decode-example",
+      "prompt": "The 0x0110 precompile returned 0x000000000000d00000000000000000000000000000002000ffffffffffff700001030001 for a 4-dimension call. What are the aggregated values and the state of each dimension?",
+      "expect": { "tool": "belnap_codec", "argsMatch": { "mode": "decode", "outputHex": "re:d000.*01030001$", "dim": "4" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-belnap-encode-two",
+      "prompt": "Prepare the 0x0110 input bytes for two participants over two dimensions: participant A embedding [1, -0.5] confidence [1, 1] weight 0.5; participant B embedding [0.25, 0.5] confidence [0.9, 0.9] weight 0.5; threshold_pos 0.8, threshold_neg 0.3.",
+      "expect": { "tool": "belnap_codec", "argsMatch": { "mode": "encode" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "nt-belnap-both-meaning",
+      "prompt": "In one sentence: what does the Both state mean in Citrate's paraconsensus?",
+      "expect": { "tool": null, "alsoAccept": ["memory_search"] },
+      "tags": ["no-tool"],
+      "note": "A concept question needs no byte math (no belnap_codec call required)."
+    }
+  ]
+}

@@ -248,8 +248,11 @@ describe("AI1 — provider selection + key-never-in-state", () => {
     // ready → local, even though a gateway key is configured (local wins).
     expect(pickChatProviderKind(configured, "gateway", "tauri", "ready")).toBe("local");
     // NEGATIVE CONTROL: server NOT healthy (any non-"ready" state) → NOT local.
-    // local-fallback means the model is ready but the server is down → gateway.
-    expect(pickChatProviderKind(configured, "gateway", "tauri", "local-fallback")).toBe("real");
+    // SCL-S7.5a (D-16 extended): local-stopped means the model is ready but its server is not
+    // running. That is NOT a gateway route: chat asks the member first ("ask"), never "real".
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "local-stopped")).toBe("ask");
+    // The old wire value no longer exists; were it ever seen it must not route to the gateway either.
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "local-fallback")).toBe("ask");
     expect(pickChatProviderKind(configured, "gateway", "tauri", "gateway-only")).toBe("real");
     // downloading with a gateway key → gateway (not local, not demo).
     expect(pickChatProviderKind(configured, "gateway", "tauri", "downloading")).toBe("real");
@@ -301,6 +304,86 @@ describe("store memory daemon (Q-A.4a) — real status read, honest offline", ()
     expect(store.getSnapshot().memDaemon).toBe("running");
     expect(store.getSnapshot().memGraphState).toBe("ready");
     expect(store.getSnapshot().memGraph?.nodes.length).toBeGreaterThan(0);
+  });
+
+  it("HUP-S3.1: startMemoryDaemon runs the knowledge import BEFORE starting the daemon", async () => {
+    const order: string[] = [];
+    const imp = vi.spyOn(bridge.memory, "importKnowledge").mockImplementation(async (onProgress) => {
+      order.push("import");
+      onProgress?.({ event: "progress", tenant: "skills", done: 128, total: 512 });
+      expect(store.getSnapshot().knowledgeImport.state).toBe("running");
+      expect(store.getSnapshot().knowledgeImport.done).toBe(128);
+      expect(store.getSnapshot().knowledgeImport.total).toBe(512);
+      return { state: "imported", nodesAdded: 512, edgesAdded: 500, tenantsImported: ["skills"], tenantsSkipped: [] };
+    });
+    const start = vi.spyOn(bridge.memory, "start").mockImplementation(async () => {
+      order.push("start");
+    });
+    await store.startMemoryDaemon();
+    expect(order).toEqual(["import", "start"]);
+    expect(store.getSnapshot().knowledgeImport.state).toBe("imported");
+    expect(store.getSnapshot().knowledgeImport.nodesAdded).toBe(512);
+    imp.mockRestore();
+    start.mockRestore();
+  });
+
+  it("HUP-S3.1: a failed knowledge import is shown honestly and the daemon still starts", async () => {
+    const imp = vi.spyOn(bridge.memory, "importKnowledge").mockResolvedValue({
+      state: "failed",
+      error: "verify: tenants/refs.syncbundle.json does not match its manifest hash",
+      nodesAdded: 0,
+      edgesAdded: 0,
+      tenantsImported: [],
+      tenantsSkipped: [],
+    });
+    await store.startMemoryDaemon();
+    expect(store.getSnapshot().knowledgeImport.state).toBe("failed");
+    expect(store.getSnapshot().knowledgeImport.message).toContain("does not match its manifest hash");
+    expect(store.getSnapshot().memDaemon).toBe("running");
+    imp.mockRestore();
+  });
+
+  it("HUP-S3.1: an import that throws is a failure, not a silent skip", async () => {
+    const imp = vi.spyOn(bridge.memory, "importKnowledge").mockRejectedValue(new Error("ipc down"));
+    await store.startMemoryDaemon();
+    expect(store.getSnapshot().knowledgeImport.state).toBe("failed");
+    expect(store.getSnapshot().knowledgeImport.message).toContain("ipc down");
+    expect(store.getSnapshot().memDaemon).toBe("running");
+    imp.mockRestore();
+  });
+
+  it("HUP-S3.1: overlapping starts share ONE import and no daemon start runs while it is in flight", async () => {
+    // Launch auto-start + a Start/Retry click must not let the second caller see "in-progress"
+    // and start the daemon while the first import still holds the store.
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const imp = vi.spyOn(bridge.memory, "importKnowledge").mockImplementation(async () => {
+      order.push("import");
+      await gate;
+      order.push("import-done");
+      return { state: "imported", nodesAdded: 1, edgesAdded: 0, tenantsImported: ["refs"], tenantsSkipped: [] };
+    });
+    const start = vi.spyOn(bridge.memory, "start").mockImplementation(async () => {
+      order.push("start");
+    });
+    const a = store.startMemoryDaemon();
+    const b = store.startMemoryDaemon();
+    const c = store.importKnowledge();
+    await Promise.resolve();
+    release();
+    await Promise.all([a, b, c]);
+    expect(imp).toHaveBeenCalledTimes(1);
+    expect(order.indexOf("import-done")).toBeLessThan(order.indexOf("start"));
+    expect(store.getSnapshot().knowledgeImport.state).toBe("imported");
+    imp.mockRestore();
+    start.mockRestore();
+  });
+
+  it("HUP-S3.1: in sim the import is an honest skip", async () => {
+    await store.startMemoryDaemon();
+    expect(store.getSnapshot().knowledgeImport.state).toBe("skipped");
+    expect(store.getSnapshot().knowledgeImport.message).toBe("no-bundle");
   });
 
   it("refreshConstellation with a query routes through the REAL daemon search (bridge.memory.search)", async () => {

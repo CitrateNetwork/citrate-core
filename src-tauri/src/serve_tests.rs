@@ -238,15 +238,72 @@ fn selection_prefers_local_when_ready_and_healthy() {
 }
 
 #[test]
-fn selection_falls_back_to_gateway_when_local_unhealthy_but_key_present() {
-    // Model ready but the server is NOT healthy → local-fallback to the gateway.
+fn selection_asks_first_when_local_unhealthy_but_key_present() {
+    // SCL-S7.5a (D-16 extended): model ready but the server is NOT running, with a gateway key.
+    // This used to be `LocalFallback` (a silent route to the gateway). It is now `LocalStopped`:
+    // not a route at all; chat asks the member first.
     let st = select_inference_state(ProviderInputs {
         model_ready: true,
         server_healthy: false,
         downloading: false,
         gateway_key_configured: true,
     });
-    assert_eq!(st, InferenceState::LocalFallback);
+    assert_eq!(st, InferenceState::LocalStopped);
+}
+
+/// SCL-S7.5a (D-16 extended, US-6.2 AC5): over every input, a verified local model whose
+/// server is not running never yields a state the frontend routes to the gateway by itself
+/// (`gateway-only`, `downloading`, or the old `local-fallback`). With a gateway key it is
+/// `LocalStopped` (ask first); without one the result is unchanged from before (no gateway).
+#[test]
+fn selection_never_routes_a_stopped_local_model_to_the_gateway() {
+    for downloading in [false, true] {
+        for gateway in [false, true] {
+            let st = select_inference_state(ProviderInputs {
+                model_ready: true,
+                server_healthy: false,
+                downloading,
+                gateway_key_configured: gateway,
+            });
+            assert_ne!(st, InferenceState::GatewayOnly, "dl={downloading} gw={gateway}");
+            assert_ne!(st.as_str(), "local-fallback", "dl={downloading} gw={gateway}");
+            if gateway {
+                assert_eq!(st, InferenceState::LocalStopped, "dl={downloading}");
+            } else {
+                assert_ne!(st, InferenceState::LocalStopped, "no key: unchanged, dl={downloading}");
+            }
+        }
+    }
+}
+
+/// SCL-S7.5a: no gateway key means behaviour is unchanged for a stopped local model (the
+/// selector never offers the gateway; the frontend never asks).
+#[test]
+fn selection_without_a_gateway_key_is_unchanged_for_a_stopped_local_model() {
+    let st = select_inference_state(ProviderInputs {
+        model_ready: true,
+        server_healthy: false,
+        downloading: false,
+        gateway_key_configured: false,
+    });
+    assert_eq!(st, InferenceState::Demo);
+}
+
+/// SCL-S7.5a: a running server (including one still cold-loading: `is_running` counts it) stays
+/// local whatever else is configured.
+#[test]
+fn selection_keeps_a_running_local_server_local() {
+    for downloading in [false, true] {
+        for gateway in [false, true] {
+            let st = select_inference_state(ProviderInputs {
+                model_ready: true,
+                server_healthy: true,
+                downloading,
+                gateway_key_configured: gateway,
+            });
+            assert_eq!(st, InferenceState::Ready, "dl={downloading} gw={gateway}");
+        }
+    }
 }
 
 #[test]
@@ -294,7 +351,7 @@ fn selection_no_model_when_no_key_and_not_downloading_but_model_absent() {
     // onboarding step — asserted here via the serialization contract.
     assert_eq!(InferenceState::NoModel.as_str(), "no-model");
     assert_eq!(InferenceState::Ready.as_str(), "ready");
-    assert_eq!(InferenceState::LocalFallback.as_str(), "local-fallback");
+    assert_eq!(InferenceState::LocalStopped.as_str(), "local-stopped");
     assert_eq!(InferenceState::Downloading.as_str(), "downloading");
     assert_eq!(InferenceState::GatewayOnly.as_str(), "gateway-only");
     assert_eq!(InferenceState::Demo.as_str(), "demo");
@@ -416,4 +473,107 @@ fn spawn_args_use_the_native_template_and_extract_reasoning() {
     assert!(args.iter().any(|a| a == "--jinja"), "native chat/tool template: {args:?}");
     let r = args.iter().position(|a| a == "--reasoning-format").expect("--reasoning-format");
     assert_eq!(args[r + 1], "deepseek");
+}
+
+// ---------------------------------------------------------------------------
+// HUP-S1.6 (rest) — the effective tier's serve plan drives `--ctx-size` and `-ngl`.
+// ---------------------------------------------------------------------------
+
+fn sized(ctx: u32, ngl: Option<u32>) -> crate::serve_plan::ServePlan {
+    crate::serve_plan::ServePlan {
+        ctx_size: ctx,
+        gpu_layers: ngl,
+        tier: Some(crate::tier::Tier::T1),
+        fits: true,
+        budget_bytes: Some(1),
+        notes: vec!["test plan".into()],
+    }
+}
+
+fn arg_after(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).map(|i| args[i + 1].clone())
+}
+
+#[test]
+fn before_any_plan_the_server_keeps_the_8192_context_and_no_offload_flag() {
+    let (mgr, _dir) = stub_manager("plan-default");
+    let args = mgr.spawn_args_for_test();
+    assert_eq!(arg_after(&args, "--ctx-size").as_deref(), Some("8192"));
+    assert!(!args.iter().any(|a| a == "-ngl"), "{args:?}");
+    assert_eq!(mgr.ctx_size(), DEFAULT_CTX_SIZE);
+}
+
+#[test]
+fn the_plan_sets_ctx_size_and_gpu_layers_on_the_argv_and_status() {
+    let (mgr, _dir) = stub_manager("plan-args");
+    mgr.set_plan(sized(32_768, Some(99)));
+    let args = mgr.spawn_args_for_test();
+    assert_eq!(arg_after(&args, "--ctx-size").as_deref(), Some("32768"));
+    assert_eq!(arg_after(&args, "-ngl").as_deref(), Some("99"));
+    assert_eq!(mgr.ctx_size(), 32_768);
+    let st = mgr.status();
+    assert_eq!(st.ctx_tokens, 32_768);
+    assert_eq!(st.gpu_layers, Some(99));
+    assert_eq!(st.plan_notes, vec!["test plan".to_string()]);
+    let json = serde_json::to_value(&st).unwrap();
+    assert_eq!(json["ctxTokens"], 32_768);
+    assert_eq!(json["gpuLayers"], 99);
+    // A CPU plan carries no -ngl flag at all.
+    mgr.set_plan(sized(16_384, None));
+    assert!(!mgr.spawn_args_for_test().iter().any(|a| a == "-ngl"));
+}
+
+#[test]
+fn a_refused_start_leaves_the_previous_plan_in_place() {
+    let (mgr, dir) = stub_manager("plan-refused");
+    mgr.set_plan(sized(16_384, Some(99)));
+    let r = mgr.start_with_plan(false, sized(65_536, Some(99)));
+    assert!(matches!(r, Err(ServeError::ModelNotReady)), "got {r:?}");
+    assert_eq!(mgr.ctx_size(), 16_384, "a refused start must not change the plan");
+    let r = mgr.select_model_planned(dir.join("other.gguf"), false, sized(65_536, None));
+    assert!(matches!(r, Err(ServeError::ModelNotReady)), "got {r:?}");
+    assert_eq!(mgr.ctx_size(), 16_384);
+}
+
+#[test]
+fn select_model_planned_applies_the_new_models_plan() {
+    let (mgr, dir) = stub_manager("plan-select");
+    let mgr = mgr
+        .with_spawn_args(long_lived_args())
+        .with_health_interval(std::time::Duration::from_secs(3600));
+    let new_model = dir.join("model3.gguf");
+    std::fs::write(&new_model, b"GGUF-3").unwrap();
+    mgr.select_model_planned(new_model, true, sized(32_768, Some(99)))
+        .expect("select starts on the new model");
+    assert_eq!(mgr.ctx_size(), 32_768);
+    assert_eq!(arg_after(&mgr.spawn_args_for_test(), "--ctx-size").as_deref(), Some("32768"));
+    mgr.stop();
+}
+
+/// HUP-S9.4 hardening: an adapter is set only for the base model it was authorized on, checked
+/// atomically against the model in place (a model switch in between leaves no adapter set).
+#[test]
+fn an_adapter_is_set_only_while_its_base_model_is_selected() {
+    let dir = std::env::temp_dir().join(format!("citrate-serve-lora-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let mgr = LlamaServerManager::new(sleep_bin(), dir.join("base-a.gguf"), dir.join("crash.jsonl"), 18099);
+    let adapter = dir.join("adapter.gguf");
+    assert!(mgr.set_lora_for_model(adapter.clone(), "base-b.gguf").is_err());
+    assert_eq!(mgr.lora(), None);
+    mgr.set_lora_for_model(adapter.clone(), "base-a.gguf").expect("same base");
+    assert_eq!(mgr.lora(), Some(adapter));
+}
+
+// main #178: the bundled llama-server is `llama-server.exe` on Windows and the bare
+// `llama-server` on macOS/Linux, so resolution must carry the platform EXE_SUFFIX.
+#[test]
+fn llama_server_file_name_carries_the_platform_exe_suffix() {
+    assert_eq!(llama_server_file_name(".exe"), "llama-server.exe");
+    assert_eq!(llama_server_file_name(""), "llama-server");
+    let here = llama_server_file_name(std::env::consts::EXE_SUFFIX);
+    if cfg!(windows) {
+        assert_eq!(here, "llama-server.exe");
+    } else {
+        assert_eq!(here, "llama-server");
+    }
 }
