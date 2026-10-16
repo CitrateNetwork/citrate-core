@@ -175,8 +175,15 @@ describe("eval.yml suites (HUP-S11.2)", () => {
   });
 
   it("reads per-tier secrets with a single-secret fallback", () => {
-    expect(src).toContain("secrets[format('EVAL_BASE_URL_{0}', inputs.tier)] || secrets.EVAL_BASE_URL");
-    expect(src).toContain("secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY");
+    for (const name of ["EVAL_BASE_URL", "EVAL_API_KEY"]) {
+      expect(src).toContain(
+        `(inputs.tier == 'T0' && secrets.${name}_T0) || (inputs.tier == 'T1' && secrets.${name}_T1) || (inputs.tier == 'T2' && secrets.${name}_T2) || secrets.${name}`,
+      );
+    }
+  });
+
+  it("names each secret explicitly (never indexes the secrets context)", () => {
+    expect(src).not.toContain("secrets[");
   });
 
   it("renders and uploads one SCORECARD-<tier>.md per run", () => {
