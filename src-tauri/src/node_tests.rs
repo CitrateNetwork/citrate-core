@@ -1096,3 +1096,123 @@ fn production_managers_use_the_app_startup_barrier() {
     assert_eq!(mgr.admission_wait, ADMISSION_WAIT);
     assert!(mgr.node_ports.is_none(), "ports come from node.toml");
 }
+
+// ---------------------------------------------------------------------------
+// Core #326 — a node that followed a withdrawn branch moves its chain data aside
+// ---------------------------------------------------------------------------
+
+/// A node RPC at `head` whose block at the rollback check height is `hash`.
+struct ForkNode {
+    head: u64,
+    hash: &'static str,
+}
+
+impl RpcTransport for ForkNode {
+    fn call(&self, body: Value) -> std::result::Result<Value, RpcError> {
+        match body.get("method").and_then(Value::as_str) {
+            Some("eth_blockNumber") => Ok(json!({ "result": format!("0x{:x}", self.head) })),
+            Some("eth_getBlockByNumber") => Ok(json!({ "result": { "hash": self.hash } })),
+            _ => Err(RpcError::Transport("unexpected".into())),
+        }
+    }
+}
+
+const FORK_DB: &[&str] = &["CURRENT", "MANIFEST-000005", "000013.sst", "000181.log", "LOCK"];
+const FORK_KEPT: &[&str] = &["proposer.key", "noise.key", "node.toml", "chain-genesis"];
+
+/// What each fixture file holds: the genesis marker holds the book genesis (as the app writes
+/// it), every other file its own name.
+fn fork_body(name: &str) -> Vec<u8> {
+    if name == crate::node_genesis::GENESIS_MARKER_FILE {
+        format!("{}\n", crate::addresses::genesis_hash()).into_bytes()
+    } else {
+        name.as_bytes().to_vec()
+    }
+}
+
+fn populated_fork_dir(tag: &str) -> (NodeManager, PathBuf) {
+    let (mgr, _fake, data_dir) = stub_manager(tag);
+    std::fs::create_dir_all(&data_dir).expect("mkdir");
+    for f in FORK_DB.iter().chain(FORK_KEPT.iter()) {
+        std::fs::write(data_dir.join(f), fork_body(f)).expect("write");
+    }
+    (mgr, data_dir)
+}
+
+fn aside_dirs(data_dir: &std::path::Path) -> Vec<PathBuf> {
+    let parent = data_dir.parent().expect("parent");
+    let prefix = format!(
+        "{}.withdrawn-",
+        data_dir.file_name().expect("name").to_string_lossy()
+    );
+    let mut v: Vec<PathBuf> = std::fs::read_dir(parent)
+        .expect("read parent")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|e| e.path())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_node_on_the_canonical_block_keeps_its_chain_data() {
+    let (mgr, data_dir) = populated_fork_dir("wd-healthy");
+    let check = crate::node_withdrawn::FORK_CHECKS[0];
+    let node = ForkNode { head: 400_000, hash: check.canonical };
+    assert!(mgr.recheck_withdrawn_via(&node), "nothing left to watch");
+    for f in FORK_DB.iter().chain(FORK_KEPT.iter()) {
+        assert!(data_dir.join(f).exists(), "{f} must stay");
+    }
+    assert!(aside_dirs(&data_dir).is_empty());
+    assert_eq!(mgr.status().notice, None);
+}
+
+#[test]
+fn a_node_on_a_withdrawn_block_moves_its_chain_data_and_keeps_its_keys() {
+    let (mgr, data_dir) = populated_fork_dir("wd-moved");
+    let node = ForkNode {
+        head: 386_060,
+        hash: "0x8a0d748900000000000000000000000000000000000000000000000000000001",
+    };
+    assert!(!mgr.recheck_withdrawn_via(&node), "watch again after the resync");
+    mgr.stop();
+    let aside = aside_dirs(&data_dir);
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    for f in FORK_DB {
+        assert!(!data_dir.join(f).exists(), "{f} must leave the data dir");
+        assert!(aside[0].join(f).exists(), "{f} must be in {}", aside[0].display());
+    }
+    for f in FORK_KEPT {
+        assert_eq!(
+            std::fs::read(data_dir.join(f)).expect("kept"),
+            fork_body(f),
+            "{f} must stay unchanged"
+        );
+    }
+    assert_eq!(
+        mgr.status().notice.as_deref(),
+        Some(crate::node_withdrawn::WITHDRAWN_NOTICE)
+    );
+    assert!(!mgr.is_mining_armed());
+}
+
+#[test]
+fn the_withdrawn_move_happens_once() {
+    let (mgr, data_dir) = populated_fork_dir("wd-once");
+    let check = crate::node_withdrawn::FORK_CHECKS[0];
+    let withdrawn = ForkNode {
+        head: 386_060,
+        hash: "0x8a0d748900000000000000000000000000000000000000000000000000000001",
+    };
+    assert!(!mgr.recheck_withdrawn_via(&withdrawn));
+    mgr.stop();
+    // After the resync the node is on the canonical block: nothing more is moved.
+    let resynced = ForkNode { head: 400_000, hash: check.canonical };
+    assert!(mgr.recheck_withdrawn_via(&resynced));
+    assert_eq!(aside_dirs(&data_dir).len(), 1);
+    // A node still below the check height is watched again and nothing is moved.
+    let behind = ForkNode { head: 1_000, hash: check.canonical };
+    assert!(!mgr.recheck_withdrawn_via(&behind));
+    assert_eq!(aside_dirs(&data_dir).len(), 1);
+}
