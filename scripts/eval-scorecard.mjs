@@ -111,7 +111,8 @@ export function loadScorecards(dir) {
 }
 
 const pct = (r) => (r === null || r === undefined ? "n/a" : `${(r * 100).toFixed(1)}%`);
-const cell = (s) => String(s).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+/** One markdown table cell: backslashes first, then pipes, so a cell cannot end the row early. */
+export const cell = (s) => String(s).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 
 /** T0 is held to the T1 bars pending owner sign-off (ra-20); its verdict is marked with `*`. */
 export const T0_BAR_NOTE =

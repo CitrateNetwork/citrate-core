@@ -23,6 +23,8 @@
 # Scoring is deterministic (no model-as-judge). A transport error aborts that suite and writes no
 # scorecard for it (Rule 1).
 #
+# Secrets are named explicitly per tier (not indexed with format()) so the runner only receives
+# the secrets this workflow uses.
 # Endpoint: the `base_url` input; when blank, the repo secret EVAL_BASE_URL_<tier> (EVAL_BASE_URL_T0,
 # _T1, _T2), else EVAL_BASE_URL. Key: EVAL_API_KEY_<tier>, else EVAL_API_KEY, passed to the CLIs by
 # env var NAME, never on argv. The endpoint must be reachable from a GitHub-hosted runner, and must
@@ -102,7 +104,7 @@ jobs:
       - name: Resolve endpoint
         env:
           INPUT_BASE_URL: ${{ inputs.base_url }}
-          SECRET_BASE_URL: ${{ secrets[format('EVAL_BASE_URL_{0}', inputs.tier)] || secrets.EVAL_BASE_URL }}
+          SECRET_BASE_URL: ${{ (inputs.tier == 'T0' && secrets.EVAL_BASE_URL_T0) || (inputs.tier == 'T1' && secrets.EVAL_BASE_URL_T1) || (inputs.tier == 'T2' && secrets.EVAL_BASE_URL_T2) || secrets.EVAL_BASE_URL }}
         run: |
           url="${INPUT_BASE_URL:-$SECRET_BASE_URL}"
           if [ -z "$url" ]; then
@@ -126,7 +128,7 @@ jobs:
       - name: Tool-call + injection eval
         if: ${{ inputs.suites == 'all' || inputs.suites == 'tools' }}
         env:
-          EVAL_API_KEY: ${{ secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY }}
+          EVAL_API_KEY: ${{ (inputs.tier == 'T0' && secrets.EVAL_API_KEY_T0) || (inputs.tier == 'T1' && secrets.EVAL_API_KEY_T1) || (inputs.tier == 'T2' && secrets.EVAL_API_KEY_T2) || secrets.EVAL_API_KEY }}
         run: |
           args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --datasets "$EVAL_DATASETS" --allow-remote)
           if [ "$EVAL_TIER" != "none" ]; then args+=(--tier "$EVAL_TIER"); fi
@@ -136,7 +138,7 @@ jobs:
       - name: Citrate QA eval
         if: ${{ !cancelled() && steps.check.outcome == 'success' && (inputs.suites == 'all' || inputs.suites == 'qa') }}
         env:
-          EVAL_API_KEY: ${{ secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY }}
+          EVAL_API_KEY: ${{ (inputs.tier == 'T0' && secrets.EVAL_API_KEY_T0) || (inputs.tier == 'T1' && secrets.EVAL_API_KEY_T1) || (inputs.tier == 'T2' && secrets.EVAL_API_KEY_T2) || secrets.EVAL_API_KEY }}
         run: |
           [ -n "${EVAL_BASE_URL:-}" ] || { echo "::error::endpoint not resolved"; exit 2; }
           args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --allow-remote)
@@ -200,7 +202,7 @@ jobs:
       - name: Sidecar eval (workflow-v1 step success, live injection-v2)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
-          EVAL_API_KEY: ${{ secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY }}
+          EVAL_API_KEY: ${{ (inputs.tier == 'T0' && secrets.EVAL_API_KEY_T0) || (inputs.tier == 'T1' && secrets.EVAL_API_KEY_T1) || (inputs.tier == 'T2' && secrets.EVAL_API_KEY_T2) || secrets.EVAL_API_KEY }}
           RUNTIME_REV: ${{ steps.runtime.outputs.rev }}
         run: |
           [ -n "${EVAL_BASE_URL:-}" ] || { echo "::error::endpoint not resolved"; exit 2; }

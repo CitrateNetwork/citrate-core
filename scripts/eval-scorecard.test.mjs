@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyScorecard, filterByTier, loadScorecards, renderScorecardMarkdown, splitFrontmatter } from "./eval-scorecard.mjs";
+import { cell, classifyScorecard, filterByTier, loadScorecards, renderScorecardMarkdown, splitFrontmatter } from "./eval-scorecard.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -336,5 +336,14 @@ describe("committed eval/results/SCORECARD.md", () => {
       source: "eval/results",
     });
     expect(splitFrontmatter(fresh).body).toBe(body);
+  });
+});
+
+describe("cell", () => {
+  it("escapes backslashes before pipes, so a trailing backslash cannot unescape the pipe", () => {
+    expect(cell("a|b")).toBe("a\\|b");
+    expect(cell("a\\|b")).toBe("a\\\\\\|b");
+    expect(cell("end\\")).toBe("end\\\\");
+    expect(cell("two\nlines")).toBe("two lines");
   });
 });

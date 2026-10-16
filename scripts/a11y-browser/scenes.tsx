@@ -167,7 +167,7 @@ const SCENES: Record<string, () => ReactElement> = {
 
 (window as unknown as { __sceneIds: string[] }).__sceneIds = Object.keys(SCENES);
 const id = decodeURIComponent(location.hash.slice(1));
-const scene = SCENES[id];
+const scene = Object.prototype.hasOwnProperty.call(SCENES, id) ? SCENES[id] : undefined;
 const root = document.getElementById("root") as HTMLElement;
 if (scene) {
   createRoot(root).render(<StrictMode>{scene()}</StrictMode>);
