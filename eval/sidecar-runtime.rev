@@ -4,5 +4,6 @@
 # names exactly the runtime it measured. Bump it in a reviewed change when the runtime moves;
 # scripts/eval-check.mjs refuses anything but this repo and a 40-hex commit.
 # 2026-10-04: top of the runtime HUP stack (hup/n6-everyday-monitor).
+# 2026-10-16: runtime main after the HGW stack (#79, #80-#84 squash 75e21cd9, #85 audit) for v0.5.2 HGW.
 repo = CitrateNetwork/citrate-agent-runtime
-rev = 45fceda902dcaaec29060a82ffeba705dc12b0a6
+rev = 75e21cd9c33b4feb6b3c75ababfb755ffe0b8f63
