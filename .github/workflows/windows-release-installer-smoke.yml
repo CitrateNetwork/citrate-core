@@ -1,0 +1,50 @@
+name: windows release installer smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-installer-smoke
+  cancel-in-progress: false
+
+jobs:
+  installer-smoke:
+    name: production NSIS fresh install and running reinstall
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download the unpublished Windows draft asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $download = Join-Path $env:RUNNER_TEMP 'citrate-installer-download'
+          New-Item -ItemType Directory -Path $download | Out-Null
+          gh release download v0.5.0-windows `
+            --repo '${{ github.repository }}' `
+            --pattern 'Citrate-Core-windows-x86_64-setup.exe' `
+            --dir $download
+
+      - name: Exercise the production installer
+        shell: powershell
+        run: |
+          & .\src-tauri\windows\tests\test-release-installer.ps1 `
+            -InstallerPath "$env:RUNNER_TEMP\citrate-installer-download\Citrate-Core-windows-x86_64-setup.exe" `
+            -EvidenceDirectory "$env:RUNNER_TEMP\citrate-installer-evidence"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload installer evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-release-installer-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/citrate-installer-evidence
+          if-no-files-found: error
+          retention-days: 30
