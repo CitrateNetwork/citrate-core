@@ -375,6 +375,8 @@ export interface AppState {
    * Observed state, never persisted.
    */
   nodeBlocked: string | null;
+  /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
+  miningHold: string | null;
   syncPct: number;
   hb: number;
   cpu: number;
@@ -759,6 +761,7 @@ export function freshState(pid: string): AppState {
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
     nodeBlocked: null,
+    miningHold: null,
     syncPct: 0,
     hb: 4,
     cpu: 0,
