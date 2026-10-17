@@ -170,7 +170,7 @@ public static class Sleeper {
     }
     $Before | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'running-reinstall-before-processes.json') -Encoding UTF8
     foreach ($Name in $OwnNames) {
-        Add-Check "running fixture $Name started" (Get-Process -Id $OwnProcesses[$Name] -ErrorAction SilentlyContinue) $OwnProcesses[$Name] 'running process'
+        Add-Check "running fixture $Name started" ([bool](Get-Process -Id $OwnProcesses[$Name] -ErrorAction SilentlyContinue)) $OwnProcesses[$Name] 'running process'
     }
 
     $null = Invoke-Installer 'running-reinstall'
