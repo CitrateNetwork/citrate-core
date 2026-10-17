@@ -31,11 +31,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $download = Join-Path $env:RUNNER_TEMP 'citrate-installer-download'
+          $evidence = Join-Path $env:RUNNER_TEMP 'citrate-installer-evidence'
           New-Item -ItemType Directory -Path $download | Out-Null
-          gh release download v0.5.0-windows `
-            --repo '${{ github.repository }}' `
-            --pattern 'Citrate-Core-windows-x86_64-setup.exe' `
-            --dir $download
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $destination = Join-Path $download 'Citrate-Core-windows-x86_64-setup.exe'
+          $headers = @{
+            Accept = 'application/octet-stream'
+            Authorization = "Bearer $env:GH_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          try {
+            Invoke-WebRequest `
+              -Uri 'https://api.github.com/repos/CitrateNetwork/citrate-core/releases/assets/648432263' `
+              -Headers $headers `
+              -OutFile $destination
+          } catch {
+            $_ | Out-String | Set-Content (Join-Path $evidence 'download-error.txt')
+            throw
+          }
 
       - name: Exercise the production installer
         shell: powershell
