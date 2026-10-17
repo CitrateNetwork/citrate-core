@@ -127,6 +127,32 @@ fn the_owned_list_matches_the_bundled_sidecars() {
     assert!(checked > 0);
 }
 
+/// The March 2026 Linux package was `Package: citrate` 0.1.0 and also owned `usr/bin/citrate-core`.
+/// Builds before 0.3 killed every process whose command line named their binary directory, which
+/// for a `.deb` is `/usr/bin`, ending the desktop session (#318). The `.deb` must declare that
+/// package as conflicting and replaced, so installing this one removes the old build and its menu
+/// entry instead of stopping on a file conflict and leaving it in place.
+#[test]
+fn the_deb_replaces_the_old_citrate_package() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(manifest.join("tauri.bundle-linux.conf.json"))
+        .expect("read Linux bundle config");
+    let v: serde_json::Value = serde_json::from_str(&text).expect("parse Linux bundle config");
+    let deb = &v["bundle"]["linux"]["deb"];
+    for field in ["conflicts", "replaces"] {
+        let list: Vec<&str> = deb[field]
+            .as_array()
+            .unwrap_or_else(|| panic!("deb.{field} list"))
+            .iter()
+            .filter_map(|e| e.as_str())
+            .collect();
+        assert!(
+            list.iter().any(|e| e.split_whitespace().next() == Some("citrate")),
+            "deb.{field} must name the old `citrate` package, got {list:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Native fixtures (macOS and Linux)
 // ---------------------------------------------------------------------------
