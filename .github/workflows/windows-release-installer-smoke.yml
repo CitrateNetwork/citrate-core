@@ -16,22 +16,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  installer-smoke:
-    name: production NSIS fresh install and running reinstall
+  fetch-installer:
+    name: fetch unpublished draft installer
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
       - name: Download the unpublished Windows draft asset
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $download = Join-Path $env:RUNNER_TEMP 'citrate-installer-download'
-          $evidence = Join-Path $env:RUNNER_TEMP 'citrate-installer-evidence'
+          $evidence = Join-Path $env:RUNNER_TEMP 'citrate-installer-fetch-evidence'
           New-Item -ItemType Directory -Path $download | Out-Null
           New-Item -ItemType Directory -Path $evidence | Out-Null
           $destination = Join-Path $download 'Citrate-Core-windows-x86_64-setup.exe'
@@ -49,6 +47,41 @@ jobs:
             $_ | Out-String | Set-Content (Join-Path $evidence 'download-error.txt')
             throw
           }
+
+      - name: Upload the installer for the read-only smoke job
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-draft-installer-${{ github.run_id }}
+          path: ${{ runner.temp }}/citrate-installer-download/Citrate-Core-windows-x86_64-setup.exe
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload fetch failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-draft-fetch-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/citrate-installer-fetch-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  installer-smoke:
+    name: production NSIS fresh install and running reinstall
+    needs: fetch-installer
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download the installer from the fetch job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-draft-installer-${{ github.run_id }}
+          path: ${{ runner.temp }}/citrate-installer-download
 
       - name: Exercise the production installer
         shell: powershell
