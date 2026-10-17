@@ -907,6 +907,91 @@ impl NodeManager {
         Some((height, peers))
     }
 
+    /// Core #326: once this node's chain reaches a rollback check height, compare its block
+    /// there with the network's canonical one ([`crate::node_withdrawn`]). On a withdrawn
+    /// branch: disarm, stop, move only the chain database files aside (keys, `node.toml` and
+    /// the genesis marker stay), show a notice, and start again so the node resyncs. Returns
+    /// `true` when nothing is left to watch (every check for this genesis passed, or a move
+    /// failed and was reported, so it is not retried in a loop).
+    pub fn recheck_withdrawn(&self) -> bool {
+        let running = {
+            let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+            matches!(
+                guard.as_ref().map(|s| s.status().state),
+                Some(SupervisorState::Running)
+            )
+        };
+        if !running {
+            return false;
+        }
+        self.recheck_withdrawn_via(&HttpTransport::new(self.rpc_url.clone()))
+    }
+
+    /// [`Self::recheck_withdrawn`] against `local` (the node's RPC; tests inject a fake).
+    pub(crate) fn recheck_withdrawn_via<T: citrate_core_kit::rpc::RpcTransport>(
+        &self,
+        local: &T,
+    ) -> bool {
+        use crate::node_withdrawn::{
+            assess, checks_for, move_chain_db_aside, today_utc, Verdict, WITHDRAWN_NOTICE,
+        };
+        let mut done = true;
+        for check in checks_for(&self.book_genesis) {
+            match assess(local, &check) {
+                Verdict::Canonical => {}
+                Verdict::Unknown | Verdict::NotReached => done = false,
+                Verdict::Withdrawn { local: hash } => {
+                    eprintln!(
+                        "[node] block {hash} at height {} is not the network's ({}) after {}: \
+                         this node followed a withdrawn branch; moving its chain data aside",
+                        check.height, check.canonical, check.label
+                    );
+                    self.mining_armed.store(false, Ordering::Relaxed);
+                    self.stop();
+                    let moved = move_chain_db_aside(&self.data_dir, &today_utc());
+                    match moved {
+                        Ok(Some((dest, names))) => {
+                            eprintln!(
+                                "[node] moved {} chain database file(s) to {}; kept: {}",
+                                names.len(),
+                                dest.display(),
+                                crate::node_genesis::kept_entries(&self.data_dir).join(", ")
+                            );
+                            *self
+                                .chain_reset_notice
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) =
+                                Some(WITHDRAWN_NOTICE.to_string());
+                        }
+                        Ok(None) => eprintln!("[node] no chain database files to move"),
+                        Err(e) => {
+                            eprintln!(
+                                "[node] could not move the chain data aside: {e}; the node stays \
+                                 stopped and the member must move {} aside by hand",
+                                self.data_dir.display()
+                            );
+                            *self
+                                .chain_reset_notice
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = Some(format!(
+                                "This node followed a branch of the chain that the network \
+                                 withdrew, and its chain data could not be moved aside ({e}). \
+                                 Quit Citrate Core and move the node folder aside, keeping \
+                                 proposer.key, noise.key and node.toml."
+                            ));
+                            return true;
+                        }
+                    }
+                    if let Err(e) = self.start() {
+                        eprintln!("[node] restart after the move failed: {e}");
+                    }
+                    return false;
+                }
+            }
+        }
+        done
+    }
+
     /// This node's local head height (`eth_blockNumber` over its own RPC), or
     /// `None` if the RPC is not up. The arm gate reads this as the "how far have I
     /// caught up" side of the comparison.
@@ -979,6 +1064,27 @@ pub fn spawn_mining_watchdog<R: Runtime>(app: AppHandle<R>) {
         });
     if let Err(e) = spawned {
         eprintln!("[node] mining watchdog did not start: {e}");
+    }
+}
+
+/// How often the withdrawn-branch check runs while it has something to watch.
+const WITHDRAWN_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// Start the withdrawn-branch watch (core #326): every [`WITHDRAWN_CHECK_EVERY`] it runs
+/// [`NodeManager::recheck_withdrawn`] until that reports nothing left to watch.
+pub fn spawn_withdrawn_watch<R: Runtime>(app: AppHandle<R>) {
+    let spawned = std::thread::Builder::new()
+        .name("withdrawn-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(WITHDRAWN_CHECK_EVERY);
+            if let Some(state) = app.try_state::<NodeState>() {
+                if state.0.recheck_withdrawn() {
+                    return;
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[node] withdrawn-branch watch did not start: {e}");
     }
 }
 
