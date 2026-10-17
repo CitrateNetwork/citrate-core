@@ -94,6 +94,7 @@ mod model_registry;
 mod node;
 mod node_genesis;
 mod node_holder;
+mod node_withdrawn;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
@@ -367,6 +368,8 @@ pub fn run() {
             // Mining watchdog: an armed producer is disarmed (respawned as a follower) as soon
             // as the mining gate stops allowing production (`mining_gate`). Off the main thread.
             node::spawn_mining_watchdog(app.handle().clone());
+            // Core #326: a node that followed a withdrawn branch moves its chain data aside.
+            node::spawn_withdrawn_watch(app.handle().clone());
             // CORE-C1.2 — the AgentManager: the node-agent under the
             // SidecarSupervisor with a bearer-authed supervision surface. @rule8:
             // the per-session bearer is minted with OsRng, handed to the child via

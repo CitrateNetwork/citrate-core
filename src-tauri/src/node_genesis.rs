@@ -169,7 +169,7 @@ pub fn is_chain_db_entry(name: &str) -> bool {
 
 /// The chain DB entries currently in `data_dir`, sorted, `CURRENT` first and `LOCK` last (the
 /// reset holds the database lock while it deletes, so the lock file goes last).
-fn chain_db_entries(data_dir: &Path) -> Result<Vec<String>, GenesisGateError> {
+pub(crate) fn chain_db_entries(data_dir: &Path) -> Result<Vec<String>, GenesisGateError> {
     let rd = match std::fs::read_dir(data_dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
