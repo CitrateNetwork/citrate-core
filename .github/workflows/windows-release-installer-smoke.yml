@@ -2,6 +2,11 @@ name: windows release installer smoke
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: ["release/0.5.0-windows"]
+    paths:
+      - ".github/workflows/windows-release-installer-smoke.yml"
+      - "src-tauri/windows/tests/test-release-installer.ps1"
 
 permissions:
   contents: read
