@@ -318,6 +318,50 @@ fn spawn_is_follower_until_armed_then_mines() {
     );
 }
 
+/// The mining gate drives the armed state: a hold never arms and is reported in the status;
+/// `Ok` arms; a later hold DISARMS an armed producer, and the next spawn is a follower again.
+#[test]
+fn mining_gate_verdict_arms_holds_and_disarms() {
+    use crate::mining_gate::MiningHold;
+    let (mgr, _fake, _data) = stub_manager("gate-verdict");
+    mgr.set_coinbase("0xd12c00c377eb4615a7ae934df509c903a29ecb6c".to_string());
+
+    assert!(!mgr.apply_mining_verdict(Err(MiningHold::TooFewProducers { others: 1 })));
+    assert!(!mgr.is_mining_armed(), "a hold never arms");
+    let st = mgr.status();
+    assert!(!st.mining_armed);
+    assert!(
+        st.mining_hold.as_deref().unwrap_or("").contains("1 other producer(s)"),
+        "the hold reason reaches the status: {:?}",
+        st.mining_hold
+    );
+
+    assert!(mgr.apply_mining_verdict(Ok(())), "Ok arms");
+    assert!(mgr.is_mining_armed());
+    let st = mgr.status();
+    assert!(st.mining_armed);
+    assert_eq!(st.mining_hold, None, "no hold reason once armed");
+    assert!(mgr.build_spec("00").args.iter().any(|a| a == "--mine"));
+    assert!(!mgr.apply_mining_verdict(Ok(())), "re-arming is a no-op");
+
+    assert!(
+        mgr.apply_mining_verdict(Err(MiningHold::NetworkStalled { age_secs: 600 })),
+        "a hold disarms an armed producer"
+    );
+    assert!(!mgr.is_mining_armed());
+    assert!(!mgr.build_spec("00").args.iter().any(|a| a == "--mine"), "follower again");
+    assert!(mgr.status().mining_hold.as_deref().unwrap_or("").contains("600s old"));
+}
+
+/// The status JSON stays exactly the old shape while production was never requested.
+#[test]
+fn status_omits_mining_fields_until_requested() {
+    let (mgr, _fake, _data) = stub_manager("gate-status-shape");
+    let v = serde_json::to_value(mgr.status()).expect("status serializes");
+    assert!(v.get("miningArmed").is_none(), "{v}");
+    assert!(v.get("miningHold").is_none(), "{v}");
+}
+
 /// The pure sync gate: the producer arms only once the local head is within
 /// `SYNC_ARM_MARGIN` of the authoritative network tip. Far behind → false (stay a
 /// follower); at/near the tip → true; a spurious local-ahead never underflows.
@@ -627,6 +671,8 @@ fn live_bounded_sync_proof() {
         sync_pct: 0.0,
         notice: None,
         blocked: None,
+        mining_armed: false,
+        mining_hold: None,
     };
     while std::time::Instant::now() < deadline {
         let st = mgr.status();

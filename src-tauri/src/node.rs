@@ -55,6 +55,7 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use zeroize::Zeroizing;
 
 use crate::custody::{Keyring, OsKeyring};
+use crate::mining_gate::MiningHold;
 use crate::node_holder::NodeBlocker;
 use crate::rpc::{HttpTransport, RpcClient};
 use crate::startup_barrier::StartupBarrier;
@@ -258,6 +259,13 @@ pub struct NodeStatus {
     /// next start attempt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<NodeBlocker>,
+    /// Whether the block producer is armed (omitted while it is not).
+    #[serde(rename = "miningArmed", skip_serializing_if = "std::ops::Not::not")]
+    pub mining_armed: bool,
+    /// Why block production is held, from the last mining-gate check (see
+    /// [`crate::mining_gate`]). Omitted when production is armed or was never requested.
+    #[serde(rename = "miningHold", skip_serializing_if = "Option::is_none")]
+    pub mining_hold: Option<String>,
 }
 
 /// Map a [`SupervisorState`] to the bridge state vocabulary the surface renders.
@@ -311,6 +319,10 @@ pub struct NodeManager {
     /// 15s cache is plenty to drive a progress figure while turning 30 network
     /// round-trips per minute into 4.
     tip_cache: Mutex<Option<(u64, std::time::Instant)>>,
+    /// The last mining-gate verdict and when it was read (see [`Self::mining_gate`]).
+    gate_cache: Mutex<Option<(std::result::Result<(), MiningHold>, std::time::Instant)>>,
+    /// Why production is held, for [`NodeStatus::mining_hold`].
+    mining_hold: Mutex<Option<String>>,
     /// The genesis the node data must belong to: the address book's
     /// `genesisHash` (tests inject their own).
     book_genesis: String,
@@ -353,6 +365,8 @@ impl NodeManager {
             coinbase: Mutex::new(None),
             mining_armed: AtomicBool::new(false),
             tip_cache: Mutex::new(None),
+            gate_cache: Mutex::new(None),
+            mining_hold: Mutex::new(None),
             book_genesis: crate::addresses::genesis_hash().to_string(),
             chain_reset_notice: Mutex::new(None),
             blocked: Mutex::new(None),
@@ -483,13 +497,6 @@ impl NodeManager {
         }
     }
 
-    /// Arm the producer IFF the node has caught up to the network tip. Reads the
-    /// local head (this node's RPC) and the AUTHORITATIVE network tip (the public
-    /// citrate RPC) — deliberately NOT the local node's own `eth_syncing`, which
-    /// reports "synced" the instant the node produces its own block, the very bug
-    /// this guards. Arms only when a coinbase is known and it is not already
-    /// armed. Best-effort: any RPC error → no-arm (stays a follower), never panics.
-    /// Returns whether it armed on this call.
     /// The network tip, re-read at most every 15s. See `tip_cache`.
     fn cached_network_tip(&self) -> Option<u64> {
         const TTL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -510,18 +517,91 @@ impl NodeManager {
         }
     }
 
+    /// Arm the producer IFF the mining gate allows it ([`crate::mining_gate`]): a coinbase is
+    /// known, the network tip is recent, this node is caught up to it AND on the same branch
+    /// (block hash agreement, not just height), it has peers, and at least two other producers
+    /// are live. Best-effort: any RPC error holds production (stays a follower), never panics.
+    /// Returns whether it armed on this call; the hold reason is kept for [`NodeStatus`].
     pub fn arm_mining_if_synced(&self) -> bool {
         if self.is_mining_armed() || self.coinbase().is_none() {
             return false;
         }
-        let (Some(local), Some(tip)) = (self.head_height(), remote_network_tip()) else {
+        let verdict = self.mining_gate();
+        self.apply_mining_verdict(verdict)
+    }
+
+    /// Re-check an ARMED producer and disarm it when the gate no longer allows production
+    /// (the network stalled, this node fell behind or onto another branch, peers or other
+    /// producers dropped away). Run by the mining watchdog in `lib.rs`. Returns whether it
+    /// disarmed on this call.
+    pub fn recheck_mining(&self) -> bool {
+        if !self.is_mining_armed() {
             return false;
-        };
-        if is_caught_up(local, tip) {
-            self.arm_mining();
-            return true;
         }
-        false
+        // While armed, a change of state can only be a disarm.
+        let verdict = self.mining_gate();
+        self.apply_mining_verdict(verdict)
+    }
+
+    /// Act on a gate verdict: `Ok` arms (if not already), a hold records the reason and
+    /// disarms an armed producer. Returns whether the armed state changed on this call.
+    pub(crate) fn apply_mining_verdict(
+        &self,
+        verdict: std::result::Result<(), MiningHold>,
+    ) -> bool {
+        match verdict {
+            Ok(()) => {
+                *self.mining_hold.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                if self.is_mining_armed() {
+                    return false;
+                }
+                self.arm_mining();
+                true
+            }
+            Err(hold) => {
+                *self.mining_hold.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(hold.to_string());
+                if self.is_mining_armed() {
+                    self.disarm_mining();
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    /// Disarm the producer and, if the node is running, restart it as a plain follower (no
+    /// `--mine`). Idempotent.
+    pub fn disarm_mining(&self) {
+        if !self.mining_armed.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let running = self.sup.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if running {
+            self.stop();
+            let _ = self.start();
+        }
+    }
+
+    /// The mining-gate verdict, re-read at most every 30s (the arm path is polled every 2s
+    /// and one read is ~30 RPC calls).
+    fn mining_gate(&self) -> std::result::Result<(), MiningHold> {
+        const TTL: Duration = Duration::from_secs(30);
+        let mut guard = self.gate_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((verdict, at)) = guard.as_ref() {
+            if at.elapsed() < TTL {
+                return verdict.clone();
+            }
+        }
+        let ev = crate::mining_gate::gather(
+            &HttpTransport::new(self.rpc_url.clone()),
+            &HttpTransport::citrate(),
+            self.coinbase(),
+            crate::mining_gate::now_secs(),
+        );
+        let verdict = crate::mining_gate::evaluate(&ev);
+        *guard = Some((verdict.clone(), std::time::Instant::now()));
+        verdict
     }
 
     /// W1.1 (WP-11) — the node's ed25519 proposer pubkey, read from the secret
@@ -790,6 +870,15 @@ impl NodeManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            mining_armed: self.is_mining_armed(),
+            mining_hold: if self.is_mining_armed() {
+                None
+            } else {
+                self.mining_hold
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+            },
         }
     }
 
@@ -956,6 +1045,27 @@ pub fn is_caught_up(local: u64, tip: u64) -> bool {
 
 /// Managed Tauri state: the process-wide node manager.
 pub struct NodeState(pub NodeManager);
+
+/// How often the mining watchdog re-checks an armed producer.
+const MINING_WATCHDOG_EVERY: Duration = Duration::from_secs(30);
+
+/// Start the mining watchdog thread: every [`MINING_WATCHDOG_EVERY`] it re-checks an armed
+/// producer against the mining gate and disarms it when the gate holds production.
+pub fn spawn_mining_watchdog<R: Runtime>(app: AppHandle<R>) {
+    let spawned = std::thread::Builder::new()
+        .name("mining-watchdog".into())
+        .spawn(move || loop {
+            std::thread::sleep(MINING_WATCHDOG_EVERY);
+            if let Some(state) = app.try_state::<NodeState>() {
+                if state.0.recheck_mining() {
+                    eprintln!("[node] block production disarmed by the mining gate");
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[node] mining watchdog did not start: {e}");
+    }
+}
 
 /// How often the withdrawn-branch check runs while it has something to watch.
 const WITHDRAWN_CHECK_EVERY: Duration = Duration::from_secs(60);

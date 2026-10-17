@@ -85,6 +85,7 @@ mod membership;
 mod memory;
 // HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
 mod knowledge_import;
+mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
@@ -374,6 +375,9 @@ pub fn run() {
             // and is handed to the spawned node via the CITRATE_STORAGE_KEY env.
             // node_status reads REAL height/peers from the node's local RPC.
             app.manage(node::build_node_state(&app.handle().clone())?);
+            // Mining watchdog: an armed producer is disarmed (respawned as a follower) as soon
+            // as the mining gate stops allowing production (`mining_gate`). Off the main thread.
+            node::spawn_mining_watchdog(app.handle().clone());
             // Core #326: a node that followed a withdrawn branch moves its chain data aside.
             node::spawn_withdrawn_watch(app.handle().clone());
             // CORE-C1.2 — the AgentManager: the node-agent under the
@@ -1173,6 +1177,7 @@ mod tests {
                     || code.contains("read_grant_status(")
                     || code.contains("remote_network_tip(")
                     || code.contains("arm_mining_if_synced(")
+                    || code.contains("recheck_mining(")
                     || code.contains("read_self_stake(")
                     || code.contains("read_claimable(");
                 if touches_network {
