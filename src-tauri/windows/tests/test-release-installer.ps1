@@ -191,7 +191,7 @@ public static class Sleeper {
             $_.CommandLine -and $_.CommandLine -like '*citrate-stop-own-sidecars.ps1*'
         } | Select-Object ProcessId, Name, ExecutablePath, CommandLine
     )
-    $HookProcesses | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'remaining-hook-processes.json') -Encoding UTF8
+    ConvertTo-Json -InputObject @($HookProcesses) -Depth 4 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'remaining-hook-processes.json') -Encoding UTF8
     Add-Check 'no installer hook process remains' ($HookProcesses.Count -eq 0) $HookProcesses.Count 0
 } catch {
     $CaughtError = $_.Exception.Message
