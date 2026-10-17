@@ -55,6 +55,7 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use zeroize::Zeroizing;
 
 use crate::custody::{Keyring, OsKeyring};
+use crate::mining_gate::MiningHold;
 use crate::node_holder::NodeBlocker;
 use crate::rpc::{HttpTransport, RpcClient};
 use crate::startup_barrier::StartupBarrier;
@@ -258,6 +259,13 @@ pub struct NodeStatus {
     /// next start attempt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<NodeBlocker>,
+    /// Whether the block producer is armed (omitted while it is not).
+    #[serde(rename = "miningArmed", skip_serializing_if = "std::ops::Not::not")]
+    pub mining_armed: bool,
+    /// Why block production is held, from the last mining-gate check (see
+    /// [`crate::mining_gate`]). Omitted when production is armed or was never requested.
+    #[serde(rename = "miningHold", skip_serializing_if = "Option::is_none")]
+    pub mining_hold: Option<String>,
 }
 
 /// Map a [`SupervisorState`] to the bridge state vocabulary the surface renders.
@@ -311,6 +319,10 @@ pub struct NodeManager {
     /// 15s cache is plenty to drive a progress figure while turning 30 network
     /// round-trips per minute into 4.
     tip_cache: Mutex<Option<(u64, std::time::Instant)>>,
+    /// The last mining-gate verdict and when it was read (see [`Self::mining_gate`]).
+    gate_cache: Mutex<Option<(std::result::Result<(), MiningHold>, std::time::Instant)>>,
+    /// Why production is held, for [`NodeStatus::mining_hold`].
+    mining_hold: Mutex<Option<String>>,
     /// The genesis the node data must belong to: the address book's
     /// `genesisHash` (tests inject their own).
     book_genesis: String,
@@ -353,6 +365,8 @@ impl NodeManager {
             coinbase: Mutex::new(None),
             mining_armed: AtomicBool::new(false),
             tip_cache: Mutex::new(None),
+            gate_cache: Mutex::new(None),
+            mining_hold: Mutex::new(None),
             book_genesis: crate::addresses::genesis_hash().to_string(),
             chain_reset_notice: Mutex::new(None),
             blocked: Mutex::new(None),
@@ -483,13 +497,6 @@ impl NodeManager {
         }
     }
 
-    /// Arm the producer IFF the node has caught up to the network tip. Reads the
-    /// local head (this node's RPC) and the AUTHORITATIVE network tip (the public
-    /// citrate RPC) — deliberately NOT the local node's own `eth_syncing`, which
-    /// reports "synced" the instant the node produces its own block, the very bug
-    /// this guards. Arms only when a coinbase is known and it is not already
-    /// armed. Best-effort: any RPC error → no-arm (stays a follower), never panics.
-    /// Returns whether it armed on this call.
     /// The network tip, re-read at most every 15s. See `tip_cache`.
     fn cached_network_tip(&self) -> Option<u64> {
         const TTL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -510,18 +517,91 @@ impl NodeManager {
         }
     }
 
+    /// Arm the producer IFF the mining gate allows it ([`crate::mining_gate`]): a coinbase is
+    /// known, the network tip is recent, this node is caught up to it AND on the same branch
+    /// (block hash agreement, not just height), it has peers, and at least two other producers
+    /// are live. Best-effort: any RPC error holds production (stays a follower), never panics.
+    /// Returns whether it armed on this call; the hold reason is kept for [`NodeStatus`].
     pub fn arm_mining_if_synced(&self) -> bool {
         if self.is_mining_armed() || self.coinbase().is_none() {
             return false;
         }
-        let (Some(local), Some(tip)) = (self.head_height(), remote_network_tip()) else {
+        let verdict = self.mining_gate();
+        self.apply_mining_verdict(verdict)
+    }
+
+    /// Re-check an ARMED producer and disarm it when the gate no longer allows production
+    /// (the network stalled, this node fell behind or onto another branch, peers or other
+    /// producers dropped away). Run by the mining watchdog in `lib.rs`. Returns whether it
+    /// disarmed on this call.
+    pub fn recheck_mining(&self) -> bool {
+        if !self.is_mining_armed() {
             return false;
-        };
-        if is_caught_up(local, tip) {
-            self.arm_mining();
-            return true;
         }
-        false
+        // While armed, a change of state can only be a disarm.
+        let verdict = self.mining_gate();
+        self.apply_mining_verdict(verdict)
+    }
+
+    /// Act on a gate verdict: `Ok` arms (if not already), a hold records the reason and
+    /// disarms an armed producer. Returns whether the armed state changed on this call.
+    pub(crate) fn apply_mining_verdict(
+        &self,
+        verdict: std::result::Result<(), MiningHold>,
+    ) -> bool {
+        match verdict {
+            Ok(()) => {
+                *self.mining_hold.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                if self.is_mining_armed() {
+                    return false;
+                }
+                self.arm_mining();
+                true
+            }
+            Err(hold) => {
+                *self.mining_hold.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(hold.to_string());
+                if self.is_mining_armed() {
+                    self.disarm_mining();
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    /// Disarm the producer and, if the node is running, restart it as a plain follower (no
+    /// `--mine`). Idempotent.
+    pub fn disarm_mining(&self) {
+        if !self.mining_armed.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let running = self.sup.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if running {
+            self.stop();
+            let _ = self.start();
+        }
+    }
+
+    /// The mining-gate verdict, re-read at most every 30s (the arm path is polled every 2s
+    /// and one read is ~30 RPC calls).
+    fn mining_gate(&self) -> std::result::Result<(), MiningHold> {
+        const TTL: Duration = Duration::from_secs(30);
+        let mut guard = self.gate_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((verdict, at)) = guard.as_ref() {
+            if at.elapsed() < TTL {
+                return verdict.clone();
+            }
+        }
+        let ev = crate::mining_gate::gather(
+            &HttpTransport::new(self.rpc_url.clone()),
+            &HttpTransport::citrate(),
+            self.coinbase(),
+            crate::mining_gate::now_secs(),
+        );
+        let verdict = crate::mining_gate::evaluate(&ev);
+        *guard = Some((verdict.clone(), std::time::Instant::now()));
+        verdict
     }
 
     /// W1.1 (WP-11) — the node's ed25519 proposer pubkey, read from the secret
@@ -790,6 +870,15 @@ impl NodeManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            mining_armed: self.is_mining_armed(),
+            mining_hold: if self.is_mining_armed() {
+                None
+            } else {
+                self.mining_hold
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+            },
         }
     }
 
@@ -816,6 +905,91 @@ impl NodeManager {
         let height = client.block_number().ok()?;
         let peers = client.peer_count().unwrap_or(0);
         Some((height, peers))
+    }
+
+    /// Core #326: once this node's chain reaches a rollback check height, compare its block
+    /// there with the network's canonical one ([`crate::node_withdrawn`]). On a withdrawn
+    /// branch: disarm, stop, move only the chain database files aside (keys, `node.toml` and
+    /// the genesis marker stay), show a notice, and start again so the node resyncs. Returns
+    /// `true` when nothing is left to watch (every check for this genesis passed, or a move
+    /// failed and was reported, so it is not retried in a loop).
+    pub fn recheck_withdrawn(&self) -> bool {
+        let running = {
+            let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+            matches!(
+                guard.as_ref().map(|s| s.status().state),
+                Some(SupervisorState::Running)
+            )
+        };
+        if !running {
+            return false;
+        }
+        self.recheck_withdrawn_via(&HttpTransport::new(self.rpc_url.clone()))
+    }
+
+    /// [`Self::recheck_withdrawn`] against `local` (the node's RPC; tests inject a fake).
+    pub(crate) fn recheck_withdrawn_via<T: citrate_core_kit::rpc::RpcTransport>(
+        &self,
+        local: &T,
+    ) -> bool {
+        use crate::node_withdrawn::{
+            assess, checks_for, move_chain_db_aside, today_utc, Verdict, WITHDRAWN_NOTICE,
+        };
+        let mut done = true;
+        for check in checks_for(&self.book_genesis) {
+            match assess(local, &check) {
+                Verdict::Canonical => {}
+                Verdict::Unknown | Verdict::NotReached => done = false,
+                Verdict::Withdrawn { local: hash } => {
+                    eprintln!(
+                        "[node] block {hash} at height {} is not the network's ({}) after {}: \
+                         this node followed a withdrawn branch; moving its chain data aside",
+                        check.height, check.canonical, check.label
+                    );
+                    self.mining_armed.store(false, Ordering::Relaxed);
+                    self.stop();
+                    let moved = move_chain_db_aside(&self.data_dir, &today_utc());
+                    match moved {
+                        Ok(Some((dest, names))) => {
+                            eprintln!(
+                                "[node] moved {} chain database file(s) to {}; kept: {}",
+                                names.len(),
+                                dest.display(),
+                                crate::node_genesis::kept_entries(&self.data_dir).join(", ")
+                            );
+                            *self
+                                .chain_reset_notice
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) =
+                                Some(WITHDRAWN_NOTICE.to_string());
+                        }
+                        Ok(None) => eprintln!("[node] no chain database files to move"),
+                        Err(e) => {
+                            eprintln!(
+                                "[node] could not move the chain data aside: {e}; the node stays \
+                                 stopped and the member must move {} aside by hand",
+                                self.data_dir.display()
+                            );
+                            *self
+                                .chain_reset_notice
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = Some(format!(
+                                "This node followed a branch of the chain that the network \
+                                 withdrew, and its chain data could not be moved aside ({e}). \
+                                 Quit Citrate Core and move the node folder aside, keeping \
+                                 proposer.key, noise.key and node.toml."
+                            ));
+                            return true;
+                        }
+                    }
+                    if let Err(e) = self.start() {
+                        eprintln!("[node] restart after the move failed: {e}");
+                    }
+                    return false;
+                }
+            }
+        }
+        done
     }
 
     /// This node's local head height (`eth_blockNumber` over its own RPC), or
@@ -871,6 +1045,48 @@ pub fn is_caught_up(local: u64, tip: u64) -> bool {
 
 /// Managed Tauri state: the process-wide node manager.
 pub struct NodeState(pub NodeManager);
+
+/// How often the mining watchdog re-checks an armed producer.
+const MINING_WATCHDOG_EVERY: Duration = Duration::from_secs(30);
+
+/// Start the mining watchdog thread: every [`MINING_WATCHDOG_EVERY`] it re-checks an armed
+/// producer against the mining gate and disarms it when the gate holds production.
+pub fn spawn_mining_watchdog<R: Runtime>(app: AppHandle<R>) {
+    let spawned = std::thread::Builder::new()
+        .name("mining-watchdog".into())
+        .spawn(move || loop {
+            std::thread::sleep(MINING_WATCHDOG_EVERY);
+            if let Some(state) = app.try_state::<NodeState>() {
+                if state.0.recheck_mining() {
+                    eprintln!("[node] block production disarmed by the mining gate");
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[node] mining watchdog did not start: {e}");
+    }
+}
+
+/// How often the withdrawn-branch check runs while it has something to watch.
+const WITHDRAWN_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// Start the withdrawn-branch watch (core #326): every [`WITHDRAWN_CHECK_EVERY`] it runs
+/// [`NodeManager::recheck_withdrawn`] until that reports nothing left to watch.
+pub fn spawn_withdrawn_watch<R: Runtime>(app: AppHandle<R>) {
+    let spawned = std::thread::Builder::new()
+        .name("withdrawn-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(WITHDRAWN_CHECK_EVERY);
+            if let Some(state) = app.try_state::<NodeState>() {
+                if state.0.recheck_withdrawn() {
+                    return;
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[node] withdrawn-branch watch did not start: {e}");
+    }
+}
 
 /// Resolve the bundled `citrate` sidecar binary path.
 ///

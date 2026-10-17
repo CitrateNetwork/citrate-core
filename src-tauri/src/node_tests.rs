@@ -318,6 +318,50 @@ fn spawn_is_follower_until_armed_then_mines() {
     );
 }
 
+/// The mining gate drives the armed state: a hold never arms and is reported in the status;
+/// `Ok` arms; a later hold DISARMS an armed producer, and the next spawn is a follower again.
+#[test]
+fn mining_gate_verdict_arms_holds_and_disarms() {
+    use crate::mining_gate::MiningHold;
+    let (mgr, _fake, _data) = stub_manager("gate-verdict");
+    mgr.set_coinbase("0xd12c00c377eb4615a7ae934df509c903a29ecb6c".to_string());
+
+    assert!(!mgr.apply_mining_verdict(Err(MiningHold::TooFewProducers { others: 1 })));
+    assert!(!mgr.is_mining_armed(), "a hold never arms");
+    let st = mgr.status();
+    assert!(!st.mining_armed);
+    assert!(
+        st.mining_hold.as_deref().unwrap_or("").contains("1 other producer(s)"),
+        "the hold reason reaches the status: {:?}",
+        st.mining_hold
+    );
+
+    assert!(mgr.apply_mining_verdict(Ok(())), "Ok arms");
+    assert!(mgr.is_mining_armed());
+    let st = mgr.status();
+    assert!(st.mining_armed);
+    assert_eq!(st.mining_hold, None, "no hold reason once armed");
+    assert!(mgr.build_spec("00").args.iter().any(|a| a == "--mine"));
+    assert!(!mgr.apply_mining_verdict(Ok(())), "re-arming is a no-op");
+
+    assert!(
+        mgr.apply_mining_verdict(Err(MiningHold::NetworkStalled { age_secs: 600 })),
+        "a hold disarms an armed producer"
+    );
+    assert!(!mgr.is_mining_armed());
+    assert!(!mgr.build_spec("00").args.iter().any(|a| a == "--mine"), "follower again");
+    assert!(mgr.status().mining_hold.as_deref().unwrap_or("").contains("600s old"));
+}
+
+/// The status JSON stays exactly the old shape while production was never requested.
+#[test]
+fn status_omits_mining_fields_until_requested() {
+    let (mgr, _fake, _data) = stub_manager("gate-status-shape");
+    let v = serde_json::to_value(mgr.status()).expect("status serializes");
+    assert!(v.get("miningArmed").is_none(), "{v}");
+    assert!(v.get("miningHold").is_none(), "{v}");
+}
+
 /// The pure sync gate: the producer arms only once the local head is within
 /// `SYNC_ARM_MARGIN` of the authoritative network tip. Far behind → false (stay a
 /// follower); at/near the tip → true; a spurious local-ahead never underflows.
@@ -627,6 +671,8 @@ fn live_bounded_sync_proof() {
         sync_pct: 0.0,
         notice: None,
         blocked: None,
+        mining_armed: false,
+        mining_hold: None,
     };
     while std::time::Instant::now() < deadline {
         let st = mgr.status();
@@ -1095,4 +1141,124 @@ fn production_managers_use_the_app_startup_barrier() {
     assert!(std::sync::Arc::ptr_eq(&mgr.admission, &StartupBarrier::global()));
     assert_eq!(mgr.admission_wait, ADMISSION_WAIT);
     assert!(mgr.node_ports.is_none(), "ports come from node.toml");
+}
+
+// ---------------------------------------------------------------------------
+// Core #326 — a node that followed a withdrawn branch moves its chain data aside
+// ---------------------------------------------------------------------------
+
+/// A node RPC at `head` whose block at the rollback check height is `hash`.
+struct ForkNode {
+    head: u64,
+    hash: &'static str,
+}
+
+impl RpcTransport for ForkNode {
+    fn call(&self, body: Value) -> std::result::Result<Value, RpcError> {
+        match body.get("method").and_then(Value::as_str) {
+            Some("eth_blockNumber") => Ok(json!({ "result": format!("0x{:x}", self.head) })),
+            Some("eth_getBlockByNumber") => Ok(json!({ "result": { "hash": self.hash } })),
+            _ => Err(RpcError::Transport("unexpected".into())),
+        }
+    }
+}
+
+const FORK_DB: &[&str] = &["CURRENT", "MANIFEST-000005", "000013.sst", "000181.log", "LOCK"];
+const FORK_KEPT: &[&str] = &["proposer.key", "noise.key", "node.toml", "chain-genesis"];
+
+/// What each fixture file holds: the genesis marker holds the book genesis (as the app writes
+/// it), every other file its own name.
+fn fork_body(name: &str) -> Vec<u8> {
+    if name == crate::node_genesis::GENESIS_MARKER_FILE {
+        format!("{}\n", crate::addresses::genesis_hash()).into_bytes()
+    } else {
+        name.as_bytes().to_vec()
+    }
+}
+
+fn populated_fork_dir(tag: &str) -> (NodeManager, PathBuf) {
+    let (mgr, _fake, data_dir) = stub_manager(tag);
+    std::fs::create_dir_all(&data_dir).expect("mkdir");
+    for f in FORK_DB.iter().chain(FORK_KEPT.iter()) {
+        std::fs::write(data_dir.join(f), fork_body(f)).expect("write");
+    }
+    (mgr, data_dir)
+}
+
+fn aside_dirs(data_dir: &std::path::Path) -> Vec<PathBuf> {
+    let parent = data_dir.parent().expect("parent");
+    let prefix = format!(
+        "{}.withdrawn-",
+        data_dir.file_name().expect("name").to_string_lossy()
+    );
+    let mut v: Vec<PathBuf> = std::fs::read_dir(parent)
+        .expect("read parent")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|e| e.path())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_node_on_the_canonical_block_keeps_its_chain_data() {
+    let (mgr, data_dir) = populated_fork_dir("wd-healthy");
+    let check = crate::node_withdrawn::FORK_CHECKS[0];
+    let node = ForkNode { head: 400_000, hash: check.canonical };
+    assert!(mgr.recheck_withdrawn_via(&node), "nothing left to watch");
+    for f in FORK_DB.iter().chain(FORK_KEPT.iter()) {
+        assert!(data_dir.join(f).exists(), "{f} must stay");
+    }
+    assert!(aside_dirs(&data_dir).is_empty());
+    assert_eq!(mgr.status().notice, None);
+}
+
+#[test]
+fn a_node_on_a_withdrawn_block_moves_its_chain_data_and_keeps_its_keys() {
+    let (mgr, data_dir) = populated_fork_dir("wd-moved");
+    let node = ForkNode {
+        head: 386_060,
+        hash: "0x8a0d748900000000000000000000000000000000000000000000000000000001",
+    };
+    assert!(!mgr.recheck_withdrawn_via(&node), "watch again after the resync");
+    mgr.stop();
+    let aside = aside_dirs(&data_dir);
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    for f in FORK_DB {
+        assert!(!data_dir.join(f).exists(), "{f} must leave the data dir");
+        assert!(aside[0].join(f).exists(), "{f} must be in {}", aside[0].display());
+    }
+    for f in FORK_KEPT {
+        assert_eq!(
+            std::fs::read(data_dir.join(f)).expect("kept"),
+            fork_body(f),
+            "{f} must stay unchanged"
+        );
+    }
+    assert_eq!(
+        mgr.status().notice.as_deref(),
+        Some(crate::node_withdrawn::WITHDRAWN_NOTICE)
+    );
+    assert!(!mgr.is_mining_armed());
+}
+
+#[test]
+fn the_withdrawn_move_happens_once() {
+    let (mgr, data_dir) = populated_fork_dir("wd-once");
+    let check = crate::node_withdrawn::FORK_CHECKS[0];
+    let withdrawn = ForkNode {
+        head: 386_060,
+        hash: "0x8a0d748900000000000000000000000000000000000000000000000000000001",
+    };
+    assert!(!mgr.recheck_withdrawn_via(&withdrawn));
+    mgr.stop();
+    // After the resync the node is on the canonical block: nothing more is moved.
+    let resynced = ForkNode { head: 400_000, hash: check.canonical };
+    assert!(mgr.recheck_withdrawn_via(&resynced));
+    assert_eq!(aside_dirs(&data_dir).len(), 1);
+    // A node still below the check height is watched again and nothing is moved.
+    let behind = ForkNode { head: 1_000, hash: check.canonical };
+    assert!(!mgr.recheck_withdrawn_via(&behind));
+    assert_eq!(aside_dirs(&data_dir).len(), 1);
 }

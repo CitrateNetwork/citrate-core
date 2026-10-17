@@ -42,6 +42,8 @@ mod components;
 mod connections;
 mod contract_deploy;
 mod daemons;
+#[cfg(any(target_os = "linux", test))]
+mod linux_webkit_env;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_reader;
 mod deploy_gate;
@@ -85,12 +87,14 @@ mod membership;
 mod memory;
 // HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
 mod knowledge_import;
+mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
 mod node;
 mod node_genesis;
 mod node_holder;
+mod node_withdrawn;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
@@ -231,23 +235,11 @@ pub const NODE_MCP_STDIO_FLAG: &str = node_mcp_http::STDIO_FLAG;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Linux + NVIDIA black-screen fix. WebKitGTK's GPU-accelerated compositing / DMABUF renderer
-    // hangs the display on NVIDIA drivers — observed on an NVIDIA GB10 (driver 580): launching the
-    // app blacked out the ENTIRE screen and crashed the X session (not just the app window; the
-    // window isn't even fullscreen). Forcing WebKit to software compositing avoids the GPU path
-    // entirely. This runs before the webview is created, and only sets each var when unset so a user
-    // whose stack renders fine can re-enable GPU compositing via the environment. macOS/Windows are
-    // unaffected (WebKit env vars are Linux-only). Bakes in the manual workaround from
-    // docs/RELEASE_LINUX.md (#236 "black screen" troubleshooting) so no user needs to set it by hand.
+    // Linux black-window guard (#237, DGX GB10 report): WebKitGTK's DMA-BUF renderer and GPU
+    // compositing off by default, never over a value the member set. Runs first, before the
+    // builder creates GTK/WebKit and while the process is single-threaded; logs one line.
     #[cfg(target_os = "linux")]
-    {
-        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-        }
-        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        }
-    }
+    linux_webkit_env::apply();
 
     tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
@@ -373,6 +365,11 @@ pub fn run() {
             // and is handed to the spawned node via the CITRATE_STORAGE_KEY env.
             // node_status reads REAL height/peers from the node's local RPC.
             app.manage(node::build_node_state(&app.handle().clone())?);
+            // Mining watchdog: an armed producer is disarmed (respawned as a follower) as soon
+            // as the mining gate stops allowing production (`mining_gate`). Off the main thread.
+            node::spawn_mining_watchdog(app.handle().clone());
+            // Core #326: a node that followed a withdrawn branch moves its chain data aside.
+            node::spawn_withdrawn_watch(app.handle().clone());
             // CORE-C1.2 — the AgentManager: the node-agent under the
             // SidecarSupervisor with a bearer-authed supervision surface. @rule8:
             // the per-session bearer is minted with OsRng, handed to the child via
@@ -1170,6 +1167,7 @@ mod tests {
                     || code.contains("read_grant_status(")
                     || code.contains("remote_network_tip(")
                     || code.contains("arm_mining_if_synced(")
+                    || code.contains("recheck_mining(")
                     || code.contains("read_self_stake(")
                     || code.contains("read_claimable(");
                 if touches_network {
