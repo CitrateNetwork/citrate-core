@@ -192,6 +192,64 @@ fn storage_key_is_minted_into_keyring_on_start() {
     mgr.stop();
 }
 
+/// The storage key reaches the node only through an owner-only key file named in
+/// `CITRATE_STORAGE_KEY_FILE`: the key is in no env var and no argv of the child, the file
+/// holds exactly the keyring key, is 0600 while the node runs, and is gone after stop.
+#[test]
+fn storage_key_reaches_the_node_only_through_an_owner_only_file() {
+    let (mgr, fake, _data) = stub_manager("key-file");
+    mgr.start().expect("stub node starts");
+    let key = fake
+        .get(KEYRING_NODE_STORAGE_ACCOUNT)
+        .unwrap()
+        .expect("storage key minted into keyring");
+    let key_hex = hex::encode(&key);
+
+    let spec = mgr.build_spec();
+    assert!(
+        !spec.env.iter().any(|(k, v)| k == "CITRATE_STORAGE_KEY" || v.contains(&key_hex)),
+        "the key itself is never in the child env"
+    );
+    assert!(!spec.args.iter().any(|a| a.contains(&key_hex)), "never in argv");
+
+    let path = mgr.storage_key_path();
+    assert!(!path.starts_with(&mgr.data_dir), "outside the chain data dir");
+    assert_eq!(std::fs::read_to_string(&path).expect("key file"), key_hex);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "owner-only key file");
+    }
+    mgr.stop();
+    assert!(!path.exists(), "the key file is removed once the node stopped");
+}
+
+/// A symbolic link already sitting where the key file goes is never written through: start
+/// replaces it with a regular owner-only file, and the link's target is left untouched.
+#[cfg(unix)]
+#[test]
+fn storage_key_file_replaces_a_planted_symlink_instead_of_writing_through_it() {
+    let (mgr, _fake, data) = stub_manager("key-file-link");
+    let path = mgr.storage_key_path();
+    let parent = path.parent().expect("key file has a parent");
+    std::fs::create_dir_all(parent).expect("mkdir key dir");
+    std::fs::create_dir_all(&data).expect("mkdir data");
+    let decoy = data.join("decoy.txt");
+    std::fs::write(&decoy, b"untouched").expect("write decoy");
+    std::os::unix::fs::symlink(&decoy, &path).expect("plant symlink");
+
+    mgr.start().expect("stub node starts");
+    let meta = std::fs::symlink_metadata(&path).expect("stat key file");
+    assert!(meta.file_type().is_file(), "the key file is a regular file, not the planted link");
+    assert_eq!(
+        std::fs::read(&decoy).expect("read decoy"),
+        b"untouched",
+        "the link's target was not written"
+    );
+    mgr.stop();
+}
+
 /// Agent precompiles are active from genesis on 40204 (reroll 2026-10-05, owner decision
 /// 2026-10-04): the node binary's release pin sets the height to 0, and on a release network a
 /// config or env height that disagrees with the pin stops the node at start-up (citrate-chain
@@ -200,7 +258,7 @@ fn storage_key_is_minted_into_keyring_on_start() {
 #[test]
 fn spawn_env_never_sets_an_agent_precompile_height() {
     let (mgr, _fake, _data) = stub_manager("agent-height");
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     assert!(
         !spec.env.iter().any(|(k, _)| k == "CITRATE_AGENT_PRECOMPILES_HEIGHT"),
         "the node's release pin is the only source of the agent precompile height"
@@ -226,14 +284,19 @@ fn spawn_env_never_sets_an_agent_precompile_height() {
 #[test]
 fn spawn_env_carries_the_fleet_consensus_vars() {
     let (mgr, _fake, _data) = stub_manager("consensus-env");
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     let get = |k: &str| {
         spec.env
             .iter()
             .find(|(n, _)| n == k)
             .map(|(_, v)| v.as_str())
     };
-    assert_eq!(get(NODE_STORAGE_KEY_ENV), Some("00"), "storage key still passed");
+    let key_path = mgr.storage_key_path();
+    assert_eq!(
+        get(NODE_STORAGE_KEY_FILE_ENV),
+        Some(key_path.to_string_lossy().as_ref()),
+        "the storage key file path is still passed"
+    );
     assert_eq!(get(NODE_BLOCK_V2_ENV), Some("1"), "v2 execute-on-receive explicit");
     // RESOLVED 2026-09-12 (`srp-s5-diskfix` reroll): `2000`, read live from rpc-1
     // (142.93.58.145) — both the running citrate-node process env and the
@@ -290,7 +353,7 @@ fn spawn_is_follower_until_armed_then_mines() {
     mgr.set_coinbase("0xd12c00c377eb4615a7ae934df509c903a29ecb6c".to_string());
 
     // Coinbase known but NOT armed → follower (no mining flags).
-    let follower = mgr.build_spec("00");
+    let follower = mgr.build_spec();
     assert!(
         !follower.args.iter().any(|a| a == "--mine"),
         "a coinbase alone must NOT arm mining — the node syncs as a follower first",
@@ -304,7 +367,7 @@ fn spawn_is_follower_until_armed_then_mines() {
     // Arm (as the caught-up gate would) → the next spawn carries --mine --coinbase.
     mgr.arm_mining();
     assert!(mgr.is_mining_armed(), "armed after arm_mining");
-    let producer = mgr.build_spec("00");
+    let producer = mgr.build_spec();
     assert!(producer.args.iter().any(|a| a == "--mine"), "mining armed");
     let ci = producer
         .args
@@ -341,7 +404,7 @@ fn mining_gate_verdict_arms_holds_and_disarms() {
     let st = mgr.status();
     assert!(st.mining_armed);
     assert_eq!(st.mining_hold, None, "no hold reason once armed");
-    assert!(mgr.build_spec("00").args.iter().any(|a| a == "--mine"));
+    assert!(mgr.build_spec().args.iter().any(|a| a == "--mine"));
     assert!(!mgr.apply_mining_verdict(Ok(())), "re-arming is a no-op");
 
     assert!(
@@ -349,7 +412,7 @@ fn mining_gate_verdict_arms_holds_and_disarms() {
         "a hold disarms an armed producer"
     );
     assert!(!mgr.is_mining_armed());
-    assert!(!mgr.build_spec("00").args.iter().any(|a| a == "--mine"), "follower again");
+    assert!(!mgr.build_spec().args.iter().any(|a| a == "--mine"), "follower again");
     assert!(mgr.status().mining_hold.as_deref().unwrap_or("").contains("600s old"));
 }
 
@@ -381,7 +444,7 @@ fn is_caught_up_gate_only_true_near_the_tip() {
 #[test]
 fn spawn_args_omit_mining_when_no_coinbase() {
     let (mgr, _fake, _data) = stub_manager("coinbase-unset");
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     assert!(
         !spec.args.iter().any(|a| a == "--mine"),
         "no mining without a coinbase",
@@ -400,7 +463,7 @@ fn set_coinbase_is_reflected_in_the_next_spawn() {
     mgr.set_coinbase("0x0000000000000000000000000000000000000001".to_string());
     // The coinbase only reaches the argv once the producer is armed (caught up).
     mgr.arm_mining();
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     let ci = spec.args.iter().position(|a| a == "--coinbase").unwrap();
     assert_eq!(
         spec.args.get(ci + 1).map(String::as_str),
@@ -1261,4 +1324,96 @@ fn the_withdrawn_move_happens_once() {
     let behind = ForkNode { head: 1_000, hash: check.canonical };
     assert!(!mgr.recheck_withdrawn_via(&behind));
     assert_eq!(aside_dirs(&data_dir).len(), 1);
+}
+
+/// A private directory for a test's "runtime dir" (owner-only, like the real ones).
+#[cfg(unix)]
+fn private_runtime_dir(tag: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let rt = tmp_dir(tag);
+    std::fs::create_dir_all(&rt).expect("mkdir runtime dir");
+    std::fs::set_permissions(&rt, std::fs::Permissions::from_mode(0o700)).expect("chmod 0700");
+    rt
+}
+
+/// With a per-user runtime directory available, the storage key file lives in it (in a
+/// per-install subdirectory), never under the app data dir that backups include.
+#[cfg(unix)]
+#[test]
+fn storage_key_file_lives_in_the_runtime_dir_not_under_app_data() {
+    let (mgr, _fake, data) = stub_manager("key-runtime");
+    let rt = private_runtime_dir("key-runtime-rt");
+    let mgr = mgr.with_key_runtime_dir(Some(rt.clone()));
+    let path = mgr.storage_key_path();
+    assert!(path.starts_with(&rt), "{} is in the runtime dir", path.display());
+    let name = data.file_name().expect("data dir name").to_string_lossy().to_string();
+    assert!(!path.starts_with(&data), "not in the chain data dir");
+    assert!(
+        !path.starts_with(data.with_file_name(format!("{name}.secrets"))),
+        "not in the app-data secrets dir"
+    );
+    let sub = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .expect("key file has a named parent")
+        .to_string_lossy()
+        .to_string();
+    assert!(sub.starts_with("citrate-core-"), "per-install subdirectory, got {sub}");
+}
+
+/// Without a usable runtime directory, the key file falls back to the app-data secrets dir.
+#[test]
+fn storage_key_file_falls_back_to_app_data_without_a_runtime_dir() {
+    let (mgr, _fake, data) = stub_manager("key-fallback");
+    let mgr = mgr.with_key_runtime_dir(None);
+    let name = data.file_name().expect("data dir name").to_string_lossy().to_string();
+    assert_eq!(
+        mgr.storage_key_path(),
+        data.with_file_name(format!("{name}.secrets")).join("storage.key")
+    );
+}
+
+/// Two installs (two data dirs) sharing one runtime dir never share a key file.
+#[cfg(unix)]
+#[test]
+fn two_installs_get_different_key_dirs_in_one_runtime_dir() {
+    let rt = private_runtime_dir("key-two-rt");
+    let (a, _fa, _da) = stub_manager("key-two-a");
+    let (b, _fb, _db) = stub_manager("key-two-b");
+    let a = a.with_key_runtime_dir(Some(rt.clone()));
+    let b = b.with_key_runtime_dir(Some(rt));
+    assert_ne!(a.storage_key_path().parent(), b.storage_key_path().parent());
+}
+
+/// A runtime dir is only used when it is a real directory owned by us and closed to others.
+#[cfg(unix)]
+#[test]
+fn a_runtime_dir_must_be_ours_and_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let ok = private_runtime_dir("key-rt-ok");
+    assert!(crate::node::usable_key_runtime_dir(&ok));
+    let open = tmp_dir("key-rt-open");
+    std::fs::create_dir_all(&open).expect("mkdir");
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    assert!(!crate::node::usable_key_runtime_dir(&open), "group/world-readable is refused");
+    assert!(!crate::node::usable_key_runtime_dir(&tmp_dir("key-rt-missing")), "missing is refused");
+    let link = tmp_dir("key-rt-link");
+    std::os::unix::fs::symlink(&ok, &link).expect("symlink");
+    assert!(!crate::node::usable_key_runtime_dir(&link), "a symbolic link is refused");
+}
+
+/// Start writes the key file into the runtime dir; stop removes it.
+#[cfg(unix)]
+#[test]
+fn start_writes_the_key_into_the_runtime_dir_and_stop_removes_it() {
+    let (mgr, _fake, data) = stub_manager("key-rt-start");
+    std::fs::create_dir_all(&data).expect("mkdir data");
+    let rt = private_runtime_dir("key-rt-start-rt");
+    let mgr = mgr.with_key_runtime_dir(Some(rt.clone()));
+    mgr.start().expect("start");
+    let path = mgr.storage_key_path();
+    assert!(path.starts_with(&rt));
+    assert!(path.is_file(), "key file written in the runtime dir");
+    mgr.stop();
+    assert!(!path.exists(), "key file removed at stop");
 }

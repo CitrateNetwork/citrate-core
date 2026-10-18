@@ -362,7 +362,7 @@ pub fn run() {
             // CORE-C1.1 — the NodeManager: the real citrate-node under the
             // SidecarSupervisor with an encrypted data dir. @rule8: the 32-byte
             // storage master key lives in the OS keyring (never on disk clear)
-            // and is handed to the spawned node via the CITRATE_STORAGE_KEY env.
+            // and is handed to the spawned node in an owner-only key file (CITRATE_STORAGE_KEY_FILE).
             // node_status reads REAL height/peers from the node's local RPC.
             app.manage(node::build_node_state(&app.handle().clone())?);
             // Mining watchdog: an armed producer is disarmed (respawned as a follower) as soon

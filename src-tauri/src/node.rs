@@ -7,7 +7,8 @@
 //! - **`start`** mints/loads a 32-byte storage master key from the OS keyring
 //!   (the A2 custody keyring pattern — never on disk in clear), then spawns the
 //!   bundled `citrate` binary under the supervisor with an explicit `--data-dir`
-//!   and the storage key handed in ONLY via the `CITRATE_STORAGE_KEY` env var.
+//!   and the storage key handed in through an owner-only key file whose PATH is in
+//!   `CITRATE_STORAGE_KEY_FILE` (the key itself is never in the child's env or argv).
 //!   The node opens its RocksDB encrypted-at-rest (AES-256-GCM per value) with
 //!   that key, so a raw-disk grep of the data dir yields ciphertext.
 //! - **`status`** reads the node's REAL sync state from its local JSON-RPC
@@ -20,11 +21,18 @@
 //! The key is minted with `OsRng` on first `start`, stored under keyring account
 //! [`KEYRING_NODE_STORAGE_ACCOUNT`] in service `ai.citrate.core` (the same
 //! service the custody vault uses), and is held in memory only as a
-//! [`Zeroizing`] hex string for the duration of the spawn call. It is passed to
-//! the child through an env var (argv would leak it to `ps`); the child converts
-//! it back to 32 raw bytes. The plaintext key is NEVER written to the data dir
-//! or any config file — only the encrypted DB and the wrong-key-detecting
-//! `encryption.meta` commitment land on disk.
+//! [`Zeroizing`] hex string for the duration of the spawn call. It is handed to
+//! the child as an owner-only (0600) key file in an owner-only per-install directory inside
+//! the per-user runtime directory (`$XDG_RUNTIME_DIR` on Linux, the per-user temporary
+//! directory from `confstr(_CS_DARWIN_USER_TEMP_DIR)` on macOS, `%LOCALAPPDATA%\Temp` on
+//! Windows), which is not part of backups and is cleared at logout or reboot. Only when no
+//! usable runtime directory exists does it fall back to an owner-only directory next to the
+//! data dir (`NodeManager::storage_key_path`). It is written at start and removed at stop; the
+//! child's env carries only the file's PATH (`CITRATE_STORAGE_KEY_FILE`), so the
+//! key is not in the child's process environment, in anything the child starts,
+//! or in a crash report that captures env, and argv never carries it (`ps`). The
+//! file stays while the supervisor runs because a supervised restart re-reads it.
+//! The key is never written to the data dir or a config file.
 //!
 //! ## C1.0b-1 — node restart policy (decided here)
 //! A citrate-node that legitimately restarts (config reload, transient network
@@ -45,7 +53,7 @@
 //! supervisor state machine or the TLA+ model is required — this is a config
 //! tuning of an existing, already-modelled parameter, not a new transition.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -82,9 +90,14 @@ const NODE_HEALTHY_AFTER: Duration = Duration::from_secs(90);
 /// one points at OUR local node's status surface.
 const NODE_LOCAL_RPC_URL: &str = "http://127.0.0.1:8545";
 
-/// The env var the node reads its 32-byte storage key from (hex). Matches the
-/// node-side `at_rest_encryption_from_env` (citrate-chain node/src/main.rs).
-const NODE_STORAGE_KEY_ENV: &str = "CITRATE_STORAGE_KEY";
+/// The env var naming the owner-only file the node reads its 32-byte storage key
+/// from (hex). Matches the node-side `at_rest_encryption_from_env` (citrate-chain
+/// node/src/main.rs). The inline `CITRATE_STORAGE_KEY` env is never set by the app.
+const NODE_STORAGE_KEY_FILE_ENV: &str = "CITRATE_STORAGE_KEY_FILE";
+
+/// The key file's name, inside an owner-only (0700) directory next to the node data dir
+/// (outside it, so a chain-data reset never touches it).
+const NODE_STORAGE_KEY_FILE: &str = "storage.key";
 
 /// CONSENSUS-CRITICAL launch env the fleet producer runs (DGX_NODE_SYNC_WEDGE_RESPONSE
 /// 2026-07-22). VALIDATOR-S1 / §R' epoch-reward + validator-registry snapshot are OFF
@@ -338,6 +351,9 @@ pub struct NodeManager {
     /// The node TCP ports to check before a start. `None`: read them from the `node.toml` the
     /// node is launched with (production). Tests inject their own.
     node_ports: Option<Vec<u16>>,
+    /// The per-user runtime directory the storage key file is written in (see the module
+    /// doc); `None` falls back to the app-data secrets directory.
+    key_runtime_dir: Option<PathBuf>,
 }
 
 /// How long a node start waits for the startup cleanup barrier (SCL-S8.5a). The cleanup runs
@@ -373,7 +389,15 @@ impl NodeManager {
             admission: StartupBarrier::global(),
             admission_wait: ADMISSION_WAIT,
             node_ports: None,
+            key_runtime_dir: key_runtime_dir(),
         }
+    }
+
+    /// Tests: use this runtime directory for the storage key file (`None` = the fallback).
+    #[cfg(test)]
+    pub fn with_key_runtime_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.key_runtime_dir = dir;
+        self
     }
 
     /// Tests: use their own startup barrier and admission wait.
@@ -671,10 +695,30 @@ impl NodeManager {
         }
     }
 
+    /// The owner-only file the storage key is handed to the node in (see the module doc):
+    /// `<runtime dir>/citrate-core-<install id>/storage.key`, where the install id is derived
+    /// from the data dir so two installs never share it; without a usable runtime directory,
+    /// `<app data>/node.secrets/storage.key` for the data dir `<app data>/node`.
+    pub(crate) fn storage_key_path(&self) -> PathBuf {
+        if let Some(rt) = &self.key_runtime_dir {
+            return rt
+                .join(format!("citrate-core-{}", install_key_id(&self.data_dir)))
+                .join(NODE_STORAGE_KEY_FILE);
+        }
+        let name = self
+            .data_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "node".to_string());
+        self.data_dir
+            .with_file_name(format!("{name}.secrets"))
+            .join(NODE_STORAGE_KEY_FILE)
+    }
+
     /// Build the [`SidecarSpec`] for the node: explicit binary, `--data-dir`,
-    /// and the storage key in the env (NOT argv — argv would leak the key to a
-    /// `ps` listing). `--network testnet` joins the public testnet.
-    fn build_spec(&self, storage_key_hex: &str) -> SidecarSpec {
+    /// and the PATH of the storage key file in the env (never the key itself, and
+    /// nothing secret in argv). `--network testnet` joins the public testnet.
+    fn build_spec(&self) -> SidecarSpec {
         let mut args = vec![
             "--network".to_string(),
             "testnet".to_string(),
@@ -719,8 +763,8 @@ impl NodeManager {
         let mut spec = SidecarSpec::new("citrate-node", self.bin.clone(), args);
         spec.env = vec![
             (
-                NODE_STORAGE_KEY_ENV.to_string(),
-                storage_key_hex.to_string(),
+                NODE_STORAGE_KEY_FILE_ENV.to_string(),
+                self.storage_key_path().to_string_lossy().to_string(),
             ),
             // The node's `tracing` output is piped (not a TTY) into the log tail the
             // UI renders; emit PLAIN text so ANSI colour escapes don't surface as
@@ -790,15 +834,44 @@ impl NodeManager {
         // Consensus safety (40204 reroll): never open another genesis's chain DB.
         self.prepare_data_dir_for_genesis()?;
         let key_hex = self.storage_key_hex()?;
-        let spec = self.build_spec(&key_hex);
+        if self.key_runtime_dir.is_some() {
+            eprintln!("[node] storage key file: per-user runtime directory");
+        } else {
+            eprintln!(
+                "[node] storage key file: app data directory (no per-user runtime directory)"
+            );
+        }
+        // Whatever sits at the key file's path (a stale file, or a symbolic link) is removed
+        // first, so the key is always written into a new regular file and never through a link.
+        self.remove_storage_key_file();
+        citrate_core_kit::fsutil::write_secret_file(&self.storage_key_path(), key_hex.as_bytes())
+            .map_err(|e| NodeError::Keyring(format!("cannot write the node storage key file: {e}")))?;
+        drop(key_hex);
+        let spec = self.build_spec();
         // C1.0b-1: default fork-bomb-bounded backoff, but a node-tuned
         // sustained-healthy window (see the module doc).
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         config.backoff = BackoffPolicy::new();
         config.healthy_after = NODE_HEALTHY_AFTER;
-        let sup = Supervisor::start(config).map_err(|e| NodeError::Spawn(e.to_string()))?;
+        let sup = match Supervisor::start(config) {
+            Ok(sup) => sup,
+            Err(e) => {
+                self.remove_storage_key_file();
+                return Err(NodeError::Spawn(e.to_string()));
+            }
+        };
         *guard = Some(sup);
         Ok(())
+    }
+
+    /// Remove the storage key file (best-effort; absent is fine).
+    fn remove_storage_key_file(&self) {
+        let path = self.storage_key_path();
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[node] cannot remove {}: {e}", path.display());
+            }
+        }
     }
 
     /// Stop the node: graceful supervisor release (SIGTERM → grace → SIGKILL),
@@ -814,6 +887,8 @@ impl NodeManager {
             // Dropping the supervisor joins the monitor thread (no orphan).
             drop(sup);
         }
+        // The node has exited: its storage key file is no longer needed.
+        self.remove_storage_key_file();
     }
 
     /// Read the node's real status: supervisor state + (when running) live
@@ -1086,6 +1161,87 @@ pub fn spawn_withdrawn_watch<R: Runtime>(app: AppHandle<R>) {
     if let Err(e) = spawned {
         eprintln!("[node] withdrawn-branch watch did not start: {e}");
     }
+}
+
+/// The install id in the storage key directory's name: the first 16 hex digits of
+/// `sha256("citrate/node-key-dir/v1" || data dir)`, so each install (each app data dir) has its
+/// own directory and the name reveals nothing about the path.
+fn install_key_id(data_dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"citrate/node-key-dir/v1");
+    h.update(data_dir.as_os_str().to_string_lossy().as_bytes());
+    let digest = h.finalize();
+    hex::encode(&digest[..8])
+}
+
+/// Whether `dir` can hold the storage key file: a real directory (not a symbolic link) and,
+/// on Unix, owned by this process's user and closed to group and others.
+pub(crate) fn usable_key_runtime_dir(dir: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(dir) else {
+        return false;
+    };
+    if !meta.is_dir() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid || meta.mode() & 0o077 != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// The per-user runtime directory for the storage key file, if this platform has a usable
+/// one (see the module doc).
+fn key_runtime_dir() -> Option<PathBuf> {
+    platform_runtime_dir().filter(|d| usable_key_runtime_dir(d))
+}
+
+#[cfg(target_os = "linux")]
+fn platform_runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+#[cfg(target_os = "macos")]
+fn platform_runtime_dir() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    let mut buf = vec![0u8; 1024];
+    // SAFETY: `buf` is a valid writable buffer of `buf.len()` bytes; confstr writes at most that
+    // many bytes, NUL-terminated, and returns the length needed (0 on error).
+    let n = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if n == 0 || n > buf.len() {
+        return None;
+    }
+    let s = CStr::from_bytes_until_nul(&buf).ok()?.to_str().ok()?;
+    let p = PathBuf::from(s);
+    p.is_absolute().then_some(p)
+}
+
+#[cfg(windows)]
+fn platform_runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|v| !v.is_empty())
+        .map(|v| PathBuf::from(v).join("Temp"))
+        .filter(|p| p.is_absolute())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn platform_runtime_dir() -> Option<PathBuf> {
+    None
 }
 
 /// Resolve the bundled `citrate` sidecar binary path.
