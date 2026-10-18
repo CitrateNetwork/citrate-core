@@ -404,7 +404,7 @@ fn mining_gate_verdict_arms_holds_and_disarms() {
     let st = mgr.status();
     assert!(st.mining_armed);
     assert_eq!(st.mining_hold, None, "no hold reason once armed");
-    assert!(mgr.build_spec("00").args.iter().any(|a| a == "--mine"));
+    assert!(mgr.build_spec().args.iter().any(|a| a == "--mine"));
     assert!(!mgr.apply_mining_verdict(Ok(())), "re-arming is a no-op");
 
     assert!(
@@ -412,7 +412,7 @@ fn mining_gate_verdict_arms_holds_and_disarms() {
         "a hold disarms an armed producer"
     );
     assert!(!mgr.is_mining_armed());
-    assert!(!mgr.build_spec("00").args.iter().any(|a| a == "--mine"), "follower again");
+    assert!(!mgr.build_spec().args.iter().any(|a| a == "--mine"), "follower again");
     assert!(mgr.status().mining_hold.as_deref().unwrap_or("").contains("600s old"));
 }
 
