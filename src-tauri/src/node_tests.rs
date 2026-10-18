@@ -225,6 +225,31 @@ fn storage_key_reaches_the_node_only_through_an_owner_only_file() {
     assert!(!path.exists(), "the key file is removed once the node stopped");
 }
 
+/// A symbolic link already sitting where the key file goes is never written through: start
+/// replaces it with a regular owner-only file, and the link's target is left untouched.
+#[cfg(unix)]
+#[test]
+fn storage_key_file_replaces_a_planted_symlink_instead_of_writing_through_it() {
+    let (mgr, _fake, data) = stub_manager("key-file-link");
+    let path = mgr.storage_key_path();
+    let parent = path.parent().expect("key file has a parent");
+    std::fs::create_dir_all(parent).expect("mkdir key dir");
+    std::fs::create_dir_all(&data).expect("mkdir data");
+    let decoy = data.join("decoy.txt");
+    std::fs::write(&decoy, b"untouched").expect("write decoy");
+    std::os::unix::fs::symlink(&decoy, &path).expect("plant symlink");
+
+    mgr.start().expect("stub node starts");
+    let meta = std::fs::symlink_metadata(&path).expect("stat key file");
+    assert!(meta.file_type().is_file(), "the key file is a regular file, not the planted link");
+    assert_eq!(
+        std::fs::read(&decoy).expect("read decoy"),
+        b"untouched",
+        "the link's target was not written"
+    );
+    mgr.stop();
+}
+
 /// Agent precompiles are active from genesis on 40204 (reroll 2026-10-05, owner decision
 /// 2026-10-04): the node binary's release pin sets the height to 0, and on a release network a
 /// config or env height that disagrees with the pin stops the node at start-up (citrate-chain

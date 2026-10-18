@@ -732,6 +732,9 @@ impl NodeManager {
         // Consensus safety (40204 reroll): never open another genesis's chain DB.
         self.prepare_data_dir_for_genesis()?;
         let key_hex = self.storage_key_hex()?;
+        // Whatever sits at the key file's path (a stale file, or a symbolic link) is removed
+        // first, so the key is always written into a new regular file and never through a link.
+        self.remove_storage_key_file();
         citrate_core_kit::fsutil::write_secret_file(&self.storage_key_path(), key_hex.as_bytes())
             .map_err(|e| NodeError::Keyring(format!("cannot write the node storage key file: {e}")))?;
         drop(key_hex);
