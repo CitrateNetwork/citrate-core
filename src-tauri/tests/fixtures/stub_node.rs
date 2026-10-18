@@ -1,14 +1,14 @@
 //! Cross-platform native node fixture for the NodeManager unit tests.
 //!
 //! This executable mirrors only the process contract those tests exercise: it
-//! accepts `--data-dir`, requires the storage-key environment variable, writes
+//! accepts `--data-dir`, requires the storage-key file named in the environment, writes
 //! non-plaintext bytes plus the encryption marker, and remains alive until the
 //! supervisor terminates it. It is test-only and never enters a production path.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-const STORAGE_KEY_ENV: &str = "CITRATE_STORAGE_KEY";
+const STORAGE_KEY_FILE_ENV: &str = "CITRATE_STORAGE_KEY_FILE";
 const SENTINEL: &[u8] = b"CITRATE_PLAINTEXT_SENTINEL_v1";
 
 fn main() {
@@ -20,9 +20,11 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let data_dir = data_dir_from_args(std::env::args().skip(1))?;
-    let key_hex = std::env::var(STORAGE_KEY_ENV)
-        .map_err(|_| format!("{STORAGE_KEY_ENV} env required"))?;
-    let key = decode_hex(&key_hex)?;
+    let key_path = std::env::var(STORAGE_KEY_FILE_ENV)
+        .map_err(|_| format!("{STORAGE_KEY_FILE_ENV} env required"))?;
+    let key_hex = std::fs::read_to_string(&key_path)
+        .map_err(|error| format!("read {STORAGE_KEY_FILE_ENV}: {error}"))?;
+    let key = decode_hex(key_hex.trim())?;
 
     std::fs::create_dir_all(&data_dir)
         .map_err(|error| format!("create data directory: {error}"))?;
@@ -59,16 +61,16 @@ fn data_dir_from_args(args: impl Iterator<Item = String>) -> Result<PathBuf, Str
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     if value.is_empty() || value.len() % 2 != 0 {
-        return Err(format!("{STORAGE_KEY_ENV} must be non-empty even-length hex"));
+        return Err(format!("{STORAGE_KEY_FILE_ENV} must be non-empty even-length hex"));
     }
     value
         .as_bytes()
         .chunks_exact(2)
         .map(|pair| {
             let text = std::str::from_utf8(pair)
-                .map_err(|_| format!("{STORAGE_KEY_ENV} must contain ASCII hex"))?;
+                .map_err(|_| format!("{STORAGE_KEY_FILE_ENV} must contain ASCII hex"))?;
             u8::from_str_radix(text, 16)
-                .map_err(|_| format!("{STORAGE_KEY_ENV} contains invalid hex"))
+                .map_err(|_| format!("{STORAGE_KEY_FILE_ENV} contains invalid hex"))
         })
         .collect()
 }
