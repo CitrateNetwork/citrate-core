@@ -1325,3 +1325,95 @@ fn the_withdrawn_move_happens_once() {
     assert!(!mgr.recheck_withdrawn_via(&behind));
     assert_eq!(aside_dirs(&data_dir).len(), 1);
 }
+
+/// A private directory for a test's "runtime dir" (owner-only, like the real ones).
+#[cfg(unix)]
+fn private_runtime_dir(tag: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let rt = tmp_dir(tag);
+    std::fs::create_dir_all(&rt).expect("mkdir runtime dir");
+    std::fs::set_permissions(&rt, std::fs::Permissions::from_mode(0o700)).expect("chmod 0700");
+    rt
+}
+
+/// With a per-user runtime directory available, the storage key file lives in it (in a
+/// per-install subdirectory), never under the app data dir that backups include.
+#[cfg(unix)]
+#[test]
+fn storage_key_file_lives_in_the_runtime_dir_not_under_app_data() {
+    let (mgr, _fake, data) = stub_manager("key-runtime");
+    let rt = private_runtime_dir("key-runtime-rt");
+    let mgr = mgr.with_key_runtime_dir(Some(rt.clone()));
+    let path = mgr.storage_key_path();
+    assert!(path.starts_with(&rt), "{} is in the runtime dir", path.display());
+    let name = data.file_name().expect("data dir name").to_string_lossy().to_string();
+    assert!(!path.starts_with(&data), "not in the chain data dir");
+    assert!(
+        !path.starts_with(data.with_file_name(format!("{name}.secrets"))),
+        "not in the app-data secrets dir"
+    );
+    let sub = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .expect("key file has a named parent")
+        .to_string_lossy()
+        .to_string();
+    assert!(sub.starts_with("citrate-core-"), "per-install subdirectory, got {sub}");
+}
+
+/// Without a usable runtime directory, the key file falls back to the app-data secrets dir.
+#[test]
+fn storage_key_file_falls_back_to_app_data_without_a_runtime_dir() {
+    let (mgr, _fake, data) = stub_manager("key-fallback");
+    let mgr = mgr.with_key_runtime_dir(None);
+    let name = data.file_name().expect("data dir name").to_string_lossy().to_string();
+    assert_eq!(
+        mgr.storage_key_path(),
+        data.with_file_name(format!("{name}.secrets")).join("storage.key")
+    );
+}
+
+/// Two installs (two data dirs) sharing one runtime dir never share a key file.
+#[cfg(unix)]
+#[test]
+fn two_installs_get_different_key_dirs_in_one_runtime_dir() {
+    let rt = private_runtime_dir("key-two-rt");
+    let (a, _fa, _da) = stub_manager("key-two-a");
+    let (b, _fb, _db) = stub_manager("key-two-b");
+    let a = a.with_key_runtime_dir(Some(rt.clone()));
+    let b = b.with_key_runtime_dir(Some(rt));
+    assert_ne!(a.storage_key_path().parent(), b.storage_key_path().parent());
+}
+
+/// A runtime dir is only used when it is a real directory owned by us and closed to others.
+#[cfg(unix)]
+#[test]
+fn a_runtime_dir_must_be_ours_and_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let ok = private_runtime_dir("key-rt-ok");
+    assert!(crate::node::usable_key_runtime_dir(&ok));
+    let open = tmp_dir("key-rt-open");
+    std::fs::create_dir_all(&open).expect("mkdir");
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    assert!(!crate::node::usable_key_runtime_dir(&open), "group/world-readable is refused");
+    assert!(!crate::node::usable_key_runtime_dir(&tmp_dir("key-rt-missing")), "missing is refused");
+    let link = tmp_dir("key-rt-link");
+    std::os::unix::fs::symlink(&ok, &link).expect("symlink");
+    assert!(!crate::node::usable_key_runtime_dir(&link), "a symbolic link is refused");
+}
+
+/// Start writes the key file into the runtime dir; stop removes it.
+#[cfg(unix)]
+#[test]
+fn start_writes_the_key_into_the_runtime_dir_and_stop_removes_it() {
+    let (mgr, _fake, data) = stub_manager("key-rt-start");
+    std::fs::create_dir_all(&data).expect("mkdir data");
+    let rt = private_runtime_dir("key-rt-start-rt");
+    let mgr = mgr.with_key_runtime_dir(Some(rt.clone()));
+    mgr.start().expect("start");
+    let path = mgr.storage_key_path();
+    assert!(path.starts_with(&rt));
+    assert!(path.is_file(), "key file written in the runtime dir");
+    mgr.stop();
+    assert!(!path.exists(), "key file removed at stop");
+}
