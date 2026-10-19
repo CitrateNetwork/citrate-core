@@ -1196,3 +1196,85 @@ fn an_export_does_not_restart_the_daemon_after_app_quit() {
     assert_eq!(daemon.starts.load(Ordering::SeqCst), 0);
     assert!(!r.daemon_restarted);
 }
+
+// ---------------------------------------------------------------- review follow-ups 3 (DGX, 60a8132)
+
+/// N1: recorded modes come from a manifest nobody signed. Restore never applies a group- or
+/// world-writable bit from it, however the manifest records it.
+#[cfg(unix)]
+#[test]
+fn restore_never_applies_group_or_world_write_from_the_manifest() {
+    let (report, _kubo, mem, _root) = export_both("mode-mask");
+    let folder = PathBuf::from(&report.folder);
+    let mut m = read_manifest(&folder).unwrap();
+    for e in m.entries.iter_mut().filter(|e| e.path.starts_with("memory/")) {
+        e.mode = Some(0o666);
+    }
+    for d in m.dirs.iter_mut() {
+        d.mode = 0o777;
+    }
+    m.entries_sha256 = manifest_digest(&m);
+    std::fs::write(folder.join(MANIFEST_NAME), serde_json::to_vec(&m).unwrap()).unwrap();
+    let store = mem.join("store.bge.memdag");
+    let daemon = FakeDaemon::new(false, &store);
+    let target = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+        registry: open_registry(),
+    };
+    restore(&folder, &[Part::Memory], None, Some(&target), 42, &mut no_progress()).unwrap();
+    let walked = walk(&mem).unwrap();
+    assert!(!walked.files.is_empty());
+    for f in &walked.files {
+        assert_eq!(mode_of(&mem.join(f)), 0o644, "{f:?}: 0o666 recorded, no g/o write applied");
+    }
+    for d in &walked.dirs {
+        assert_eq!(mode_of(&mem.join(d)), 0o755, "{d:?}: 0o777 recorded, no g/o write applied");
+    }
+    assert_eq!(mode_of(&mem), 0o755, "the store root too");
+}
+
+/// N1 tripwire: every mode the restore path applies goes through `apply_restored_mode`, which
+/// masks group/world write. A new chmod in the restore path that skips it fails here.
+#[test]
+fn restore_path_applies_modes_only_through_the_mask() {
+    let src = include_str!("storage_backup.rs");
+    let body_of = |name: &str| -> String {
+        let start = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("fn {name} exists"));
+        let rest = &src[start..];
+        let end = rest.find("\n}\n").expect("fn body ends");
+        rest[..end].to_string()
+    };
+    for f in ["restore", "swap_in_memory"] {
+        let body = body_of(f);
+        for banned in ["apply_mode(", "apply_and_check_mode(", "set_permissions", "PermissionsExt", "from_mode("] {
+            assert!(!body.contains(banned), "{f} applies a mode without the mask: {banned}");
+        }
+    }
+    assert!(body_of("swap_in_memory").contains("apply_restored_mode("));
+    let mask = body_of("apply_restored_mode");
+    assert!(mask.contains("& !0o022"), "apply_restored_mode masks group/world write");
+}
+
+/// Docs truth: the manifest digest is unkeyed (anyone who edits the manifest can recompute it), so
+/// the docs must not claim an edited manifest is detected, and must say the Memory part is not
+/// encrypted.
+#[test]
+fn storage_docs_do_not_overclaim_manifest_integrity_or_encryption() {
+    let doc = include_str!("../../docs/STORAGE_K4.md");
+    let module = include_str!("storage_backup.rs");
+    for (name, text) in [("docs/STORAGE_K4.md", doc), ("storage_backup.rs", module)] {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !flat.contains("edited manifest is caught"),
+            "{name} claims an edited manifest is detected"
+        );
+    }
+    let flat = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("The Memory part of an export is not encrypted"));
+    assert!(flat.contains("not signed"), "the doc says the manifest is not signed");
+    assert!(!module.contains("docs/storage/K4_STORAGE.md"), "N3: stale doc path");
+}

@@ -31,7 +31,7 @@ describe("K4 Backup — export", () => {
     const html = render();
     expect(html).toContain("Export a backup");
     expect(html).toContain("SHA-256 of every file");
-    expect(html).toContain("isn&#x27;t encrypted by the app");
+    expect(html).toContain("The Memory part of a backup is not encrypted");
   });
 
   it("shows progress while exporting", () => {
