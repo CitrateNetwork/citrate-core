@@ -1414,7 +1414,14 @@ export class Store {
    * number that was not just read; they show the "See membership pricing" link instead.
    */
   async refreshMembershipPrice(): Promise<void> {
-    void this.lastPriceReadAt;
+    const PRICE_READ_MS = 10 * 60_000;
+    if (this.lastPriceReadAt && Date.now() - this.lastPriceReadAt < PRICE_READ_MS) return;
+    this.lastPriceReadAt = Date.now();
+    try {
+      this.setState({ membershipPrice: await bridge.membership.price() });
+    } catch {
+      this.setState({ membershipPrice: null });
+    }
   }
 
   async refreshChainParams(): Promise<void> {

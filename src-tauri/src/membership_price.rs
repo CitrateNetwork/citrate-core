@@ -31,10 +31,72 @@ pub fn price_url(base: &str) -> String {
     format!("{}/api/membership/price", base.trim_end_matches('/'))
 }
 
+/// The amount in minor units that `display` states (digits, at most one `.`, at most two decimals;
+/// thousands separators and the currency symbol are ignored). None when it can't be read.
+fn display_minor_units(display: &str) -> Option<u64> {
+    let kept: String = display
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = kept.split('.');
+    let whole = parts.next()?;
+    let frac = parts.next().unwrap_or("");
+    if parts.next().is_some() || whole.is_empty() || frac.len() > 2 {
+        return None;
+    }
+    let whole: u64 = whole.parse().ok()?;
+    let frac: u64 = if frac.is_empty() {
+        0
+    } else {
+        format!("{frac:0<2}").parse().ok()?
+    };
+    whole.checked_mul(100)?.checked_add(frac)
+}
+
 /// Decide the price from the route's HTTP status and body.
 pub fn parse_price(status: u16, body: &[u8]) -> Result<MembershipPrice, String> {
-    let _ = (status, body);
-    Err("membership price: not read yet".to_string())
+    if status != 200 {
+        return Err(format!("membership price unavailable (HTTP {status})"));
+    }
+    let v: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| "membership price: unreadable response".to_string())?;
+    let currency = v
+        .get("currency")
+        .and_then(|c| c.as_str())
+        .filter(|c| c.len() == 3 && c.bytes().all(|b| b.is_ascii_lowercase()))
+        .ok_or("membership price: missing or invalid currency")?
+        .to_string();
+    let unit_amount = v
+        .get("unitAmount")
+        .and_then(|u| u.as_u64())
+        .filter(|u| *u > 0)
+        .ok_or("membership price: missing or invalid unitAmount")?;
+    let interval = v
+        .get("interval")
+        .and_then(|i| i.as_str())
+        .filter(|i| matches!(*i, "year" | "month"))
+        .ok_or("membership price: missing or invalid interval")?
+        .to_string();
+    let display_amount = v
+        .get("displayAmount")
+        .and_then(|d| d.as_str())
+        .filter(|d| {
+            !d.is_empty()
+                && d.len() <= 24
+                && d.chars()
+                    .all(|c| c.is_alphanumeric() || " .,$€£¥".contains(c))
+        })
+        .ok_or("membership price: missing or invalid displayAmount")?
+        .to_string();
+    if display_minor_units(&display_amount) != Some(unit_amount) {
+        return Err("membership price: displayAmount does not match unitAmount".to_string());
+    }
+    Ok(MembershipPrice {
+        currency,
+        unit_amount,
+        interval,
+        display_amount,
+    })
 }
 
 /// GET the price route: status + body, or a transport error.

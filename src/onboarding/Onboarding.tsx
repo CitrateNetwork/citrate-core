@@ -592,7 +592,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
         <div style={{ border: "2px solid var(--tx-1)", background: "var(--srf-2)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6, position: "relative" }}>
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>Pilot · selected</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>
-            {/* C1-V V12: no in-app price until core-membership serves one (chain-team ruling). */}
+            {/* C1-P: the price read from core-membership, or the pricing link when it was not read. */}
             <PricingLink open={(u) => void store.openExternal(u)} price={s.membershipPrice} style={{ fontSize: 15 }} />
           </div>
           <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0 }}>Full membership. Everything listed below.</p>

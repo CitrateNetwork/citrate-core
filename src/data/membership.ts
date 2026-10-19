@@ -32,8 +32,9 @@ export interface MembershipPrice {
  * to MEMBERSHIP_PRICING_URL when this is null; they never supply a number.
  */
 export function membershipPriceLabel(price: MembershipPrice | null | undefined): string | null {
-  void price;
-  return null;
+  if (!price || !price.displayAmount || !(price.unitAmount > 0)) return null;
+  const per = price.interval === "year" ? "a year" : price.interval === "month" ? "a month" : null;
+  return per ? price.displayAmount + " " + per : null;
 }
 
 /** §5.3: what membership buys. */
