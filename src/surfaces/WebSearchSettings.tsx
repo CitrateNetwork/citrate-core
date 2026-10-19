@@ -15,7 +15,7 @@
 import { useEffect, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
-import { noteRunning } from "./hermes/hermesRunning";
+import { noteRunning } from "../shell/slices/hermesRunning";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,

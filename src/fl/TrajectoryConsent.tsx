@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import type { FlRoundsDomain, FlTrainingSet, FlTrajectoryStatus } from "../bridge/domains";
 import { DEFAULT_PROPOSAL } from "./flRounds";
-import { noteRunning } from "../surfaces/hermes/hermesRunning";
+import { noteRunning } from "../shell/slices/hermesRunning";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const label: React.CSSProperties = { fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" };

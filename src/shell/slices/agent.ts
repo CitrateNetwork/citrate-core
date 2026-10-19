@@ -12,6 +12,7 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
+import { refreshHermesRunningFromSaved } from "./hermesRunning";
 import type { AgentSkill, AgentApproval, AgentHarnessStatus, RegistrySkill } from "../../bridge/domains";
 
 export type RuntimeId = "hermes" | "openclaw" | "grok";
@@ -151,10 +152,13 @@ export async function startRuntime(id: RuntimeId): Promise<void> {
   if (agentSlice.get().busy || rt.state === "starting" || rt.state === "running") return;
   agentSlice.set({ busy: true });
   setHermes({ state: "starting", error: null });
+  // Whether this call started a new Hermes (not one that was already running).
+  let spawned = true;
   try {
     await bridge.agentHarness.start();
   } catch (e) {
     // "already running" is success, not an error — the sidecar is up (double-start guard).
+    spawned = false;
     if (!/already running/i.test(message(e))) {
       agentSlice.set({ busy: false, error: message(e) });
       setHermes({ state: "error", error: message(e) });
@@ -167,6 +171,8 @@ export async function startRuntime(id: RuntimeId): Promise<void> {
       const status = await bridge.agentHarness.status();
       if (status.running) {
         agentSlice.set({ busy: false });
+        // A new Hermes read the saved sidecar settings at start (K2: the Controls restart notice).
+        if (spawned) await refreshHermesRunningFromSaved();
         await refreshAgent();
         return;
       }

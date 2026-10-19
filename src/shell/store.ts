@@ -82,6 +82,7 @@ import {
   verifierReported,
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
+import { refreshHermesRunningFromSaved } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
@@ -2592,6 +2593,8 @@ export class Store {
         this.setState({ hermesTerminal: st.enabled });
         this.save();
       }
+      // Core restarted a running Hermes to apply this, so it also read the other saved settings.
+      if (st.restarted) await refreshHermesRunningFromSaved();
       if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
       this.toast(on ? "Hermes can run terminal commands; each one asks you first" : "Hermes terminal commands are off");
     } catch (e) {
@@ -2606,6 +2609,7 @@ export class Store {
   private async syncHermesTerminal(): Promise<void> {
     try {
       const st = await syncTerminalAccess(this.terminalIo(), this.state.hermesTerminal);
+      if (st.restarted) await refreshHermesRunningFromSaved();
       if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
     } catch {
       /* core older than this setting, or no Hermes yet: the spawn reads its own default */

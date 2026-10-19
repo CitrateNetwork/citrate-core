@@ -30,7 +30,7 @@ import { loadWebSettings, saveWebSettings, type HermesWebStatus, type WebSetting
 import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
-import { confirmRunning, hermesRunningSlice, noteRunning } from "./hermesRunning";
+import { confirmRunning, hermesRunningSlice, noteRunning } from "../../shell/slices/hermesRunning";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -315,11 +315,16 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         try {
           if (r.ok) {
             // Confirmed: Hermes stopped and is running again, so it read the saved settings.
+            // Re-read what is saved now (another card may have written since this panel loaded) and
+            // record it as what Hermes runs with.
             setRestartError(null);
-            confirmRunning({
-              ...(web ? { webSearch: web.settings.searchEnabled } : {}),
-              ...(learn ? { learn: learn.settings.enabled } : {}),
-            });
+            const [w, l] = await Promise.all([
+              webDesktop ? loadWebSettings(io.web).catch(() => null) : Promise.resolve(null),
+              io.fl.trajectoryStatus().catch(() => null),
+            ]);
+            if (w) setWeb(w);
+            if (l) setLearn(l);
+            confirmRunning({ webSearch: w ? w.settings.searchEnabled : null, learn: l ? l.settings.enabled : null });
           } else {
             // Not confirmed: the notices stay, with what happened.
             setRestartError(
