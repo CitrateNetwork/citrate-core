@@ -25,12 +25,17 @@ export interface GrantFacts {
   unlockBlock: number | null;
   /** The bond has been activated: its principal is staked in the ValidatorRegistry. */
   staked: boolean;
+  /**
+   * The grant is on chain. A granted member whose unlock block has not been read sees "—", never
+   * the pre-grant "for about a year" (contract rule 2). Omit before the grant exists.
+   */
+  granted?: boolean;
 }
 
 /** The custody sentence (§5.4): where the grant is and whether it is staked. */
-export function grantCustody({ amountSalt, unlockBlock, staked }: GrantFacts): string {
+export function grantCustody({ amountSalt, unlockBlock, staked, granted }: GrantFacts): string {
   const grant = amountSalt && amountSalt !== "—" ? `a ${amountSalt} SALT grant` : "a SALT grant";
-  const until = unlockBlock != null ? `until block ${unlockBlock.toLocaleString("en-US")}` : "for about a year";
+  const until = unlockBlock != null ? `until block ${unlockBlock.toLocaleString("en-US")}` : granted ? "until block — (not read yet)" : "for about a year";
   return staked
     ? `Your membership comes with ${grant}, locked in your bond ${until}. Your bond is activated, so the grant is staked in the ValidatorRegistry.`
     : `Your membership comes with ${grant}, locked in your bond ${until}. It is not staked until you activate the bond.`;

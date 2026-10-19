@@ -1,32 +1,29 @@
 // =====================================================================
 // citrate-core: the membership price (C1-V V12)
 //
-// UI truth contract v1 §5.3: "$48 a year" comes from the membership service, not a hard-coded
-// string, and it buys membership, not SALT.
+// UI truth contract v1 §5.3: the membership price comes from the membership service, not a
+// hard-coded string, and it buys membership, not SALT.
 //
-// SOURCE NOTE (flagged in the C1-V PR): core-membership has no price endpoint yet. The amount it
-// charges is its Stripe price (`STRIPE_PRICE_ID`, the $48/yr Pilot price, core-membership
-// src/lib/stripe/client.ts), and Stripe checkout shows the member the exact charge before they pay.
-// Until core-membership serves the price, this is the single place the app states it, in the same
-// style as the chain config (src/chain.ts) and the address book; every surface reads it from here.
-// When the service exposes the price, replace this constant with that read.
+// Chain-team ruling (no waiver): core-membership does not serve a public price route yet, so the
+// app states NO price. Every surface links to the membership site instead ("See membership
+// pricing"), and Stripe checkout shows the exact charge before anything is paid. This module stays
+// the single place that will read the price once core-membership ships the route (board item
+// owned by DGX); until then `membershipPriceLabel()` returns null and callers show the link.
 // =====================================================================
 
-export const MEMBERSHIP_PRICE = {
-  usd: 48,
-  period: "year",
-  source: "core-membership checkout (Stripe STRIPE_PRICE_ID); no price endpoint yet",
-} as const;
+/** The public membership page, which states the current price. */
+export const MEMBERSHIP_PRICING_URL = "https://membership.citrate.ai";
 
-/** "$48" */
-export function membershipPrice(): string {
-  return "$" + MEMBERSHIP_PRICE.usd;
+/** The link text every surface shows in place of a price. */
+export const SEE_PRICING = "See membership pricing";
+
+/**
+ * The price as served by core-membership, or null while no price route exists. Callers render
+ * SEE_PRICING linking to MEMBERSHIP_PRICING_URL when this is null; they never supply a number.
+ */
+export function membershipPriceLabel(): string | null {
+  return null;
 }
 
-/** "$48/year" */
-export function membershipPricePerYear(): string {
-  return membershipPrice() + "/" + MEMBERSHIP_PRICE.period;
-}
-
-/** §5.3: what the price buys. */
-export const MEMBERSHIP_BUYS = "It buys membership. It does not buy SALT.";
+/** §5.3: what membership buys. */
+export const MEMBERSHIP_BUYS = "Membership does not buy SALT.";

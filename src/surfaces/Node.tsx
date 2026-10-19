@@ -324,7 +324,7 @@ export function Node({ store, s }: SurfaceProps) {
                 {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
                 {s.hasGrant && (
                   <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0, lineHeight: 1.5 }}>
-                    {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 })}
+                    {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant })}
                   </p>
                 )}
                 {/* W1.3 — once the node is synced (proposer.key minted), the member

@@ -395,7 +395,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
               {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
               {s.hasGrant
-                ? grantExplanation({ amountSalt: grantSaltStr, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 })
+                ? grantExplanation({ amountSalt: grantSaltStr, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: true })
                 : "No membership grant on this wallet."}
             </p>
           </div>

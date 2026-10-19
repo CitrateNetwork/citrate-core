@@ -3,8 +3,10 @@
 //   V5  three different explanations of grant custody -> one explanation everywhere (§5.4), with
 //       the "not purchased, not an investment" line wherever the grant is mentioned (§5.7) and the
 //       betanet carry-over line (§5.6). "Staked" only once the bond is activated.
-//   V12 "$48" hard-coded in Onboarding and Settings -> one source (§5.3). Here the price source is
-//       swapped for $60 to prove every surface reads it rather than a literal.
+//   V12 "$48" hard-coded in Onboarding and Settings -> one source (§5.3). Chain-team ruling (no
+//       waiver): until core-membership serves a public price route, the app shows NO number and
+//       links to the membership page ("See membership pricing") instead.
+//   V13 Community promised referral rewards with no on-chain source, and "settled" (§5.5, §1).
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
@@ -13,12 +15,10 @@ vi.mock("../bridge/mode", () => ({
   BRIDGE_MODE: "tauri" as const,
   assertSimAllowed: () => {},
 }));
-vi.mock("../data/membership", async (orig) => {
-  const real = await orig<typeof import("../data/membership")>();
-  return { ...real, MEMBERSHIP_PRICE: { ...real.MEMBERSHIP_PRICE, usd: 60 }, membershipPrice: () => "$60", membershipPricePerYear: () => "$60/year" };
-});
 
-import { S3, S5 } from "../onboarding/Onboarding";
+import { Onboarding, S3, S5 } from "../onboarding/Onboarding";
+import { Community } from "./Community";
+import { MEMBERSHIP_PRICING_URL } from "../data/membership";
 import { Wallet } from "./Wallet";
 import { Node } from "./Node";
 import { Settings } from "./Settings";
@@ -37,6 +37,9 @@ const stub = {
   refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
+  refreshProducers: () => {},
+  claimAccountMismatch: () => false,
+  openExternal: async () => {},
   toast: () => {},
   identity: () => ({ name: "Member", initials: "M", email: "m@example.com", sub: "sub-1", wallet: "0x" + "0".repeat(40), tier: "pilot", role: "member", org: null, real: true }),
 } as unknown as Store;
@@ -114,7 +117,7 @@ describe("V5 — one grant-custody explanation everywhere", () => {
 
   it("the built-in agent's staking reply uses it, with no LiquidStakingPool or mainnet-release story", async () => {
     vi.useFakeTimers();
-    const ctx: AgentContext = { height: 1, peers: 1, nodeState: "synced", staked: 0, liquid: 0, claimable: null, rewardsTotal: null, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "pilot" };
+    const ctx: AgentContext = { height: 1, peers: 1, nodeState: "synced", staked: 0, liquid: 0, claimable: null, rewardsTotal: null, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "pilot", grant: { amountSalt: 32_000, unlockBlock: 16_000_000, staked: false } };
     let text = "";
     const done = createDemoProvider(() => ctx).send({
       messages: [{ role: "user", content: "what's my staking position?" }],
@@ -137,27 +140,89 @@ describe("V5 — one grant-custody explanation everywhere", () => {
   });
 });
 
-describe("V12 — the membership price has one source", () => {
-  it("S3 shows the price from the membership source, never a literal $48", () => {
+describe("V12 — no in-app price until core-membership serves one", () => {
+  const PRICE = /\$\s?\d/;
+
+  it("S3 shows a 'See membership pricing' link and no price", () => {
     const html = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />);
-    expect(html).toContain("$60");
-    expect(html).not.toContain("$48");
+    expect(html).not.toMatch(PRICE);
+    expect(html).toContain("See membership pricing");
+    expect(html).toContain(MEMBERSHIP_PRICING_URL);
     expect(html).toContain("does not buy SALT");
   });
 
-  it("Settings shows the price from the membership source", () => {
+  it("Settings shows the link and no price", () => {
     const html = renderToStaticMarkup(<Settings store={stub} s={member({ sSec: "billing" })} />);
-    expect(html).toContain("$60/year");
-    expect(html).not.toContain("$48");
+    expect(html).not.toMatch(PRICE);
+    expect(html).toContain("See membership pricing");
   });
 
-  it("no surface hard-codes a $48 string", () => {
-    for (const f of ["src/onboarding/Onboarding.tsx", "src/surfaces/Settings.tsx", "src/surfaces/Commissary.tsx"]) {
+  it("no surface, and not membership.ts, carries a price literal", () => {
+    for (const f of ["src/onboarding/Onboarding.tsx", "src/surfaces/Settings.tsx", "src/surfaces/Commissary.tsx", "src/data/membership.ts"]) {
       const code = readFileSync(f, "utf8")
         .split("\n")
         .filter((l) => !/^\s*(\/\/|\*|\{\/\*)/.test(l))
         .join("\n");
-      expect(code, f).not.toContain("$48");
+      expect(code, f).not.toMatch(/\$\d|usd:\s*\d/);
     }
+  });
+
+  it("the pricing link points at the membership site", () => {
+    expect(MEMBERSHIP_PRICING_URL).toBe("https://membership.citrate.ai");
+  });
+});
+
+describe("#349 review — remaining grant mentions use the one explanation", () => {
+  it("the claim banner and the S3 stalled-grant card say 'grant, locked in your bond' with the disclaimer", () => {
+    const claim = renderToStaticMarkup(
+      <Onboarding store={stub} s={member({ stage: "s3", s3: "idle", hasGrant: false, authEmail: "m@example.com", pendingClaim: { email: "m@example.com" } as never })} />,
+    );
+    expect(claim).not.toContain("SALT stake");
+    expect(claim).toContain(GRANT_DISCLAIMER);
+    const stalled = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "paying", s3PollExhausted: true, hasGrant: false })} />);
+    expect(stalled).not.toContain("SALT stake");
+    expect(stalled).toContain(GRANT_DISCLAIMER);
+  });
+
+  it("a granted member whose unlock block is unread sees '—', not 'about a year'", () => {
+    expect(grantExplanation({ amountSalt: "32,000", unlockBlock: null, staked: false, granted: true })).toContain("until block — (not read yet)");
+    expect(grantExplanation({ amountSalt: "32,000", unlockBlock: null, staked: false })).toContain("for about a year");
+  });
+
+  it("the agent's staking reply branches on the real grant state and unlock block", async () => {
+    vi.useFakeTimers();
+    const ask = async (ctx: AgentContext) => {
+      let text = "";
+      const done = createDemoProvider(() => ctx).send({
+        messages: [{ role: "user", content: "what's my staking position?" }],
+        callbacks: { onStatus: () => {}, onToken: (t: string) => (text += t), onToolCall: async (_c: ToolCall) => "ok" },
+      });
+      await vi.runAllTimersAsync();
+      await done;
+      return text;
+    };
+    const base: AgentContext = { height: 1, peers: 1, nodeState: "synced", staked: 0, liquid: 0, claimable: null, rewardsTotal: null, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "free", grant: null };
+    const free = await ask(base);
+    expect(free).not.toContain("Your membership comes with");
+    expect(free).toContain("no membership grant");
+    const granted = await ask({ ...base, tier: "pilot", grant: { amountSalt: 32_000, unlockBlock: 16_000_000, staked: false } });
+    expect(granted).toContain("until block 16,000,000");
+    expect(granted).toContain(GRANT_DISCLAIMER);
+  });
+
+  it("the Hermes context carries the grant facts", () => {
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0 });
+    expect(store.snapshot().grant).toEqual({ amountSalt: 32000, unlockBlock: 16_000_000, staked: false });
+    store.setState({ hasGrant: false });
+    expect(store.snapshot().grant).toBeNull();
+  });
+});
+
+describe("V13 — referrals describe only what is recorded", () => {
+  it("Community promises no referral reward and says nothing 'settled'", () => {
+    const html = renderToStaticMarkup(<Community store={stub} s={member()} />);
+    expect(html.toLowerCase()).not.toMatch(/reward|settle/);
+    expect(html).not.toContain("SALT grant to the whole group");
+    expect(html).toContain("recorded");
   });
 });

@@ -19,10 +19,10 @@ import { SurfaceProps } from "./shared";
 import { CATALOG } from "../data/seed";
 import { RANK } from "../shell/state";
 import { federationUrl } from "../data/links";
-import { membershipPrice } from "../data/membership";
+import { membershipPriceLabel } from "../data/membership";
 
-// C1-V V12: the membership price comes from its one source (UI truth contract §5.3).
-const JOIN_LABEL = "Join · " + membershipPrice() + "/yr";
+// C1-V V12: no in-app price until core-membership serves one (chain-team ruling, contract §5.3).
+const JOIN_LABEL = membershipPriceLabel() ? "Join · " + membershipPriceLabel() : "Join · see pricing";
 
 type BadgeTriple = [string, string, string];
 const badge = (st: string): BadgeTriple =>

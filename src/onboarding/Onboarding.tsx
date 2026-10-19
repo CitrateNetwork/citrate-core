@@ -9,8 +9,9 @@ import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
 import { CONSENSUS_LAG_NOTE, validatorWord } from "../shell/chainTruth";
-import { grantExplanation } from "../data/grantCopy";
-import { MEMBERSHIP_BUYS, MEMBERSHIP_PRICE, membershipPrice } from "../data/membership";
+import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
+import { MEMBERSHIP_BUYS } from "../data/membership";
+import { PricingLink } from "../components/PricingLink";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -317,7 +318,8 @@ function ClaimBanner({ store, s }: { store: Store; s: AppState }) {
       <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
         {matched ? (
           <>
-            You paid as <strong>{claim.email}</strong>. Your seat (SBT + 32,000 SALT stake) lands on chain once the grant settles — it will appear here.
+            You paid as <strong>{claim.email}</strong>. Your seat (the membership SBT, and a 32,000 SALT grant locked in your bond) lands on chain once the grant is
+            issued — it will appear here. {GRANT_DISCLAIMER}
           </>
         ) : (
           <>
@@ -562,7 +564,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr", gap: 12 }}>
         <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={eyebrow}>Free</div>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>$0</div>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>No charge</div>
           <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0, flex: 1 }}>Wallet, agent harness, chain reads, marketplace view. No staking, no grant.</p>
           {s.s3 === "idle" && (
             <button className="btn btn-ghost btn-sm" style={{ marginTop: 8, alignSelf: "flex-start" }} onClick={() => store.onS3Free()}>
@@ -573,7 +575,8 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
         <div style={{ border: "2px solid var(--tx-1)", background: "var(--srf-2)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6, position: "relative" }}>
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>Pilot · selected</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>
-            {membershipPrice()}<span style={{ fontSize: 13, color: "var(--tx-3)" }}> / {MEMBERSHIP_PRICE.period}</span>
+            {/* C1-V V12: no in-app price until core-membership serves one (chain-team ruling). */}
+            <PricingLink open={(u) => void store.openExternal(u)} style={{ fontSize: 15 }} />
           </div>
           <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0 }}>Full membership. Everything listed below.</p>
         </div>
@@ -614,7 +617,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
             </>
           ) : (
             <button className="btn btn-primary btn-lg" onClick={() => store.onS3Pay()}>
-              Check out in your browser · {membershipPrice()}
+              Check out in your browser
             </button>
           )}
         </div>
@@ -643,8 +646,8 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
         <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }} data-testid="s3-poll-exhausted">
           <div style={{ fontSize: 15, fontWeight: 500 }}>Payment received — the grant has not landed yet</div>
           <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
-            Your payment settled. The membership grant (the SBT and the 32,000 SALT stake) is
-            issued server-side and has not appeared on chain yet. This app stopped polling to
+            Your payment settled. The membership grant (the SBT, and a 32,000 SALT grant locked in your bond) is
+            issued server-side and has not appeared on chain yet. {GRANT_DISCLAIMER} This app stopped polling to
             avoid hammering the network — it does not mean anything failed, and you do not need
             to pay again.
           </p>
@@ -824,7 +827,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
               <SettleRow k="Member wallet" v={short(s.walletAddr)} accent />
             </div>
             <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 })}
+              {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant })}
             </p>
           </div>
           <div>

@@ -41,6 +41,12 @@ export interface AgentContext {
   claimable: number | null;
   /** `ValidatorRegistry.rewardsOf(pubkey).total` in SALT; null = not a validator / not read. */
   rewardsTotal: number | null;
+  /**
+   * The member's membership grant as read from chain (C1-V V5): the amount in SALT, the bond's
+   * `MemberBond.unlockBlock` (null = not read), and whether the bond is activated (staked). null =
+   * no grant (free tier, or not granted yet). Optional so older callers default to "no grant".
+   */
+  grant?: { amountSalt: number; unlockBlock: number | null; staked: boolean } | null;
   walletAddr: string;
   tier: string;
 }
@@ -993,7 +999,10 @@ function routeIntent(t: string): Plan {
       toolCalls: [tc("chain_read", { query: "staking.position" })],
       compose: (c) =>
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4); staked = stakeOf.
-        `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. ${grantExplanation({ amountSalt: null, unlockBlock: null, staked: c.staked > 0 })} Your node is **${c.nodeState}**; the Wallet and Node pages show the bond's unlock block.`,
+        // C1-V review (#349): branch on the real grant state, with the real amount and unlock block.
+        c.grant
+          ? `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. ${grantExplanation({ amountSalt: c.grant.amountSalt.toLocaleString("en-US"), unlockBlock: c.grant.unlockBlock, staked: c.grant.staked, granted: true })} Your node is **${c.nodeState}**.`
+          : `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. You have no membership grant on this wallet${c.tier === "free" ? " (public tier)" : " yet"}. Your node is **${c.nodeState}**.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {

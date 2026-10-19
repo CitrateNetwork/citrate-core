@@ -2103,6 +2103,8 @@ export class Store {
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
+      // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
+      grant: s.hasGrant && grantStakedSalt > 0 ? { amountSalt: grantStakedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
       membership: {
@@ -2112,7 +2114,7 @@ export class Store {
         locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
         note:
-          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 }) +
+          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant }) +
           " Locked SALT is not spendable and is separate from the liquid balance.",
       },
     };
