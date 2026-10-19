@@ -82,4 +82,19 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     expect(read).toHaveBeenCalledTimes(2);
     expect(store.state.pendingWithdrawalsError).toBeNull();
   });
+
+  it("overlapping refreshes share one read, so retry chains do not multiply", async () => {
+    let release!: (v: never[]) => void;
+    const read = vi.spyOn(bridge.wallet, "pendingWithdrawals").mockReturnValue(new Promise((r) => (release = r as never)));
+    const a = store.refreshPendingWithdrawals();
+    const b = store.refreshPendingWithdrawals();
+    expect(read).toHaveBeenCalledTimes(1);
+    release([] as never[]);
+    await Promise.all([a, b]);
+    expect(store.state.pendingWithdrawalsError).toBeNull();
+    // Once settled, a new refresh reads again.
+    read.mockResolvedValue([]);
+    await store.refreshPendingWithdrawals();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
 });

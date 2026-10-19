@@ -502,6 +502,9 @@ struct ChainStub {
     fail_from: RefCell<Option<u64>>,
     /// How many eth_getLogs calls answer -32002 ("retry": the node's cache is filling) first.
     retry_first: RefCell<u32>,
+    /// citrate-chain#334: eth_blockNumber is the STORED height, but eth_getLogs omits blocks above
+    /// the APPLIED tip without an error. `applied_tip` = that tip (None = all applied).
+    applied_tip: RefCell<Option<u64>>,
     requests: RefCell<Vec<JsonValue>>,
 }
 impl ChainStub {
@@ -513,6 +516,7 @@ impl ChainStub {
             max_range: None,
             fail_from: RefCell::new(None),
             retry_first: RefCell::new(0),
+            applied_tip: RefCell::new(None),
             requests: RefCell::new(Vec::new()),
         }
     }
@@ -547,7 +551,8 @@ impl RpcTransport for ChainStub {
                 if *self.retry_first.borrow() > 0 {
                     *self.retry_first.borrow_mut() -= 1;
                     return Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
-                        "code": -32002, "message": "log index warming, retry" } }));
+                        "code": -32002, "message": "log index warming, retry",
+                        "data": { "retryable": true } } }));
                 }
                 if let Some(at) = *self.fail_from.borrow() {
                     if from <= at && at <= to {
@@ -556,6 +561,9 @@ impl RpcTransport for ChainStub {
                 }
                 if let Some(c) = self.clamp_to {
                     to = to.min(from + c);
+                }
+                if let Some(t) = *self.applied_tip.borrow() {
+                    to = to.min(t);
                 }
                 let logs: Vec<JsonValue> = self
                     .withdrawals
@@ -680,14 +688,15 @@ fn a_refresh_is_incremental() {
     let rpc = RpcClient::with_transport(ChainStub::new(50_000, vec![(1, 10_000, false)]));
     let mut scan = WithdrawalScan::default();
     read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("first");
-    assert_eq!(scan.next_block, 50_001);
+    // The committed position stays SAFE_DEPTH_BLOCKS behind the head (C1-W, #371 review).
+    assert_eq!(scan.next_block, 50_001 - SAFE_DEPTH_BLOCKS);
     let before = rpc.transport().log_ranges().len();
     read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("refresh");
     let after = rpc.transport().log_ranges();
-    assert_eq!(after.len() - before, 1, "one window: the re-scanned tail");
+    assert_eq!(after.len() - before, 1, "one window: the trailing 1000 blocks");
     let (a, b) = after[after.len() - 1];
     assert_eq!(b, 50_000);
-    assert_eq!(a, 50_001 - RESCAN_TAIL_BLOCKS, "only the tail is re-read");
+    assert_eq!(a, 50_001 - SAFE_DEPTH_BLOCKS, "only the trailing window is re-read");
 }
 
 // A failed window is an error, never an empty (or partial) list; the blocks read before it are
@@ -746,6 +755,28 @@ fn a_retry_answer_retries_the_same_window_and_then_reads_it() {
     assert_eq!(ranges[0], (LIQUID_STAKING_POOL_DEPLOY_BLOCK, LIQUID_STAKING_POOL_DEPLOY_BLOCK + 999));
 }
 
+// A -32002 that does not say `retryable: true` is a window error after ONE call.
+#[test]
+fn a_retry_code_without_the_retryable_flag_is_not_retried() {
+    struct Busy(RefCell<u32>);
+    impl RpcTransport for Busy {
+        fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+            match body["method"].as_str() {
+                Some("eth_blockNumber") => Ok(ok(JsonValue::String("0x7d0".into()))),
+                _ => {
+                    *self.0.borrow_mut() += 1;
+                    Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1,
+                        "error": { "code": -32002, "message": "busy" } }))
+                }
+            }
+        }
+    }
+    let rpc = RpcClient::with_transport(Busy(RefCell::new(0)));
+    let err = read_pending_withdrawals(&rpc, STAKER_ADDR).expect_err("an error");
+    assert!(matches!(err, StakingError::Rpc(_)), "{err:?}");
+    assert_eq!(*rpc.transport().0.borrow(), 1, "no retry");
+}
+
 #[test]
 fn the_retry_back_off_is_bounded() {
     let waits: Vec<u64> = (0..LOGS_RETRY_ATTEMPTS).map(|a| logs_retry_backoff(a).as_millis() as u64).collect();
@@ -786,11 +817,86 @@ fn saved_scan_progress_survives_a_relaunch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// #371 review: eth_blockNumber (stored height) can be ahead of what eth_getLogs serves (applied
+// tip). A position committed past the applied tip, then saved, would skip those blocks forever.
+// The committed position stays SAFE_DEPTH_BLOCKS behind the head, so after a relaunch the trailing
+// blocks are read again and the withdrawal is found.
+#[test]
+fn a_head_ahead_of_the_logs_does_not_skip_a_withdrawal_after_a_relaunch() {
+    let dir = std::env::temp_dir().join(format!("c1w-lag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("withdrawal-scans.json");
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![(12, 4_500, false)]));
+    *rpc.transport().applied_tip.borrow_mut() = Some(4_200);
+    // Launch 1: the node has stored 5,000 blocks but applied 4,200; block 4,500 is not served yet.
+    let mut scan = load_scan(&file, "k");
+    let first = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 1");
+    assert!(first.is_empty());
+    assert!(scan.next_block <= 5_001 - SAFE_DEPTH_BLOCKS, "{}", scan.next_block);
+    save_scan(&file, "k", &scan).expect("save");
+    // Launch 2: the node has applied everything.
+    *rpc.transport().applied_tip.borrow_mut() = None;
+    let mut scan = load_scan(&file, "k");
+    let second = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 2");
+    assert_eq!(second.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["12"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// #371 review: overlapping refreshes must not roll progress back. A slower read that started
+// from older progress and saves last keeps the larger position and the union of ids.
+#[test]
+fn an_older_scan_saved_last_does_not_roll_progress_back() {
+    let dir = std::env::temp_dir().join(format!("c1w-race-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("withdrawal-scans.json");
+    let newer = WithdrawalScan { next_block: 90_000, ids: [1u128, 2].into_iter().collect() };
+    let older = WithdrawalScan { next_block: 20_000, ids: [1u128, 3].into_iter().collect() };
+    save_scan(&file, "k", &newer).expect("save newer");
+    save_scan(&file, "k", &older).expect("save older");
+    let got = load_scan(&file, "k");
+    assert_eq!(got.next_block, 90_000);
+    assert_eq!(got.ids, [1u128, 2, 3].into_iter().collect());
+    // The in-memory store merges the same way.
+    assert_eq!(merge_scans(&newer, &older), got);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn concurrent_saves_leave_a_whole_file_with_the_furthest_progress() {
+    let dir = std::env::temp_dir().join(format!("c1w-conc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("withdrawal-scans.json");
+    let handles: Vec<_> = (1..=16u64)
+        .map(|i| {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                let s = WithdrawalScan { next_block: i * 1_000, ids: [i as u128].into_iter().collect() };
+                save_scan(&file, "k", &s).expect("save");
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("join");
+    }
+    let got = load_scan(&file, "k");
+    assert_eq!(got.next_block, 16_000);
+    assert_eq!(got.ids.len(), 16, "no save lost");
+    // Written by temp file + rename: nothing but the scan file is left in the folder.
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(names, vec!["withdrawal-scans.json".to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_scan_starts_at_the_pool_deployment_block() {
     // contracts/addresses/40204.provenance.json: LiquidStakingPool created at block 427.
     assert_eq!(LIQUID_STAKING_POOL_DEPLOY_BLOCK, 427);
     assert_eq!(LOG_WINDOW_BLOCKS, 1000);
+    assert_eq!(SAFE_DEPTH_BLOCKS, 1000, "the chain's settled depth");
 }
 
 #[test]

@@ -554,9 +554,13 @@ pub const LIQUID_STAKING_POOL_DEPLOY_BLOCK: u64 = 427;
 /// 1000 blocks; citrate-chain#334 answers -32005 instead.
 pub const LOG_WINDOW_BLOCKS: u64 = 1000;
 
-/// C1-W — blocks below the last scanned head that a refresh reads again, so a log in a block the
-/// node had not yet indexed at the previous read is still found. Duplicates are dropped by id.
-pub const RESCAN_TAIL_BLOCKS: u64 = 64;
+/// C1-W (#371 review) — how far behind the head the committed scan position stays. Under
+/// citrate-chain#334 `eth_blockNumber` is the stored height while `eth_getLogs` omits blocks above
+/// the applied tip without an error, so a position at the head could mark unserved blocks done
+/// (and, saved to disk, skip them for good). Every refresh re-reads these trailing blocks, and
+/// duplicates are dropped by id. At least the chain's settled depth (1000). There is no usable
+/// finalized head: `finalized` returns genesis while finality is not running.
+pub const SAFE_DEPTH_BLOCKS: u64 = 1000;
 
 /// C1-W — how many times one window is asked for when the node answers -32002 ("retry").
 pub const LOGS_RETRY_ATTEMPTS: u32 = 5;
@@ -577,18 +581,39 @@ pub fn load_scan(file: &std::path::Path, key: &str) -> WithdrawalScan {
         .unwrap_or_default()
 }
 
-/// C1-W — save the scan for `key` into `file` (public chain facts only: a block and request ids).
+/// C1-W (#371 review) — two scans of the same key, merged so progress never goes back: the larger
+/// position and the union of ids (a claimed id that comes back is dropped again at the next read).
+pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
+    WithdrawalScan {
+        next_block: a.next_block.max(b.next_block),
+        ids: a.ids.union(&b.ids).copied().collect(),
+    }
+}
+
+/// C1-W — save the scan for `key` into `file` (public chain facts only: a block and request ids),
+/// merged with what is saved ([`merge_scans`]), one save at a time, written to a temp file and
+/// renamed over the old one so a reader never sees a partial file.
 pub fn save_scan(file: &std::path::Path, key: &str, scan: &WithdrawalScan) -> std::io::Result<()> {
+    static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     let mut all: std::collections::HashMap<String, WithdrawalScan> = std::fs::read(file)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    all.insert(key.to_string(), scan.clone());
+    let merged = match all.get(key) {
+        Some(saved) => merge_scans(saved, scan),
+        None => scan.clone(),
+    };
+    all.insert(key.to_string(), merged);
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let body = serde_json::to_vec(&all).map_err(std::io::Error::other)?;
-    std::fs::write(file, body)
+    let tmp = file.with_extension(format!("json.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, file).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// C1-W — what the paged scan has read for one staker: the first block not yet scanned and every
@@ -603,7 +628,7 @@ pub struct WithdrawalScan {
 
 /// [`read_pending_withdrawals`], continuing `scan`. `WithdrawalRequested` logs are read in windows
 /// of at most [`LOG_WINDOW_BLOCKS`] from [`LIQUID_STAKING_POOL_DEPLOY_BLOCK`] (or from the last
-/// scanned block, less [`RESCAN_TAIL_BLOCKS`]) to the head; a -32005 answer halves the window. A
+/// committed position, which stays [`SAFE_DEPTH_BLOCKS`] behind the head) to the head; a -32005 answer halves the window. A
 /// failed window is an error naming it (never an empty or partial list); the windows read before it
 /// stay in `scan`. With `deadline`, a scan still short of the head when it passes is
 /// [`StakingError::Incomplete`].
@@ -621,13 +646,12 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         .block_number()
         .map_err(|e| StakingError::Rpc(e.to_string()))?;
 
-    let mut from = if scan.next_block > LIQUID_STAKING_POOL_DEPLOY_BLOCK {
-        scan.next_block
-            .saturating_sub(RESCAN_TAIL_BLOCKS)
-            .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK)
-    } else {
-        LIQUID_STAKING_POOL_DEPLOY_BLOCK
-    };
+    let mut from = scan.next_block.max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
+    // The position committed to `scan` never passes this: the trailing SAFE_DEPTH_BLOCKS are read
+    // again by every refresh.
+    let commit_cap = (current_block + 1)
+        .saturating_sub(SAFE_DEPTH_BLOCKS)
+        .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
     let mut window = LOG_WINDOW_BLOCKS;
     let mut retries = 0u32;
     while from <= current_block {
@@ -658,7 +682,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
                         scan.ids.insert(decode_uint256_topic(id_topic)?);
                     }
                 }
-                scan.next_block = scan.next_block.max(to + 1);
+                scan.next_block = scan.next_block.max((to + 1).min(commit_cap));
                 from = to + 1;
                 retries = 0;
             }
@@ -890,7 +914,7 @@ pub fn wallet_claim_withdrawal_sync(
 /// C1-W: reads from the public RPC (`rpc.citrate.ai`): only producer nodes store receipts and
 /// logs today, so a member's own follower node can't answer `eth_getLogs`. The scan is paged (see
 /// [`read_pending_withdrawals_with`]) and kept per staker for this app session, so a refresh reads
-/// only new blocks; the first scan is spread over refreshes by [`SCAN_BUDGET`].
+/// only the trailing blocks and new ones; the first scan is spread over refreshes by [`SCAN_BUDGET`].
 #[tauri::command]
 pub async fn wallet_pending_withdrawals(
     app: tauri::AppHandle,
@@ -922,11 +946,16 @@ pub async fn wallet_pending_withdrawals(
         let rpc = crate::rpc::RpcClient::citrate();
         let deadline = std::time::Instant::now() + SCAN_BUDGET;
         let out = read_pending_withdrawals_with(&rpc, &wallet.address, &mut scan, Some(deadline));
-        // Keep the progress even when this read failed or ran out of budget.
-        scans()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key.clone(), scan.clone());
+        // Keep the progress even when this read failed or ran out of budget, merged with any read
+        // that overlapped this one so progress never goes back.
+        {
+            let mut all = scans().lock().unwrap_or_else(|e| e.into_inner());
+            let merged = match all.get(&key) {
+                Some(cur) => merge_scans(cur, &scan),
+                None => scan.clone(),
+            };
+            all.insert(key.clone(), merged);
+        }
         if let Some(f) = file.as_deref() {
             // Best effort: a failed save only means the next launch rescans.
             let _ = save_scan(f, &key, &scan);

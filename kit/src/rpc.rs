@@ -300,7 +300,12 @@ impl<T: RpcTransport> RpcClient<T> {
             };
             match err.get("code").and_then(Value::as_i64) {
                 Some(RPC_LIMIT_EXCEEDED) => return Err(GetLogsError::RangeTooLarge(msg())),
-                Some(RPC_RETRY) => return Err(GetLogsError::Retry(msg())),
+                // #371 review: only an answer that says it is retryable is retried.
+                Some(RPC_RETRY)
+                    if err.pointer("/data/retryable").and_then(Value::as_bool) == Some(true) =>
+                {
+                    return Err(GetLogsError::Retry(msg()))
+                }
                 _ => {}
             }
         }
@@ -463,7 +468,8 @@ fn parse_logs(result: &Value) -> Result<Vec<LogEntry>, RpcError> {
 pub const RPC_LIMIT_EXCEEDED: i64 = -32005;
 
 /// The JSON-RPC code citrate-chain#334 returns while a deep historical `eth_getLogs` range is not
-/// served yet (the node's cache fills over several requests): retry the same range later.
+/// served yet (the node's cache fills over several requests), with `data.retryable = true`: retry
+/// the same range later. Without that flag it is an ordinary error.
 pub const RPC_RETRY: i64 = -32002;
 
 /// An `eth_getLogs` failure, telling a too-wide range apart from every other error (C1-W).

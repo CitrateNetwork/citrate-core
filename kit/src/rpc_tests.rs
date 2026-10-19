@@ -319,10 +319,15 @@ fn get_logs_range_tells_a_too_wide_range_from_other_errors() {
 // C1-W (#334 review) — -32002 means "retry this range later": a paging caller retries it.
 #[test]
 fn get_logs_range_reports_a_retry_answer() {
-    let retry = json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32002, "message": "retry" } });
-    let rpc = RpcClient::with_transport(MockTransport::new(vec![retry]));
-    assert!(matches!(
-        rpc.get_logs_range(json!({ "fromBlock": "0x1ab", "toBlock": "0x592" })),
-        Err(GetLogsError::Retry(m)) if m == "retry"
-    ));
+    let retry = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32002, "message": "retry", "data": { "retryable": true } } });
+    // #371 review: only an error that says it is retryable is retried.
+    let not_marked = json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32002, "message": "busy" } });
+    let marked_false = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32002, "message": "busy", "data": { "retryable": false } } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![retry, not_marked, marked_false]));
+    let f = json!({ "fromBlock": "0x1ab", "toBlock": "0x592" });
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::Retry(m)) if m == "retry"));
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "busy"));
+    assert!(matches!(rpc.get_logs_range(f), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "busy"));
 }

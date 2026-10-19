@@ -4525,6 +4525,18 @@ export class Store {
    * reads []. Failure leaves the last honest list untouched — no fabricated rows.
    */
   async refreshPendingWithdrawals(): Promise<void> {
+    // C1-W (#371 review): one read at a time. Overlapping callers (launch, Wallet mount, after a
+    // ceremony, the retry timers) share the read in flight, so the retry chains never multiply.
+    if (this.pendingWithdrawalsRead) return this.pendingWithdrawalsRead;
+    this.pendingWithdrawalsRead = this.readPendingWithdrawals().finally(() => {
+      this.pendingWithdrawalsRead = null;
+    });
+    return this.pendingWithdrawalsRead;
+  }
+
+  private pendingWithdrawalsRead: Promise<void> | null = null;
+
+  private async readPendingWithdrawals(): Promise<void> {
     try {
       const list = await bridge.wallet.pendingWithdrawals();
       this.setState({ pendingWithdrawals: list, pendingWithdrawalsError: null });
