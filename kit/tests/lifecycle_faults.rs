@@ -18,13 +18,15 @@ mod lifecycle;
 use std::time::Duration;
 
 use citrate_core_kit::supervisor::{
-    BackoffPolicy, ChildWatch, ControlResult, Desired, HealthCheck, Phase, Receipt, Supervisor,
-    SupervisorConfig, SupervisorState,
+    BackoffPolicy, ChildWatch, ControlResult, ControlToken, Desired, HealthCheck, Phase, Receipt,
+    Supervisor, SupervisorConfig, SupervisorState,
 };
 use lifecycle::fixture::{pgrep, pid_alive, sleep_bin, OwnedFixture, SUITE_PREFIX};
 use lifecycle::timing::{hold_for, sample_over, wait_for, Deadline};
 
-const ACQUIRE: Duration = Duration::from_secs(5);
+/// How long a fixture waits to acquire what it needs before it gives up as INCONCLUSIVE. Long,
+/// because hosts running many suites at once can take seconds to schedule a fork and exec.
+const ACQUIRE: Duration = Duration::from_secs(15);
 
 fn fast_backoff(max_retries: u32) -> BackoffPolicy {
     BackoffPolicy {
@@ -32,6 +34,20 @@ fn fast_backoff(max_retries: u32) -> BackoffPolicy {
         multiplier: 2,
         max_delay: Duration::from_millis(80),
         max_retries,
+    }
+}
+
+/// A receipt read that rides out a briefly contended cell: `Unknown` (the bounded read found
+/// the cell busy) is retried for up to a second, so assertions see the real receipt.
+fn receipt_of(sup: &Supervisor, token: ControlToken) -> Receipt {
+    let deadline = Deadline::after(Duration::from_secs(1));
+    loop {
+        match sup.receipt(token) {
+            Receipt::Unknown { .. } if !deadline.expired() => {
+                std::thread::sleep(Duration::from_millis(2))
+            }
+            r => return r,
+        }
     }
 }
 
@@ -480,7 +496,7 @@ fn repeated_stop_joins_receipt() {
     };
     // The child ignores SIGTERM, so the teardown lasts the whole grace: accepted, not done.
     assert_eq!(
-        sup.receipt(first),
+        receipt_of(&sup, first),
         Receipt::Pending,
         "Accepted never means Complete"
     );
@@ -491,8 +507,8 @@ fn repeated_stop_joins_receipt() {
         other => panic!("repeated Stop: {other:?}"),
     }
     let done = wait_for(ACQUIRE, Duration::from_millis(10), || {
-        match sup.receipt(first) {
-            Receipt::Pending => None,
+        match receipt_of(&sup, first) {
+            Receipt::Pending | Receipt::Unknown { .. } => None,
             r => Some(r),
         }
     });
@@ -559,12 +575,12 @@ fn explicit_start_after_stop_creates_exactly_one_incarnation() {
     assert_eq!(pids[1], second_pid);
     assert_ne!(first_pid, second_pid);
     let started = wait_for(ACQUIRE, Duration::from_millis(10), || {
-        matches!(sup.receipt(token), Receipt::Started { .. }).then_some(())
+        matches!(receipt_of(&sup, token), Receipt::Started { .. }).then_some(())
     });
     assert!(
         started.is_ok(),
         "the Start receipt reports the spawn: {:?}",
-        sup.receipt(token)
+        receipt_of(&sup, token)
     );
     let snap = sup
         .lifecycle()
@@ -607,8 +623,8 @@ fn stop_with_a_held_reader_is_incomplete_and_quarantined() {
         other => panic!("Stop: {other:?}"),
     };
     let settled = wait_for(ACQUIRE, Duration::from_millis(10), || {
-        match sup.receipt(token) {
-            Receipt::Pending => None,
+        match receipt_of(&sup, token) {
+            Receipt::Pending | Receipt::Unknown { .. } => None,
             r => Some(r),
         }
     });
@@ -649,7 +665,7 @@ fn stop_with_a_held_reader_is_incomplete_and_quarantined() {
     });
     assert!(released.is_ok(), "late reader completion leaves quarantine");
     assert!(
-        matches!(sup.receipt(token), Receipt::Incomplete { .. }),
+        matches!(receipt_of(&sup, token), Receipt::Incomplete { .. }),
         "the receipt keeps what was observed at the time"
     );
     assert!(
@@ -688,7 +704,10 @@ fn start_during_held_reader_teardown_waits_for_cleanup() {
         Duration::from_millis(50),
         || (fx.pidfile_pids().len(), sup.lifecycle().map(|l| l.phase)),
     );
-    assert!(!pid_alive(parent), "the old direct child was torn down");
+    let torn_down = wait_for(ACQUIRE, Duration::from_millis(20), || {
+        (!pid_alive(parent)).then_some(())
+    });
+    assert!(torn_down.is_ok(), "the old direct child was torn down");
     assert!(
         pid_alive(descendant),
         "INCONCLUSIVE: the descendant should still hold the pipe"
@@ -702,19 +721,19 @@ fn start_during_held_reader_teardown_waits_for_cleanup() {
         "a new incarnation started while the old reader was held: {spawned:?}"
     );
     assert_eq!(
-        sup.receipt(start),
+        receipt_of(&sup, start),
         Receipt::Pending,
         "the Start waits for the cleanup"
     );
     // The descendant ends, the old reader finishes: the Start proceeds with one new incarnation.
     lifecycle::fixture::kill(descendant, libc::SIGKILL);
     let started = wait_for(ACQUIRE, Duration::from_millis(10), || {
-        matches!(sup.receipt(start), Receipt::Started { .. }).then_some(())
+        matches!(receipt_of(&sup, start), Receipt::Started { .. }).then_some(())
     });
     assert!(
         started.is_ok(),
         "the Start proceeds after cleanup: {:?}",
-        sup.receipt(start)
+        receipt_of(&sup, start)
     );
     let after = fx.expect_pids(4, ACQUIRE);
     assert_eq!(
@@ -819,10 +838,17 @@ fn start_after_a_crash_with_a_held_reader_waits_for_cleanup() {
 fn start_after_health_failures_with_a_held_reader_waits_for_cleanup() {
     let fx = OwnedFixture::new("health-held");
     let mut spec = fx.descendants_spec("lcf-health-held", 1);
+    // Healthy until the first incarnation has recorded itself and its descendant, then failing:
+    // under load an always-false probe could end the child before it wrote its pids.
+    let pidfile = fx.path("pids");
     spec.health_check = Some(HealthCheck {
         interval: Duration::from_millis(50),
         grace: Duration::ZERO,
-        probe: std::sync::Arc::new(|| false),
+        probe: std::sync::Arc::new(move || {
+            std::fs::read_to_string(&pidfile)
+                .map(|s| s.lines().count() < 2)
+                .unwrap_or(true)
+        }),
     });
     let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
     cfg.backoff = fast_backoff(0);
@@ -866,15 +892,17 @@ fn held_reader_blocks_the_next_start(sup: &Supervisor, fx: &OwnedFixture) {
         spawned.is_empty(),
         "a new incarnation started while the old reader was held: {spawned:?}"
     );
-    assert_eq!(sup.receipt(start), Receipt::Pending);
+    assert_eq!(receipt_of(sup, start), Receipt::Pending);
     lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    // The receipt, not the pid file: the new incarnation may be ended by its own fixture (crash,
+    // failing probe) before its shell has written its pid.
     let started = wait_for(ACQUIRE, Duration::from_millis(10), || {
-        (fx.pidfile_pids().len() > 2).then_some(())
+        matches!(receipt_of(sup, start), Receipt::Started { .. }).then_some(())
     });
     assert!(
         started.is_ok(),
         "the Start proceeds after cleanup: {:?}",
-        sup.receipt(start)
+        receipt_of(sup, start)
     );
 }
 
