@@ -14,6 +14,7 @@ import { simFlRounds } from "../../bridge/sim/flRounds";
 import { simEscalation } from "../../bridge/sim/escalation";
 import type { SimHost } from "../../bridge/sim/index";
 import { store } from "../../shell/store";
+import { WebSearchSettings } from "../WebSearchSettings";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -461,6 +462,33 @@ describe("Hermes › Controls, first depth (K2)", () => {
     await click($("toggle-web-search"));
     expect(h.calls.some((c) => c.cmd === "hermes_web_settings_set")).toBe(false);
     expect($("reason-web-search")?.textContent).toContain("core went away");
+  });
+
+  it("mounted next to the Settings › Web search form: Controls turns search off, the form saves a browser change, search stays off", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }) });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => {
+      root?.render(
+        <>
+          <ControlsPanel store={fakeStore()} s={{ hermesTerminal: false, hermesReadAloud: false }} io={h.io} />
+          <WebSearchSettings io={h.io.web} />
+        </>,
+      );
+    });
+    await flush();
+    // Both loaded with search on.
+    expect($("toggle-web-search")?.checked).toBe(true);
+    expect($("web-search-toggle")?.checked).toBe(true);
+    // The top toggle turns search off.
+    await click($("toggle-web-search"));
+    expect(h.web.current.settings.searchEnabled).toBe(false);
+    // The lower form (still showing its loaded draft) turns the browser on and saves.
+    await click($("browser-toggle"));
+    await click($("web-save"));
+    expect(h.web.current.settings).toEqual({ ...DEFAULT_WEB_SETTINGS, browserEnabled: true, searchEnabled: false });
+    expect($("web-search-toggle")?.checked).toBe(false);
   });
 
   it("uses HIC wording, never HITL", async () => {

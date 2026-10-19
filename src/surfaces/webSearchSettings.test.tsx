@@ -141,6 +141,53 @@ describe("WebSearchSettings", () => {
     act(() => m.root.unmount());
   });
 
+  it("Save re-reads the saved settings and writes only the fields changed in the form (another writer's change is kept)", async () => {
+    // One saved settings object, as in core: this form and any other writer read and replace it.
+    let saved: HermesWebStatus = status({ settings: { ...DEFAULT_WEB_SETTINGS, searchEnabled: true } });
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const io: WebSettingsIo = {
+      mode: "tauri",
+      invoke: (async (cmd: string, args?: Record<string, unknown>) => {
+        calls.push({ cmd, args });
+        if (cmd === "hermes_web_settings_set") saved = { ...saved, settings: args?.settings as HermesWebStatus["settings"] };
+        return saved;
+      }) as WebSettingsIo["invoke"],
+    };
+    const { host, root } = await mount(io);
+    expect(q<HTMLInputElement>(host, "web-search-toggle")?.checked).toBe(true);
+    // Someone else (Hermes › Controls) turns web search off after the form loaded.
+    saved = { ...saved, settings: { ...saved.settings, searchEnabled: false } };
+    await click(q(host, "browser-toggle"));
+    await click(q(host, "web-save"));
+    const cmds = calls.map((c) => c.cmd);
+    expect(cmds.slice(-2)).toEqual(["hermes_web_settings_get", "hermes_web_settings_set"]);
+    expect(saved.settings).toEqual({ ...DEFAULT_WEB_SETTINGS, browserEnabled: true, searchEnabled: false });
+    // The form shows what core answered, including the other writer's change.
+    expect(q<HTMLInputElement>(host, "web-search-toggle")?.checked).toBe(false);
+    expect(q<HTMLInputElement>(host, "browser-toggle")?.checked).toBe(true);
+    act(() => root.unmount());
+  });
+
+  it("Save with a failed re-read writes nothing and reports the error", async () => {
+    let fail = false;
+    const calls: string[] = [];
+    const io: WebSettingsIo = {
+      mode: "tauri",
+      invoke: (async (cmd: string, args?: Record<string, unknown>) => {
+        calls.push(cmd);
+        if (cmd === "hermes_web_settings_get" && fail) throw new Error("core went away");
+        return status(args?.settings ? { settings: args.settings as HermesWebStatus["settings"] } : {});
+      }) as WebSettingsIo["invoke"],
+    };
+    const { host, root } = await mount(io);
+    fail = true;
+    await click(q(host, "browser-toggle"));
+    await click(q(host, "web-save"));
+    expect(calls).not.toContain("hermes_web_settings_set");
+    expect(q(host, "web-error")?.textContent).toContain("core went away");
+    act(() => root.unmount());
+  });
+
   it("the browser switch is disabled in the browser preview", async () => {
     const invoke = vi.fn();
     const { host, root } = await mount({ mode: "sim", invoke: invoke as WebSettingsIo["invoke"] });

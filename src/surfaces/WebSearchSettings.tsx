@@ -7,6 +7,10 @@
 // fast decisions on listed sites. Core stores them (hermes_web.rs) and passes them to the Hermes
 // sidecar when it starts. Everything is off or local until the member changes it, and every choice
 // that sends data to a third party says so on the card.
+//
+// Save writes only what the member changed in this form: it re-reads the saved settings, applies the
+// fields that differ from what the form loaded, and writes that. Another writer (Hermes › Controls,
+// mounted next to this form) may have changed other fields since the form loaded; those are kept.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -23,6 +27,15 @@ import {
   type HermesWebStatus,
   type WebSettingsIo,
 } from "../agent/webSearch";
+
+/** The fields of `draft` that differ from `baseline` (what the form loaded or last saved). */
+export function changedFields(baseline: HermesWebSettings, draft: HermesWebSettings): Partial<HermesWebSettings> {
+  const out: Partial<HermesWebSettings> = {};
+  for (const k of Object.keys(draft) as (keyof HermesWebSettings)[]) {
+    if (JSON.stringify(draft[k]) !== JSON.stringify(baseline[k])) (out as Record<string, unknown>)[k] = draft[k];
+  }
+  return out;
+}
 
 const defaultIo: WebSettingsIo = {
   mode: BRIDGE_MODE === "tauri" ? "tauri" : "sim",
@@ -73,6 +86,8 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   const desktop = io.mode === "tauri";
   const [status, setStatus] = useState<HermesWebStatus | null>(null);
   const [draft, setDraft] = useState<HermesWebSettings>(DEFAULT_WEB_SETTINGS);
+  // What the form loaded (or last saved): the baseline that tells which fields the member changed.
+  const [baseline, setBaseline] = useState<HermesWebSettings>(DEFAULT_WEB_SETTINGS);
   const [originsText, setOriginsText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -85,6 +100,7 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
         if (!live) return;
         setStatus(st);
         setDraft(st.settings);
+        setBaseline(st.settings);
         setOriginsText(st.settings.jevOrigins.join("\n"));
       })
       .catch((e) => live && setError(String(e)));
@@ -103,9 +119,12 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
     setSaving(true);
     setError(null);
     try {
-      const st = await saveWebSettings(io, { ...draft, jevOrigins: parsed.origins });
+      const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
+      const fresh = await loadWebSettings(io);
+      const st = await saveWebSettings(io, { ...fresh.settings, ...edits });
       setStatus(st);
       setDraft(st.settings);
+      setBaseline(st.settings);
       setOriginsText(st.settings.jevOrigins.join("\n"));
     } catch (e) {
       setError(String(e));
