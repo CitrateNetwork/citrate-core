@@ -237,3 +237,62 @@ fn a_superseded_start_receipt_says_so() {
     ));
     assert!(matches!(wait_receipt(&sup, stop), Receipt::Complete { .. }));
 }
+
+/// Identical concurrent Starts after Failed join one intent: none supersedes another.
+#[test]
+fn concurrent_starts_after_failed_join_one_intent() {
+    for round in 0..20 {
+        let sup = Arc::new(
+            Supervisor::start(missing_bin_config(&format!("join-{round}"), 0)).expect("start"),
+        );
+        sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+        let starters: Vec<_> = (0..4)
+            .map(|_| {
+                let s = sup.clone();
+                std::thread::spawn(move || s.request_start())
+            })
+            .collect();
+        let tokens: Vec<ControlToken> = starters
+            .into_iter()
+            .filter_map(|t| t.join().ok())
+            .filter_map(|r| match r {
+                ControlResult::Accepted(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        for t in &tokens {
+            assert_ne!(
+                wait_receipt(&sup, *t),
+                Receipt::Superseded,
+                "round {round}: a concurrent identical Start superseded another: {tokens:?}"
+            );
+        }
+    }
+}
+
+/// A token is bound to the supervisor that issued it: another supervisor (another service, or
+/// a replacement for the same one) never answers for it.
+#[test]
+fn a_token_is_only_answered_by_the_supervisor_that_issued_it() {
+    let a = Supervisor::start(missing_bin_config("token-a", 0)).expect("start a");
+    let b = Supervisor::start(missing_bin_config("token-b", 0)).expect("start b");
+    a.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    b.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let ta = match a.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("{other:?}"),
+    };
+    let tb = match b.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(wait_receipt(&a, ta), Receipt::Complete { .. }));
+    assert!(matches!(wait_receipt(&b, tb), Receipt::Complete { .. }));
+    assert_eq!(b.receipt(ta), Receipt::Expired, "B never answers for A's token");
+    assert_eq!(a.receipt(tb), Receipt::Expired, "A never answers for B's token");
+    drop(a);
+    let a2 = Supervisor::start(missing_bin_config("token-a", 0)).expect("start a2");
+    a2.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let _ = a2.request_stop();
+    assert_eq!(a2.receipt(ta), Receipt::Expired, "a replacement never answers for the old one");
+}
