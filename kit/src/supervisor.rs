@@ -1139,8 +1139,9 @@ impl Supervisor {
     /// - `Unavailable` if the deadline publisher could not be created or has ended (nothing is
     ///   committed, and no replacement publisher is created).
     /// - `Busy` if the cell is contended or every deadline record is in use (nothing committed).
-    /// - A call while a Stop is pending joins it and keeps its first deadline: a later call never
-    ///   restarts the budget. Otherwise as [`Supervisor::request_stop`].
+    /// - A call while a Stop is pending joins it: a plain pending Stop gets this deadline, and a
+    ///   pending deadline is moved earlier if this one is tighter, never later (a later call
+    ///   never restarts the budget). Otherwise as [`Supervisor::request_stop`].
     pub fn request_stop_within(&self, within: Duration) -> ControlResult {
         if let Some(reason) = self.deadlines.unavailable() {
             return ControlResult::Unavailable(reason);
@@ -1243,6 +1244,11 @@ impl Supervisor {
 
     /// The lifecycle cell (D-12): phase, readiness, intent and identity counters. A bounded
     /// read: `None` means the cell was contended and nothing is claimed.
+    ///
+    /// Not purely an observation after shutdown: with no monitor left, this read reconciles a
+    /// quarantine. It joins the log readers that have ended since shutdown, and once no reader
+    /// and no ticket is left it moves the phase from `Quarantined` to `Stopped` (bumping the
+    /// revision) before returning the snapshot. Before shutdown it changes nothing.
     pub fn lifecycle(&self) -> Option<LifecycleSnapshot> {
         self.shared.lock_bounded().map(|mut c| {
             // After shutdown, a read is the only thing left that can observe late completion.
