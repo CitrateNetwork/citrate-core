@@ -599,6 +599,11 @@ fn stop_with_a_held_reader_is_incomplete_and_quarantined() {
         .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
     assert_eq!(snap.phase, Phase::Quarantined);
     assert!(matches!(sup.request_start(), ControlResult::Quarantined(_)));
+    // A repeated Stop while quarantined is not "already satisfied": owned work is still running.
+    match sup.request_stop() {
+        ControlResult::Quarantined(reason) => assert!(!reason.is_empty()),
+        other => panic!("a repeated Stop while quarantined: {other:?}"),
+    }
     assert_eq!(fx.pidfile_pids().len(), 2, "no new child while quarantined");
     // The descendant ends, the pipe closes, the reader finishes: ownership is reconciled.
     lifecycle::fixture::kill(descendant, libc::SIGKILL);
@@ -610,8 +615,76 @@ fn stop_with_a_held_reader_is_incomplete_and_quarantined() {
         matches!(sup.receipt(token), Receipt::Incomplete { .. }),
         "the receipt keeps what was observed at the time"
     );
+    assert!(
+        matches!(sup.request_stop(), ControlResult::AlreadySatisfied(_)),
+        "once ownership is reconciled, a Stop is already satisfied"
+    );
     assert!(matches!(sup.request_start(), ControlResult::Accepted(_)));
     fx.expect_pids(3, ACQUIRE);
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A Start accepted while a Stop's teardown is in progress (superseding it) must not spawn a new
+/// incarnation while the old incarnation's reader is still held open by a descendant: the old
+/// resources are reconciled first, then exactly one new incarnation starts.
+#[test]
+fn start_during_held_reader_teardown_waits_for_cleanup() {
+    let fx = OwnedFixture::new("start-held");
+    let mut cfg = SupervisorConfig::new(
+        fx.descendants_spec("lcf-start-held", 1),
+        fx.path("crash.jsonl"),
+    );
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let parent = running_pid(&sup, &fx);
+    let pids = fx.expect_pids(2, ACQUIRE);
+    let descendant = pids[1];
+    assert!(matches!(sup.request_stop(), ControlResult::Accepted(_)));
+    let start = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start during teardown: {other:?}"),
+    };
+    let samples = sample_over(
+        Duration::from_millis(1500),
+        Duration::from_millis(50),
+        || (fx.pidfile_pids().len(), sup.lifecycle().map(|l| l.phase)),
+    );
+    assert!(!pid_alive(parent), "the old direct child was torn down");
+    assert!(
+        pid_alive(descendant),
+        "INCONCLUSIVE: the descendant should still hold the pipe"
+    );
+    let spawned: Vec<_> = samples
+        .iter()
+        .filter(|(_, (n, phase))| *n != 2 || *phase == Some(Phase::Alive))
+        .collect();
+    assert!(
+        spawned.is_empty(),
+        "a new incarnation started while the old reader was held: {spawned:?}"
+    );
+    assert_eq!(
+        sup.receipt(start),
+        Receipt::Pending,
+        "the Start waits for the cleanup"
+    );
+    // The descendant ends, the old reader finishes: the Start proceeds with one new incarnation.
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    let started = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        matches!(sup.receipt(start), Receipt::Started { .. }).then_some(())
+    });
+    assert!(
+        started.is_ok(),
+        "the Start proceeds after cleanup: {:?}",
+        sup.receipt(start)
+    );
+    let after = fx.expect_pids(4, ACQUIRE);
+    assert_eq!(
+        after.len(),
+        4,
+        "exactly one new incarnation (parent and its descendant)"
+    );
     drop(sup);
     fx.assert_clean();
 }
