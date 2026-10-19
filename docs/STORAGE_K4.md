@@ -82,6 +82,16 @@ and SHA-256; and nothing in the folder is unlisted.
 - Files: each file's bytes are hashed again as read, re-added to kubo and pinned locally. If kubo
   returns a different CID (a CID-version change), the report lists it.
 
+Every dir and file the backup code creates is owner-only from creation: the backup folder and
+its contents, and the restore staging dir (a sibling of the memory dir) with everything staged in
+it. Dirs are made 0700 via `DirBuilder` mode and files 0600 via `OpenOptions` mode, before any
+bytes land, so nothing is readable by other local users mid-copy even when the app-data parent is.
+A restored file then gets its recorded mode.
+
+App quit during a long export or restore: shutdown closes the import registry before it stops
+memory. The backup restarts a previously running daemon only through the registry gate
+(`unless_closed`), so after quit begins it does not start it again (the report notes this).
+
 Not backed up: the daemon socket (`memdag.sock`) and the crash log. Note that the memory store is
 not encrypted at rest by core today (see `memory.rs`), so a backup is as private as the folder it
 is written to; the surface says so.

@@ -142,6 +142,11 @@ fn tmp_dir(tag: &str) -> PathBuf {
 }
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// A registry of our own (never the app-wide one), open unless a test closes it.
+fn open_registry() -> Arc<crate::knowledge_import::ImportRegistry> {
+    Arc::new(crate::knowledge_import::ImportRegistry::default())
+}
+
 /// A memory dir shaped like the real one: a RocksDB-like store dir, sidecar markers, the live
 /// socket (never backed up) and the crash log (never backed up).
 fn seed_memory_dir(root: &Path) -> PathBuf {
@@ -181,6 +186,7 @@ fn export_both(tag: &str) -> (ExportReport, Arc<FakeKubo>, PathBuf, PathBuf) {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let report = export(
         &dest,
@@ -248,6 +254,7 @@ fn export_stops_a_running_memory_daemon_and_restarts_it() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let mut seen_running_during_copy = false;
     let mut on = |p: &Progress| {
@@ -278,6 +285,7 @@ fn export_leaves_a_stopped_daemon_stopped() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let report = export(&dest, &[Part::Memory], None, Some(&src), 1, &mut no_progress()).unwrap();
     assert_eq!(daemon.starts.load(Ordering::SeqCst), 0);
@@ -336,6 +344,7 @@ fn export_never_overwrites_and_refuses_a_bad_destination() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     // Relative path.
     let e = export(Path::new("relative/dir"), &[Part::Memory], None, Some(&src), 1, &mut no_progress());
@@ -517,6 +526,7 @@ fn restore_memory_replaces_the_store_and_keeps_the_previous_copy() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let r = restore(
         Path::new(&report.folder),
@@ -558,6 +568,7 @@ fn restore_refuses_a_mismatch_and_touches_nothing() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let pins_before = kubo.pins.lock().unwrap().clone();
     let root2 = tmp_dir("restore-refuse-files");
@@ -659,6 +670,7 @@ fn restore_refuses_a_part_the_backup_does_not_have() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let r = restore(
         Path::new(&report.folder),
@@ -679,6 +691,7 @@ fn restore_reports_progress_and_ends_with_done() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let mut events: Vec<Progress> = Vec::new();
     let mut on = |p: &Progress| events.push(p.clone());
@@ -802,6 +815,7 @@ fn restore_holds_the_memory_store_lock_while_it_swaps() {
         dir: mem.clone(),
         store_path: store.clone(),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let mut locked_during_copy = Vec::new();
     let mut start_refused_mid_restore = false;
@@ -843,6 +857,7 @@ fn the_memory_store_lock_is_released_after_a_refused_restore() {
         dir: mem.clone(),
         store_path: store.clone(),
         daemon: &daemon,
+        registry: open_registry(),
     };
     assert!(restore(&folder, &[Part::Memory], None, Some(&target), 42, &mut no_progress()).is_err());
     assert!(!crate::memory::memory_store_locked(&store));
@@ -883,6 +898,7 @@ fn restore_reapplies_the_original_modes_recorded_in_the_manifest() {
         dir: mem.clone(),
         store_path: store.clone(),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let report = export(&dest, &[Part::Memory], None, Some(&src), 1, &mut no_progress()).unwrap();
     let folder = PathBuf::from(&report.folder);
@@ -941,6 +957,7 @@ fn export_lists_a_missing_memory_store_as_skipped_not_exported() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let r = export(&dest, &[Part::Files, Part::Memory], Some(&mgr), Some(&src), 1, &mut no_progress())
         .unwrap();
@@ -969,6 +986,7 @@ fn export_skips_an_empty_memory_store() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let r = export(&dest, &[Part::Files, Part::Memory], Some(&mgr), Some(&src), 1, &mut no_progress())
         .unwrap();
@@ -988,6 +1006,7 @@ fn export_with_nothing_to_back_up_is_refused_and_leaves_no_folder() {
         dir: mem.clone(),
         store_path: mem.join("store.bge.memdag"),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let r = export(&dest, &[Part::Memory], None, Some(&src), 1, &mut no_progress());
     assert!(matches!(r, Err(BackupError::InvalidFolder(_))), "{r:?}");
@@ -1010,6 +1029,7 @@ fn restore_reports_only_what_it_restored_and_names_the_skipped_part() {
         dir: absent.clone(),
         store_path: absent.join("store.bge.memdag"),
         daemon: &d0,
+        registry: open_registry(),
     };
     let report = export(&dest, &[Part::Files, Part::Memory], Some(&mgr), Some(&src), 1, &mut no_progress())
         .unwrap();
@@ -1023,6 +1043,7 @@ fn restore_reports_only_what_it_restored_and_names_the_skipped_part() {
         dir: mem.clone(),
         store_path: store.clone(),
         daemon: &daemon,
+        registry: open_registry(),
     };
     let fresh_root = tmp_dir("restore-skip-fresh");
     let fresh = files_manager(&fresh_root, FakeKubo::new());
@@ -1046,5 +1067,132 @@ fn restore_reports_only_what_it_restored_and_names_the_skipped_part() {
     assert_eq!(std::fs::read(mem.join("store.bge.memdag/000123.sst")).unwrap(), before);
     assert_eq!(daemon.stops.load(Ordering::SeqCst), 0);
     assert!(r.previous_memory_kept_at.is_none());
+    assert!(!r.daemon_restarted);
+}
+
+// ---------------------------------------------------------------- review follow-ups 2 (Codex, bf97f30)
+
+/// P1: a file the backup code creates is owner-only from the moment it is opened (never created
+/// at the umask default and narrowed afterwards).
+#[cfg(unix)]
+#[test]
+fn copied_files_are_created_owner_only_at_open() {
+    let root = tmp_dir("create-mode");
+    let src = root.join("src.bin");
+    std::fs::write(&src, b"secret-ish").unwrap();
+    set_mode(&src, 0o644);
+    let to = root.join("copy.bin");
+    copy_hashing(&src, &to).unwrap();
+    assert_eq!(mode_of(&to), 0o600, "created 0600, not the umask default");
+}
+
+/// P1: while a restore is copying, the staging dir is 0700 and every staged file and dir is
+/// owner-only, so other local users can't read the store mid-restore.
+#[cfg(unix)]
+#[test]
+fn restore_staging_is_owner_only_while_it_copies() {
+    let root = tmp_dir("staging-modes");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let mem = seed_memory_dir(&root);
+    let store = mem.join("store.bge.memdag");
+    for f in ["000123.sst", "CURRENT", "LOCK", "sub/OPTIONS-000007"] {
+        set_mode(&store.join(f), 0o600);
+    }
+    set_mode(&mem.join("docs-corpus.seeded"), 0o600);
+    for d in [&mem, &store, &store.join("sub")] {
+        set_mode(d, 0o700);
+    }
+    // The app-data parent is traversable by others (the case the review describes).
+    set_mode(&root, 0o755);
+    let daemon = FakeDaemon::new(false, &store);
+    let src = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+        registry: open_registry(),
+    };
+    let report = export(&dest, &[Part::Memory], None, Some(&src), 1, &mut no_progress()).unwrap();
+    let mut checks = 0;
+    let mut on = |p: &Progress| {
+        if p.phase != "memory" {
+            return;
+        }
+        let staging: Vec<PathBuf> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("memory.restore-staging-"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(staging.len(), 1, "one staging dir");
+        assert_eq!(mode_of(&staging[0]), 0o700, "staging dir is 0700 mid-copy");
+        let walked = walk(&staging[0]).unwrap();
+        for f in &walked.files {
+            assert_eq!(mode_of(&staging[0].join(f)) & 0o077, 0, "{f:?} owner-only mid-copy");
+        }
+        for d in &walked.dirs {
+            assert_eq!(mode_of(&staging[0].join(d)) & 0o077, 0, "{d:?} owner-only mid-copy");
+        }
+        checks += 1;
+    };
+    restore(Path::new(&report.folder), &[Part::Memory], None, Some(&src), 42, &mut on).unwrap();
+    assert_eq!(checks, 5, "checked at every staged file");
+}
+
+/// P2: if the member quits during a long restore (app shutdown closes the import registry and
+/// stops memory), the restore does not start the daemon again afterwards.
+#[test]
+fn a_restore_does_not_restart_the_daemon_after_app_quit() {
+    let (report, _kubo, mem, _root) = export_both("quit-mid-restore");
+    let store = mem.join("store.bge.memdag");
+    let daemon = FakeDaemon::new(true, &store);
+    let registry = open_registry();
+    let target = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+        registry: registry.clone(),
+    };
+    let mut on = |p: &Progress| {
+        if p.phase == "memory" && p.done == 1 {
+            // App quit begins mid-copy.
+            registry.shutdown(std::time::Duration::from_millis(0));
+        }
+    };
+    let r = restore(Path::new(&report.folder), &[Part::Memory], None, Some(&target), 42, &mut on)
+        .expect("the restore itself completes");
+    assert_eq!(daemon.starts.load(Ordering::SeqCst), 0, "no restart after quit began");
+    assert!(!daemon.is_running());
+    assert!(!r.daemon_restarted);
+    assert!(r.notes.iter().any(|n| n.contains("quitting")), "{:?}", r.notes);
+}
+
+/// P2, export side: same rule.
+#[test]
+fn an_export_does_not_restart_the_daemon_after_app_quit() {
+    let root = tmp_dir("quit-mid-export");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let mem = seed_memory_dir(&root);
+    let store = mem.join("store.bge.memdag");
+    let daemon = FakeDaemon::new(true, &store);
+    let registry = open_registry();
+    let src = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+        registry: registry.clone(),
+    };
+    let mut on = |p: &Progress| {
+        if p.phase == "memory" && p.done == 1 {
+            registry.shutdown(std::time::Duration::from_millis(0));
+        }
+    };
+    let r = export(&dest, &[Part::Memory], None, Some(&src), 1, &mut on).expect("export completes");
+    assert_eq!(daemon.starts.load(Ordering::SeqCst), 0);
     assert!(!r.daemon_restarted);
 }

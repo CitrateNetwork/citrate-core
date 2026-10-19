@@ -43,7 +43,13 @@
 //!
 //! The memory store is not encrypted at rest by core (see `memory.rs`); the copy is the store as
 //! it is on disk, so the backup folder is created owner-only (0700 on Unix) and the surface tells
-//! the member to keep it somewhere private.
+//! the member to keep it somewhere private. Every dir and file this module creates (the backup
+//! folder, its contents, and the restore staging dir and everything in it) is owner-only from
+//! creation (0700 dirs via `DirBuilder` mode, 0600 files via `OpenOptions` mode), never created at
+//! the umask default and narrowed afterwards. A restored file then gets its recorded mode.
+//!
+//! App quit: a running daemon is started again only if app quit has not begun (the import
+//! registry's gate, which `shutdown_all_sidecars` closes before it stops memory).
 //!
 //! ## Files
 //! Only objects PINNED on this node are exported (an index row the daemon no longer holds is
@@ -387,6 +393,9 @@ pub struct MemorySource<'a> {
     /// The RocksDB store dir inside it (the importer's lock key).
     pub store_path: PathBuf,
     pub daemon: &'a dyn DaemonControl,
+    /// The knowledge-import registry, closed by app quit (`shutdown_all_sidecars`). Production
+    /// passes the app-wide one; a closed registry means the app is quitting.
+    pub registry: std::sync::Arc<crate::knowledge_import::ImportRegistry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -503,14 +512,46 @@ fn apply_and_check_mode(path: &Path, rel: &str, mode: u32) -> Result<(), BackupE
     Ok(())
 }
 
-/// Copy `from` to `to` (created new; never overwrites), hashing the bytes on the way.
+/// Open a NEW file (never overwrites) that is owner-only (0600) from the moment it exists.
+fn create_private_file(to: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(to)
+}
+
+/// Create `dir` (and missing parents) owner-only (0700) at creation, never at the umask default.
+fn create_private_dir_all(dir: &Path) -> Result<(), BackupError> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir).map_err(|e| io_err("create a folder", e))
+}
+
+/// Create one NEW owner-only (0700) dir; fails if it exists.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
+}
+
+/// Copy `from` to `to` (created new and owner-only; never overwrites), hashing the bytes on the
+/// way. A recorded original mode is applied after the bytes are in.
 fn copy_hashing(from: &Path, to: &Path) -> Result<(u64, String), BackupError> {
     let mut src = std::fs::File::open(from).map_err(|e| io_err("open", e))?;
-    let mut dst = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(to)
-        .map_err(|e| io_err("create", e))?;
+    let mut dst = create_private_file(to).map_err(|e| io_err("create", e))?;
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 1 << 16];
     let mut n_total: u64 = 0;
@@ -667,7 +708,7 @@ fn create_backup_folder(dest: &Path, now: u64) -> Result<PathBuf, BackupError> {
             format!("{base}-{n}")
         };
         let p = dest.join(&name);
-        match std::fs::create_dir(&p) {
+        match create_private_dir(&p) {
             Ok(()) => {
                 restrict_to_owner(&p)?;
                 return Ok(p);
@@ -746,7 +787,7 @@ fn with_memory_paused<T>(
                 .to_string(),
         ));
     };
-    if crate::knowledge_import::ImportRegistry::global().is_closed() {
+    if m.registry.is_closed() {
         return Err(BackupError::Busy("the app is quitting".to_string()));
     }
     // Held from before the daemon stops until the copy/swap is done: every memory start path
@@ -772,9 +813,15 @@ fn with_memory_paused<T>(
     drop(store_lock);
     let mut restarted = false;
     if was_running {
-        match m.daemon.start() {
-            Ok(()) => restarted = true,
-            Err(e) => notes.push(format!("the memory daemon did not start again: {e}")),
+        // Never restart once app quit began: shutdown closes the registry before it stops the
+        // memory daemon, and `unless_closed` holds the gate, so a quit either waits for this
+        // start (and then stops it) or has already closed and this start does not run.
+        match m.registry.unless_closed(|| m.daemon.start()) {
+            Some(Ok(())) => restarted = true,
+            Some(Err(e)) => notes.push(format!("the memory daemon did not start again: {e}")),
+            None => notes.push(
+                "the app is quitting, so the memory daemon was not started again".to_string(),
+            ),
         }
     }
     out.map(|v| (v, restarted))
@@ -843,7 +890,7 @@ fn export_into(
     if let (true, Some(mgr)) = (parts.contains(&Part::Files), files) {
         let rows = mgr.list().map_err(|e| BackupError::Kubo(e.to_string()))?;
         let files_dir = folder.join(FILES_DIR);
-        std::fs::create_dir(&files_dir).map_err(|e| io_err("create files/", e))?;
+        create_private_dir(&files_dir).map_err(|e| io_err("create files/", e))?;
         let (pinned, unpinned): (Vec<_>, Vec<_>) = rows
             .into_iter()
             .partition(|r| r.pin_state == PinState::Pinned);
@@ -874,10 +921,7 @@ fn export_into(
                 }
             };
             let rel = format!("{FILES_DIR}/{}", r.cid);
-            let mut out = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(files_dir.join(&r.cid))
+            let mut out = create_private_file(&files_dir.join(&r.cid))
                 .map_err(|e| io_err("write a file", e))?;
             out.write_all(&bytes)
                 .map_err(|e| io_err("write a file", e))?;
@@ -971,10 +1015,7 @@ fn export_into(
     };
     manifest.entries_sha256 = manifest_digest(&manifest);
     let json = serde_json::to_vec_pretty(&manifest).map_err(|e| io_err("write the manifest", e))?;
-    let mut mf = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(folder.join(MANIFEST_NAME))
+    let mut mf = create_private_file(&folder.join(MANIFEST_NAME))
         .map_err(|e| io_err("write the manifest", e))?;
     mf.write_all(&json)
         .map_err(|e| io_err("write the manifest", e))?;
@@ -1052,10 +1093,10 @@ fn copy_memory_out(
             mode,
         });
     }
-    std::fs::create_dir_all(out).map_err(|e| io_err("create a folder", e))?;
+    create_private_dir_all(out)?;
     for rel in &walked.dirs {
         let slash = utf8(rel)?;
-        std::fs::create_dir_all(out.join(rel)).map_err(|e| io_err("create a folder", e))?;
+        create_private_dir_all(&out.join(rel))?;
         if let Some(mode) = mode_of(&mem_dir.join(rel))? {
             dirs.push(ManifestDir {
                 path: format!("{MEMORY_DIR}/{slash}"),
@@ -1069,7 +1110,7 @@ fn copy_memory_out(
         let slash = utf8(rel)?;
         let to = out.join(rel);
         if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| io_err("create a folder", e))?;
+            create_private_dir_all(parent)?;
         }
         let from = mem_dir.join(rel);
         let mode = mode_of(&from)?;
@@ -1454,15 +1495,15 @@ fn swap_in_memory(
         .unwrap_or_else(|| MEMORY_DIR.to_string());
     let stamp = backup_folder_name(now).replace("citrate-backup-", "");
     let staging = unique_sibling(parent, &format!("{base}.restore-staging-{stamp}"));
-    std::fs::create_dir(&staging).map_err(|e| io_err("create the staging folder", e))?;
+    // 0700 from creation, before any file lands (the parent may be readable by other users).
+    create_private_dir(&staging).map_err(|e| io_err("create the staging folder", e))?;
 
     let staged = (|| -> Result<u64, BackupError> {
         // Recorded directories first (empty ones included), owner-writable while staging.
         for d in dirs {
             if d.path != MEMORY_DIR {
                 let inner: PathBuf = d.path.split('/').skip(1).collect();
-                std::fs::create_dir_all(staging.join(inner))
-                    .map_err(|err| io_err("create a folder", err))?;
+                create_private_dir_all(&staging.join(inner))?;
             }
         }
         let total = entries.len() as u64;
@@ -1476,7 +1517,7 @@ fn swap_in_memory(
             let inner: PathBuf = rel.components().skip(1).collect();
             let to = staging.join(&inner);
             if let Some(p) = to.parent() {
-                std::fs::create_dir_all(p).map_err(|err| io_err("create a folder", err))?;
+                create_private_dir_all(p)?;
             }
             let (size, sha) = copy_hashing(&folder.join(&rel), &to)?;
             if size != e.size || sha != e.sha256 {
@@ -1588,6 +1629,7 @@ fn memory_source<'a>(mgr: &'a crate::memory::MemoryManager) -> Result<MemorySour
         dir,
         store_path,
         daemon: mgr,
+        registry: crate::knowledge_import::ImportRegistry::global(),
     })
 }
 

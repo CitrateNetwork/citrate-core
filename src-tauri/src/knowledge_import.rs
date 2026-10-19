@@ -147,7 +147,7 @@ impl ImportRegistry {
 
     /// Run `f` unless the registry is closed, holding the gate so a concurrent
     /// [`Self::shutdown`] waits for `f` (and the caller's later stops see its effect).
-    fn unless_closed<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
+    pub(crate) fn unless_closed<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
         let closed = lock(&self.gate);
         (!*closed).then(f)
     }
