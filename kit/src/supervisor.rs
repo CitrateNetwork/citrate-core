@@ -2735,7 +2735,8 @@ enum RunOutcome {
 /// tagged with the incarnation it samples; a result for any other incarnation, or one that
 /// arrives after the worker's timeout, is discarded.
 struct ProbeRunner {
-    handle: JoinHandle<bool>,
+    /// The probe's answer and the monotonic time it finished, taken on the worker thread.
+    handle: JoinHandle<(bool, std::time::Instant)>,
     incarnation: u64,
     started: std::time::Instant,
     timed_out: bool,
@@ -2747,7 +2748,10 @@ impl ProbeRunner {
         let p = probe.clone();
         std::thread::Builder::new()
             .name("supervisor:probe".into())
-            .spawn(move || p())
+            .spawn(move || {
+                let healthy = p();
+                (healthy, std::time::Instant::now())
+            })
             .ok()
             .map(|handle| ProbeRunner {
                 handle,
@@ -2763,15 +2767,38 @@ impl ProbeRunner {
     }
 }
 
-/// Take a finished worker out of the slot and return its tag, whether it had timed out, and its
-/// result. A panicked probe did not attest health (false). `None` while it is still running.
-fn take_finished(slot: &mut Option<ProbeRunner>) -> Option<(u64, bool, bool)> {
+/// A finished probe worker, taken out of the slot.
+struct Finished {
+    /// The incarnation the worker sampled.
+    incarnation: u64,
+    /// The monitor had already timed it out (and handled that sample).
+    timed_out: bool,
+    /// Its answer came after its interval. A late answer never counts, however soon after its
+    /// deadline it is collected.
+    late: bool,
+    /// Its answer. A panicked probe did not attest health (false).
+    healthy: bool,
+}
+
+/// Take a finished worker out of the slot. `None` while it is still running.
+fn take_finished(slot: &mut Option<ProbeRunner>, interval: Duration) -> Option<Finished> {
     if !slot.as_ref().is_some_and(|r| r.handle.is_finished()) {
         return None;
     }
     let runner = slot.take()?;
-    let healthy = runner.handle.join().unwrap_or(false);
-    Some((runner.incarnation, runner.timed_out, healthy))
+    let (healthy, late) = match runner.handle.join() {
+        Ok((healthy, done)) => (
+            healthy,
+            done.saturating_duration_since(runner.started) >= interval,
+        ),
+        Err(_) => (false, false),
+    };
+    Some(Finished {
+        incarnation: runner.incarnation,
+        timed_out: runner.timed_out,
+        late,
+        healthy,
+    })
 }
 
 /// What `supervise_running` watches over: the intent and incarnation it serves, the probe and
@@ -2879,10 +2906,15 @@ fn supervise_running(
                 publish(shown, None);
             }};
         }
-        if let Some((tag, timed_out, healthy)) = take_finished(slot) {
-            // A result for another incarnation, or after the worker's timeout, is inert.
-            if tag == inc && !timed_out {
-                if healthy {
+        if let Some(done) = take_finished(slot, hc.interval) {
+            // A result for another incarnation, or of a worker already timed out, is inert. A
+            // late answer collected before its timeout was noticed is that timeout: it never
+            // counts as a success.
+            let counts = done.incarnation == inc && !done.timed_out;
+            if counts && done.late {
+                sample_failed!();
+            } else if counts {
+                if done.healthy {
                     let first = *window.first_ok.get_or_insert(now);
                     window.last_ok = Some(now);
                     shown = Readiness::Ready;
