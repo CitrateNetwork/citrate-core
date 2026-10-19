@@ -214,6 +214,46 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
     expect(store.state.validatorActivation).toBeNull();
   });
 
+  // #366 review F1: the chosen registry key (the bond's) is also the key the producer sample is
+  // checked against, so a bonded validator that is producing shows "Producing blocks".
+  it("a bonded validator that is producing shows 'Producing blocks' on the Node page", async () => {
+    await poll(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
+    expect(store.state.validatorPubkey).toBe(BOND_KEY);
+    const html = renderToStaticMarkup(
+      <Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }} />,
+    );
+    expect(html).toContain("Producing blocks");
+    expect(html).not.toContain("validator key not read yet");
+  });
+
+  it("with no bond the node's key is the one checked for producing", async () => {
+    await poll(grant({ bondDeployed: false, bondActivated: null, bondPubkey: null, hasSbt: false, attributedStakeWei: "0", attributedPrincipalWei: "0" }));
+    expect(store.state.validatorPubkey).toBe(NODE_KEY);
+  });
+
+  // Codex on #366: a transient failure reading MemberBond.pubkey() must not stick. A deployed bond
+  // whose key came back null (and is not known to be un-activated) is UNREAD, shown as
+  // "— · reading validator key", and the grant status is read again on the next poll.
+  it("a failed pubkey read on a bonded member is retried on the next poll", async () => {
+    const reads = await poll(grant({ bondedStakeWei: wei(32000), hasValidator: true, bondActivated: true, bondPubkey: null }));
+    expect(reads.validatorActivation).not.toHaveBeenCalled();
+    expect(validatorDash(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.memberBond)).toBe(
+      "— · reading validator key",
+    );
+    // Next poll: the read lands.
+    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
+    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
+    await store.refreshNode();
+    expect(gs).toHaveBeenCalled();
+    expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
+    expect(store.state.memberBond?.pubkey).toBe(BOND_KEY);
+  });
+
+  it("an unread activated() flag with no key is also 'reading validator key'", () => {
+    expect(validatorDash(32_000, null, true, { deployed: true, activated: null, pubkey: null })).toBe("— · reading validator key");
+  });
+
   it("an activated validator still reads 'Validator active' through the bond's key", () => {
     expect(validatorWord(32_000, active, true, activatedBond)).toBe("Validator active");
   });

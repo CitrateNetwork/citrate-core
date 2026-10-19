@@ -250,3 +250,32 @@ describe("C1-V #347 — a broadcast failure after submission is an unknown outco
     expect(onResolved).toHaveBeenCalledWith(false);
   });
 });
+
+// #366 review F2 (Codex P2): the earlier-payment warning and the spend summary handed to the review
+// must actually be on screen, not only in state.
+describe("#366 F2 — the wallet review renders its warning and spend summary", () => {
+  it("shows the earlier-payment warning as an alert", () => {
+    const HASH = "0x" + "cd".repeat(32);
+    const s = {
+      ...freshState("p1"),
+      walletReview: {
+        kind: "agent" as const,
+        label: "pay the router",
+        view,
+        rawAck: false,
+        warning: "an identical payment was submitted earlier, outcome unknown (tx " + HASH + "): check it on the block explorer before approving this one",
+      },
+    };
+    const html = renderToStaticMarkup(<WalletReviewModal store={store} s={s} />);
+    expect(html).toContain("an identical payment was submitted earlier, outcome unknown");
+    expect(html).toContain(HASH);
+    expect(html).toMatch(/role="alert"[^>]*>[\s\S]*identical payment/);
+  });
+
+  it("shows the spend summary, and no warning box when there is none", () => {
+    const s = { ...freshState("p1"), walletReview: { kind: "stake" as const, label: "Activate", view, rawAck: false, spendSummary: "32,000 SALT bond principal · no value sent" } };
+    const html = renderToStaticMarkup(<WalletReviewModal store={store} s={s} />);
+    expect(html).toContain("32,000 SALT bond principal · no value sent");
+    expect(html).not.toContain('role="alert"');
+  });
+});

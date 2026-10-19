@@ -95,16 +95,16 @@ describe("C1-V3 — agent payment with an unknown outcome", () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
     const r = store.state.walletReview;
     expect(r?.kind).toBe("agent");
-    expect(r?.spendSummary ?? "").toContain("outcome unknown");
-    expect(r?.spendSummary ?? "").toContain(HASH);
-    expect(r?.spendSummary ?? "").toMatch(/check/i);
+    expect(r?.warning ?? "").toContain("outcome unknown");
+    expect(r?.warning ?? "").toContain(HASH);
+    expect(r?.warning ?? "").toMatch(/check/i);
   });
 
   it("a different payment carries no earlier-tx warning", async () => {
     await store.reviewAgentApproval({ id: "call-pay", kind: "chain", summary: "pay the router", to: TO, data: DATA });
     await store.approveWalletReview(false);
     await store.reviewAgentApproval({ id: "call-other", kind: "chain", summary: "pay someone else", to: TO, data: "0x1234" });
-    expect(store.state.walletReview?.spendSummary ?? "").not.toContain("outcome unknown");
+    expect(store.state.walletReview?.warning).toBeUndefined();
   });
 
   it("a stale call with an unknown outcome says the payment was submitted, not that a rejection was not needed", async () => {

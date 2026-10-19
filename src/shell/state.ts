@@ -233,6 +233,11 @@ export interface WalletReview {
   label: string;
   view: CeremonyView;
   spendSummary?: string;
+  /**
+   * #366 F2 — a caution the member must see before approving, rendered as an alert on the review
+   * (e.g. an identical payment submitted earlier with an unknown outcome, and its tx hash).
+   */
+  warning?: string;
   /** True once the user has ticked the raw-mode ack (undecodable calldata). */
   rawAck: boolean;
   /**

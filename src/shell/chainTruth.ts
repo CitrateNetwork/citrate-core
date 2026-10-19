@@ -288,7 +288,7 @@ export interface MemberBondState {
   pubkey: string | null;
 }
 
-type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "bond state not read yet" | "registry state inconsistent" };
+type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" };
 
 /**
  * The validator state, from the registry and the bond only (contract v1.1 §1 Validators).
@@ -304,9 +304,15 @@ type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" 
  */
 function validatorState(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond: MemberBondState | null | undefined): WordOrReason {
   const bondNotActivated = !!bond && bond.deployed && bond.activated === false;
-  // A registered stake is already staked: with the status unread it is never "Bond locked · not
-  // staked", so no activation is offered for it (#348 review).
-  if (!activation) return bondNotActivated && !(stakeSalt > 0) ? { word: "Bond locked · not staked" } : { reason: "registry not read yet" };
+  if (!activation) {
+    // A registered stake is already staked: with the status unread it is never "Bond locked · not
+    // staked", so no activation is offered for it (#348 review).
+    if (bondNotActivated) return stakeSalt > 0 ? { reason: "registry not read yet" } : { word: "Bond locked · not staked" };
+    // A deployed bond with no key read (and not known to be un-activated) is still being read;
+    // the store retries the grant status on the next poll.
+    if (bond?.deployed && !bond.pubkey) return { reason: "reading validator key" };
+    return { reason: "registry not read yet" };
+  }
   if (activation.status === 2) return { word: "Exiting" };
   if (activation.status === 3) return { word: "Slashed" };
   if (activation.status === 1) {

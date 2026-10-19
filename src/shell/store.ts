@@ -1363,6 +1363,8 @@ export class Store {
         key = this.validatorPubkey;
       }
       if (!key) return null;
+      // #366 F1: the chosen registry key is also the key the producer sample is checked against.
+      if (this.state.validatorPubkey !== key.toLowerCase()) this.setState({ validatorPubkey: key.toLowerCase() });
       return await this.chainReads.validatorActivation(key);
     } catch {
       return null;
@@ -1461,7 +1463,11 @@ export class Store {
       // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
       // own read (whatever the node is doing) until it lands.
       const needActivation = this.state.hasGrant && this.state.memberBond === null;
-      if ((needBond || needGrant || needActivation) && dueForBondRead) {
+      // Codex on #366: a deployed bond whose key (or activated flag) did not read is UNREAD, not
+      // final. Read the grant status again on the next due poll until the key lands.
+      const mb = this.state.memberBond;
+      const needBondKey = !!mb && mb.deployed && mb.activated !== false && !mb.pubkey;
+      if ((needBond || needGrant || needActivation || needBondKey) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
@@ -4825,9 +4831,9 @@ export class Store {
     view: CeremonyView,
     spendSummary?: string,
     onResolved?: WalletReview["onResolved"],
-    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord },
+    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord; warning?: string },
   ): void {
-    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.warning ? { warning: extra.warning } : {}), ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
   }
 
   /**
@@ -4909,8 +4915,13 @@ export class Store {
             : "an identical payment was submitted earlier, outcome unknown" +
               (prior ? " (tx " + prior + ")" : "") +
               ": check it on the block explorer before approving this one";
-        this.openWalletReview("agent", ap.summary, view, warning, (approved, outcome) =>
-          outcome?.kind === "outcome-unknown" ? settleUnknown(key, outcome.txHash) : settle(approved, approved),
+        this.openWalletReview(
+          "agent",
+          ap.summary,
+          view,
+          undefined,
+          (approved, outcome) => (outcome?.kind === "outcome-unknown" ? settleUnknown(key, outcome.txHash) : settle(approved, approved)),
+          { warning },
         );
         return;
       }
