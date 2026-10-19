@@ -19,6 +19,8 @@ import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLi
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
 import { RelayStatusChip } from "./RelayStatusChip";
+import { JoinRequests, InviteStateLine } from "./JoinRequests";
+import { rendezvousSlice, startRendezvousFeed, refreshRendezvous, cancelJoin, forgetJoin } from "../shell/slices/rendezvous";
 import {
   groupsSlice,
   refreshGroups,
@@ -77,6 +79,8 @@ function humanBytes(n: number): string {
 
 export function Groups({ store, s }: SurfaceProps) {
   const st = groupsSlice.use();
+  // GROW-S2 (Join 9) — relay rendezvous views from the member daemon (join://state + on-demand tick).
+  const rv = rendezvousSlice.use();
   const cl = clusterSlice.use();
   const [tab, setTab] = useState<Tab>("chat");
   const [createOpen, setCreateOpen] = useState(false);
@@ -128,6 +132,9 @@ export function Groups({ store, s }: SurfaceProps) {
 
   useEffect(() => {
     void refreshGroups();
+    // GROW-S2 — follow join://state and check the rendezvous now (joins + this device's invites).
+    void startRendezvousFeed();
+    void refreshRendezvous();
     // Populate s.myGroups + s.commsAddr (the durable, comms-keyed role source) on mount so
     // canManage is correct immediately on load/reload — not just after visiting People (#55).
     void store.refreshPeople();
@@ -521,6 +528,16 @@ export function Groups({ store, s }: SurfaceProps) {
           us this invite (from the web join page). Show who invited you + to what; a full invite-token
           link gets a one-click "Request to join" (server-blind claim → owner approves). A token-less
           referral shows context only (joining still needs the owner to add you — no fake action). */}
+      {/* GROW-S2 — this device's join requests through the relay rendezvous (contract §11 words). */}
+      <JoinRequests
+        joins={rv.joins}
+        lastKnown={rv.lastKnownJoin}
+        listedGroups={st.groups.map((g) => g.id)}
+        busy={rv.busy}
+        onRetry={() => void refreshRendezvous().then(() => refreshGroups())}
+        onCancel={(g) => void cancelJoin(g)}
+        onForget={(g) => void forgetJoin(g)}
+      />
       {s.pendingInvite && (() => {
         const pi = s.pendingInvite;
         // INVITE-S2 — a token (`t=`) is all a one-click self-admit needs; a `k=` claims key only
@@ -930,6 +947,14 @@ export function Groups({ store, s }: SurfaceProps) {
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{pi.forHandle}</span>
                         <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>invite pending · self-admit · one use</span>
+                        {pi.lookup && (
+                          <InviteStateLine
+                            view={rv.invites.find((i) => i.lookup === pi.lookup)}
+                            lastKnown={rv.lastKnownInvite[pi.lookup]}
+                            onRetry={() => void refreshRendezvous()}
+                            onRemove={doOffboard}
+                          />
+                        )}
                       </span>
                       <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(pi.link || `citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them. They tap Join and they're in."); }}>Copy link</button>
                       <button className="btn btn-ghost btn-sm" style={{ color: "var(--tx-3)" }} onClick={() => void bridge.invites.revoke(pi.group, pi.token).then(refreshInvites)}>Revoke</button>
