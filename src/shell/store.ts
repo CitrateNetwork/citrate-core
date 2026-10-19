@@ -1618,6 +1618,18 @@ export class Store {
     });
   }
 
+  /** S7 — "Try again" after a reverted activation (red-commit stub: the old inline reset). */
+  onS7RetryAfterRevert(): void {
+    const a = this.state.activation;
+    this.setState({ s7TxHash: null, s7TxAt: null, activation: a ? { ...a, tx: null } : a });
+    this.save();
+  }
+
+  /** The Node surface's Activate (red-commit stub: the old unguarded call). */
+  async requestValidatorActivation(): Promise<boolean> {
+    return this.activateValidator();
+  }
+
   /** S7 — "Explore free": enter the app without activating. Membership and tier are unchanged;
    *  the bond stays locked, not staked, and can be activated later from Node. */
   onS7Skip(): void {

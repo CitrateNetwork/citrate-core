@@ -2228,22 +2228,26 @@ fn join8_approve_and_broadcast_never_parks_its_tx_in_the_shared_map() {
     );
 }
 
-/// A transport that flags when the first RPC arrives (the approval is consumed by then).
-struct FlagRpc {
+/// A transport that, on its FIRST call (the approval is consumed by then), meets a barrier
+/// with the rejecting thread, so the reject attempts deterministically start while the
+/// broadcast is in flight (no spin flag, no scheduling luck).
+struct BarrierRpc<'a> {
     inner: MockRpc,
-    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    gate: &'a std::sync::Barrier,
+    met: std::cell::Cell<bool>,
 }
-impl RpcTransport for FlagRpc {
+impl RpcTransport for BarrierRpc<'_> {
     fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
-        self.started.store(true, std::sync::atomic::Ordering::SeqCst);
+        if !self.met.replace(true) {
+            self.gate.wait();
+        }
         self.inner.call(body)
     }
 }
 
 #[test]
 fn join8_a_concurrent_reject_cannot_take_an_approve_and_broadcast_tx() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
     for round in 0..40 {
@@ -2252,57 +2256,174 @@ fn join8_a_concurrent_reject_cannot_take_an_approve_and_broadcast_tx() {
             "0x3535353535353535353535353535353535353535",
             "0x1",
         ));
-        let started = Arc::new(AtomicBool::new(false));
+        let gate = std::sync::Barrier::new(2);
         let done = AtomicBool::new(false);
-        let rpc = RpcClient::with_transport(FlagRpc {
+        let attempts = AtomicUsize::new(0);
+        let rpc = RpcClient::with_transport(BarrierRpc {
             inner: MockRpc::new(vec![
                 ok(JsonValue::String("0x7".into())),
                 ok(JsonValue::String("0x77359400".into())),
                 ok(JsonValue::String("0xabc".into())),
                 ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
             ]),
-            started: started.clone(),
+            gate: &gate,
+            met: std::cell::Cell::new(false),
         });
-        let mut stolen = 0usize;
-        let outcome = std::thread::scope(|sc| {
+        let (outcome, stolen) = std::thread::scope(|sc| {
             let rejecter = sc.spawn(|| {
+                gate.wait(); // the approval is consumed and the broadcast is in flight
                 let mut n = 0usize;
-                // Once the approval is consumed (first RPC seen), hammer reject on the same id.
-                while !done.load(Ordering::SeqCst) {
-                    if started.load(Ordering::SeqCst) && c.reject(&view.id).is_ok() {
+                loop {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    if c.reject(&view.id).is_ok() {
                         n += 1;
+                    }
+                    if done.load(Ordering::SeqCst) {
+                        break;
                     }
                 }
                 n
             });
             let r = c.approve_and_broadcast(&v, &rpc, &view.id, false, bcfg(2));
             done.store(true, Ordering::SeqCst);
-            stolen = rejecter.join().unwrap_or(usize::MAX);
-            r
+            (r, rejecter.join().unwrap_or(usize::MAX))
         });
         assert!(outcome.is_ok(), "round {round}: broadcast lost its tx: {outcome:?}");
         assert_eq!(stolen, 0, "round {round}: a concurrent reject took the in-flight tx");
+        assert!(attempts.load(Ordering::SeqCst) >= 1, "round {round}: the race was exercised");
     }
 }
 
-/// TRIPWIRE: only `approve_and_sign` may park a signed tx in the shared map, and the
-/// one-call `approve_and_broadcast` must not route through the two public halves.
+/// The structural prepared-map rule, as a function so it can be checked against evasions.
+/// Returns one message per violation (empty = clean).
+fn prepared_map_violations(src: &str) -> Vec<String> {
+    let src = strip_test_module(src);
+    let mut out = Vec::new();
+    if src.matches("lock_prepared().insert(").count() != 1 {
+        out.push("exactly one place may insert into the prepared map".to_string());
+    }
+    if let Some(start) = src.find("pub fn approve_and_broadcast") {
+        let body = &src[start..];
+        let end = body.find("\n    }\n").map(|i| i + 6).unwrap_or(body.len());
+        let body = &body[..end];
+        if body.contains("self.approve_and_sign(") || body.contains("self.send_prepared(") {
+            out.push("approve_and_broadcast round-trips through the shared map".to_string());
+        }
+    }
+    out
+}
+
+/// TRIPWIRE: the real source has no prepared-map violation.
 #[test]
 fn join8_tripwire_only_approve_and_sign_parks_a_signed_tx() {
-    let src = strip_test_module(include_str!("ceremony.rs"));
-    assert_eq!(
-        src.matches("lock_prepared().insert(").count(),
-        1,
-        "exactly one place may insert into the prepared map"
-    );
-    let start = src
-        .find("pub fn approve_and_broadcast")
-        .expect("approve_and_broadcast exists");
-    let body = &src[start..];
-    let end = body.find("\n    }\n").map(|i| i + 6).unwrap_or(body.len());
-    let body = &body[..end];
-    assert!(
-        !body.contains("self.approve_and_sign(") && !body.contains("self.send_prepared("),
-        "approve_and_broadcast must keep its tx private, not round-trip it through the shared map"
-    );
+    let v = prepared_map_violations(include_str!("ceremony.rs"));
+    assert!(v.is_empty(), "prepared-map violations: {v:?}");
+}
+
+/// The tripwire must see through wrappers and call spellings, not match one text form.
+#[test]
+fn join8_tripwire_catches_evasions() {
+    let real = include_str!("ceremony.rs");
+    let marker = "        let (_key, prepared, _hash) = self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id)?;\n        Self::send_signed(rpc, prepared, cfg)";
+    assert!(real.contains(marker), "fixture anchor present");
+    let evasions = [
+        // UFCS spelling of the old round-trip.
+        "        Self::approve_and_sign(self, vault, rpc, id, raw_ack, cfg.chain_id)?;\n        Self::send_prepared(self, rpc, id, cfg)".to_string(),
+        // A wrapper that parks the tx, then the public send.
+        "        self.park_then(vault, rpc, id, raw_ack, cfg.chain_id)?;\n        SignatureCeremony::send_prepared(self, rpc, id, cfg)".to_string(),
+    ];
+    let wrapper = "\n    fn park_then<T: crate::rpc::RpcTransport>(&self, vault: &CustodyVault, rpc: &crate::rpc::RpcClient<T>, id: &str, raw_ack: bool, chain_id: u64) -> Result<()> {\n        let (key, prepared, _h) = self.sign_consumed(vault, rpc, id, raw_ack, chain_id)?;\n        let mut m = self.prepared.lock().unwrap_or_else(|e| e.into_inner());\n        m.insert(key, prepared);\n        Ok(())\n    }\n";
+    for (i, ev) in evasions.iter().enumerate() {
+        let mut src = real.replacen(marker, ev, 1);
+        if i == 1 {
+            let at = src.find("    /// **Step 2' — reject.**").unwrap_or(0);
+            src.insert_str(at, wrapper);
+        }
+        assert!(
+            !prepared_map_violations(&src).is_empty(),
+            "evasion {i} was not caught"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Join-8 follow-up — a signed but unsent tx expires. After its TTL it is dropped
+// from memory and can no longer be sent; the send says truthfully that nothing
+// was sent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join8_a_prepared_tx_expires_and_is_never_sent_after_its_ttl() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_millis(1));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    let r = c.send_prepared(&send_rpc, &view.id, bcfg(2));
+    assert_eq!(r.err(), Some(CeremonyError::PreparedExpired));
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
+    assert!(CeremonyError::PreparedExpired.to_string().contains("nothing was sent"));
+}
+
+#[test]
+fn join8_expired_signed_txs_are_dropped_from_memory() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_millis(1));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(c.prepared_len(), 0, "an expired signed tx is not kept");
+}
+
+#[test]
+fn join8_a_prepared_tx_within_its_ttl_still_sends() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_secs(60));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    let hash = c
+        .approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String(hash)),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    assert!(c.send_prepared(&send_rpc, &view.id, bcfg(2)).is_ok());
+}
+
+#[test]
+fn join8_the_default_ttl_is_two_minutes() {
+    assert_eq!(PREPARED_TTL, std::time::Duration::from_secs(120));
 }

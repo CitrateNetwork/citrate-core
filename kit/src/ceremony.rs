@@ -370,6 +370,9 @@ pub enum CeremonyError {
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
     Broadcast(String),
+    /// Join-8: a signed transaction was held longer than its time-to-live without being sent,
+    /// and was discarded. Nothing was sent.
+    PreparedExpired,
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -397,6 +400,10 @@ impl std::fmt::Display for CeremonyError {
                 "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
+            CeremonyError::PreparedExpired => write!(
+                f,
+                "ceremony: the signed transaction expired before it was sent; nothing was sent"
+            ),
         }
     }
 }
@@ -437,6 +444,10 @@ struct Pending {
     decoded: DecodedAction,
     requires_raw_ack: bool,
 }
+
+/// Join-8: how long a signed, unsent transaction may wait for its send (red-commit stub: not
+/// enforced yet).
+pub const PREPARED_TTL: std::time::Duration = std::time::Duration::from_secs(0);
 
 /// A signed transaction awaiting its send (public facts + the signed raw RLP; no key material).
 struct Prepared {
@@ -529,6 +540,16 @@ impl SignatureCeremony {
     /// pending map; a poisoned guard yields it intact.
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Pending>> {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Test seam: set the signed-tx time-to-live (red-commit stub: no effect yet).
+    #[cfg(test)]
+    fn set_prepared_ttl(&self, _ttl: std::time::Duration) {}
+
+    /// Test seam: how many signed txs are held unsent.
+    #[cfg(test)]
+    fn prepared_len(&self) -> usize {
+        self.lock_prepared().len()
     }
 
     /// Lock the prepared (signed, unsent) map, recovering from poison like [`Self::lock`].

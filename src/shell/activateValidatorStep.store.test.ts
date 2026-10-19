@@ -78,6 +78,8 @@ vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () =>
 import { Store } from "./store";
 import { PERSIST_KEYS, STORAGE_KEY } from "./state";
 import { activationPhase } from "../onboarding/activateValidator";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -411,5 +413,112 @@ describe("single-flight periodic reads (a slow read is still applied)", () => {
     slow.resolve(readyStatus({ bondActivated: false, membershipActive: false }));
     await first;
     expect(store.state.activation?.membershipActive).toBe(true);
+  });
+});
+
+describe("follow-up: a signed tx that expired before it was sent", () => {
+  it("clears the saved hash with a truthful message (nothing was sent)", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    sendPreparedMock.mockRejectedValueOnce(new Error("ceremony: the signed transaction expired before it was sent; nothing was sent"));
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash).toBeNull();
+    expect(store.state.s7TxAt).toBeNull();
+    expect(persisted().s7TxHash).toBeNull();
+    expect(String(store.state.toast ?? "")).toMatch(/nothing was sent/i);
+    expect(String(store.state.toast ?? "")).not.toMatch(/not settled/i);
+  });
+
+  it("any other send failure still keeps the saved hash (it may have been sent)", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    sendPreparedMock.mockRejectedValueOnce(new Error("ceremony: broadcast failed: timeout"));
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+  });
+});
+
+describe("follow-up: Try again after a revert resets the read generation", () => {
+  it("a read in flight from before Try again cannot bring the reverted tx back", async () => {
+    const store = memberStore();
+    store.recordActivationTx("0xabc");
+    const failed = { hash: "0xabc", included: true, blockNumber: 501, success: false };
+    chain.current = readyStatus({ tx: failed });
+    await store.refreshActivation();
+    expect(activationPhase(store.state.activation, true, store.state.s7TxHash)).toBe("failed");
+    // A slow read (asked with the reverted tx) is still in flight when the member retries.
+    const stale = deferred<ActivationStatusView>();
+    activationStatusMock.mockImplementationOnce(() => stale.promise);
+    const r = store.refreshActivation();
+    store.onS7RetryAfterRevert();
+    stale.resolve(readyStatus({ tx: failed }));
+    await r;
+    expect(store.state.activation?.tx ?? null).toBeNull();
+    expect(activationPhase(store.state.activation, true, store.state.s7TxHash)).not.toBe("failed");
+    expect(persisted().s7TxHash).toBeNull(); // written now, not on the debounced timer
+  });
+});
+
+describe("follow-up: the Node surface's Activate is guarded like S7", () => {
+  it("refuses while an activation tx is recorded", async () => {
+    const store = memberStore();
+    store.setState({ stage: "done" });
+    store.recordActivationTx("0xfeed");
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("reads the chain first and refuses when the gate is not met", async () => {
+    const store = memberStore();
+    store.setState({ stage: "done", activation: null });
+    chain.current = readyStatus({ membershipActive: false });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(activationStatusMock).toHaveBeenCalled();
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("when allowed, it saves the hash before sending, exactly as S7 does", async () => {
+    const store = memberStore();
+    store.setState({ stage: "done", activation: null });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.requestValidatorActivation()).toBe(true);
+    let onDiskAtSend: unknown = "unset";
+    sendPreparedMock.mockImplementationOnce(async () => {
+      onDiskAtSend = persisted().s7TxHash;
+      return { txHash: "0xfeed", blockNumber: 501 };
+    });
+    await store.approveWalletReview(false);
+    expect(prepareMock).toHaveBeenCalledTimes(1);
+    expect(onDiskAtSend).toBe("0xfeed");
+  });
+});
+
+describe("follow-up tripwires", () => {
+  const root = join(__dirname, "..");
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const f of readdirSync(d)) {
+      const p = join(d, f);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(f) && !/\.test\.(ts|tsx)$/.test(f)) files.push(p);
+    }
+  };
+  walk(root);
+  const rel = (p: string) => p.slice(root.length + 1);
+
+  it("only the store calls activateValidator (every surface goes through the guarded entry)", () => {
+    const offenders = files.filter((f) => rel(f) !== "shell/store.ts" && /\.activateValidator\(/.test(readFileSync(f, "utf8")));
+    expect(offenders.map(rel)).toEqual([]);
+  });
+
+  it("only the store writes s7TxHash (no surface resets it around the read generation)", () => {
+    const offenders = files.filter((f) => !["shell/store.ts", "shell/state.ts"].includes(rel(f)) && /s7TxHash\s*:/.test(readFileSync(f, "utf8")));
+    expect(offenders.map(rel)).toEqual([]);
   });
 });
