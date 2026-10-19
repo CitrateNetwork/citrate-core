@@ -15,7 +15,7 @@ export const NAVI: [string, string, string, string][] = [
   ["storage", "Storage", "M12 3 C7 3 4 4.5 4 6.5 C4 8.5 7 10 12 10 C17 10 20 8.5 20 6.5 C20 4.5 17 3 12 3 Z", "M4 6.5 V17.5 C4 19.5 7 21 12 21 C17 21 20 19.5 20 17.5 V6.5 M4 12 C4 14 7 15.5 12 15.5 C17 15.5 20 14 20 12"],
   ["journal", "Journal", "M6 3 H19 V21 H6 A2 2 0 0 1 4 19 V5 A2 2 0 0 1 6 3 Z", "M9 3 V21 M12.5 8 H16 M12.5 12 H15"],
   ["comms", "Comms", "M18 16 V11 A6 6 0 0 0 6 11 V16 L4 18 H20 Z", "M10 21 A2 2 0 0 0 14 21"],
-  ["commissary", "Commissary", "M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z", "M3 8 L12 13 L21 8 M12 13 V21"],
+  ["commissary", "Store", "M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z", "M3 8 L12 13 L21 8 M12 13 V21"],
   ["settings", "Settings", "M4 7 H20 M4 12 H20 M4 17 H20", "M9 5 V9 M15 10 V14 M8 15 V19"],
   ["models", "Models", "M4 7 L12 3 L20 7 L12 11 Z", "M4 12 L12 16 L20 12 M4 17 L12 21 L20 17"],
   ["files", "Files", "M6 3 H14 L18 7 V21 H6 Z", "M14 3 V7 H18 M9 12 H15 M9 16 H15"],

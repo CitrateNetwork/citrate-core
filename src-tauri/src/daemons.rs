@@ -1044,7 +1044,7 @@ pub(crate) fn store_book(path: &Path, book: &DaemonBook) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("could not save the daemons file: {e}"))
 }
 
-fn book_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn book_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join(FILE_NAME))
@@ -1056,12 +1056,21 @@ fn with_book<T>(
     write: bool,
     f: impl FnOnce(&mut DaemonBook) -> Result<T, String>,
 ) -> Result<T, String> {
-    let path = book_path(app)?;
+    with_book_file(&book_path(app)?, write, f)
+}
+
+/// [`with_book`] over an explicit file: load, change and (when `write`) store the book under the
+/// one process-wide lock. The Store's daemon installer (K5a) writes through here.
+pub(crate) fn with_book_file<T>(
+    path: &Path,
+    write: bool,
+    f: impl FnOnce(&mut DaemonBook) -> Result<T, String>,
+) -> Result<T, String> {
     let _guard = BOOK_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let mut book = load_book(&path)?;
+    let mut book = load_book(path)?;
     let out = f(&mut book)?;
     if write {
-        store_book(&path, &book)?;
+        store_book(path, &book)?;
     }
     Ok(out)
 }

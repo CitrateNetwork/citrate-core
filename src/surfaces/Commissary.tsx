@@ -1,5 +1,10 @@
 // =====================================================================
-// citrate-core — Commissary
+// citrate-core — Store (formerly Commissary; the route id stays `commissary`, K0 owns routes)
+//
+// K5a: the first tab is the SIGNED catalog (StoreCatalog.tsx → Rust store_catalog.rs): verified
+// against the catalog key from the key ceremony, with staged installs that arrive paused. The
+// tabs below it are the older local seed and the federation links, unchanged.
+//
 // Ported 1:1 from design/CitrateCore.dc.html (COMMISSARY section + inline
 // script: cTabs / appCards / sdkCards / docCards / svcCards; tier gating via
 // RANK compare against effTier (FAIL-CLOSED — see rankOf); org-scoped cards
@@ -19,6 +24,7 @@ import { SurfaceProps } from "./shared";
 import { CATALOG } from "../data/seed";
 import { RANK } from "../shell/state";
 import { federationUrl } from "../data/links";
+import { StoreCatalog } from "./StoreCatalog";
 
 type BadgeTriple = [string, string, string];
 const badge = (st: string): BadgeTriple =>
@@ -42,6 +48,7 @@ const tierPill = (t: string): BadgeTriple =>
     : ["var(--danger-bg)", "var(--danger)", "var(--danger)"];
 
 const CTABS: [string, string][] = [
+  ["catalog", "Catalog"],
   ["apps", "Apps"],
   ["sdks", "SDKs"],
   ["docs", "Docs"],
@@ -109,6 +116,7 @@ export function Commissary({ store, s }: SurfaceProps) {
     color: s.cTab === id ? "var(--tx-1)" : "var(--tx-3)",
   }));
 
+  const ctCatalog = s.cTab === "catalog";
   const ctApps = s.cTab === "apps";
   const ctSdks = s.cTab === "sdks";
   const ctDocs = s.cTab === "docs";
@@ -137,7 +145,8 @@ export function Commissary({ store, s }: SurfaceProps) {
         locked,
         unlocked: !locked,
         lockText: "Requires " + (a.minTier === "pilot" ? "Pilot membership" : "an Enterprise seat"),
-        unlockLabel: a.minTier === "pilot" ? "Join · $48/yr" : "Contact us",
+        // No price in this copy: the membership price comes from the membership service.
+        unlockLabel: a.minTier === "pilot" ? "Join" : "Contact us",
         onUnlock: () =>
           store.toast(
             a.minTier === "pilot"
@@ -184,7 +193,7 @@ export function Commissary({ store, s }: SurfaceProps) {
         locked,
         unlocked: !locked,
         opacity: locked ? 0.6 : 1,
-        cta: d.minTier === "pilot" ? "Join · $48/yr" : "Contact us",
+        cta: d.minTier === "pilot" ? "Join" : "Contact us",
         onUnlock: () =>
           store.toast("This doc unlocks with " + (d.minTier === "pilot" ? "Pilot membership" : "an Enterprise seat") + "."),
       };
@@ -195,7 +204,7 @@ export function Commissary({ store, s }: SurfaceProps) {
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Commissary</span>
+        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Store</span>
         <span style={{ display: "flex", gap: 2, background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 2 }}>
           {cTabs.map((t) => (
             <button
@@ -217,10 +226,15 @@ export function Commissary({ store, s }: SurfaceProps) {
             </button>
           ))}
         </span>
-        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
-          catalog · local seed · not yet the signed manifest
-        </span>
+        {!ctCatalog && (
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
+            catalog · local seed · not yet the signed manifest
+          </span>
+        )}
       </div>
+
+      {/* ----- Signed catalog (K5a) ----- */}
+      {ctCatalog && <StoreCatalog />}
 
       {/* ----- Apps ----- */}
       {ctApps && (

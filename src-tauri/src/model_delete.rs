@@ -235,8 +235,8 @@ pub fn states(
 }
 
 /// The live usage: the chat llama-server (chat and Hermes) and the embedding server.
-struct LiveUsage<'a> {
-    serve: &'a crate::serve::LlamaServerManager,
+pub(crate) struct LiveUsage<'a> {
+    pub(crate) serve: &'a crate::serve::LlamaServerManager,
 }
 
 fn same_file(a: &Path, canonical: &Path) -> bool {

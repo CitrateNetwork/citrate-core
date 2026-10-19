@@ -155,6 +155,7 @@ mod model_catalog;
 mod model_delete;
 mod social;
 mod storage;
+mod store_catalog;
 mod training;
 
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
@@ -906,6 +907,13 @@ pub fn run() {
             components::components_status,
             components::components_update,
             components::components_rollback,
+            // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
+            // removal. Every catalog command refuses until the catalog key is issued.
+            store_catalog::store_catalog,
+            store_catalog::store_stage,
+            store_catalog::store_install,
+            store_catalog::store_installed,
+            store_catalog::store_remove,
             // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
             // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
             mcp_servers::mcp_servers_list,
