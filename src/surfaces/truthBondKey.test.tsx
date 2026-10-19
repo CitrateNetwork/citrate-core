@@ -254,6 +254,58 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
     expect(validatorDash(32_000, null, true, { deployed: true, activated: null, pubkey: null })).toBe("— · reading validator key");
   });
 
+  // Codex P1 on #366: a returning member restores hasGrant=true and bondedStake>=32000 from
+  // PERSIST_KEYS while memberBond starts null (it is observed, never persisted). The poll must still
+  // read the grant status once, fill memberBond, and read the registry for the bond's key.
+  it("a returning member with a restored grant and stake reads the bond and the registry", async () => {
+    const reads = {
+      validatorActivation: vi.fn(async () => active),
+      minStakeWei: async () => 32_000n * WEI,
+      blockSeconds: async () => 2,
+      producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
+      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
+    };
+    (store as unknown as { chainReads: ChainReads }).chainReads = reads as unknown as ChainReads;
+    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    (store as unknown as { validatorPubkey: string | null }).validatorPubkey = null;
+    // What loadState() restores for a bonded member, with the observed fields at their defaults.
+    store.setState({ node: "synced", stage: "done", hasGrant: true, bondedStake: 32_000, selfStake: 0, validatorActivation: null, memberBond: null });
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
+    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+    vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: NODE_KEY });
+    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
+    await store.refreshNode();
+    expect(gs).toHaveBeenCalledTimes(1);
+    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY });
+    expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
+    expect(store.state.validatorActivation).toEqual(active);
+  });
+
+  it("an exited member restored with a stale stake still sees the registry status", async () => {
+    const exiting: ValidatorActivation = { isActive: false, status: 2, actEpoch: 480, currentEpoch: 511 };
+    const reads = {
+      validatorActivation: vi.fn(async () => exiting),
+      minStakeWei: async () => 32_000n * WEI,
+      blockSeconds: async () => 2,
+      producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
+      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
+    };
+    (store as unknown as { chainReads: ChainReads }).chainReads = reads as unknown as ChainReads;
+    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    store.setState({ node: "synced", stage: "done", hasGrant: true, bondedStake: 32_000, validatorActivation: null, memberBond: null });
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 511_000, syncPct: 100, miningArmed: true });
+    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+    vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: NODE_KEY });
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: "0", hasValidator: false }));
+    await store.refreshNode();
+    expect(store.state.bondedStake).toBe(0);
+    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.memberBond)).toBe("Exiting");
+  });
+
   it("an activated validator still reads 'Validator active' through the bond's key", () => {
     expect(validatorWord(32_000, active, true, activatedBond)).toBe("Validator active");
   });
