@@ -1598,10 +1598,14 @@ const BEFORE_RESTORE_INFIX: &str = ".before-restore-";
 fn before_restore_key(suffix: &str) -> Option<(String, u32)> {
     let (stamp, n) = match suffix.get(15..) {
         Some("") => (suffix, 1),
-        Some(rest) => (
-            suffix.get(..15)?,
-            rest.strip_prefix('-')?.parse::<u32>().ok()?,
-        ),
+        Some(rest) => {
+            // Only the `-n` the swap writes: digits, no leading zero (so `-02` never ties `-2`).
+            let n = rest.strip_prefix('-')?;
+            if n.is_empty() || n.starts_with('0') || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            (suffix.get(..15)?, n.parse::<u32>().ok()?)
+        }
         None => return None,
     };
     let ok = stamp.len() == 15
@@ -1642,14 +1646,18 @@ pub(crate) fn recover_interrupted_restore(mem_dir: &Path) -> Result<Option<PathB
     let Some(kept) = newest else {
         return Ok(None);
     };
-    rollback_rename(&kept, mem_dir).map_err(|e| {
-        format!(
+    if let Err(e) = rollback_rename(&kept, mem_dir) {
+        // Lost a race with another rollback: the store is back in place, which is the goal.
+        if std::fs::symlink_metadata(mem_dir).is_ok() {
+            return Ok(None);
+        }
+        return Err(format!(
             "a memory restore was interrupted, and moving the previous store {} back to {} failed: \
              {e}. Nothing was changed and the memory daemon will not start until it is moved back",
             kept.display(),
             mem_dir.display()
-        )
-    })?;
+        ));
+    }
     Ok(Some(kept))
 }
 
@@ -1672,8 +1680,12 @@ fn rollback_rename(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
-/// B1 red-step stub (old behaviour: create the dir, no rollback). Replaced in the fix commit.
+/// B1: the one way to create the memory dir. Every path that creates it (the daemon start, the
+/// knowledge import) calls this first, so an interrupted restore is rolled back before anything
+/// can build a fresh store in its place. Fails closed: when the rollback fails, nothing is
+/// created. Pinned by `every_memory_dir_creator_rolls_back_first`.
 pub(crate) fn ensure_memory_dir(mem_dir: &Path) -> Result<(), String> {
+    recover_interrupted_restore(mem_dir)?;
     std::fs::create_dir_all(mem_dir).map_err(|e| format!("cannot create the memory directory: {e}"))
 }
 

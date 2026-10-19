@@ -111,15 +111,27 @@ Not backed up: the daemon socket (`memdag.sock`) and the crash log.
 - The memory swap is two renames: the live `memory/` dir moves to `memory.before-restore-<time>`,
   then the staging dir becomes `memory/`. If the app is killed (or the machine loses power)
   between them, there is no live `memory/` dir for a moment. **This is rolled back
-  automatically**: when the memory manager is created (app start) and again before every daemon
-  start, if `memory/` is missing and a `memory.before-restore-<time>` folder exists, the newest one
-  (by its time stamp, then its `-n` suffix as a number) is renamed back to `memory/`. Other
-  `before-restore` folders and any `memory.restore-staging-<time>` folder (the half-staged copy)
-  are left untouched for inspection. A present `memory/` is never touched. If the rename fails,
-  the daemon refuses to start with an error naming the folder, so no empty store is created in
-  its place; move the folder back by hand (with the app quit) and start again. Symlinks or files
-  with a `before-restore` name are never used. The restored copy that was being swapped in is not
-  promoted; run the restore again.
+  automatically.** Every path that creates `memory/` goes through one guard,
+  `storage_backup::ensure_memory_dir`: the daemon start and the knowledge import (which runs
+  before the daemon starts). The memory manager also runs the rollback when it is created at app
+  start.
+  - **Which folder:** if `memory/` is missing and a `memory.before-restore-<time>` folder exists,
+    the newest one is renamed back to `memory/`. Newest means the latest time stamp, then the
+    `-n` suffix read as a number; suffixes with a leading zero (`-02`) are not names the swap
+    writes and are ignored.
+  - **Left alone:** other `before-restore` folders, and any `memory.restore-staging-<time>`
+    folder (the half-staged copy). A present `memory/` is never touched. Symlinks or files with a
+    `before-restore` name are never used. Two rollbacks racing on the same folder both succeed;
+    the one that loses the rename finds the store already in place.
+  - **If the rename fails,** the guard refuses: the daemon does not start, the import does not
+    run, and no `memory/` is created. The error names the folder. Move it back by hand (with the
+    app quit) and start again.
+  - The restored copy that was being swapped in is not promoted; run the restore again.
+- **A deliberately removed `memory/` is rolled back too.** The rollback can't tell an interrupted
+  swap from a `memory/` folder someone deleted on purpose. If `memory/` is removed while a
+  `memory.before-restore-*` folder is still there, the next start brings that older store back.
+  To delete the memory store for good, delete the `memory.before-restore-*` folders as well (with
+  the app quit).
 - Backups are not signed (see above).
 
 ## 4. Storage processes and the supervisor

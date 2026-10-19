@@ -765,10 +765,10 @@ impl MemoryManager {
         if !self.bin.exists() {
             return Err(MemoryError::BinaryNotFound(self.bin.display().to_string()));
         }
-        // Ensure the store parent dir exists before the daemon opens RocksDB.
+        // Ensure the store parent dir exists before the daemon opens RocksDB, through the shared
+        // guard (rolls back an interrupted restore first; never an empty dir in its place).
         if let Some(parent) = self.store_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| MemoryError::Spawn(format!("mkdir store parent: {e}")))?;
+            crate::storage_backup::ensure_memory_dir(parent).map_err(MemoryError::Spawn)?;
         }
         let key_hex = self.store_key_hex()?;
         let spec = self.build_spec(&key_hex);

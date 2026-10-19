@@ -486,12 +486,11 @@ fn run_importer(
     digest: &str,
     mut on_line: impl FnMut(&ImportLine),
 ) -> KnowledgeImportReport {
+    // K4 (B1): the shared guard rolls back an interrupted restore before the memory dir is
+    // created; when that fails the import refuses, so no corpus-only store takes its place.
     if let Some(parent) = plan.store_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return KnowledgeImportReport::failed(
-                format!("cannot create the memory directory: {e}"),
-                Some(digest.to_string()),
-            );
+        if let Err(e) = crate::storage_backup::ensure_memory_dir(parent) {
+            return KnowledgeImportReport::failed(e, Some(digest.to_string()));
         }
     }
     let mut progress =
