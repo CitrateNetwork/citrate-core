@@ -1059,7 +1059,13 @@ impl Supervisor {
             return ControlResult::RejectedClosing;
         }
         if c.desired == Desired::Stopped {
-            return c.repeated_stop(self.shared.epoch);
+            let joined = c.repeated_stop(self.shared.epoch);
+            drop(c);
+            // Joining a pending Stop is only Accepted while a monitor can settle it.
+            return match joined {
+                ControlResult::Accepted(token) => self.observed(token),
+                other => other,
+            };
         }
         let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
         if c.phase != Phase::Quarantined {
@@ -1089,7 +1095,11 @@ impl Supervisor {
         }
         if c.desired == Desired::Running && c.phase != Phase::Failed {
             return match c.active {
-                Some((token, IntentKind::Start)) => ControlResult::Accepted(token),
+                Some((token, IntentKind::Start)) => {
+                    drop(c);
+                    // Joining a pending Start is only Accepted while a monitor can settle it.
+                    self.observed(token)
+                }
                 _ => ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch)),
             };
         }
@@ -1526,6 +1536,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     let mut settled_stop: Option<u64> = None;
     // Whether a child was torn down since the last settled Stop (names "child" in the scope).
     let mut tore_down_child = false;
+    // The intent the last admitted spawn served. A different current intent is a new Start.
+    let mut spawned_for: u64 = 0;
 
     loop {
         let (seq, desired, closing) = shared.intent();
@@ -1557,11 +1569,16 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         }
 
         // desired == Running
-        //
-        // A Start that superseded a Stop mid-teardown: the old incarnation's child is gone, but
-        // its readers (and any process holding its output pipe) may not be. Reconcile them before
-        // admitting the next spawn; until then the service is Quarantined and the Start pending.
-        if tore_down_child {
+        if failed_seq == Some(seq) {
+            shared.wait_wake(None);
+            continue;
+        }
+        // The first spawn for a new Start intent. However the previous incarnation ended (a
+        // Stop's teardown that this Start superseded, a crash, or health failures that spent the
+        // retry budget), its child is gone but its readers (and any process holding its output
+        // pipe) may not be. Reconcile them before admitting the spawn; until then the service is
+        // Quarantined and the Start pending.
+        if spawned_for != seq {
             let remaining = drain_readers(&mut readers, READER_DRAIN);
             if !remaining.is_empty() {
                 hold_start_for_cleanup(&shared, seq, &remaining);
@@ -1570,10 +1587,6 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
             }
             release_start_hold(&shared, seq);
             tore_down_child = false;
-        }
-        if failed_seq == Some(seq) {
-            shared.wait_wake(None);
-            continue;
         }
         if budget_seq != seq {
             budget_seq = seq;
@@ -1584,6 +1597,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         if !admit_spawn(&shared, seq) {
             continue;
         }
+        spawned_for = seq;
         let mut child = match spawn_child(&spec) {
             Ok(c) => c,
             Err(e) => {
