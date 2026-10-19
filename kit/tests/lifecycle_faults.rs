@@ -2459,6 +2459,39 @@ fn an_automated_start_carries_the_budget_over() {
     fx.assert_clean();
 }
 
+/// A probe answer that arrives after its interval never counts, even when the monitor first
+/// sees it finished and its deadline passed in the same poll (it must not be read as a fresh
+/// success just because the result was collected before the timeout was noticed).
+#[test]
+fn a_probe_answer_after_its_interval_never_counts() {
+    let fx = OwnedFixture::new("late-answer");
+    let mut spec = fx.leaf_spec("lcf-late-answer");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(50),
+        grace: Duration::from_secs(30),
+        probe: Arc::new(|| {
+            // Just past the interval: finishes between two monitor polls after the deadline.
+            std::thread::sleep(Duration::from_millis(55));
+            true
+        }),
+    });
+    let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let samples = sample_over(
+        Duration::from_millis(1500),
+        Duration::from_millis(5),
+        || sup.lifecycle().map(|l| l.readiness),
+    );
+    assert!(
+        samples.iter().all(|(_, r)| *r != Some(Readiness::Ready)),
+        "a late answer was read as a fresh success: {:?}",
+        samples.iter().find(|(_, r)| *r == Some(Readiness::Ready))
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
 // ---------------------------------------------------------------------------
 // Suite manifest
 // ---------------------------------------------------------------------------

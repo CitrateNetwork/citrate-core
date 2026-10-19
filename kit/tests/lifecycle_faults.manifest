@@ -60,4 +60,5 @@ a_forward_wall_clock_jump_never_grants_credit | regression | SCL-S3.2 | the live
 sustained_fresh_success_resets_the_retry_budget | positive-control | SCL-S3.2 | fresh successes spanning healthy_after reset the budget; four crashes after healthy runs never reach Failed (INV-1)
 automated_restarts_never_reset_the_budget | regression | SCL-S3.2 | automated restarts carry the retry budget: a crashing child restarted once after every crash still reaches Failed after 1 + max_retries failures (INV-17)
 an_automated_start_carries_the_budget_over | regression | SCL-S3.2 | an automated start after a Stop counts the failures before the Stop; 1 + max_retries failures in all (INV-17)
+a_probe_answer_after_its_interval_never_counts | regression | SCL-S3.1 | an answer that finishes after the probe interval is discarded even when collected before the timeout is noticed (INV-12, INV-13)
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures
