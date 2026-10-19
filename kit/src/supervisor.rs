@@ -1119,6 +1119,11 @@ impl Supervisor {
             // Joining a pending Stop (plain or with a deadline) applies this deadline to it if
             // it is the tighter one.
             if let Some((token, IntentKind::Stop)) = c.active {
+                if !self.monitor_running() {
+                    // Nothing could settle the Stop or free a record: arm none.
+                    drop(c);
+                    return self.observed(token);
+                }
                 if !self.deadlines.arm_or_tighten(
                     self.owner,
                     token.app_epoch,
@@ -1127,9 +1132,15 @@ impl Supervisor {
                 ) {
                     return ControlResult::Busy;
                 }
-                return ControlResult::Accepted(token);
+                drop(c);
+                return self.observed(token);
             }
-            return c.repeated_stop(self.shared.epoch);
+            let joined = c.repeated_stop(self.shared.epoch);
+            drop(c);
+            return match joined {
+                ControlResult::Accepted(token) => self.observed(token),
+                other => other,
+            };
         }
         let seq = c.intent_sequence.saturating_add(1);
         // With the monitor gone nothing would ever settle (and so free) a deadline record: the
