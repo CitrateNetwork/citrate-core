@@ -122,7 +122,7 @@ export async function runEscalationTool(deps: EscalationDeps, args: Record<strin
     return "escalation endpoints are unavailable: " + message(e) + ". Nothing was sent.";
   }
   if (endpoints.length === 0) {
-    return "No escalation endpoint is set up, so nothing was sent. The member can add one in Settings › Escalation.";
+    return "No escalation endpoint is set up, so nothing was sent. The member can add one in Hermes › Controls, under Escalation & spend.";
   }
   const wanted = typeof args.endpoint === "string" ? args.endpoint.trim().toLowerCase() : "";
   const ep = (wanted && endpoints.find((e) => e.id.toLowerCase() === wanted || e.label.toLowerCase() === wanted)) || endpoints[0];
