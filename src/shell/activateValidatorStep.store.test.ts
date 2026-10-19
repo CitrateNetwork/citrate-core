@@ -519,8 +519,11 @@ describe("follow-up: the Node surface's Activate is guarded like S7", () => {
 /** Surface files (non-test .ts/.tsx under src/, except the store) that bypass the guarded
  *  activation entry: a direct activateValidator / registerValidator call in any spelling. */
 function guardOffenders(sources: [string, string][]): string[] {
-  // Red-commit form: the old rule (direct `.activateValidator(` only).
-  const bypass = [/\.activateValidator\(/];
+  const bypass = [
+    /\.activateValidator\b/, // method access, called or not (`store.activateValidator`)
+    /\.registerValidator\s*\(/, // the bridge call itself
+    /\[\s*["'`](activate|register)Validator["'`]\s*\]/, // bracket access
+  ];
   return sources.filter(([rel, src]) => rel !== "shell/store.ts" && bypass.some((re) => re.test(src))).map(([rel]) => rel);
 }
 

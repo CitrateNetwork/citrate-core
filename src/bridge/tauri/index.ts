@@ -38,7 +38,7 @@ import type {
   NodeStatusView,
   ConnectionInfo,
 } from "../domains";
-import { Unavailable } from "../types";
+import { SignedTxExpired, Unavailable } from "../types";
 import { tauriImportKnowledge } from "./knowledge";
 
 function unavailable(domain: string, op: string): never {
@@ -140,7 +140,18 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         return invoke<{ txHash: string }>("sign_prepare", { id, rawAck });
       },
       async sendPrepared(id: string): Promise<BroadcastResult> {
-        return invoke<BroadcastResult>("sign_send_prepared", { id });
+        try {
+          return await invoke<BroadcastResult>("sign_send_prepared", { id });
+        } catch (e) {
+          // sign_send_prepared returns a STRUCTURED error ({ code, message }). Only the
+          // "signedTxExpired" code means nothing was sent; the message text never decides.
+          if (e && typeof e === "object" && (e as { code?: unknown }).code === "signedTxExpired") {
+            throw new SignedTxExpired(String((e as { message?: unknown }).message ?? "signed transaction expired"));
+          }
+          if (e instanceof Error) throw e;
+          if (e && typeof e === "object" && "message" in e) throw new Error(String((e as { message: unknown }).message));
+          throw new Error(String(e));
+        }
       },
       async reject(id: string): Promise<void> {
         await invoke("sign_reject", { id });

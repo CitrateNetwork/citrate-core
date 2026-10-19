@@ -28,6 +28,7 @@ import {
   WalletReview,
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
+import { SignedTxExpired } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
@@ -394,9 +395,6 @@ export function foldNodeLogs(lines: { ts: number; stream: "out" | "err"; line: s
  * its stake meets the threshold, else `synced`. This is the seam that replaces
  * the sim `tick()` node state in a Tauri build.
  */
-/** The ceremony's `PreparedExpired` message (kit/src/ceremony.rs): nothing was sent. */
-const SIGNED_TX_EXPIRED = /signed transaction expired before it was sent; nothing was sent/;
-
 export function mapNodeState(state: string, syncPct: number, staked: number): AppState["node"] {
   switch (state) {
     case "starting":
@@ -5171,7 +5169,8 @@ export class Store {
       }
       this.setState({ walletReview: null });
       const msg = String((err as Error).message ?? err);
-      if (r.onSigned && SIGNED_TX_EXPIRED.test(msg)) {
+      // Branch on the structured error TYPE only: a node error after a real send can quote any text.
+      if (r.onSigned && err instanceof SignedTxExpired) {
         // The ceremony dropped the signed tx before it was sent: nothing reached the network.
         r.onNotSent?.();
         this.toast(r.label + " — the signed transaction expired before it was sent; nothing was sent. You can try again.");

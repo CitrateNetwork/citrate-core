@@ -2309,45 +2309,95 @@ fn split_fns(code: &str) -> Vec<(String, String)> {
     }
     let mut out = Vec::new();
     for (k, (at, name)) in starts.iter().enumerate() {
-        let end = starts.get(k + 1).map(|(e, _)| *e).unwrap_or(code.len());
+        let next_fn = starts.get(k + 1).map(|(e, _)| *e).unwrap_or(code.len());
+        // A chunk also ends at the next top-level item (a line starting in column 0 that is
+        // not the closing brace), so a struct or const between functions is not counted.
+        let mut end = next_fn;
+        let mut pos = *at;
+        while let Some(nl) = code[pos..next_fn].find('\n') {
+            let line_start = pos + nl + 1;
+            if line_start >= next_fn {
+                break;
+            }
+            let c = code.as_bytes()[line_start];
+            if c != b' ' && c != b'}' && c != b'\n' && c != b'\t' {
+                end = line_start;
+                break;
+            }
+            pos = line_start;
+        }
         out.push((name.clone(), code[*at..end].to_string()));
     }
     out
 }
 
-/// True when `body` calls `name` in any spelling (`self.name(`, `Self::name(`, `Type::name(`).
-fn calls(body: &str, name: &str) -> bool {
-    let pat = format!("{name}(");
+/// Positions where `tok` occurs as a whole identifier in `body`.
+fn token_at(body: &str, tok: &str) -> Vec<usize> {
     let b = body.as_bytes();
+    let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = Vec::new();
     let mut i = 0;
-    while let Some(off) = body[i..].find(&pat) {
+    while let Some(off) = body[i..].find(tok) {
         let at = i + off;
-        let before = if at == 0 { b' ' } else { b[at - 1] };
-        let is_decl = body[..at].ends_with("fn ");
-        if !before.is_ascii_alphanumeric() && before != b'_' && !is_decl {
-            return true;
+        let end = at + tok.len();
+        let before_ok = at == 0 || !is_ident(b[at - 1]);
+        let after_ok = end >= b.len() || !is_ident(b[end]);
+        if before_ok && after_ok {
+            out.push(at);
         }
-        i = at + pat.len();
+        i = end;
     }
-    false
+    out
 }
 
-/// The STRUCTURAL prepared-map rule (Join-8 follow-up). It works on functions and calls,
-/// not on one spelling:
-///   * only the allow-listed functions may touch the shared map (through `lock_prepared(`
-///     or the `prepared` field directly);
-///   * among them, only `approve_and_sign` inserts, and it does so exactly once;
-///   * `approve_and_broadcast` must not reach ANY map-touching function through the call
-///     graph (UFCS, `Self::`, wrappers and helpers included).
+/// True when `body` refers to the function `name` in any form (a call in any spelling, a
+/// function pointer, a macro argument), other than its own declaration.
+fn calls(body: &str, name: &str) -> bool {
+    token_at(body, name)
+        .into_iter()
+        .any(|at| !body[..at].ends_with("fn "))
+}
+
+/// True when `body` touches the shared prepared store in any form: the lock helper or the
+/// store's methods named anywhere, the `prepared` field by `.prepared`, or a `prepared:` field
+/// pattern (struct literal or destructuring).
+fn touches_store(body: &str) -> bool {
+    ["lock_prepared", "park_signed", "take_signed", "discard_signed"]
+        .iter()
+        .any(|t| !token_at(body, t).is_empty())
+        || token_at(body, "prepared").into_iter().any(|at| {
+            let after = body[at + "prepared".len()..].trim_start();
+            body[..at].ends_with('.') || after.starts_with(':') && !after.starts_with("::")
+        })
+}
+
+/// Any form of adding to a map.
+fn mutates_map(body: &str) -> bool {
+    [".insert(", "::insert(", ".entry(", ".extend(", ".append(", "or_insert"]
+        .iter()
+        .any(|m| body.contains(m))
+}
+
+/// The STRUCTURAL prepared-map rule (Join-8 follow-up). The compiler enforces most of it (the
+/// map is a private newtype with `park_signed` as its only way in); this scan is the backstop:
+///   * only allow-listed functions touch the store (`lock_prepared`, the store methods, the
+///     `prepared` field, or a `prepared:` pattern);
+///   * no toucher adds to a map in any form, and `park_signed` is called exactly once, from
+///     `approve_and_sign`;
+///   * inside `mod prepared_store`, only `park_signed` adds to the map;
+///   * `approve_and_broadcast` refers to no store-touching function (calls in any spelling,
+///     function pointers and macro arguments included).
 ///
 /// Returns one message per violation (empty = clean).
 fn prepared_map_violations(src: &str) -> Vec<String> {
-    const ALLOWED: [&str; 5] = [
+    const ALLOWED: [&str; 7] = [
+        "new",
         "lock_prepared",
         "approve_and_sign",
         "send_prepared",
         "reject",
         "prepared_len",
+        "backdate_wall",
     ];
     let src = strip_test_module(src);
     let code: String = src
@@ -2358,48 +2408,67 @@ fn prepared_map_violations(src: &str) -> Vec<String> {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let fns = split_fns(&code);
-    let touches = |b: &str| b.contains("lock_prepared(") || b.contains(".prepared.") || b.contains(".prepared\n");
     let mut out = Vec::new();
+    // The store module: only park_signed may add to the map.
+    let (outside, module) = match code.find("mod prepared_store {") {
+        Some(m) => {
+            let end = code[m..].find("\n}\n").map(|e| m + e + 3).unwrap_or(code.len());
+            (format!("{}{}", &code[..m], &code[end..]), code[m..end].to_string())
+        }
+        None => {
+            out.push("mod prepared_store not found".to_string());
+            (code.clone(), String::new())
+        }
+    };
+    for (name, body) in split_fns(&module) {
+        if name != "park_signed" && mutates_map(&body) {
+            out.push(format!("prepared_store::{name} adds to the map; only park_signed may"));
+        }
+    }
+    let fns = split_fns(&outside);
     let mut touchers = Vec::new();
+    let mut parks = 0usize;
     for (name, body) in &fns {
-        if !touches(body) {
+        let n_parks = token_at(body, "park_signed").len();
+        parks += n_parks;
+        if n_parks > 0 && name != "approve_and_sign" {
+            out.push(format!("fn {name} parks a signed tx; only approve_and_sign may"));
+        }
+        if !touches_store(body) {
             continue;
         }
         touchers.push(name.clone());
         if !ALLOWED.contains(&name.as_str()) {
-            out.push(format!("fn {name} touches the shared prepared map but is not allow-listed"));
+            out.push(format!("fn {name} touches the shared prepared store but is not allow-listed"));
         }
-        let inserts = body.matches(".insert(").count();
-        if name == "approve_and_sign" {
-            if inserts != 1 {
-                out.push(format!("approve_and_sign must insert exactly once (found {inserts})"));
-            }
-        } else if inserts > 0 && name != "lock_prepared" {
-            out.push(format!("fn {name} inserts into the shared prepared map"));
+        if mutates_map(body) {
+            out.push(format!("fn {name} adds to a map while touching the prepared store"));
         }
     }
-    // Reachability from approve_and_broadcast over the crate-local call graph.
-    let names: Vec<&String> = fns.iter().map(|(n, _)| n).collect();
+    if parks != 1 {
+        out.push(format!("park_signed must be called exactly once (found {parks})"));
+    }
+    if !fns.iter().any(|(n, _)| n == "approve_and_broadcast") {
+        out.push("approve_and_broadcast not found".to_string());
+    }
+    // Reachability from approve_and_broadcast over the crate-local reference graph.
+    let names: Vec<String> = fns.iter().map(|(n, _)| n.clone()).collect();
     let mut seen = std::collections::BTreeSet::new();
-    let mut stack: Vec<String> = vec!["approve_and_broadcast".to_string()];
+    let mut stack = vec!["approve_and_broadcast".to_string()];
     while let Some(cur) = stack.pop() {
         if !seen.insert(cur.clone()) {
             continue;
         }
         for (n, body) in fns.iter().filter(|(n, _)| *n == cur) {
-            if n != "approve_and_broadcast" && touchers.contains(n) {
-                out.push(format!("approve_and_broadcast reaches {n}, which touches the shared prepared map"));
+            if n != "new" && touchers.contains(n) {
+                out.push(format!("approve_and_broadcast reaches {n}, which touches the prepared store"));
             }
             for callee in &names {
-                if *callee != n && calls(body, callee) {
-                    stack.push((*callee).clone());
+                if callee != n && callee != "new" && calls(body, callee) {
+                    stack.push(callee.clone());
                 }
             }
         }
-    }
-    if !fns.iter().any(|(n, _)| n == "approve_and_broadcast") {
-        out.push("approve_and_broadcast not found".to_string());
     }
     out
 }
