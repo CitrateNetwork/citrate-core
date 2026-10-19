@@ -370,6 +370,9 @@ pub enum CeremonyError {
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
     Broadcast(String),
+    /// K6: the network gate refused the signature before the wallet key was read: this build
+    /// has no network set, or the request commits to another chain id. Nothing was signed.
+    WrongNetwork(String),
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -397,6 +400,7 @@ impl std::fmt::Display for CeremonyError {
                 "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
+            CeremonyError::WrongNetwork(m) => write!(f, "ceremony: {m}; nothing was signed"),
         }
     }
 }
@@ -421,6 +425,7 @@ impl From<WalletError> for CeremonyError {
         match e {
             WalletError::Custody => CeremonyError::VaultLocked,
             WalletError::NotFound => CeremonyError::NoWallet,
+            WalletError::WrongNetwork(m) => CeremonyError::WrongNetwork(m),
             _ => CeremonyError::SignFailed,
         }
     }
@@ -1002,6 +1007,13 @@ impl SignatureCeremony {
         clock: &dyn Fn() -> u64,
     ) -> BudgetedOutcome {
         use crate::web_budget::{FallThrough, RecordStatus, SiweEvalInput};
+        // K6: the same network gate the signer applies, checked before the budget is evaluated so
+        // a refused sign-in reserves nothing and uses no budget. `sign_personal` checks it again.
+        if let Err(e) =
+            crate::rpc::check_wallet_signing(wallet::personal_message_scope(req.message.as_bytes()))
+        {
+            return self.siwe_fall_through(&req, FallThrough::Network(e.to_string()));
+        }
         let mut guard = gate.lock();
         let now = clock();
         let wallet_addr = wallet::address(vault).ok().map(|w| w.address);
@@ -1047,10 +1059,14 @@ impl SignatureCeremony {
                     origin: plan.origin,
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 guard.close(record_id, RecordStatus::NotSigned);
                 drop(guard);
-                self.siwe_fall_through(&req, FallThrough::SignerUnavailable)
+                let why = match e {
+                    WalletError::WrongNetwork(m) => FallThrough::Network(m),
+                    _ => FallThrough::SignerUnavailable,
+                };
+                self.siwe_fall_through(&req, why)
             }
         }
     }

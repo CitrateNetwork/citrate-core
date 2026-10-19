@@ -66,6 +66,7 @@ use citrate_wallet_core::{
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::custody::{CustodyError, CustodyVault};
+use crate::rpc::SignatureScope;
 
 /// Slot-name prefix reserved for the wallet keystore (the B1.1 mirror of A3's
 /// `oidc-` reservation). The single default account is sealed under
@@ -136,6 +137,9 @@ pub enum WalletError {
     NotFound,
     /// Key derivation failed (should be unreachable for a validated mnemonic).
     Derivation,
+    /// K6: the network gate refused this signature: no network is set in this build, or the
+    /// signature commits to another chain id. The key was not read and nothing was signed.
+    WrongNetwork(String),
 }
 
 impl std::fmt::Display for WalletError {
@@ -146,6 +150,7 @@ impl std::fmt::Display for WalletError {
             WalletError::AlreadyExists => write!(f, "wallet: a wallet already exists"),
             WalletError::NotFound => write!(f, "wallet: no wallet stored"),
             WalletError::Derivation => write!(f, "wallet: key derivation failed"),
+            WalletError::WrongNetwork(m) => write!(f, "wallet: {m}; nothing was signed"),
         }
     }
 }
@@ -358,6 +363,51 @@ fn read_entropy(vault: &CustodyVault) -> Result<Zeroizing<Vec<u8>>> {
     }
 }
 
+/// **The one way a signer gets the wallet key (K6).** Checks the network gate first
+/// ([`crate::rpc::check_wallet_signing`]: refuses when no network is set, and a chain-committing
+/// `scope` must be the target chain), and only then reads the sealed entropy and derives the key.
+/// Every signer below calls this and nothing else derives the key for signing; the structural
+/// test `wallet_tests::every_signer_takes_the_key_through_the_network_gate` keeps it that way, so
+/// a new signer (EIP-712, say, with `SignatureScope::Chain(domain.chainId)`) cannot skip the gate.
+fn signing_key(vault: &CustodyVault, scope: SignatureScope) -> Result<UnifiedKey> {
+    crate::rpc::check_wallet_signing(scope).map_err(|e| match e {
+        crate::rpc::RpcError::WrongNetwork(m) => WalletError::WrongNetwork(m),
+        other => WalletError::WrongNetwork(other.to_string()),
+    })?;
+    let entropy = read_entropy(vault)?;
+    derive_key_from_entropy(&entropy)
+    // `entropy` zeroizes on drop here.
+}
+
+/// What a `personal_sign` message commits to. A Sign-In with Ethereum message (EIP-4361) names
+/// its chain on a `Chain ID:` line, so a message with one is [`SignatureScope::Chain`] and must be
+/// for the target chain; a `Chain ID:` value that does not parse, or two that disagree, is chain 0
+/// and never matches. Any other message commits to no chain and is [`SignatureScope::Unbound`]:
+/// it is not network-bound (it is still refused while no network is set).
+pub fn personal_message_scope(message: &[u8]) -> SignatureScope {
+    let Ok(text) = std::str::from_utf8(message) else {
+        return SignatureScope::Unbound;
+    };
+    let mut found: Option<u64> = None;
+    for line in text.lines() {
+        let t = line.trim();
+        let Some(head) = t.get(..9) else { continue };
+        if !head.eq_ignore_ascii_case("chain id:") {
+            continue;
+        }
+        let id = t[9..].trim().parse::<u64>().unwrap_or(0);
+        match found {
+            None => found = Some(id),
+            Some(prev) if prev != id => return SignatureScope::Chain(0),
+            Some(_) => {}
+        }
+    }
+    match found {
+        Some(id) => SignatureScope::Chain(id),
+        None => SignatureScope::Unbound,
+    }
+}
+
 /// **In-process only.** Sign a message with the stored wallet's default account.
 /// Requires the vault UNLOCKED (fails closed if locked). Reads the sealed entropy,
 /// re-derives the `UnifiedKey`, signs, and zeroizes the secret buffers. Returns
@@ -374,11 +424,10 @@ fn read_entropy(vault: &CustodyVault) -> Result<Zeroizing<Vec<u8>>> {
 /// signing outside it is forbidden. The call-site invariant is asserted
 /// structurally in `ceremony_tests::adv1_adv7_signer_only_reachable_via_approve`.
 pub(crate) fn sign_message(vault: &CustodyVault, message: &[u8]) -> Result<Vec<u8>> {
-    let entropy = read_entropy(vault)?;
-    let key = derive_key_from_entropy(&entropy)?;
+    let key = signing_key(vault, personal_message_scope(message))?;
     let sig = key.sign(message);
     Ok(sig)
-    // `entropy` + `key` zeroize on drop here.
+    // `key` zeroizes on drop here.
 }
 
 /// HKDF salt (domain) for [`derive_scoped_secret`]. Fixed forever — changing it re-derives every
@@ -450,8 +499,8 @@ pub(crate) fn sign_transaction(
     fields: &LegacyTxFields,
     chain_id: u64,
 ) -> Result<SignedTx> {
-    let entropy = read_entropy(vault)?;
-    let key = derive_key_from_entropy(&entropy)?;
+    // K6: an EIP-155 transaction commits to `chain_id`; it must be the target chain.
+    let key = signing_key(vault, SignatureScope::Chain(chain_id))?;
     // Unwrap the secp256k1 signing key. The B1.1 derivation always yields a
     // Secp256k1 UnifiedKey for `m/44'/60'/0'/0/0`; a non-secp key would be a
     // derivation bug (fail closed rather than sign with the wrong curve).
@@ -462,7 +511,7 @@ pub(crate) fn sign_transaction(
         _ => return Err(WalletError::Derivation),
     };
     Ok(signed)
-    // `entropy` + `key` (its inner k256::SigningKey) zeroize on drop here; the
+    // `key` (its inner k256::SigningKey) zeroize on drop here; the
     // wallet-core signer already zeroized the intermediate signing hash.
 }
 
@@ -509,8 +558,9 @@ pub fn eip191_prehash(message: &[u8]) -> [u8; 32] {
 /// path. `ceremony_tests::adv1_adv7_signer_only_reachable_via_approve` scans for
 /// any other call site. CLAUDE.md rule 3: all signing goes through the ceremony.
 pub(crate) fn sign_personal(vault: &CustodyVault, message: &[u8]) -> Result<[u8; 65]> {
-    let entropy = read_entropy(vault)?;
-    let key = derive_key_from_entropy(&entropy)?;
+    // K6: a SIWE message is checked against the target chain; any other message is not
+    // network-bound, but is still refused while no network is set.
+    let key = signing_key(vault, personal_message_scope(message))?;
     // Same fail-closed rule as `sign_transaction`: the B1.1 derivation always
     // yields a Secp256k1 key for m/44'/60'/0'/0/0, so anything else is a
     // derivation bug and must not be signed with the wrong curve.
@@ -532,7 +582,7 @@ pub(crate) fn sign_personal(vault: &CustodyVault, message: &[u8]) -> Result<[u8;
     // nowhere" bug, so it is asserted in the tests.
     out[64] = rec + 27;
     Ok(out)
-    // `entropy` + `key` zeroize on drop here.
+    // `key` zeroizes on drop here.
 }
 
 /// **Verify, don't sign.** Recover the Ethereum address that produced an EIP-191 `personal_sign`

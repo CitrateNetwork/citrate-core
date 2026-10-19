@@ -340,22 +340,33 @@ impl NetworkProfile {
         })
     }
 
-    /// What the network gate checks for this profile. An unset (or malformed) value stays
-    /// `None`, so the gate refuses.
+    /// What the network gate checks for this profile: its chain id and genesis only when the
+    /// WHOLE profile is ready ([`Self::ready`]). Any value not set or malformed gives an all-unset
+    /// gate, which refuses every wallet signature (transaction, message, typed data, sign-in) and
+    /// every send.
     pub fn expected_network(&self) -> crate::rpc::ExpectedNetwork {
-        crate::rpc::ExpectedNetwork {
-            name: self.id.clone(),
-            chain_id: self.chain_id.filter(|&c| c != 0),
-            genesis_hash: self.genesis_hash.as_deref().and_then(check_hash),
+        match self.ready() {
+            Ok(r) => crate::rpc::ExpectedNetwork {
+                name: r.id,
+                chain_id: Some(r.chain_id),
+                genesis_hash: Some(r.genesis_hash),
+            },
+            Err(e) => {
+                eprintln!("[network] {e}");
+                crate::rpc::ExpectedNetwork {
+                    name: self.id.clone(),
+                    chain_id: None,
+                    genesis_hash: None,
+                }
+            }
         }
     }
 }
 
-/// Install the process-wide network gate for the active profile (app startup). When the
-/// profiles cannot be read or the active one is unknown, an all-unset gate is installed, so every
-/// signature and send is refused rather than left unchecked.
-pub fn install_network_gate() {
-    let expected = match active() {
+/// The gate for the active profile ([`NetworkProfile::expected_network`]); all-unset when the
+/// profiles cannot be read or the active one is unknown.
+pub fn active_gate() -> crate::rpc::ExpectedNetwork {
+    match active() {
         Ok(p) => p.expected_network(),
         Err(e) => {
             eprintln!("[network] {e}");
@@ -365,8 +376,16 @@ pub fn install_network_gate() {
                 genesis_hash: None,
             }
         }
-    };
-    if expected.chain_id.is_none() || expected.genesis_hash.is_none() {
+    }
+}
+
+/// Install the process-wide network gate for the active profile (app startup), from
+/// [`active_gate`]. When the profiles cannot be read, the active one is unknown, or any of its
+/// values is not set, an all-unset gate is installed, so every signature and send is refused
+/// rather than left unchecked.
+pub fn install_network_gate() {
+    let expected = active_gate();
+    if !expected.is_set() {
         eprintln!(
             "[network] network {:?} is not set in this build; signing and sending are refused",
             expected.name

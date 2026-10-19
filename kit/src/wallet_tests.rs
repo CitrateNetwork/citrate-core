@@ -658,3 +658,191 @@ fn derive_scoped_secret_fails_closed_when_no_wallet_or_locked() {
     let (v, _p) = vault();
     assert!(derive_scoped_secret(&v, b"x").is_err(), "no wallet -> fail closed");
 }
+
+// =========================================================================
+// K6 — the one network gate on wallet-key signing
+// =========================================================================
+
+const K6_TEST_GENESIS: &str = "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1";
+
+/// The next-genesis profile as it ships today: nothing set.
+fn k6_unset() -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "genesis-2026-12".into(),
+        chain_id: None,
+        genesis_hash: None,
+    }
+}
+
+fn k6_set(chain_id: u64) -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "alpha-r1005".into(),
+        chain_id: Some(chain_id),
+        genesis_hash: Some(K6_TEST_GENESIS.into()),
+    }
+}
+
+fn k6_tx() -> LegacyTxFields {
+    LegacyTxFields {
+        nonce: 0,
+        gas_price: 1,
+        gas_limit: 21_000,
+        to: Some([0x35; 20]),
+        value: 1,
+        data: Vec::new(),
+    }
+}
+
+fn k6_siwe(chain: &str) -> String {
+    format!(
+        "app.example.org wants you to sign in with your Ethereum account:\n{CANONICAL_ADDRESS}\n\nSign in.\n\nURI: https://app.example.org/login\nVersion: 1\nChain ID: {chain}\nNonce: abcdef0123456789\nIssued At: 2026-10-19T00:00:00Z"
+    )
+}
+
+#[test]
+fn k6_personal_message_scope_reads_the_siwe_chain_id_and_nothing_else() {
+    use crate::rpc::SignatureScope::{Chain, Unbound};
+    assert_eq!(personal_message_scope(k6_siwe("40204").as_bytes()), Chain(40204));
+    assert_eq!(personal_message_scope(k6_siwe("1").as_bytes()), Chain(1));
+    // A value that does not parse, or two lines that disagree, never matches a target chain.
+    assert_eq!(personal_message_scope(k6_siwe("40204x").as_bytes()), Chain(0));
+    let two = format!("{}\nChain ID: 1", k6_siwe("40204"));
+    assert_eq!(personal_message_scope(two.as_bytes()), Chain(0));
+    assert_eq!(personal_message_scope(b"chain id: 7"), Chain(7));
+    // Plain text and non-UTF-8 bytes commit to no chain.
+    assert_eq!(personal_message_scope(b"Citrate identity binding\nNetwork: discord"), Unbound);
+    assert_eq!(personal_message_scope(&[0xff, 0xfe, 0x00]), Unbound);
+}
+
+/// With no network set, every signer refuses before the key is read: the error is the network
+/// refusal even on a LOCKED vault, which would otherwise fail on the key read.
+#[test]
+fn k6_every_signer_refuses_when_no_network_is_set() {
+    let (v, _p) = init_and_unlock();
+    import(&v, CANONICAL_MNEMONIC).expect("import");
+    crate::rpc::with_added_network_gate(k6_unset(), || {
+        assert!(matches!(sign_personal(&v, b"hello"), Err(WalletError::WrongNetwork(_))));
+        assert!(matches!(
+            sign_personal(&v, k6_siwe("40204").as_bytes()),
+            Err(WalletError::WrongNetwork(_))
+        ));
+        assert!(matches!(sign_message(&v, b"hello"), Err(WalletError::WrongNetwork(_))));
+        assert!(matches!(
+            sign_transaction(&v, &k6_tx(), 40204),
+            Err(WalletError::WrongNetwork(_))
+        ));
+        v.lock();
+        assert!(matches!(sign_personal(&v, b"hello"), Err(WalletError::WrongNetwork(_))));
+    });
+    // The added gate is gone after the closure; this process installs no gate, so it signs.
+    v.unlock(&mut PASS.to_vec()).expect("unlock");
+    assert!(sign_personal(&v, b"hello").is_ok());
+}
+
+/// With the network set: chain-committing signatures must name its chain id; plain messages
+/// sign (they are not network-bound).
+#[test]
+fn k6_a_set_network_checks_chain_committing_signatures() {
+    let (v, _p) = init_and_unlock();
+    import(&v, CANONICAL_MNEMONIC).expect("import");
+    crate::rpc::with_added_network_gate(k6_set(40204), || {
+        let plain = sign_personal(&v, b"hello").expect("plain personal_sign is not network-bound");
+        assert!(recover_personal(b"hello", &plain)
+            .expect("recovers")
+            .eq_ignore_ascii_case(CANONICAL_ADDRESS));
+        sign_personal(&v, k6_siwe("40204").as_bytes()).expect("SIWE for the target chain");
+        assert!(matches!(
+            sign_personal(&v, k6_siwe("1").as_bytes()),
+            Err(WalletError::WrongNetwork(m)) if m.contains("chain 1")
+        ));
+        sign_transaction(&v, &k6_tx(), 40204).expect("tx for the target chain");
+        assert!(matches!(
+            sign_transaction(&v, &k6_tx(), 1),
+            Err(WalletError::WrongNetwork(_))
+        ));
+    });
+}
+
+/// An added gate can only add a check: a set gate on top of a not-set one still refuses.
+#[test]
+fn k6_an_added_gate_never_loosens_signing() {
+    let (v, _p) = init_and_unlock();
+    import(&v, CANONICAL_MNEMONIC).expect("import");
+    crate::rpc::with_added_network_gate(k6_unset(), || {
+        crate::rpc::with_added_network_gate(k6_set(40204), || {
+            assert!(matches!(sign_personal(&v, b"hello"), Err(WalletError::WrongNetwork(_))));
+        })
+    });
+}
+
+/// STRUCTURAL: the wallet key is derived for signing in exactly one place, `signing_key`, which
+/// runs the network gate first. Every function in wallet.rs that signs takes its key from it, and
+/// only `address` (no signature) derives the key otherwise.
+///
+/// NEGATIVE CONTROL: write a new signer that calls `read_entropy` + `derive_key_from_entropy`
+/// itself (an EIP-712 signer, say), or call `sign_recoverable` from a function that does not use
+/// `signing_key`, and this test fails.
+#[test]
+fn every_signer_takes_the_key_through_the_network_gate() {
+    let src = include_str!("wallet.rs");
+    let non_test = match src.rfind("#[cfg(test)]\nmod tests") {
+        Some(i) => &src[..i],
+        None => src,
+    };
+    // Split into top-level functions by their signature lines.
+    let mut fns: Vec<(String, String)> = Vec::new();
+    for line in non_test.lines() {
+        let t = line.trim_start();
+        let is_fn_head = line == t
+            && (t.starts_with("fn ") || t.starts_with("pub fn ") || t.starts_with("pub(crate) fn "));
+        if is_fn_head {
+            let name = t
+                .split("fn ")
+                .nth(1)
+                .and_then(|r| r.split(['(', '<']).next())
+                .unwrap_or("")
+                .to_string();
+            fns.push((name, String::new()));
+        }
+        if let Some((_, body)) = fns.last_mut() {
+            if !t.starts_with("//") {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+    }
+    let derive = "derive_key_from_entropy".to_string() + "(";
+    let gate = "signing_key".to_string() + "(";
+    let primitives = [
+        "sign_recoverable".to_string() + "(",
+        "sign_eip155_legacy_tx".to_string() + "(",
+        ".sign".to_string() + "(",
+    ];
+    let mut signers = 0;
+    for (name, body) in &fns {
+        let body_after_head = body.split_once('\n').map(|x| x.1).unwrap_or("");
+        if body_after_head.contains(&derive) {
+            assert!(
+                name == "signing_key" || name == "address",
+                "wallet.rs `{name}` derives the wallet key outside the network gate"
+            );
+        }
+        let signs = primitives.iter().any(|p| body_after_head.contains(p.as_str()));
+        if signs || name.starts_with("sign_") {
+            assert!(
+                body_after_head.contains(&gate),
+                "wallet.rs `{name}` signs without taking the key from the network gate"
+            );
+            signers += 1;
+        }
+    }
+    assert!(signers >= 3, "sign_message, sign_transaction and sign_personal were found");
+    let gate_fn = fns
+        .iter()
+        .find(|(n, _)| n == "signing_key")
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+    let check = gate_fn.find("check_wallet_signing").expect("the gate checks the network");
+    let read = gate_fn.find("read_entropy").expect("then reads the key");
+    assert!(check < read, "the network check runs before the key is read");
+}

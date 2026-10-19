@@ -63,6 +63,95 @@ pub fn network_gate() -> Option<&'static ExpectedNetwork> {
     NETWORK_GATE.get()
 }
 
+impl ExpectedNetwork {
+    /// Both values are set and well formed. A gate that is not set refuses every signature.
+    pub fn is_set(&self) -> bool {
+        self.chain_id.is_some_and(|c| c != 0)
+            && self
+                .genesis_hash
+                .as_deref()
+                .is_some_and(|g| is_block_hash(&g.to_ascii_lowercase()))
+    }
+}
+
+/// What a wallet-key signature commits to, for the signing gate ([`check_wallet_signing`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureScope {
+    /// The signature commits to no chain: a plain `personal_sign` (EIP-191) message. It cannot be
+    /// checked against a network, so it is NOT network-bound; it is still refused while the
+    /// network is not set.
+    Unbound,
+    /// The signature commits to this EIP-155 chain id: a transaction, a Sign-In with Ethereum
+    /// message (`Chain ID:`), or EIP-712 typed data (`domain.chainId`). It must be the chain id
+    /// of the network this build targets.
+    Chain(u64),
+}
+
+thread_local! {
+    /// Gates added for the current thread by [`with_added_network_gate`].
+    static ADDED_GATES: std::cell::RefCell<Vec<ExpectedNetwork>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with `extra` checked as well as the process-wide gate, on this thread. It can only add
+/// a check: the installed gate still applies, so this never loosens signing. Tests use it to put
+/// a not-set or another network in front of a signing entry point without touching the
+/// process-wide gate.
+pub fn with_added_network_gate<R>(extra: ExpectedNetwork, f: impl FnOnce() -> R) -> R {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            ADDED_GATES.with(|g| {
+                g.borrow_mut().pop();
+            });
+        }
+    }
+    ADDED_GATES.with(|g| g.borrow_mut().push(extra));
+    let _pop = Pop;
+    f()
+}
+
+fn check_one(gate: &ExpectedNetwork, scope: SignatureScope) -> Result<(), RpcError> {
+    let name = &gate.name;
+    if !gate.is_set() {
+        return Err(RpcError::WrongNetwork(format!(
+            "this build has no network set (profile {name:?}), so the wallet signs nothing; \
+             update Citrate Core"
+        )));
+    }
+    if let SignatureScope::Chain(c) = scope {
+        let want = gate.chain_id.unwrap_or_default();
+        if c != want {
+            return Err(RpcError::WrongNetwork(format!(
+                "the signature is for chain {c}, this build targets chain {want} ({name})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// **The one gate on wallet-key signing (K6).** Every signer in `wallet.rs` calls this (through
+/// `wallet::signing_key`) before the wallet key is derived, whatever path reached it: a ceremony
+/// approval, the budgeted sign-in, a transaction broadcast. It checks, locally and with no RPC
+/// call, the installed gate and any added for this thread:
+/// - a gate that is not set refuses every signature, of any kind;
+/// - a chain-committing signature ([`SignatureScope::Chain`]) must name the gate's chain id.
+///
+/// The RPC genesis check ([`RpcClient::verify_network`]) is separate and applies where a signature
+/// goes to an endpoint (transactions). A process with no gate installed and none added (other
+/// apps on this kit) is not gated.
+pub fn check_wallet_signing(scope: SignatureScope) -> Result<(), RpcError> {
+    if let Some(g) = network_gate() {
+        check_one(g, scope)?;
+    }
+    ADDED_GATES.with(|gates| {
+        for g in gates.borrow().iter() {
+            check_one(g, scope)?;
+        }
+        Ok(())
+    })
+}
+
 fn is_block_hash(s: &str) -> bool {
     s.len() == 66
         && s.starts_with("0x")

@@ -286,3 +286,36 @@ fn the_webview_reads_the_same_profiles_file() {
         "profile.ts imports profiles.json"
     );
 }
+
+/// K6: the signing gate is set only from a fully ready profile. The active profile gives a set
+/// gate; the next-genesis profile (every value null) would give one that refuses every signature.
+#[test]
+fn the_signing_gate_is_set_only_from_a_ready_profile() {
+    let gate = active_gate();
+    assert!(gate.is_set(), "the active profile is ready: {gate:?}");
+    let r = active().unwrap().ready().unwrap();
+    assert_eq!(gate.chain_id, Some(r.chain_id));
+    assert_eq!(gate.genesis_hash.as_deref(), Some(r.genesis_hash.as_str()));
+    let next = profile("genesis-2026-12").unwrap();
+    assert!(next.ready().is_err());
+    assert!(!next.expected_network().is_set());
+    assert!(crate::rpc::with_added_network_gate(next.expected_network(), || {
+        crate::rpc::check_wallet_signing(crate::rpc::SignatureScope::Unbound)
+    })
+    .is_err());
+}
+
+/// K6: a profile with its chain id and genesis set but anything else not set is not fully set,
+/// so its gate refuses every signature.
+#[test]
+fn a_partly_set_profile_gives_a_gate_that_refuses() {
+    let json = PROFILES_JSON.replace(
+        "\"addressBook\": \"addresses/40204.json\"",
+        "\"addressBook\": null",
+    );
+    assert_ne!(json, PROFILES_JSON, "the replacement hit the active profile");
+    let (active_id, all) = parse(&json).expect("parses");
+    let p = all.iter().find(|p| p.id == active_id).expect("active");
+    assert!(p.chain_id.is_some() && p.genesis_hash.is_some());
+    assert!(!p.expected_network().is_set());
+}
