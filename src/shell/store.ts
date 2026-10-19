@@ -2242,10 +2242,13 @@ export class Store {
     }
   }
 
-  /** Whether setup has reached the point where a Join can run (signed in, wallet ready). */
+  /** Whether setup has reached the point where a Join can run (signed in, wallet ready): the wallet
+   *  step (s4) onward. `s7` is the "Activate validator" step added by core#354; it is compared as a
+   *  string so this works whether or not that step exists in this build's stage type. */
   canJoinNow(): boolean {
-    const st = this.state.stage;
-    return st === "done" || (this.state.signedIn && (st === "s4" || st === "s5" || st === "s6"));
+    const st: string = this.state.stage;
+    if (st === "done") return true;
+    return this.state.signedIn && ["s4", "s5", "s6", "s7"].includes(st);
   }
 
   /** The paste field (onboarding + Groups): the member typed or pasted an invite. A v2 link is held in

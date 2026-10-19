@@ -181,6 +181,19 @@ describe("v2 invite deep links (task 12)", () => {
     expect(spies.set).not.toHaveBeenCalled();
   });
 
+  it("Join is offered from the wallet step through the end of setup, including s7 (Activate validator)", () => {
+    for (const stage of ["s4", "s5", "s6", "s7", "done"]) {
+      store.setState({ stage: stage as never, signedIn: true });
+      expect(store.canJoinNow(), stage).toBe(true);
+    }
+    for (const stage of ["s0", "s1", "s2", "s3"]) {
+      store.setState({ stage: stage as never, signedIn: true });
+      expect(store.canJoinNow(), stage).toBe(false);
+    }
+    store.setState({ stage: "s7" as never, signedIn: false });
+    expect(store.canJoinNow()).toBe(false);
+  });
+
   it("pendingJoin is not a persisted key", async () => {
     const { PERSIST_KEYS } = await import("./state");
     expect(PERSIST_KEYS).not.toContain("pendingJoin");

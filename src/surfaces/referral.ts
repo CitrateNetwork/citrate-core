@@ -121,8 +121,12 @@ export function joinErrorMessage(e: unknown): string {
   switch (joinErrorKind(e)) {
     case "unavailable":
       return "Short invite links are not available right now. Try again later.";
-    case "nameNotAllowed":
-      return "That group name can't go on an invite link. Use Latin letters and digits, and leave out words like “official” or “support”.";
+    case "nameNotAllowed": {
+      // The rule lives in one place: Rust `JoinError::NameNotAllowed` (#353), which matches the
+      // service. Show that text as-is (minus the "join:" prefix) instead of a second copy here.
+      const m = (e instanceof Error ? e.message : String(e ?? "")).replace(/^join:\s*/, "").trim();
+      return m ? m.charAt(0).toUpperCase() + m.slice(1) : "That group name isn't allowed on an invite.";
+    }
     case "notSignedIn":
       return "Sign in to create invite links.";
     case "notFound":

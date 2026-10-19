@@ -50,11 +50,11 @@ describe("createDirectInvite", () => {
     expect(out).toEqual({ kind: "fallback", relayLink: RELAY, relayToken: "tok" });
   });
 
-  it("a rejected name is reported (Latin letters and digits) and the unused relay invite is revoked", async () => {
-    const d = deps({ mint: vi.fn(async () => { throw new Error("join: that cluster name isn't allowed on an invite. Use Latin letters and digits"); }) });
+  it("a rejected name is reported with the service's rule and the unused relay invite is revoked", async () => {
+    const d = deps({ mint: vi.fn(async () => { throw new Error('join: that cluster name isn\'t allowed on an invite. Use letters from one of Latin, Greek, Cyrillic or Cherokee (not mixed), digits and spaces, and avoid reserved words such as "official" or "support"'); }) });
     const out = await createDirectInvite(d, "grp_1", "Сад", "general");
     expect(out.kind).toBe("error");
-    if (out.kind === "error") expect(out.message).toMatch(/Latin letters and digits/);
+    if (out.kind === "error") expect(out.message).toMatch(/one of Latin, Greek, Cyrillic or Cherokee \(not mixed\), digits and spaces/);
     expect(d.invites.revoke).toHaveBeenCalledWith("grp_1", "tok");
   });
 
@@ -145,7 +145,7 @@ describe("InviteLinksView", () => {
   });
 
   it("an error is shown as text", () => {
-    expect(view({ direct: { kind: "error", message: "Use Latin letters and digits" } })).toContain("Use Latin letters and digits");
+    expect(view({ direct: { kind: "error", message: "Use letters from one script" } })).toContain("Use letters from one script");
   });
 
   it("a public link shows its short link with no group id or address", () => {

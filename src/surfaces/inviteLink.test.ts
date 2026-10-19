@@ -58,10 +58,14 @@ describe("joinErrorKind / joinErrorMessage — the Rust join errors, read honest
     expect(joinErrorKind(new Error("join: could not reach the invite service"))).toBe("unavailable");
   });
 
-  it("a rejected name tells the member to use Latin letters and digits", () => {
-    const raw = 'join: that cluster name isn\'t allowed on an invite. Use Latin letters and digits, and avoid reserved words such as "official" or "support"';
+  it("a rejected name shows the Rust NameNotAllowed text (one script, digits, spaces, no reserved words)", () => {
+    const raw = 'join: that cluster name isn\'t allowed on an invite. Use letters from one of Latin, Greek, Cyrillic or Cherokee (not mixed), digits and spaces, and avoid reserved words such as "official" or "support"';
     expect(joinErrorKind(raw)).toBe("nameNotAllowed");
-    expect(joinErrorMessage(raw)).toMatch(/Latin letters and digits/);
+    const shown = joinErrorMessage(raw);
+    // The Rust message is shown as-is (minus the "join:" prefix), not a second copy of the rule.
+    expect(shown).toBe(raw.replace(/^join:\s*/, "").replace(/^t/, "T"));
+    expect(shown).toMatch(/one of Latin, Greek, Cyrillic or Cherokee \(not mixed\)/);
+    expect(shown).not.toMatch(/Use Latin letters and digits/);
   });
 
   it("sign-in, not-found and rate limit read as themselves", () => {
