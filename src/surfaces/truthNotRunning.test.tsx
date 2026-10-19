@@ -194,9 +194,15 @@ import { resolveQuery, type WidgetSources } from "../widgets/catalog";
 /** Run a gallery widget's script against one query result and return what it shows. */
 async function runWidget(key: string, data: unknown): Promise<string> {
   const t = WIDGET_TEMPLATES.find((w) => w.key === key)!;
+  // Parse the template as DOM (no regex over HTML): take the script's text, render the rest.
+  const tpl = document.createElement("template");
+  tpl.innerHTML = t.html;
+  const scripts = Array.from(tpl.content.querySelectorAll("script"));
+  expect(scripts).toHaveLength(1);
+  const script = scripts[0].textContent || "";
+  scripts[0].remove();
   const host = document.createElement("div");
-  host.innerHTML = t.html.replace(/<script>[\s\S]*<\/script>/, "");
-  const script = /<script>([\s\S]*)<\/script>/.exec(t.html)![1];
+  host.appendChild(tpl.content.cloneNode(true));
   const doc = { getElementById: (id: string) => host.querySelector("#" + id), createElement: (n: string) => document.createElement(n) };
   vi.useFakeTimers();
   new Function("citrate", "document", script)({ query: () => Promise.resolve(data) }, doc);
