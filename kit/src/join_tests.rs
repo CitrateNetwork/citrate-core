@@ -292,7 +292,7 @@ fn aad_matches_the_shared_landing_vectors() {
 #[test]
 fn hkdf_key_derivation_matches_known_answer() {
     // Independent computation (RFC 5869 with an empty salt, i.e. 32 zero bytes, info
-    // "citrate-join-v1", K = 00 01 .. 0f), so the web side can check its own implementation.
+    // "citrate-join-envelope-v1", K = 00 01 .. 0f), so the web side can check its own implementation.
     let mut b = [0u8; 16];
     for (i, x) in b.iter_mut().enumerate() {
         *x = i as u8;
@@ -300,7 +300,36 @@ fn hkdf_key_derivation_matches_known_answer() {
     let okm = derive_aead_key(&LinkKey::from_bytes(b)).expect("hkdf");
     assert_eq!(
         hex::encode(&okm[..]),
-        "af8be0d2ef95ef83dbb142effd4306958a317ff326027075dbf02c3338dd92e6"
+        "be763053d8bcb5a9e70a3ef3d38e8cac1808bac2dc7eef32c24358f867c2365d"
+    );
+}
+
+#[test]
+fn hkdf_info_is_its_own_domain_label() {
+    assert_eq!(ENVELOPE_HKDF_INFO, "citrate-join-envelope-v1");
+    // Distinct from the AAD: not equal to, and not a prefix of, any AAD string.
+    let aad = String::from_utf8(aad_bytes(JoinKind::Direct, CODE, ENVELOPE_VERSION).expect("aad"))
+        .expect("utf8");
+    assert!(!aad.starts_with(ENVELOPE_HKDF_INFO));
+    assert!(!ENVELOPE_HKDF_INFO.starts_with("citrate-join-v1"));
+    // The derivation really uses it: the old shared label gives a different key.
+    let k = LinkKey::from_bytes([3u8; 16]);
+    let ours = derive_aead_key(&k).expect("hkdf");
+    let mut old = [0u8; 32];
+    Hkdf::<Sha256>::new(None, &[3u8; 16])
+        .expand(b"citrate-join-v1", &mut old)
+        .expect("hkdf");
+    assert_ne!(&ours[..], &old[..]);
+}
+
+#[test]
+fn env_hash_matches_landing_envelope_hash() {
+    // landing src/lib/join.ts:198 (f704313): base64url(SHA-256(Buffer.from(env, "base64url"))).
+    // Vector computed independently (python hashlib + urlsafe_b64encode, padding stripped) over the
+    // 40 bytes 00..27.
+    assert_eq!(
+        envelope_hash("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJw").expect("hash"),
+        "X6pO7DYRVWgSwtdLQ3yMSa3T-RDxAGPYAUQffXXNXjs"
     );
 }
 

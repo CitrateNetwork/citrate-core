@@ -7,7 +7,7 @@
 //! 1. **Reserve.** `POST /api/join` (bearer = the member's auth.citrate.ai access token, via
 //!    [`BearerSource`]) → `{code, status:"pending", aad:{v, kind, code}}`.
 //! 2. **Seal.** The app draws a random 128-bit link key `K`, derives the AEAD key with
-//!    `HKDF-SHA256(ikm = K, salt = none, info = "citrate-join-v1")`, and seals the relay invite
+//!    `HKDF-SHA256(ikm = K, salt = none, info = "citrate-join-envelope-v1")`, and seals the relay invite
 //!    `{g,t,k,n}` with XChaCha20-Poly1305 under a random 192-bit nonce. The additional
 //!    authenticated data is the UTF-8 string `citrate-join-v1|<kind>|<code>` ([`aad_bytes`]).
 //! 3. **Attach.** `PUT /api/join/<code>` `{env, envVersion:1}` → `{status:"valid", envHash}`.
@@ -74,8 +74,10 @@ pub const JOIN_PINNED_KIDS: &[&str] = &["join-1", "join-2"];
 
 /// The envelope format version this client seals and opens (`envVersion`).
 pub const ENVELOPE_VERSION: u32 = 1;
-/// HKDF `info` and the AAD prefix for envelope version 1.
-pub const ENVELOPE_INFO: &str = "citrate-join-v1";
+/// HKDF `info` for envelope version 1: a domain label of its own, deliberately distinct from the
+/// AAD prefix (`citrate-join-v<envVersion>|…`, see [`aad_bytes`]), so the key-derivation context and
+/// the AEAD binding can never be confused with each other.
+pub const ENVELOPE_HKDF_INFO: &str = "citrate-join-envelope-v1";
 /// The service's envelope cap (decoded bytes).
 pub const ENVELOPE_MAX_BYTES: usize = 2048;
 const NONCE_LEN: usize = 24;
@@ -463,7 +465,7 @@ pub fn aad_bytes(kind: JoinKind, code: &str, env_version: u32) -> Result<Vec<u8>
 fn derive_aead_key(key: &LinkKey) -> Result<Zeroizing<[u8; 32]>, JoinError> {
     let hk = Hkdf::<Sha256>::new(None, &key.0[..]);
     let mut okm = Zeroizing::new([0u8; 32]);
-    hk.expand(ENVELOPE_INFO.as_bytes(), &mut okm[..])
+    hk.expand(ENVELOPE_HKDF_INFO.as_bytes(), &mut okm[..])
         .map_err(|_| JoinError::Envelope)?;
     Ok(okm)
 }
@@ -543,7 +545,9 @@ pub fn open(
     Ok(p)
 }
 
-/// `envHash`: base64url(SHA-256(decoded envelope bytes)).
+/// `envHash`: unpadded base64url of SHA-256 over the DECODED envelope bytes. Matches citrate-landing
+/// `envelopeHash` (src/lib/join.ts:198 @ f704313):
+/// `createHash("sha256").update(Buffer.from(envB64url, "base64url")).digest("base64url")`.
 pub fn envelope_hash(env: &str) -> Result<String, JoinError> {
     let bytes = decode_envelope(env)?;
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(&bytes)))
