@@ -7,12 +7,27 @@
 // and member SALT crediting is @rule8-gated (gateSec) — so contribute/claim report that plainly and
 // never fabricate a round, balance, or reward (Rule 1). A future claim is ceremony-gated (D-23): the
 // unsigned claimDividend intent stops at the Signature Ceremony.
+//
+// C1-V V11 (UI truth contract §1, §4): PatronageLedger and FederatedRoundLedger are NOT deployed on
+// 40204, so the shipped address book has no entry for them. Until both are in the book the surface
+// says "Group rounds not live yet" and makes no ledger read at all (an empty address is not a source).
 // =====================================================================
 import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import type { Group, RewardInfo, RoundPhase, RoundStatus } from "../bridge/domains";
 import { FlRoundsPanel } from "../fl/FlRoundsPanel";
+import book from "../../src-tauri/addresses/40204.json";
+
+const ZERO_ADDRESS = /^0x0{40}$/i;
+const isDeployed = (a: string | undefined): boolean => !!a && /^0x[0-9a-fA-F]{40}$/.test(a) && !ZERO_ADDRESS.test(a);
+
+/** Group rounds are live only when BOTH round contracts are in the bundled address book. */
+export function groupRoundsLive(addresses: Record<string, string | undefined>): boolean {
+  return isDeployed(addresses.PatronageLedger) && isDeployed(addresses.FederatedRoundLedger);
+}
+
+const ROUNDS_LIVE = groupRoundsLive(book.addresses as Record<string, string | undefined>);
 
 // The round lifecycle as a person reads it, mapped from the domain's RoundPhase.
 const PHASE_UI: Record<RoundPhase, { label: string; tone: string; blurb: string }> = {
@@ -36,6 +51,7 @@ export function Train({ store }: SurfaceProps) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (!ROUNDS_LIVE) return; // nothing to read: the round contracts are not deployed
     void (async () => {
       try {
         const gs = await bridge.groups.list();
@@ -68,7 +84,7 @@ export function Train({ store }: SurfaceProps) {
   };
 
   useEffect(() => {
-    if (groupId) void load(groupId);
+    if (ROUNDS_LIVE && groupId) void load(groupId);
   }, [groupId]);
 
   const contribute = async () => {
@@ -120,16 +136,27 @@ export function Train({ store }: SurfaceProps) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Train together</span>
         <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid var(--warn)", color: "var(--warn)", background: "var(--warn-bg)", flexShrink: 0 }}>
-          reads live · claims @rule8-gated
+          {ROUNDS_LIVE ? "reads live · claims @rule8-gated" : "not live yet"}
         </span>
-        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>settled through the ceremony · never double-paid</span>
+        {ROUNDS_LIVE && <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>settled through the ceremony · never double-paid</span>}
       </div>
 
+      {!ROUNDS_LIVE ? (
+        <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 500 }}>Group rounds not live yet</span>
+          <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
+            Group training rounds need two contracts, PatronageLedger and FederatedRoundLedger, and neither is deployed on betanet yet. Rounds, contributions and
+            claims appear here once they are. Nothing on this card is read from a round in the meantime.
+          </p>
+          <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>source · address book 40204 (no PatronageLedger entry)</span>
+        </div>
+      ) : (
       <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
         Your group trains a model together: each member trains locally and contributes, the network aggregates the result, and contributors are settled in SALT for verified work. The round and your reward below are read live from 40204 (PatronageLedger); member SALT claims activate once revenue is credited, past the @rule8 money-surface sign-off (gateSec).
       </p>
+      )}
 
-      {groups.length === 0 ? (
+      {!ROUNDS_LIVE ? null : groups.length === 0 ? (
         <div className="surface" style={{ padding: 18, fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
           No groups yet — create one in Groups first, then open a training round with them.
         </div>

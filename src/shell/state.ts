@@ -354,10 +354,13 @@ export interface AppState {
   coachDone: boolean;
   demoOpen: boolean;
   toast: string | null;
+  /**
+   * The local node's `eth_blockNumber`. 0 means no reading yet (UI truth contract §2: the
+   * call returns 0x0 on error, so 0 is never shown as a height). There is no finality-age
+   * field: checkpoint finality is not running on 40204 (contract §4), so nothing may show one.
+   */
   height: number;
   peers: number;
-  lastCp: number;
-  finAge: number;
   node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "stalled" | "error";
   /**
    * What the MEMBER wants the node to do, as distinct from what it is doing.
@@ -378,7 +381,6 @@ export interface AppState {
   /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
   miningHold: string | null;
   syncPct: number;
-  hb: number;
   cpu: number;
   ram: number;
   logs: LogLine[];
@@ -753,17 +755,15 @@ export function freshState(pid: string): AppState {
     coachDone: !P.fresh,
     demoOpen: false,
     toast: null,
-    height: 131204 + ((Math.random() * 40) | 0),
+    // No reading until the node is polled (contract rule 2): never a seeded height.
+    height: 0,
     peers: 0,
-    lastCp: 131200,
-    finAge: 8,
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
     nodeBlocked: null,
     miningHold: null,
     syncPct: 0,
-    hb: 4,
     cpu: 0,
     ram: 0,
     logs: [],
@@ -993,13 +993,16 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
-  "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
+  "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
   "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
   "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
+
+/** Observed node state: rewritten by every poll, so it is never persisted or restored. */
+export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1009,6 +1012,9 @@ export function loadState(): AppState {
     saved = null;
   }
   const base = freshState((saved && saved.persona) || "p1");
+  // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
+  // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
+  if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // Owner decision 2026-10-01: the sidecar agent loop is on for members. Installs that saved the
   // old default (off) are switched on once; a member who turns it off afterwards stays off.

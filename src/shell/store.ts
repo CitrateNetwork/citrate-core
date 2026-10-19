@@ -521,11 +521,6 @@ export function tickPatch(
   // climbing height + steady ~24 peers a packaged build must never show.
   if (sim) {
     u.height = s.height + (rand() < 0.85 ? 1 : 2);
-    u.finAge = s.finAge + 0.6;
-    if (u.height - s.lastCp >= 50) {
-      u.lastCp = u.height;
-      u.finAge = 0;
-    }
     const target = running ? 24 : 0;
     let peers = s.peers;
     if (peers < target) peers += Math.ceil(rand() * 3);
@@ -559,7 +554,6 @@ export function tickPatch(
       u.claimable = s.claimable + (dv + dp + dc) * 0.85;
     }
     if (running) {
-      u.hb = (s.hb + 0.6) % 30;
       u.cpu = s.node === "paused" ? 2 + rand() * 2 : (s.node === "validating" ? 18 : 11) + rand() * 12;
       u.ram = (s.node === "validating" ? 780 : 540) + rand() * 140;
       if (rand() < 0.55) {
@@ -1402,10 +1396,6 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
-        // There is NO real finality/checkpoint-age source from the node yet
-        // (WO-1 adds citrate_getDagStats). Mark it unavailable (< 0) rather than
-        // leaving the fabricated seed value — displays render "—" (Rule 1).
-        finAge: -1,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
@@ -2025,7 +2015,6 @@ export class Store {
     return {
       height: s.height,
       peers: s.peers,
-      finalityAge: Math.round(s.finAge),
       nodeState: nodeLabelLocal(s.node),
       // "staked" now reflects the locked membership grant (falling back to the validator bond), so the
       // model no longer sees 0 for a granted member.
