@@ -2359,20 +2359,8 @@ pub(crate) fn verify_store_session_echo(
     Ok(())
 }
 
-/// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
-type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
-
-/// Open a session on the local model with the body `build` makes (chat or daemon).
-fn open_local_session(
-    app: &tauri::AppHandle,
-    system_prompt: &str,
-    tools_json: &str,
-    build: SessionBodyFn,
-) -> std::result::Result<String, String> {
-    open_local_session_with(app, system_prompt, tools_json, build)
-}
-
-/// [`open_local_session`] over any body builder (a Store daemon's carries its approved tools).
+/// Open a daemon session on the local model with the body `build` makes from (system prompt,
+/// tools JSON, base URL, bearer, model, context tokens).
 fn open_local_session_with(
     app: &tauri::AppHandle,
     system_prompt: &str,
@@ -2447,9 +2435,12 @@ pub async fn hermes_session_open_unattended(
                     open_local_session_with(&app, &system_prompt, &tools_json, build)
                 }
             }
-            None => {
-                open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
-            }
+            None => open_local_session_with(
+                &app,
+                &system_prompt,
+                &tools_json,
+                build_daemon_session_body,
+            ),
         }
     })
     .await
