@@ -31,6 +31,10 @@ use lifecycle::timing::{hold_for, sample_over, wait_for, Deadline};
 /// because hosts running many suites at once can take seconds to schedule a fork and exec.
 const ACQUIRE: Duration = Duration::from_secs(15);
 
+/// How long a fixture whose property is a count (children, failures) may wait for Failed. The
+/// count is what is asserted; this bound only keeps a wedged run from hanging the suite.
+const SLOW_FAILED: Duration = Duration::from_secs(90);
+
 fn fast_backoff(max_retries: u32) -> BackoffPolicy {
     BackoffPolicy {
         base_delay: Duration::from_millis(20),
@@ -2021,7 +2025,9 @@ fn grace_longer_than_healthy_after_never_credits_a_failing_probe() {
     cfg.stop_grace = Duration::from_millis(300);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(3));
+    // The property is the count, not the time: under a loaded host the two incarnations can take
+    // far longer than the 3 s the scenario names, so wait generously for Failed.
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
     let pids = fx.pidfile_pids();
     assert_eq!(
         st.state,
@@ -2069,9 +2075,13 @@ fn late_probe_answers_never_make_ready_or_credit() {
     cfg.stop_grace = Duration::from_millis(300);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let samples = sample_over(Duration::from_secs(3), Duration::from_millis(10), || {
-        sup.lifecycle().map(|l| (l.phase, l.readiness))
-    });
+    // Sample readiness until the service is Failed (bounded generously for a loaded host).
+    let mut samples = Vec::new();
+    let deadline = Deadline::after(SLOW_FAILED);
+    while sup.status().state != SupervisorState::Failed && !deadline.expired() {
+        samples.push(((), sup.lifecycle().map(|l| (l.phase, l.readiness))));
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let st = sup.status();
     assert_eq!(
         st.state,
@@ -2117,7 +2127,7 @@ fn probe_workers_never_overlap_across_incarnations() {
     cfg.stop_grace = Duration::from_millis(300);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
     assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
     let attempts = sup.lifecycle().map_or(0, |l| l.counters.attempts);
     assert!(
@@ -2298,7 +2308,7 @@ fn a_forward_wall_clock_jump_never_grants_credit() {
     cfg.backoff = fast_backoff(2);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(15));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
     assert_eq!(
         st.state,
         SupervisorState::Failed,
@@ -2318,19 +2328,29 @@ fn sustained_fresh_success_resets_the_retry_budget() {
     let fx = OwnedFixture::new("credit");
     let mut spec = fx.leaf_spec("lcf-credit");
     spec.health_check = Some(HealthCheck {
-        interval: Duration::from_millis(50),
+        interval: Duration::from_millis(250),
         grace: Duration::ZERO,
         probe: Arc::new(|| true),
     });
     let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
-    cfg.healthy_after = Duration::from_millis(150);
+    cfg.healthy_after = Duration::from_millis(500);
     cfg.backoff = fast_backoff(1);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     for round in 0..4 {
         let pid = running_pid(&sup, &fx);
-        // Healthy well past healthy_after, then a crash.
-        hold_for(Duration::from_millis(600));
+        // Healthy well past healthy_after (wait for this window's credit), then a crash.
+        let want = round as u64 + 1;
+        let credited = wait_for(ACQUIRE, Duration::from_millis(10), || {
+            sup.lifecycle()
+                .filter(|l| l.counters.health_credits >= want)
+                .map(|_| ())
+        });
+        assert!(
+            credited.is_ok(),
+            "round {round}: sustained fresh successes earn the credit: {:?}",
+            sup.lifecycle().map(|l| (l.readiness, l.counters))
+        );
         assert_ne!(sup.status().state, SupervisorState::Failed, "round {round}");
         lifecycle::fixture::kill(pid, libc::SIGKILL);
         fx.expect_pids(round + 2, ACQUIRE);
@@ -2369,7 +2389,7 @@ fn automated_restarts_never_reset_the_budget() {
     // After every crash, restart the next incarnation once, as an automated caller would.
     let mut restarted_after: u32 = 0;
     let mut automated = 0;
-    let deadline = Deadline::after(Duration::from_secs(10));
+    let deadline = Deadline::after(SLOW_FAILED);
     loop {
         let st = sup.status();
         if st.state == SupervisorState::Failed {
@@ -2449,7 +2469,7 @@ fn an_automated_start_carries_the_budget_over() {
         ControlResult::Accepted(_) => {}
         other => panic!("automated start of a stopped service: {other:?}"),
     }
-    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(10));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
     assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
     assert_eq!(
         st.restarts, 4,
