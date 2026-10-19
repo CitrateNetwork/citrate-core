@@ -2325,6 +2325,104 @@ fn sustained_fresh_success_resets_the_retry_budget() {
     fx.assert_clean();
 }
 
+/// Automated restarts (a stop-then-start no member asked for, like the node's mining arm and
+/// disarm) never reset the retry budget: a child that keeps crashing still reaches Failed
+/// after `max_retries`, however many automated restarts it got in between. Only a member Start
+/// gives a fresh budget (INV-17, owner rule from #345 and #351).
+#[test]
+fn automated_restarts_never_reset_the_budget() {
+    let fx = OwnedFixture::new("auto-restart");
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_after_spec("lcf-auto-restart", "0.3"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.healthy_after = Duration::from_secs(30);
+    cfg.backoff = fast_backoff(2);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    // After every crash, restart the next incarnation once, as an automated caller would.
+    let mut restarted_after: u32 = 0;
+    let mut automated = 0;
+    let deadline = Deadline::after(Duration::from_secs(10));
+    loop {
+        let st = sup.status();
+        if st.state == SupervisorState::Failed {
+            break;
+        }
+        assert!(
+            !deadline.expired(),
+            "never Failed: the automated restarts reset the budget ({} failures, {automated} \
+             automated restarts)",
+            st.restarts
+        );
+        if st.state == SupervisorState::Running && st.restarts > restarted_after {
+            restarted_after = st.restarts;
+            match sup.request_auto_restart() {
+                ControlResult::Accepted(_) => automated += 1,
+                other => panic!("automated restart of a running service: {other:?}"),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(automated >= 2, "INCONCLUSIVE: {automated} automated restarts ran");
+    assert_eq!(
+        sup.status().restarts,
+        3,
+        "failures since the member Start stay within the first run plus max_retries (2)"
+    );
+    let counters = sup.lifecycle().map(|l| l.counters);
+    assert!(
+        counters.is_some_and(|c| c.consecutive_failures == 3 && c.initial_failures == 1),
+        "{counters:?}"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// An automated start after a Stop carries the budget over: the failures before the Stop
+/// still count, so the total stays within the first run plus `max_retries`.
+#[test]
+fn an_automated_start_carries_the_budget_over() {
+    let fx = OwnedFixture::new("auto-start");
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_after_spec("lcf-auto-start", "0.25"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.healthy_after = Duration::from_secs(30);
+    cfg.backoff = fast_backoff(3);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let crashed = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        let st = sup.status();
+        (st.restarts >= 1 && st.state == SupervisorState::Running).then_some(())
+    });
+    assert!(crashed.is_ok(), "INCONCLUSIVE: no crash and respawn yet");
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("INCONCLUSIVE: Stop: {other:?}"),
+    };
+    assert!(matches!(settle(&sup, stop, ACQUIRE), Receipt::Complete { .. }));
+    let before = sup.status().restarts;
+    assert!(
+        (1..=3).contains(&before),
+        "INCONCLUSIVE: {before} failures before the Stop"
+    );
+    match sup.request_auto_start() {
+        ControlResult::Accepted(_) => {}
+        other => panic!("automated start of a stopped service: {other:?}"),
+    }
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(10));
+    assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
+    assert_eq!(
+        st.restarts, 4,
+        "first run plus max_retries (3) in all; {before} came before the Stop"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
 // ---------------------------------------------------------------------------
 // Suite manifest
 // ---------------------------------------------------------------------------
