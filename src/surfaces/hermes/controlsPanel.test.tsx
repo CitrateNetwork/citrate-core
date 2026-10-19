@@ -16,6 +16,8 @@ import type { SimHost } from "../../bridge/sim/index";
 import { store } from "../../shell/store";
 import { WebSearchSettings } from "../WebSearchSettings";
 import type { HermesRestartResult } from "../../shell/slices/agent";
+import { hermesRunningSlice } from "./hermesRunning";
+import { TrajectoryConsent } from "../../fl/TrajectoryConsent";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -30,6 +32,8 @@ afterEach(() => {
 });
 beforeEach(() => {
   daemonsSlice.set({ view: null, loaded: false, error: null });
+  // A fresh app session: nothing known yet about what the running Hermes started with.
+  hermesRunningSlice.set({ webSearch: null, learn: null });
 });
 
 const $ = (id: string) => host?.querySelector(`[data-testid="${id}"]`) as HTMLInputElement | null;
@@ -482,6 +486,90 @@ describe("Hermes › Controls, first depth (K2)", () => {
     await click($("restart-learn"));
     expect($("pending-learn")).toBeTruthy();
     expect($("restart-error-learn")?.textContent).toContain("bridge down");
+  });
+
+  // ---------- pending restart survives remounts (Codex P2 at 6be691a4) ----------
+  const remount = async (h: Harness) => {
+    act(() => root?.unmount());
+    host?.remove();
+    await mount(h);
+  };
+
+  it("remount: after turning web search off, leaving and coming back keeps the restart notice", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }), withRestart: true });
+    await mount(h);
+    await click($("toggle-web-search"));
+    expect($("pending-web-search")).toBeTruthy();
+    await remount(h);
+    expect($("toggle-web-search")?.checked).toBe(false);
+    expect($("pending-web-search")?.textContent).toContain("still has web search on");
+    expect($("restart-web-search")).toBeTruthy();
+  });
+
+  it("remount: after turning learn off, leaving and coming back keeps the restart notice", async () => {
+    const h = harness({ learn: true, withRestart: true });
+    await mount(h);
+    await click($("toggle-learn"));
+    await remount(h);
+    expect($("toggle-learn")?.checked).toBe(false);
+    expect($("pending-learn")?.textContent).toContain("still records sessions");
+    expect($("restart-learn")).toBeTruthy();
+  });
+
+  it("remount: a confirmed restart clears the notice, and it stays cleared after coming back", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }), learn: true, withRestart: true });
+    await mount(h);
+    await click($("toggle-web-search"));
+    await click($("toggle-learn"));
+    await remount(h);
+    await click($("restart-learn"));
+    expect($("pending-web-search")).toBeNull();
+    expect($("pending-learn")).toBeNull();
+    await remount(h);
+    expect($("pending-web-search")).toBeNull();
+    expect($("pending-learn")).toBeNull();
+  });
+
+  it("remount: a failed restart keeps the notice across remounts", async () => {
+    const h = harness({ learn: true, withRestart: true });
+    h.restart.mockResolvedValueOnce({ ok: false, stage: "start", error: "llama-server is not running" });
+    await mount(h);
+    await click($("toggle-learn"));
+    await click($("restart-learn"));
+    await remount(h);
+    expect($("pending-learn")).toBeTruthy();
+  });
+
+  it("a change saved in Settings › Web search before Controls ever opened still shows as pending", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }) });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => {
+      root?.render(<WebSearchSettings io={h.io.web} />);
+    });
+    await flush();
+    await click($("web-search-toggle"));
+    await click($("web-save"));
+    expect(h.web.current.settings.searchEnabled).toBe(false);
+    await remount(h);
+    expect($("pending-web-search")?.textContent).toContain("still has web search on");
+  });
+
+  it("a change saved in Train › Training data before Controls ever opened still shows as pending", async () => {
+    const h = harness({ learn: true });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const fl = { ...h.io.fl, overview: vi.fn(), buildTrainingSet: vi.fn() } as unknown as Parameters<typeof TrajectoryConsent>[0]["fl"];
+    await act(async () => {
+      root?.render(<TrajectoryConsent fl={fl} toast={() => {}} />);
+    });
+    await flush();
+    await click($("fl-traj-toggle"));
+    expect(h.fl.set).toHaveBeenCalledWith(false, false);
+    await remount(h);
+    expect($("pending-learn")?.textContent).toContain("still records sessions");
   });
 
   // ---------- field-specific web writes (#343 race) ----------

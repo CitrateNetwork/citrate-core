@@ -15,6 +15,7 @@
 import { useEffect, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
+import { noteRunning } from "./hermes/hermesRunning";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -121,6 +122,8 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
     try {
       const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
       const fresh = await loadWebSettings(io);
+      // Hermes reads search at start: remember what it runs with before changing the saved value.
+      noteRunning("webSearch", fresh.settings.searchEnabled);
       const st = await saveWebSettings(io, { ...fresh.settings, ...edits });
       setStatus(st);
       setDraft(st.settings);

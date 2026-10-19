@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import type { FlRoundsDomain, FlTrainingSet, FlTrajectoryStatus } from "../bridge/domains";
 import { DEFAULT_PROPOSAL } from "./flRounds";
+import { noteRunning } from "../surfaces/hermes/hermesRunning";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const label: React.CSSProperties = { fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" };
@@ -38,6 +39,8 @@ export function TrajectoryConsent({ fl, toast }: { fl: FlRoundsDomain; toast: (m
     setErr(null);
     setBuilt(null);
     try {
+      // Hermes reads this switch at start: remember what it runs with before changing it.
+      if (st) noteRunning("learn", st.settings.enabled);
       const next = await fl.setTrajectoryConsent(!on, on ? deleteRecorded : false);
       setSt(next);
       toast(

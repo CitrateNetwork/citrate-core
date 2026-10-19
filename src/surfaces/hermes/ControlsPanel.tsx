@@ -30,6 +30,7 @@ import { loadWebSettings, saveWebSettings, type HermesWebStatus, type WebSetting
 import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
+import { confirmRunning, hermesRunningSlice, noteRunning } from "./hermesRunning";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -213,8 +214,10 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const daemons = daemonsSlice.use();
   // What the running Hermes started with, as far as this panel knows: the saved value when the
   // panel opened, or after the last restart from here. Saved differs from it = pending a restart.
-  const [webStarted, setWebStarted] = useState<boolean | null>(null);
-  const [learnStarted, setLearnStarted] = useState<boolean | null>(null);
+  // App-wide (hermesRunning.ts), so a pending restart survives leaving and reopening this panel.
+  const running = hermesRunningSlice.use();
+  const webStarted = running.webSearch;
+  const learnStarted = running.learn;
   const [restarting, setRestarting] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
 
@@ -223,12 +226,12 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     let live = true;
     if (webDesktop) {
       loadWebSettings(io.web).then(
-        (st) => live && (setWeb(st), setWebErr(st.loadError ?? null), setWebStarted(st.settings.searchEnabled)),
+        (st) => live && (setWeb(st), setWebErr(st.loadError ?? null), noteRunning("webSearch", st.settings.searchEnabled)),
         (e) => live && setWebErr(msg(e)),
       );
     }
     io.fl.trajectoryStatus().then(
-      (st) => live && (setLearn(st), setLearnErr(st.loadError), setLearnStarted(st.settings.enabled)),
+      (st) => live && (setLearn(st), setLearnErr(st.loadError), noteRunning("learn", st.settings.enabled)),
       (e) => live && setLearnErr(msg(e)),
     );
     io.escalation.budget().then(
@@ -259,6 +262,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         // Field-specific: re-read what is saved now (another form may have changed it since this
         // panel loaded), change only searchEnabled, and show what core answers.
         const fresh = await loadWebSettings(io.web);
+        noteRunning("webSearch", fresh.settings.searchEnabled);
         const st = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
         setWeb(st);
         setWebErr(st.loadError ?? null);
@@ -283,6 +287,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     run("learn", async () => {
       try {
         // Turning it off keeps recorded sessions; deleting them is a second-depth choice.
+        if (learn) noteRunning("learn", learn.settings.enabled);
         const st = await io.fl.setTrajectoryConsent(on, false);
         setLearn(st);
         setLearnErr(st.loadError);
@@ -311,8 +316,10 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
           if (r.ok) {
             // Confirmed: Hermes stopped and is running again, so it read the saved settings.
             setRestartError(null);
-            if (web) setWebStarted(web.settings.searchEnabled);
-            if (learn) setLearnStarted(learn.settings.enabled);
+            confirmRunning({
+              ...(web ? { webSearch: web.settings.searchEnabled } : {}),
+              ...(learn ? { learn: learn.settings.enabled } : {}),
+            });
           } else {
             // Not confirmed: the notices stay, with what happened.
             setRestartError(
