@@ -1367,6 +1367,10 @@ fn rollback_ignores_a_symlink_or_file_with_a_before_restore_name() {
 #[cfg(unix)]
 #[test]
 fn rollback_fails_closed_when_the_rename_fails() {
+    if running_as_root() {
+        eprintln!("skipped: root bypasses the 0555 parent; rollback_fails_closed_on_an_injected_rename_failure covers this as root");
+        return;
+    }
     let root = interrupted_root("rollback-ro", &[("memory.before-restore-20261019-120000", b"old")]);
     set_mode(&root, 0o555);
     let mem = root.join("memory");
@@ -1394,7 +1398,145 @@ fn swap_and_rollback_share_the_before_restore_name() {
         assert!(b.contains("BEFORE_RESTORE_INFIX"), "{f} uses the shared name");
         assert!(!b.contains("\".before-restore-"), "{f} has no literal kept-store name");
     }
-    // The memory manager runs the rollback at init and before every start.
-    let memory = include_str!("memory.rs");
-    assert!(memory.matches("recover_interrupted_restore()").count() >= 2);
+}
+
+// ---------------------------------------------------------------- N2 review (DGX, 1c86a7e)
+
+/// Whether the test process runs as root (DAC is bypassed, so permission-based failures can't be
+/// produced). Tests that rely on a read-only dir skip with a note instead of passing vacuously.
+pub(crate) fn running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions and touches no memory.
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Injects a rename failure on this thread for the duration of `f`.
+pub(crate) fn with_failing_rollback_rename<T>(f: impl FnOnce() -> T) -> T {
+    FAIL_ROLLBACK_RENAME.with(|c| c.set(true));
+    let out = f();
+    FAIL_ROLLBACK_RENAME.with(|c| c.set(false));
+    out
+}
+
+/// Fail closed without relying on permissions (holds as root too).
+#[test]
+fn rollback_fails_closed_on_an_injected_rename_failure() {
+    let root = interrupted_root("rollback-inject", &[("memory.before-restore-20261019-120000", b"old")]);
+    let mem = root.join("memory");
+    let err = with_failing_rollback_rename(|| recover_interrupted_restore(&mem)).expect_err("error");
+    assert!(err.contains("interrupted") && err.contains("memory.before-restore-20261019-120000"), "{err}");
+    assert!(!mem.exists());
+    assert!(root.join("memory.before-restore-20261019-120000/store.bge.memdag/CURRENT").exists());
+}
+
+/// B1: the shared guard every creator of `memory/` calls. When the rollback fails it refuses and
+/// creates nothing; when a kept store exists it is brought back instead of an empty dir.
+#[test]
+fn the_memory_dir_guard_rolls_back_first_and_fails_closed() {
+    let root = interrupted_root("guard-fail", &[("memory.before-restore-20261019-120000", b"old")]);
+    let mem = root.join("memory");
+    let r = with_failing_rollback_rename(|| ensure_memory_dir(&mem));
+    assert!(r.is_err(), "the guard refuses when the rollback fails");
+    assert!(!mem.exists(), "and creates no empty memory dir");
+
+    let root = interrupted_root("guard-ok", &[("memory.before-restore-20261019-120000", b"old")]);
+    let mem = root.join("memory");
+    ensure_memory_dir(&mem).expect("guard");
+    assert_eq!(std::fs::read(mem.join("store.bge.memdag/CURRENT")).unwrap(), b"old");
+
+    let root = tmp_dir("guard-fresh");
+    let mem = root.join("memory");
+    ensure_memory_dir(&mem).expect("a fresh install gets an empty memory dir");
+    assert!(mem.is_dir());
+}
+
+/// Suffix tie: `-02` is not a name the swap writes, so it is ignored rather than tying with `-2`.
+#[test]
+fn rollback_ignores_leading_zero_suffixes() {
+    let root = interrupted_root(
+        "rollback-zero",
+        &[
+            ("memory.before-restore-20261019-130000", b"bare"),
+            ("memory.before-restore-20261019-130000-2", b"two"),
+            ("memory.before-restore-20261019-130000-02", b"zero-two"),
+            ("memory.before-restore-20261019-130000-010", b"zero-ten"),
+        ],
+    );
+    let mem = root.join("memory");
+    let from = recover_interrupted_restore(&mem).unwrap();
+    assert_eq!(from, Some(root.join("memory.before-restore-20261019-130000-2")));
+    assert_eq!(std::fs::read(mem.join("store.bge.memdag/CURRENT")).unwrap(), b"two");
+    assert!(root.join("memory.before-restore-20261019-130000-02").exists());
+    assert!(root.join("memory.before-restore-20261019-130000-010").exists());
+}
+
+/// Race: concurrent rollbacks on one root. Exactly one moves the store; the others see it in
+/// place and succeed (no false "failed" error); nothing is lost.
+#[test]
+fn concurrent_rollbacks_never_report_a_false_failure() {
+    for round in 0..40 {
+        let root = interrupted_root(
+            &format!("rollback-race-{round}"),
+            &[("memory.before-restore-20261019-120000", b"kept")],
+        );
+        let mem = root.join("memory");
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let (mem, barrier) = (mem.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    recover_interrupted_restore(&mem)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(results.iter().all(|r| r.is_ok()), "round {round}: {results:?}");
+        assert_eq!(results.iter().filter(|r| matches!(r, Ok(Some(_)))).count(), 1, "round {round}");
+        assert_eq!(std::fs::read(mem.join("store.bge.memdag/CURRENT")).unwrap(), b"kept");
+    }
+}
+
+/// B1 tripwire: WHERE the rollback runs. Every path that creates the memory dir goes through
+/// `ensure_memory_dir`, which rolls back first; nothing else in memory.rs or knowledge_import.rs
+/// creates a directory.
+#[test]
+fn every_memory_dir_creator_rolls_back_first() {
+    // A method body ends at its 4-space-indented brace, a free function's at column 0.
+    fn body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let start = src.find(sig).unwrap_or_else(|| panic!("{sig} exists"));
+        let rest = &src[start..];
+        let end = if sig.starts_with("    ") || sig.starts_with("pub fn start(&self)") {
+            "\n    }\n"
+        } else {
+            "\n}\n"
+        };
+        &rest[..rest.find(end).expect("fn ends")]
+    }
+    let non_test = |src: &'static str| -> &'static str { src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src) };
+    let memory = non_test(include_str!("memory.rs"));
+    let import = non_test(include_str!("knowledge_import.rs"));
+    for (name, src) in [("memory.rs", memory), ("knowledge_import.rs", import)] {
+        for banned in ["create_dir_all(", "create_dir(", "DirBuilder"] {
+            assert!(!src.contains(banned), "{name} creates a dir directly ({banned}); use ensure_memory_dir");
+        }
+    }
+    let start = body(memory, "pub fn start(&self) -> Result<()> {");
+    let guard = start.find("ensure_memory_dir(").expect("start calls the guard");
+    assert!(guard < start.find("Supervisor::start").expect("spawn"), "guard before spawn");
+    let new = body(memory, "    pub fn new(\n");
+    assert!(new.contains("recover_interrupted_restore()"), "init rolls back");
+    let run = body(import, "fn run_importer(\n");
+    let guard = run.find("ensure_memory_dir(").expect("the import calls the guard");
+    assert!(guard < run.find("write_progress(").expect("progress write"), "guard before any write");
+    assert!(guard < run.find("run_importer_child(").expect("importer"), "guard before the importer");
+    let g = body(include_str!("storage_backup.rs"), "pub(crate) fn ensure_memory_dir(");
+    let rb = g.find("recover_interrupted_restore(").expect("the guard rolls back");
+    assert!(rb < g.find("create_dir_all(").expect("then creates"), "roll back before creating");
 }

@@ -938,17 +938,18 @@ fn memory_init_rolls_back_an_interrupted_restore() {
     assert!(!kept.exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn memory_start_fails_closed_when_the_rollback_cannot_run() {
-    use std::os::unix::fs::PermissionsExt;
     let root = tmp_dir("n2-ro");
+    std::fs::create_dir_all(&root).unwrap();
     let kept = root.join("memory.before-restore-20261019-120000");
     std::fs::create_dir_all(kept.join("store.bge.memdag")).unwrap();
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let mgr = manager_at(&root);
-    let started = mgr.start();
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Injected rename failure (works as root too); both the init and the start rollback fail.
+    let (mgr, started) = crate::storage_backup::tests::with_failing_rollback_rename(|| {
+        let mgr = manager_at(&root);
+        let started = mgr.start();
+        (mgr, started)
+    });
     if started.is_ok() {
         mgr.stop();
     }

@@ -1642,7 +1642,7 @@ pub(crate) fn recover_interrupted_restore(mem_dir: &Path) -> Result<Option<PathB
     let Some(kept) = newest else {
         return Ok(None);
     };
-    std::fs::rename(&kept, mem_dir).map_err(|e| {
+    rollback_rename(&kept, mem_dir).map_err(|e| {
         format!(
             "a memory restore was interrupted, and moving the previous store {} back to {} failed: \
              {e}. Nothing was changed and the memory daemon will not start until it is moved back",
@@ -1651,6 +1651,30 @@ pub(crate) fn recover_interrupted_restore(mem_dir: &Path) -> Result<Option<PathB
         )
     })?;
     Ok(Some(kept))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: make the next rollback rename on this thread fail, so the fail-closed paths
+    /// are exercised without relying on file permissions (which root bypasses).
+    pub(crate) static FAIL_ROLLBACK_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The rollback's single `rename(2)`.
+fn rollback_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_ROLLBACK_RENAME.with(|f| f.get()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "injected rename failure",
+        ));
+    }
+    std::fs::rename(from, to)
+}
+
+/// B1 red-step stub (old behaviour: create the dir, no rollback). Replaced in the fix commit.
+pub(crate) fn ensure_memory_dir(mem_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(mem_dir).map_err(|e| format!("cannot create the memory directory: {e}"))
 }
 
 /// `parent/name`, or `parent/name-2`, `-3`, … when it exists.
@@ -1805,6 +1829,6 @@ pub fn storage_backup_restore_sync(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     include!("storage_backup_tests.rs");
 }
