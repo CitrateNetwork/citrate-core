@@ -803,3 +803,23 @@ fn rendezvous_tick_round_trips_over_the_member_socket() {
     assert_eq!(t.invites[0].state, crate::rendezvous::InviteState::Open);
     let _ = handle.join();
 }
+
+// GROW-S2 review: the rendezvous verbs get a longer IPC deadline than the 5 s default (the daemon
+// may wait on the relay before it answers).
+#[test]
+fn rendezvous_verbs_get_the_longer_ipc_deadline() {
+    assert!(RENDEZVOUS_IPC_TIMEOUT >= Duration::from_secs(15));
+    let g = String::new();
+    for req in [
+        Request::RendezvousOpen { group: g.clone(), token: g.clone(), expires_at: 0 },
+        Request::RendezvousJoin { group: g.clone(), token: g.clone(), name: g.clone() },
+        Request::RendezvousTick,
+        Request::RendezvousCancel { group: g.clone() },
+        Request::RendezvousClose { lookup: g.clone() },
+        Request::RendezvousForget { group: g.clone() },
+    ] {
+        assert_eq!(ipc_timeout_for(&req), RENDEZVOUS_IPC_TIMEOUT, "{req:?}");
+    }
+    assert_eq!(ipc_timeout_for(&Request::ListGroups), COMMS_IPC_TIMEOUT);
+    assert_eq!(ipc_timeout_for(&Request::RevokeInvite { token_hash: g }), COMMS_IPC_TIMEOUT);
+}

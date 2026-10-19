@@ -124,47 +124,95 @@ pub(crate) fn blake3_token_hash(token: &str) -> String {
     hex::encode(blake3::hash(token.as_bytes()).as_bytes())
 }
 
-/// GROW-S2 (§15 M2) — the outcome of the two publishes at mint: the INVITE-S2 `publishInvite` and
-/// the rendezvous `rendezvousOpen` (same `expires_at`). Fail-closed: no link is handed out when both
-/// fail; one success is enough (a relay without rendezvous still serves the legacy self-admit, and a
-/// rendezvous still works if the legacy publish failed). Returns `(published, lookup)`.
-///
-/// The daemon's `lookup` must equal the one derived here from the token (§3); a different value
-/// means the two sides disagree on the derivation, and that open is treated as failed.
+/// GROW-S2 (§15 M2) — the result of the two publishes at mint that handed out a link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MintDecision {
+    /// The INVITE-S2 `publishInvite` worked (there is a legacy invite record to revoke).
+    pub published: bool,
+    /// The rendezvous lookup to record for revoke ("" only when the daemon or relay doesn't speak
+    /// rendezvous, so nothing can have been opened).
+    pub lookup: String,
+}
+
+/// No link: both publishes failed. `lookup_to_close` is an open the daemon may still hold (an
+/// ambiguous answer), which the caller closes so the daemon drops its secrets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MintRefused {
+    pub message: String,
+    pub lookup_to_close: String,
+}
+
+/// The lookup to record for an open, whatever the answer (I6: ambiguity is never terminal). The
+/// daemon persists the open before it talks to the relay (§9), so a timeout, a dropped socket or an
+/// error can still leave it open at the daemon, resending. Only "this daemon / relay has no
+/// rendezvous" means nothing was opened. A daemon answer with another lookup is recorded as given,
+/// so the close reaches what the daemon holds.
+fn lookup_to_record(
+    open: &Result<crate::comms::RendezvousOpened, crate::rendezvous::RvError>,
+    expected_lookup: &str,
+) -> String {
+    use crate::rendezvous::RvError;
+    match open {
+        Ok(o) => o.lookup.to_ascii_lowercase(),
+        Err(RvError::DaemonUnsupported) => String::new(),
+        Err(e) if crate::rendezvous::is_relay_unsupported(e) => String::new(),
+        Err(_) => expected_lookup.to_ascii_lowercase(),
+    }
+}
+
+/// GROW-S2 (§15 M2) — decide the mint from the two publishes: the INVITE-S2 `publishInvite` and the
+/// rendezvous `rendezvousOpen` (same `expires_at`). Fail-closed: no link when both fail; one
+/// confirmed success is enough (a relay without rendezvous still serves the legacy self-admit, and
+/// a rendezvous still works if the legacy publish failed). A confirmed open needs the daemon's
+/// lookup to equal the §3 derivation computed here.
 pub(crate) fn decide_mint(
     publish: Result<(), String>,
     open: Result<crate::comms::RendezvousOpened, crate::rendezvous::RvError>,
     expected_lookup: &str,
-) -> Result<(bool, String), String> {
-    let open = match open {
-        Ok(o) if o.lookup.eq_ignore_ascii_case(expected_lookup) => {
-            Ok(o.lookup.to_ascii_lowercase())
-        }
+) -> Result<MintDecision, MintRefused> {
+    let lookup = lookup_to_record(&open, expected_lookup);
+    let opened = match &open {
+        Ok(o) if o.lookup.eq_ignore_ascii_case(expected_lookup) => Ok(()),
         Ok(_) => {
             Err("the comms daemon registered a different rendezvous for this invite".to_string())
         }
         Err(e) => Err(e.to_string()),
     };
-    match (publish, open) {
-        (Ok(()), Ok(lookup)) => Ok((true, lookup)),
-        (Ok(()), Err(_)) => Ok((true, String::new())),
-        (Err(_), Ok(lookup)) => Ok((false, lookup)),
-        (Err(p), Err(o)) => Err(format!(
-            "couldn't publish the invite to the relay ({p}; rendezvous: {o})"
-        )),
+    match (publish, opened) {
+        (Ok(()), _) => Ok(MintDecision {
+            published: true,
+            lookup,
+        }),
+        (Err(_), Ok(())) => Ok(MintDecision {
+            published: false,
+            lookup,
+        }),
+        (Err(p), Err(o)) => Err(MintRefused {
+            message: format!("couldn't publish the invite to the relay ({p}; rendezvous: {o})"),
+            lookup_to_close: lookup,
+        }),
     }
 }
 
-/// GROW-S2 (§15 M2) — what revoking an invite must do: close its rendezvous (when one was opened)
-/// and revoke its INVITE-S2 record (when it was published). An invite with no local record is
-/// revoked the pre-S2 way (relay invite only).
-pub(crate) fn revoke_plan(invite: Option<&PendingInvite>) -> (Option<String>, bool) {
+/// GROW-S2 (§9 "call both") — what revoking an invite does: close its rendezvous whenever one was
+/// recorded, and always send the INVITE-S2 revoke. `legacy_must_succeed` is false only for an
+/// invite whose legacy publish failed (the relay may have no record to revoke).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RevokePlan {
+    pub close: Option<String>,
+    pub legacy_must_succeed: bool,
+}
+
+pub(crate) fn revoke_plan(invite: Option<&PendingInvite>) -> RevokePlan {
     match invite {
-        Some(i) => (
-            (!i.lookup.is_empty()).then(|| i.lookup.clone()),
-            i.published,
-        ),
-        None => (None, true),
+        Some(i) => RevokePlan {
+            close: (!i.lookup.is_empty()).then(|| i.lookup.clone()),
+            legacy_must_succeed: i.published,
+        },
+        None => RevokePlan {
+            close: None,
+            legacy_must_succeed: true,
+        },
     }
 }
 
@@ -244,7 +292,17 @@ pub async fn group_invite_create(
         crate::rendezvous::token_ipc_hex(&token),
         expires_at,
     );
-    let (published, lookup) = decide_mint(publish, open, &crate::rendezvous::lookup_hex(&token))?;
+    let MintDecision { published, lookup } =
+        match decide_mint(publish, open, &crate::rendezvous::lookup_hex(&token)) {
+            Ok(d) => d,
+            Err(refused) => {
+                // No link. Close an open the daemon may still hold, so it drops its secrets.
+                if !refused.lookup_to_close.is_empty() {
+                    let _ = crate::comms::rendezvous_close(&app, refused.lookup_to_close);
+                }
+                return Err(refused.message);
+            }
+        };
     // Label the invitee's joined group with the real name when we can read it (best-effort).
     let name_hex = match group_name_of(&app, &group).await {
         Some(n) if !n.is_empty() => hex::encode(n.as_bytes()),
@@ -534,22 +592,24 @@ pub async fn group_invite_revoke(
     token: String,
 ) -> Result<(), String> {
     let mut invites = load(&app);
-    let (close_lookup, revoke_legacy) = revoke_plan(
+    let plan = revoke_plan(
         invites
             .iter()
             .find(|i| i.group == group && i.token == token),
     );
-    // GROW-S2 — close the rendezvous first (the daemon persists the close and resends it until the
-    // relay confirms; it also drops its local secrets for it). A daemon without the op never opened
-    // one, so that is not an error.
-    if let Some(lookup) = close_lookup {
+    // GROW-S2 (§9) — close the rendezvous first (the daemon persists the close and resends it until
+    // the relay confirms; it also drops its local secrets for it). A daemon without the op never
+    // opened one, so that is not an error.
+    if let Some(lookup) = plan.close {
         match crate::comms::rendezvous_close(&app, lookup) {
             Ok(()) | Err(crate::rendezvous::RvError::DaemonUnsupported) => {}
             Err(e) => return Err(format!("couldn't revoke the invite: {e}")),
         }
     }
-    if revoke_legacy {
-        crate::comms::revoke_invite(&app, blake3_token_hash(&token))?;
+    // Then always the INVITE-S2 revoke (it also closes a linked rendezvous at the relay, §4).
+    let legacy = crate::comms::revoke_invite(&app, blake3_token_hash(&token));
+    if plan.legacy_must_succeed {
+        legacy?;
     }
     invites.retain(|i| !(i.group == group && i.token == token));
     save(&app, &invites)
@@ -571,34 +631,62 @@ mod tests {
         })
     }
 
+    fn ok(published: bool, lookup: &str) -> Result<super::MintDecision, super::MintRefused> {
+        Ok(super::MintDecision {
+            published,
+            lookup: lookup.to_string(),
+        })
+    }
+
     #[test]
     fn mint_hands_out_the_link_when_both_publishes_succeed() {
         assert_eq!(crate::rendezvous::lookup_hex(T), LOOKUP);
         assert_eq!(
             super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP),
-            Ok((true, LOOKUP.to_string()))
+            ok(true, LOOKUP)
         );
     }
 
     #[test]
-    fn mint_still_hands_out_the_link_when_the_relay_is_relay_unsupported() {
+    fn mint_records_no_rendezvous_only_when_the_daemon_or_relay_lacks_it() {
         for open in [
             Err(RvError::Daemon("relay_unsupported".into())),
             Err(RvError::DaemonUnsupported),
-            Err(RvError::Ipc("timeout".into())),
         ] {
-            assert_eq!(
-                super::decide_mint(Ok(()), open, LOOKUP),
-                Ok((true, String::new()))
-            );
+            assert_eq!(super::decide_mint(Ok(()), open, LOOKUP), ok(true, ""));
         }
+    }
+
+    /// I6 / §9 "call both": a timeout or error on rendezvousOpen is ambiguous. The daemon may
+    /// have persisted the open and keep resending it, so the derived lookup is recorded and
+    /// revoke can close it.
+    #[test]
+    fn an_ambiguous_open_still_records_the_derived_lookup() {
+        for open in [
+            Err(RvError::Ipc(
+                "comms daemon did not respond within 15000 ms".into(),
+            )),
+            Err(RvError::Ipc("connect: refused".into())),
+            Err(RvError::Daemon("relay unreachable".into())),
+        ] {
+            assert_eq!(super::decide_mint(Ok(()), open, LOOKUP), ok(true, LOOKUP));
+        }
+    }
+
+    #[test]
+    fn open_times_out_then_revoke_still_closes_the_rendezvous() {
+        let d = super::decide_mint(Ok(()), Err(RvError::Ipc("timed out".into())), LOOKUP)
+            .expect("the link is handed out (the legacy publish worked)");
+        let plan = super::revoke_plan(Some(&invite(&d.lookup, d.published)));
+        assert_eq!(plan.close.as_deref(), Some(LOOKUP));
+        assert!(plan.legacy_must_succeed);
     }
 
     #[test]
     fn mint_hands_out_the_link_when_only_the_rendezvous_opened() {
         assert_eq!(
             super::decide_mint(Err("relay down".into()), opened(LOOKUP), LOOKUP),
-            Ok((false, LOOKUP.to_string()))
+            ok(false, LOOKUP)
         );
     }
 
@@ -610,8 +698,8 @@ mod tests {
             LOOKUP,
         )
         .expect_err("no link when nothing was published");
-        assert!(!e.contains(T), "the error never carries the token");
-        // A relay_unsupported rendezvous plus a failed publish is still nothing redeemable.
+        assert!(!e.message.contains(T), "the error never carries the token");
+        assert_eq!(e.lookup_to_close, "", "nothing was opened");
         assert!(super::decide_mint(
             Err("x".into()),
             Err(RvError::Daemon("relay_unsupported".into())),
@@ -621,17 +709,32 @@ mod tests {
     }
 
     #[test]
-    fn a_daemon_lookup_that_doesnt_match_the_derivation_is_not_recorded() {
+    fn a_refused_mint_closes_an_open_the_daemon_may_have_kept() {
+        // Both failed, but the open timed out: the daemon may hold it. No link is handed out, and
+        // the caller closes the rendezvous so the daemon drops its secrets.
+        let e = super::decide_mint(
+            Err("x".into()),
+            Err(RvError::Ipc("timed out".into())),
+            LOOKUP,
+        )
+        .expect_err("no link");
+        assert_eq!(e.lookup_to_close, LOOKUP);
+    }
+
+    #[test]
+    fn a_daemon_lookup_that_doesnt_match_the_derivation_is_not_trusted_but_is_closable() {
         let other = "00".repeat(32);
+        // Not counted as an open (no link on its own), but recorded so revoke closes what the
+        // daemon actually holds.
         assert_eq!(
             super::decide_mint(Ok(()), opened(&other), LOOKUP),
-            Ok((true, String::new()))
+            ok(true, &other)
         );
-        assert!(super::decide_mint(Err("x".into()), opened(&other), LOOKUP).is_err());
-        // Case differences are the same lookup.
+        let e = super::decide_mint(Err("x".into()), opened(&other), LOOKUP).expect_err("no link");
+        assert_eq!(e.lookup_to_close, other);
         assert_eq!(
             super::decide_mint(Ok(()), opened(&LOOKUP.to_uppercase()), LOOKUP),
-            Ok((true, LOOKUP.to_string()))
+            ok(true, LOOKUP)
         );
     }
 
@@ -649,17 +752,36 @@ mod tests {
     }
 
     #[test]
-    fn revoke_closes_the_rendezvous_and_revokes_the_legacy_invite() {
+    fn revoke_always_sends_both_when_a_rendezvous_was_recorded() {
+        let p = super::revoke_plan(Some(&invite(LOOKUP, true)));
         assert_eq!(
-            super::revoke_plan(Some(&invite(LOOKUP, true))),
-            (Some(LOOKUP.to_string()), true)
+            (p.close.as_deref(), p.legacy_must_succeed),
+            (Some(LOOKUP), true)
         );
+        // The legacy revoke is still sent when its publish failed; only its error is tolerated.
+        let p = super::revoke_plan(Some(&invite(LOOKUP, false)));
         assert_eq!(
-            super::revoke_plan(Some(&invite(LOOKUP, false))),
-            (Some(LOOKUP.to_string()), false)
+            (p.close.as_deref(), p.legacy_must_succeed),
+            (Some(LOOKUP), false)
         );
-        assert_eq!(super::revoke_plan(Some(&invite("", true))), (None, true));
-        assert_eq!(super::revoke_plan(None), (None, true));
+        let p = super::revoke_plan(Some(&invite("", true)));
+        assert_eq!((p.close, p.legacy_must_succeed), (None, true));
+        let p = super::revoke_plan(None);
+        assert_eq!((p.close, p.legacy_must_succeed), (None, true));
+    }
+
+    #[test]
+    fn revoke_body_sends_close_then_the_legacy_revoke_unconditionally() {
+        let src = include_str!("invites.rs");
+        let body = &src[src.find("pub async fn group_invite_revoke").expect("fn")..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        let close = body.find("rendezvous_close(").expect("close");
+        let legacy = body.find("revoke_invite(&app").expect("legacy");
+        assert!(close < legacy);
+        assert!(
+            !body.contains("if revoke_legacy"),
+            "the legacy revoke is always sent"
+        );
     }
 
     #[test]
