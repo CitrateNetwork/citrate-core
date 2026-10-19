@@ -1,0 +1,87 @@
+# created: 2026-10-19 | branch: ci/k1f-linux-fault-suite | author: Larry Klosowski + Claude Opus 5.5 (DGX lane)
+# status: active (K1-F). Linux x86_64 lane for the services supervisor: the kit supervisor lib
+# tests and the lifecycle fault-injection suite (kit/tests/lifecycle_faults.rs, from #342/#351),
+# run inside a fresh user+PID namespace so a stray kill can only reach the suite's own processes.
+# The leftover-fixture check runs inside the namespace, before its init exits (see
+# scripts/ci/lifecycle-faults-linux.sh). Not a required check yet; SCL-S13.1 decides that.
+name: lifecycle-faults-linux
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "kit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/ci/lifecycle-faults-linux.sh"
+      - ".github/workflows/lifecycle-faults-linux.yml"
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "kit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/ci/lifecycle-faults-linux.sh"
+      - ".github/workflows/lifecycle-faults-linux.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifecycle-faults-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-fault-suite:
+    name: supervisor fault suite (linux x86_64, pid namespace)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      RUSTUP_TOOLCHAIN: "1.98.1"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      LCF_TIMEOUT_SECS: "600"
+      LOG_DIR: ${{ github.workspace }}/lifecycle-faults-linux-logs
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned toolchain action
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: lifecycle-faults-linux
+
+      - name: Install Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Allow unprivileged user namespaces
+        shell: bash
+        run: |
+          # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor. The suite runs
+          # unprivileged inside `unshare --user --map-root-user --pid --fork --mount-proc`, the
+          # same command as on a developer desktop, so lift the restriction on this throwaway VM.
+          if unshare --user --map-root-user --pid --fork --mount-proc true 2>/dev/null; then
+            echo "user+pid namespaces already available"
+          else
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            unshare --user --map-root-user --pid --fork --mount-proc true
+          fi
+
+      - name: Run the supervisor fault suite in a PID namespace
+        shell: bash
+        run: scripts/ci/lifecycle-faults-linux.sh --log-dir "$LOG_DIR"
+
+      - name: Upload fault-suite logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lifecycle-faults-linux-logs
+          path: ${{ env.LOG_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
