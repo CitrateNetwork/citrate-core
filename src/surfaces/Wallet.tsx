@@ -427,7 +427,14 @@ export function Wallet({ store, s }: SurfaceProps) {
                 — · pending withdrawals: {s.pendingWithdrawalsError}
               </p>
             )}
-            {s.pendingWithdrawalsError === null && pending.length === 0 && (
+            {/* C1-W: no evidence of how far the node executed (citrate_executedHead not served):
+                found rows are real, but an empty list is not "none". */}
+            {s.pendingWithdrawalsError === null && s.pendingWithdrawalsUnconfirmed && (
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="citrate_executedHead (citrate-chain#334, #336, #337) is not on the public RPC yet">
+                {pending.length === 0 ? "— · pending withdrawals: " : ""}can&apos;t confirm the scan reached the chain head: the RPC does not report the block it has executed yet
+              </p>
+            )}
+            {s.pendingWithdrawalsError === null && !s.pendingWithdrawalsUnconfirmed && pending.length === 0 && (
               <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
                 No pending withdrawals. A requested withdrawal appears here and becomes claimable after the ~7-day (50,400-block) delay.
               </p>

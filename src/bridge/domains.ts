@@ -160,8 +160,10 @@ export interface WalletDomain {
   claimWithdrawal(id: string): Promise<CeremonyView>;
   /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
    * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * A fresh wallet honestly returns []. Never fabricated (Rule 1). */
-  pendingWithdrawals(): Promise<PendingWithdrawal[]>;
+   * Never fabricated (Rule 1). C1-W: `confirmed` is false when the node gave no evidence of how
+   * far it executed (citrate_executedHead), so withdrawals in unserved blocks may be missing and an
+   * empty list is not "none". */
+  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -213,6 +215,12 @@ export interface WalletDomain {
 /** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
  * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
  * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
+/** C1-W — one pending-withdrawals read: the rows, and whether the read proved its coverage. */
+export interface PendingWithdrawalsRead {
+  withdrawals: PendingWithdrawal[];
+  confirmed: boolean;
+}
+
 export interface PendingWithdrawal {
   id: string;
   saltWei: string;

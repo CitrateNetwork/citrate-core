@@ -777,22 +777,22 @@ fn results_are_deduplicated_across_windows_and_refreshes() {
     assert_eq!(second.len(), 1, "no duplicate after the tail re-scan");
 }
 
-// The last scanned block is kept, so a refresh only reads the new blocks (plus a short re-scanned
-// tail for blocks near the head).
+// The committed position is kept, so a refresh only reads the new blocks plus the trailing margin.
 #[test]
 fn a_refresh_is_incremental() {
     let rpc = RpcClient::with_transport(ChainStub::new(50_000, vec![(1, 10_000, false)]));
+    *rpc.transport().executed_head.borrow_mut() = Some(50_000);
     let mut scan = WithdrawalScan::default();
     read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("first");
-    // The committed position stays SAFE_DEPTH_BLOCKS behind the head (C1-W, #371 review).
-    assert_eq!(scan.next_block, 50_001 - SAFE_DEPTH_BLOCKS);
+    // The committed position stays the reorg margin below the executed head (chain#337 protocol).
+    assert_eq!(scan.next_block, 50_001 - EXECUTED_HEAD_MARGIN_BLOCKS);
     let before = rpc.transport().log_ranges().len();
     read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("refresh");
     let after = rpc.transport().log_ranges();
-    assert_eq!(after.len() - before, 1, "one window: the trailing 1000 blocks");
+    assert_eq!(after.len() - before, 1, "one window: the trailing margin");
     let (a, b) = after[after.len() - 1];
     assert_eq!(b, 50_000);
-    assert_eq!(a, 50_001 - SAFE_DEPTH_BLOCKS, "only the trailing window is re-read");
+    assert_eq!(a, 50_001 - EXECUTED_HEAD_MARGIN_BLOCKS, "only the trailing margin is re-read");
 }
 
 // A failed window is an error, never an empty (or partial) list; the position does not move.
@@ -817,14 +817,17 @@ fn a_failed_window_is_an_error_not_an_empty_list() {
 #[test]
 fn an_unfinished_scan_is_reported_as_still_reading() {
     let rpc = RpcClient::with_transport(ChainStub::new(30_000, vec![(2, 25_000, false)]));
+    *rpc.transport().executed_head.borrow_mut() = Some(30_000);
     let mut scan = WithdrawalScan::default();
     let past = std::time::Instant::now();
     let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(past)).expect_err("budget spent");
-    assert!(matches!(err, StakingError::Incomplete { .. }), "{err:?}");
-    assert!(err.to_string().contains("30000"), "{err}");
+    assert!(matches!(err, StakingError::OutOfBudget), "{err:?}");
+    assert!(err.to_string().contains("still reading chain history"), "{err}");
     let mut done = None;
     for _ in 0..100 {
-        match read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(std::time::Instant::now() + std::time::Duration::from_secs(5))) {
+        // The paging stops H2_RESERVE before the deadline, so give it a little more than that.
+        let deadline = std::time::Instant::now() + H2_RESERVE + std::time::Duration::from_millis(50);
+        match read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)) {
             Ok(p) => {
                 done = Some(p);
                 break;
@@ -1103,6 +1106,8 @@ fn an_executed_head_bounds_the_committed_position() {
 #[test]
 fn without_executed_head_the_conservative_depth_holds() {
     let rpc = RpcClient::with_transport(ChainStub::new(8_000, vec![]));
+    // An older node that reports its applied tip (it is behind by nothing).
+    *rpc.transport().syncing.borrow_mut() = Some(serde_json::json!({ "startingBlock": "0x1", "currentBlock": "0x1f40", "highestBlock": "0x1f41" }));
     let mut scan = WithdrawalScan::default();
     read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
     assert_eq!(scan.next_block, 8_001 - SAFE_DEPTH_BLOCKS);
@@ -1325,6 +1330,19 @@ fn a_spent_budget_makes_no_rpc_call() {
     assert_eq!(scan.next_block, 4_001);
 }
 
+// With no evidence, a budget stop cannot keep progress, so it says "can't confirm" instead of
+// "still reading" for ever (DGX: until chain#334/#336/#337 are on the public RPC).
+#[test]
+fn a_budget_stop_without_evidence_is_unconfirmed() {
+    let rpc = RpcClient::with_transport(ChainStub::new(50_000_000, vec![]));
+    let mut scan = WithdrawalScan::default();
+    let deadline = std::time::Instant::now() + H2_RESERVE + std::time::Duration::from_millis(30);
+    let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect_err("unconfirmed");
+    assert!(matches!(err, StakingError::Unconfirmed), "{err:?}");
+    assert!(err.to_string().contains("can't confirm"), "{err}");
+    assert_eq!(scan.next_block, 0);
+}
+
 #[test]
 fn the_scan_starts_at_the_pool_deployment_block() {
     // contracts/addresses/40204.provenance.json: LiquidStakingPool created at block 427.
@@ -1393,8 +1411,12 @@ fn scan_position_violations(prod: &str) -> Vec<String> {
             if !fallback.contains("syncing") {
                 bad.push("the fallback is not bounded by the eth_syncing applied tip".into());
             }
-            if !fallback.contains("Err(_) => scan.next_block") {
+            if !fallback.contains("Err(_) => None") {
                 bad.push("an executed-head error advances the position".into());
+            }
+            // DGX probe A: eth_syncing `false` is not evidence.
+            if !fallback.contains("Ok(None) | Err(_) => None") {
+                bad.push("eth_syncing false is taken as evidence".into());
             }
         }
     }
@@ -1443,6 +1465,7 @@ fn tripwire_catches_a_fixed_depth_position() {
     assert!(bad.iter().any(|b| b.contains("fixed depth")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("reorg margin")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("error advances")), "{bad:?}");
+    assert!(bad.iter().any(|b| b.contains("syncing false")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("not capped at the executed head")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("read twice")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("by number")), "{bad:?}");

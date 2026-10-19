@@ -4538,8 +4538,8 @@ export class Store {
 
   private async readPendingWithdrawals(): Promise<void> {
     try {
-      const list = await bridge.wallet.pendingWithdrawals();
-      this.setState({ pendingWithdrawals: list, pendingWithdrawalsError: null });
+      const read = await bridge.wallet.pendingWithdrawals();
+      this.setState({ pendingWithdrawals: read.withdrawals, pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: !read.confirmed });
     } catch (err) {
       // C1-W: a failed eth_getLogs window (or an unfinished first scan) is shown as "—" plus the
       // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read

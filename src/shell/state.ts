@@ -412,6 +412,9 @@ export interface AppState {
    * runs. null = the list is a complete read. Never shown as an empty queue. Not persisted.
    */
   pendingWithdrawalsError: string | null;
+  /** C1-W — the last read gave no evidence of how far the node executed: the rows shown are real,
+   * but withdrawals in blocks the node has not served yet may be missing. Not persisted. */
+  pendingWithdrawalsUnconfirmed: boolean;
   hasGrant: boolean;
   hasSbt: boolean;
   earnVal: number;
@@ -780,6 +783,7 @@ export function freshState(pid: string): AppState {
     bondedStake: 0,
     pendingWithdrawals: [],
     pendingWithdrawalsError: "not read yet",
+    pendingWithdrawalsUnconfirmed: false,
     hasGrant: false,
     hasSbt: false,
     earnVal: 0,

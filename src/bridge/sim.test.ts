@@ -88,10 +88,11 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     await expect(bridge.signing.broadcast(send.id, false)).rejects.toThrow(/desktop|web shim|no key/i);
   });
 
-  it("wallet.pendingWithdrawals returns an honest empty queue in sim (no chain)", async () => {
+  it("wallet.pendingWithdrawals returns no rows and an unconfirmed read in sim (no chain)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);
-    expect(await bridge.wallet.pendingWithdrawals()).toEqual([]);
+    // C1-W: nothing was read, so it is not "none".
+    expect(await bridge.wallet.pendingWithdrawals()).toEqual({ withdrawals: [], confirmed: false });
   });
 
   // No custody vault/key exists in web-dev, so ensureReady provisions nothing: it
