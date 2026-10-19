@@ -76,16 +76,26 @@ export function fmtBlocksDuration(blocks: number, blockTimeMs: number | null): s
   return `${b} (${fmtDuration(blocks * blockTimeMs)})`;
 }
 
-/** Contract §1 "Synced": `eth_syncing` = false AND local height within 5 blocks of the public head. */
-export function isNetworkSynced(st: ActivationStatusView | null): boolean | null {
-  if (!st || st.localSyncing == null || st.localBlock == null || st.headBlock == null) return null;
-  if (st.localSyncing) return false;
-  return st.headBlock - st.localBlock <= SYNC_MARGIN_BLOCKS;
+/**
+ * The ONE place local and public heights are compared: public head minus local height. Positive
+ * means behind, negative means AHEAD (a divergent branch or a stale public RPC). `null` when
+ * either height is unknown. Every sync decision goes through this (tripwire in the tests).
+ */
+export function syncGap(st: ActivationStatusView): number | null {
+  if (st.localBlock == null || st.headBlock == null) return null;
+  return st.headBlock - st.localBlock;
 }
 
-function blocksBehind(st: ActivationStatusView): number | null {
-  if (st.localBlock == null || st.headBlock == null) return null;
-  return Math.max(0, st.headBlock - st.localBlock);
+/**
+ * Contract §1 "Synced": `eth_syncing` = false AND local height within 5 blocks of the public
+ * head, in EITHER direction. A local node ahead of the head is not Synced.
+ */
+export function isNetworkSynced(st: ActivationStatusView | null): boolean | null {
+  if (!st || st.localSyncing == null) return null;
+  const gap = syncGap(st);
+  if (gap == null) return null;
+  if (st.localSyncing) return false;
+  return Math.abs(syncGap(st) ?? Infinity) <= SYNC_MARGIN_BLOCKS;
 }
 
 /** The step's precondition gate. Opens only when every check is `true`. */
@@ -122,7 +132,7 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
   });
 
   const synced = isNetworkSynced(st);
-  const behind = st ? blocksBehind(st) : null;
+  const gap = st ? syncGap(st) : null;
   checks.push({
     key: "synced",
     label: "Node",
@@ -131,7 +141,7 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
       synced === true
         ? "Synced"
         : synced === false
-          ? `Node not Synced · ${behind == null ? "—" : fmtInt(behind)} blocks behind (needs to be within ${SYNC_MARGIN_BLOCKS} of the network head)`
+          ? `Node not Synced · ${gap == null ? "—" : gap < 0 ? `${fmtInt(-gap)} blocks ahead of the network head (a different branch or a stale public RPC)` : `${fmtInt(gap)} blocks behind`} (needs to be within ${SYNC_MARGIN_BLOCKS} of the network head)`
           : "— not read yet (the local node is not answering)",
   });
 
