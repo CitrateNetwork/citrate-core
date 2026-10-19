@@ -91,6 +91,19 @@ describe("chat route: pure routing per value", () => {
   });
 });
 
+// STD (Codex P2 on #372 at 33410a0): local_only never falls back to the demo agent.
+describe("chat route: local only never uses the demo agent", () => {
+  it("tripwire: under local_only every non-ready state holds the message and offers nothing remote", () => {
+    for (const remote of [[], gw]) {
+      for (const st of STATES) {
+        if (st === "ready") continue;
+        expect(pickChatProviderKind(remote, "gateway", "tauri", st, "local_only")).toBe("ask");
+        expect(routeAskOptions(st, "local_only", remote.length > 0).gateway).toBe(false);
+      }
+    }
+  });
+});
+
 describe("chat route: the store", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -152,6 +165,25 @@ describe("chat route: the store", () => {
     expect(inferLocalMock).toHaveBeenCalledTimes(1);
     expect(inferToolsMock).not.toHaveBeenCalled();
   });
+
+  for (const inference of ["demo", "downloading", "no-model"]) {
+    it(`local_only, no key, core reports "${inference}": not sent with the local-only message; no demo reply, no tool run`, async () => {
+      route.chatRoute = "local_only";
+      route.inference = inference;
+      route.gatewayConfigured = false;
+      const store = await freshStore();
+      expect(store.provider?.kind).not.toBe("demo");
+      void store.sendChat("what is my balance?");
+      await until(() => store.state.chatStatus === "ready" && agentReplies(store).length === 1);
+      const replies = agentReplies(store);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].error).toContain("Local only");
+      expect(replies[0].text).toBe("");
+      expect(store.state.chatRouteHold).toBeNull();
+      expect(inferToolsMock).not.toHaveBeenCalled();
+      expect(inferLocalMock).not.toHaveBeenCalled();
+    });
+  }
 
   it("setChatRoute stores the choice through chat_route_set and re-routes at once", async () => {
     const store = await freshStore();

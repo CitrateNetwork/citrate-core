@@ -217,3 +217,83 @@ fn the_remote_chat_commands_check_the_route() {
         "model_inference_state applies the route"
     );
 }
+
+// ---------------------------------------------------------------------------
+// STD (Codex P2 on #372 at 33410a0): an existing file must name its route, and local_only never
+// falls back to the demo agent or a download-meanwhile route.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_existing_file_without_a_route_fails_closed() {
+    // Adversarial / damaged files that parse as JSON but carry no route. Only an ABSENT file
+    // gets the ask_first default; anything present must say which route it is.
+    for (i, text) in [
+        "{}",
+        r#"{"changedAtMs":42}"#,
+        r#"{"route":null}"#,
+        r#"{"route":"","changedAtMs":1}"#,
+        r#"{"route":"gateway"}"#,
+        "[]",
+        "null",
+        "",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let d = tmp(&format!("missing-route-{i}"));
+        std::fs::write(d.join(ROUTE_FILE), text).expect("write");
+        assert!(load(&d).is_err(), "{text:?} must not load");
+        assert_eq!(effective(&d), ChatRoute::LocalOnly, "{text:?} fails closed");
+        let st = status(&d);
+        assert_eq!(st.route, ChatRoute::LocalOnly, "{text:?}");
+        assert!(st.load_error.is_some(), "{text:?} reports why");
+        assert!(
+            remote_chat_allowed(&d).is_err(),
+            "{text:?} refuses remote chat"
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+    // A complete file still loads (the timestamp alone is optional).
+    let d = tmp("route-only");
+    std::fs::write(d.join(ROUTE_FILE), r#"{"route":"ask_first"}"#).expect("write");
+    assert_eq!(load(&d).expect("load").route, ChatRoute::AskFirst);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn local_only_with_no_local_model_and_no_key_is_local_only_not_demo() {
+    assert_eq!(
+        select_route(inputs(false, false, false, false), ChatRoute::LocalOnly),
+        InferenceState::LocalOnly
+    );
+    assert_eq!(
+        select_route(inputs(false, false, true, false), ChatRoute::LocalOnly),
+        InferenceState::LocalOnly,
+        "a download in flight is not a usable local model"
+    );
+}
+
+/// Tripwire: every input combination under local_only yields only a local state. A new
+/// InferenceState that is a remote or demo route must be added to this list on purpose.
+#[test]
+fn tripwire_local_only_never_yields_a_demo_or_remote_state() {
+    for ready in [false, true] {
+        for healthy in [false, true] {
+            for downloading in [false, true] {
+                for gw in [false, true] {
+                    let s = select_route(
+                        inputs(ready, healthy, downloading, gw),
+                        ChatRoute::LocalOnly,
+                    );
+                    assert!(
+                        matches!(
+                            s,
+                            InferenceState::Ready | InferenceState::LocalOnlyStopped | InferenceState::LocalOnly
+                        ),
+                        "local_only with ready={ready} healthy={healthy} downloading={downloading} gateway={gw} gave {s:?}"
+                    );
+                }
+            }
+        }
+    }
+}
