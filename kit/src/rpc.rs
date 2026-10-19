@@ -350,6 +350,11 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_hex_quantity(n, "block.number").map(Some)
     }
 
+    /// STD red stub (C1-W): old behaviour, never asked.
+    pub fn is_executed(&self, _hash: &str) -> Result<Option<(bool, Option<u64>)>, RpcError> {
+        Ok(None)
+    }
+
     /// `eth_syncing` → the node's APPLIED (executed) tip when it reports that it is behind
     /// (`{currentBlock, …}`), or `None` when it answers `false` (not behind) (C1-W).
     pub fn syncing(&self) -> Result<Option<u64>, RpcError> {

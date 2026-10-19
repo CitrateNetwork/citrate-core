@@ -134,6 +134,8 @@ type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 export const PENDING_SCAN_RETRY_MS = 2_000;
 /** C1-W — how soon a read the node answered "still indexing" (-32002) is tried again. */
 export const PENDING_INDEXING_RETRY_MS = 10_000;
+/** STD red stub (C1-W): not used by the current behaviour. */
+export const PENDING_CATCHUP_RETRY_MS = 30_000;
 
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;

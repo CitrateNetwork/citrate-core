@@ -415,6 +415,8 @@ export interface AppState {
   /** C1-W — the last read gave no evidence of how far the node executed: the rows shown are real,
    * but withdrawals in blocks the node has not served yet may be missing. Not persisted. */
   pendingWithdrawalsUnconfirmed: boolean;
+  /** STD red stub (C1-W): never set by the current behaviour. */
+  pendingWithdrawalsNote?: string | null;
   hasGrant: boolean;
   hasSbt: boolean;
   earnVal: number;

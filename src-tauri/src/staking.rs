@@ -649,6 +649,8 @@ pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
             .collect(),
         claimed,
         last_read_confirmed: false,
+        last_read_complete: false,
+        last_read_note: None,
     }
 }
 
@@ -702,6 +704,11 @@ pub struct WithdrawalScan {
     /// can't confirm rather than showing an empty queue.
     #[serde(skip)]
     pub last_read_confirmed: bool,
+    /// STD red stubs: never set by the current behaviour.
+    #[serde(skip)]
+    pub last_read_complete: bool,
+    #[serde(skip)]
+    pub last_read_note: Option<String>,
 }
 
 /// [`read_pending_withdrawals`], continuing `scan`. `WithdrawalRequested` logs are read in windows

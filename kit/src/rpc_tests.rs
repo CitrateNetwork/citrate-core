@@ -390,3 +390,25 @@ fn block_number_by_hash() {
     assert_eq!(sent[0]["method"], "eth_getBlockByHash");
     assert_eq!(sent[0]["params"][0], json!(h));
 }
+
+// chain#337 citrate_isExecuted(hash) -> {executed, number|null}. -32601 = an older node (None);
+// -32603 (no tip), -32602 (malformed hash) and a malformed result are errors.
+#[test]
+fn is_executed_answers() {
+    let h = format!("0x{}", "ab".repeat(32));
+    let yes = json!({ "jsonrpc": "2.0", "id": 1, "result": { "executed": true, "number": "0x1770" } });
+    let no = json!({ "jsonrpc": "2.0", "id": 2, "result": { "executed": false, "number": null } });
+    let absent = json!({ "jsonrpc": "2.0", "id": 3, "error": { "code": -32601, "message": "Method not found" } });
+    let no_tip = json!({ "jsonrpc": "2.0", "id": 4, "error": { "code": -32603, "message": "no applied tip" } });
+    let bad_hash = json!({ "jsonrpc": "2.0", "id": 5, "error": { "code": -32602, "message": "malformed hash" } });
+    let malformed = json!({ "jsonrpc": "2.0", "id": 6, "result": { "executed": "yes" } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![yes, no, absent, no_tip, bad_hash, malformed]));
+    assert_eq!(rpc.is_executed(&h), Ok(Some((true, Some(6000)))));
+    assert_eq!(rpc.is_executed(&h), Ok(Some((false, None))));
+    assert_eq!(rpc.is_executed(&h), Ok(None));
+    assert!(rpc.is_executed(&h).is_err(), "-32603");
+    assert!(rpc.is_executed(&h).is_err(), "-32602");
+    assert!(rpc.is_executed(&h).is_err(), "malformed");
+    assert_eq!(rpc.transport().requests()[0]["method"], "citrate_isExecuted");
+    assert_eq!(rpc.transport().requests()[0]["params"][0], json!(h));
+}

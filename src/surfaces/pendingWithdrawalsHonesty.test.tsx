@@ -12,7 +12,7 @@ vi.mock("../bridge/mode", () => ({
 
 import { Wallet } from "./Wallet";
 import { freshState, type AppState } from "../shell/state";
-import { store, type Store } from "../shell/store";
+import { store, PENDING_SCAN_RETRY_MS, PENDING_CATCHUP_RETRY_MS, type Store } from "../shell/store";
 import { bridge } from "../bridge";
 
 const stubStore = {
@@ -115,5 +115,38 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [w], pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: true, height: 6000 })} />);
     expect(html).toContain("2.00 SALT");
     expect(html).toContain("can&#x27;t confirm");
+  });
+
+  // #371 round 5: the Rust read says whether it reached the head ("complete") and, when not
+  // confirmed, why ("note"). An incomplete read is read again soon; a complete but unconfirmed one
+  // (the node is behind, or gives no evidence) is read again later. The note is shown.
+  it("an incomplete read is read again soon, and its found rows are shown", async () => {
+    vi.useFakeTimers();
+    const w = { id: "1", saltWei: "1000000000000000000", requestBlock: 900, claimableAtBlock: 51300, claimable: false };
+    const read = vi
+      .spyOn(bridge.wallet, "pendingWithdrawals")
+      .mockResolvedValueOnce({ withdrawals: [w], confirmed: false, complete: false, note: "reading chain history: blocks 427-12426 of 30000 read" } as never)
+      .mockResolvedValueOnce({ withdrawals: [w], confirmed: true, complete: true, note: null } as never);
+    await store.refreshPendingWithdrawals();
+    expect(store.state.pendingWithdrawals.map((x) => x.id)).toEqual(["1"]);
+    expect(store.state.pendingWithdrawalsNote).toContain("reading chain history");
+    await vi.advanceTimersByTimeAsync(PENDING_SCAN_RETRY_MS + 10);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(store.state.pendingWithdrawalsUnconfirmed).toBe(false);
+  });
+
+  it("a complete but unconfirmed read is read again later and shows why", async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .spyOn(bridge.wallet, "pendingWithdrawals")
+      .mockResolvedValue({ withdrawals: [], confirmed: false, complete: true, note: "the node has served blocks up to 3000 of 5000" } as never);
+    await store.refreshPendingWithdrawals();
+    const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: true, pendingWithdrawalsNote: store.state.pendingWithdrawalsNote })} />);
+    expect(html).toContain("the node has served blocks up to 3000 of 5000");
+    expect(html).not.toContain("No pending withdrawals");
+    await vi.advanceTimersByTimeAsync(PENDING_SCAN_RETRY_MS + 10);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(PENDING_CATCHUP_RETRY_MS);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 });
