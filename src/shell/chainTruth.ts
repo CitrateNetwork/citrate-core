@@ -56,8 +56,18 @@ export interface ProducerSample {
   proposers: string[];
 }
 
-/** The window label every producing figure carries. */
-export const PRODUCER_WINDOW_LABEL = `sampled over the last ${PRODUCER_SAMPLE_BLOCKS} blocks`;
+/** The window label a producing figure carries: the N blocks that actually came back. */
+export function producerWindowLabel(sample: ProducerSample): string {
+  return `sampled over the last ${sample.window} blocks`;
+}
+
+/**
+ * Why a sample cannot back a producing figure: fewer than PRODUCER_SAMPLE_BLOCKS blocks came back
+ * (failed batch entries). null = the sample is complete. A short sample shows "—" plus this reason.
+ */
+export function producerShortfall(sample: ProducerSample): string | null {
+  return sample.window < PRODUCER_SAMPLE_BLOCKS ? `only ${sample.window} of ${PRODUCER_SAMPLE_BLOCKS} blocks came back` : null;
+}
 
 /** Distinct, lower-cased `proposerPubkey`s of a list of blocks, in first-seen order. */
 export function distinctProposers(blocks: unknown[]): string[] {
@@ -71,12 +81,15 @@ export function distinctProposers(blocks: unknown[]): string[] {
   return seen;
 }
 
-export type ProducingWord = "Producing blocks" | `Not seen producing in the last ${typeof PRODUCER_SAMPLE_BLOCKS} blocks`;
+export type ProducingWord = "Producing blocks" | `Not seen producing in the last ${number} blocks`;
 
-/** "Producing blocks" only when this node's key is in the sample (contract §1). null = unknown. */
+/**
+ * "Producing blocks" only when this node's key is in the sample (contract §1). null = unknown,
+ * including a short sample (producerShortfall), which never backs either word.
+ */
 export function producingWord(sample: ProducerSample | null, pubkey: string | null): ProducingWord | null {
-  if (!sample || !pubkey) return null;
-  return sample.proposers.includes(pubkey.toLowerCase()) ? "Producing blocks" : `Not seen producing in the last ${PRODUCER_SAMPLE_BLOCKS} blocks`;
+  if (!sample || !pubkey || producerShortfall(sample)) return null;
+  return sample.proposers.includes(pubkey.toLowerCase()) ? "Producing blocks" : `Not seen producing in the last ${sample.window} blocks`;
 }
 
 interface BlockStamp {

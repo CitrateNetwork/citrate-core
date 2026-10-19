@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { PRODUCER_WINDOW_LABEL, producingWord, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { producerShortfall, producerWindowLabel, producingWord, saltFromWei, validatorWord } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
@@ -124,7 +124,9 @@ export function Node({ store, s }: SurfaceProps) {
     ? "— · not a registered validator"
     : pWord
       ? pWord
-      : s.producersError
+      : s.producers && producerShortfall(s.producers)
+        ? "— · producer sample incomplete: " + producerShortfall(s.producers)
+        : s.producersError
         ? "— · producer sample unavailable: " + s.producersError
         : !s.validatorPubkey
           ? "— · validator key not read yet"
@@ -374,9 +376,9 @@ export function Node({ store, s }: SurfaceProps) {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Producing</span>
-                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title="distinct proposerPubkey in the last 100 blocks · rpc.citrate.ai">
+                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title={"distinct proposerPubkey in the " + (s.producers ? s.producers.window + " blocks sampled" : "sampled blocks") + " · rpc.citrate.ai"}>
                     {producingStr}
-                    {pWord && <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{PRODUCER_WINDOW_LABEL}</span>}
+                    {pWord && s.producers && <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{producerWindowLabel(s.producers)}</span>}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>

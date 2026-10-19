@@ -437,3 +437,76 @@ describe("#348 review — 'Producing blocks' from a sampled proposer set", () =>
     expect(html).toContain("1 producing · sampled over the last 100 blocks");
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Review round 2 on #348 (chain team).
+// ---------------------------------------------------------------------------------------------
+import { producerWindowLabel, producerShortfall } from "../shell/chainTruth";
+
+describe("#348 round 2 — the producer labels state the N actually sampled", () => {
+  const ME = "0x" + "11".repeat(32);
+  it("labels a full sample with its real window", () => {
+    expect(producerWindowLabel({ head: 1, window: 100, proposers: [] })).toBe("sampled over the last 100 blocks");
+    expect(producerShortfall({ head: 1, window: 100, proposers: [] })).toBeNull();
+  });
+  it("a short sample (N < 100) is '—' with a reason, on Node and the Dashboard", () => {
+    const short = { head: 1, window: 37, proposers: [ME] };
+    expect(producerShortfall(short)).toBe("only 37 of 100 blocks came back");
+    expect(producingWord(short, ME)).toBeNull();
+    const node = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: ME, producers: short })} />);
+    expect(node).toContain("— · producer sample incomplete: only 37 of 100 blocks came back");
+    expect(node).not.toContain(">Producing blocks<");
+    expect(node).not.toContain("last 100 blocks");
+    const dash = renderToStaticMarkup(<Dash store={stub} s={member({ producers: short })} />);
+    expect(dash).toContain("producing: — · only 37 of 100 blocks came back");
+    expect(dash).not.toContain("1 producing");
+  });
+});
+
+describe("#348 round 2 — no 'earnings' on ALF or in the handbook", () => {
+  it("ALF.tsx and seed.ts carry no 'earnings' outside comments", () => {
+    for (const f of ["src/surfaces/ALF.tsx", "src/data/seed.ts"]) {
+      const code = readFileSync(f, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .filter((l) => !/^\s*\/\//.test(l))
+        .join("\n")
+        .toLowerCase();
+      expect(code, f).not.toMatch(/\bearnings\b/);
+    }
+  });
+});
+
+describe("#348 round 2 — the claim path is chosen from the same signal as Rust (has_validator)", () => {
+  const grant = (over: Record<string, unknown>) =>
+    ({ bondDeployed: true, hasValidator: true, bondedStakeWei: "0", unlockBlock: null, isUnlocked: false, ...over }) as never;
+  afterEach(() => vi.restoreAllMocks());
+
+  it("an exited validator (registry stake 0, has_validator) with claimable rewards takes the validator path", async () => {
+    store.setState({ bondedStake: 0 });
+    vi.spyOn(store as never, "assertPayoutKyc").mockResolvedValue(true as never);
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({}));
+    const claim = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing", claimableWei: "0" });
+    await store.claimRewards();
+    expect(claim).toHaveBeenCalledWith({ validator: true });
+  });
+
+  it("a bonded stake without has_validator does not take the validator path", async () => {
+    store.setState({ bondedStake: 32_000 });
+    vi.spyOn(store as never, "assertPayoutKyc").mockResolvedValue(true as never);
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ hasValidator: false }));
+    const claim = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing", claimableWei: "0" });
+    await store.claimRewards();
+    expect(claim).toHaveBeenCalledWith({ validator: false });
+    store.setState({ bondedStake: 0 });
+  });
+
+  it("an unreadable grant status stops the claim with a reason instead of guessing", async () => {
+    vi.spyOn(store as never, "assertPayoutKyc").mockResolvedValue(true as never);
+    vi.spyOn(bridge.membership, "grantStatus").mockRejectedValue(new Error("rpc 503"));
+    const claim = vi.spyOn(bridge.agent, "claim");
+    await store.claimRewards();
+    expect(claim).not.toHaveBeenCalled();
+    expect(String(store.getSnapshot().toast)).toContain("rpc 503");
+  });
+});

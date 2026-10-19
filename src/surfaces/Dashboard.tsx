@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
-import { PRODUCER_WINDOW_LABEL } from "../shell/chainTruth";
+import { PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel } from "../shell/chainTruth";
 import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
@@ -68,7 +68,12 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   useEffect(() => {
     void store.refreshProducers();
   }, [store]);
-  const producingSub = s.producers ? s.producers.proposers.length + " producing · " + PRODUCER_WINDOW_LABEL : s.producersError ? "producing: — · sample unavailable" : "producing: — · not sampled yet";
+  const shortfall = s.producers ? producerShortfall(s.producers) : null;
+  const producingSub = s.producers && shortfall
+    ? "producing: — · " + shortfall
+    : s.producers
+      ? s.producers.proposers.length + " producing · " + producerWindowLabel(s.producers)
+      : s.producersError ? "producing: — · sample unavailable" : "producing: — · not sampled yet";
 
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
@@ -106,7 +111,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "direct P2P", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "Direct P2P peers your node is dialed into (bootnodes + sequencer + discovered members) — not the whole network's node count (net_peerCount)", vsize: "21px" },
     // C1-V V1: checkpoint finality is specified but not running on 40204 (UI truth contract §4).
     { label: "Finality", value: "—", sub: "not running yet", color: "var(--tx-3)", tip: "Checkpoint finality is specified but not running on betanet: the finalized tag still returns the genesis block. A confirmation count is a depth, not finality.", vsize: "21px" },
-    { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: (validatorCount != null ? "active · " : "active: reading… · ") + producingSub, color: "var(--tx-1)", tip: "Active: ValidatorRegistry.activeCount(), the active validator set (on-chain, the same from every node). Producing: distinct proposerPubkey " + PRODUCER_WINDOW_LABEL + " on rpc.citrate.ai. Active does not imply producing.", vsize: "21px" },
+    { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: (validatorCount != null ? "active · " : "active: reading… · ") + producingSub, color: "var(--tx-1)", tip: "Active: ValidatorRegistry.activeCount(), the active validator set (on-chain, the same from every node). Producing: distinct proposerPubkey over the last " + PRODUCER_SAMPLE_BLOCKS + " blocks on rpc.citrate.ai. Active does not imply producing.", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     {
       label: "Staked",

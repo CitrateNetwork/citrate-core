@@ -4290,11 +4290,22 @@ export class Store {
   async claimRewards(): Promise<void> {
     // Payout gate: KYC is required to take SALT out (participation is not gated).
     if (!(await this.assertPayoutKyc("Claiming rewards"))) return;
+    // C1-V review round 2: choose the claim path from the SAME signal Rust's user_claim uses
+    // (grant status: bondDeployed && hasValidator, i.e. pubkeyOfStaker(bond) != 0), read now.
+    // Registry stake is NOT that signal: an exited validator has stake 0 and can still hold
+    // claimable validator rewards. If the grant status cannot be read, stop with the reason.
+    let validator: boolean;
+    try {
+      const g = await bridge.membership.grantStatus(this.identity().wallet);
+      validator = g.bondDeployed && g.hasValidator;
+    } catch (err) {
+      this.toast("Claim unavailable — could not read your validator status: " + String((err as Error).message ?? err));
+      return;
+    }
     let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
     try {
-      // C1-V review: a validator's claim pre-checks the same rewardsOf.claimableNow the
-      // "Claimable now" figure shows (the Rust user_claim takes the validator branch then).
-      res = await bridge.agent.claim({ validator: this.state.bondedStake > 0 });
+      // A validator's pre-check reads rewardsOf.claimableNow, the figure "Claimable now" shows.
+      res = await bridge.agent.claim({ validator });
     } catch (err) {
       this.toast("Claim unavailable — " + String((err as Error).message ?? err));
       return;
