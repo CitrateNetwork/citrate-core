@@ -239,3 +239,49 @@ Refinement notes for the formal lane (not changed here; the model lives on #345)
 - **SC3 (SCL-S4):** the permit across generations, quarantine of a worker that never ends,
   INV-16 for probe workers on Stop, the literal-only HTTP adapter and the IPC adapters.
 - Freshness (two intervals) is SPEC-001's starting value; S14 measures it on packaged builds.
+
+### SCL-S3 review round 1 (DGX, changes requested at `56ecf82`)
+
+- **Rebased onto the current #352 head**, `d539d1e`. This picks up `75272cc` (shutdown waits for
+  readers; a quarantine reconciles without a monitor), `21ed683` (load hardening) and the #351
+  round-3 fixes (tokens carry their supervisor instance; a pending Start is joined in every
+  phase). Resolved conflicts:
+  - `Cell`: both sides' fields are kept (`closed`, `closed_readers`, `instance`, plus the SC2
+    readiness, counters and member-start fields).
+  - `start_intent`: keeps #351's "join a pending Start in every phase" ahead of the
+    member/automated split.
+  - The lifecycle unit tests from both sides are all kept.
+  - None of the SC2 tests build a `ControlToken` by hand, so the new `instance` field needed no
+    test change.
+- **A late probe answer no longer counts** (red `13dc35a`, fix `115e7ff`). The monitor collected a
+  finished worker before it checked that worker's deadline, so an answer at 55 ms on a 50 ms
+  interval, first seen in the same poll, was read as a fresh success (Ready at 435 ms). Now:
+  - the worker records its own monotonic finish time;
+  - an answer counts only for the current incarnation, if the monitor had not timed it out, and
+    only if it finished within the interval;
+  - a late answer collected before its timeout was noticed is treated as that timeout;
+  - a worker that was already timed out is inert, so no sample is counted twice.
+  - Fixture: `a_probe_answer_after_its_interval_never_counts`.
+- **Load hardening** (`ab324e4`). The SC2 fixtures that wait for Failed now assert counts with a
+  90 s bound (`SLOW_FAILED`) instead of 3 to 15 s windows. The sustained-credit fixture uses a
+  250 ms interval and waits for each window's credit.
+
+| Measure | #352 head `d539d1e` | This branch `ab324e4` |
+|---|---|---|
+| `cargo test --workspace --locked` | (2511 - 17) | **2511 passed, 0 failed, 20 ignored** |
+| kit `supervisor::tests` Unix / Windows | 41 / 19 | **47 / 25** (`lifecycle-platforms.yml`) |
+| `lifecycle_faults` | 43 | **54** |
+
+**Repeated runs** (18 concurrent copies × 5 rounds, own fresh target dir, no `citrate-lcf-` process
+left after any round):
+
+| Build | Host load average | Result |
+|---|---|---|
+| this branch | 260 to 270 | 88/90. Each failure is in an SC1 fixture: `publication_ticket_released_before_stop_settles_is_in_the_complete_scope` (readers missed the 250 ms stop window) and `start_after_health_failures_with_a_held_reader_waits_for_cleanup` (no pid recorded in 15 s) |
+| `d539d1e` control | 125 to 150 | 90/90 |
+| this branch, run again | 95 to 115 | **90/90** |
+
+At a load average of about 260 the second SC1 fixture can lose its first child before the shell
+records a pid. Its probe answers healthy until then, and with the late-answer rule an answer
+slower than its 50 ms interval now counts as a failed sample. That is the intended rule. If that
+fixture flakes in CI, the fix belongs in the fixture (a longer probe interval), not in the rule.
