@@ -319,6 +319,119 @@ fn pc_fixture_processes_carry_the_suite_prefix() {
 }
 
 // ---------------------------------------------------------------------------
+// SCL-S2 (SC1): acknowledged controls. Bug (a) of 06_BUG_TRIAGE: a repeated Stop respawned the
+// child. These failed on the supervisor at `b521d98` and pass with the SC1 control cell.
+// ---------------------------------------------------------------------------
+
+/// Bug (a): a second Stop on a stopped service does not respawn it (BDD E1, `@bug-a`).
+#[test]
+fn stop_in_off_never_respawns() {
+    let fx = OwnedFixture::new("stop-off");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-stop-off"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let pid = running_pid(&sup, &fx);
+    sup.stop();
+    assert_eq!(sup.status().state, SupervisorState::Off);
+    sup.stop();
+    let samples = sample_over(Duration::from_secs(2), Duration::from_millis(50), || {
+        let st = sup.status();
+        (fx.pidfile_pids().len(), st.state, st.pid)
+    });
+    let respawned: Vec<_> = samples
+        .iter()
+        .filter(|(_, (n, s, p))| *n != 1 || *s != SupervisorState::Off || p.is_some())
+        .collect();
+    drop(sup);
+    let report = fx.assert_clean();
+    assert!(
+        respawned.is_empty(),
+        "a second Stop respawned the child (first pid {pid}): {respawned:?}; cleanup {report:?}"
+    );
+}
+
+/// A Stop while the service sits in Backoff cancels the retry, and a second Stop changes
+/// nothing: no new child over 2 s.
+#[test]
+fn stop_in_backoff_never_respawns() {
+    let fx = OwnedFixture::new("stop-backoff");
+    let mut cfg =
+        SupervisorConfig::new(fx.crash_spec("lcf-stop-backoff", 3), fx.path("crash.jsonl"));
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(600),
+        multiplier: 1,
+        max_delay: Duration::from_millis(600),
+        max_retries: 5,
+    };
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let st = sup.wait_until(|s| matches!(s, SupervisorState::Backoff { .. }), ACQUIRE);
+    assert!(
+        matches!(st.state, SupervisorState::Backoff { .. }),
+        "INCONCLUSIVE: never reached Backoff: {st:?}"
+    );
+    let before = fx.expect_pids(1, ACQUIRE).len();
+    sup.stop();
+    sup.stop();
+    let samples = sample_over(Duration::from_secs(2), Duration::from_millis(50), || {
+        (fx.pidfile_pids().len(), sup.status().state)
+    });
+    drop(sup);
+    fx.assert_clean();
+    assert!(
+        samples
+            .iter()
+            .all(|(_, (n, s))| *n == before && *s == SupervisorState::Off),
+        "no retry after Stop in Backoff: {samples:?}"
+    );
+}
+
+/// Many Stops racing one teardown (the child ignores SIGTERM, so the teardown lasts the whole
+/// grace) end in one stopped service: no Stop respawns the child afterwards.
+#[test]
+fn concurrent_stops_during_teardown_never_respawn() {
+    let fx = OwnedFixture::new("stop-race");
+    let mut cfg = SupervisorConfig::new(
+        fx.stubborn_leaf_spec("lcf-stop-race"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.stop_grace = Duration::from_millis(400);
+    let sup = std::sync::Arc::new(
+        Supervisor::start(cfg)
+            .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}")),
+    );
+    let pid = running_pid(&sup, &fx);
+    let stoppers: Vec<_> = (0..8)
+        .map(|_| {
+            let s = sup.clone();
+            std::thread::spawn(move || s.stop())
+        })
+        .collect();
+    for t in stoppers {
+        let _ = t.join();
+    }
+    assert!(
+        !pid_alive(pid),
+        "the child is gone after every Stop returned"
+    );
+    let samples = sample_over(Duration::from_secs(2), Duration::from_millis(50), || {
+        let st = sup.status();
+        (fx.pidfile_pids().len(), st.state, st.pid)
+    });
+    drop(sup);
+    let report = fx.assert_clean();
+    let respawned: Vec<_> = samples
+        .iter()
+        .filter(|(_, (n, s, p))| *n != 1 || *s != SupervisorState::Off || p.is_some())
+        .collect();
+    assert!(
+        respawned.is_empty(),
+        "a queued Stop respawned the child: {respawned:?}; cleanup {report:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Suite manifest
 // ---------------------------------------------------------------------------
 

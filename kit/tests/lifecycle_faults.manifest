@@ -16,4 +16,7 @@ pc_single_stop_ends_the_child_and_stays_off | positive-control | SCL-S1.3 | one 
 pc_crash_respawns_a_distinct_incarnation | positive-control | SCL-S1.3 | an external kill is a crash and yields one distinct new incarnation
 pc_crash_loop_reaches_failed_after_the_retry_budget | positive-control | SCL-S1.3 | a crash loop runs once plus max_retries, then Failed, then nothing
 pc_fixture_processes_carry_the_suite_prefix | harness | SCL-S1.3 | every fixture process is visible to the CI job's pgrep -f citrate-lcf- check
+stop_in_off_never_respawns | regression | SCL-S2.2 | bug (a): a second Stop on a stopped service creates no child over 2 s
+stop_in_backoff_never_respawns | regression | SCL-S2.2 | a Stop in Backoff cancels the retry; a second Stop changes nothing over 2 s
+concurrent_stops_during_teardown_never_respawn | regression | SCL-S2.2 | 8 Stops racing one teardown leave one stopped service, no respawn over 2 s
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures

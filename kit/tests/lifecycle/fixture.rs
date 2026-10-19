@@ -146,6 +146,21 @@ impl OwnedFixture {
         ))
     }
 
+    /// argv for a long-lived leaf that ignores SIGTERM (the ignore survives `exec`), so a stop
+    /// has to wait out its grace and escalate to SIGKILL. Keeps a teardown in progress long
+    /// enough to race controls against it.
+    pub fn stubborn_leaf_args(&self) -> Vec<String> {
+        self.sh_args(&format!(
+            "echo $$ >>\"$1\"; trap '' TERM; exec {} -f \"$2\"",
+            tail_bin().display()
+        ))
+    }
+
+    /// A supervised long-lived leaf that ignores SIGTERM.
+    pub fn stubborn_leaf_spec(&self, name: &str) -> SidecarSpec {
+        SidecarSpec::new(name, sh_bin(), self.stubborn_leaf_args())
+    }
+
     /// A supervised long-lived leaf.
     pub fn leaf_spec(&self, name: &str) -> SidecarSpec {
         SidecarSpec::new(name, sh_bin(), self.leaf_args())
