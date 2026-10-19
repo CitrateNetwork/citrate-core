@@ -1234,3 +1234,14 @@ fn r5_a_not_started_outcome_is_recorded_as_not_started() {
     crate::daemons::with_book_file(&fx.daemons, true, |b| b.finish_run(&id, &run, 0, o, "Not started: Hermes restarted", at + 1)).expect("finish");
     assert_eq!(fx.fx_daemon_book().daemons[0].last_outcome.as_deref(), Some("not_started"));
 }
+
+#[test]
+fn a_sidecar_must_scope_every_runtime_set_including_the_grant_document_ones() {
+    use crate::daemons::sidecar_scopes_host_sets;
+    let all = all_sets();
+    assert!(sidecar_scopes_host_sets(Some(&all)));
+    for missing in ["shell_run", "files", "web_search"] {
+        let less: Vec<String> = all.iter().filter(|s| *s != missing).cloned().collect();
+        assert!(!sidecar_scopes_host_sets(Some(&less)), "a sidecar that cannot scope {missing} is an older one");
+    }
+}
