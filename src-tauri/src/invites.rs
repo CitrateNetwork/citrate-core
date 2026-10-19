@@ -42,6 +42,20 @@ pub struct PendingInvite {
     /// "Copy link" hands out a one-click link. Public; safe to serialize. `default` for pre-S1 records.
     #[serde(default)]
     pub link: String,
+    /// GROW-S2 — the relay rendezvous `lookup` (hex) the daemon confirmed for this invite, empty when
+    /// no rendezvous was opened (an older daemon, a relay without rendezvous, or a pre-S2 invite).
+    /// Public (the relay's own index). Revoke closes it with `rendezvousClose`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lookup: String,
+    /// GROW-S2 — whether the INVITE-S2 `publishInvite` succeeded for this invite (so revoke knows
+    /// whether there is a legacy invite record to revoke). Records from before GROW-S2 were only kept
+    /// when the publish succeeded, so the default is `true`.
+    #[serde(default = "default_true")]
+    pub published: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
@@ -55,6 +69,8 @@ pub struct PendingInviteView {
     pub for_handle: String,
     pub created_at: u64,
     pub link: String,
+    /// GROW-S2 — the rendezvous lookup (matches `InviteView.lookup`), "" when none was opened.
+    pub lookup: String,
 }
 
 impl From<&PendingInvite> for PendingInviteView {
@@ -65,6 +81,7 @@ impl From<&PendingInvite> for PendingInviteView {
             for_handle: i.for_handle.clone(),
             created_at: i.created_at,
             link: i.link.clone(),
+            lookup: i.lookup.clone(),
         }
     }
 }
@@ -105,6 +122,50 @@ fn now_unix_ms() -> u64 {
 /// CONNECT-S1 claims-inbox (both sides client-computed there, so that one need not match the relay).
 pub(crate) fn blake3_token_hash(token: &str) -> String {
     hex::encode(blake3::hash(token.as_bytes()).as_bytes())
+}
+
+/// GROW-S2 (§15 M2) — the outcome of the two publishes at mint: the INVITE-S2 `publishInvite` and
+/// the rendezvous `rendezvousOpen` (same `expires_at`). Fail-closed: no link is handed out when both
+/// fail; one success is enough (a relay without rendezvous still serves the legacy self-admit, and a
+/// rendezvous still works if the legacy publish failed). Returns `(published, lookup)`.
+///
+/// The daemon's `lookup` must equal the one derived here from the token (§3); a different value
+/// means the two sides disagree on the derivation, and that open is treated as failed.
+pub(crate) fn decide_mint(
+    publish: Result<(), String>,
+    open: Result<crate::comms::RendezvousOpened, crate::rendezvous::RvError>,
+    expected_lookup: &str,
+) -> Result<(bool, String), String> {
+    let open = match open {
+        Ok(o) if o.lookup.eq_ignore_ascii_case(expected_lookup) => {
+            Ok(o.lookup.to_ascii_lowercase())
+        }
+        Ok(_) => {
+            Err("the comms daemon registered a different rendezvous for this invite".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    match (publish, open) {
+        (Ok(()), Ok(lookup)) => Ok((true, lookup)),
+        (Ok(()), Err(_)) => Ok((true, String::new())),
+        (Err(_), Ok(lookup)) => Ok((false, lookup)),
+        (Err(p), Err(o)) => Err(format!(
+            "couldn't publish the invite to the relay ({p}; rendezvous: {o})"
+        )),
+    }
+}
+
+/// GROW-S2 (§15 M2) — what revoking an invite must do: close its rendezvous (when one was opened)
+/// and revoke its INVITE-S2 record (when it was published). An invite with no local record is
+/// revoked the pre-S2 way (relay invite only).
+pub(crate) fn revoke_plan(invite: Option<&PendingInvite>) -> (Option<String>, bool) {
+    match invite {
+        Some(i) => (
+            (!i.lookup.is_empty()).then(|| i.lookup.clone()),
+            i.published,
+        ),
+        None => (None, true),
+    }
 }
 
 /// Look up a group's human name from the owner's own group list (best-effort). Used to label the
@@ -173,7 +234,17 @@ pub async fn group_invite_create(
     // INVITE-S2 — publish the token HASH (never the raw token) + expiry so the invitee self-admits.
     let token_hash = blake3_token_hash(&token);
     let expires_at = now_unix_ms().saturating_add(INVITE_TTL_MS);
-    crate::comms::publish_invite(&app, group.clone(), token_hash.clone(), expires_at)?;
+    let publish = crate::comms::publish_invite(&app, group.clone(), token_hash.clone(), expires_at);
+    // GROW-S2 — open the relay rendezvous right after, with the same expiry (§9). The token crosses
+    // to the local daemon only, as hex of its bytes; the daemon sends the relay `lookup` and
+    // `token_hash`, never the token.
+    let open = crate::comms::rendezvous_open(
+        &app,
+        group.clone(),
+        crate::rendezvous::token_ipc_hex(&token),
+        expires_at,
+    );
+    let (published, lookup) = decide_mint(publish, open, &crate::rendezvous::lookup_hex(&token))?;
     // Label the invitee's joined group with the real name when we can read it (best-effort).
     let name_hex = match group_name_of(&app, &group).await {
         Some(n) if !n.is_empty() => hex::encode(n.as_bytes()),
@@ -192,6 +263,8 @@ pub async fn group_invite_create(
         created_at: now_unix(),
         priv_key,
         link: link.clone(),
+        lookup,
+        published,
     });
     save(&app, &invites)?;
     // #73 — the inviter's audit copy (provable intent; the relay tally is authoritative for scoring).
@@ -460,14 +533,159 @@ pub async fn group_invite_revoke(
     group: String,
     token: String,
 ) -> Result<(), String> {
-    crate::comms::revoke_invite(&app, blake3_token_hash(&token))?;
     let mut invites = load(&app);
+    let (close_lookup, revoke_legacy) = revoke_plan(
+        invites
+            .iter()
+            .find(|i| i.group == group && i.token == token),
+    );
+    // GROW-S2 — close the rendezvous first (the daemon persists the close and resends it until the
+    // relay confirms; it also drops its local secrets for it). A daemon without the op never opened
+    // one, so that is not an error.
+    if let Some(lookup) = close_lookup {
+        match crate::comms::rendezvous_close(&app, lookup) {
+            Ok(()) | Err(crate::rendezvous::RvError::DaemonUnsupported) => {}
+            Err(e) => return Err(format!("couldn't revoke the invite: {e}")),
+        }
+    }
+    if revoke_legacy {
+        crate::comms::revoke_invite(&app, blake3_token_hash(&token))?;
+    }
     invites.retain(|i| !(i.group == group && i.token == token));
     save(&app, &invites)
 }
 
 #[cfg(test)]
 mod tests {
+    // ---- GROW-S2 (Join 9, M2) ----------------------------------------------------------------
+    use crate::comms::RendezvousOpened;
+    use crate::rendezvous::RvError;
+
+    const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const LOOKUP: &str = "57e96326581e57d94d5673f8a3c42b21d54aa07ba0cdf62934d73cd947cfdd13";
+
+    fn opened(lookup: &str) -> Result<RendezvousOpened, RvError> {
+        Ok(RendezvousOpened {
+            lookup: lookup.into(),
+            expires_at: 1,
+        })
+    }
+
+    #[test]
+    fn mint_hands_out_the_link_when_both_publishes_succeed() {
+        assert_eq!(crate::rendezvous::lookup_hex(T), LOOKUP);
+        assert_eq!(
+            super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP),
+            Ok((true, LOOKUP.to_string()))
+        );
+    }
+
+    #[test]
+    fn mint_still_hands_out_the_link_when_the_relay_is_relay_unsupported() {
+        for open in [
+            Err(RvError::Daemon("relay_unsupported".into())),
+            Err(RvError::DaemonUnsupported),
+            Err(RvError::Ipc("timeout".into())),
+        ] {
+            assert_eq!(
+                super::decide_mint(Ok(()), open, LOOKUP),
+                Ok((true, String::new()))
+            );
+        }
+    }
+
+    #[test]
+    fn mint_hands_out_the_link_when_only_the_rendezvous_opened() {
+        assert_eq!(
+            super::decide_mint(Err("relay down".into()), opened(LOOKUP), LOOKUP),
+            Ok((false, LOOKUP.to_string()))
+        );
+    }
+
+    #[test]
+    fn mint_fails_closed_when_both_publishes_fail() {
+        let e = super::decide_mint(
+            Err("relay down".into()),
+            Err(RvError::DaemonUnsupported),
+            LOOKUP,
+        )
+        .expect_err("no link when nothing was published");
+        assert!(!e.contains(T), "the error never carries the token");
+        // A relay_unsupported rendezvous plus a failed publish is still nothing redeemable.
+        assert!(super::decide_mint(
+            Err("x".into()),
+            Err(RvError::Daemon("relay_unsupported".into())),
+            LOOKUP
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_daemon_lookup_that_doesnt_match_the_derivation_is_not_recorded() {
+        let other = "00".repeat(32);
+        assert_eq!(
+            super::decide_mint(Ok(()), opened(&other), LOOKUP),
+            Ok((true, String::new()))
+        );
+        assert!(super::decide_mint(Err("x".into()), opened(&other), LOOKUP).is_err());
+        // Case differences are the same lookup.
+        assert_eq!(
+            super::decide_mint(Ok(()), opened(&LOOKUP.to_uppercase()), LOOKUP),
+            Ok((true, LOOKUP.to_string()))
+        );
+    }
+
+    fn invite(lookup: &str, published: bool) -> super::PendingInvite {
+        super::PendingInvite {
+            group: "g".into(),
+            token: T.into(),
+            for_handle: "h".into(),
+            created_at: 1,
+            priv_key: String::new(),
+            link: String::new(),
+            lookup: lookup.into(),
+            published,
+        }
+    }
+
+    #[test]
+    fn revoke_closes_the_rendezvous_and_revokes_the_legacy_invite() {
+        assert_eq!(
+            super::revoke_plan(Some(&invite(LOOKUP, true))),
+            (Some(LOOKUP.to_string()), true)
+        );
+        assert_eq!(
+            super::revoke_plan(Some(&invite(LOOKUP, false))),
+            (Some(LOOKUP.to_string()), false)
+        );
+        assert_eq!(super::revoke_plan(Some(&invite("", true))), (None, true));
+        assert_eq!(super::revoke_plan(None), (None, true));
+    }
+
+    #[test]
+    fn pre_s2_pending_records_load_as_published_without_a_rendezvous() {
+        let old = r#"[{"group":"g","token":"t","forHandle":"h","createdAt":1,"privKey":"aa","link":"l"}]"#;
+        let v: Vec<super::PendingInvite> = serde_json::from_str(old).expect("old file loads");
+        assert!(v[0].published);
+        assert!(v[0].lookup.is_empty());
+        let view = super::PendingInviteView::from(&v[0]);
+        assert_eq!(view.lookup, "");
+    }
+
+    #[test]
+    fn mint_opens_the_rendezvous_with_the_same_expiry_and_hex_token() {
+        let src = include_str!("invites.rs");
+        let body = &src[src.find("pub async fn group_invite_create").expect("fn")..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        let publish = body
+            .find("publish_invite(&app, group.clone(), token_hash.clone(), expires_at)")
+            .expect("publish");
+        let open = body.find("rendezvous_open(").expect("open");
+        assert!(publish < open, "rendezvousOpen right after publishInvite");
+        assert!(body.contains("crate::rendezvous::token_ipc_hex(&token),\n        expires_at,"));
+        assert!(body.contains("decide_mint(publish, open,"));
+    }
+
     // Pure helper: the invite link format the invitee's app parses.
     #[test]
     fn invite_link_shape() {
@@ -528,6 +746,8 @@ mod tests {
             created_at: 1000,
             priv_key: "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+            lookup: String::new(),
+            published: true,
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
         assert_eq!(views.len(), 1);
@@ -561,6 +781,8 @@ mod tests {
             created_at: 1000,
             priv_key: "deadbeef".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+            lookup: String::new(),
+            published: true,
         }];
         super::write_pending(&path, &invites).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
