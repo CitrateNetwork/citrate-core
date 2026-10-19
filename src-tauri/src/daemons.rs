@@ -1290,6 +1290,13 @@ impl DaemonBook {
             _ => return Err("that run is not in flight (it finished, or was released)".into()),
         };
         r.running = None;
+        // A run that never started ran no inference: it is never charged (the runner sends 0;
+        // core does not rely on that).
+        let tokens_used = if outcome == RunOutcome::NotStarted {
+            0
+        } else {
+            tokens_used
+        };
         r.tokens_today = r.tokens_today.saturating_add(u64::from(tokens_used));
         r.last_outcome = Some(outcome.label().into());
         r.last_token_source = Some(source.label().into());

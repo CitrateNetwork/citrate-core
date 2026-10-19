@@ -143,7 +143,9 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
     } finally {
       clearTimeout(timer);
     }
-    const tokens = meter.tokens();
+    // A run that never started (core refused its session open) ran no inference: it charges
+    // nothing, whatever the meter estimated before the open.
+    const tokens = outcome === "not_started" ? 0 : meter.tokens();
     const tokenSource = meter.source();
     const endedMs = deps.now();
     let recorded = false;
