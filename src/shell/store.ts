@@ -1459,15 +1459,13 @@ export class Store {
       let grantPatch: Partial<AppState> | null = null;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
-      // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
-      // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
-      // own read (whatever the node is doing) until it lands.
-      const needActivation = this.state.hasGrant && this.state.memberBond === null;
-      // Codex on #366: a deployed bond whose key (or activated flag) did not read is UNREAD, not
-      // final. Read the grant status again on the next due poll until the key lands.
+      // Codex on #366: the bond state is observed, never persisted, so after a restart it is null
+      // while hasGrant / bondedStake come back from disk and close the other gates. A null bond
+      // state, or a deployed bond whose key (or activated flag) did not read, is UNREAD: read the
+      // grant status on the next due poll until it lands.
       const mb = this.state.memberBond;
-      const needBondKey = !!mb && mb.deployed && mb.activated !== false && !mb.pubkey;
-      if ((needBond || needGrant || needActivation || needBondKey) && dueForBondRead) {
+      const needBondKey = !mb || (mb.deployed && mb.activated !== false && !mb.pubkey);
+      if ((needBond || needGrant || needBondKey) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
