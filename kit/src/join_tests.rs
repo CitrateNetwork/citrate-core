@@ -94,6 +94,8 @@ struct ResolveSpec {
     exp: u64,
     exp_iso: String,
     env: Option<String>,
+    /// The signed `envVersion` (direct only).
+    env_version: u32,
     kid: String,
     seed: &'static str,
 }
@@ -110,6 +112,7 @@ impl ResolveSpec {
             exp: FAR_EXP,
             exp_iso: FAR_EXP_ISO.into(),
             env: Some(env.into()),
+            env_version: 1,
             kid: "join-1".into(),
             seed: SEED_CURRENT,
         }
@@ -137,10 +140,10 @@ impl ResolveSpec {
         });
         if let Some(env) = &self.env {
             let h = envelope_hash(env).expect("hash");
-            claims["envVersion"] = 1.into();
+            claims["envVersion"] = self.env_version.into();
             claims["envHash"] = h.clone().into();
             body["env"] = env.clone().into();
-            body["envVersion"] = 1.into();
+            body["envVersion"] = self.env_version.into();
             body["envHash"] = h.into();
         }
         (claims, body)
@@ -773,6 +776,8 @@ struct StubState {
     jwks_unpinned_only: bool,
     /// Answer every request (except the redirect target) with a 307 to `<base>/followed`.
     redirect_everything: bool,
+    /// Sign resolves with this `envVersion` instead of 1 (a future envelope format).
+    sign_env_version: Option<u32>,
 }
 
 struct StubJoinService {
@@ -1015,6 +1020,7 @@ fn handle(
                         exp: FAR_EXP,
                         exp_iso: FAR_EXP_ISO.into(),
                         env: r.env.clone(),
+                        env_version: s.sign_env_version.unwrap_or(1),
                         kid: "join-1".into(),
                         seed: SEED_CURRENT,
                     };
@@ -1458,4 +1464,68 @@ fn e2e_join_http_never_follows_a_redirect() {
         s.requests.iter().all(|r| !r.contains("/api/join/followed")),
         "a redirect was followed"
     );
+}
+
+#[test]
+fn verify_carries_the_signed_env_version() {
+    let (_k, env) = sealed_env(CODE);
+    let v1 = verify_resolve(
+        &ResolveSpec::direct(CODE, &env).body(),
+        CODE,
+        &served_jwks_typed(),
+        JOIN_PINNED_KIDS,
+    )
+    .expect("verify v1");
+    assert_eq!(v1.env_version, Some(1));
+    // A future version is still a valid SIGNATURE; whether it can be opened is a separate check.
+    let v2 = ResolveSpec {
+        env_version: 2,
+        ..ResolveSpec::direct(CODE, &env)
+    };
+    let got = verify_resolve(&v2.body(), CODE, &served_jwks_typed(), JOIN_PINNED_KIDS)
+        .expect("verify v2");
+    assert_eq!(got.env_version, Some(2));
+    let r = verify_resolve(
+        &ResolveSpec::referral(CODE).body(),
+        CODE,
+        &served_jwks_typed(),
+        JOIN_PINNED_KIDS,
+    )
+    .expect("verify referral");
+    assert_eq!(r.env_version, None);
+}
+
+#[test]
+fn open_versioned_binds_the_version_and_refuses_unknown_ones() {
+    let (key, env) = sealed_env(CODE);
+    assert_eq!(
+        open_versioned(&key, JoinKind::Direct, CODE, &env, 1).expect("v1"),
+        sample_invite()
+    );
+    // A v1 envelope is never opened under another version (the version is in the AAD), and an
+    // unknown version is refused before any decryption is attempted.
+    for v in [0, 2, 3, u32::MAX] {
+        assert_eq!(
+            open_versioned(&key, JoinKind::Direct, CODE, &env, v),
+            Err(JoinError::Envelope),
+            "v{v}"
+        );
+    }
+    assert_eq!(SUPPORTED_ENVELOPE_VERSIONS, &[1]);
+}
+
+#[test]
+fn e2e_a_signed_env_version_2_is_refused_not_opened_as_v1() {
+    let stub = StubJoinService::start();
+    let c = stub.client();
+    let m = c
+        .mint(&FixedBearer(BEARER), &direct_req(), Some(&sample_invite()))
+        .expect("mint");
+    // The service signs envVersion 2 over an envelope this app sealed as v1.
+    stub.state().sign_env_version = Some(2);
+    assert_eq!(
+        c.resolve(&m.share_url.expect("url")),
+        Err(JoinError::Envelope)
+    );
+    assert!(c.take_opened(&m.code).is_none(), "nothing may be held");
 }

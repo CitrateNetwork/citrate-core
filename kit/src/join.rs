@@ -523,21 +523,43 @@ fn decode_envelope(env: &str) -> Result<Vec<u8>, JoinError> {
     Ok(bytes)
 }
 
-/// Open an envelope with `K`. Fails (`Envelope`) for a wrong key, a wrong `kind` or `code`, or any
-/// changed byte.
+/// The envelope versions this client can open. A resolve whose SIGNED `envVersion` is not listed
+/// is refused (never opened as another version). Adding a version means adding its derivation here
+/// and in [`open_versioned`].
+pub const SUPPORTED_ENVELOPE_VERSIONS: &[u32] = &[ENVELOPE_VERSION];
+
+/// Open an envelope with `K` as the current version ([`ENVELOPE_VERSION`]). Fails (`Envelope`) for a
+/// wrong key, a wrong `kind` or `code`, or any changed byte. A resolved envelope is opened with
+/// [`open_versioned`] and its signed `envVersion` instead.
 pub fn open(
     key: &LinkKey,
     kind: JoinKind,
     code: &str,
     env: &str,
 ) -> Result<InvitePayload, JoinError> {
+    open_versioned(key, kind, code, env, ENVELOPE_VERSION)
+}
+
+/// Open an envelope under the given `env_version`: the version taken from the verified (signed)
+/// resolve claims, which is also the version bound into the AAD. An unsupported version is refused
+/// (`Envelope`) before any decryption is attempted.
+pub fn open_versioned(
+    key: &LinkKey,
+    kind: JoinKind,
+    code: &str,
+    env: &str,
+    env_version: u32,
+) -> Result<InvitePayload, JoinError> {
+    if !SUPPORTED_ENVELOPE_VERSIONS.contains(&env_version) {
+        return Err(JoinError::Envelope);
+    }
     check_code(code)?;
     let bytes = decode_envelope(env)?;
     let (nonce, ct) = bytes.split_at(NONCE_LEN);
     let aead_key = derive_aead_key(key)?;
     let cipher =
         XChaCha20Poly1305::new_from_slice(&aead_key[..]).map_err(|_| JoinError::Envelope)?;
-    let aad = aad_bytes(kind, code, ENVELOPE_VERSION)?;
+    let aad = aad_bytes(kind, code, env_version)?;
     let plaintext = Zeroizing::new(
         cipher
             .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: &aad })
@@ -643,6 +665,9 @@ pub struct VerifiedInvite {
     pub exp: u64,
     /// The ISO expiry string as sent (consistent with `exp`).
     pub exp_iso: String,
+    /// Direct only: the SIGNED envelope version. Open the envelope with exactly this version
+    /// ([`open_versioned`]); it may be one this client doesn't support.
+    pub env_version: Option<u32>,
 }
 
 /// Verify a resolve response for `expected_code` against the fetched JWKS, accepting a key only
@@ -715,7 +740,9 @@ pub fn verify_resolve(
     match body.kind {
         JoinKind::Direct => {
             let env = body.env.as_deref().ok_or(JoinError::Signature)?;
-            if body.env_version != Some(ENVELOPE_VERSION) {
+            // The version must be present and signed (body == claim is checked above). Whether this
+            // client can open it is decided at open time, not here.
+            if claims.env_version.is_none() {
                 return Err(JoinError::Signature);
             }
             let h = envelope_hash(env).map_err(|_| JoinError::Signature)?;
@@ -738,6 +765,7 @@ pub fn verify_resolve(
         inviter_verified: body.inviter_verified,
         exp: claims.exp,
         exp_iso: body.exp.clone(),
+        env_version: claims.env_version,
     })
 }
 
@@ -1260,7 +1288,9 @@ impl JoinClient {
         if v.kind == JoinKind::Direct {
             match (key, body.env.as_deref()) {
                 (Some(k), Some(env)) => {
-                    let payload = open(k, JoinKind::Direct, code, env)?;
+                    // The signed version, which is also the version bound in the AAD.
+                    let ver = v.env_version.ok_or(JoinError::Signature)?;
+                    let payload = open_versioned(k, JoinKind::Direct, code, env, ver)?;
                     self.opened().insert(
                         code.to_string(),
                         Opened {
