@@ -72,7 +72,15 @@ const BANNED = /\bfinal(ized)?\b|validating|earning|projected|estimate|per day|\
 
 // ---------------------------------------------------------------------------------------------
 describe("Node › Status", () => {
-  const live = { publicHead: 510_032, compat: "compatible" as const, mode: "tauri" as const, statusError: null };
+  const live = {
+    publicHead: 510_032,
+    publicHeadAgeMs: 2_000,
+    publicHeadError: false,
+    statusAgeMs: 1_000,
+    compat: "compatible" as const,
+    mode: "tauri" as const,
+    statusError: null,
+  };
 
   it("one sentence in contract words, with direct peers and the read height", async () => {
     const h = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} />);
@@ -131,13 +139,48 @@ describe("Node › Status", () => {
     expect(h.textContent).not.toContain("23 direct peers");
   });
 
-  it("activation is offered on a synced node, without an amount or earning copy", async () => {
+  it("activation is offered only for registry status None and a bond not activated, without an amount", async () => {
     const store = stubStore();
-    const h = await mount(<NodeStatusView store={store} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} />);
+    const h = await mount(<NodeStatusView store={store} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} registryStatus={0} bondActivated={false} />);
     const b = button(h, /Activate validator/);
     expect(b?.textContent).not.toMatch(/32,000|SALT/);
     await click(b);
     expect(store.calls).toContain("activateValidator");
+  });
+
+  it("no Activate while the registry status or the bond state is unread: '—' and the reason", async () => {
+    const h = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} />);
+    expect(button(h, /Activate validator/)).toBeUndefined();
+    expect(h.querySelector('[data-testid="activate-gate"]')?.textContent).toMatch(/^—/);
+    expect(h.querySelector('[data-testid="activate-gate"]')?.textContent).toMatch(/validatorInfo/);
+  });
+
+  it("Exiting, Slashed or an activated bond: no Activate, and the word is shown", async () => {
+    for (const [status, activated, word] of [
+      [2, false, "Exiting"],
+      [3, false, "Slashed"],
+      [0, true, "—"],
+    ] as const) {
+      const h = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} registryStatus={status} bondActivated={activated} />);
+      expect(button(h, /Activate validator/), word).toBeUndefined();
+      expect(h.querySelector('[data-testid="activate-gate"]')?.textContent?.startsWith(word), word).toBe(true);
+      act(() => root?.unmount());
+    }
+  });
+
+  it("an unreadable network head is Sync unknown, with the local height labelled this node", async () => {
+    const h = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} publicHead={null} publicHeadAgeMs={null} />);
+    expect(h.querySelector('[data-testid="node-sentence"]')?.textContent).toBe("Sync unknown · network head unavailable");
+    expect(h.textContent).toContain("510,030 (this node)");
+    const stale = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} publicHeadAgeMs={90_000} />);
+    expect(stale.querySelector('[data-testid="node-sentence"]')?.textContent).toBe("Sync unknown · network head unavailable");
+  });
+
+  it("stale local reads are unknown, not current: an old node_status answer shows the error state", async () => {
+    const h = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} statusAgeMs={61_000} />);
+    expect(h.querySelector('[data-state="error"]')?.textContent).toMatch(/61 s ago/);
+    expect(h.querySelector('[data-testid="node-sentence"]')).toBeNull();
+    expect(h.textContent).not.toContain("510,030");
   });
 });
 
@@ -288,9 +331,21 @@ describe("Node › Rewards", () => {
     expect(h.textContent).toMatch(/also reads 0 for a key that isn't registered/);
   });
 
+  it("a malformed or empty read is unknown, never 0", async () => {
+    for (const totalWei of ["", "12x"]) {
+      const h = await mount(<NodeRewards mode="tauri" read={async () => ({ totalWei, claimableWei: "0", proposerPubkey: "0x" + "ab".repeat(32) })} />);
+      expect(h.querySelector('[data-state="error"]'), totalWei).not.toBeNull();
+      expect(h.querySelector('[data-reward="total"]'), totalWei).toBeNull();
+      expect(h.textContent).not.toContain("0.00 SALT");
+      act(() => root?.unmount());
+    }
+  });
+
   it("unavailable without a proposer key, error with '—' otherwise", async () => {
-    const noKey = await mount(<NodeRewards mode="tauri" read={async () => Promise.reject("proposer.key not found: arm the producer first")} />);
+    const noKey = await mount(<NodeRewards mode="tauri" read={async () => Promise.reject("proposer key not minted yet")} />);
     expect(noKey.querySelector('[data-state="unavailable"]')?.textContent).toContain("this node's key");
+    expect(noKey.querySelector('[data-state="unavailable"]')?.textContent).toContain("armed block production");
+    expect(noKey.querySelector('[data-state="unavailable"]')?.textContent).not.toContain("Activate validator");
     act(() => root?.unmount());
     const err = await mount(<NodeRewards mode="tauri" read={async () => Promise.reject("eth_call timed out")} />);
     expect(err.querySelector('[data-state="error"]')?.textContent).toContain("eth_call timed out");
@@ -321,6 +376,8 @@ describe("Node › Advanced", () => {
     const ok = await mount(<NodeAdvancedView s={at()} mode="tauri" compat="compatible" liveGenesis={GEN} reads={reads()} />);
     expect(ok.querySelector('[data-testid="genesis-word"]')?.textContent).toBe("matches this build");
     expect(ok.textContent).toContain("Update required at genesis");
+    // The chain id is this build's configuration, not a read.
+    expect(ok.textContent).toContain("this build's chain config (expected)");
     act(() => root?.unmount());
     const bad = await mount(<NodeAdvancedView s={at()} mode="tauri" compat="retired" liveGenesis={"0x" + "11".repeat(32)} reads={reads()} />);
     expect(bad.querySelector('[data-testid="genesis-word"]')?.textContent).toBe("Update required");
