@@ -1278,3 +1278,103 @@ fn storage_docs_do_not_overclaim_manifest_integrity_or_encryption() {
     assert!(flat.contains("not signed"), "the doc says the manifest is not signed");
     assert!(!module.contains("docs/storage/K4_STORAGE.md"), "N3: stale doc path");
 }
+
+// ---------------------------------------------------------------- N2: interrupted-swap rollback
+
+/// A data root shaped like a restore killed between its two renames: no `memory/`, the previous
+/// store kept as `memory.before-restore-<stamp>`.
+fn interrupted_root(tag: &str, kept: &[(&str, &[u8])]) -> PathBuf {
+    let root = tmp_dir(tag);
+    for (name, marker) in kept {
+        let d = root.join(name);
+        std::fs::create_dir_all(d.join("store.bge.memdag")).unwrap();
+        std::fs::write(d.join("store.bge.memdag/CURRENT"), marker).unwrap();
+    }
+    root
+}
+
+#[test]
+fn rollback_brings_the_newest_before_restore_folder_back() {
+    let root = interrupted_root(
+        "rollback-newest",
+        &[
+            ("memory.before-restore-20261019-120000", b"old"),
+            ("memory.before-restore-20261019-130000", b"newer"),
+            ("memory.before-restore-20261019-130000-2", b"newer-2"),
+            // "-10" is newer than "-2" (numeric suffix, not lexicographic).
+            ("memory.before-restore-20261019-130000-10", b"newest"),
+        ],
+    );
+    let staging = root.join("memory.restore-staging-20261019-130000");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("partial"), b"staged").unwrap();
+    let mem = root.join("memory");
+    let from = recover_interrupted_restore(&mem).expect("rollback");
+    assert_eq!(from, Some(root.join("memory.before-restore-20261019-130000-10")));
+    assert_eq!(std::fs::read(mem.join("store.bge.memdag/CURRENT")).unwrap(), b"newest");
+    // The other kept folders and the staging folder are left exactly as they were.
+    for (name, marker) in [
+        ("memory.before-restore-20261019-120000", &b"old"[..]),
+        ("memory.before-restore-20261019-130000", b"newer"),
+        ("memory.before-restore-20261019-130000-2", b"newer-2"),
+    ] {
+        assert_eq!(std::fs::read(root.join(name).join("store.bge.memdag/CURRENT")).unwrap(), marker);
+    }
+    assert!(!root.join("memory.before-restore-20261019-130000-10").exists());
+    assert_eq!(std::fs::read(staging.join("partial")).unwrap(), b"staged");
+}
+
+#[test]
+fn rollback_never_touches_a_present_memory_dir() {
+    let root = interrupted_root("rollback-present", &[("memory.before-restore-20261019-120000", b"old")]);
+    let mem = root.join("memory");
+    std::fs::create_dir_all(&mem).unwrap();
+    std::fs::write(mem.join("live"), b"live").unwrap();
+    assert_eq!(recover_interrupted_restore(&mem).unwrap(), None);
+    assert_eq!(std::fs::read(mem.join("live")).unwrap(), b"live");
+    assert!(!mem.join("store.bge.memdag").exists(), "never merged or overwritten");
+    assert!(root.join("memory.before-restore-20261019-120000/store.bge.memdag/CURRENT").exists());
+}
+
+#[test]
+fn rollback_is_a_noop_without_a_before_restore_folder() {
+    let root = tmp_dir("rollback-none");
+    let staging = root.join("memory.restore-staging-20261019-130000");
+    std::fs::create_dir_all(&staging).unwrap();
+    let mem = root.join("memory");
+    assert_eq!(recover_interrupted_restore(&mem).unwrap(), None);
+    assert!(!mem.exists(), "a staging folder alone is never promoted");
+    assert!(staging.exists());
+    // A missing data root (fresh install) is fine too.
+    assert_eq!(recover_interrupted_restore(&root.join("nope/memory")).unwrap(), None);
+}
+
+/// A symlink or a plain file with a before-restore name is never used.
+#[cfg(unix)]
+#[test]
+fn rollback_ignores_a_symlink_or_file_with_a_before_restore_name() {
+    let root = tmp_dir("rollback-symlink");
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.join("memory.before-restore-20261019-150000")).unwrap();
+    std::fs::write(root.join("memory.before-restore-20261019-160000"), b"a file").unwrap();
+    let mem = root.join("memory");
+    assert_eq!(recover_interrupted_restore(&mem).unwrap(), None);
+    assert!(!mem.exists());
+}
+
+/// The rename fails (read-only data root): a clear error, the kept folder intact, no new `memory/`.
+#[cfg(unix)]
+#[test]
+fn rollback_fails_closed_when_the_rename_fails() {
+    let root = interrupted_root("rollback-ro", &[("memory.before-restore-20261019-120000", b"old")]);
+    set_mode(&root, 0o555);
+    let mem = root.join("memory");
+    let r = recover_interrupted_restore(&mem);
+    set_mode(&root, 0o755);
+    let err = r.expect_err("a failed rename is an error");
+    assert!(err.contains("memory.before-restore-20261019-120000"), "{err}");
+    assert!(err.contains("interrupted"), "{err}");
+    assert!(!mem.exists(), "no empty store was created");
+    assert!(root.join("memory.before-restore-20261019-120000/store.bge.memdag/CURRENT").exists());
+}

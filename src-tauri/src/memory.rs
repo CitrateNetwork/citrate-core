@@ -588,7 +588,7 @@ impl MemoryManager {
         crash_record_path: PathBuf,
         transport: Box<dyn MemoryTransport>,
     ) -> Self {
-        MemoryManager {
+        let mgr = MemoryManager {
             keyring,
             bin,
             store_path,
@@ -598,7 +598,24 @@ impl MemoryManager {
             sup: Mutex::new(None),
             model_dir: None,
             learned_ledger: None,
+        };
+        // K4 (N2): roll back an interrupted restore at init. A failure here is reported by
+        // `start`, which runs the same check and refuses (fail closed, no empty store).
+        if let Err(e) = mgr.recover_interrupted_restore() {
+            eprintln!("[memory] {e}");
         }
+        mgr
+    }
+
+    /// K4 (N2): roll back a restore that was interrupted between its two renames (see
+    /// [`crate::storage_backup::recover_interrupted_restore`]). Run at init and before every start.
+    fn recover_interrupted_restore(&self) -> Result<()> {
+        let Some(mem_dir) = self.store_path.parent() else {
+            return Ok(());
+        };
+        crate::storage_backup::recover_interrupted_restore(mem_dir)
+            .map(|_| ())
+            .map_err(MemoryError::Spawn)
     }
 
     /// HUP-S3.4 (fan-out 7): the learned-memory ledger recall and search read to leave out
@@ -742,6 +759,9 @@ impl MemoryManager {
                 "a memory backup or restore is in progress; the memory daemon starts when it finishes".into(),
             ));
         }
+        // K4 (N2): a restore interrupted between its two renames left no live memory dir. Put the
+        // previous store back before anything can create an empty one; fail closed if that fails.
+        self.recover_interrupted_restore()?;
         if !self.bin.exists() {
             return Err(MemoryError::BinaryNotFound(self.bin.display().to_string()));
         }

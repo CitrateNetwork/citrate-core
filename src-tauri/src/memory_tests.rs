@@ -901,3 +901,60 @@ fn memory_start_is_refused_while_a_restore_holds_the_store() {
     mgr.start().expect("starts once the restore is done");
     mgr.stop();
 }
+
+// ---------------------------------------------------------------------------
+// K4 (N2) — an interrupted restore is rolled back at init; start fails closed if it can't be
+// ---------------------------------------------------------------------------
+
+fn manager_at(root: &std::path::Path) -> MemoryManager {
+    let mem = root.join("memory");
+    MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        mem.join("store.bge.memdag"),
+        mem.join("memdag.sock"),
+        mem.join("crash-records.jsonl"),
+        Box::new(StubTransport {
+            recall_text: fixture_recall_text(),
+            search_text: fixture_recall_text(),
+            neighbors_text: fixture_neighbors_text(),
+            error: None,
+        }),
+    )
+}
+
+#[test]
+fn memory_init_rolls_back_an_interrupted_restore() {
+    let root = tmp_dir("n2-init");
+    let kept = root.join("memory.before-restore-20261019-120000");
+    std::fs::create_dir_all(kept.join("store.bge.memdag")).unwrap();
+    std::fs::write(kept.join("store.bge.memdag/CURRENT"), b"previous").unwrap();
+    let _mgr = manager_at(&root);
+    assert_eq!(
+        std::fs::read(root.join("memory/store.bge.memdag/CURRENT")).unwrap(),
+        b"previous",
+        "the previous store is live again"
+    );
+    assert!(!kept.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn memory_start_fails_closed_when_the_rollback_cannot_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tmp_dir("n2-ro");
+    let kept = root.join("memory.before-restore-20261019-120000");
+    std::fs::create_dir_all(kept.join("store.bge.memdag")).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mgr = manager_at(&root);
+    let started = mgr.start();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if started.is_ok() {
+        mgr.stop();
+    }
+    let err = started.expect_err("start refuses");
+    assert!(err.to_string().contains("interrupted"), "{err}");
+    assert_eq!(mgr.status().state, "stopped", "nothing was spawned");
+    assert!(!root.join("memory").exists(), "no empty store was created");
+    assert!(kept.join("store.bge.memdag").exists());
+}

@@ -1590,6 +1590,12 @@ fn swap_in_memory(
     Ok((n, kept))
 }
 
+/// N2: roll back a memory swap interrupted between its two renames (`mem_dir` missing, a
+/// `<base>.before-restore-*` sibling present). STD red-step stub: keeps the old behaviour.
+pub(crate) fn recover_interrupted_restore(_mem_dir: &Path) -> Result<Option<PathBuf>, String> {
+    Ok(None)
+}
+
 /// `parent/name`, or `parent/name-2`, `-3`, … when it exists.
 fn unique_sibling(parent: &Path, name: &str) -> PathBuf {
     let first = parent.join(name);
