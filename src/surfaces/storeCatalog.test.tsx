@@ -319,6 +319,25 @@ describe("removing a started daemon stops its run first", () => {
     expect(order).toEqual(["cancel:d0a", "cancelled:d0a", "remove:daily-brief"]);
   });
 
+  it("a daemon already deleted from the Daemons screen does not block removing its Store entry", async () => {
+    vi.restoreAllMocks();
+    registerDaemonCanceller(async () => {
+      throw new Error("no such daemon");
+    });
+    const remove = vi.spyOn(bridge.store, "remove").mockResolvedValue({ ok: "Daily brief removed" });
+    vi.spyOn(bridge.store, "catalog").mockResolvedValue({
+      state: "no_key", message: null, catalogUrl: "", keyFingerprint: null, sequence: null, expiresAt: null, listings: [],
+    });
+    vi.spyOn(bridge.store, "installed").mockResolvedValue([]);
+    storeSlice.set({
+      installed: [{ listingId: "daily-brief", kind: "daemon", name: "Daily brief", version: "1.0.0", target: "d0a", installedAt: 1, state: "missing" }],
+    });
+    await removeInstall("daily-brief");
+    expect(remove).toHaveBeenCalledWith("daily-brief");
+    expect(storeSlice.get().notice).toBe("Daily brief removed");
+    registerDaemonCanceller(null);
+  });
+
   it("a cancel that fails stops the removal and says why", async () => {
     vi.restoreAllMocks();
     registerDaemonCanceller(async () => {

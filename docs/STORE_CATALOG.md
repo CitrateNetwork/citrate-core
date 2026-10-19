@@ -73,9 +73,13 @@ Verify → stage → review → approve (HIC) → install paused.
 - **Install.** The install record is saved **before** the target is created, so the Store never
   leaves an install it does not track: if the record cannot be saved, nothing is created; if
   the target fails, the record is taken back out; if only the final confirming write fails, the
-  record stays and still tracks the install. Daemons are created paused in one write of the
+  record stays and still tracks the install. A model install the app left between the download's rename
+  and its verify (the app quit in that window) is checked again by its pinned hash on the next
+  read of the installed list: confirmed when it matches, otherwise the file and its record are
+  removed together. Removing a pending model record also removes its unverified file. Daemons are created paused in one write of the
   daemon book; models are downloaded and verified and not selected.
-- **Remove.** One call, no key. A target removed elsewhere counts as removed. For a started
+- **Remove.** One call, no key. A target removed elsewhere counts as removed (a daemon already
+  deleted from the Daemons screen included: there is no run left to stop). For a started
   daemon the app first pauses it, stops its run and any queued claim of it, and waits until
   each has ended and been recorded; core refuses to delete a daemon with a run in flight
   (`daemon_running`) unless that run is past the stale-run release. A run that ends after its

@@ -151,8 +151,12 @@ export async function removeInstall(listingId: string): Promise<void> {
     try {
       await cancelDaemon(rec.target);
     } catch (e) {
-      storeSlice.set({ removing: null, notice: "Could not stop its run, so it was not removed: " + msg(e) });
-      return;
+      // Already deleted (for example from the Daemons screen): nothing is left to stop, so the
+      // Store record is removed as usual. Any other failure stops the removal.
+      if (!/no such daemon/i.test(msg(e))) {
+        storeSlice.set({ removing: null, notice: "Could not stop its run, so it was not removed: " + msg(e) });
+        return;
+      }
     }
   }
   try {
