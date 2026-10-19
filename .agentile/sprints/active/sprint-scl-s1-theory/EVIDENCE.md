@@ -285,3 +285,23 @@ At a load average of about 260 the second SC1 fixture can lose its first child b
 records a pid. Its probe answers healthy until then, and with the late-answer rule an answer
 slower than its 50 ms interval now counts as a failed sample. That is the intended rule. If that
 fixture flakes in CI, the fix belongs in the fixture (a longer probe interval), not in the rule.
+
+### SCL-S3 review round 2 (rebase onto #352 `ccb9ed3`)
+
+- **Rebase.** #352 moved to `ccb9ed3`: `enter_failed` now marks the service Failed and settles
+  the failing Start under one lock, and a new `failed_barrier` test hook was added.
+  - The only conflict was the fault suite's `use` list; both sides' imports are kept.
+  - `supervisor.rs` merged cleanly. SC2's spent-budget path calls the new single-lock
+    `enter_failed`.
+- **Counts:**
+
+  | Measure | Result |
+  |---|---|
+  | `cargo test --workspace --locked` | 2512 passed, 0 failed, 20 ignored |
+  | kit `supervisor::tests` | 47 Unix (25 Windows, checked by `lifecycle-platforms.yml`) |
+  | `lifecycle_faults` | 55 (#352's 44 plus 11 from SCL-S3) |
+
+- **Repeated runs.** 90 runs (18 concurrent copies × 5 rounds) in a fresh target dir, at a host
+  load average of 33 to 79: 90/90 green, and no `citrate-lcf-` process left.
+  `start_after_health_failures_with_a_held_reader_waits_for_cleanup` did not flake, so its
+  probe interval is unchanged.
