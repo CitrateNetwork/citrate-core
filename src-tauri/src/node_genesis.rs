@@ -320,6 +320,11 @@ pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), Genes
             "injected stop mid-delete (test)".into(),
         ));
     }
+    #[cfg(test)]
+    if let Some(name) = test_hooks::APPEAR_AFTER_WIPE.with(|n| n.take()) {
+        std::fs::write(data_dir.join(name), name.as_bytes())
+            .map_err(|e| GenesisGateError::Io(format!("test hook: {e}")))?;
+    }
     Ok((names, bytes))
 }
 
@@ -381,6 +386,9 @@ pub(crate) mod test_hooks {
         /// `wipe_chain_db` stops after deleting this many entries (a crash mid-delete), or after
         /// the last one when fewer were left.
         pub static STOP_WIPE_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+        /// A chain database file of this name appears once `wipe_chain_db` has deleted the
+        /// entries it listed (one written between the listing and the end of the delete).
+        pub static APPEAR_AFTER_WIPE: Cell<Option<&'static str>> = const { Cell::new(None) };
     }
 }
 
@@ -998,6 +1006,45 @@ mod tests {
             reconcile_genesis(&d, NEW, never_running).unwrap(),
             GenesisOutcome::Kept
         );
+    }
+
+    /// MAC round 5 on core#363: a chain database entry that is present once the delete has run
+    /// (written after the delete listed the directory) refuses the start with the OLD marker
+    /// and the intent in place; nothing is committed over it. The next start deletes it and
+    /// completes the migration.
+    #[test]
+    fn an_entry_that_survives_the_delete_does_not_commit_the_marker() {
+        let d = tmp("relist");
+        populate(&d);
+        write_marker(&d, OLD).unwrap();
+        test_hooks::APPEAR_AFTER_WIPE.with(|n| n.set(Some("000999.sst")));
+        let out = reconcile_genesis(&d, NEW, never_running);
+        test_hooks::APPEAR_AFTER_WIPE.with(|n| n.set(None));
+        let err = out.expect_err("a database entry left after the delete refuses the start");
+        assert!(
+            matches!(&err, GenesisGateError::Io(m) if m.contains("000999.sst")),
+            "{err:?}"
+        );
+        assert_eq!(
+            read_marker(&d).unwrap().as_deref(),
+            Some(OLD),
+            "the new marker is not committed"
+        );
+        assert!(read_intent(&d).unwrap().is_some(), "the intent stays");
+        assert_eq!(
+            std::fs::read_to_string(d.join("node.toml")).unwrap(),
+            OLD_CONFIG,
+            "the config is not set aside before the delete is complete"
+        );
+
+        let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+        assert!(matches!(out, GenesisOutcome::Reset { .. }), "{out:?}");
+        assert_db_gone(&d);
+        assert!(!d.join("000999.sst").exists());
+        assert_config_set_aside(&d, OLD_CONFIG_ASIDE);
+        assert_keys_kept(&d);
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW));
+        assert!(read_intent(&d).unwrap().is_none());
     }
 
     /// K6 (Codex P2 on core#363): if setting node.toml aside fails, the start is refused with

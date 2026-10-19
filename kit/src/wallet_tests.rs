@@ -1020,10 +1020,18 @@ fn k6_lex(src: &str) -> (Vec<char>, Vec<char>) {
     (code, shape)
 }
 
+/// The words that start an item (or a `let`) after any visibility: an attributed item ends at its
+/// `;` or its `{ .. }`, never at a `,` (which may sit in its generics).
+const K6_ITEM_WORDS: &[&str] = &[
+    "async", "const", "enum", "extern", "fn", "impl", "let", "macro_rules", "mod", "static",
+    "struct", "trait", "type", "union", "unsafe", "use",
+];
+
 /// Drop every `#[cfg(test)]` item and every comment, keeping all other code. Only the item the
 /// attribute applies to is removed, by token position rather than by line: the attribute, any
 /// further attributes, then the item up to its first `;` outside brackets or through its
-/// matching `}`. Code before or after that item on the same line stays in scope, so
+/// matching `}`; a struct field, enum variant or match arm ends at its `,` or before the closing
+/// bracket of what encloses it. Code before or after that item on the same line stays in scope, so
 /// `#[cfg(test)] const A: u8 = 0; fn prod() { .. }` keeps `fn prod`. String-aware: brackets,
 /// `;`, `//` and attributes inside string, raw-string and char literals are not structure (see
 /// [`k6_lex`]), while the literals themselves stay in the output so needles inside them are
@@ -1056,6 +1064,7 @@ fn k6_strip_test_items(src: &str) -> String {
         }
         None
     };
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut dropped = vec![false; n];
     let mut i = 0;
     while i < n {
@@ -1076,7 +1085,22 @@ fn k6_strip_test_items(src: &str) -> String {
                 }
             }
         }
-        // The item: to its first `;` at bracket depth 0, or through the `{ .. }` it opens.
+        // What is attributed: an item or `let` (after any visibility), or else a struct field,
+        // enum variant, match arm or expression, which also ends at a `,` at depth 0.
+        let item_like = {
+            let mut v = j;
+            if at(v, &['p', 'u', 'b']) && !(v + 3 < n && ident(shape[v + 3])) {
+                v = skip_ws(v + 3);
+                if v < n && shape[v] == '(' {
+                    v = close(v).map(skip_ws).unwrap_or(n);
+                }
+            }
+            let w: String = shape[v.min(n)..].iter().take_while(|&&c| ident(c)).collect();
+            K6_ITEM_WORDS.contains(&w.as_str())
+        };
+        // The item: to its first `;` (or, for a field, variant or arm, `,`) at bracket depth 0,
+        // or through the `{ .. }` it opens. A closer at depth 0 belongs to the enclosing struct,
+        // enum or block, so the item ends before it.
         let mut end = None;
         if ok {
             let mut depth = 0i64;
@@ -1084,8 +1108,16 @@ fn k6_strip_test_items(src: &str) -> String {
             while k < n {
                 match shape[k] {
                     '(' | '[' => depth += 1,
+                    ')' | ']' | '}' if depth == 0 => {
+                        end = Some(k);
+                        break;
+                    }
                     ')' | ']' => depth -= 1,
                     ';' if depth == 0 => {
+                        end = Some(k + 1);
+                        break;
+                    }
+                    ',' if depth == 0 && !item_like => {
                         end = Some(k + 1);
                         break;
                     }
@@ -1094,9 +1126,6 @@ fn k6_strip_test_items(src: &str) -> String {
                         break;
                     }
                     _ => {}
-                }
-                if depth < 0 {
-                    break;
                 }
                 k += 1;
             }
@@ -1126,57 +1155,81 @@ fn k6_strip_test_items(src: &str) -> String {
     out
 }
 
-/// One scanned source, lexed once: `(path, code with comments blanked, non-test code)`.
-type K6Source = (std::path::PathBuf, String, String);
+/// What a source compiles in, by token: the file name of every resolvable path or include (see
+/// [`k6_module_refs`]; an `include_str!` reads a file as text and compiles nothing) and the name
+/// of every `mod <name>` declaration.
+#[derive(Default)]
+struct K6Refs {
+    files: Vec<String>,
+    mods: Vec<String>,
+}
+
+fn k6_refs(src: &str) -> K6Refs {
+    let files = k6_module_refs(src)
+        .into_iter()
+        .flatten()
+        .filter_map(|lit| std::path::Path::new(&lit).file_name().and_then(|f| f.to_str()).map(String::from))
+        .collect();
+    let t = k6_tokens(src);
+    let mods = t
+        .windows(2)
+        .filter_map(|w| match (&w[0], &w[1]) {
+            (K6Tok::Ident(m), K6Tok::Ident(name)) if m == "mod" => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    K6Refs { files, mods }
+}
+
+impl K6Refs {
+    fn count(&self, name: &str, stem: &str) -> usize {
+        self.files.iter().filter(|f| *f == name).count() + self.mods.iter().filter(|m| *m == stem).count()
+    }
+}
+
+/// One scanned source, lexed once.
+struct K6Source {
+    path: std::path::PathBuf,
+    /// The source with comments blanked.
+    code: String,
+    /// The source with comments and `#[cfg(test)]` items removed.
+    non_test: String,
+    refs: K6Refs,
+    non_test_refs: K6Refs,
+}
 
 fn k6_prep(path: std::path::PathBuf, src: &str) -> K6Source {
     let code: String = k6_lex(src).0.into_iter().collect();
-    (path, code, k6_strip_test_items(src))
+    let non_test = k6_strip_test_items(src);
+    let refs = k6_refs(&code);
+    let non_test_refs = k6_refs(&non_test);
+    K6Source { path, code, non_test, refs, non_test_refs }
 }
 
 /// Whether a `*_tests.rs` file is compiled only under `cfg(test)`: it starts with `#![cfg(test)]`,
-/// or some file in the same crate brings it in (`include!("x_tests.rs")`, `#[path = "x_tests.rs"]`
-/// or `mod x_tests`) and every such reference sits inside a `#[cfg(test)]` item. A reference the
-/// scan cannot see (an `include!(concat!(..))`, say) leaves the file unreferenced, so it is scanned. A file brought in
-/// by non-test code (say `pub mod x_tests;`) is NOT exempt, and neither is an orphan.
+/// or some file in the same crate brings it in (`include!("x_tests.rs")`, `#[path = "x_tests.rs"]`,
+/// a `path` inside `#[cfg_attr(..)]`, or `mod x_tests`, in any spacing) and every such reference
+/// sits inside a `#[cfg(test)]` item. A reference the scan cannot see (an
+/// `include!(concat!(..))`, say) leaves the file unreferenced, so it is scanned. A file brought
+/// in by non-test code (say `pub mod x_tests;`) is NOT exempt, and neither is an orphan.
 fn k6_is_cfg_test_file(path: &std::path::Path, crate_files: &[K6Source]) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let Some(stem) = name.strip_suffix(".rs") else {
         return false;
     };
-    let Some((_, own_code, _)) = crate_files.iter().find(|(p, _, _)| p == path) else {
+    let Some(own) = crate_files.iter().find(|f| f.path == path) else {
         return false;
     };
-    if own_code.trim_start().starts_with("#![cfg(test)]") {
+    if own.code.trim_start().starts_with("#![cfg(test)]") {
         return true;
     }
-    let quoted = format!("{name}\"");
-    let m = format!("mod {stem}");
-    let refs = |code: &str| -> usize {
-        // `include!("…x_tests.rs")` or `#[path = "…x_tests.rs"]` (an `include_str!` of the file
-        // reads it as text and does not compile it, so it is not a reference).
-        let mut n = code
-            .lines()
-            .filter(|l| l.contains(quoted.as_str()))
-            .filter(|l| l.contains("include!(") || l.contains("path"))
-            .count();
-        for (at, _) in code.match_indices(m.as_str()) {
-            let after = code[at + m.len()..].chars().next().unwrap_or(' ');
-            let before = code[..at].chars().next_back().unwrap_or(' ');
-            let joined = |c: char| c.is_alphanumeric() || c == '_';
-            if !joined(after) && !joined(before) {
-                n += 1;
-            }
-        }
-        n
-    };
     let mut referenced = false;
-    for (other, code, non_test) in crate_files {
-        if other == path || refs(code) == 0 {
+    for other in crate_files {
+        if other.path == path || other.refs.count(name, stem) == 0 {
             continue;
         }
         referenced = true;
-        if refs(non_test) > 0 {
+        if other.non_test_refs.count(name, stem) > 0 {
             return false;
         }
     }
@@ -1318,16 +1371,16 @@ fn wallet_key_material_is_reachable_only_through_the_key_module() {
                 continue;
             }
         }
-        let (all_code, non_test) = kit_sources
+        let src = kit_sources
             .iter()
             .chain(app_sources.iter())
-            .find(|(p, _, _)| p == path)
-            .map(|(_, code, non_test)| (code.clone(), non_test.clone()))
+            .find(|f| f.path == *path)
             .expect("prepared source");
+        let (all_code, non_test) = (&src.code, &src.non_test);
         for needle in &needles {
             // The capability and forging needles are counted on the whole file (comments
             // blanked, nothing stripped): a test item can never hide one (MAC round 4).
-            let code = if strict.contains(needle) { &all_code } else { &non_test };
+            let code = if strict.contains(needle) { all_code } else { non_test };
             let n = code.matches(needle.as_str()).count();
             if n > 0 {
                 found.push((rel.clone(), needle.clone(), n));
@@ -1435,56 +1488,239 @@ fn k6_strip_test_items_keeps_same_line_code_after_a_test_item() {
     }
 }
 
-/// Every `include!("…")` and `#[path = "…"]` in `code`, with the literal it names; `None` for a
-/// form the scan cannot resolve (not a plain string literal, e.g. `include!(concat!(..))`).
-/// Located on the literal-blanked view, so a needle inside a string is not a reference.
-fn k6_module_refs(src: &str) -> Vec<Option<String>> {
+/// MAC round 5 on core#363: a `#[cfg(test)]` on a struct field, an enum variant or a match arm
+/// removes only that field, variant or arm; the item after the enclosing struct, enum or fn is
+/// still scanned.
+#[test]
+fn k6_strip_test_items_bounds_a_test_field_variant_or_arm() {
+    let src = concat!(
+        "struct S { #[cfg(test)] t_s: u8, u_s: u8 } fn prod_s() { keep_s(); }\n",
+        "struct P {\n    #[cfg(test)]\n    pub t_p: u8,\n    pub u_p: u8,\n}\nfn prod_p() {}\n",
+        "struct L { u_l: u8, #[cfg(test)] t_l: u8 }\nfn prod_l() {}\n",
+        "struct T(#[cfg(test)] u8, u16);\nfn prod_t() {}\n",
+        "enum E { #[cfg(test)] TE, UE }\nfn prod_e() {}\n",
+        "enum F { #[cfg(test)] TF { x: u8 }, UF(u8) }\nfn prod_f() {}\n",
+        "fn m(v: u8) -> u8 {\n    match v {\n        #[cfg(test)]\n        0 => t_m0(),\n",
+        "        #[cfg(test)]\n        1 => { t_m1() }\n        _ => u_m(),\n    }\n}\nfn prod_m() {}\n",
+    );
+    let out = k6_strip_test_items(src);
+    for gone in ["t_s", "t_p", "t_l", "TE", "TF", "t_m0", "t_m1"] {
+        assert!(!out.contains(gone), "{gone} dropped: {out}");
+    }
+    for kept in ["u_s", "keep_s", "u_p", "u_l", "u16", "UE", "UF", "u_m"] {
+        assert!(out.contains(kept), "{kept} kept: {out}");
+    }
+    for f in ["prod_s", "prod_p", "prod_l", "prod_t", "prod_e", "prod_f", "prod_m"] {
+        assert!(out.contains(f), "{f} kept: {out}");
+    }
+}
+
+/// `unsafe` sites in `src`, by token: `(unsafe keywords, lint attributes that lower `unsafe_code`
+/// below deny)`. Comments and literals are not tokens, so neither counts.
+fn k6_unsafe_sites(src: &str) -> (usize, usize) {
+    let t = k6_tokens(src);
+    let word = |k: usize, w: &str| matches!(t.get(k), Some(K6Tok::Ident(x)) if x == w);
+    let keywords = (0..t.len()).filter(|&k| word(k, "unsafe")).count();
+    let mut overrides = 0;
+    for k in 0..t.len() {
+        let level = ["allow", "warn", "expect"].iter().any(|l| word(k, l));
+        if level && matches!(t.get(k + 1), Some(K6Tok::Punct('('))) {
+            let end = k6_tok_close(&t, k + 1);
+            if (k + 2..end).any(|m| word(m, "unsafe_code")) {
+                overrides += 1;
+            }
+        }
+    }
+    (keywords, overrides)
+}
+
+/// The unsafe-site counter on in-memory sources: every spelling of a lint override is seen.
+#[test]
+fn k6_unsafe_sites_sees_every_form() {
+    let src = concat!(
+        "#[allow(dead_code, unsafe_code)]\nfn a() { unsafe { x() } }\n",
+        "#[cfg_attr(all(), expect ( unsafe_code ))]\nunsafe fn b() {}\n",
+        "#![warn(\n    unsafe_code\n)]\n",
+        "#[allow(unsafe_code)]\nfn c() {}\n",
+        "unsafe impl Send for X {}\n",
+        "// unsafe { } allow(unsafe_code)\n",
+        "fn e() { let s = \"unsafe { allow(unsafe_code) }\"; }\n",
+        "#[deny(unsafe_code)]\n#[forbid(unsafe_code)]\n#[allow(unsafe_op_in_unsafe_fn)]\nfn d() {}\n",
+    );
+    assert_eq!(k6_unsafe_sites(src), (3, 4), "keywords: a, b, impl; overrides: a, b, warn, c");
+}
+
+/// STRUCTURAL (K6): the kit crate's `deny(unsafe_code)` is what makes a private field a
+/// capability. `forbid` would refuse the reviewed libc calls in `supervisor`, so instead every
+/// `unsafe` keyword and every attribute that lowers the lint is pinned per file, in every .rs
+/// under kit/src (comments and literals excluded, any spelling). With
+/// `k6_no_module_or_include_reaches_outside_the_scanned_trees`, no kit code is outside this scan.
+#[test]
+fn k6_kit_unsafe_is_only_the_reviewed_blocks() {
+    let kit_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    k6_collect_rs(&kit_src, &mut files);
+    let allowed: &[(&str, (usize, usize))] =
+        &[("supervisor.rs", (2, 2)), ("supervisor_tests.rs", (1, 1))];
+    let mut bad = Vec::new();
+    for f in &files {
+        let rel = f.strip_prefix(&kit_src).expect("under kit/src").to_string_lossy().replace('\\', "/");
+        let got = k6_unsafe_sites(&std::fs::read_to_string(f).expect("read source"));
+        let want = allowed.iter().find(|(n, _)| *n == rel).map(|(_, c)| *c).unwrap_or((0, 0));
+        if got != want {
+            bad.push(format!("{rel}: {got:?}, expected {want:?}"));
+        }
+    }
+    assert!(bad.is_empty(), "an unreviewed `unsafe` or unsafe_code lint override in kit: {bad:?}");
+    assert!(files.len() > 30, "positive control: kit/src was walked");
+}
+
+/// One token of a lexed source (see [`k6_tokens`]).
+#[derive(Debug, Clone, PartialEq)]
+enum K6Tok {
+    Ident(String),
+    Punct(char),
+    /// A string literal: its text for a plain or raw string (`"…"`, `r"…"`, `r#"…"#`) with no
+    /// escape; `None` for any other (escaped, byte or C string).
+    Lit(Option<String>),
+}
+
+/// The tokens of `src`, whitespace-insensitive: comments are dropped and every string literal is
+/// one token (so nothing inside a literal or a comment is structure), raw identifiers (`r#x`)
+/// read as their name, and everything else is an identifier or a single punctuation character.
+fn k6_tokens(src: &str) -> Vec<K6Tok> {
     let (code, shape) = k6_lex(src);
     let n = shape.len();
-    let skip_ws = |mut i: usize| {
-        while i < n && shape[i].is_whitespace() {
-            i += 1;
-        }
-        i
-    };
-    let lit = |i: usize| -> Option<String> {
-        if i >= n || code[i] != '"' {
-            return None;
-        }
-        let mut k = i + 1;
-        let mut v = String::new();
-        while k < n && code[k] != '"' {
-            if code[k] == '\\' {
-                return None;
-            }
-            v.push(code[k]);
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    // From the opening quote at `q`: the index of the closing quote (literal contents are blank
+    // in `shape`, so it is the next quote).
+    let close_quote = |q: usize| {
+        let mut k = q + 1;
+        while k < n && shape[k] != '"' {
             k += 1;
         }
-        (k < n).then_some(v)
+        k
     };
-    let joined = |c: char| c.is_alphanumeric() || c == '_';
     let mut out = Vec::new();
-    for i in 0..n {
-        if i > 0 && joined(shape[i - 1]) {
+    let mut i = 0;
+    while i < n {
+        let c = shape[i];
+        if c.is_whitespace() {
+            i += 1;
             continue;
         }
-        let word = |w: &str| w.chars().enumerate().all(|(o, c)| i + o < n && shape[i + o] == c);
-        if word("include!") {
-            let j = skip_ws(i + "include!".len());
-            if j < n && shape[j] == '(' {
-                out.push(lit(skip_ws(j + 1)));
+        if c == '"' {
+            let k = close_quote(i);
+            let v: String = code[i + 1..k.min(n)].iter().collect();
+            out.push(K6Tok::Lit((k < n && !v.contains('\\')).then_some(v)));
+            i = k + 1;
+            continue;
+        }
+        if !ident(c) {
+            out.push(K6Tok::Punct(c));
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && ident(shape[i]) {
+            i += 1;
+        }
+        let w: String = shape[start..i].iter().collect();
+        let mut j = i;
+        while j < n && shape[j] == '#' {
+            j += 1;
+        }
+        let quoted = j < n && shape[j] == '"';
+        match w.as_str() {
+            "r" | "br" | "cr" if quoted => {
+                let k = close_quote(j);
+                let v: String = code[j + 1..k.min(n)].iter().collect();
+                out.push(K6Tok::Lit((w == "r" && k < n).then_some(v)));
+                i = (k + 1 + (j - i)).min(n);
             }
-        } else if word("#") {
-            let j = skip_ws(i + 1);
-            if j < n && shape[j] == '[' {
-                let k = skip_ws(j + 1);
-                let is_path = "path".chars().enumerate().all(|(o, c)| k + o < n && shape[k + o] == c)
-                    && !(k + 4 < n && joined(shape[k + 4]));
-                if is_path {
-                    let e = skip_ws(k + 4);
-                    if e < n && shape[e] == '=' {
-                        out.push(lit(skip_ws(e + 1)));
-                    }
+            "b" | "c" if i < n && shape[i] == '"' => {
+                out.push(K6Tok::Lit(None));
+                i = close_quote(i) + 1;
+            }
+            "r" if j == i + 1 && j < n && ident(shape[j]) => {
+                let s2 = j;
+                while j < n && ident(shape[j]) {
+                    j += 1;
+                }
+                out.push(K6Tok::Ident(shape[s2..j].iter().collect()));
+                i = j;
+            }
+            _ => out.push(K6Tok::Ident(w)),
+        }
+    }
+    out
+}
+
+/// From an opening bracket token at `i`, the index of its matching closer (`toks.len()` if none).
+fn k6_tok_close(toks: &[K6Tok], i: usize) -> usize {
+    let mut depth = 0i64;
+    for (k, t) in toks.iter().enumerate().skip(i) {
+        match t {
+            K6Tok::Punct('(' | '[' | '{') => depth += 1,
+            K6Tok::Punct(')' | ']' | '}') => {
+                depth -= 1;
+                if depth == 0 {
+                    return k;
+                }
+            }
+            _ => {}
+        }
+    }
+    toks.len()
+}
+
+/// Every source file `src` compiles in, with the literal that names it; `None` for a form the
+/// scan cannot resolve. Token-based, so spacing, line breaks, delimiters and literal kind do not
+/// matter, and nothing inside a comment or a literal counts:
+/// - `include!` (any path prefix, any delimiter): its literal argument;
+/// - `#[path = …]`, and every `path = …` inside a `#[cfg_attr(…)]` (at any nesting);
+/// - a `use` that names `include` (a renamed `include!` the scan cannot follow): `None`.
+///
+/// `include_str!` / `include_bytes!` read a file as data and compile nothing, so they are not
+/// references.
+fn k6_module_refs(src: &str) -> Vec<Option<String>> {
+    let t = k6_tokens(src);
+    let punct = |k: usize, p: char| matches!(t.get(k), Some(K6Tok::Punct(c)) if *c == p);
+    let word = |k: usize, w: &str| matches!(t.get(k), Some(K6Tok::Ident(x)) if x == w);
+    let lit = |k: usize| match t.get(k) {
+        Some(K6Tok::Lit(v)) => v.clone(),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    let mut in_use = false;
+    for k in 0..t.len() {
+        if word(k, "use") {
+            in_use = true;
+        } else if punct(k, ';') {
+            in_use = false;
+        }
+        if word(k, "include") {
+            if punct(k + 1, '!') && (punct(k + 2, '(') || punct(k + 2, '[') || punct(k + 2, '{')) {
+                out.push(lit(k + 3));
+            } else if in_use {
+                out.push(None);
+            }
+            continue;
+        }
+        if !punct(k, '#') {
+            continue;
+        }
+        let open = if punct(k + 1, '!') { k + 2 } else { k + 1 };
+        if !punct(open, '[') {
+            continue;
+        }
+        let end = k6_tok_close(&t, open);
+        if word(open + 1, "path") && punct(open + 2, '=') {
+            out.push(lit(open + 3));
+        } else if (open + 1..end).any(|m| word(m, "cfg_attr")) {
+            for m in open + 1..end {
+                if word(m, "path") && punct(m + 1, '=') {
+                    out.push(lit(m + 2));
                 }
             }
         }
@@ -1512,7 +1748,8 @@ fn k6_ref_in_tree(file: &std::path::Path, lit: &str, root: &std::path::Path) -> 
 /// STRUCTURAL (K6, MAC round 4 on core#363): the key-access scan reads every .rs under kit/src
 /// and src-tauri/src, so no source may compile in a file from outside those trees: every
 /// `#[path = "…"]` and `include!("…")` must name a plain relative literal that resolves under its
-/// crate's source root.
+/// crate's source root. That includes a `path` inside `#[cfg_attr(…)]` and any spacing or
+/// delimiter of `include!` (see [`k6_module_refs`]).
 #[test]
 fn k6_no_module_or_include_reaches_outside_the_scanned_trees() {
     let kit_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -1549,18 +1786,47 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
         "let s = \"include!(\\\"../hidden.rs\\\")\";\n",
         "// include!(\"../comment.rs\");\n",
         "#[pathological = \"../no.rs\"]\nfn z() {}\n",
+        // MAC round 5: a conditional path, spacing, other delimiters, raw literals, renames.
+        "#[cfg_attr(not(test), path = \"../cfg_a.rs\")]\nmod ca;\n",
+        "#[cfg_attr(all(), inline, path=\"../cfg_b.rs\")]\nmod cb;\n",
+        "#[cfg_attr(\n    unix,\n    cfg_attr(all(), path\n        = \"../cfg_c.rs\")\n)]\nmod cc;\n",
+        "#[cfg_attr(any(), path = r\"../cfg_d.rs\")]\nmod cd;\n",
+        "#[path = r#\"../raw.rs\"#]\nmod r;\n",
+        "# [\n  path = \"../split.rs\"\n]\nmod s;\n",
+        "include ! (\"../spaced.rs\");\n",
+        "core::include![\"../bracket.rs\"];\n",
+        "std::include! {\"../brace.rs\"}\n",
+        "use std::include as inc;\n",
+        "#[path = $p]\nmod m;\n",
+        // Data, not code: read as text or bytes, never compiled.
+        "let d = include_str ! (\"../data.txt\");\nlet b = include_bytes!(\"../blob.bin\");\n",
+        // A conditional attribute with no path is not a reference.
+        "#[cfg_attr(test, allow(dead_code))]\nfn y() {}\n",
     );
     let refs = k6_module_refs(src);
+    let s = |v: &str| Some(v.to_string());
     assert_eq!(
         refs,
         vec![
-            Some("a_tests.rs".to_string()),
-            Some("../x.rs".to_string()),
-            Some("sub/b.rs".to_string()),
+            s("a_tests.rs"),
+            s("../x.rs"),
+            s("sub/b.rs"),
             None,
-            Some("/abs/c.rs".to_string()),
+            s("/abs/c.rs"),
+            s("../cfg_a.rs"),
+            s("../cfg_b.rs"),
+            s("../cfg_c.rs"),
+            s("../cfg_d.rs"),
+            s("../raw.rs"),
+            s("../split.rs"),
+            s("../spaced.rs"),
+            s("../bracket.rs"),
+            s("../brace.rs"),
+            None,
+            None,
         ],
-        "literals, comments and look-alike attributes are not references"
+        "literals, comments and look-alike attributes are not references; every path and \
+         include form is, whatever its spacing, delimiter or literal kind"
     );
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let file = root.join("wallet.rs");
@@ -1582,6 +1848,12 @@ fn k6_tests_file_is_exempt_only_under_cfg_test() {
         "#[cfg(test)]\nmod tests {\n    include!(\"e_tests.rs\");\n}\n",
         "#[cfg(test)]\nfn h() { let s = \"{\"; }\n",
         "mod tests2 {\n    include!(\"f_tests.rs\");\n}\n",
+        "#[cfg(test)]\nmod t3 {\n    include!(\"g_tests.rs\");\n}\n",
+        "mod p3 {\n    include ! (\"g_tests.rs\");\n}\n",
+        "#[cfg(test)]\nmod h_tests;\n",
+        "#[cfg_attr(not(test), path = \"h_tests.rs\")]\nmod h_prod;\n",
+        "#[cfg(test)]\nmod i_tests;\n",
+        "pub mod\n    i_tests;\n",
     );
     let srcs: Vec<K6Source> = [
         ("lib.rs", lib),
@@ -1591,6 +1863,9 @@ fn k6_tests_file_is_exempt_only_under_cfg_test() {
         ("d_tests.rs", "fn x() {}\n"),
         ("e_tests.rs", "fn x() {}\n"),
         ("f_tests.rs", "fn x() {}\n"),
+        ("g_tests.rs", "fn x() {}\n"),
+        ("h_tests.rs", "fn x() {}\n"),
+        ("i_tests.rs", "fn x() {}\n"),
     ]
     .iter()
     .map(|(n, s)| k6_prep(d.join(n), s))
@@ -1602,6 +1877,9 @@ fn k6_tests_file_is_exempt_only_under_cfg_test() {
     assert!(!exempt("d_tests.rs"), "an orphan is scanned");
     assert!(exempt("e_tests.rs"), "include! inside a #[cfg(test)] mod");
     assert!(!exempt("f_tests.rs"), "include! after a test helper holding a brace literal");
+    assert!(!exempt("g_tests.rs"), "a spaced `include ! (..)` in non-test code is a reference");
+    assert!(!exempt("h_tests.rs"), "a conditional `path` in non-test code is a reference");
+    assert!(!exempt("i_tests.rs"), "`mod` and the name on separate lines is a reference");
 }
 
 /// K6: plain `custody_get` refuses the wallet slot even on an unlocked vault holding a wallet, so
