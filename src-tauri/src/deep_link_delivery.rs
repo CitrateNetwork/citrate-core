@@ -49,8 +49,9 @@ pub fn log_redact(url: &url::Url) -> String {
 }
 
 /// Free text (an error message) as it may be logged: every word that looks like a URL is reduced
-/// to `scheme://host`, or `<url>` when it does not parse; any other word holding `?`, `#` or `=`
-/// is cut there.
+/// to `scheme://host`, or `<url>` when it does not parse. Any other word holding `@` (raw or
+/// percent-encoded `%40`) is replaced by `<email>` whole, so neither side of an address is kept;
+/// a word holding `?`, `#` or `=` is cut there.
 pub fn log_redact_text(text: &str) -> String {
     text.split_whitespace()
         .map(|word| {
@@ -60,6 +61,8 @@ pub fn log_redact_text(text: &str) -> String {
                     Ok(u) if u.host_str().is_some() => log_redact(&u),
                     _ => "<url>".to_string(),
                 }
+            } else if word.contains('@') || word.to_ascii_lowercase().contains("%40") {
+                "<email>".to_string()
             } else {
                 match word.find(['?', '#', '=']) {
                     Some(i) => word[..i].to_string(),

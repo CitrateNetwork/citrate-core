@@ -247,6 +247,35 @@ fn log_redact_text_reduces_urls_in_free_text() {
 }
 
 #[test]
+fn log_redact_text_drops_a_bare_email_raw_or_percent_encoded() {
+    for msg in [
+        "registration failed for a@b.example: permission denied",
+        "registration failed for (a@b.example), see log",
+        "registration failed for a%40b.example: permission denied",
+        "registration failed for a%40B.example: permission denied",
+        "owner member@example.org; retry",
+    ] {
+        let out = log_redact_text(msg);
+        for leaked in [
+            "a@",
+            "@b",
+            "b.example",
+            "B.example",
+            "%40",
+            "member",
+            "example.org",
+        ] {
+            assert!(!out.contains(leaked), "{leaked} appears in: {out}");
+        }
+        assert!(out.contains("<email>"), "{out}");
+        assert!(
+            out.starts_with("registration failed for") || out.starts_with("owner"),
+            "{out}"
+        );
+    }
+}
+
+#[test]
 fn log_redact_text_hides_an_unparseable_url() {
     let out = log_redact_text("bad citrate://[pAth-s3gment?t=tok3n-T-value");
     assert_clean(&out);
