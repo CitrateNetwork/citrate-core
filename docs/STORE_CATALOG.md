@@ -72,7 +72,10 @@ Verify → stage → review → approve (HIC) → install paused.
   the target fails, the record is taken back out; if only the final confirming write fails, the
   record stays and still tracks the install. Daemons are created paused in one write of the
   daemon book; models are downloaded and verified and not selected.
-- **Remove.** One call, no key. A target removed elsewhere counts as removed.
+- **Remove.** One call, no key. A target removed elsewhere counts as removed. A listing whose
+  install is still running cannot be removed (K5-F): core refuses it with `install_running`
+  and the screen shows "Installing…" instead of Remove until the install ends. A pending record
+  left by an install that is no longer running is removable.
 
 Apps, widgets, skills and MCP servers are listed but answer "Not installable yet".
 

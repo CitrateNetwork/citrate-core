@@ -8,10 +8,11 @@ import {
   CatalogStateBanner,
   ListingCard,
   ListingPage,
+  InstalledList,
   CATALOG_STATE_TEXT,
 } from "./StoreCatalog";
 import { Commissary } from "./Commissary";
-import { storeSlice, beginInstall, approveInstall, closeSheet, type StoreSheet } from "../shell/slices/store";
+import { storeSlice, beginInstall, approveInstall, closeSheet, removeInstall, type StoreSheet } from "../shell/slices/store";
 import { bridge } from "../bridge";
 import { freshState } from "../shell/state";
 import type { Store } from "../shell/store";
@@ -235,6 +236,61 @@ describe("install flow through the slice", () => {
     const v = await bridge.store.catalog();
     expect(v.state).toBe("desktop_only");
     expect(v.listings).toEqual([]);
+  });
+});
+
+describe("K5-F: no Remove while an install is in flight", () => {
+  const item = (patch: Partial<StoreInstalled> = {}): StoreInstalled => ({
+    listingId: "tiny-model",
+    kind: "model",
+    name: "Tiny model",
+    version: "1.0.0",
+    target: "tiny-model.gguf",
+    installedAt: 1,
+    state: "not_selected",
+    ...patch,
+  });
+  const removeButton = (out: string) => out.match(/<button[^>]*>(Remove|Removing…|Installing…)<\/button>/)?.[0] ?? "";
+
+  it("an install core reports as installing offers no Remove", () => {
+    const out = renderToStaticMarkup(<InstalledList items={[item({ state: "installing" })]} removing={null} installingId={null} />);
+    const btn = removeButton(out);
+    expect(btn).toContain("disabled");
+    expect(btn).toContain("Installing…");
+    expect(out).not.toContain(">Start<");
+  });
+
+  it("the listing whose install sheet is still installing offers no Remove", () => {
+    const out = renderToStaticMarkup(<InstalledList items={[item({ state: "missing" })]} removing={null} installingId="tiny-model" />);
+    expect(removeButton(out)).toContain("disabled");
+  });
+
+  it("a finished install keeps its Remove", () => {
+    const out = renderToStaticMarkup(<InstalledList items={[item()]} removing={null} installingId={null} />);
+    const btn = removeButton(out);
+    expect(btn).toContain(">Remove<");
+    expect(btn).not.toContain("disabled");
+  });
+
+  it("removeInstall refuses locally while that listing is installing, and shows core's refusal otherwise", async () => {
+    vi.restoreAllMocks();
+    const remove = vi.spyOn(bridge.store, "remove").mockResolvedValue({
+      refused: { code: "install_running", message: "It is still installing." },
+    });
+    vi.spyOn(bridge.store, "catalog").mockResolvedValue({
+      state: "no_key", message: null, catalogUrl: "", keyFingerprint: null, sequence: null, expiresAt: null, listings: [],
+    });
+    vi.spyOn(bridge.store, "installed").mockResolvedValue([]);
+    storeSlice.set({
+      sheet: { listingId: "tiny-model", phase: "installing", staged: null, refusal: null, installed: null, pct: 10 },
+    });
+    await removeInstall("tiny-model");
+    expect(remove).not.toHaveBeenCalled();
+    expect(storeSlice.get().notice).toContain("still installing");
+    closeSheet();
+    await removeInstall("tiny-model");
+    expect(remove).toHaveBeenCalledWith("tiny-model");
+    expect(storeSlice.get().notice).toContain("still installing");
   });
 });
 

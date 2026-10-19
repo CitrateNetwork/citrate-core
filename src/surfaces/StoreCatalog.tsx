@@ -101,6 +101,7 @@ export const REFUSAL_TITLE: Record<string, string> = {
   already_installed: "Already installed",
   not_installed: "Not installed",
   in_use: "In use",
+  install_running: "Still installing",
   install_failed: "The install did not finish",
   desktop_only: "The Store needs the desktop app",
 };
@@ -345,7 +346,19 @@ function RefusalBody({ refusal }: { refusal: StoreRefusal }) {
   );
 }
 
-export function InstalledList({ items, removing }: { items: StoreInstalled[]; removing: string | null }) {
+/**
+ * What the Store installed. K5-F: an install still in flight (core reports `installing`, or its
+ * install sheet is still installing) offers no Remove; core refuses it too (`install_running`).
+ */
+export function InstalledList({
+  items,
+  removing,
+  installingId,
+}: {
+  items: StoreInstalled[];
+  removing: string | null;
+  installingId: string | null;
+}) {
   if (items.length === 0) return null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 760 }}>
@@ -363,9 +376,15 @@ export function InstalledList({ items, removing }: { items: StoreInstalled[]; re
               Start
             </button>
           )}
-          <button className="btn btn-ghost btn-sm" disabled={removing === i.listingId} onClick={() => void removeInstall(i.listingId)}>
-            {removing === i.listingId ? "Removing…" : "Remove"}
-          </button>
+          {i.state === "installing" || installingId === i.listingId ? (
+            <button className="btn btn-ghost btn-sm" disabled title="It can be removed when the install has finished">
+              Installing…
+            </button>
+          ) : (
+            <button className="btn btn-ghost btn-sm" disabled={removing === i.listingId} onClick={() => void removeInstall(i.listingId)}>
+              {removing === i.listingId ? "Removing…" : "Remove"}
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -417,7 +436,11 @@ export function StoreCatalog() {
           </>
         )
       )}
-      <InstalledList items={st.installed} removing={st.removing} />
+      <InstalledList
+        items={st.installed}
+        removing={st.removing}
+        installingId={st.sheet && (st.sheet.phase === "installing" || st.sheet.phase === "staging") ? st.sheet.listingId : null}
+      />
       {st.sheet && (
         <InstallSheetView
           sheet={st.sheet}

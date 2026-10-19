@@ -2260,6 +2260,7 @@ export type StoreRefusalCode =
   | "already_installed"
   | "not_installed"
   | "in_use"
+  | "install_running"
   | "install_failed"
   | "desktop_only";
 

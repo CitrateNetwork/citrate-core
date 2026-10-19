@@ -72,7 +72,7 @@ pub(crate) const COMMANDS: [&str; 5] = [
 /// Why a Store call did not go ahead. `code` is one of: `no_key`, `fetch_failed`,
 /// `signature_failed`, `invalid`, `expired`, `rollback`, `hash_failed`, `tier_locked`,
 /// `not_installable`, `not_listed`, `stage_expired`, `changed`, `already_installed`,
-/// `not_installed`, `in_use`, `install_failed`.
+/// `not_installed`, `in_use`, `install_running`, `install_failed`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Refusal {
@@ -336,22 +336,30 @@ struct StagedFile {
 
 static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// One install at a time per Store folder (a model install can take minutes); a second is
-/// refused, not queued.
-static INSTALLS_RUNNING: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// refused, not queued. The value is the listing being installed, once known: Remove refuses
+/// that listing until the install ends (K5-F).
+static INSTALLS_RUNNING: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Option<String>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 struct InstallSlot(PathBuf);
 
 impl InstallSlot {
     fn take(root: &Path) -> Result<Self, Refusal> {
         let mut running = INSTALLS_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
-        if !running.insert(root.to_path_buf()) {
+        if running.contains_key(root) {
             return Err(refuse(
                 "install_failed",
                 "Another Store install is running; try again when it finishes",
             ));
         }
+        running.insert(root.to_path_buf(), None);
         Ok(InstallSlot(root.to_path_buf()))
+    }
+
+    /// Name the listing this install is for (before its record is saved).
+    fn set_listing(&self, listing_id: &str) {
+        let mut running = INSTALLS_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
+        running.insert(self.0.clone(), Some(listing_id.to_string()));
     }
 }
 
@@ -360,6 +368,16 @@ impl Drop for InstallSlot {
         let mut running = INSTALLS_RUNNING.lock().unwrap_or_else(|p| p.into_inner());
         running.remove(&self.0);
     }
+}
+
+/// The listing an install in this Store folder is working on right now, if any.
+fn installing_listing(root: &Path) -> Option<String> {
+    INSTALLS_RUNNING
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(root)
+        .cloned()
+        .flatten()
 }
 
 fn read_store_file(root: &Path) -> Result<StoreFile, Refusal> {
@@ -766,18 +784,11 @@ pub struct InstalledView {
     pub state: String,
 }
 
-fn install_running(root: &Path) -> bool {
-    INSTALLS_RUNNING
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .contains(root)
-}
-
 fn installed_view(
     r: &InstallRecord,
     t: &Targets<'_>,
     now_ms: u64,
-    installing: bool,
+    installing: Option<&str>,
 ) -> InstalledView {
     let state = match r.kind {
         ListingKind::Daemon => crate::daemons::with_book_file(&t.daemons_path, false, |b| {
@@ -790,7 +801,7 @@ fn installed_view(
         ListingKind::Model if crate::model::is_file_ready(&t.models_dir, &r.target) => {
             "not_selected"
         }
-        _ if r.pending && installing => "installing",
+        _ if r.pending && installing == Some(r.listing_id.as_str()) => "installing",
         _ => "missing",
     };
     InstalledView {
@@ -812,11 +823,11 @@ pub(crate) fn installed_sync(
 ) -> Result<Vec<InstalledView>, Refusal> {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let st = read_store_file(root)?;
-    let installing = install_running(root);
+    let installing = installing_listing(root);
     Ok(st
         .installs
         .iter()
-        .map(|r| installed_view(r, t, now_ms, installing))
+        .map(|r| installed_view(r, t, now_ms, installing.as_deref()))
         .collect())
 }
 
@@ -855,8 +866,9 @@ pub(crate) fn install_sync(
     on_progress: &mut dyn FnMut(u64, u64),
 ) -> Result<InstalledView, Refusal> {
     let key = key.as_ref().map_err(catalog_refusal)?;
-    let _slot = InstallSlot::take(root)?;
+    let slot = InstallSlot::take(root)?;
     let staged = take_stage(root, stage_id, now)?;
+    slot.set_listing(&staged.listing.id);
     // The listing must still be in the verified catalog exactly as the member reviewed it.
     let vc = cached_catalog(root, key, now)?;
     let listing = vc.catalog().listing(&staged.listing.id).ok_or_else(|| {
@@ -924,7 +936,7 @@ pub(crate) fn install_sync(
             }
         }
     });
-    Ok(installed_view(&record, t, now_ms, false))
+    Ok(installed_view(&record, t, now_ms, None))
 }
 
 enum Plan {
@@ -1045,6 +1057,14 @@ pub(crate) fn remove_sync(
     listing_id: &str,
 ) -> Result<String, Refusal> {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // K5-F: never pull a listing out from under its own install. Checked under the Store lock,
+    // which the install also holds when it saves the record it is working on.
+    if installing_listing(root).as_deref() == Some(listing_id) {
+        return Err(refuse(
+            "install_running",
+            "It is still installing. Remove it when the install has finished.",
+        ));
+    }
     let mut st = read_store_file(root)?;
     let idx = st
         .installs

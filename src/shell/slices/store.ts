@@ -128,6 +128,13 @@ export function closeSheet(): void {
 
 /** One call: core removes the daemon or the model file and forgets the install. */
 export async function removeInstall(listingId: string): Promise<void> {
+  // K5-F: never ask core to remove a listing whose install is still running here (core refuses
+  // it too, with `install_running`).
+  const sheet = storeSlice.get().sheet;
+  if (sheet?.listingId === listingId && (sheet.phase === "installing" || sheet.phase === "staging")) {
+    storeSlice.set({ notice: "It is still installing. Remove it when the install has finished." });
+    return;
+  }
   storeSlice.set({ removing: listingId, notice: null });
   try {
     const out = await bridge.store.remove(listingId);

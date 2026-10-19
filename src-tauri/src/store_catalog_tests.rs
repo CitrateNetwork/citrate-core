@@ -575,6 +575,110 @@ fn a_failed_target_leaves_no_record_behind() {
     assert!(fx.fx_install(&st.stage_id, 0).is_ok());
 }
 
+// ---- K5-F: no removal while the install is in flight -----------------------------------------
+
+/// Serves the model only after the test says so, and reports when the download has started.
+struct GatedTransport {
+    body: Vec<u8>,
+    started: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+    go: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl crate::model::ModelTransport for GatedTransport {
+    fn total_size(&self) -> std::result::Result<u64, crate::model::ModelError> {
+        Ok(self.body.len() as u64)
+    }
+    fn get_from(&self, offset: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, crate::model::ModelError> {
+        if let Ok(tx) = self.started.lock() {
+            let _ = tx.send(());
+        }
+        if let Ok(rx) = self.go.lock() {
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(20));
+        }
+        let start = (offset as usize).min(self.body.len());
+        Ok(Box::new(std::io::Cursor::new(self.body[start..].to_vec())))
+    }
+}
+
+#[test]
+fn remove_is_refused_while_that_install_is_in_flight() {
+    let fx = Fx::standard("inflight");
+    fx.fx_view(1);
+    // A finished install, to show other installs stay removable meanwhile.
+    let d = fx.fx_stage("daily-brief", 1).expect("stage daemon");
+    fx.fx_install(&d.stage_id, 1).expect("install daemon");
+    let st = fx.fx_stage("tiny-model", 1).expect("stage model");
+
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel();
+    let transport = GatedTransport {
+        body: model_bytes(),
+        started: std::sync::Mutex::new(started_tx),
+        go: std::sync::Mutex::new(go_rx),
+    };
+    let slot = std::sync::Mutex::new(Some(transport));
+    let (root, key) = (fx.root.clone(), fx.key.root());
+    let (daemons_path, models_dir) = (fx.daemons.clone(), fx.models.clone());
+    let stage_id = st.stage_id.clone();
+    std::thread::scope(|scope| {
+        let installer = scope.spawn(|| {
+            let usage = Usage(None);
+            let make = |_: &str| -> Box<dyn crate::model::ModelTransport> {
+                match slot.lock().ok().and_then(|mut s| s.take()) {
+                    Some(t) => Box::new(t),
+                    None => Box::new(MemTransport(Vec::new())),
+                }
+            };
+            let t = Targets {
+                daemons_path,
+                models_dir,
+                bundled_models: None,
+                usage: &usage,
+                model_transport: &make,
+            };
+            install_sync(&root, &key, &t, 1, &stage_id, NOW, NOW_MS, 0, &mut |_, _| {})
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the download started");
+
+        // The in-flight install shows as installing and cannot be removed.
+        let listed = fx.fx_installed();
+        let m = listed.iter().find(|i| i.listing_id == "tiny-model").expect("tracked");
+        assert_eq!(m.state, "installing");
+        let err = fx.fx_remove("tiny-model", &Usage(None)).unwrap_err();
+        assert_eq!(err.code, "install_running", "{err:?}");
+        // Another, finished install is still removable.
+        assert!(fx.fx_remove("daily-brief", &Usage(None)).is_ok());
+
+        go_tx.send(()).expect("release the download");
+        let iv = installer.join().expect("joined").expect("installed");
+        assert_eq!(iv.state, "not_selected");
+    });
+    // Once finished, it is removable as usual.
+    assert!(fx.fx_remove("tiny-model", &Usage(None)).is_ok());
+}
+
+#[test]
+fn a_pending_record_left_by_an_install_that_is_not_running_is_removable() {
+    // A crash between saving the record and creating the target leaves a pending record with no
+    // install running: that is not in flight, so Remove clears it.
+    let fx = Fx::standard("stalepending");
+    fx.fx_view(1);
+    let rec = InstallRecord {
+        listing_id: "tiny-model".into(),
+        kind: ListingKind::Model,
+        name: "tiny-model name".into(),
+        version: "1.0.0".into(),
+        target: "tiny-model.gguf".into(),
+        installed_at: NOW,
+        pending: true,
+    };
+    update_installs(&fx.root, |i| i.push(rec)).expect("seed record");
+    assert_eq!(fx.fx_installed()[0].state, "missing");
+    assert!(fx.fx_remove("tiny-model", &Usage(None)).is_ok());
+}
+
 // ---- wiring --------------------------------------------------------------------------------
 
 #[test]
