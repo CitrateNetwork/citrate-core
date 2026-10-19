@@ -518,6 +518,10 @@ struct ChainStub {
     executed_next: RefCell<std::collections::VecDeque<Result<u64, i64>>>,
     /// Hashes `eth_getBlockByHash` no longer serves (the block left the executed chain).
     unknown_hashes: RefCell<std::collections::HashSet<String>>,
+    /// A raw `citrate_executedHead` response body (e.g. a malformed result), used when set.
+    executed_head_raw: RefCell<Option<JsonValue>>,
+    /// `citrate_executedHead` fails at the transport (a timeout) when set.
+    executed_head_timeout: RefCell<bool>,
     /// Block hashes that differ from the default `stub_hash(n)` (a reorg).
     reorged: RefCell<std::collections::HashMap<u64, String>>,
     requests: RefCell<Vec<JsonValue>>,
@@ -540,6 +544,8 @@ impl ChainStub {
             executed_head_error: RefCell::new(None),
             executed_next: RefCell::new(Default::default()),
             unknown_hashes: RefCell::new(Default::default()),
+            executed_head_raw: RefCell::new(None),
+            executed_head_timeout: RefCell::new(false),
             reorged: RefCell::new(Default::default()),
             requests: RefCell::new(Vec::new()),
         }
@@ -581,6 +587,12 @@ impl ChainStub {
     }
     fn one(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
         match body["method"].as_str() {
+            Some("citrate_executedHead") if *self.executed_head_timeout.borrow() => {
+                Err(RpcError::Transport("rpc.citrate.ai timed out".into()))
+            }
+            Some("citrate_executedHead") if self.executed_head_raw.borrow().is_some() => {
+                Ok(self.executed_head_raw.borrow().clone().unwrap_or_default())
+            }
             Some("citrate_executedHead") if !self.executed_next.borrow().is_empty() => {
                 match self.executed_next.borrow_mut().pop_front() {
                     Some(Ok(n)) => Ok(ok(serde_json::json!({ "number": format!("0x{n:x}"), "hash": self.hash_at(n) }))),
@@ -898,6 +910,7 @@ fn saved_scan_progress_survives_a_relaunch() {
         claimed: [4u128].into_iter().collect(),
         anchor: Some((40_000, stub_hash(40_000))),
         generation: 2,
+        ..Default::default()
     };
     save_scan(&file, "k", &scan).expect("save");
     assert_eq!(load_scan(&file, "k"), scan);
@@ -1227,6 +1240,89 @@ fn a_reorg_is_detected_by_hash_not_by_number() {
     assert_eq!(scan.generation, 1);
     let by_number = rpc.transport().requests.borrow().iter().any(|r| r["method"] == "eth_getBlockByNumber");
     assert!(!by_number, "the reorg check never uses eth_getBlockByNumber");
+}
+
+// DGX probe A (#371 at eebb3ba): `eth_syncing == false` only means no peer showed a higher height.
+// It is NOT evidence of the applied tip. Stored head 5000, applied 3000, no citrate_executedHead
+// (an older node), a withdrawal at 3500: nothing is committed, and after a relaunch (the node
+// caught up) the withdrawal is found.
+#[test]
+fn probe_a_syncing_false_is_not_evidence() {
+    let dir = std::env::temp_dir().join(format!("c1w-probe-a-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("withdrawal-scans.json");
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![(50, 3_500, false)]));
+    *rpc.transport().applied_tip.borrow_mut() = Some(3_000);
+    *rpc.transport().syncing.borrow_mut() = Some(JsonValue::Bool(false));
+    let mut scan = load_scan(&file, "k");
+    assert!(read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 1").is_empty());
+    assert_eq!(scan.next_block, 0, "syncing=false committed {}", scan.next_block);
+    assert!(!scan.last_read_confirmed, "no evidence: the read is not confirmed");
+    save_scan(&file, "k", &scan).expect("save");
+    *rpc.transport().applied_tip.borrow_mut() = None;
+    let mut scan = load_scan(&file, "k");
+    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 2");
+    assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["50"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// DGX probe B: fall back to eth_syncing ONLY on -32601 (method not found). A timeout, -32603, any
+// other error code or a malformed result is no evidence, even when eth_syncing would report a tip.
+#[test]
+fn probe_b_only_method_not_found_falls_back() {
+    let behind = serde_json::json!({ "startingBlock": "0x1", "currentBlock": "0x1f40", "highestBlock": "0x2328" });
+    type Setup = fn(&ChainStub);
+    let cases: [(&str, Setup); 4] = [
+        ("timeout", |s| *s.executed_head_timeout.borrow_mut() = true),
+        ("-32603", |s| *s.executed_head_error.borrow_mut() = Some(-32603)),
+        ("-32000", |s| *s.executed_head_error.borrow_mut() = Some(-32000)),
+        ("malformed", |s| {
+            *s.executed_head_raw.borrow_mut() = Some(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "hash": "0x01" } }))
+        }),
+    ];
+    for (name, setup) in cases {
+        let stub = ChainStub::new(9_000, vec![(4, 2_000, false)]);
+        setup(&stub);
+        *stub.syncing.borrow_mut() = Some(behind.clone());
+        let rpc = RpcClient::with_transport(stub);
+        let mut scan = WithdrawalScan::default();
+        let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect(name);
+        assert_eq!(got.len(), 1, "{name}: the list is still read");
+        assert_eq!(scan.next_block, 0, "{name}: no evidence, no advance");
+        assert!(!scan.last_read_confirmed, "{name}");
+    }
+    // -32601 (an older node) with an eth_syncing applied tip IS evidence.
+    let stub = ChainStub::new(9_000, vec![]);
+    *stub.syncing.borrow_mut() = Some(behind);
+    let rpc = RpcClient::with_transport(stub);
+    let mut scan = WithdrawalScan::default();
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("fallback");
+    assert!(scan.next_block > 0 && scan.next_block <= 8_001 - EXECUTED_HEAD_MARGIN_BLOCKS, "{}", scan.next_block);
+    assert!(scan.last_read_confirmed);
+}
+
+// The executed-head path with both reads served confirms the read.
+#[test]
+fn an_executed_head_read_is_confirmed() {
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![]));
+    *rpc.transport().executed_head.borrow_mut() = Some(5_000);
+    let mut scan = WithdrawalScan::default();
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    assert!(scan.last_read_confirmed);
+}
+
+// The RPC calls outside the paging loop (eth_blockNumber, h1, eth_syncing, the anchor check, h2)
+// honour the deadline too: with the budget spent, nothing is called.
+#[test]
+fn a_spent_budget_makes_no_rpc_call() {
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![]));
+    *rpc.transport().executed_head.borrow_mut() = Some(5_000);
+    let mut scan = WithdrawalScan { next_block: 4_001, anchor: Some((4_100, stub_hash(4_100))), ..Default::default() };
+    let past = std::time::Instant::now() - std::time::Duration::from_millis(1);
+    let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(past)).expect_err("spent");
+    assert!(err.to_string().contains("still reading chain history"), "{err}");
+    assert!(rpc.transport().requests.borrow().is_empty(), "{:?}", rpc.transport().requests.borrow());
+    assert_eq!(scan.next_block, 4_001);
 }
 
 #[test]

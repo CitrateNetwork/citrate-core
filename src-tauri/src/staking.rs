@@ -629,6 +629,7 @@ pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
             .copied()
             .collect(),
         claimed,
+        last_read_confirmed: false,
     }
 }
 
@@ -676,6 +677,9 @@ pub struct WithdrawalScan {
     /// Bumped by every rewind, so a merge never undoes a rewind with older, further progress.
     #[serde(default)]
     pub generation: u64,
+    /// STD red stub: never set by the current behaviour.
+    #[serde(skip)]
+    pub last_read_confirmed: bool,
 }
 
 /// [`read_pending_withdrawals`], continuing `scan`. `WithdrawalRequested` logs are read in windows
