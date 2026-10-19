@@ -167,6 +167,7 @@ pub(crate) const RUNTIME_HOST_SET_NAMES: &[&str] = &[
 
 /// Host tool sets the sidecar offers only to a session opened with a grant document, which a
 /// daemon session never is: excluded by construction, so they need no env-hold row.
+#[cfg(test)]
 pub(crate) const GRANT_DOC_ONLY_SETS: &[&str] = &["shell_run"];
 
 /// The marker a Store daemon's tool list carries for a host tool set its permissions cover.
@@ -232,10 +233,12 @@ pub(crate) struct SidecarFacts<'a> {
 /// opened with exactly its approved sets whatever is on for other sessions. A sidecar that
 /// reports only some of them is treated as an older one.
 pub(crate) fn sidecar_scopes_host_sets(session_tool_sets: Option<&[String]>) -> bool {
+    // Every runtime set name, the grant-document-only ones included: a sidecar that cannot
+    // scope one of them is treated as an older one.
     session_tool_sets.is_some_and(|names| {
-        HOST_TOOL_SETS
+        RUNTIME_HOST_SET_NAMES
             .iter()
-            .all(|set| names.iter().any(|n| n == set.permission))
+            .all(|want| names.iter().any(|n| n == want))
     })
 }
 
