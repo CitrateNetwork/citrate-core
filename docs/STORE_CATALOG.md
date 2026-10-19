@@ -121,7 +121,12 @@ daemon may run with them depends on the sidecar:
   cover every set below, core opens a Store daemon's session with `toolSets` naming exactly the
   sets its approved permissions cover (an empty list for none), `promptSnapshot: false`, and only
   its approved core tools. The other sets stay off for that session whatever is on elsewhere, so
-  the start check is relaxed.
+  the start check is relaxed. Because such a sidecar would fail open if `toolSets` did not
+  arrive, the session-create response must echo `toolSets` (the same names) and
+  `promptSnapshot: false`; otherwise core closes the session and the run does not start.
+  `toolSets` is always an explicit array built in core from the daemon's stored approved
+  permissions (never from the webview), and never names `files` or `shell_run`. Relaxing needs
+  both capabilities: `sessionToolSets` covering every set below and `sessionPromptSnapshot`.
 - **An older sidecar (no `capabilities`, or not every set listed).** Core does not start a Store
   daemon while any set its approved permissions do not cover is on: Start (resume) is refused
   with the reason and how to run it sandboxed, and a run that comes due is recorded as

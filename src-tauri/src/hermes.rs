@@ -1038,8 +1038,26 @@ impl HermesManager {
     /// the scoping. The 201 response must echo `toolSets` equal (as a set) to `sent_sets` and
     /// `promptSnapshot: false`. A sidecar that ignored either (an older one, or a dropped field)
     /// fails open, so its session is closed and the run refused.
-    pub fn session_open_store(&self, body: &str, _sent_sets: &[String]) -> Result<String> {
-        self.session_open(body)
+    pub fn session_open_store(&self, body: &str, sent_sets: &[String]) -> Result<String> {
+        let bearer = self.bearer()?;
+        let resp = Self::check(self.control.post(
+            &format!("{}/sessions", self.control_url()),
+            &bearer,
+            body,
+        )?)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))?;
+        let id = v
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        valid_session_id(&id).map_err(HermesError::Decode)?;
+        if let Err(why) = verify_store_session_echo(&v, sent_sets) {
+            let _ = self.session_close(&id);
+            return Err(HermesError::Decode(why));
+        }
+        Ok(id)
     }
 
     /// HUP-S2.1: send `doc` (the whole grant document) to every session opened with grants. A
@@ -2308,6 +2326,37 @@ pub(crate) fn scoping_tool_sets(status: &RemoteStatus) -> Option<Vec<String>> {
     let caps = status.capabilities.as_ref()?;
     caps.session_prompt_snapshot
         .then(|| caps.session_tool_sets.clone())
+}
+
+/// The check on a Store daemon's session-create response: `toolSets` echoed as an array with
+/// exactly the sent names (any order), and `promptSnapshot` echoed as `false`.
+pub(crate) fn verify_store_session_echo(
+    resp: &serde_json::Value,
+    sent_sets: &[String],
+) -> std::result::Result<(), String> {
+    let refused = |what: &str| {
+        format!("Not started: Hermes did not confirm {what} for this daemon's session, so it was closed. Hermes may need an update.")
+    };
+    let echoed = resp
+        .get("toolSets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| refused("the toolSets allowlist"))?;
+    let mut got: Vec<&str> = echoed.iter().filter_map(|v| v.as_str()).collect();
+    if got.len() != echoed.len() {
+        return Err(refused("the toolSets allowlist"));
+    }
+    let mut want: Vec<&str> = sent_sets.iter().map(String::as_str).collect();
+    got.sort_unstable();
+    got.dedup();
+    want.sort_unstable();
+    want.dedup();
+    if got != want {
+        return Err(refused("the toolSets allowlist"));
+    }
+    if resp.get("promptSnapshot") != Some(&serde_json::Value::Bool(false)) {
+        return Err(refused("promptSnapshot: false"));
+    }
+    Ok(())
 }
 
 /// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
