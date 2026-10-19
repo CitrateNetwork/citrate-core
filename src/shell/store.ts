@@ -82,7 +82,7 @@ import {
   verifierReported,
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
-import { refreshHermesRunningFromSaved } from "./slices/hermesRunning";
+import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
@@ -2588,13 +2588,17 @@ export class Store {
     this.setState({ hermesTerminal: on });
     this.save();
     try {
-      const st = await syncTerminalAccess(this.terminalIo(), on);
+      // Core may restart a running Hermes to apply this, and Hermes then reads its other saved
+      // settings: snapshot them before (writes held), commit only when core says it restarted.
+      const st = await withHermesStart(async (snapshot) => {
+        const r = await syncTerminalAccess(this.terminalIo(), on);
+        if (r.restarted) confirmRunning(snapshot);
+        return r;
+      });
       if (st.enabled !== on) {
         this.setState({ hermesTerminal: st.enabled });
         this.save();
       }
-      // Core restarted a running Hermes to apply this, so it also read the other saved settings.
-      if (st.restarted) await refreshHermesRunningFromSaved();
       if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
       this.toast(on ? "Hermes can run terminal commands; each one asks you first" : "Hermes terminal commands are off");
     } catch (e) {
@@ -2608,8 +2612,11 @@ export class Store {
    *  (what Settings shows is what applies). Quiet: nothing to report when they already agree. */
   private async syncHermesTerminal(): Promise<void> {
     try {
-      const st = await syncTerminalAccess(this.terminalIo(), this.state.hermesTerminal);
-      if (st.restarted) await refreshHermesRunningFromSaved();
+      const st = await withHermesStart(async (snapshot) => {
+        const r = await syncTerminalAccess(this.terminalIo(), this.state.hermesTerminal);
+        if (r.restarted) confirmRunning(snapshot);
+        return r;
+      });
       if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
     } catch {
       /* core older than this setting, or no Hermes yet: the spawn reads its own default */

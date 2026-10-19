@@ -15,7 +15,7 @@
 import { useEffect, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
-import { noteRunning } from "../shell/slices/hermesRunning";
+import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -115,8 +115,11 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   const set = (patch: Partial<HermesWebSettings>) => setDraft((d) => ({ ...d, ...patch }));
   const disabled = !desktop || saving;
 
+  // Hermes reads these at start: while a start or restart is in flight, Save waits.
+  const held = hermesRunningSlice.use().starting > 0;
+
   const save = async () => {
-    if (parsed.bad.length || tooMany) return;
+    if (parsed.bad.length || tooMany || hermesStarting()) return;
     setSaving(true);
     setError(null);
     try {
@@ -255,9 +258,14 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
         </ul>
         <span style={hint}>Changes apply the next time Hermes starts.</span>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button className="btn btn-secondary btn-sm" data-testid="web-save" disabled={disabled || parsed.bad.length > 0 || tooMany} onClick={() => void save()}>
+          <button className="btn btn-secondary btn-sm" data-testid="web-save" disabled={disabled || held || parsed.bad.length > 0 || tooMany} onClick={() => void save()}>
             {saving ? "Saving…" : "Save"}
           </button>
+          {held && (
+            <span data-testid="web-held" style={hint}>
+              {HELD_DURING_START}
+            </span>
+          )}
           {error && (
             <span data-testid="web-error" style={hint}>
               {error}

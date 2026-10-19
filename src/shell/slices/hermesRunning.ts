@@ -9,10 +9,12 @@
 // replaces it with what is saved now. It is app-wide state, not a component's, so leaving and
 // reopening a panel does not lose a pending restart.
 //
-// Every app path that restarts Hermes calls refreshHermesRunningFromSaved once the new Hermes is
-// up: a Start confirmed running (startRuntime: the Agent page's Start, the toolchain card's restart
-// and the Controls restart), and the terminal switch's automatic restart (store.setHermesTerminal
-// and the launch sync, when core reports `restarted`).
+// Hermes reads the saved values AT START, so every app path that starts or restarts Hermes runs
+// inside withHermesStart: it marks a start in flight (the writers of these two settings hold their
+// writes until it ends), takes the saved values BEFORE the start, and the caller commits that
+// snapshot only once the start is confirmed. Paths: startRuntime (the Agent page's Start, the
+// toolchain card's restart and the Controls restart via restartHermesConfirmed) and the terminal
+// switch's automatic restart (store.setHermesTerminal and the launch sync).
 //
 // Limit: a restart core makes on its own (the supervisor restarting a crashed sidecar) is not
 // reported to the app, so the notice can outlive it. That errs toward warning. A sidecar report of
@@ -25,10 +27,25 @@ import type { HermesWebStatus } from "../../agent/webSearch";
 
 export type HermesStartSetting = "webSearch" | "learn";
 
-/** null = not known yet this session. */
-export type HermesRunningState = Record<HermesStartSetting, boolean | null>;
+/** What the running Hermes started with (null = not known yet this session), and how many starts
+ *  or restarts are in flight (the writers hold their writes while it is above zero). */
+export interface HermesRunningState {
+  webSearch: boolean | null;
+  learn: boolean | null;
+  starting: number;
+}
 
-export const hermesRunningSlice = createSlice<HermesRunningState>({ webSearch: null, learn: null });
+export type HermesSavedSnapshot = Pick<HermesRunningState, HermesStartSetting>;
+
+export const hermesRunningSlice = createSlice<HermesRunningState>({ webSearch: null, learn: null, starting: 0 });
+
+/** True while Hermes is starting or restarting: writes to its start-time settings wait. */
+export function hermesStarting(): boolean {
+  return hermesRunningSlice.get().starting > 0;
+}
+
+/** Said by a writer that holds its write during a start. */
+export const HELD_DURING_START = "Hermes is starting. This setting can be changed once it is up.";
 
 /** Record the value Hermes is running with, if not already known: call with the SAVED value when
  *  first reading it, and before every write with the value saved just before that write. */
@@ -36,18 +53,15 @@ export function noteRunning(key: HermesStartSetting, saved: boolean): void {
   if (hermesRunningSlice.get()[key] === null) hermesRunningSlice.set({ [key]: saved } as Partial<HermesRunningState>);
 }
 
-/** A restart was confirmed: Hermes now runs with what is saved. */
-export function confirmRunning(saved: Partial<HermesRunningState>): void {
-  hermesRunningSlice.set(saved);
+/** A start was confirmed: Hermes runs with the snapshot taken before it started. */
+export function confirmRunning(snapshot: Partial<HermesSavedSnapshot>): void {
+  hermesRunningSlice.set(snapshot);
 }
 
-/**
- * Hermes has just (re)started, so it read the saved settings: record those as what it runs with.
- * A value that cannot be read (no desktop app, core error) becomes unknown rather than a guess; the
- * next read or write fills it in. Never throws.
- */
-export async function refreshHermesRunningFromSaved(): Promise<void> {
-  const [web, learn] = await Promise.all([
+/** The saved values now. A value that cannot be read (no desktop app, core error) is unknown,
+ *  never a guess. Never throws. */
+export async function readSavedForHermes(): Promise<HermesSavedSnapshot> {
+  const [webSearch, learn] = await Promise.all([
     invoke<HermesWebStatus>("hermes_web_settings_get").then(
       (st) => st.settings.searchEnabled,
       () => null,
@@ -57,5 +71,21 @@ export async function refreshHermesRunningFromSaved(): Promise<void> {
       () => null,
     ),
   ]);
-  hermesRunningSlice.set({ webSearch: web, learn });
+  return { webSearch, learn };
+}
+
+/**
+ * Run a Hermes start or restart: mark it in flight first (so no writer changes the saved values
+ * from here on), snapshot the saved values (what Hermes will read when it starts), then run `f`
+ * with the snapshot. `f` commits it with confirmRunning only once the start is confirmed.
+ * `read` is the snapshot source (the app's saved settings by default).
+ */
+export async function withHermesStart<T>(f: (snapshot: HermesSavedSnapshot) => Promise<T>, read: () => Promise<HermesSavedSnapshot> = readSavedForHermes): Promise<T> {
+  hermesRunningSlice.set((st) => ({ starting: st.starting + 1 }));
+  try {
+    const snapshot = await read();
+    return await f(snapshot);
+  } finally {
+    hermesRunningSlice.set((st) => ({ starting: Math.max(0, st.starting - 1) }));
+  }
 }

@@ -12,7 +12,7 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import { refreshHermesRunningFromSaved } from "./hermesRunning";
+import { confirmRunning, withHermesStart } from "./hermesRunning";
 import type { AgentSkill, AgentApproval, AgentHarnessStatus, RegistrySkill } from "../../bridge/domains";
 
 export type RuntimeId = "hermes" | "openclaw" | "grok";
@@ -150,6 +150,12 @@ export async function startRuntime(id: RuntimeId): Promise<void> {
   }
   // Idempotent: ignore a tap while a spawn is in flight or it is already up.
   if (agentSlice.get().busy || rt.state === "starting" || rt.state === "running") return;
+  // Hermes reads the saved web search and learning settings when it starts: snapshot them first
+  // (writes are held from here on) and commit the snapshot only once the start is confirmed.
+  await withHermesStart((snapshot) => spawnHermes(snapshot));
+}
+
+async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Promise<void> {
   agentSlice.set({ busy: true });
   setHermes({ state: "starting", error: null });
   // Whether this call started a new Hermes (not one that was already running).
@@ -172,7 +178,7 @@ export async function startRuntime(id: RuntimeId): Promise<void> {
       if (status.running) {
         agentSlice.set({ busy: false });
         // A new Hermes read the saved sidecar settings at start (K2: the Controls restart notice).
-        if (spawned) await refreshHermesRunningFromSaved();
+        if (spawned) confirmRunning(snapshot);
         await refreshAgent();
         return;
       }
@@ -214,6 +220,11 @@ export type HermesRestartResult = { ok: true } | { ok: false; stage: "stop" | "s
  * (Hermes › Controls), so "applied" is never claimed for a restart that did not happen.
  */
 export async function restartHermesConfirmed(): Promise<HermesRestartResult> {
+  // Hold writes to Hermes's start-time settings for the whole stop + start.
+  return withHermesStart(() => restartSteps());
+}
+
+async function restartSteps(): Promise<HermesRestartResult> {
   agentSlice.set({ error: null });
   setHermes({ error: null });
   const hermesError = () => agentSlice.get().attached.find((r) => r.id === "hermes")?.error ?? null;

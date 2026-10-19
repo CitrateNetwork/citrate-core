@@ -15,7 +15,7 @@ vi.mock("../../bridge/tauri/invoke", async (orig) => ({
 import { bridge } from "../../bridge";
 import { store } from "../store";
 import { agentSlice, startRuntime } from "./agent";
-import { hermesRunningSlice, refreshHermesRunningFromSaved } from "./hermesRunning";
+import { hermesRunningSlice, readSavedForHermes } from "./hermesRunning";
 import { ControlsPanel, type ControlsIo } from "../../surfaces/hermes/ControlsPanel";
 import { DEFAULT_WEB_SETTINGS, type WebSettingsIo } from "../../agent/webSearch";
 import type { FlTrajectoryStatus } from "../../bridge/domains";
@@ -126,23 +126,19 @@ describe("Hermes running settings follow every restart", () => {
     expect($("pending-learn")).toBeTruthy();
   });
 
-  it("refresh reads the saved web search value through hermes_web_settings_get", async () => {
+  it("the saved snapshot reads the web search value through hermes_web_settings_get", async () => {
     learnStore(false);
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "hermes_web_settings_get") return { settings: { ...DEFAULT_WEB_SETTINGS, searchEnabled: true } };
       throw new Error("unexpected " + cmd);
     });
-    hermesRunningSlice.set({ webSearch: false, learn: true });
-    await refreshHermesRunningFromSaved();
+    expect(await readSavedForHermes()).toEqual({ webSearch: true, learn: false });
     expect(invokeMock).toHaveBeenCalledWith("hermes_web_settings_get");
-    expect(hermesRunningSlice.get()).toEqual({ webSearch: true, learn: false });
   });
 
   it("a saved value that cannot be read becomes unknown, never a guess", async () => {
     vi.spyOn(bridge.flRounds, "trajectoryStatus").mockRejectedValue(new Error("no desktop app"));
-    hermesRunningSlice.set({ webSearch: true, learn: true });
-    await refreshHermesRunningFromSaved();
-    expect(hermesRunningSlice.get()).toEqual({ webSearch: null, learn: null });
+    expect(await readSavedForHermes()).toEqual({ webSearch: null, learn: null });
   });
 
   it("the Agent page's Start (Hermes was off, now confirmed running) refreshes from the saved settings", async () => {

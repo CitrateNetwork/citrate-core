@@ -30,7 +30,7 @@ import { loadWebSettings, saveWebSettings, type HermesWebStatus, type WebSetting
 import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
-import { confirmRunning, hermesRunningSlice, noteRunning } from "../../shell/slices/hermesRunning";
+import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -218,6 +218,9 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const running = hermesRunningSlice.use();
   const webStarted = running.webSearch;
   const learnStarted = running.learn;
+  // A start or restart is in flight (from here, the Agent page or the terminal switch): Hermes is
+  // reading the saved values, so the two start-time switches hold until it is up.
+  const held = running.starting > 0;
   const [restarting, setRestarting] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
 
@@ -257,7 +260,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const webOn = web?.settings.searchEnabled === true;
   const setWebSearch = (on: boolean) =>
     run("web-search", async () => {
-      if (!web) return;
+      if (!web || hermesStarting()) return;
       try {
         // Field-specific: re-read what is saved now (another form may have changed it since this
         // panel loaded), change only searchEnabled, and show what core answers.
@@ -272,7 +275,9 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     });
   const webReason = !webDesktop
     ? "Web search needs the desktop app. This preview cannot change it."
-    : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (More, in Settings › Web search)." : null);
+    : held
+      ? HELD_DURING_START
+      : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (More, in Settings › Web search)." : null);
 
   const webPending =
     web && web.appliesOnRestart && webStarted !== null && web.settings.searchEnabled !== webStarted
@@ -285,6 +290,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const learnOn = learn?.settings.enabled === true;
   const setLearnOn = (on: boolean) =>
     run("learn", async () => {
+      if (hermesStarting()) return;
       try {
         // Turning it off keeps recorded sessions; deleting them is a second-depth choice.
         if (learn) noteRunning("learn", learn.settings.enabled);
@@ -306,25 +312,31 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const restart = io.restartHermes
     ? async () => {
         setRestarting(true);
+        // What Hermes will read when it starts: the saved values now, before the restart (writes are
+        // held until it ends). Committed only once the restart is confirmed.
+        const readSaved = async (): Promise<HermesSavedSnapshot> => {
+          const [w, l] = await Promise.all([
+            webDesktop ? loadWebSettings(io.web).catch(() => null) : Promise.resolve(null),
+            io.fl.trajectoryStatus().catch(() => null),
+          ]);
+          if (w) setWeb(w);
+          if (l) setLearn(l);
+          return { webSearch: w ? w.settings.searchEnabled : null, learn: l ? l.settings.enabled : null };
+        };
         let r: HermesRestartResult;
         try {
-          r = (await io.restartHermes?.()) ?? { ok: false, stage: "stop", error: "no restart is available" };
+          r = await withHermesStart(async (snapshot) => {
+            const res = (await io.restartHermes?.()) ?? { ok: false as const, stage: "stop" as const, error: "no restart is available" };
+            if (res.ok) confirmRunning(snapshot);
+            return res;
+          }, readSaved);
         } catch (e) {
           r = { ok: false, stage: "stop", error: msg(e) };
         }
         try {
           if (r.ok) {
-            // Confirmed: Hermes stopped and is running again, so it read the saved settings.
-            // Re-read what is saved now (another card may have written since this panel loaded) and
-            // record it as what Hermes runs with.
+            // Confirmed: Hermes stopped and started again with the snapshot taken before.
             setRestartError(null);
-            const [w, l] = await Promise.all([
-              webDesktop ? loadWebSettings(io.web).catch(() => null) : Promise.resolve(null),
-              io.fl.trajectoryStatus().catch(() => null),
-            ]);
-            if (w) setWeb(w);
-            if (l) setLearn(l);
-            confirmRunning({ webSearch: w ? w.settings.searchEnabled : null, learn: l ? l.settings.enabled : null });
           } else {
             // Not confirmed: the notices stay, with what happened.
             setRestartError(
@@ -374,13 +386,13 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         }
       />
 
-      <Row row={rows["web-search"]} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search"} onChange={(on) => void setWebSearch(on)} reason={webReason} pending={webPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
+      <Row row={rows["web-search"]} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search" || held} onChange={(on) => void setWebSearch(on)} reason={webReason} pending={webPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
 
       <Row row={rows.terminal} checked={!!s.hermesTerminal} disabled={busy === "terminal"} onChange={(on) => void run("terminal", () => store.setHermesTerminal(on))} />
 
       <Row row={rows.daemons} checked={daemonsOn} disabled={daemonsDisabled} onChange={(on) => void setDaemonsOn(on)} reason={daemonReason} />
 
-      <Row row={rows.learn} checked={learnOn} disabled={learn === null || busy === "learn"} onChange={(on) => void setLearnOn(on)} reason={learnErr} pending={learnPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
+      <Row row={rows.learn} checked={learnOn} disabled={learn === null || busy === "learn" || held} onChange={(on) => void setLearnOn(on)} reason={held ? HELD_DURING_START : learnErr} pending={learnPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
 
       <Row row={rows.voice} checked={!!s.hermesReadAloud} disabled={false} onChange={(on) => store.setHermesReadAloud(on)} />
     </div>
