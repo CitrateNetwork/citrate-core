@@ -3,6 +3,8 @@
 //   §2 durations: blocks × MEASURED block time, never 12 s;
 //   §5: one grant explanation, "staked" only after activated(), no earning or projections.
 import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { ActivationStatusView } from "../bridge/domains";
 import {
   activationGate,
@@ -237,5 +239,55 @@ describe("a recorded pending tx outranks the gate", () => {
   });
   it("is ready with no recorded tx", () => {
     expect(activationPhase(ready({ tx: null }), true, null)).toBe("ready");
+  });
+});
+
+describe("Synced is a two-sided band: a local node AHEAD of the public head is not Synced", () => {
+  // Public 500,000. A local node ahead of it is on a divergent branch or reading a stale public
+  // RPC, and must not pass the gate into the staking ceremony.
+  it("5 blocks ahead is within the band", () => {
+    expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 500_005 }))).toBe(true);
+  });
+  it("6 blocks ahead is not Synced", () => {
+    expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 500_006 }))).toBe(false);
+  });
+  it("a wildly divergent local height (10,000 ahead) is not Synced and blocks the gate with its reason", () => {
+    const st = ready({ headBlock: 500_000, localBlock: 510_000 });
+    expect(isNetworkSynced(st)).toBe(false);
+    const g = activationGate(st, true);
+    expect(g.ready).toBe(false);
+    const synced = g.checks.find((c) => c.key === "synced");
+    expect(synced?.ok).toBe(false);
+    expect(synced?.detail).toMatch(/10,000 blocks ahead/);
+  });
+});
+
+describe("TRIPWIRE: sync-gate arithmetic lives in one shared, two-sided helper", () => {
+  const root = join(__dirname, "..");
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const f of readdirSync(d)) {
+      const p = join(d, f);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(f) && !/\.test\.(ts|tsx)$/.test(f)) files.push(p);
+    }
+  };
+  walk(root);
+  it("no source subtracts local and head heights except syncGap, and the gate takes its absolute value", () => {
+    const heightMath = /(headBlock|localBlock)\s*-\s*[\w.]*(headBlock|localBlock)/;
+    const hits: string[] = [];
+    for (const f of files) {
+      readFileSync(f, "utf8")
+        .split("\n")
+        .forEach((line, i) => {
+          if (heightMath.test(line)) hits.push(`${f.slice(root.length + 1)}:${i + 1}`);
+        });
+    }
+    expect(hits).toHaveLength(1); // the one subtraction, inside syncGap
+    const src = readFileSync(join(root, "onboarding/activateValidator.ts"), "utf8");
+    const helper = src.slice(src.indexOf("export function syncGap"), src.indexOf("export function isNetworkSynced"));
+    expect(helper).toMatch(/headBlock|localBlock/);
+    const gate = src.slice(src.indexOf("export function isNetworkSynced"));
+    expect(gate.slice(0, gate.indexOf("\n}\n"))).toMatch(/Math\.abs\(\s*syncGap\(/);
   });
 });
