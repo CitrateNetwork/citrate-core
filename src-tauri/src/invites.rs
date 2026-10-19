@@ -223,7 +223,8 @@ pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<
         .and_then(|b| String::from_utf8(b).ok())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Invited group".to_string());
-    crate::comms::redeem_invite(&app, group.clone(), token.clone(), name.clone())?;
+    let wire = redeem_token_wire(&token)?;
+    crate::comms::redeem_invite(&app, group.clone(), wire, name.clone())?;
     append_referral(
         &app,
         ReferralEvent {
@@ -237,6 +238,31 @@ pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<
         },
     );
     Ok(())
+}
+
+/// Length of an invite token as minted ([`random_state`]: 32 bytes, unpadded base64url).
+const INVITE_TOKEN_LEN: usize = 43;
+
+/// The token in the form the member daemon's `RedeemInvite` expects: hex of the bytes the relay
+/// hashes. The relay looks the invite up by `BLAKE3(bytes)` and the owner published
+/// [`blake3_token_hash`]`(token)` = `BLAKE3(token's UTF-8 bytes)`, so the bytes are the token string
+/// itself, hex-encoded (not the base64url-decoded value, which would hash to a different record).
+/// Validates the minted shape first (43 base64url chars that decode to 32 bytes). Errors never
+/// contain the token.
+pub(crate) fn redeem_token_wire(token: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    let shaped = token.len() == INVITE_TOKEN_LEN
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(token)
+            .map(|raw| raw.len() == 32)
+            .unwrap_or(false);
+    if !shaped {
+        return Err("invite link token is malformed; ask for a new link".to_string());
+    }
+    Ok(hex::encode(token.as_bytes()))
 }
 
 /// Decode a hex-encoded group name back to a display string (empty on any failure).
@@ -468,6 +494,82 @@ pub async fn group_invite_revoke(
 
 #[cfg(test)]
 mod tests {
+    /// A real invite token, exactly as `group_invite_create` mints it (`random_state`: 32 random
+    /// bytes, unpadded base64url, 43 chars), taken from a link in the real share format.
+    fn real_token_from_link() -> String {
+        let token = crate::connections::random_state();
+        let link = format!(
+            "citrate://invite?g={}&t={token}&k={}",
+            "ab".repeat(16),
+            "02".repeat(33)
+        );
+        super::link_param(&link, "t").expect("t= in the link")
+    }
+
+    /// The member daemon's `RedeemInvite` hex-decodes `token` and the relay recomputes
+    /// `BLAKE3(bytes)` to find the record the owner published as `blake3_token_hash(token)`. So the
+    /// wire form must hex-decode to exactly the bytes that were hashed at publish: the token's own
+    /// UTF-8 bytes. A real 43-char base64url token must round-trip to that.
+    #[test]
+    fn redeem_token_wire_round_trips_a_real_token_to_the_published_hash() {
+        for _ in 0..32 {
+            let token = real_token_from_link();
+            assert_eq!(token.len(), 43);
+            let wire = super::redeem_token_wire(&token).expect("a real token is accepted");
+            assert!(
+                wire.chars().all(|c| c.is_ascii_hexdigit()),
+                "the daemon hex-decodes it"
+            );
+            let bytes = hex::decode(&wire).expect("hex");
+            assert_eq!(bytes, token.as_bytes());
+            assert_eq!(
+                hex::encode(blake3::hash(&bytes).as_bytes()),
+                super::blake3_token_hash(&token),
+                "the relay finds the record the owner published"
+            );
+        }
+    }
+
+    /// The raw string a real token used to be sent as is NOT valid hex, which is the failure this
+    /// fixes ("token must be hex" from the daemon).
+    #[test]
+    fn a_real_token_is_not_hex_on_its_own() {
+        let token = real_token_from_link();
+        assert!(hex::decode(&token).is_err() || token.len() % 2 == 1);
+        assert_ne!(super::redeem_token_wire(&token).ok(), Some(token));
+    }
+
+    #[test]
+    fn redeem_token_wire_refuses_malformed_tokens_without_echoing_them() {
+        let good = real_token_from_link();
+        let short = &good[..42];
+        let long = format!("{good}A");
+        let bad_char = format!("{}+", &good[..42]);
+        let padded = format!("{}=", &good[..42]);
+        for bad in [
+            "",
+            short,
+            long.as_str(),
+            bad_char.as_str(),
+            padded.as_str(),
+            "tok123",
+        ] {
+            let err = super::redeem_token_wire(bad).expect_err(bad);
+            if !bad.is_empty() {
+                assert!(!err.contains(bad), "the error never repeats the token");
+            }
+        }
+    }
+
+    #[test]
+    fn redeem_sends_the_wire_form_not_the_raw_token() {
+        let src = include_str!("invites.rs");
+        let body = &src[src.find("pub async fn group_invite_redeem").expect("fn")..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        assert!(body.contains("redeem_token_wire(&token)"));
+        assert!(!body.contains("redeem_invite(&app, group.clone(), token.clone()"));
+    }
+
     // Pure helper: the invite link format the invitee's app parses.
     #[test]
     fn invite_link_shape() {
