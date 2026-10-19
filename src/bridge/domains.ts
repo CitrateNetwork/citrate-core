@@ -1824,6 +1824,68 @@ export interface InviteClaim {
   address: string;
 }
 
+// ── v2 invite links (GROW-S1 task 10): a short code at citrate.ai plus a sealed envelope that only
+// the share link opens. Mirrors the Rust `citrate_core_kit::join` views. The webview never sees the
+// link key, the envelope, the relay token or the session bearer: the only value carrying the key is
+// `JoinMinted.shareUrl` (`https://citrate.ai/join/<code>#<key>`), meant to be copied and shared.
+// Not yet registered on CxBridge: the inviter UI (task 11) and invitee path (task 12) wire it.
+export type JoinKind = "direct" | "referral";
+export type JoinGoal = "storage" | "training" | "inference" | "dapps" | "general";
+export interface JoinMintRequest {
+  kind: JoinKind;
+  /** Inviter-approved display name (the service filters reserved names: HTTP 422). */
+  clusterName: string;
+  goal: JoinGoal;
+  ttlSeconds?: number;
+  maxResolves?: number;
+}
+export interface JoinMinted {
+  code: string;
+  kind: JoinKind;
+  /** `valid` once usable; `pending` = reserved but the envelope isn't attached (retry `attach`). */
+  status: "valid" | "pending";
+  /** ISO expiry. */
+  exp: string;
+  /** The link to share. Present only when `status === "valid"`. */
+  shareUrl: string | null;
+  /** Why a direct code is still pending. */
+  attachError: string | null;
+}
+export interface JoinResolved {
+  code: string;
+  kind: JoinKind;
+  clusterName: string | null;
+  goal: string | null;
+  inviter: string | null;
+  inviterVerified: boolean;
+  exp: string;
+  /** A direct invite that opened and is held (in Rust) for `redeem`. */
+  actionable: boolean;
+  /** A direct invite whose link arrived without its key. */
+  keyMissing: boolean;
+}
+export interface JoinCodeEntry {
+  code: string;
+  kind: JoinKind;
+  status: "pending" | "valid" | "expired" | "revoked" | "exhausted";
+  exp: string;
+  resolveCount: number;
+}
+export interface JoinDomain {
+  /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
+  mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
+  /** Retry attaching a pending direct code's envelope (idempotent). */
+  attach(code: string): Promise<JoinMinted>;
+  /** Resolve + verify a link (or bare code). Counts against the code's resolve limit: call once. */
+  resolve(link: string): Promise<JoinResolved>;
+  /** The member's explicit Join for a resolved, actionable direct invite. */
+  redeem(code: string): Promise<void>;
+  /** Revoke one of the member's codes. */
+  revoke(code: string): Promise<void>;
+  /** The member's codes, newest first. */
+  list(): Promise<JoinCodeEntry[]>;
+}
+
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
  *  caller-supplied + compiled — the app never fabricates contract code (Rule 1). */
 export interface ContractDeployInput {
