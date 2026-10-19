@@ -150,6 +150,43 @@ pub(crate) fn enabled_host_sets(env: &[(String, String)]) -> Vec<&'static HostTo
         .collect()
 }
 
+/// The ids of the host tool sets on in `env`, in [`HOST_TOOL_SETS`] order.
+pub(crate) fn enabled_host_set_ids(env: &[(String, String)]) -> Vec<String> {
+    enabled_host_sets(env)
+        .into_iter()
+        .map(|s| s.id.to_string())
+        .collect()
+}
+
+/// Said when core cannot see the sidecar's environment (not running, or restarting).
+pub(crate) const HOST_ENV_UNKNOWN: &str = "Not started: Hermes is not running or is restarting, so the tools it offers could not be checked. It runs at its next scheduled time.";
+
+/// K5a: the check right before a Store daemon's session is opened. `claimed` is the host tool
+/// sets on when the run was claimed; `current` the environment of the sidecar now (`None` = not
+/// running or restarting). Refused when the environment is unknown, when the sets changed since
+/// the claim (a restart with other settings), or when an uncovered set is on.
+pub(crate) fn store_open_check(
+    allowed: &[String],
+    claimed: Option<&[String]>,
+    current: Option<&[(String, String)]>,
+) -> Result<(), String> {
+    let env = current.ok_or_else(|| HOST_ENV_UNKNOWN.to_string())?;
+    let now = enabled_host_set_ids(env);
+    match claimed {
+        Some(c) if c == now.as_slice() => {}
+        _ => {
+            return Err(
+                "Not started: the tools Hermes offers changed since this run was claimed (it restarted with other settings). It runs at its next scheduled time."
+                    .into(),
+            )
+        }
+    }
+    match host_block_reason(allowed, env) {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
 /// Why a Store daemon bound to `allowed` must not start while the sidecar runs with `env`, or
 /// `None` when every host tool set that is on is covered by its approved permissions.
 pub(crate) fn host_block_reason(allowed: &[String], env: &[(String, String)]) -> Option<String> {
@@ -564,6 +601,10 @@ struct Running {
     run_id: String,
     started_ms: u64,
     tokens_allowed: u32,
+    /// K5a: for a Store daemon, the host tool sets on when this run was claimed (ids). The
+    /// session open checks the sets are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -902,6 +943,23 @@ impl DaemonBook {
         self.delete(id)
     }
 
+    /// The tools a daemon is bound to (`None` = a member-written daemon, or no such daemon).
+    pub(crate) fn allowed_tools_of(&self, id: &str) -> Option<Vec<String>> {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.allowed_tools.clone())
+    }
+
+    /// The host tool sets the daemon's run in flight was claimed against.
+    pub(crate) fn claimed_host_sets(&self, id: &str) -> Option<Vec<String>> {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.running.as_ref())
+            .and_then(|run| run.host_sets.clone())
+    }
+
     pub(crate) fn delete(&mut self, id: &str) -> Result<(), String> {
         let before = self.records.len();
         self.records.retain(|r| r.id != id);
@@ -999,13 +1057,21 @@ impl DaemonBook {
                 r.last_note = Some(why.into());
                 continue;
             }
-            if let (Some(allowed), Some(env)) = (&r.allowed_tools, host_env) {
-                if let Some(why) = host_block_reason(allowed, env) {
+            // A Store daemon is claimed only against a KNOWN sidecar environment: unknown (Hermes
+            // not running, in crash backoff, or restarting) blocks it like an uncovered set does.
+            let mut host_sets = None;
+            if let Some(allowed) = &r.allowed_tools {
+                let why = match host_env {
+                    None => Some(HOST_ENV_UNKNOWN.to_string()),
+                    Some(env) => host_block_reason(allowed, env),
+                };
+                if let Some(why) = why {
                     r.skipped_today = r.skipped_today.saturating_add(1);
                     r.last_outcome = Some("not_started".into());
                     r.last_note = Some(one_line(&why, NOTE_MAX));
                     continue;
                 }
+                host_sets = host_env.map(enabled_host_set_ids);
             }
             let remaining = u64::from(r.budget.max_tokens_per_day).saturating_sub(r.tokens_today);
             let tokens_allowed = u64::from(r.budget.max_tokens_per_run).min(remaining) as u32;
@@ -1016,6 +1082,7 @@ impl DaemonBook {
                 run_id: run_id.clone(),
                 started_ms: now_ms,
                 tokens_allowed,
+                host_sets,
             });
             claims.push(Claim {
                 daemon_id: r.id.clone(),
@@ -1313,6 +1380,21 @@ pub(crate) fn with_book_file<T>(
         store_book(path, &book)?;
     }
     Ok(out)
+}
+
+/// K5a: for a Store daemon, the open-time check (`store_open_check`) against the sidecar's
+/// current environment. A member daemon (or an unknown id) passes unchanged.
+pub(crate) fn check_store_daemon_open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    let (allowed, claimed) = with_book(app, false, |b| {
+        Ok((b.allowed_tools_of(id), b.claimed_host_sets(id)))
+    })?;
+    let Some(allowed) = allowed else {
+        return Ok(());
+    };
+    let current = crate::hermes::manager(app)
+        .ok()
+        .and_then(|m| m.started_env());
+    store_open_check(&allowed, claimed.as_deref(), current.as_deref())
 }
 
 fn views(book: &DaemonBook, now_ms: u64, offset_min: i32) -> DaemonsView {

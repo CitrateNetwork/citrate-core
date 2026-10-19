@@ -733,7 +733,12 @@ impl HermesManager {
         let mut env_used: Option<Vec<(String, String)>> = None;
         let started = persist_bearer(&self.token_path, &token).and_then(|()| {
             let spec = self.build_spec();
-            env_used = Some(spec.env.clone());
+            // What the child actually sees: the app's own environment (inherited by the spawn)
+            // overlaid with core's values, so a CITRATE_HERMES_* flag in the launch environment is
+            // checked too.
+            let inherited = std::env::vars_os()
+                .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+            env_used = Some(effective_child_env(inherited, &spec.env));
             let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
             config.backoff = BackoffPolicy::new();
             config.healthy_after = HERMES_HEALTHY_AFTER;
@@ -2179,6 +2184,20 @@ pub fn build_session_body(
     .to_string())
 }
 
+/// K5a: the environment a spawned child sees: `inherited` (the app's own, which the spawn passes
+/// on) overlaid with `set` (core's explicit values, which win). Only `CITRATE_` keys are kept:
+/// those are the ones that turn sidecar features on.
+pub(crate) fn effective_child_env(
+    inherited: impl Iterator<Item = (String, String)>,
+    set: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = inherited
+        .filter(|(k, _)| k.starts_with("CITRATE_") && !set.iter().any(|(s, _)| s == k))
+        .collect();
+    out.extend(set.iter().cloned());
+    out
+}
+
 /// HUP-S10.3 — the body for a DAEMON run's session: exactly the chat body plus `unattended: true`,
 /// so the sidecar starts the session in the HIC downgrade (every effectful call needs the member's
 /// explicit decision from the first step). A sidecar that predates the flag ignores it; core marks
@@ -2242,8 +2261,14 @@ pub async fn hermes_session_open_unattended(
     app: tauri::AppHandle,
     system_prompt: String,
     tools_json: String,
+    // K5a: the daemon this run belongs to. A Store daemon is re-checked against the sidecar's
+    // CURRENT environment right before its session opens (an older runner sends none).
+    daemon_id: Option<String>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
+        if let Some(id) = &daemon_id {
+            crate::daemons::check_store_daemon_open(&app, id)?;
+        }
         open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
     })
     .await

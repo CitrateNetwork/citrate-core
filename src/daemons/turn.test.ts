@@ -193,3 +193,14 @@ describe("a Store daemon's prompt carries no app snapshot", () => {
     expect((mine.openUnattended.mock.calls[0] as unknown as [string, string])[0]).toContain("Live app context");
   });
 });
+
+describe("a daemon session is opened for its daemon", () => {
+  it("passes the daemon id so core re-checks a Store daemon right before opening", async () => {
+    const done = () => [
+      { events: [{ seq: 1, event: { type: "final", content: "ok" } }, { seq: 2, event: { type: "done", outcome: "answered" } }], lastSeq: 2, busy: false },
+    ];
+    const sidecar = sidecarFake(done());
+    await runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar }));
+    expect((sidecar.openUnattended.mock.calls[0] as unknown as [string, string, string])[2]).toBe("d1");
+  });
+});

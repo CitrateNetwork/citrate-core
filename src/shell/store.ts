@@ -2892,7 +2892,7 @@ export class Store {
       systemPrompt: () => chatSystemPrompt(this.snapshot()),
       context: () => this.snapshot(),
       sidecar: {
-        openUnattended: (p, t) => h.sessionOpenUnattended(p, t),
+        openUnattended: (p, t, daemonId) => h.sessionOpenUnattended(p, t, daemonId),
         send: (id, text) => h.sessionSend(id, text),
         events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
         toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),

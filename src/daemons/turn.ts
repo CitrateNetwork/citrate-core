@@ -48,7 +48,8 @@ export const DAEMON_PREAMBLE =
   "\n\nThis is a SCHEDULED DAEMON RUN: the member set this task to run on a timer and is not watching. Do the task, then answer in a few short lines. Prefer reading over changing anything. Any change you propose (a journal entry, a memory, a group action, a transaction) waits for the member's explicit approval, so say what you proposed. Never claim something was done unless a tool result says so.";
 
 export interface SidecarDaemonApi {
-  openUnattended(systemPrompt: string, toolsJson: string): Promise<string>;
+  /** `daemonId`: core re-checks a Store daemon against Hermes's current tools before opening. */
+  openUnattended(systemPrompt: string, toolsJson: string, daemonId?: string): Promise<string>;
   send: SidecarSessionApi["send"];
   events: SidecarSessionApi["events"];
   toolResult: SidecarSessionApi["toolResult"];
@@ -119,7 +120,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
     provider = createSidecarProvider(
       {
         open: async (p, t) => {
-          const id = await sc.openUnattended(p, t);
+          const id = await sc.openUnattended(p, t, claim.daemonId);
           opened.push(id);
           return id;
         },

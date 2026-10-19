@@ -115,7 +115,8 @@ citrate-agent-runtime: a session flag to turn host tool sets off). Until there i
 start a Store daemon while any set its approved permissions do not cover is on: Start (resume)
 is refused with the reason and how to run it sandboxed, and a run that comes due is recorded as
 `not_started` instead of running (`daemons.rs::HOST_TOOL_SETS`, `resume_checked`,
-`claim_due_with`; the check reads the environment the running sidecar was started with).
+`claim_due_with`; the check reads the effective environment the running sidecar was started
+with).
 
 | Tool set | Tools | On when | Covering permission | How it is excluded today |
 |---|---|---|---|---|
@@ -129,9 +130,24 @@ is refused with the reason and how to run it sandboxed, and a run that comes due
 | File, sheet, project and undo tools | `file_*`, `fs_*`, `sheet_*`, `project_create` | a grant document in the session | none | Daemon sessions are opened with no grant document |
 | `shell_run` | `shell_run` | `CITRATE_HERMES_SHELL_RUN=1` and folder grants | none | No grant document; and in a daemon run every command is declined (no one approves it) |
 
-The app ships with the starter capsules and the bundled skills, so in practice **a Store daemon
-does not start until the runtime switch exists**, whatever its permissions. That is deliberate:
-"no tools" must be true, not approximately true.
+The app ships with the starter capsules and the bundled skills (and turns skill learning on), so
+in practice **a Store daemon starts only if its approved permissions cover those sets too**
+(`capsules_run`, `skills_read`, `learn_propose`), which no first-party listing is expected to
+declare, until the runtime switch exists. That is deliberate: "no tools" must be true, not
+approximately true.
+
+Three more rules close the gaps around restarts and the launch environment:
+
+- **Unknown environment blocks.** A Store daemon is claimed only against a known sidecar
+  environment. While Hermes is not running, in crash backoff or restarting after a settings
+  change, a due run is recorded as `not_started`.
+- **Re-checked right before the session opens.** The claim records which host sets were on.
+  `hermes_session_open_unattended` (given the daemon id) refuses the open when the environment is
+  now unknown, when the sets changed since the claim, or when an uncovered set is on.
+- **The effective environment is checked.** The sidecar inherits the app's own environment, so a
+  `CITRATE_HERMES_*` flag in the launch environment would turn a set on without core setting it.
+  Core records what the child actually sees (the inherited `CITRATE_*` variables overlaid with
+  core's own values) and checks that.
 
 The prompt of a Store daemon run is the plain agent prompt with no live app snapshot (balances,
 wallet, node state); only what its approved tools return reaches it. A member-written daemon keeps

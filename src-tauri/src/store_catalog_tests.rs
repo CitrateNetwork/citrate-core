@@ -713,7 +713,7 @@ fn every_mapped_tool_is_a_real_agent_tool() {
 fn claim_tools(fx: &Fx, daemon_id: &str) -> Option<Vec<String>> {
     crate::daemons::with_book_file(&fx.daemons, true, |b| {
         b.set_paused(daemon_id, false, NOW_MS)?;
-        let claims = b.claim_due(NOW_MS + 18 * 3_600_000, 0)?;
+        let claims = b.claim_due_with(NOW_MS + 18 * 3_600_000, 0, Some(&[]))?;
         Ok(claims.into_iter().find(|c| c.daemon_id == daemon_id).map(|c| c.allowed_tools))
     })
     .expect("claim")
@@ -754,7 +754,7 @@ fn removing_a_daemon_with_a_run_in_flight_is_refused_until_the_run_ends() {
     let at = NOW_MS + 18 * 3_600_000;
     let run_id = crate::daemons::with_book_file(&fx.daemons, true, |b| {
         b.set_paused(&iv.target, false, NOW_MS)?;
-        Ok(b.claim_due(at, 0)?.remove(0).run_id)
+        Ok(b.claim_due_with(at, 0, Some(&[]))?.remove(0).run_id)
     })
     .expect("claimed");
     let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> { Box::new(MemTransport(Vec::new())) };
@@ -785,7 +785,7 @@ fn a_released_stale_run_does_not_block_removal() {
     let at = NOW_MS + 18 * 3_600_000;
     crate::daemons::with_book_file(&fx.daemons, true, |b| {
         b.set_paused(&iv.target, false, NOW_MS)?;
-        b.claim_due(at, 0).map(|_| ())
+        b.claim_due_with(at, 0, Some(&[])).map(|_| ())
     })
     .expect("claimed");
     let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> { Box::new(MemTransport(Vec::new())) };
@@ -908,6 +908,85 @@ fn a_member_written_daemon_is_not_held_to_store_permissions() {
         .expect("saved");
     book.set_paused(&v.id, true, NOW_MS).expect("pause");
     assert!(book.resume_checked(&v.id, NOW_MS, Some(&env(&[("CITRATE_HERMES_SEARCH", "1")]))).is_ok());
+}
+
+// ---- unknown or changed sidecar environment ----------------------------------------------------
+
+#[test]
+fn an_unknown_sidecar_environment_blocks_a_store_daemon_claim() {
+    let (fx, id) = {
+        let fx = Fx::new("unknownenv");
+        let listing = listing_json("bare", "daemon", "public", DAEMON_URL, &daemon_template(), BUDGET);
+        fx.fx_publish(&catalog_json(1, &[listing]));
+        fx.fx_view(0);
+        let st = fx.fx_stage("bare", 0).expect("stage");
+        let id = fx.fx_install(&st.stage_id, 0).expect("install").target;
+        (fx, id)
+    };
+    crate::daemons::with_book_file(&fx.daemons, true, |b| b.set_paused(&id, false, NOW_MS)).expect("start");
+    let at = NOW_MS + 18 * 3_600_000;
+    // Hermes restarting (crash backoff, a settings change): its environment is unknown.
+    let claims = crate::daemons::with_book_file(&fx.daemons, true, |b| b.claim_due_with(at, 0, None)).expect("claim");
+    assert!(claims.is_empty(), "not claimed while the environment is unknown");
+    let v = &fx.fx_daemon_book().daemons[0];
+    assert_eq!(v.last_outcome.as_deref(), Some("not_started"));
+    // A member daemon is unaffected.
+    let mut book = crate::daemons::DaemonBook::default();
+    let m = book
+        .save(crate::daemons::DaemonInput { id: None, name: "Mine".into(), prompt: "Do it.".into(), schedule: "0 8 * * *".into(), budget: None }, NOW_MS, 0)
+        .expect("saved");
+    assert_eq!(book.claim_due_with(at, 0, None).expect("claim").len(), 1, "{}", m.id);
+}
+
+#[test]
+fn opening_a_store_daemon_session_rechecks_the_current_environment() {
+    use crate::daemons::{enabled_host_set_ids, store_open_check};
+    let none: Vec<String> = Vec::new();
+    let off: Vec<(String, String)> = Vec::new();
+    let search_on = env(&[("CITRATE_HERMES_SEARCH", "1")]);
+    let claimed_off = enabled_host_set_ids(&off);
+    // Same (all off) at claim and at open: opens.
+    assert!(store_open_check(&none, Some(&claimed_off), Some(&off)).is_ok());
+    // Hermes is restarting at open: refused.
+    assert!(store_open_check(&none, Some(&claimed_off), None).is_err());
+    // Web search was turned on between the claim and the open: refused.
+    let err = store_open_check(&none, Some(&claimed_off), Some(&search_on)).unwrap_err();
+    assert!(err.contains("changed") || err.contains("Web search"), "{err}");
+    // Covered by the approved permission but still a change since the claim: refused.
+    let covered = tools_for_permissions(&["web_search".to_string()]);
+    assert!(store_open_check(&covered, Some(&claimed_off), Some(&search_on)).is_err());
+    // Claimed with no record of the sets (an older book): refused.
+    assert!(store_open_check(&none, None, Some(&off)).is_err());
+}
+
+#[test]
+fn a_claim_records_the_host_sets_it_was_checked_against() {
+    let fx = Fx::standard("claimsets");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    let at = NOW_MS + 18 * 3_600_000;
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(&id, false, NOW_MS)?;
+        b.claim_due_with(at, 0, Some(&[])).map(|_| ())
+    })
+    .expect("claimed");
+    let sets = crate::daemons::with_book_file(&fx.daemons, false, |b| Ok(b.claimed_host_sets(&id))).expect("read");
+    assert_eq!(sets, Some(Vec::new()));
+}
+
+#[test]
+fn the_check_reads_what_the_sidecar_inherits_from_the_launch_environment() {
+    use crate::daemons::host_block_reason;
+    // The app was launched with a tool-set flag core never set: the child inherits it.
+    let inherited = env(&[("CITRATE_HERMES_SEARCH", "1"), ("HOME", "/Users/x")]);
+    let core_set = env(&[("CITRATE_HERMES_ADDR", "127.0.0.1:1")]);
+    let effective = crate::hermes::effective_child_env(inherited.into_iter(), &core_set);
+    assert!(effective.iter().any(|(k, v)| k == "CITRATE_HERMES_SEARCH" && v == "1"));
+    assert!(host_block_reason(&[], &effective).is_some(), "the inherited flag is seen");
+    // Core's own value wins over an inherited one.
+    let effective = crate::hermes::effective_child_env(env(&[("CITRATE_HERMES_SEARCH", "1")]).into_iter(), &env(&[("CITRATE_HERMES_SEARCH", "0")]));
+    assert!(host_block_reason(&[], &effective).is_none());
 }
 
 // ---- wiring --------------------------------------------------------------------------------
