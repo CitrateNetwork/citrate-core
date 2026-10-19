@@ -36,13 +36,17 @@
 //! - **I2. The marker is the single commit point.** The migration is a sequence of idempotent
 //!   steps: write the intent, delete the chain DB, set the previous `node.toml` aside, fsync the
 //!   directory, write the marker. Only the marker rename commits it. Removing the intent after
-//!   the commit is cleanup.
+//!   the commit is cleanup. Every migration attempt mints a fresh random nonce and records it in
+//!   its intent and, at the commit, in the marker: an intent is committed only when the marker
+//!   carries **its** nonce. A marker that merely names the intent's target genesis (the old
+//!   marker, when a launch rolls back to the genesis it already names) is not a commit.
 //! - **I3. Every uncommitted step is retried on the next launch, whatever the profile is
 //!   then.** The intent ([`MIGRATION_INTENT_FILE`]) is made durable before the first destructive
-//!   step. While it names a target that the marker does not name, the data dir is mid-migration:
-//!   the next launch rolls the migration forward to the genesis that launch targets, even when the
-//!   profile changed in between, and even when it changed back to the genesis the old marker
-//!   names (a partly deleted database is never kept).
+//!   step. While the marker does not carry its nonce, the data dir is mid-migration: the next
+//!   launch starts a new attempt (new nonce, same source genesis) to the genesis that launch
+//!   targets, and that attempt deletes every chain DB entry left before it writes any marker.
+//!   This holds however many launches crash in a row and whatever genesis each one targets,
+//!   including the genesis the old marker names (a partly deleted database is never kept).
 //! - **I4. A node never opens a data dir that is mid-migration or of another network.** The node
 //!   is spawned only after [`reconcile_genesis`] returns `Ok`, which it does only with the marker
 //!   naming the book genesis, no intent left, no chain DB of another genesis and no `node.toml`
@@ -51,15 +55,16 @@
 //! ## Steps
 //! 1. Validate the book genesis; a zero or unparsable hash refuses the start.
 //! 2. No intent and the marker equals the book genesis: nothing to do.
-//!    An intent whose target the marker already names is a committed migration whose cleanup
-//!    was interrupted: the intent is removed and step 2 is evaluated again.
+//!    An intent whose nonce the marker carries is a committed migration whose cleanup was
+//!    interrupted: the intent is removed and step 2 is evaluated again. Any other intent
+//!    (no nonce, an unreadable file, or a nonce the marker does not carry) is uncommitted.
 //! 3. No intent, no marker, no chain DB and no `node.toml`: a fresh data dir, marked.
-//! 4. Otherwise migrate, holding the database lock: write the intent (temp file, fsync,
-//!    rename, directory fsync; an existing intent keeps its source genesis and takes the new
-//!    target), delete every chain DB entry (`CURRENT` first, so a partly deleted directory never
-//!    looks like a complete database), set the previous network's `node.toml` aside
-//!    ([`retire_node_config`]), fsync the directory, write the marker atomically, then remove
-//!    the intent.
+//! 4. Otherwise migrate, holding the database lock: write the intent with a fresh nonce (temp
+//!    file, fsync, rename, directory fsync; an existing uncommitted intent keeps its source
+//!    genesis and takes the new target), delete every chain DB entry (`CURRENT` first, so a
+//!    partly deleted directory never looks like a complete database) and check that none is
+//!    left, set the previous network's `node.toml` aside ([`retire_node_config`]), fsync the
+//!    directory, write the marker (genesis and nonce) atomically, then remove the intent.
 //!
 //! A crash or error anywhere before the marker rename leaves the intent (or, before the intent
 //! was durable, an untouched database), so the next start runs every step again; each is
@@ -288,15 +293,17 @@ pub fn reset_log_message(
 pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), GenesisGateError> {
     let names = chain_db_entries(data_dir)?;
     let mut bytes = 0u64;
+    // Tests can stop the delete after the first `k` entries, as a crash there would.
     #[cfg(test)]
-    let mut deleted = 0usize;
-    for name in &names {
-        #[cfg(test)]
-        if test_hooks::STOP_WIPE_AFTER.with(|n| n.get()) == Some(deleted) {
-            return Err(GenesisGateError::Io(
-                "injected stop mid-delete (test)".into(),
-            ));
-        }
+    let stop_at = test_hooks::STOP_WIPE_AFTER.with(|n| n.get());
+    #[cfg(test)]
+    let todo: &[String] = match stop_at {
+        Some(k) => &names[..k.min(names.len())],
+        None => &names,
+    };
+    #[cfg(not(test))]
+    let todo: &[String] = &names;
+    for name in todo {
         let path = data_dir.join(name);
         bytes = bytes.saturating_add(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
         match std::fs::remove_file(&path) {
@@ -304,10 +311,14 @@ pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), Genes
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(GenesisGateError::Io(format!("remove {name}: {e}"))),
         }
-        #[cfg(test)]
-        {
-            deleted += 1;
-        }
+    }
+    // A stop set for more entries than were left still stops the run here (a crash right after
+    // the last unlink), so every crash point is reachable whatever an earlier attempt deleted.
+    #[cfg(test)]
+    if stop_at.is_some() {
+        return Err(GenesisGateError::Io(
+            "injected stop mid-delete (test)".into(),
+        ));
     }
     Ok((names, bytes))
 }
@@ -367,7 +378,8 @@ pub(crate) mod test_hooks {
         /// The migration stops (returns an error, as a crash would leave the disk) right after
         /// this step.
         pub static STOP_AFTER: Cell<Option<super::Step>> = const { Cell::new(None) };
-        /// `wipe_chain_db` stops after deleting this many entries (a crash mid-delete).
+        /// `wipe_chain_db` stops after deleting this many entries (a crash mid-delete), or after
+        /// the last one when fewer were left.
         pub static STOP_WIPE_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
     }
 }
@@ -410,13 +422,52 @@ fn marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(GENESIS_MARKER_FILE)
 }
 
+/// The marker: its first line is the genesis; a migration that committed it adds a
+/// `migration <nonce>` line (I2). A marker written for a fresh data dir has no nonce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marker {
+    /// The genesis, lowercase and trimmed.
+    pub genesis: String,
+    /// The nonce of the migration that committed this marker, if any.
+    pub nonce: Option<String>,
+}
+
+/// The marker, if present.
+pub fn read_marker_record(data_dir: &Path) -> Result<Option<Marker>, GenesisGateError> {
+    let text = match std::fs::read_to_string(marker_path(data_dir)) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(GenesisGateError::Io(format!("read marker: {e}"))),
+    };
+    let genesis = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let nonce = text
+        .lines()
+        .skip(1)
+        .find_map(|l| l.trim().strip_prefix("migration "))
+        .and_then(parse_nonce);
+    Ok(Some(Marker { genesis, nonce }))
+}
+
 /// The genesis the marker names, lowercase and trimmed; `None` when absent.
+#[cfg(test)]
 pub fn read_marker(data_dir: &Path) -> Result<Option<String>, GenesisGateError> {
-    match std::fs::read_to_string(marker_path(data_dir)) {
-        Ok(s) => Ok(Some(s.trim().to_ascii_lowercase())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(GenesisGateError::Io(format!("read marker: {e}"))),
-    }
+    Ok(read_marker_record(data_dir)?.map(|m| m.genesis))
+}
+
+/// A migration nonce: 32 lowercase hex digits (128 random bits).
+fn parse_nonce(v: &str) -> Option<String> {
+    let v = v.trim().to_ascii_lowercase();
+    (v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit())).then_some(v)
+}
+
+/// A fresh nonce for one migration attempt (I2).
+fn new_nonce() -> String {
+    format!("{:032x}", rand::random::<u128>())
 }
 
 /// Write `contents` to `data_dir/name` atomically and durably: temp file, fsync, rename,
@@ -434,10 +485,24 @@ fn write_durable(data_dir: &Path, name: &str, contents: &str) -> std::io::Result
     sync_dir(data_dir)
 }
 
-/// Write the marker atomically: temp file, fsync, rename, directory fsync.
-fn write_marker(data_dir: &Path, genesis: &str) -> Result<(), GenesisGateError> {
-    write_durable(data_dir, GENESIS_MARKER_FILE, &format!("{genesis}\n"))
+/// Write the marker atomically: temp file, fsync, rename, directory fsync. `nonce` is the
+/// committing migration's (I2); `None` for a fresh data dir.
+fn write_marker_with(
+    data_dir: &Path,
+    genesis: &str,
+    nonce: Option<&str>,
+) -> Result<(), GenesisGateError> {
+    let body = match nonce {
+        Some(n) => format!("{genesis}\nmigration {n}\n"),
+        None => format!("{genesis}\n"),
+    };
+    write_durable(data_dir, GENESIS_MARKER_FILE, &body)
         .map_err(|e| GenesisGateError::Io(format!("write marker: {e}")))
+}
+
+/// Write a marker with no migration nonce (a fresh data dir).
+fn write_marker(data_dir: &Path, genesis: &str) -> Result<(), GenesisGateError> {
+    write_marker_with(data_dir, genesis, None)
 }
 
 /// An uncommitted (or not yet cleaned up) migration, from [`MIGRATION_INTENT_FILE`].
@@ -445,9 +510,25 @@ fn write_marker(data_dir: &Path, genesis: &str) -> Result<(), GenesisGateError> 
 pub struct MigrationIntent {
     /// The genesis the data belonged to when the migration began (`None`: not recorded).
     pub from: Option<String>,
-    /// The genesis the migration was moving to (`None`: unreadable, which never matches a
-    /// marker, so the migration is rolled forward).
+    /// The genesis the migration was moving to (`None`: unreadable).
     pub to: Option<String>,
+    /// This attempt's nonce (`None`: missing or unreadable, which never matches a marker, so
+    /// the migration is rolled forward).
+    pub nonce: Option<String>,
+}
+
+impl MigrationIntent {
+    /// Whether `marker` is this migration's commit (I2): it carries this intent's nonce (and
+    /// names its target). A marker that only names the same genesis is not.
+    fn committed_by(&self, marker: Option<&Marker>) -> bool {
+        match (marker, &self.nonce) {
+            (Some(m), Some(n)) => {
+                m.nonce.as_deref() == Some(n.as_str())
+                    && self.to.as_deref() == Some(m.genesis.as_str())
+            }
+            _ => false,
+        }
+    }
 }
 
 fn intent_path(data_dir: &Path) -> PathBuf {
@@ -468,6 +549,7 @@ pub fn read_intent(data_dir: &Path) -> Result<Option<MigrationIntent>, GenesisGa
                 return Ok(Some(MigrationIntent {
                     from: None,
                     to: None,
+                    nonce: None,
                 }));
             }
             return Err(GenesisGateError::Io(format!("read migration intent: {e}")));
@@ -479,19 +561,25 @@ pub fn read_intent(data_dir: &Path) -> Result<Option<MigrationIntent>, GenesisGa
             .map(|v| v.trim().to_ascii_lowercase())
             .and_then(|v| validate_book_genesis(&v).ok())
     };
+    let nonce = text
+        .lines()
+        .find_map(|l| l.strip_prefix("nonce "))
+        .and_then(parse_nonce);
     Ok(Some(MigrationIntent {
         from: field("from "),
         to: field("to "),
+        nonce,
     }))
 }
 
 fn write_intent(data_dir: &Path, intent: &MigrationIntent) -> Result<(), GenesisGateError> {
     let from = intent.from.as_deref().unwrap_or("unrecorded");
     let to = intent.to.as_deref().unwrap_or("unrecorded");
+    let nonce = intent.nonce.as_deref().unwrap_or("unrecorded");
     write_durable(
         data_dir,
         MIGRATION_INTENT_FILE,
-        &format!("from {from}\nto {to}\n"),
+        &format!("nonce {nonce}\nfrom {from}\nto {to}\n"),
     )
     .map_err(|e| GenesisGateError::Io(format!("write the migration intent: {e}")))
 }
@@ -525,11 +613,13 @@ pub fn reconcile_genesis(
     node_running: impl FnOnce() -> bool,
 ) -> Result<GenesisOutcome, GenesisGateError> {
     let book = validate_book_genesis(book_genesis)?;
-    let marker = read_marker(data_dir)?;
+    let marker_record = read_marker_record(data_dir)?;
+    let marker = marker_record.as_ref().map(|m| m.genesis.clone());
     let mut intent = read_intent(data_dir)?;
-    // A migration whose commit (the marker) happened but whose cleanup did not: finish it.
+    // A migration whose commit (the marker carrying its nonce) happened but whose cleanup did
+    // not: finish it. Any other intent is uncommitted and rolled forward below (I2, I3).
     if let Some(i) = &intent {
-        if i.to.is_some() && i.to == marker {
+        if i.committed_by(marker_record.as_ref()) {
             clear_intent(data_dir)?;
             intent = None;
         }
@@ -560,19 +650,30 @@ pub fn reconcile_genesis(
     // I3: the intent is durable before the first destructive step. An earlier, uncommitted
     // intent keeps the genesis the data came from (it names the set-aside config) and takes this
     // launch's target, so a profile change between launches rolls forward to the new target.
+    // Every attempt mints its own nonce (I2): only a marker this attempt writes commits it.
     let previous = match &intent {
         Some(i) => i.from.clone(),
         None => marker.clone(),
     };
+    let nonce = new_nonce();
     write_intent(
         data_dir,
         &MigrationIntent {
             from: previous.clone(),
             to: Some(book.clone()),
+            nonce: Some(nonce.clone()),
         },
     )?;
     checkpoint("intent")?;
     let (removed, bytes) = wipe_chain_db(data_dir)?;
+    // The delete is complete before any marker is written: whatever an earlier attempt left.
+    let left = chain_db_entries(data_dir)?;
+    if !left.is_empty() {
+        return Err(GenesisGateError::Io(format!(
+            "chain database entries remain after the delete: {}",
+            left.join(", ")
+        )));
+    }
     checkpoint("wipe")?;
     // K6: the previous network's node.toml goes before the marker commits the switch.
     let retired_config = retire_node_config(data_dir, previous.as_deref())
@@ -580,8 +681,8 @@ pub fn reconcile_genesis(
     checkpoint("retire")?;
     sync_dir(data_dir).map_err(|e| GenesisGateError::Io(format!("sync the node data dir: {e}")))?;
     checkpoint("sync")?;
-    // I2: the commit point.
-    write_marker(data_dir, &book)?;
+    // I2: the commit point, carrying this attempt's nonce.
+    write_marker_with(data_dir, &book, Some(&nonce))?;
     checkpoint("marker")?;
     clear_intent(data_dir)?;
     drop(lock);
@@ -1218,21 +1319,20 @@ mod tests {
         let d = tmp("intent-source");
         populate(&d);
         write_marker(&d, OLD).unwrap();
+        let ends = |d: &Path| {
+            read_intent(d)
+                .unwrap()
+                .map(|i| (i.from, i.to, i.nonce.is_some()))
+        };
         assert!(interrupted(&d, NEW, Crash::After(Step::IntentWritten)).is_err());
-        assert_eq!(
-            read_intent(&d).unwrap(),
-            Some(MigrationIntent {
-                from: Some(OLD.into()),
-                to: Some(NEW.into())
-            })
-        );
+        assert_eq!(ends(&d), Some((Some(OLD.into()), Some(NEW.into()), true)));
+        let first_nonce = read_intent(&d).unwrap().unwrap().nonce;
         assert!(interrupted(&d, THIRD, Crash::After(Step::DbWiped)).is_err());
-        assert_eq!(
-            read_intent(&d).unwrap(),
-            Some(MigrationIntent {
-                from: Some(OLD.into()),
-                to: Some(THIRD.into())
-            })
+        assert_eq!(ends(&d), Some((Some(OLD.into()), Some(THIRD.into()), true)));
+        assert_ne!(
+            read_intent(&d).unwrap().unwrap().nonce,
+            first_nonce,
+            "a retarget is a new attempt with a new nonce"
         );
         let out = reconcile_genesis(&d, THIRD, never_running).unwrap();
         let GenesisOutcome::Reset { previous, .. } = out else {
@@ -1249,12 +1349,14 @@ mod tests {
         let d = tmp("committed-cleanup");
         populate(&d);
         std::fs::remove_file(d.join("node.toml")).unwrap();
-        write_marker(&d, NEW).unwrap();
+        let n = new_nonce();
+        write_marker_with(&d, NEW, Some(&n)).unwrap();
         write_intent(
             &d,
             &MigrationIntent {
                 from: Some(OLD.into()),
                 to: Some(NEW.into()),
+                nonce: Some(n),
             },
         )
         .unwrap();
@@ -1266,6 +1368,181 @@ mod tests {
         for f in DB {
             assert!(d.join(f).exists(), "{f}: nothing is wiped after the commit");
         }
+    }
+
+    /// I2 (MAC round 4 on core#363): a marker that names the intent's target genesis but not
+    /// its nonce is not that migration's commit. The data is never kept: the migration is
+    /// rolled forward. Covers a marker with no nonce, another migration's nonce, and an intent
+    /// with no (or an unreadable) nonce.
+    #[test]
+    fn a_marker_naming_the_target_without_the_intent_nonce_is_not_a_commit() {
+        let n = new_nonce();
+        let other = new_nonce();
+        let cases: &[(Option<&str>, Option<&str>)] = &[
+            (None, Some(n.as_str())),
+            (Some(other.as_str()), Some(n.as_str())),
+            (Some(n.as_str()), None),
+        ];
+        for (marker_nonce, intent_nonce) in cases {
+            let ctx = format!("marker={marker_nonce:?} intent={intent_nonce:?}");
+            let d = tmp("nonce-mismatch");
+            populate(&d);
+            write_marker_with(&d, OLD, *marker_nonce).unwrap();
+            write_intent(
+                &d,
+                &MigrationIntent {
+                    from: Some(OLD.into()),
+                    to: Some(OLD.into()),
+                    nonce: intent_nonce.map(str::to_string),
+                },
+            )
+            .unwrap();
+            let out = reconcile_genesis(&d, OLD, never_running).unwrap();
+            assert!(
+                matches!(out, GenesisOutcome::Reset { .. }),
+                "{ctx}: not Kept: {out:?}"
+            );
+            assert_committed(&d, OLD, OLD_CONFIG_ASIDE, &ctx);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// Marker format: the first line is the genesis, a committing migration adds its nonce, and
+    /// a marker from before nonces (one line) still reads as that genesis with no nonce.
+    #[test]
+    fn the_marker_records_the_committing_nonce_and_old_markers_still_read() {
+        let d = tmp("marker-format");
+        std::fs::write(d.join(GENESIS_MARKER_FILE), format!("{NEW}\n")).unwrap();
+        assert_eq!(
+            read_marker_record(&d).unwrap(),
+            Some(Marker {
+                genesis: NEW.into(),
+                nonce: None
+            })
+        );
+        let n = new_nonce();
+        assert_eq!(n.len(), 32);
+        assert_ne!(n, new_nonce(), "fresh per attempt");
+        write_marker_with(&d, OLD, Some(&n)).unwrap();
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(OLD));
+        assert_eq!(read_marker_record(&d).unwrap().unwrap().nonce, Some(n));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// M3, the sequence MAC reproduced on ff2c18e (round 4 on core#363): a migration to NEW
+    /// crashes mid-delete; the next launch targets OLD (the genesis the marker still names) and
+    /// crashes too; the launch after that must not keep the half-deleted database.
+    #[test]
+    fn crash_then_retarget_to_the_marker_genesis_then_crash_then_launch_is_not_kept() {
+        for second in CRASHES {
+            if matches!(second, Crash::After(Step::MarkerWritten)) {
+                continue; // that one commits OLD; covered by the full matrix below
+            }
+            let ctx = format!("second={second:?}");
+            let d = tmp("double-crash");
+            populate(&d);
+            write_marker(&d, OLD).unwrap();
+            assert!(interrupted(&d, NEW, Crash::MidWipe).is_err(), "{ctx}");
+            assert!(!d.join("CURRENT").exists(), "{ctx}: CURRENT went first");
+            assert!(interrupted(&d, OLD, *second).is_err(), "{ctx}");
+            assert_eq!(
+                read_marker(&d).unwrap().as_deref(),
+                Some(OLD),
+                "{ctx}: the old marker"
+            );
+            let out = reconcile_genesis(&d, OLD, never_running).unwrap();
+            assert!(
+                matches!(out, GenesisOutcome::Reset { .. }),
+                "{ctx}: a partly deleted DB is never kept: {out:?}"
+            );
+            assert_committed(&d, OLD, OLD_CONFIG_ASIDE, &ctx);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// M1-M4 across two consecutive crashes: every first crash point (to NEW), then a launch for
+    /// every target crashing at every point, then a launch for every target, from a marked and
+    /// an unrecorded database. The third launch always ends committed to its own genesis with no
+    /// chain DB left (nothing partly deleted is kept), and the launch after it keeps everything.
+    #[test]
+    fn m1_m4_two_consecutive_crashes_at_every_point_and_every_profile_converge() {
+        let targets = [NEW, THIRD, OLD];
+        let mut cases = 0usize;
+        for marked in [true, false] {
+            let aside = if marked {
+                OLD_CONFIG_ASIDE
+            } else {
+                UNRECORDED_ASIDE
+            };
+            for first in CRASHES {
+                for mid in targets {
+                    for second in CRASHES {
+                        for last in targets {
+                            let ctx = format!(
+                                "marked={marked} first={first:?}->NEW second={second:?}->{mid} last={last}"
+                            );
+                            let d = tmp("m2-matrix");
+                            populate(&d);
+                            if marked {
+                                write_marker(&d, OLD).unwrap();
+                            }
+                            assert!(interrupted(&d, NEW, *first).is_err(), "{ctx}");
+                            let first_committed =
+                                matches!(first, Crash::After(Step::MarkerWritten));
+                            // The second launch: it only escapes its injected crash when there
+                            // is nothing to migrate (the first committed NEW and it targets NEW).
+                            let r2 = interrupted(&d, mid, *second);
+                            let mut committed_to = None;
+                            match &r2 {
+                                Ok(out) => {
+                                    assert!(first_committed && mid == NEW, "{ctx}: {out:?}");
+                                    assert_eq!(out, &GenesisOutcome::Kept, "{ctx}");
+                                    committed_to = Some(NEW);
+                                }
+                                Err(_) => {
+                                    if matches!(second, Crash::After(Step::MarkerWritten)) {
+                                        committed_to = Some(mid);
+                                    }
+                                }
+                            }
+                            // Whatever is on disk now: the marker names the genesis of a
+                            // committed attempt only alongside an empty chain DB, or it is the
+                            // original marker (I2).
+                            let m = read_marker(&d).unwrap();
+                            if m.as_deref() != Some(OLD) && m.is_some() {
+                                assert!(
+                                    chain_db_entries(&d).unwrap().is_empty(),
+                                    "{ctx}: a new marker only after the full delete"
+                                );
+                                assert!(
+                                    !d.join("node.toml").exists(),
+                                    "{ctx}: a new marker only after the config is aside"
+                                );
+                            }
+                            let out = reconcile_genesis(&d, last, never_running)
+                                .unwrap_or_else(|e| panic!("{ctx}: {e}"));
+                            if committed_to == Some(last) {
+                                assert_eq!(out, GenesisOutcome::Kept, "{ctx}");
+                            } else {
+                                assert!(
+                                    matches!(out, GenesisOutcome::Reset { .. }),
+                                    "{ctx}: {out:?}"
+                                );
+                            }
+                            assert_committed(&d, last, aside, &ctx);
+                            assert_eq!(
+                                reconcile_genesis(&d, last, || panic!("no probe")).unwrap(),
+                                GenesisOutcome::Kept,
+                                "{ctx}"
+                            );
+                            let _ = std::fs::remove_dir_all(&d);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 2 * 7 * 3 * 7 * 3, "the full matrix ran");
     }
 
     #[test]
