@@ -7,7 +7,7 @@
 // lock (withHermesStart), so it waits for a write already in progress and never sees half of one.
 import { publishWebSettings, withWebSettingsLock } from "./webSettingsSync";
 import { loadWebSettings, saveWebSettings, type HermesWebSettings, type HermesWebStatus, type WebSettingsIo } from "./webSearch";
-import { hermesStarting } from "../shell/slices/hermesRunning";
+import { hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
 
 /** Run `write` under the lock, unless Hermes is starting. Resolves to null when the write was held. */
 export function writeWebSettingsUnlessStarting<T>(write: () => Promise<T>): Promise<T | null> {
@@ -15,13 +15,17 @@ export function writeWebSettingsUnlessStarting<T>(write: () => Promise<T>): Prom
 }
 
 /**
- * The one writer of the saved web settings: re-read what core has, change only `fields`, write
+ * The one writer of the saved web settings, inside the lock and the start hold above: re-read what core has, change only `fields`, write
  * the whole object back (core replaces it on every set), and tell the other views.
  * Resolves null when the write was held for a Hermes start.
  */
-export async function patchWebSettings(io: WebSettingsIo, fields: Partial<HermesWebSettings>, source: symbol): Promise<HermesWebStatus | null> {
-  const fresh = await loadWebSettings(io);
-  const saved = await saveWebSettings(io, { ...fresh.settings, ...fields });
-  publishWebSettings(saved, source);
-  return saved;
+export function patchWebSettings(io: WebSettingsIo, fields: Partial<HermesWebSettings>, source: symbol): Promise<HermesWebStatus | null> {
+  return writeWebSettingsUnlessStarting(async () => {
+    const fresh = await loadWebSettings(io);
+    // Hermes reads search at start: remember what it runs with before changing the saved value.
+    noteRunning("webSearch", fresh.settings.searchEnabled);
+    const saved = await saveWebSettings(io, { ...fresh.settings, ...fields });
+    publishWebSettings(saved, source);
+    return saved;
+  });
 }
