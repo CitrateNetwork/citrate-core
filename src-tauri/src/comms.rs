@@ -726,6 +726,25 @@ fn connect_with_retry(socket_path: &Path) -> Result<IpcStream> {
 /// `Ipc` error and the surface falls to its empty/error state instead of beachballing.
 const COMMS_IPC_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// GROW-S2 review — the deadline for the rendezvous verbs. These can wait on the networked relay
+/// before the daemon answers (an open is persisted, then sent; a tick runs a Summary, polls, an
+/// admit and its reconciliation), so the 5 s default is too tight. A miss is still an honest,
+/// ambiguous error (I6): the caller never treats it as "nothing happened".
+const RENDEZVOUS_IPC_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The read/write deadline for one request.
+fn ipc_timeout_for(req: &Request) -> Duration {
+    match req {
+        Request::RendezvousOpen { .. }
+        | Request::RendezvousJoin { .. }
+        | Request::RendezvousTick
+        | Request::RendezvousCancel { .. }
+        | Request::RendezvousClose { .. }
+        | Request::RendezvousForget { .. } => RENDEZVOUS_IPC_TIMEOUT,
+        _ => COMMS_IPC_TIMEOUT,
+    }
+}
+
 /// Flag-A — short, single-attempt timeout for the relay-health probe. It must never add UI latency,
 /// so it does NOT use `connect_with_retry` (that window is for first-open races) and caps the whole
 /// round-trip well under a second. A wedged daemon is already the supervisor's job; this probe only
@@ -736,7 +755,7 @@ const RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 /// request, read one response — the normal command path.
 fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
     let stream = connect_with_retry(socket_path)?;
-    ipc_round_trip(stream, COMMS_IPC_TIMEOUT, bearer, req)
+    ipc_round_trip(stream, ipc_timeout_for(req), bearer, req)
 }
 
 /// HUP-S10.5 — the offline matrix probe's seam: one messaging request (list groups) over the
