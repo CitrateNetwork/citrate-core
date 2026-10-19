@@ -230,3 +230,12 @@ describe("the bond's registered key vs this node's key", () => {
     expect(keyMismatch(ready())).toBeNull();
   });
 });
+
+describe("a recorded pending tx outranks the gate", () => {
+  it("is pending when the step holds a tx hash the read did not include", () => {
+    expect(activationPhase(ready({ tx: null }), true, "0xfeed")).toBe("pending");
+  });
+  it("is ready with no recorded tx", () => {
+    expect(activationPhase(ready({ tx: null }), true, null)).toBe("ready");
+  });
+});

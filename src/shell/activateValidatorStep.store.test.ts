@@ -61,12 +61,31 @@ vi.mock("../bridge", () => ({
     membership: { grantStatus: async () => ({}) },
     auth: { status: async () => ({ signedIn: false }) },
     custody: { status: async () => ({ unlocked: false, autolockMins: 30 }) },
+    agentHarness: { recordDecision: async () => ({}) },
   },
 }));
 vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
 
 import { Store } from "./store";
-import { PERSIST_KEYS } from "./state";
+import { PERSIST_KEYS, STORAGE_KEY } from "./state";
+import { activationPhase } from "../onboarding/activateValidator";
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+}
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+const never = () => new Promise<void>(() => {});
+function persisted(): Record<string, unknown> {
+  return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+}
 
 function memberStore(): Store {
   const store = new Store();
@@ -126,12 +145,22 @@ describe("resume after quit", () => {
     expect(store.state.activation?.bondDeployed).toBe(true);
     expect(store.state.activationError).toContain("rpc down");
   });
-  it("forgets the tx hash once the chain shows the bond activated", async () => {
+  it("forgets the tx hash only once a read OBSERVED that tx's receipt and the bond activated", async () => {
     const store = memberStore();
     store.setState({ s7TxHash: "0xabc" });
-    chain.current = readyStatus({ bondActivated: true, registryStatus: 1 });
+    chain.current = readyStatus({ bondActivated: true, registryStatus: 1, tx: { hash: "0xabc", included: true, blockNumber: 501, success: true } });
     await store.refreshActivation();
     expect(store.state.s7TxHash).toBeNull();
+  });
+  it("keeps a recorded pending tx when the response did not observe its receipt", async () => {
+    const store = memberStore();
+    store.setState({ s7TxHash: "0xabc" });
+    chain.current = readyStatus({ bondActivated: true, registryStatus: 1, tx: null });
+    await store.refreshActivation();
+    expect(store.state.s7TxHash).toBe("0xabc");
+    chain.current = readyStatus({ bondActivated: true, registryStatus: 1, tx: { hash: "0xother", included: true, blockNumber: 501, success: true } });
+    await store.refreshActivation();
+    expect(store.state.s7TxHash).toBe("0xabc");
   });
 });
 
@@ -173,13 +202,46 @@ describe("no silent signing", () => {
     expect(store.state.walletReview?.label).not.toContain("32,000");
   });
 
-  it("the approval card's resolve records the tx hash for resume", async () => {
+  it("QUIT AFTER BROADCAST: the tx hash is persisted on broadcast acceptance, before any refresh finishes", async () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     await store.onS7Activate();
-    await store.state.walletReview?.onResolved?.(true, "0xfeed");
-    expect(store.state.s7TxHash).toBe("0xfeed");
+    // The post-broadcast refreshes never finish (the member quits while they are in flight).
+    vi.spyOn(store, "refreshWallet").mockImplementation(never);
+    vi.spyOn(store, "refreshNode").mockImplementation(never);
+    vi.spyOn(store, "refreshActivity").mockImplementation(never);
+    void store.approveWalletReview(false);
+    await flush();
+    expect(broadcastMock).toHaveBeenCalledTimes(1);
+    // Written to disk synchronously, not on the debounced save timer.
+    expect(persisted().s7TxHash).toBe("0xfeed");
+    expect(persisted().stage).toBe("s7");
+
+    // Relaunch: the step resumes to Pending and offers no fresh activation.
+    const reopened = new Store();
+    reopened.setState({ hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true });
+    expect(reopened.state.stage).toBe("s7");
+    expect(reopened.state.s7TxHash).toBe("0xfeed");
+    chain.current = readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } });
+    await reopened.refreshActivation();
+    expect(activationStatusMock).toHaveBeenLastCalledWith(WALLET, "0xfeed");
+    expect(activationPhase(reopened.state.activation, true, reopened.state.s7TxHash)).toBe("pending");
+    (reopened as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    const calls = registerValidatorMock.mock.calls.length;
+    expect(await reopened.onS7Activate()).toBe(false);
+    expect(registerValidatorMock.mock.calls.length).toBe(calls);
+  });
+
+  it("a pending tx blocks a fresh activation even if a read lacking it says the gate is met", async () => {
+    const store = memberStore();
+    store.setState({ s7TxHash: "0xfeed" });
+    chain.current = readyStatus({ tx: null });
+    await store.refreshActivation();
+    expect(activationPhase(store.state.activation, true, store.state.s7TxHash)).toBe("pending");
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.onS7Activate()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
   });
 
   it("fails closed when the gate is not met: no ceremony is built", async () => {
@@ -200,5 +262,46 @@ describe("no silent signing", () => {
     (store as unknown as { maybeAutoBond: () => void }).maybeAutoBond();
     expect(registerValidatorMock).not.toHaveBeenCalled();
     expect(store.state.walletReview).toBeNull();
+  });
+});
+
+describe("out-of-order activation reads", () => {
+  it("a slower, older response never overwrites a newer one", async () => {
+    const store = memberStore();
+    const older = deferred<ActivationStatusView>();
+    const newer = deferred<ActivationStatusView>();
+    activationStatusMock.mockImplementationOnce(() => older.promise).mockImplementationOnce(() => newer.promise);
+    const r1 = store.refreshActivation();
+    const r2 = store.refreshActivation();
+    newer.resolve(readyStatus({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 502 }));
+    await r2;
+    older.resolve(readyStatus({ bondActivated: false }));
+    await r1;
+    expect(store.state.activation?.bondActivated).toBe(true);
+  });
+
+  it("a stale failure does not mark the newer read as failed", async () => {
+    const store = memberStore();
+    const older = deferred<ActivationStatusView>();
+    activationStatusMock.mockImplementationOnce(() => older.promise);
+    const r1 = store.refreshActivation();
+    await store.refreshActivation();
+    older.reject(new Error("timeout"));
+    await r1;
+    expect(store.state.activationError).toBeNull();
+    expect(store.state.activation?.bondDeployed).toBe(true);
+  });
+
+  it("a read sent before the tx was recorded cannot clear or bypass it", async () => {
+    const store = memberStore();
+    const inflight = deferred<ActivationStatusView>();
+    activationStatusMock.mockImplementationOnce(() => inflight.promise);
+    const r1 = store.refreshActivation();
+    // The broadcast is accepted while that read is in flight.
+    store.recordActivationTx("0xfeed");
+    inflight.resolve(readyStatus({ bondActivated: true, registryStatus: 1, tx: null }));
+    await r1;
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    expect(store.state.activation).toBeNull(); // the stale read was ignored
   });
 });

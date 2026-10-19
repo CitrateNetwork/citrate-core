@@ -251,9 +251,13 @@ export function activationGrantCopy(st: ActivationStatusView | null): string {
   return [custody, staked, GRANT_DISCLAIMER, BETANET_CARRYOVER].join(" ");
 }
 
-/** Which screen the step shows. A sent activation stays Pending until the chain shows the bond activated. */
-export function activationPhase(st: ActivationStatusView | null, walletLinked: boolean): ActivationPhase {
-  if (!st) return "reading";
+/**
+ * Which screen the step shows. A sent activation stays Pending until the chain shows the bond
+ * activated. `pendingTxHash` is the step's recorded tx: while it is set and the read did not
+ * report that tx's receipt, the step is Pending, never "ready" (no second activation).
+ */
+export function activationPhase(st: ActivationStatusView | null, walletLinked: boolean, pendingTxHash: string | null = null): ActivationPhase {
+  if (!st) return pendingTxHash ? "pending" : "reading";
   if (st.registryStatus === 2) return "exiting";
   if (st.registryStatus === 3) return "slashed";
   if (st.bondActivated === true) {
@@ -262,9 +266,10 @@ export function activationPhase(st: ActivationStatusView | null, walletLinked: b
     if (v.word?.startsWith("Registered")) return "registered";
     return "reading";
   }
-  if (st.tx) {
+  if (st.tx && (!pendingTxHash || st.tx.hash === pendingTxHash)) {
     if (st.tx.included === true && st.tx.success === false) return "failed";
     return "pending";
   }
+  if (pendingTxHash) return "pending";
   return activationGate(st, walletLinked).ready ? "ready" : "blocked";
 }

@@ -640,6 +640,8 @@ export class Store {
   // W1.x — true once the producer has been armed this session (the node respawns
   // with --mine and mints proposer.key). Gate for `maybeAutoBond` step 1.
   private validatorArmed = false;
+  // Join-8 — the generation of the newest activation read; older responses are ignored.
+  private activationGen = 0;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
@@ -1514,15 +1516,34 @@ export class Store {
   async refreshActivation(): Promise<void> {
     const member = this.identity().wallet;
     if (!member) return;
+    // Reads overlap (S6 hand-off, S7 mount, the 15 s poll, the post-broadcast read). Only the
+    // newest request may apply; recording a tx also bumps the generation, so a read sent
+    // without that tx can never overwrite or clear it.
+    const gen = ++this.activationGen;
+    const askedTx = this.state.s7TxHash;
     try {
-      const st = await bridge.node.activationStatus(member, this.state.s7TxHash);
+      const st = await bridge.node.activationStatus(member, askedTx);
+      if (gen !== this.activationGen) return; // a newer read was issued: this one is stale
       const patch: Partial<AppState> = { activation: st, activationError: null };
-      if (st.bondActivated === true && this.state.s7TxHash) patch.s7TxHash = null;
+      // Forget the recorded tx only when THIS read observed its receipt and the bond activated.
+      const recorded = this.state.s7TxHash;
+      if (recorded && st.bondActivated === true && st.tx?.hash === recorded && st.tx.included === true) patch.s7TxHash = null;
       this.setState(patch);
       if (patch.s7TxHash === null) this.save();
     } catch (err) {
+      if (gen !== this.activationGen) return;
       this.setState({ activationError: String((err as Error)?.message ?? err) });
     }
+  }
+
+  /**
+   * Record a broadcast activation tx: persisted immediately (a quit right after must resume to
+   * Pending) and the read generation bumped, so any read in flight without it is discarded.
+   */
+  recordActivationTx(txHash: string): void {
+    this.activationGen++;
+    this.setState({ s7TxHash: txHash });
+    this.saveNow();
   }
 
   /** S6 → S7 for a member with a granted bond; anyone else enters the app (there is no bond). */
@@ -1544,17 +1565,24 @@ export class Store {
    * is persisted so the step resumes to "Pending" after a quit.
    */
   async onS7Activate(): Promise<boolean> {
+    if (this.state.s7TxHash) {
+      // An activation is already sent and not yet observed: never offer a second one.
+      this.toast("Activation already sent — waiting for it to be included.");
+      return false;
+    }
     const gate = activationGate(this.state.activation, this.walletIsLinked());
     if (!gate.ready) {
       const why = gate.checks.find((c) => c.ok !== true);
       this.toast("Activation not available yet — " + (why ? why.detail : "the chain has not been read"));
       return false;
     }
-    return this.activateValidator(async (approved, txHash) => {
-      if (!approved || !txHash) return;
-      this.setState({ s7TxHash: txHash });
-      this.save();
-      await this.refreshActivation();
+    return this.activateValidator({
+      // Persist on broadcast acceptance, before the post-broadcast refreshes.
+      onBroadcast: (txHash) => this.recordActivationTx(txHash),
+      // The re-read is a separate, later step.
+      onResolved: async (approved) => {
+        if (approved) await this.refreshActivation();
+      },
     });
   }
 
@@ -2040,16 +2068,25 @@ export class Store {
 
   save(): void {
     if (this._saveT) clearTimeout(this._saveT);
-    this._saveT = setTimeout(() => {
-      const s = this.state;
-      const keep: Record<string, unknown> = {};
-      for (const k of PERSIST_KEYS) keep[k] = s[k];
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));
-      } catch {
-        /* ignore */
-      }
-    }, 400);
+    this._saveT = setTimeout(() => this.writePersisted(), 400);
+  }
+
+  /** Persist NOW, not on the debounced timer: for state that must survive an immediate quit. */
+  saveNow(): void {
+    if (this._saveT) clearTimeout(this._saveT);
+    this._saveT = null;
+    this.writePersisted();
+  }
+
+  private writePersisted(): void {
+    const s = this.state;
+    const keep: Record<string, unknown> = {};
+    for (const k of PERSIST_KEYS) keep[k] = s[k];
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));
+    } catch {
+      /* ignore */
+    }
   }
 
   snapshot() {
@@ -4458,7 +4495,7 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
-  async activateValidator(onResolved?: WalletReview["onResolved"]): Promise<boolean> {
+  async activateValidator(hooks?: { onBroadcast?: WalletReview["onBroadcast"]; onResolved?: WalletReview["onResolved"] }): Promise<boolean> {
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
@@ -4497,7 +4534,10 @@ export class Store {
     // no SALT from the wallet; the bond forwards its own principal, and the wallet pays gas.
     const principal = principalSalt(this.state.activation);
     const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
-    this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, onResolved);
+    this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, hooks?.onResolved);
+    if (hooks?.onBroadcast && this.state.walletReview) {
+      this.setState({ walletReview: { ...this.state.walletReview, onBroadcast: hooks.onBroadcast } });
+    }
     return true;
   }
 
@@ -5029,6 +5069,13 @@ export class Store {
     // Tauri: sign + broadcast the real 40204 tx, then re-read balances from chain.
     try {
       const result = await bridge.signing.broadcast(r.view.id, ack);
+      // Join-8: record the accepted tx FIRST (persisted synchronously), before the refreshes
+      // below, so a quit while they are in flight still resumes to "Pending".
+      try {
+        r.onBroadcast?.(result.txHash);
+      } catch {
+        /* a recording failure must not turn a sent tx into a reported failure */
+      }
       this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
       this.toast(r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
       this.setState({ walletReview: null });

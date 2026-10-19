@@ -1173,7 +1173,8 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
   const a = s.activation;
   const linked = store.walletIsLinked();
   const gate = activationGate(a, linked);
-  const phase = activationPhase(a, linked);
+  const phase = activationPhase(a, linked, s.s7TxHash);
+  const pendingTx = a?.tx && (!s.s7TxHash || a.tx.hash === s.s7TxHash) ? a.tx : null;
   const vs = validatorState(a);
   const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "slashed";
   const mismatch = keyMismatch(a);
@@ -1227,7 +1228,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
 
-      {phase === "pending" && a?.tx && (
+      {phase === "pending" && (s.s7TxHash || pendingTx) && (
         <div className="surface" style={{ display: "flex", alignItems: "center", gap: 16, padding: "18px 20px" }} data-testid="s7-pending">
           <div style={{ width: 40, height: 40, flexShrink: 0 }}>
             <LoaderMark size={40} />
@@ -1235,9 +1236,9 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <div style={{ fontSize: 14, fontWeight: 500 }}>Pending</div>
             <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              {a.tx.included === true && a.tx.blockNumber != null
-                ? `Included in block ${fmtI(a.tx.blockNumber)} · waiting for the bond to read activated`
-                : `tx ${short(a.tx.hash)} · not in a block yet`}
+              {pendingTx?.included === true && pendingTx.blockNumber != null
+                ? `Included in block ${fmtI(pendingTx.blockNumber)} · waiting for the bond to read activated`
+                : `tx ${short(pendingTx?.hash ?? s.s7TxHash ?? "")} · not in a block yet`}
             </div>
           </div>
         </div>

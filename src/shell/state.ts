@@ -238,6 +238,12 @@ export interface WalletReview {
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
   onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
+  /**
+   * Join-8 — called SYNCHRONOUSLY the moment the signer accepts the broadcast and returns its tx
+   * hash, before any post-broadcast refresh. A caller that must survive a quit (S7 records the
+   * activation tx) persists here, not in `onResolved`, which runs only after the refreshes.
+   */
+  onBroadcast?: (txHash: string) => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
