@@ -18,7 +18,7 @@ import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal,
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
-import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, telemetryConsentPatch, clearJoinSteps } from "./privacy/joinFunnel";
+import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, telemetryConsentPatch, clearJoinSteps, rememberTelemetryConsent } from "./privacy/joinFunnel";
 import { JoinStepsNote } from "./privacy/JoinStepsNote";
 
 const queryClient = new QueryClient();
@@ -304,10 +304,12 @@ function Root() {
         consentVersion={s.telemetryConsentVersion}
         onAcknowledge={() => {
           store.setState({ telemetryConsentVersion: telemetryConsentPatch(true).telemetryConsentVersion });
+          rememberTelemetryConsent(telemetryConsentPatch(true));
           store.save();
         }}
         onTurnOff={() => {
           store.setState(telemetryConsentPatch(false));
+          rememberTelemetryConsent(telemetryConsentPatch(false));
           clearJoinSteps();
           bridge.config.write({ telemetry: false }).catch(() => {
             /* honest no-op: on the Tauri path a failed persist surfaces on next read */

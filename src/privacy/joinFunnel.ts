@@ -81,6 +81,14 @@ function persistedConsent(): boolean {
 }
 
 let consentSource: (() => boolean) | null = null;
+// The last consent change made this session (Settings or the note). It wins over the persisted
+// app state, which can be stale when that state's own write failed.
+let rememberedConsent: { telemetry: boolean; telemetryConsentVersion: number | null } | null = null;
+
+/** Record a consent change made this session (pass `telemetryConsentPatch(on)`). */
+export function rememberTelemetryConsent(c: { telemetry: boolean; telemetryConsentVersion: number | null }): void {
+  rememberedConsent = { telemetry: c.telemetry, telemetryConsentVersion: c.telemetryConsentVersion };
+}
 
 /** Bind the live consent (the app binds `funnelConsented(telemetry, telemetryConsentVersion)`).
  *  `null` falls back to the persisted toggle. */
@@ -90,7 +98,9 @@ export function setJoinFunnelConsent(source: (() => boolean) | null): void {
 
 function consented(): boolean {
   try {
-    return consentSource ? consentSource() === true : persistedConsent();
+    if (consentSource) return consentSource() === true;
+    if (rememberedConsent) return funnelConsented(rememberedConsent.telemetry, rememberedConsent.telemetryConsentVersion);
+    return persistedConsent();
   } catch {
     return false;
   }
@@ -102,17 +112,22 @@ interface Record_ {
   sent: JoinStep[];
 }
 
-// In-memory copy so a webview with blocked storage still dedupes for this session.
+// In-memory copy of the step sets. It is the source while storage is blocked, and — once any
+// write has failed (a full quota, say) — for the rest of the session (`writeFailed` is sticky),
+// so a stale persisted record can never undo dedupe after a write was lost.
 let memory: Record_ | null = null;
+let writeFailed = false;
 
-function load(): Record_ {
+const EMPTY = (): Record_ => ({ v: 1, pending: [], sent: [] });
+
+function readPersisted(): Record_ | "blocked" {
   let raw: string | null;
   try {
     raw = localStorage.getItem(JOIN_FUNNEL_STORAGE_KEY);
   } catch {
-    return memory ?? { v: 1, pending: [], sent: [] }; // storage blocked: this session's copy
+    return "blocked";
   }
-  if (!raw) return { v: 1, pending: [], sent: [] };
+  if (!raw) return EMPTY();
   try {
     const r = JSON.parse(raw) as Partial<Record_>;
     return {
@@ -121,8 +136,16 @@ function load(): Record_ {
       sent: inPathOrder((Array.isArray(r.sent) ? r.sent : []).filter(isStep)),
     };
   } catch {
-    return { v: 1, pending: [], sent: [] }; // unreadable: start over rather than guess
+    return EMPTY(); // unreadable: start over rather than guess
   }
+}
+
+function load(): Record_ {
+  // In-memory over persisted: after a failed write (or with storage blocked) memory is the truth.
+  if (writeFailed && memory) return memory;
+  const persisted = readPersisted();
+  if (persisted === "blocked") return memory ?? EMPTY();
+  return persisted;
 }
 
 function store(r: Record_): void {
@@ -130,7 +153,7 @@ function store(r: Record_): void {
   try {
     localStorage.setItem(JOIN_FUNNEL_STORAGE_KEY, JSON.stringify({ v: 1, pending: r.pending, sent: r.sent }));
   } catch {
-    /* storage unavailable: the in-memory copy still dedupes for this session */
+    writeFailed = true; // sticky: memory wins from now on this session
   }
 }
 
@@ -166,11 +189,11 @@ export function markJoinStepsSent(steps: readonly string[]): void {
 
 /** Forget every recorded step (called when the member turns telemetry off). */
 export function clearJoinSteps(): void {
-  memory = null;
+  memory = EMPTY();
   try {
     localStorage.removeItem(JOIN_FUNNEL_STORAGE_KEY);
   } catch {
-    /* nothing stored */
+    writeFailed = true; // the stale record stays on disk; the empty memory copy wins
   }
 }
 
