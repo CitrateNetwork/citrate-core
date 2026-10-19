@@ -51,6 +51,7 @@ import { TERMINAL_ACCESS_HINT, TERMINAL_ACCESS_LABEL } from "../agent/terminalAc
 import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
+import { ControlsPanel } from "./hermes/ControlsPanel";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -152,6 +153,7 @@ const AI_PRESETS: AiPreset[] = [
 const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
+  ["hermes", "Hermes controls"],
   ["ai", "AI providers"],
   ["escalation", "Escalation & spend"],
   ["mcp", "MCP servers"],
@@ -1124,6 +1126,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
+        {/* ---------- K2 (0.5.2): Hermes controls, first depth (same settings as the cards here) ---------- */}
+        {s.sSec === "hermes" && <ControlsPanel store={store} s={s} />}
         {/* ---------- MCP servers (HUP-S4.4) ---------- */}
         {s.sSec === "mcp" && <McpServersPanel io={desktopMcpIo} />}
         {/* ---------- Privacy & recovery (HUP-S10.5) ---------- */}

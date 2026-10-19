@@ -32,6 +32,7 @@ const stubStore = {
 const SECTIONS: AppState["sSec"][] = [
   "account",
   "connections",
+  "hermes",
   "ai",
   "mcp",
   "node",
