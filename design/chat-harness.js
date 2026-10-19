@@ -9,7 +9,7 @@
 //     onStatus(status)      'thinking' | 'streaming' | 'tool' | 'done' | 'error'
 //     onToken(text)         streamed content delta
 //     onToolCall(call)      { id, name, arguments } — host resolves the tool
-//                           (HITL gating happens in the host: memory/chain
+//                           (HIC gating happens in the host: memory/chain
 //                           writes route to the approval queue / Signature
 //                           Ceremony) and returns a Promise<resultString>.
 //   }
@@ -55,7 +55,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'memory_assert',
-      description: 'Write a fact to the member\u2019s memory graph. HITL: queues for approval.',
+      description: 'Write a fact to the member\u2019s memory graph. HIC: queues for approval.',
       parameters: { type: 'object', properties: { fact: { type: 'string' } }, required: ['fact'] },
     },
   },
@@ -63,7 +63,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'journal_append',
-      description: 'Append an entry to the member\u2019s local journal (today\u2019s daily note). Off-chain, HITL: queues for approval.',
+      description: 'Append an entry to the member\u2019s local journal (today\u2019s daily note). Off-chain, HIC: queues for approval.',
       parameters: { type: 'object', properties: { entry: { type: 'string' } }, required: ['entry'] },
     },
   },
@@ -144,13 +144,12 @@ export function createLocalProvider({ port = 11544 }) {
 // ---------------------------------------------------------------------
 // Demo provider — same contract, scripted reasoning over live sim state.
 // getContext() is supplied by the host and returns the current snapshot:
-// { height, peers, finalityAge, nodeState, staked, liquid, claimable,
-//   earningsToday, walletAddr, memberSince, tier }
+// { fx (C1 fixture), nodeState, hasGrant, routing, webSearch, via, walletAddr, tier }
 // ---------------------------------------------------------------------
 export function createDemoProvider(getContext) {
   return {
     kind: 'demo',
-    label: 'infer.citrate.ai · local-proxy',
+    label: 'demo replies (contract-safe)',
     async send({ messages, callbacks }) {
       const userText = (messages[messages.length - 1]?.content || '').toLowerCase();
       callbacks.onStatus('thinking');
@@ -178,35 +177,57 @@ export function createDemoProvider(getContext) {
   };
 }
 
+// Slice 1 (0.5.2): every reply follows the chain team's UI truth contract v1. Chain numbers come
+// only from the C1 fixture (labelled as such), finality is never described as running, and there
+// are no earnings projections, investment words or SALT prices. Unknown is said as unknown.
 function routeIntent(t, getContext) {
   const has = (...ws) => ws.some((w) => t.includes(w));
+  const fx = () => getContext().fx;
+  const viaNote = (c) => (c.via === 'gateway' ? '(Made by infer.citrate.ai for this one reply, because you allowed it.)\n' : c.routing === 'local' || c.via === 'local' ? '(Made by the local model on this machine.)\n' : '');
 
-  if (has('stake', 'staked', 'position', 'validator status')) {
+  if (has('search the web', 'look up', 'search for', 'web search', 'google')) {
+    const ctx = getContext();
+    if (!ctx.webSearch) {
+      return { toolCalls: [], compose: () => 'Web search is off, so I can’t look that up. You can turn it on in Hermes › Controls › Web search. Until then I answer from this machine only.' };
+    }
     return {
-      toolCalls: [tc('chain_read', { query: 'staking.position' })],
-      compose: (c) =>
-        `You have **${fmt(c.staked)} SALT** staked in the LiquidStakingPool — your full membership grant, vaulted and attributed to your validator. That meets the 32,000 SALT minimum, so your node ${c.nodeState === 'validating' ? 'is validating and earning' : 'is eligible to validate once running'}. The granted principal stays vaulted until mainnet release; rewards your node earns are yours. Withdrawals of self-added stake carry a 7-day lockup.`,
+      toolCalls: [tc('web_search', { query: t })],
+      compose: () => 'I searched through your local SearXNG and read three pages on this machine. (Prototype reply: the real one cites each page it read.)\nGhostDAG is the ordering rule a BlockDAG uses: it picks a well-connected set of blocks and orders the whole DAG from that set, so blocks made at the same time are kept instead of thrown away.',
+    };
+  }
+  if (has('plan', 'draft', 'research', 'rewrite')) {
+    return {
+      toolCalls: [tc('memory_recall', { query: 'journal: this week' })],
+      compose: (c) => viaNote(c) + 'From your journal this week: 1) finish the slice 1 review, 2) read the UI truth contract before slice 2, 3) leave Inbox triage running. Want me to save this as a journal page? It will wait for your approval first.',
+    };
+  }
+  if (has('stake', 'staked', 'bond', 'grant', 'position', 'validator status')) {
+    return {
+      toolCalls: [tc('chain_read', { query: 'membership.bond' })],
+      compose: (c) => c.hasGrant
+        ? 'Your membership comes with a 32,000 SALT grant, locked in your bond. Its state is “Bond locked · not staked” until MemberBond.activated() is true. The lock end (date and block) comes from MemberBond.unlockTimestamp() and unlockBlock(); this prototype has no per-member bond read, so I show it as unknown rather than guess. The grant was not purchased and is not an investment. Betanet: what carries over to mainnet is set in the genesis spec.'
+        : 'You are not a member yet, so there is no bond. Membership comes with a 32,000 SALT grant, locked in a bond; it is not purchased and not an investment.',
     };
   }
   if (has('earn', 'reward', 'claim', 'income', 'made today')) {
     return {
-      toolCalls: [tc('chain_read', { query: 'earnings.claimable' })],
-      compose: (c) =>
-        `Today your node has earned **${c.earningsToday.toFixed(2)} SALT** — validation makes up most of it, with smaller pinning and compute shares. Your claimable balance is **${c.claimable.toFixed(2)} SALT**; claims batch until they clear the dust threshold, and claiming signs a claimRewards() transaction through the ceremony. Want me to take you to the earnings view?`,
+      toolCalls: [tc('chain_read', { query: 'validator.rewards' })],
+      compose: () => 'Validator rewards come only from ValidatorRegistry.rewardsOf for your validator key, and only a validator that produces blocks receives them. On 40204 today 1 of ' + fx().activeValidators + ' active validators produces blocks (contract v1). This prototype has no read of your rewardsOf, so your rewards are unknown here, not zero. I don’t project or estimate rewards.',
     };
   }
   if (has('balance', 'wallet', 'how much salt')) {
     return {
-      toolCalls: [tc('chain_read', { query: 'wallet.balances' })],
-      compose: (c) =>
-        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (earned rewards — the 32,000 grant sits staked, not liquid). Staked: **${fmt(c.staked)} SALT**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from your local node.`,
+      toolCalls: [tc('chain_read', { query: 'wallet.balance' })],
+      compose: (c) => 'Your balance comes from eth_getBalance on “latest” for ' + c.walletAddr.slice(0, 6) + '…' + c.walletAddr.slice(-4) + '. This prototype has no live read, so it is unknown (—), not zero. Wallet is redrawn in slice 2.',
     };
   }
   if (has('network', 'height', 'peers', 'block', 'finality', 'status')) {
     return {
-      toolCalls: [tc('chain_read', { query: 'network.vitals' })],
-      compose: (c) =>
-        `Chain 40204 is at height **${fmt(c.height)}**, your node sees **${c.peers} peers**, and the last BFT checkpoint settled ${c.finalityAge}s ago (checkpoints land every ~50 blocks). Your node is **${c.nodeState}**.`,
+      toolCalls: [tc('chain_read', { query: 'network.fixture' })],
+      compose: (c) => {
+        const f = c.fx;
+        return 'From the C1 fixture (read at block ' + fmt(f.block) + ', ' + f.capturedAt + ', not live): Citrate betanet, chain 40204. Blocks every ~' + f.blockTime + ' s. ' + f.activeValidators + ' validators are active and 1 produces blocks. Checkpoint finality is not running yet, so I count confirmations, not finality. Your node: ' + c.nodeState + '.';
+      },
     };
   }
   if (has('journal', 'log this', 'write this down', 'worklog')) {
@@ -215,45 +236,42 @@ function routeIntent(t, getContext) {
       toolCalls: [tc('journal_append', { entry })],
       compose: (_c, calls) =>
         calls[0].result === 'approved'
-          ? 'Logged to today\u2019s daily note — off-chain, local, and yours. I keep my own worklog there too; open Journal to see the thread.'
+          ? 'Added to today’s page. It is local and yours.'
           : 'You declined, so nothing was written. The journal only takes entries you approve.',
     };
   }
   if (has('remember', 'note that', 'save this', 'keep in mind')) {
-    const fact = t.replace(/^(please\s+)?(remember|note that|save this|keep in mind)[:,]?\s*/i, '') || 'the member\u2019s note';
+    const fact = t.replace(/^(please\s+)?(remember|note that|save this|keep in mind)[:,]?\s*/i, '') || 'the member’s note';
     return {
       toolCalls: [tc('memory_assert', { fact })],
       compose: (_c, calls) =>
         calls[0].result === 'approved'
-          ? 'Written to your memory graph — you approved the assertion, so it now lives in your personal tenant, witnessed and recallable.'
-          : 'Understood — you declined the write, so nothing was stored. Your memory graph only takes facts you approve.',
+          ? 'Written to your memory graph, because you approved it.'
+          : 'You declined, so nothing was stored. Your memory graph only takes facts you approve.',
     };
   }
   if (has('memory', 'recall', 'what do you know')) {
     return {
       toolCalls: [tc('memory_recall', { query: t })],
-      compose: () =>
-        'From your memory graph: your validator key ceremony completed at onboarding, your gateway key is bound to this device, and the chain-facts tenant carries the 40204 contract catalog. Ask me to recall anything specific, or open Storage to walk the constellation.',
+      compose: () => 'From your memory graph: you prefer short replies (contradicted once; resolve it in Hermes › Learn), and your shared folder is ~/projects/site. Ask me to recall anything specific.',
     };
   }
-  if (has('doc', 'how do i', 'guide', 'tutorial', 'learn')) {
+  if (has('doc', 'how do i', 'guide', 'tutorial')) {
     return {
       toolCalls: [tc('docs_link', { topic: t })],
-      compose: () =>
-        'I linked the closest Atlas guides for your tier in the tutorials rail. The validator operations handbook is the right starting point — it covers sync, heartbeat, and what slashing protection expects from an operator.',
+      compose: () => 'The Atlas guides for your tier cover running a node, daemons and approvals. Start with “How approvals work”.',
     };
   }
   if (has('go to', 'open ', 'take me', 'navigate')) {
-    const route = ['wallet', 'node', 'storage', 'comms', 'commissary', 'settings'].find((r) => t.includes(r)) || 'dashboard';
+    const route = ['groups', 'wallet', 'node', 'store', 'settings'].find((r) => t.includes(r)) || 'hermes';
     return {
       toolCalls: [tc('app_navigate', { route })],
-      compose: () => `Done — you're on ${route[0].toUpperCase() + route.slice(1)}.`,
+      compose: () => `Done. You're on ${route[0].toUpperCase() + route.slice(1)}.`,
     };
   }
   return {
     toolCalls: [],
-    compose: (c) =>
-      `I'm your member agent — grounded in your node, wallet, and memory graph. I can read your staking position, break down earnings, recall or (with your approval) write memory, link docs at your tier, and move you around the app. Your node is ${c.nodeState} at height ${fmt(c.height)}. What do you need?`,
+    compose: (c) => viaNote(c) + 'I’m Hermes, running on this machine. I can read your journal and memory, search the web if you turn it on, and propose changes that wait for your review. Ask me about the network and I’ll say where each number comes from.',
   };
 }
 

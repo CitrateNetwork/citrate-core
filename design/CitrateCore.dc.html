@@ -418,9 +418,776 @@
         <sc-if value="{{ bannerCta }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ onBannerCta }}">{{ bannerCtaLabel }}</button></sc-if>
       </div>
     </sc-if>
+    <!-- ===================== ANNOTATIONS (slice 1) =====================
+         Every screen names its route id, the bridge call that feeds it, and the
+         genesis feature flag. Core ports from these; the chain team checks the
+         numbers against the UI truth contract v1. Hidden from members in the build. -->
+    <sc-if value="{{ annShow }}" hint-placeholder-val="{{ true }}">
+    <div data-screen-label="Annotation strip" style="display:flex;flex-direction:column;gap:5px;padding:8px 26px 9px;border-bottom:1px dashed var(--line-2);background:var(--srf-inset);">
+      <div style="display:flex;align-items:center;gap:8px 18px;flex-wrap:wrap;">
+        <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);">screen</span>
+        <span class="mono" style="font-size:11px;color:var(--tx-1);">{{ annScreen }}</span>
+        <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);">route</span>
+        <span class="mono" style="font-size:11px;color:var(--tx-1);">{{ annRoute }}</span>
+        <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);">flag</span>
+        <span class="mono" style="font-size:11px;color:var(--tx-1);">{{ annFlag }}</span>
+        <span style="flex:1;"></span>
+        <sc-if value="{{ annHasVariants }}" hint-placeholder-val="{{ true }}">
+        <span style="display:inline-flex;align-items:center;gap:4px;">
+          <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);margin-right:4px;">state</span>
+          <sc-for list="{{ annVariants }}" as="av" hint-placeholder-count="4">
+            <button onClick="{{ av.go }}" class="mono" style="font-size:10px;padding:2px 8px;border-radius:999px;border:1px solid {{ av.bd }};background:{{ av.bg }};color:{{ av.fg }};cursor:pointer;">{{ av.label }}</button>
+          </sc-for>
+        </span>
+        </sc-if>
+      </div>
+      <div style="display:flex;gap:8px 18px;flex-wrap:wrap;">
+        <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);">bridge</span>
+        <span class="mono" style="font-size:10.5px;line-height:1.5;color:var(--tx-2);flex:1;min-width:0;">{{ annBridge }}</span>
+      </div>
+    </div>
+    </sc-if>
+
     <div style="flex:1;min-height:0;overflow:auto;">
 
-      <!-- ===================== DASHBOARD ===================== -->
+      <!-- ===================== HERMES (K2) ===================== -->
+      <sc-if value="{{ rHermes }}" hint-placeholder-val="{{ true }}">
+      <div data-screen-label="Hermes" style="display:flex;flex-direction:column;min-height:100%;">
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 26px 0;flex-wrap:wrap;">
+          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;">Hermes</span>
+          <div role="tablist" style="display:flex;gap:2px;background:var(--srf-1);border:1px solid var(--line-1);border-radius:var(--r-2);padding:3px;">
+            <sc-for list="{{ hTabs }}" as="ht" hint-placeholder-count="5">
+              <button role="tab" aria-selected="{{ ht.sel }}" onClick="{{ ht.go }}" style="font-family:var(--font-sans);font-size:12.5px;font-weight:{{ ht.weight }};padding:6px 14px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ ht.bg }};color:{{ ht.color }};display:inline-flex;align-items:center;gap:7px;">
+                {{ ht.label }}
+                <sc-if value="{{ ht.badge }}" hint-placeholder-val="{{ false }}"><span class="mono tabular" style="font-size:10px;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:var(--citrate-yellow);color:#0e0f0c;display:inline-flex;align-items:center;justify-content:center;">{{ ht.badge }}</span></sc-if>
+              </button>
+            </sc-for>
+          </div>
+          <span style="flex:1;"></span>
+          <button onClick="{{ goControls }}" class="mono" style="font-size:10px;letter-spacing:.06em;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--line-2);background:transparent;color:var(--tx-2);cursor:pointer;" title="Model routing · Hermes › Controls">
+            <span style="width:6px;height:6px;border-radius:999px;background:{{ routeDot }};"></span>{{ routeChip }}
+          </button>
+          <button onClick="{{ goWork }}" class="mono" style="font-size:10px;letter-spacing:.06em;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--line-2);background:transparent;color:var(--tx-2);cursor:pointer;" title="Daemons · Hermes › Work">
+            <span style="width:6px;height:6px;border-radius:999px;background:{{ dmDot }};"></span>{{ dmChip }}
+          </button>
+        </div>
+
+        <!-- shared state card: empty / error / unavailable for every Hermes screen -->
+        <sc-if value="{{ hStateCard }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:20px 26px 24px;">
+          <div class="surface" data-screen-label="{{ hStateLabel }}" style="max-width:640px;padding:22px 24px;display:flex;flex-direction:column;gap:12px;border-color:{{ hStateBd }};">
+            <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:{{ hStateFg }};">{{ hStateKind }}</span>
+            <span style="font-family:var(--font-display);font-weight:420;font-size:20px;line-height:1.25;">{{ hStateTitle }}</span>
+            <p style="font-size:13.5px;line-height:1.6;color:var(--tx-2);margin:0;">{{ hStateBody }}</p>
+            <sc-if value="{{ hStateWhy }}" hint-placeholder-val="{{ false }}">
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);background:var(--srf-inset);border-radius:var(--r-1);padding:8px 10px;">{{ hStateWhy }}</span>
+            </sc-if>
+            <div style="display:flex;gap:10px;">
+              <sc-if value="{{ hStateCta }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ onHStateCta }}">{{ hStateCta }}</button></sc-if>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ CHAT ============ -->
+        <sc-if value="{{ htChat }}" hint-placeholder-val="{{ true }}">
+        <div data-screen-label="Hermes chat" style="padding:16px 26px 24px;display:grid;grid-template-columns:minmax(0,1fr) 316px;gap:16px;flex:1;min-height:520px;box-sizing:border-box;">
+          <div class="surface" style="display:flex;flex-direction:column;min-height:0;overflow:hidden;">
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line-1);">
+              <span style="font-size:14px;font-weight:500;">Chat</span>
+              <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ personaName }}</span>
+              <span style="flex:1;"></span>
+              <span class="mono" style="font-size:10px;letter-spacing:.08em;color:var(--tx-3);display:inline-flex;align-items:center;gap:6px;">
+                <span style="width:6px;height:6px;border-radius:999px;background:{{ routeDot }};"></span>{{ chatBackendLabel }}
+              </span>
+            </div>
+            <div ref="{{ setChatScroll }}" style="flex:1;min-height:0;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:16px;">
+              <sc-if value="{{ chatEmpty }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:6px;padding:18px 4px;">
+                  <span style="font-family:var(--font-display);font-size:19px;font-weight:420;">Ask Hermes anything.</span>
+                  <span style="font-size:13px;line-height:1.6;color:var(--tx-2);max-width:520px;">Hermes runs on this machine. It reads your journal, memory and node, and anything it wants to change comes back to you first, in Work › Awaiting your review.</span>
+                </div>
+              </sc-if>
+              <sc-for list="{{ msgs }}" as="m" hint-placeholder-count="2">
+                <div style="display:flex;flex-direction:column;gap:5px;">
+                  <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:{{ m.whoColor }};">{{ m.who }}</span>
+                  <span style="font-size:13.5px;line-height:1.6;color:var(--tx-1);white-space:pre-wrap;">{{ m.text }}<sc-if value="{{ m.streaming }}" hint-placeholder-val="{{ false }}"><span style="display:inline-block;width:7px;height:14px;background:var(--accent);margin-left:2px;vertical-align:-2px;animation:ccCaret 1s step-end infinite;"></span></sc-if></span>
+                  <sc-if value="{{ m.hasChips }}" hint-placeholder-val="{{ false }}">
+                    <span style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px;">
+                      <sc-for list="{{ m.chips }}" as="ch">
+                        <span class="mono" style="font-size:10px;letter-spacing:.05em;padding:2px 8px;border-radius:999px;border:1px solid {{ ch.bd }};color:{{ ch.fg }};background:{{ ch.bg }};">{{ ch.label }}</span>
+                      </sc-for>
+                    </span>
+                  </sc-if>
+                </div>
+              </sc-for>
+              <sc-if value="{{ chatThinking }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <span style="width:34px;height:34px;display:inline-block;flex-shrink:0;"><dc-import name="LoaderMark" size="34" hint-size="34px,34px"></dc-import></span>
+                  <span class="mono" style="font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">{{ chatThinkingLabel }}</span>
+                </div>
+              </sc-if>
+              <!-- ask-first: Hermes asks before it sends anything to the gateway -->
+              <sc-if value="{{ askShow }}" hint-placeholder-val="{{ false }}">
+                <div class="cc-fade-up" data-screen-label="Ask before gateway" style="border:1px solid var(--warn);background:var(--warn-bg);border-radius:var(--r-2);padding:14px 16px;display:flex;flex-direction:column;gap:8px;">
+                  <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--warn);">Ask before gateway · HIC-1</span>
+                  <span style="font-size:13.5px;font-weight:500;">Use the Citrate gateway for this reply?</span>
+                  <span style="font-size:12.5px;line-height:1.55;color:var(--tx-2);">The local model is not sure it can do this well. If you allow it, this conversation goes to <span class="mono">infer.citrate.ai</span> for one reply. Nothing is sent until you choose.</span>
+                  <span class="mono" style="font-size:10.5px;color:var(--tx-3);">“{{ askText }}”</span>
+                  <div style="display:flex;gap:8px;">
+                    <button class="btn btn-primary btn-sm" onClick="{{ onAskAllow }}">Use gateway once</button>
+                    <button class="btn btn-ghost btn-sm" onClick="{{ onAskLocal }}">Keep it local</button>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+            <sc-if value="{{ showSuggestions }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 16px 10px;">
+                <sc-for list="{{ suggestions }}" as="sg" hint-placeholder-count="3">
+                  <button onClick="{{ sg.use }}" style="font-family:var(--font-sans);font-size:12px;color:var(--tx-2);background:var(--srf-1);border:1px solid var(--line-1);border-radius:999px;padding:5px 12px;cursor:pointer;" style-hover="border-color:var(--tx-2);color:var(--tx-1);">{{ sg.label }}</button>
+                </sc-for>
+              </div>
+            </sc-if>
+            <div style="display:flex;gap:10px;padding:12px 16px;border-top:1px solid var(--line-1);">
+              <input ref="{{ setChatInput }}" class="input" placeholder="Ask Hermes…" onKeyDown="{{ onChatKey }}" style="flex:1;">
+              <button class="btn btn-primary" onClick="{{ onSend }}" disabled="{{ chatBusy }}">Send</button>
+            </div>
+          </div>
+          <!-- right rail: widgets and daemons stay here (core plan table) -->
+          <div style="display:flex;flex-direction:column;gap:16px;min-height:0;overflow:auto;">
+            <div class="surface" data-screen-label="Rail awaiting review" style="display:flex;flex-direction:column;">
+              <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line-1);">
+                <span style="font-size:13.5px;font-weight:500;">Awaiting your review</span>
+                <span class="mono tabular" style="margin-left:auto;font-size:11px;color:var(--tx-2);">{{ apprCount }}</span>
+              </div>
+              <sc-if value="{{ apprEmpty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:14px 16px;">Nothing waiting. Changes Hermes or a daemon wants to make land here first.</p>
+              </sc-if>
+              <sc-for list="{{ apprRail }}" as="ar" hint-placeholder-count="1">
+                <button onClick="{{ goWork }}" style="font-family:var(--font-sans);text-align:left;display:flex;flex-direction:column;gap:3px;padding:10px 16px;border:none;border-bottom:1px solid var(--line-1);background:transparent;cursor:pointer;color:var(--tx-1);">
+                  <span style="font-size:12.5px;font-weight:500;">{{ ar.title }}</span>
+                  <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ ar.origin }}</span>
+                </button>
+              </sc-for>
+            </div>
+            <div class="surface" data-screen-label="Rail daemons" style="display:flex;flex-direction:column;">
+              <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line-1);">
+                <span style="font-size:13.5px;font-weight:500;">Daemons</span>
+                <a href="#/hermes/work" onClick="{{ goWork }}" style="margin-left:auto;font-size:11.5px;">Work ›</a>
+              </div>
+              <sc-if value="{{ dmEmpty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:14px 16px;">No daemons yet. They stay off until you create one or install one.</p>
+              </sc-if>
+              <sc-for list="{{ dmRail }}" as="dr" hint-placeholder-count="2">
+                <div style="display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line-1);">
+                  <span style="flex:1;min-width:0;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ dr.name }}</span>
+                  <span class="mono" style="font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid {{ dr.pillBd }};color:{{ dr.pillFg }};background:{{ dr.pillBg }};white-space:nowrap;">{{ dr.statusLabel }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div class="surface" data-screen-label="Rail network fixture" style="display:flex;flex-direction:column;">
+              <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line-1);gap:8px;">
+                <span style="font-size:13.5px;font-weight:500;">Network</span>
+                <span class="mono" style="margin-left:auto;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
+              </div>
+              <sc-for list="{{ fxRows }}" as="fx" hint-placeholder-count="4">
+                <div style="display:flex;gap:10px;padding:8px 16px;border-bottom:1px solid var(--line-1);" title="{{ fx.src }}">
+                  <span style="flex:1;font-size:12px;color:var(--tx-2);">{{ fx.k }}</span>
+                  <span class="mono tabular" style="font-size:12px;color:var(--tx-1);white-space:nowrap;">{{ fx.v }}</span>
+                </div>
+              </sc-for>
+              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;padding:10px 16px;">{{ fxFoot }}</p>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ WORK ============ -->
+        <sc-if value="{{ htWork }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Hermes work" style="padding:16px 26px 24px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start;">
+          <div style="display:flex;flex-direction:column;gap:16px;min-width:0;">
+
+            <div class="surface" data-screen-label="Work awaiting your review" style="display:flex;flex-direction:column;">
+              <div style="display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line-1);">
+                <span style="font-size:14px;font-weight:500;">Awaiting your review</span>
+                <span class="mono tabular" style="font-size:11px;color:var(--tx-3);">{{ apprCount }}</span>
+                <span style="flex:1;"></span>
+                <a href="#/hermes/controls" onClick="{{ goApprovalRecords }}" style="font-size:11.5px;">Approval records ›</a>
+              </div>
+              <sc-if value="{{ apprEmpty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:13px;line-height:1.6;color:var(--tx-3);margin:0;padding:16px 18px;">Nothing waiting. Anything Hermes or a daemon wants to change (a journal page, a file, a terminal command, a chain action) comes here first and waits for you.</p>
+              </sc-if>
+              <sc-for list="{{ apprRows }}" as="ap" hint-placeholder-count="2">
+                <div class="{{ ap.rowClass }}" style="display:flex;flex-direction:column;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line-1);">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                    <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid var(--line-2);color:var(--tx-2);">{{ ap.kindLabel }}</span>
+                    <span style="font-size:13.5px;font-weight:500;flex:1;min-width:200px;">{{ ap.title }}</span>
+                    <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ ap.age }}</span>
+                  </div>
+                  <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ ap.origin }}</span>
+                  <div style="background:var(--srf-inset);border-radius:var(--r-1);padding:10px 12px;display:flex;flex-direction:column;gap:4px;">
+                    <sc-for list="{{ ap.preview }}" as="pl">
+                      <span class="mono" style="font-size:11.5px;line-height:1.5;color:{{ pl.color }};white-space:pre-wrap;">{{ pl.text }}</span>
+                    </sc-for>
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="btn btn-primary btn-sm" onClick="{{ ap.approve }}">{{ ap.approveLabel }}</button>
+                    <button class="btn btn-ghost btn-sm" onClick="{{ ap.decline }}">Decline</button>
+                    <span class="mono" style="font-size:10px;color:var(--tx-3);margin-left:auto;">{{ ap.hic }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div class="surface" data-screen-label="Work daemons" style="display:flex;flex-direction:column;">
+              <div style="display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line-1);flex-wrap:wrap;">
+                <span style="font-size:14px;font-weight:500;">Daemons</span>
+                <span class="mono" style="font-size:10.5px;color:var(--tx-3);">scheduled Hermes tasks · each with its own budget</span>
+                <span style="flex:1;"></span>
+                <button class="btn btn-ghost btn-sm" onClick="{{ onPauseAll }}">{{ pauseAllLabel }}</button>
+                <button class="btn btn-ghost btn-sm" onClick="{{ goStore }}">Find daemons in Store</button>
+              </div>
+              <sc-if value="{{ allPausedNote }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:10px;align-items:center;padding:9px 18px;background:var(--warn-bg);border-bottom:1px solid var(--line-1);">
+                  <span style="width:6px;height:6px;border-radius:999px;background:var(--warn);"></span>
+                  <span style="font-size:12px;color:var(--tx-1);flex:1;">All daemons are paused from Controls. Nothing runs until you resume them.</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ dmEmpty }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:18px;display:flex;flex-direction:column;gap:8px;">
+                  <span style="font-size:13px;line-height:1.6;color:var(--tx-2);">No daemons. Daemons stay off until you create one or install one from the Store. A new daemon arrives paused, with a budget you can read before it ever runs.</span>
+                  <div><button class="btn btn-ghost btn-sm" onClick="{{ goStore }}">Find daemons in Store</button></div>
+                </div>
+              </sc-if>
+              <sc-for list="{{ dmRows }}" as="d" hint-placeholder-count="3">
+                <div class="{{ d.rowClass }}" style="display:flex;flex-direction:column;gap:8px;padding:13px 18px;border-bottom:1px solid var(--line-1);">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                    <span style="font-size:13.5px;font-weight:500;">{{ d.name }}</span>
+                    <span class="mono" style="font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid {{ d.pillBd }};color:{{ d.pillFg }};background:{{ d.pillBg }};">{{ d.statusLabel }}</span>
+                    <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ d.source }}</span>
+                    <span style="flex:1;"></span>
+                    <sc-if value="{{ d.canStart }}" hint-placeholder-val="{{ false }}"><button class="btn btn-primary btn-sm" onClick="{{ d.start }}">Start</button></sc-if>
+                    <sc-if value="{{ d.canPause }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ d.pause }}">Pause</button></sc-if>
+                    <sc-if value="{{ d.canReview }}" hint-placeholder-val="{{ false }}"><button class="btn btn-secondary btn-sm" onClick="{{ d.review }}">Review change</button></sc-if>
+                    <button class="btn btn-ghost btn-sm" onClick="{{ d.history }}">Runs</button>
+                  </div>
+                  <span style="font-size:12.5px;line-height:1.5;color:var(--tx-2);">{{ d.prompt }}</span>
+                  <div style="display:flex;gap:6px 18px;flex-wrap:wrap;">
+                    <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);">{{ d.schedule }}</span>
+                    <span class="mono tabular" style="font-size:10.5px;color:{{ d.runsColor }};">{{ d.runs }}</span>
+                    <span class="mono tabular" style="font-size:10.5px;color:{{ d.tokColor }};">{{ d.tokens }}</span>
+                    <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);">{{ d.spend }}</span>
+                    <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);">{{ d.next }}</span>
+                  </div>
+                  <sc-if value="{{ d.note }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-size:12px;line-height:1.5;color:{{ d.noteColor }};">{{ d.note }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+
+            <div class="surface" data-screen-label="Work run log" style="display:flex;flex-direction:column;">
+              <div style="display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line-1);">
+                <span style="font-size:14px;font-weight:500;">Run log</span>
+                <span class="mono" style="font-size:10.5px;color:var(--tx-3);">no conversation content · tokens measured or estimated</span>
+                <span style="flex:1;"></span>
+                <a href="#/hermes/controls" onClick="{{ goRunHistory }}" style="font-size:11.5px;">Full history ›</a>
+              </div>
+              <sc-if value="{{ runEmpty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:14px 18px;">No runs yet. Each finished run is written here with its outcome and token count.</p>
+              </sc-if>
+              <sc-for list="{{ runRows }}" as="rr" hint-placeholder-count="3">
+                <div style="display:grid;grid-template-columns:110px minmax(0,1fr) 170px 130px;gap:10px;align-items:center;padding:9px 18px;border-bottom:1px solid var(--line-1);">
+                  <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);">{{ rr.when }}</span>
+                  <span style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ rr.name }}</span>
+                  <span class="mono" style="font-size:10.5px;color:{{ rr.outColor }};">{{ rr.outcome }}</span>
+                  <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);text-align:right;">{{ rr.tokens }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div class="surface" data-screen-label="Work agents" style="display:flex;flex-direction:column;">
+              <div style="padding:13px 16px;border-bottom:1px solid var(--line-1);font-size:14px;font-weight:500;">Agents</div>
+              <sc-for list="{{ agentRows }}" as="ag" hint-placeholder-count="2">
+                <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line-1);">
+                  <span style="width:7px;height:7px;border-radius:999px;background:{{ ag.dot }};flex-shrink:0;"></span>
+                  <span style="flex:1;min-width:0;">
+                    <span style="display:block;font-size:12.5px;font-weight:500;">{{ ag.name }}</span>
+                    <span class="mono" style="display:block;font-size:10px;color:var(--tx-3);">{{ ag.sub }}</span>
+                  </span>
+                </div>
+              </sc-for>
+            </div>
+            <div class="surface" data-screen-label="Work skills" style="display:flex;flex-direction:column;">
+              <div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line-1);">
+                <span style="font-size:14px;font-weight:500;">Skills</span>
+                <a href="#/hermes/learn" onClick="{{ goLearn }}" style="margin-left:auto;font-size:11.5px;">Teach Hermes ›</a>
+              </div>
+              <sc-if value="{{ skillsEmpty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:14px 16px;">No skills on this machine yet.</p>
+              </sc-if>
+              <sc-for list="{{ skillRows }}" as="sk" hint-placeholder-count="3">
+                <div style="display:flex;flex-direction:column;gap:2px;padding:9px 16px;border-bottom:1px solid var(--line-1);">
+                  <span class="mono" style="font-size:12px;color:var(--tx-1);">{{ sk.name }}</span>
+                  <span style="font-size:11.5px;color:var(--tx-3);">{{ sk.desc }}</span>
+                </div>
+              </sc-for>
+              <div style="display:flex;gap:10px;padding:10px 16px;" title="SkillRegistry.totalSkills() · fixture block 499,058">
+                <span style="flex:1;font-size:11.5px;color:var(--tx-2);">On-chain SkillRegistry</span>
+                <span class="mono tabular" style="font-size:11.5px;color:var(--tx-1);">0 listed</span>
+                <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:1px 6px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+      <!-- ============ JOURNAL (0.5.1 journal, now Hermes › Journal) ============ -->
+      <sc-if value="{{ rJournal }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Journal" class="journal-grid" style="padding:16px 26px 24px;box-sizing:border-box;">
+        <div style="display:flex;flex-direction:column;gap:14px;min-height:0;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-family:var(--font-display);font-weight:420;font-size:24px;flex:1;">Journal</span>
+            <button class="btn btn-ghost btn-sm" onClick="{{ onJNew }}">+ Page</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <span class="eyebrow" style="padding:0 2px 4px;">Daily notes</span>
+            <sc-for list="{{ jDaily }}" as="jp" hint-placeholder-count="2">
+              <button onClick="{{ jp.go }}" style="font-family:var(--font-sans);display:flex;align-items:center;gap:8px;text-align:left;font-size:13px;font-weight:{{ jp.weight }};padding:7px 10px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ jp.bg }};color:{{ jp.color }};">
+                <span class="mono tabular" style="font-size:12px;flex:1;">{{ jp.label }}</span>
+                <sc-if value="{{ jp.pinned }}" hint-placeholder-val="{{ false }}"><span style="width:6px;height:6px;border-radius:999px;background:var(--accent);"></span></sc-if>
+              </button>
+            </sc-for>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <span class="eyebrow" style="padding:0 2px 4px;">Pages</span>
+            <sc-for list="{{ jNamed }}" as="jp" hint-placeholder-count="2">
+              <button onClick="{{ jp.go }}" style="font-family:var(--font-sans);display:flex;align-items:center;gap:8px;text-align:left;font-size:13px;font-weight:{{ jp.weight }};padding:7px 10px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ jp.bg }};color:{{ jp.color }};">
+                <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ jp.label }}</span>
+                <sc-if value="{{ jp.pinned }}" hint-placeholder-val="{{ false }}"><span style="width:6px;height:6px;border-radius:999px;background:var(--accent);"></span></sc-if>
+              </button>
+            </sc-for>
+          </div>
+          <div style="flex:1;"></div>
+          <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;border-top:1px solid var(--line-1);padding-top:12px;">Local and off-chain — encrypted at rest in your data dir. Agents and the harness write here only with your approval; pinned pages snapshot encrypted to the PIN daemon.</p>
+        </div>
+        <div class="surface" style="display:flex;flex-direction:column;min-height:420px;">
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px 12px;padding:14px 18px;border-bottom:1px solid var(--line-1);">
+            <sc-if value="{{ jViewing }}" hint-placeholder-val="{{ true }}">
+              <span style="font-family:var(--font-display);font-weight:440;font-size:18px;flex:1;min-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ jTitle }}</span>
+            </sc-if>
+            <sc-if value="{{ jEditing }}" hint-placeholder-val="{{ false }}">
+              <input ref="{{ setJTitle }}" class="input" style="flex:1;max-width:340px;height:32px;font-weight:500;">
+            </sc-if>
+            <span class="mono" style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-3);white-space:nowrap;">{{ jMeta }}</span>
+            <span style="position:relative;display:inline-flex;">
+              <button class="btn btn-ghost btn-sm" onClick="{{ onJExportToggle }}">Export</button>
+              <sc-if value="{{ jExportOpen }}" hint-placeholder-val="{{ false }}">
+                <span class="cc-fade-up" style="position:absolute;right:0;top:34px;z-index:20;background:var(--srf-2);border:1px solid var(--line-2);border-radius:var(--r-2);box-shadow:var(--shadow-lift);display:flex;flex-direction:column;min-width:170px;overflow:hidden;">
+                  <sc-for list="{{ jExports }}" as="ex">
+                    <button onClick="{{ ex.go }}" style="font-family:var(--font-sans);text-align:left;font-size:12.5px;padding:9px 14px;border:none;border-bottom:1px solid var(--line-1);cursor:pointer;background:transparent;color:var(--tx-1);display:flex;gap:10px;align-items:baseline;" style-hover="background:var(--srf-1);">
+                      <span style="flex:1;">{{ ex.label }}</span>
+                      <span class="mono" style="font-size:9.5px;color:var(--tx-3);">{{ ex.ext }}</span>
+                    </button>
+                  </sc-for>
+                </span>
+              </sc-if>
+            </span>
+            <button class="btn btn-ghost btn-sm" onClick="{{ onJPin }}" disabled="{{ jPinDisabled }}">{{ jPinLabel }}</button>
+            <button class="btn btn-secondary btn-sm" onClick="{{ onJEdit }}">{{ jEditLabel }}</button>
+          </div>
+          <sc-if value="{{ jViewing }}" hint-placeholder-val="{{ true }}">
+            <div style="flex:1;min-height:0;overflow:auto;padding:18px 20px;display:flex;flex-direction:column;gap:2px;">
+              <sc-for list="{{ jBlocks }}" as="b" hint-placeholder-count="4">
+                <div style="display:flex;gap:10px;align-items:baseline;padding:4px 0 4px {{ b.pad }};">
+                  <span style="width:5px;height:5px;border-radius:999px;background:var(--line-2);flex-shrink:0;position:relative;top:-3px;"></span>
+                  <sc-if value="{{ b.agent }}" hint-placeholder-val="{{ false }}">
+                    <span class="mono" style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#5d60c9;border:1px solid #5d60c9;border-radius:999px;padding:1px 7px;flex-shrink:0;position:relative;top:-1px;">agent</span>
+                  </sc-if>
+                  <sc-if value="{{ b.prompt }}" hint-placeholder-val="{{ false }}">
+                    <span class="mono" style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-text);border:1px solid var(--accent-text);border-radius:999px;padding:1px 7px;flex-shrink:0;position:relative;top:-1px;">prompt</span>
+                  </sc-if>
+                  <span style="font-size:13.5px;line-height:1.6;color:var(--tx-1);flex:1;">{{ b.text }}</span>
+                  <sc-if value="{{ b.prompt }}" hint-placeholder-val="{{ false }}">
+                    <button class="btn btn-ghost btn-sm" onClick="{{ b.run }}" style="flex-shrink:0;">Run →</button>
+                  </sc-if>
+                </div>
+              </sc-for>
+              <sc-if value="{{ jBacklinksShow }}" hint-placeholder-val="{{ false }}">
+                <div style="margin-top:18px;border-top:1px solid var(--line-1);padding-top:14px;display:flex;flex-direction:column;gap:8px;">
+                  <span class="eyebrow">Linked from</span>
+                  <sc-for list="{{ jBacklinks }}" as="bl">
+                    <button onClick="{{ bl.go }}" style="font-family:var(--font-sans);text-align:left;background:var(--srf-1);border:1px solid var(--line-1);border-radius:var(--r-1);padding:9px 12px;cursor:pointer;display:flex;flex-direction:column;gap:2px;">
+                      <span style="font-size:12.5px;font-weight:500;color:var(--tx-1);">{{ bl.title }}</span>
+                      <span style="font-size:11.5px;color:var(--tx-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:520px;">{{ bl.snippet }}</span>
+                    </button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+          <sc-if value="{{ jEditing }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;min-height:0;display:flex;flex-direction:column;">
+              <textarea ref="{{ setJText }}" style="flex:1;min-height:300px;resize:none;border:none;outline:none;background:var(--srf-2);color:var(--tx-1);font-family:var(--font-mono);font-size:12.5px;line-height:1.8;padding:18px 20px;"></textarea>
+              <div class="mono" style="font-size:10px;color:var(--tx-3);padding:8px 18px;border-top:1px solid var(--line-1);">one bullet per line · two leading spaces indent · [[Page name]] links · @agent marks agent entries · @prompt makes a runnable prompt</div>
+            </div>
+          </sc-if>
+        </div>
+        <div class="surface journal-capture" data-screen-label="Journal capture" style="display:flex;flex-direction:column;min-height:420px;">
+          <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line-1);">
+            <span style="font-size:13.5px;font-weight:500;flex:1;">Capture &amp; chat</span>
+            <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:{{ jMicHintColor }};">{{ jMicHint }}</span>
+          </div>
+          <div ref="{{ setJChatScroll }}" style="flex:1;min-height:0;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px;">
+            <sc-if value="{{ jMsgsEmpty }}" hint-placeholder-val="{{ false }}">
+              <p style="font-size:12px;line-height:1.6;color:var(--tx-3);margin:0;">Talk or type. Save what lands as a note or a runnable prompt on this page, or send it straight to your agent — same agent, same approvals.</p>
+            </sc-if>
+            <sc-for list="{{ jMsgs }}" as="m" hint-placeholder-count="2">
+              <div style="display:flex;flex-direction:column;gap:4px;">
+                <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:{{ m.whoColor }};">{{ m.who }}</span>
+                <span style="font-size:12.5px;line-height:1.55;color:var(--tx-1);white-space:pre-wrap;">{{ m.text }}<sc-if value="{{ m.streaming }}" hint-placeholder-val="{{ false }}"><span style="display:inline-block;width:6px;height:12px;background:var(--accent);margin-left:2px;vertical-align:-2px;animation:ccCaret 1s step-end infinite;"></span></sc-if></span>
+              </div>
+            </sc-for>
+            <sc-if value="{{ chatThinking }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="width:26px;height:26px;display:inline-block;flex-shrink:0;"><dc-import name="LoaderMark" size="26" hint-size="26px,26px"></dc-import></span>
+                <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">{{ chatThinkingLabel }}</span>
+              </div>
+            </sc-if>
+          </div>
+          <sc-if value="{{ jInterimShow }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:8px 16px;border-top:1px dashed var(--line-2);">
+              <span style="font-size:12px;line-height:1.5;color:var(--tx-2);font-style:italic;">{{ jInterim }}</span>
+            </div>
+          </sc-if>
+          <div style="display:flex;flex-direction:column;gap:8px;padding:12px 16px;border-top:1px solid var(--line-1);">
+            <div style="display:flex;gap:8px;">
+              <button onClick="{{ onJMic }}" title="{{ jMicTitle }}" style="width:36px;height:36px;flex-shrink:0;border-radius:999px;border:1px solid {{ jMicBd }};background:{{ jMicBg }};color:{{ jMicFg }};cursor:pointer;display:inline-flex;align-items:center;justify-content:center;">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 A3 3 0 0 1 15 6 V12 A3 3 0 0 1 9 12 V6 A3 3 0 0 1 12 3 Z"></path><path d="M5 11 A7 7 0 0 0 19 11 M12 18 V21"></path></svg>
+              </button>
+              <input ref="{{ setJChatInput }}" class="input" placeholder="Speak or type a thought…" onKeyDown="{{ onJChatKey }}" style="flex:1;height:36px;">
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-primary btn-sm" onClick="{{ onJChatSend }}" disabled="{{ chatBusy }}" style="flex:1;">Send to Hermes</button>
+              <button class="btn btn-ghost btn-sm" onClick="{{ onJSaveNote }}">Save note</button>
+              <button class="btn btn-ghost btn-sm" onClick="{{ onJSavePrompt }}">Save prompt</button>
+            </div>
+            <span class="mono" style="font-size:9.5px;color:var(--tx-3);">dictation via your browser's speech engine · captures stay in your journal until you send them</span>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+        <!-- ============ LEARN ============ -->
+        <sc-if value="{{ htLearn }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Hermes learn" style="padding:16px 26px 24px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start;">
+          <div style="display:flex;flex-direction:column;gap:16px;min-width:0;">
+            <div class="surface" data-screen-label="Learn proposals" style="display:flex;flex-direction:column;">
+              <div style="padding:13px 18px;border-bottom:1px solid var(--line-1);display:flex;flex-direction:column;gap:3px;">
+                <span style="font-size:14px;font-weight:500;">Waiting to be learned</span>
+                <span style="font-size:12px;color:var(--tx-3);">Hermes proposes; a verifier checks; you decide. Nothing is learned without you.</span>
+              </div>
+              <sc-if value="{{ propEmpty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:14px 18px;">No proposals. Teach Hermes a task, or turn on Learn from my sessions in Controls.</p>
+              </sc-if>
+              <sc-for list="{{ propRows }}" as="pr" hint-placeholder-count="1">
+                <div style="display:flex;flex-direction:column;gap:8px;padding:13px 18px;border-bottom:1px solid var(--line-1);">
+                  <div style="display:flex;gap:10px;align-items:center;">
+                    <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid var(--line-2);color:var(--tx-2);">{{ pr.kind }}</span>
+                    <span style="font-size:13px;font-weight:500;flex:1;">{{ pr.title }}</span>
+                  </div>
+                  <span class="mono" style="font-size:10.5px;color:{{ pr.evColor }};">{{ pr.evidence }}</span>
+                  <div style="display:flex;gap:8px;">
+                    <button class="btn btn-primary btn-sm" onClick="{{ pr.accept }}" disabled="{{ pr.blocked }}">Accept</button>
+                    <button class="btn btn-ghost btn-sm" onClick="{{ pr.reject }}">Reject</button>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <div class="surface" data-screen-label="Learn learned skills" style="display:flex;flex-direction:column;">
+              <div style="padding:13px 18px;border-bottom:1px solid var(--line-1);font-size:14px;font-weight:500;">Learned skills and memories</div>
+              <sc-if value="{{ learnedEmpty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:14px 18px;">Nothing learned yet.</p>
+              </sc-if>
+              <sc-for list="{{ learnedRows }}" as="lr" hint-placeholder-count="2">
+                <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 18px;border-bottom:1px solid var(--line-1);">
+                  <span style="flex:1;min-width:0;">
+                    <span style="display:block;font-size:12.5px;font-weight:500;">{{ lr.name }}</span>
+                    <span class="mono" style="display:block;font-size:10px;color:var(--tx-3);margin-top:2px;">{{ lr.sub }}</span>
+                  </span>
+                  <span class="mono" style="font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid {{ lr.bd }};color:{{ lr.fg }};white-space:nowrap;">{{ lr.state }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:16px;min-width:0;">
+            <div class="surface" data-screen-label="Learn teach Hermes" style="padding:16px 18px;display:flex;flex-direction:column;gap:10px;">
+              <span style="font-size:14px;font-weight:500;">Teach Hermes</span>
+              <span style="font-size:12.5px;line-height:1.55;color:var(--tx-2);">Show Hermes a task and how to check the answer. It runs the task, the check runs on its answer, and if it passes you get a proposal to accept.</span>
+              <label class="lbl" style="margin:4px 0 0;">Task</label>
+              <input ref="{{ setTeachTask }}" class="input" placeholder="Summarise yesterday's journal in three bullets">
+              <label class="lbl" style="margin:4px 0 0;">How to check it</label>
+              <input ref="{{ setTeachCheck }}" class="input" placeholder="Exactly three lines, each starting with “- ”">
+              <div><button class="btn btn-secondary btn-sm" onClick="{{ onTeach }}" disabled="{{ teachBusy }}">{{ teachLabel }}</button></div>
+            </div>
+            <div class="surface" data-screen-label="Learn knowledge import" style="padding:16px 18px;display:flex;flex-direction:column;gap:10px;">
+              <span style="font-size:14px;font-weight:500;">Knowledge import</span>
+              <span style="font-size:12.5px;line-height:1.55;color:var(--tx-2);">Load the bundled Citrate knowledge corpus into your memory graph, so Hermes can answer questions about the network from local pages. It is verified against its manifest first.</span>
+              <sc-for list="{{ kiLines }}" as="kl">
+                <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ kl.t }}</span>
+              </sc-for>
+              <div><button class="btn btn-ghost btn-sm" onClick="{{ onImport }}" disabled="{{ kiBusy }}">{{ kiLabel }}</button></div>
+            </div>
+            <div class="surface" data-screen-label="Learn training opt-in" style="padding:16px 18px;display:flex;flex-direction:column;gap:10px;">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <span style="font-size:14px;font-weight:500;flex:1;">Training opt-in</span>
+                <button role="switch" aria-checked="{{ trainOn }}" onClick="{{ onTrainToggle }}" style="width:40px;height:22px;border-radius:999px;border:1px solid {{ trainTrackBd }};background:{{ trainTrackBg }};position:relative;cursor:pointer;padding:0;flex-shrink:0;"><span style="position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:999px;background:{{ trainKnob }};transform:translateX({{ trainKnobX }});transition:transform var(--dur-fast) var(--ease-standard);"></span></button>
+              </div>
+              <span style="font-size:12.5px;line-height:1.55;color:var(--tx-2);">Record your Hermes sessions on this machine so they can become training examples later. Recordings stay local. Turning this off can delete what was recorded.</span>
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ trainStatus }}</span>
+              <div style="display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:var(--r-1);background:var(--srf-inset);">
+                <span style="width:6px;height:6px;border-radius:999px;background:var(--tx-3);"></span>
+                <span style="font-size:12px;color:var(--tx-2);">Group rounds not live yet. Nothing recorded here is sent anywhere.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ CONTROLS ============ -->
+        <sc-if value="{{ htControls }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Hermes controls" style="padding:16px 26px 24px;display:flex;flex-direction:column;gap:14px;">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <div style="display:flex;gap:2px;border:1px solid var(--line-1);border-radius:var(--r-2);padding:3px;background:var(--srf-1);">
+              <sc-for list="{{ depthTabs }}" as="dt" hint-placeholder-count="3">
+                <button onClick="{{ dt.go }}" style="font-family:var(--font-sans);font-size:12px;font-weight:{{ dt.weight }};padding:5px 12px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ dt.bg }};color:{{ dt.color }};">{{ dt.label }}</button>
+              </sc-for>
+            </div>
+            <span style="font-size:12px;color:var(--tx-3);">{{ depthHint }}</span>
+          </div>
+
+        <!-- Controls state card (keeps the depth switcher visible) -->
+        <sc-if value="{{ cStateCard }}" hint-placeholder-val="{{ false }}">
+        <div>
+          <div class="surface" data-screen-label="{{ hStateLabel }}" style="max-width:640px;padding:22px 24px;display:flex;flex-direction:column;gap:12px;border-color:{{ hStateBd }};">
+            <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:{{ hStateFg }};">{{ hStateKind }}</span>
+            <span style="font-family:var(--font-display);font-weight:420;font-size:20px;line-height:1.25;">{{ hStateTitle }}</span>
+            <p style="font-size:13.5px;line-height:1.6;color:var(--tx-2);margin:0;">{{ hStateBody }}</p>
+            <sc-if value="{{ hStateWhy }}" hint-placeholder-val="{{ false }}">
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);background:var(--srf-inset);border-radius:var(--r-1);padding:8px 10px;">{{ hStateWhy }}</span>
+            </sc-if>
+            <div style="display:flex;gap:10px;">
+              <sc-if value="{{ hStateCta }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ onHStateCta }}">{{ hStateCta }}</button></sc-if>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+          <sc-if value="{{ cpNudge }}" hint-placeholder-val="{{ false }}">
+            <div class="cc-fade-up" style="display:flex;align-items:center;gap:12px;max-width:880px;padding:10px 16px;border-radius:var(--r-2);border:1px solid var(--accent);background:var(--accent-wash);">
+              <span style="font-size:12.5px;color:var(--tx-1);flex:1;">Web search is on. Daemons that use it, like a morning web brief, are in the Store.</span>
+              <button class="btn btn-ghost btn-sm" onClick="{{ goStore }}">Find daemons in Store</button>
+            </div>
+          </sc-if>
+          <!-- depth 1: the switches -->
+          <sc-if value="{{ cd1 }}" hint-placeholder-val="{{ true }}">
+          <div class="surface" data-screen-label="Controls depth 1" style="display:flex;flex-direction:column;max-width:880px;">
+            <sc-for list="{{ ctlRows }}" as="c" hint-placeholder-count="6">
+              <div class="{{ c.rowClass }}" style="display:flex;align-items:center;gap:16px;padding:15px 18px;border-bottom:1px solid var(--line-1);">
+                <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;">
+                  <span style="font-size:14px;font-weight:500;">{{ c.label }}</span>
+                  <span style="font-size:12.5px;line-height:1.5;color:var(--tx-2);">{{ c.desc }}</span>
+                  <span class="mono" style="font-size:10.5px;color:{{ c.stateColor }};">{{ c.stateText }}</span>
+                </span>
+                <sc-if value="{{ c.isSeg }}" hint-placeholder-val="{{ false }}">
+                  <span style="display:inline-flex;gap:2px;border:1px solid var(--line-2);border-radius:var(--r-1);padding:2px;flex-shrink:0;">
+                    <sc-for list="{{ c.segs }}" as="sg">
+                      <button onClick="{{ sg.go }}" style="font-family:var(--font-sans);font-size:12px;padding:5px 10px;border:none;border-radius:4px;cursor:pointer;background:{{ sg.bg }};color:{{ sg.fg }};font-weight:{{ sg.weight }};">{{ sg.label }}</button>
+                    </sc-for>
+                  </span>
+                </sc-if>
+                <sc-if value="{{ c.isSwitch }}" hint-placeholder-val="{{ true }}">
+                  <button role="switch" aria-checked="{{ c.on }}" aria-label="{{ c.label }}" onClick="{{ c.toggle }}" style="width:40px;height:22px;border-radius:999px;border:1px solid {{ c.trackBd }};background:{{ c.trackBg }};position:relative;cursor:pointer;padding:0;flex-shrink:0;"><span style="position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:999px;background:{{ c.knob }};transform:translateX({{ c.knobX }});transition:transform var(--dur-fast) var(--ease-standard);"></span></button>
+                </sc-if>
+                <button onClick="{{ c.details }}" class="btn btn-ghost btn-sm" style="flex-shrink:0;">Details ›</button>
+              </div>
+            </sc-for>
+            <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:12px 18px;">Each switch writes the same setting the old Settings pages wrote. Nothing new is allowed by default: daemons stay off until created, spend stays at zero, terminal stays off.</p>
+          </div>
+          </sc-if>
+
+          <!-- depth 2: details -->
+          <sc-if value="{{ cd2 }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Controls depth 2" style="display:grid;grid-template-columns:210px minmax(0,1fr);gap:18px;max-width:1040px;">
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <sc-for list="{{ d2Nav }}" as="dn" hint-placeholder-count="7">
+                <button onClick="{{ dn.go }}" style="font-family:var(--font-sans);text-align:left;font-size:13px;font-weight:{{ dn.weight }};padding:8px 12px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ dn.bg }};color:{{ dn.color }};">{{ dn.label }}</button>
+              </sc-for>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px;min-width:0;">
+              <div class="surface" style="display:flex;flex-direction:column;">
+                <div style="padding:14px 18px;border-bottom:1px solid var(--line-1);display:flex;flex-direction:column;gap:3px;">
+                  <span style="font-size:14.5px;font-weight:500;">{{ d2Title }}</span>
+                  <span style="font-size:12.5px;line-height:1.5;color:var(--tx-2);">{{ d2Lead }}</span>
+                </div>
+                <sc-if value="{{ d2Empty }}" hint-placeholder-val="{{ false }}">
+                  <p style="font-size:12.5px;line-height:1.6;color:var(--tx-3);margin:0;padding:14px 18px;">{{ d2EmptyText }}</p>
+                </sc-if>
+                <sc-for list="{{ d2Rows }}" as="r" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line-1);">
+                    <span style="flex:1;min-width:0;">
+                      <span style="display:block;font-size:13px;font-weight:500;">{{ r.name }}</span>
+                      <span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;line-height:1.5;">{{ r.sub }}</span>
+                    </span>
+                    <sc-if value="{{ r.value }}" hint-placeholder-val="{{ false }}"><span class="mono tabular" style="font-size:12px;color:{{ r.valueColor }};white-space:nowrap;">{{ r.value }}</span></sc-if>
+                    <sc-if value="{{ r.isSwitch }}" hint-placeholder-val="{{ false }}">
+                      <button role="switch" aria-checked="{{ r.on }}" aria-label="{{ r.name }}" onClick="{{ r.toggle }}" style="width:40px;height:22px;border-radius:999px;border:1px solid {{ r.trackBd }};background:{{ r.trackBg }};position:relative;cursor:pointer;padding:0;flex-shrink:0;"><span style="position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:999px;background:{{ r.knob }};transform:translateX({{ r.knobX }});transition:transform var(--dur-fast) var(--ease-standard);"></span></button>
+                    </sc-if>
+                    <sc-if value="{{ r.btn }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ r.act }}">{{ r.btn }}</button></sc-if>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ d2Add }}" hint-placeholder-val="{{ false }}">
+                  <div style="padding:12px 18px;"><button class="btn btn-ghost btn-sm" onClick="{{ onD2Add }}">{{ d2Add }}</button></div>
+                </sc-if>
+              </div>
+              <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;">{{ d2Foot }}</p>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- depth 3: records -->
+          <sc-if value="{{ cd3 }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Controls depth 3" style="display:flex;flex-direction:column;gap:12px;max-width:1040px;">
+            <div style="display:flex;gap:6px;">
+              <sc-for list="{{ d3Nav }}" as="an" hint-placeholder-count="3">
+                <button onClick="{{ an.go }}" class="btn btn-sm {{ an.cls }}">{{ an.label }}</button>
+              </sc-for>
+            </div>
+            <sc-if value="{{ d3Summary }}" hint-placeholder-val="{{ false }}">
+            <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line-1);border:1px solid var(--line-1);border-radius:var(--r-2);overflow:hidden;">
+              <sc-for list="{{ d3Tiles }}" as="tl" hint-placeholder-count="4">
+                <div style="background:var(--srf-1);padding:12px 14px;display:flex;flex-direction:column;gap:4px;">
+                  <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--tx-3);">{{ tl.k }}</span>
+                  <span class="tabular" style="font-family:var(--font-display);font-size:20px;font-weight:420;">{{ tl.v }}</span>
+                  <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ tl.sub }}</span>
+                </div>
+              </sc-for>
+            </div>
+            </sc-if>
+            <sc-if value="{{ d3Picker }}" hint-placeholder-val="{{ false }}">
+              <span style="display:flex;gap:6px;flex-wrap:wrap;">
+                <sc-for list="{{ d3DaemonPick }}" as="dp">
+                  <button onClick="{{ dp.go }}" class="btn btn-sm {{ dp.cls }}">{{ dp.label }}</button>
+                </sc-for>
+              </span>
+            </sc-if>
+            <div class="surface" style="display:flex;flex-direction:column;">
+              <div style="display:grid;grid-template-columns:{{ d3Cols }};gap:10px;padding:10px 18px;border-bottom:1px solid var(--line-1);background:var(--srf-1);">
+                <sc-for list="{{ d3Head }}" as="hd"><span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);">{{ hd }}</span></sc-for>
+              </div>
+              <sc-if value="{{ d3Empty }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12.5px;line-height:1.6;color:var(--tx-3);margin:0;padding:16px 18px;">{{ d3EmptyText }}</p>
+              </sc-if>
+              <sc-for list="{{ d3Rows }}" as="row" hint-placeholder-count="3">
+                <div style="display:grid;grid-template-columns:{{ d3Cols }};gap:10px;padding:10px 18px;border-bottom:1px solid var(--line-1);align-items:baseline;">
+                  <sc-for list="{{ row.cells }}" as="cell"><span class="mono tabular" style="font-size:11px;line-height:1.5;color:{{ cell.c }};word-break:break-word;">{{ cell.t }}</span></sc-for>
+                </div>
+              </sc-for>
+            </div>
+            <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;">{{ d3Foot }}</p>
+          </div>
+          </sc-if>
+        </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ===================== PLACE STUBS (slice 2 and later) ===================== -->
+      <sc-if value="{{ rStub }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="{{ stubLabel }}" style="padding:20px 26px 24px;display:flex;flex-direction:column;gap:16px;max-width:880px;">
+        <div style="display:flex;align-items:baseline;gap:12px;">
+          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;">{{ stubTitle }}</span>
+          <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid var(--line-2);color:var(--tx-2);">{{ stubSlice }}</span>
+        </div>
+        <p style="font-size:14px;line-height:1.6;color:var(--tx-2);margin:0;">{{ stubLead }}</p>
+        <div class="surface" style="display:flex;flex-direction:column;">
+          <sc-for list="{{ stubTabs }}" as="sbt" hint-placeholder-count="4">
+            <div style="display:flex;gap:14px;padding:11px 18px;border-bottom:1px solid var(--line-1);">
+              <span style="width:120px;flex-shrink:0;font-size:13px;font-weight:500;">{{ sbt.k }}</span>
+              <span style="font-size:12.5px;line-height:1.5;color:var(--tx-2);">{{ sbt.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ stubHasLegacy }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;gap:10px;align-items:center;">
+            <button class="btn btn-ghost btn-sm" onClick="{{ onStubLegacy }}">Open the 0.5.1 screen (reference, not a port target)</button>
+            <span style="font-size:11.5px;color:var(--tx-3);">It predates the UI truth contract and shows numbers the contract does not allow.</span>
+          </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ rLegacyBar }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 26px;background:var(--danger-bg);border-bottom:1px solid var(--danger);">
+          <span style="font-size:12.5px;color:var(--danger);flex:1;">0.5.1 reference screen. Not a port target: it predates UI truth contract v1 (see violations V1 to V12).</span>
+          <button class="btn btn-ghost btn-sm" onClick="{{ onLegacyClose }}">Back to the slice 1 stub</button>
+        </div>
+      </sc-if>
+
+      <!-- ===================== STORE STUB (click path 2 hop; Store is slice 2) ===================== -->
+      <sc-if value="{{ rStoreStub }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Store stub install sheet" style="padding:20px 26px 24px;display:flex;flex-direction:column;gap:16px;max-width:880px;">
+        <div style="display:flex;align-items:baseline;gap:12px;">
+          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;">Store</span>
+          <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid var(--warn);background:var(--warn-bg);color:var(--warn);">slice 2 · stub</span>
+        </div>
+        <p style="font-size:14px;line-height:1.6;color:var(--tx-2);margin:0;">The Store (catalog, listing, signature check, install sheet) is drawn in slice 2. This stub stands in for one first-party daemon listing so click path 2 can run end to end.</p>
+        <div class="surface" style="display:flex;flex-direction:column;">
+          <div style="display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line-1);">
+            <span style="width:38px;height:38px;border-radius:var(--r-2);background:var(--accent-wash);border:1px solid var(--line-1);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7 V12 L15 14"></path><path d="M12 3 A9 9 0 1 0 12.01 3 Z"></path></svg>
+            </span>
+            <span style="flex:1;min-width:0;">
+              <span style="display:block;font-size:15px;font-weight:500;">Morning web brief</span>
+              <span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);">Daemon · first-party · Citrate</span>
+            </span>
+            <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px dashed var(--line-2);color:var(--tx-3);">signature check · slice 2</span>
+          </div>
+          <div style="padding:14px 18px;display:flex;flex-direction:column;gap:10px;">
+            <span style="font-size:13px;line-height:1.6;color:var(--tx-2);">Each morning, searches the web for the topics in your pinned journal pages and drafts a short brief as a new journal page. The page is only written if you approve it.</span>
+            <span class="eyebrow">Declared permissions</span>
+            <sc-for list="{{ stPerms }}" as="sp" hint-placeholder-count="3">
+              <div style="display:flex;gap:10px;align-items:flex-start;">
+                <span style="width:6px;height:6px;border-radius:999px;background:{{ sp.dot }};margin-top:6px;flex-shrink:0;"></span>
+                <span style="font-size:12.5px;line-height:1.5;color:var(--tx-1);flex:1;">{{ sp.t }}</span>
+                <span class="mono" style="font-size:10px;color:{{ sp.stateColor }};white-space:nowrap;">{{ sp.state }}</span>
+              </div>
+            </sc-for>
+            <span class="eyebrow" style="margin-top:4px;">Declared budget</span>
+            <span class="mono tabular" style="font-size:11.5px;color:var(--tx-1);">4 runs a day · 20,000 tokens a day · 6,000 tokens a run · 0 SALT spend</span>
+            <sc-if value="{{ stNeedsWeb }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:var(--r-1);background:var(--warn-bg);border:1px solid var(--warn);">
+                <span style="font-size:12px;color:var(--tx-1);flex:1;">This daemon needs web search, which is off. You can install it now; it will not run until web search is on.</span>
+                <button class="btn btn-ghost btn-sm" onClick="{{ goControls }}">Open Controls</button>
+              </div>
+            </sc-if>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;padding:14px 18px;border-top:1px solid var(--line-1);">
+            <sc-if value="{{ stCanInstall }}" hint-placeholder-val="{{ true }}">
+              <button class="btn btn-primary" onClick="{{ onStubInstall }}">Install paused</button>
+            </sc-if>
+            <sc-if value="{{ stInstalled }}" hint-placeholder-val="{{ false }}">
+              <span class="mono" style="font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;padding:3px 10px;border-radius:999px;background:var(--ok-bg);border:1px solid var(--ok);color:var(--ok);">installed · paused</span>
+              <button class="btn btn-ghost btn-sm" onClick="{{ goWork }}">Open in Hermes › Work</button>
+            </sc-if>
+            <span style="font-size:11.5px;color:var(--tx-3);">It arrives paused. You start it.</span>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== DASHBOARD (0.5.1, retired: Hermes › Chat replaces it) ===================== -->
       <sc-if value="{{ rDash }}" hint-placeholder-val="{{ true }}">
       <div data-screen-label="Dashboard" style="padding:20px 26px 24px;display:flex;flex-direction:column;gap:16px;min-height:100%;box-sizing:border-box;">
         <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line-1);border:1px solid var(--line-1);border-radius:var(--r-2);overflow:hidden;">
@@ -1085,6 +1852,7 @@
           <sc-for list="{{ setNav }}" as="sn" hint-placeholder-count="6">
             <button onClick="{{ sn.go }}" style="font-family:var(--font-sans);text-align:left;font-size:13px;font-weight:{{ sn.weight }};padding:8px 12px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ sn.bg }};color:{{ sn.color }};">{{ sn.label }}</button>
           </sc-for>
+          <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:14px 0 0;padding:12px 12px 0;border-top:1px solid var(--line-1);">AI providers, escalation, MCP servers, web search and budgets moved to <a href="#/hermes/controls" onClick="{{ goControls }}">Hermes › Controls</a>. Node configuration moves to Node › Advanced (slice 2).</p>
         </div>
         <div style="display:flex;flex-direction:column;gap:14px;padding-top:44px;">
 
@@ -1366,141 +2134,6 @@
       </div>
       </sc-if>
 
-      <!-- ===================== JOURNAL ===================== -->
-      <sc-if value="{{ rJournal }}" hint-placeholder-val="{{ false }}">
-      <div data-screen-label="Journal" class="journal-grid" style="padding:20px 26px 24px;min-height:100%;box-sizing:border-box;">
-        <div style="display:flex;flex-direction:column;gap:14px;min-height:0;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <span style="font-family:var(--font-display);font-weight:420;font-size:24px;flex:1;">Journal</span>
-            <button class="btn btn-ghost btn-sm" onClick="{{ onJNew }}">+ Page</button>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px;">
-            <span class="eyebrow" style="padding:0 2px 4px;">Daily notes</span>
-            <sc-for list="{{ jDaily }}" as="jp" hint-placeholder-count="2">
-              <button onClick="{{ jp.go }}" style="font-family:var(--font-sans);display:flex;align-items:center;gap:8px;text-align:left;font-size:13px;font-weight:{{ jp.weight }};padding:7px 10px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ jp.bg }};color:{{ jp.color }};">
-                <span class="mono tabular" style="font-size:12px;flex:1;">{{ jp.label }}</span>
-                <sc-if value="{{ jp.pinned }}" hint-placeholder-val="{{ false }}"><span style="width:6px;height:6px;border-radius:999px;background:var(--accent);"></span></sc-if>
-              </button>
-            </sc-for>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px;">
-            <span class="eyebrow" style="padding:0 2px 4px;">Pages</span>
-            <sc-for list="{{ jNamed }}" as="jp" hint-placeholder-count="2">
-              <button onClick="{{ jp.go }}" style="font-family:var(--font-sans);display:flex;align-items:center;gap:8px;text-align:left;font-size:13px;font-weight:{{ jp.weight }};padding:7px 10px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ jp.bg }};color:{{ jp.color }};">
-                <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ jp.label }}</span>
-                <sc-if value="{{ jp.pinned }}" hint-placeholder-val="{{ false }}"><span style="width:6px;height:6px;border-radius:999px;background:var(--accent);"></span></sc-if>
-              </button>
-            </sc-for>
-          </div>
-          <div style="flex:1;"></div>
-          <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;border-top:1px solid var(--line-1);padding-top:12px;">Local and off-chain — encrypted at rest in your data dir. Agents and the harness write here only with your approval; pinned pages snapshot encrypted to the PIN daemon.</p>
-        </div>
-        <div class="surface" style="display:flex;flex-direction:column;min-height:420px;">
-          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px 12px;padding:14px 18px;border-bottom:1px solid var(--line-1);">
-            <sc-if value="{{ jViewing }}" hint-placeholder-val="{{ true }}">
-              <span style="font-family:var(--font-display);font-weight:440;font-size:18px;flex:1;min-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ jTitle }}</span>
-            </sc-if>
-            <sc-if value="{{ jEditing }}" hint-placeholder-val="{{ false }}">
-              <input ref="{{ setJTitle }}" class="input" style="flex:1;max-width:340px;height:32px;font-weight:500;">
-            </sc-if>
-            <span class="mono" style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-3);white-space:nowrap;">{{ jMeta }}</span>
-            <span style="position:relative;display:inline-flex;">
-              <button class="btn btn-ghost btn-sm" onClick="{{ onJExportToggle }}">Export</button>
-              <sc-if value="{{ jExportOpen }}" hint-placeholder-val="{{ false }}">
-                <span class="cc-fade-up" style="position:absolute;right:0;top:34px;z-index:20;background:var(--srf-2);border:1px solid var(--line-2);border-radius:var(--r-2);box-shadow:var(--shadow-lift);display:flex;flex-direction:column;min-width:170px;overflow:hidden;">
-                  <sc-for list="{{ jExports }}" as="ex">
-                    <button onClick="{{ ex.go }}" style="font-family:var(--font-sans);text-align:left;font-size:12.5px;padding:9px 14px;border:none;border-bottom:1px solid var(--line-1);cursor:pointer;background:transparent;color:var(--tx-1);display:flex;gap:10px;align-items:baseline;" style-hover="background:var(--srf-1);">
-                      <span style="flex:1;">{{ ex.label }}</span>
-                      <span class="mono" style="font-size:9.5px;color:var(--tx-3);">{{ ex.ext }}</span>
-                    </button>
-                  </sc-for>
-                </span>
-              </sc-if>
-            </span>
-            <button class="btn btn-ghost btn-sm" onClick="{{ onJPin }}" disabled="{{ jPinDisabled }}">{{ jPinLabel }}</button>
-            <button class="btn btn-secondary btn-sm" onClick="{{ onJEdit }}">{{ jEditLabel }}</button>
-          </div>
-          <sc-if value="{{ jViewing }}" hint-placeholder-val="{{ true }}">
-            <div style="flex:1;min-height:0;overflow:auto;padding:18px 20px;display:flex;flex-direction:column;gap:2px;">
-              <sc-for list="{{ jBlocks }}" as="b" hint-placeholder-count="4">
-                <div style="display:flex;gap:10px;align-items:baseline;padding:4px 0 4px {{ b.pad }};">
-                  <span style="width:5px;height:5px;border-radius:999px;background:var(--line-2);flex-shrink:0;position:relative;top:-3px;"></span>
-                  <sc-if value="{{ b.agent }}" hint-placeholder-val="{{ false }}">
-                    <span class="mono" style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#5d60c9;border:1px solid #5d60c9;border-radius:999px;padding:1px 7px;flex-shrink:0;position:relative;top:-1px;">agent</span>
-                  </sc-if>
-                  <sc-if value="{{ b.prompt }}" hint-placeholder-val="{{ false }}">
-                    <span class="mono" style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-text);border:1px solid var(--accent-text);border-radius:999px;padding:1px 7px;flex-shrink:0;position:relative;top:-1px;">prompt</span>
-                  </sc-if>
-                  <span style="font-size:13.5px;line-height:1.6;color:var(--tx-1);flex:1;">{{ b.text }}</span>
-                  <sc-if value="{{ b.prompt }}" hint-placeholder-val="{{ false }}">
-                    <button class="btn btn-ghost btn-sm" onClick="{{ b.run }}" style="flex-shrink:0;">Run →</button>
-                  </sc-if>
-                </div>
-              </sc-for>
-              <sc-if value="{{ jBacklinksShow }}" hint-placeholder-val="{{ false }}">
-                <div style="margin-top:18px;border-top:1px solid var(--line-1);padding-top:14px;display:flex;flex-direction:column;gap:8px;">
-                  <span class="eyebrow">Linked from</span>
-                  <sc-for list="{{ jBacklinks }}" as="bl">
-                    <button onClick="{{ bl.go }}" style="font-family:var(--font-sans);text-align:left;background:var(--srf-1);border:1px solid var(--line-1);border-radius:var(--r-1);padding:9px 12px;cursor:pointer;display:flex;flex-direction:column;gap:2px;">
-                      <span style="font-size:12.5px;font-weight:500;color:var(--tx-1);">{{ bl.title }}</span>
-                      <span style="font-size:11.5px;color:var(--tx-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:520px;">{{ bl.snippet }}</span>
-                    </button>
-                  </sc-for>
-                </div>
-              </sc-if>
-            </div>
-          </sc-if>
-          <sc-if value="{{ jEditing }}" hint-placeholder-val="{{ false }}">
-            <div style="flex:1;min-height:0;display:flex;flex-direction:column;">
-              <textarea ref="{{ setJText }}" style="flex:1;min-height:300px;resize:none;border:none;outline:none;background:var(--srf-2);color:var(--tx-1);font-family:var(--font-mono);font-size:12.5px;line-height:1.8;padding:18px 20px;"></textarea>
-              <div class="mono" style="font-size:10px;color:var(--tx-3);padding:8px 18px;border-top:1px solid var(--line-1);">one bullet per line · two leading spaces indent · [[Page name]] links · @agent marks agent entries · @prompt makes a runnable prompt</div>
-            </div>
-          </sc-if>
-        </div>
-        <div class="surface journal-capture" data-screen-label="Journal capture" style="display:flex;flex-direction:column;min-height:420px;">
-          <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line-1);">
-            <span style="font-size:13.5px;font-weight:500;flex:1;">Capture &amp; chat</span>
-            <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:{{ jMicHintColor }};">{{ jMicHint }}</span>
-          </div>
-          <div ref="{{ setJChatScroll }}" style="flex:1;min-height:0;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px;">
-            <sc-if value="{{ jMsgsEmpty }}" hint-placeholder-val="{{ false }}">
-              <p style="font-size:12px;line-height:1.6;color:var(--tx-3);margin:0;">Talk or type. Save what lands as a note or a runnable prompt on this page, or send it straight to your agent — same agent, same approvals.</p>
-            </sc-if>
-            <sc-for list="{{ jMsgs }}" as="m" hint-placeholder-count="2">
-              <div style="display:flex;flex-direction:column;gap:4px;">
-                <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:{{ m.whoColor }};">{{ m.who }}</span>
-                <span style="font-size:12.5px;line-height:1.55;color:var(--tx-1);white-space:pre-wrap;">{{ m.text }}<sc-if value="{{ m.streaming }}" hint-placeholder-val="{{ false }}"><span style="display:inline-block;width:6px;height:12px;background:var(--accent);margin-left:2px;vertical-align:-2px;animation:ccCaret 1s step-end infinite;"></span></sc-if></span>
-              </div>
-            </sc-for>
-            <sc-if value="{{ chatThinking }}" hint-placeholder-val="{{ false }}">
-              <div style="display:flex;align-items:center;gap:8px;">
-                <span style="width:26px;height:26px;display:inline-block;flex-shrink:0;"><dc-import name="LoaderMark" size="26" hint-size="26px,26px"></dc-import></span>
-                <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">{{ chatThinkingLabel }}</span>
-              </div>
-            </sc-if>
-          </div>
-          <sc-if value="{{ jInterimShow }}" hint-placeholder-val="{{ false }}">
-            <div style="padding:8px 16px;border-top:1px dashed var(--line-2);">
-              <span style="font-size:12px;line-height:1.5;color:var(--tx-2);font-style:italic;">{{ jInterim }}</span>
-            </div>
-          </sc-if>
-          <div style="display:flex;flex-direction:column;gap:8px;padding:12px 16px;border-top:1px solid var(--line-1);">
-            <div style="display:flex;gap:8px;">
-              <button onClick="{{ onJMic }}" title="{{ jMicTitle }}" style="width:36px;height:36px;flex-shrink:0;border-radius:999px;border:1px solid {{ jMicBd }};background:{{ jMicBg }};color:{{ jMicFg }};cursor:pointer;display:inline-flex;align-items:center;justify-content:center;">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 A3 3 0 0 1 15 6 V12 A3 3 0 0 1 9 12 V6 A3 3 0 0 1 12 3 Z"></path><path d="M5 11 A7 7 0 0 0 19 11 M12 18 V21"></path></svg>
-              </button>
-              <input ref="{{ setJChatInput }}" class="input" placeholder="Speak or type a thought…" onKeyDown="{{ onJChatKey }}" style="flex:1;height:36px;">
-            </div>
-            <div style="display:flex;gap:8px;">
-              <button class="btn btn-primary btn-sm" onClick="{{ onJChatSend }}" disabled="{{ chatBusy }}" style="flex:1;">Send to agent</button>
-              <button class="btn btn-ghost btn-sm" onClick="{{ onJSaveNote }}">Save note</button>
-              <button class="btn btn-ghost btn-sm" onClick="{{ onJSavePrompt }}">Save prompt</button>
-            </div>
-            <span class="mono" style="font-size:9.5px;color:var(--tx-3);">dictation via your browser's speech engine · captures stay in your journal until you send them</span>
-          </div>
-        </div>
-      </div>
-      </sc-if>
 
     </div>
   </main>
@@ -1621,10 +2254,28 @@
       </span>
     </div>
     <div style="display:flex;flex-direction:column;gap:6px;">
-      <span class="lbl">Chat backend</span>
+      <span class="lbl">Click path 2 · everyday</span>
+      <sc-for list="{{ cpSteps }}" as="cs" hint-placeholder-count="5">
+        <span style="display:flex;gap:8px;font-size:12px;color:{{ cs.c }};"><span class="mono" style="width:10px;">{{ cs.mark }}</span>{{ cs.t }}</span>
+      </sc-for>
+      <span style="display:flex;gap:6px;margin-top:4px;">
+        <button class="btn btn-secondary btn-sm" onClick="{{ onCpStart }}">Go to step 1</button>
+        <button class="btn btn-ghost btn-sm" onClick="{{ onCpReset }}">Reset path</button>
+      </span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <span class="lbl">Model routing</span>
       <span style="display:flex;gap:6px;">
-        <button class="btn btn-sm {{ demoGwCls }}" onClick="{{ onDemoGw }}">gateway</button>
-        <button class="btn btn-sm {{ demoLocalCls }}" onClick="{{ onDemoLocal }}">local fallback</button>
+        <button class="btn btn-sm {{ demoRouteLocalCls }}" onClick="{{ onDemoRouteLocal }}">local only</button>
+        <button class="btn btn-sm {{ demoRouteAskCls }}" onClick="{{ onDemoRouteAsk }}">ask first</button>
+      </span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <span class="lbl">Appearance · annotations</span>
+      <span style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn btn-sm {{ demoLightCls }}" onClick="{{ onDemoLight }}">light</button>
+        <button class="btn btn-sm {{ demoDarkCls }}" onClick="{{ onDemoDark }}">dark</button>
+        <button class="btn btn-sm {{ demoAnnCls }}" onClick="{{ onDemoAnn }}">annotations</button>
       </span>
     </div>
     <div style="display:flex;flex-direction:column;gap:6px;">
@@ -1664,7 +2315,7 @@ class Component extends DCLogic {
     super(props);
     this.PERSONAS = {
       p1: { id: 'p1', name: 'Dana Okafor', initials: 'DO', label: 'P1 · The Joiner', tier: 'pilot', role: 'member', org: null, fresh: true, blurb: 'Fresh install — walks S0–S6.', email: 'dana.okafor@fastmail.com' },
-      p2: { id: 'p2', name: 'Marcus Bell', initials: 'MB', label: 'P2 · The Operator', tier: 'pilot', role: 'operator', org: null, fresh: false, blurb: 'Onboarded, node validating, deep telemetry.', email: 'mbell@protonmail.com' },
+      p2: { id: 'p2', name: 'Marcus Bell', initials: 'MB', label: 'P2 · The Operator', tier: 'pilot', role: 'operator', org: null, fresh: false, blurb: 'Onboarded, node synced, daemons and approvals seeded.', email: 'mbell@protonmail.com' },
       p3: { id: 'p3', name: 'Priya Anand', initials: 'PA', label: 'P3 · The Builder', tier: 'pilot', role: 'builder', org: null, fresh: false, blurb: 'SDKs, gateway key, agents on the socket.', email: 'priya@lattice.dev' },
       p4: { id: 'p4', name: 'R. Calloway', initials: 'RC', label: 'P4 · The Org Seat', tier: 'enterprise', role: 'org-seat', org: 'BA-7', fresh: false, blurb: 'Org seat — org-scoped doors render.', email: 'r.calloway@defense_prime.com' },
     };
@@ -1672,7 +2323,7 @@ class Component extends DCLogic {
     this.ORIGIN_COLORS = { 'user wallet action': '#5a8205', 'node-agent': '#1b4965', 'chat agent': '#5d60c9', 'micro-app': '#a8497a' };
     this.cid = 0; this.mid = 0; this.resolvers = {}; this._focusId = null;
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem('citrate-core-proto-v2') || 'null'); } catch (e) { saved = null; }
+    try { saved = JSON.parse(localStorage.getItem('citrate-core-proto-v3') || 'null'); } catch (e) { saved = null; }
     const base = this.freshState((saved && saved.persona) || 'p1');
     if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: 'ready' });
     this.state = base;
@@ -1696,7 +2347,7 @@ class Component extends DCLogic {
       stage: P.fresh ? 's0' : 'done',
       s1: 'idle', s2: 'none', s3: 'idle', s5: 'idle', s5c: 0, s5n: 0,
       s5hash: this.hash(), kycOutcome: 'verified',
-      route: 'dashboard', wTab: 'overview', nTab: 'ops', cTab: 'apps', sSec: 'account',
+      route: 'hermes', wTab: 'overview', nTab: 'ops', cTab: 'apps', sSec: 'account',
       coach: -1, coachDone: !P.fresh, demoOpen: false, toast: null,
       height: 131204 + ((Math.random() * 40) | 0), peers: 0, lastCp: 131200, finAge: 8,
       node: 'off', syncPct: 0, hb: 4, cpu: 0, ram: 0,
@@ -1728,12 +2379,13 @@ class Component extends DCLogic {
       s.jPages = [{ id: 'd-' + today, title: today, kind: 'daily', pinned: false, blocks: ['Welcome — this journal is local and yours. One bullet per line, [[Page name]] to link.', 'Agents write here only with your approval, every time.'] }];
     } else {
       s.jPages = [
-        { id: 'd-' + today, title: today, kind: 'daily', pinned: false, blocks: ['Node validated through the night — [[Validator runbook]] holds.', '@agent claim batched at 09:12 · 12.41 SALT — approved by you', '  follow up: raise the bond on kq4e before the next window', 'Reviewed [[Agent worklog]] — indexing is ahead of schedule.'] },
-        { id: 'p-runbook', title: 'Validator runbook', kind: 'page', pinned: true, blocks: ['Keep stake ≥ 32,000 — eligibility is a hard floor.', 'The heartbeat is slashing protection. Never kill -9 the agent mid-job.', 'Claims batch until ≥ 5 SALT to avoid dust gas.', 'Pause before OS upgrades; resume re-attests the machine.'] },
+        { id: 'd-' + today, title: today, kind: 'daily', pinned: false, blocks: ['Node stayed synced overnight. See [[Node runbook]].', '@agent Inbox triage · 3 threads summarised · approved by you', '  follow up: read the C1 UI truth contract before the slice 2 review', 'Reviewed [[Agent worklog]]: indexing is ahead of schedule.'] },
+        { id: 'p-runbook', title: 'Node runbook', kind: 'page', pinned: true, blocks: ['Read numbers from their named source; unknown is not zero.', 'Count confirmations, not finality: checkpoint finality is not running on 40204 yet.', 'Pause daemons before OS upgrades.', 'Keep the data dir on the internal disk.'] },
         { id: 'p-worklog', title: 'Agent worklog', kind: 'page', pinned: false, blocks: ['@agent 2026-07-10 · researched x402 settlement flows for the marketplace brief', '@agent 2026-07-11 · indexed the 40204 contract catalog into chain-facts', '@agent drafts live here — off-chain, local, recallable via [[' + today + ']]'] },
       ];
     }
     s.jSel = s.jPages[0].id;
+    this.hermesSeed(s, pid);
     if (!P.fresh) {
       s.hasGrant = true; s.hasSbt = true;
       s.pins = [
@@ -1776,7 +2428,7 @@ class Component extends DCLogic {
     });
   }
   greeting(P) {
-    return { id: 'g0', who: 'Agent', text: 'Welcome back, ' + P.name.split(' ')[0] + '. I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, earnings, or the network.', chips: [], streaming: false };
+    return { id: 'g0', who: 'Hermes', text: 'Welcome back, ' + P.name.split(' ')[0] + '. I run on this machine and read your journal, memory and node. Anything I want to change waits for you in Work › Awaiting your review. Ask me about the network and I will name where each number comes from.', chips: [], streaming: false };
   }
 
   componentDidMount() {
@@ -1787,8 +2439,15 @@ class Component extends DCLogic {
     }).catch((e) => console.error('chat-harness', e));
     this.timer = setInterval(() => this.tick(), 600);
     this.onHash = () => {
-      const r = (location.hash || '').replace(/^#\//, '');
-      if (r && r !== this.state.route && ['dashboard', 'wallet', 'node', 'storage', 'journal', 'comms', 'commissary', 'settings'].indexOf(r) >= 0) this.setState({ route: r });
+      // K0 five-place map. 0.5.1 routes keep working as deep links and open their new home.
+      const parts = (location.hash || '').replace(/^#\//, '').split('/');
+      const LEGACY = { dashboard: ['hermes', 'chat'], agent: ['hermes', 'work'], journal: ['hermes', 'journal'], commissary: ['store'], models: ['store'], storage: ['node'], files: ['node'], comms: ['groups'], people: ['groups'], cluster: ['groups'], train: ['groups'], connections: ['settings'] };
+      let [r, t] = parts;
+      if (LEGACY[r]) [r, t] = [LEGACY[r][0], t || LEGACY[r][1]];
+      if (['hermes', 'groups', 'wallet', 'node', 'store', 'settings'].indexOf(r) < 0) return;
+      const u = { route: r, legacy: null };
+      if (r === 'hermes' && ['chat', 'journal', 'work', 'learn', 'controls'].indexOf(t) >= 0) u.hTab = t;
+      if (r !== this.state.route || (u.hTab && u.hTab !== this.state.hTab)) this.setState(u);
     };
     window.addEventListener('hashchange', this.onHash);
     this.onHash();
@@ -1799,21 +2458,22 @@ class Component extends DCLogic {
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => {
       const s = this.state; const keep = {};
-      for (const k of ['persona', 'tier', 'org', 'entitlement', 'stage', 's2', 's3', 's5', 's5n', 'hasGrant', 'hasSbt', 'liquid', 'selfStake', 'earnVal', 'earnPin', 'earnComp', 'earnToday', 'claimable', 'activity', 'node', 'syncPct', 'peers', 'gwKey', 'rpc', 'net', 'cpuCap', 'autolock', 'sigPolicy', 'channel', 'telemetry', 'storageMode', 'coachDone', 'dataDir', 's5hash', 'walletAddr', 'socketPath', 'kycOutcome', 'chatBackend', 'crashes', 'wTab', 'nTab', 'cTab', 'sSec', 'route', 'deviceId', 'pins', 'jPages', 'jSel', 'connections', 'aiKeys', 'aiDefault', 'sponsorUnits', 'blocksProposed']) keep[k] = s[k];
-      try { localStorage.setItem('citrate-core-proto-v2', JSON.stringify(keep)); } catch (e) {}
+      for (const k of ['persona', 'tier', 'org', 'entitlement', 'stage', 's2', 's3', 's5', 's5n', 'hasGrant', 'hasSbt', 'liquid', 'selfStake', 'earnVal', 'earnPin', 'earnComp', 'earnToday', 'claimable', 'activity', 'node', 'syncPct', 'peers', 'gwKey', 'rpc', 'net', 'cpuCap', 'autolock', 'sigPolicy', 'channel', 'telemetry', 'storageMode', 'coachDone', 'dataDir', 's5hash', 'walletAddr', 'socketPath', 'kycOutcome', 'chatBackend', 'crashes', 'wTab', 'nTab', 'cTab', 'sSec', 'route', 'deviceId', 'pins', 'jPages', 'jSel', 'connections', 'aiKeys', 'aiDefault', 'sponsorUnits', 'blocksProposed', 'hTab', 'cDepth', 'cSec', 'cAud', 'routing', 'webSearch', 'browser', 'reader', 'terminal', 'allPaused', 'learnSessions', 'voice', 'mcp', 'folders', 'annot', 'theme', 'escCap', 'escEndpoints', 'escHistory', 'daemons', 'approvals', 'runLog', 'records', 'proposals', 'learned', 'recordedFiles', 'cp2']) keep[k] = s[k];
+      try { localStorage.setItem('citrate-core-proto-v3', JSON.stringify(keep)); } catch (e) {}
     }, 400);
   }
 
   snapshot() {
     const s = this.state;
+    // Contract-safe context for the demo reply engine: fixture numbers and the member's switches only.
     return {
-      height: s.height, peers: s.peers, finalityAge: Math.round(s.finAge),
-      nodeState: this.nodeLabel(s.node), staked: (s.hasGrant ? 32000 : 0) + s.selfStake,
-      liquid: s.liquid, claimable: s.claimable, earningsToday: s.earnToday,
+      fx: Component.FX(), nodeState: this.nodeLabel(s.node), hasGrant: s.hasGrant,
+      routing: s.routing, webSearch: s.webSearch, via: this._via || null,
       walletAddr: s.walletAddr, tier: s.tier,
     };
   }
-  nodeLabel(n) { return { off: 'off', prov: 'provisioning', syncing: 'syncing', synced: 'synced', paused: 'paused', validating: 'validating', error: 'error' }[n] || n; }
+  // UI truth contract §1 node words. A synced node is never called 'validating' here; validator state needs its own read.
+  nodeLabel(n) { return { off: 'Off', prov: 'Starting', syncing: 'Syncing', synced: 'Synced', paused: 'Off', validating: 'Synced', error: 'Error' }[n] || n; }
 
   tick() {
     this.setState((s) => {
@@ -1895,7 +2555,7 @@ class Component extends DCLogic {
     this.toast(note || 'Copied');
   }
   go(route) {
-    this.setState({ route });
+    this.setState({ route, legacy: null });
     try { if ((location.hash || '').replace(/^#\//, '') !== route) location.hash = '#/' + route; } catch (e) {}
     this.save();
   }
@@ -1936,22 +2596,32 @@ class Component extends DCLogic {
   }
 
   // ---------- chat ----------
-  async sendChat(text) {
+  async sendChat(text, opts) {
     text = (text || '').trim();
     if (!text || this.state.chatStatus !== 'ready' || !this.provider) return;
+    const resumed = !!(opts && opts.via);
+    this._via = resumed ? opts.via : (this.state.routing === 'local' ? 'local' : null);
     const userMsg = { id: 'm' + (++this.mid), who: 'You', text, chips: [], streaming: false };
-    this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: 'thinking' }));
+    // Ask before gateway: a request the local model may not handle well waits for the member (HIC-1).
+    if (!resumed && this.state.routing === 'ask' && /\b(plan|draft|research|rewrite)\b/i.test(text)) {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), askPending: text }));
+      if (this.chatInputEl) this.chatInputEl.value = '';
+      this.scrollChat();
+      return;
+    }
+    if (resumed) this.setState({ chatStatus: 'thinking' });
+    else this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: 'thinking' }));
     if (this.chatInputEl) this.chatInputEl.value = '';
     const asstId = 'm' + (++this.mid);
     let started = false;
     const ensure = () => {
       if (started) return; started = true;
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: asstId, who: 'Agent', text: '', chips: [], streaming: true }]) }));
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: asstId, who: 'Hermes', text: '', chips: [], streaming: true }]) }));
     };
     const patch = (fn) => this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? fn(m) : m)) }));
     try {
       await this.provider.send({
-        messages: this.state.chatMsgs.filter((m) => !m.streaming).map((m) => ({ role: m.who === 'You' ? 'user' : 'assistant', content: m.text })).concat([{ role: 'user', content: text }]),
+        messages: this.state.chatMsgs.filter((m) => !m.streaming).map((m) => ({ role: m.who === 'You' ? 'user' : 'assistant', content: m.text })).concat(resumed ? [] : [{ role: 'user', content: text }]),
         callbacks: {
           onStatus: (st) => { if (st === 'streaming') ensure(); this.setState({ chatStatus: st === 'done' || st === 'error' ? 'ready' : st }); },
           onToken: (tk) => { ensure(); patch((m) => Object.assign({}, m, { text: m.text + tk.replace(/\*\*/g, '') })); this.scrollChat(); },
@@ -2072,7 +2742,7 @@ class Component extends DCLogic {
     let status = 'ok'; let result = 'ok';
     if (call.name === 'memory_assert') {
       const r = await this.requestSig({
-        origin: 'chat agent', requester: 'dashboard agent · tool memory_assert',
+        origin: 'chat agent', requester: 'Hermes chat · tool memory_assert',
         title: 'Write to your memory graph', chainless: true,
         rows: [{ k: 'Assertion', v: '“' + (args.fact || '') + '”' }, { k: 'Tenant', v: 'personal · your capability grant' }, { k: 'Store', v: this.state.socketPath }],
         cost: 'none — local memory write', sponsor: 'no chain transaction', sponsorColor: 'var(--tx-3)',
@@ -2082,7 +2752,7 @@ class Component extends DCLogic {
       const entry = args.entry || 'work note';
       const today = new Date().toISOString().slice(0, 10);
       const r = await this.requestSig({
-        origin: 'chat agent', requester: 'dashboard agent · tool journal_append',
+        origin: 'chat agent', requester: 'Hermes chat · tool journal_append',
         title: 'Write to your journal', chainless: true,
         rows: [{ k: 'Entry', v: '“' + entry + '”' }, { k: 'Page', v: today + ' · daily note' }, { k: 'Store', v: 'local journal — off-chain, encrypted at rest' }],
         cost: 'none — local journal write', sponsor: 'no chain transaction', sponsorColor: 'var(--tx-3)',
@@ -2099,11 +2769,12 @@ class Component extends DCLogic {
       }
       status = r; result = r;
     } else if (call.name === 'app_navigate') {
-      const route = ['wallet', 'node', 'storage', 'comms', 'commissary', 'settings', 'dashboard'].indexOf(args.route) >= 0 ? args.route : 'dashboard';
-      this.go(route); result = 'ok';
+      const route = ['hermes', 'groups', 'wallet', 'node', 'store', 'settings'].indexOf(args.route) >= 0 ? args.route : 'hermes';
+      if (route === 'hermes') this.hgo(args.tab || 'chat'); else this.go(route);
+      result = 'ok';
     } else if (call.name === 'chain_read') {
       result = JSON.stringify(this.snapshot());
-    } else if (call.name === 'memory_recall' || call.name === 'docs_link') {
+    } else if (call.name === 'memory_recall' || call.name === 'docs_link' || call.name === 'web_search') {
       result = 'ok';
     }
     const label = call.name.replace('_', '.') + (args.query ? ' · ' + args.query : '') + (status === 'approved' ? ' · approved' : status === 'declined' ? ' · declined' : ' ✓');
@@ -2260,14 +2931,13 @@ class Component extends DCLogic {
 
     // ----- shell -----
     V.shell = s.stage === 'done';
+    // K0 five-place map (betanet plan, core team plan table). Settings sits apart, at the bottom.
     const NAVI = [
-      ['dashboard', 'Dashboard', 'M3 11 L12 3 L21 11 V20 H14 V14 H10 V20 H3 Z', 'M0 0'],
+      ['hermes', 'Hermes', 'M12 3 L14.6 9.4 L21 12 L14.6 14.6 L12 21 L9.4 14.6 L3 12 L9.4 9.4 Z', 'M0 0'],
+      ['groups', 'Groups', 'M8 11 A3 3 0 1 0 8 5 A3 3 0 0 0 8 11 Z M2 20 A6 6 0 0 1 14 20', 'M16 11 A3 3 0 0 0 16 5 M18 20 A6 6 0 0 0 15 15'],
       ['wallet', 'Wallet', 'M3 7 V17 A2 2 0 0 0 5 19 H19 A2 2 0 0 0 21 17 V9 A2 2 0 0 0 19 7 Z M3 7 A2 2 0 0 1 5 5 H16', 'M15.5 13 H17.5'],
       ['node', 'Node', 'M4 5 H20 V11 H4 Z M4 13 H20 V19 H4 Z', 'M7 8 H7.01 M7 16 H7.01'],
-      ['storage', 'Storage', 'M12 3 C7 3 4 4.5 4 6.5 C4 8.5 7 10 12 10 C17 10 20 8.5 20 6.5 C20 4.5 17 3 12 3 Z', 'M4 6.5 V17.5 C4 19.5 7 21 12 21 C17 21 20 19.5 20 17.5 V6.5 M4 12 C4 14 7 15.5 12 15.5 C17 15.5 20 14 20 12'],
-      ['journal', 'Journal', 'M6 3 H19 V21 H6 A2 2 0 0 1 4 19 V5 A2 2 0 0 1 6 3 Z', 'M9 3 V21 M12.5 8 H16 M12.5 12 H15'],
-      ['comms', 'Comms', 'M18 16 V11 A6 6 0 0 0 6 11 V16 L4 18 H20 Z', 'M10 21 A2 2 0 0 0 14 21'],
-      ['commissary', 'Commissary', 'M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z', 'M3 8 L12 13 L21 8 M12 13 V21'],
+      ['store', 'Store', 'M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z', 'M3 8 L12 13 L21 8 M12 13 V21'],
       ['settings', 'Settings', 'M4 7 H20 M4 12 H20 M4 17 H20', 'M9 5 V9 M15 10 V14 M8 15 V19'],
     ];
     V.nav = NAVI.map(([id, label, iconA, iconB]) => {
@@ -2278,18 +2948,19 @@ class Component extends DCLogic {
         weight: active ? 500 : 400,
         color: active ? '#0e0f0c' : '#cde7d6',
         bg: active ? 'var(--citrate-green)' : 'transparent',
-        dot: id === 'comms' && s.stage === 'done',
+        dot: (id === 'groups' && s.stage === 'done') || (id === 'hermes' && s.approvals && s.approvals.length > 0),
       };
     });
     const nodeColors = { off: 'var(--tx-3)', prov: '#ffbd10', syncing: '#ffbd10', synced: '#8ecc09', paused: '#ffbd10', validating: '#8ecc09', error: '#dd7259' };
     V.sideDotColor = s.node === 'off' ? 'rgba(205,231,214,.35)' : nodeColors[s.node];
     V.sideDotAnim = s.node === 'validating' || s.node === 'syncing' ? 'ccPulse 2.4s var(--ease-standard) infinite' : 'none';
-    V.sideNodeText = s.node === 'off' ? 'node off' : s.node === 'syncing' ? 'syncing ' + (s.syncPct | 0) + '%' : this.nodeLabel(s.node) + ' · ' + fmtI(s.height);
+    // Contract §1 words only; no locally ticking height (V10). The live line is drawn on Node in slice 2.
+    V.sideNodeText = s.node === 'syncing' ? 'Syncing · blocks behind from eth_syncing' : 'Node · ' + this.nodeLabel(s.node);
     V.userInitials = P.initials; V.userName = P.name;
     V.tierText = effTier === 'free' ? 'public tier' : effTier === 'enterprise' ? 'enterprise · ' + (s.org || '') : 'pilot member';
     V.tierColor = s.entitlement === 'active' ? 'rgba(205,231,214,.6)' : s.entitlement === 'lapsed' ? '#dd7259' : '#ffbd10';
-    const REG = { dashboard: 'instrument', node: 'instrument', wallet: 'instrument', storage: 'instrument', journal: 'charter', comms: 'charter', commissary: 'charter', settings: 'charter' };
-    V.reg = REG[s.route] || 'charter';
+    // Light (charter) and dark (instrument) registers: slice 1 draws every screen in both.
+    V.reg = s.theme === 'dark' ? 'instrument' : 'charter';
 
     // banner
     V.bannerShow = s.entitlement !== 'active';
@@ -2308,9 +2979,7 @@ class Component extends DCLogic {
     }
 
     // routes
-    V.rDash = s.route === 'dashboard'; V.rWallet = s.route === 'wallet'; V.rNode = s.route === 'node';
-    V.rStorage = s.route === 'storage'; V.rComms = s.route === 'comms'; V.rComm = s.route === 'commissary'; V.rSettings = s.route === 'settings';
-    V.rJournal = s.route === 'journal';
+    // (slice 1) route flags are set in hermesVals(): Hermes tabs, place stubs, the 0.5.1 reference screens.
 
     // ----- dashboard -----
     const src = s.node === 'off' ? 'rpc.citrate.ai' : 'local node';
@@ -2602,7 +3271,9 @@ class Component extends DCLogic {
     V.svcCards = D ? D.CATALOG.services : [];
 
     // ----- settings -----
-    const secs = [['account', 'Account & RBAC'], ['connections', 'Connections'], ['ai', 'AI providers'], ['node', 'Node configuration'], ['api', 'API endpoints & keys'], ['keys', 'Keys & security'], ['billing', 'Memberships & billing'], ['app', 'App']];
+    // 0.5.2: only account-level things remain. AI providers moved to Hermes › Controls; node configuration to Node › Advanced (slice 2).
+    const secs = [['account', 'Account & RBAC'], ['connections', 'Connections'], ['api', 'API endpoints & keys'], ['keys', 'Keys & security'], ['billing', 'Memberships & billing'], ['app', 'App']];
+    if (s.sSec === 'ai' || s.sSec === 'node') s.sSec = 'account';
     V.setNav = secs.map(([id, label]) => ({
       label, go: () => { this.setState({ sSec: id }); this.save(); },
       weight: s.sSec === id ? 500 : 400,
@@ -2979,17 +3650,603 @@ class Component extends DCLogic {
       go: () => { this.setState({ kycOutcome: id }); this.toast('S2 will resolve to “' + label + '”'); this.save(); },
     }));
     V.onDemoReset = () => {
-      try { localStorage.removeItem('citrate-core-proto-v2'); } catch (e) {}
+      try { localStorage.removeItem('citrate-core-proto-v3'); } catch (e) {}
       const ns = this.freshState('p1'); ns.dataReady = s.dataReady;
       this.setState(ns);
       this.toast('Prototype reset — fresh install');
     };
+
+    this.hermesVals(V, s, P);
 
     // ----- toast -----
     V.toastShow = !!s.toast;
     V.toastText = s.toast || '';
 
     return V;
+  }
+
+  // =====================================================================
+  // Slice 1 (0.5.2 design): the five-place shell and Hermes (core plan K2).
+  // Chain numbers come only from the C1 fixture (FX) and are labelled
+  // "fixture" on screen. Nothing here ticks, projects or estimates.
+  // =====================================================================
+  static FX() {
+    return {
+      label: 'FIXTURE — captured from 40204, not live',
+      capturedAt: '2026-10-19 00:26 UTC',
+      block: 499058, blockTime: 2, activeValidators: 5, skills: 0, models: 1,
+    };
+  }
+
+  hermesSeed(s, pid) {
+    const fresh = pid === 'p1';
+    const now = Date.now();
+    Object.assign(s, {
+      hTab: 'chat', cDepth: 1, cSec: 'providers', cAud: 'records', cRunPick: 'all',
+      routing: 'ask', webSearch: false, browser: false, reader: 'local', terminal: false,
+      allPaused: false, learnSessions: false, voice: false,
+      mcp: { mem: false, scan: false, node: false },
+      folders: [], variants: {}, annot: true, theme: 'light', legacy: null,
+      askPending: null, teachBusy: false, kiState: 'idle', kiLines: [],
+      escCap: 0, escEndpoints: [], escHistory: [],
+      daemons: [], approvals: [], runLog: [], records: [], proposals: [], learned: [],
+      recordedFiles: 0, cp2: { web: false, store: false, installed: false, started: false, approved: false },
+      hl: null,
+    });
+    if (fresh) return;
+    s.routing = pid === 'p2' ? 'local' : 'ask';
+    s.folders = ['~/projects/site'];
+    s.terminal = pid === 'p3';
+    s.mcp = { mem: true, scan: false, node: pid === 'p2' };
+    s.daemons = [
+      { id: 'd-inbox', name: 'Inbox triage', prompt: 'Read new Comms threads in my groups and draft a one-line summary of each into today’s journal.', schedule: 'every day · 07:30', source: 'created by you', paused: false, state: 'scheduled', runsToday: 1, maxRuns: 4, tokensToday: 4210, maxTok: 20000, needsWeb: false, next: 'next run tomorrow 07:30', tokenSrc: 'measured' },
+      { id: 'd-digest', name: 'Repo digest', prompt: 'Summarise commits in ~/projects/site since the last run.', schedule: 'every 2 h', source: 'created by you', paused: false, state: 'over', runsToday: 4, maxRuns: 4, tokensToday: 19880, maxTok: 20000, needsWeb: false, next: 'skipped until 00:00 · 2 runs skipped', tokenSrc: 'estimated' },
+      { id: 'd-notes', name: 'Release-notes watcher', prompt: 'Check the citrate-core release page and note anything new.', schedule: 'every day · 18:00', source: 'created by you', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: true, next: 'paused', tokenSrc: null },
+    ];
+    s.approvals = [
+      { id: 'a-shell', kind: 'shell', title: 'Run a terminal command', origin: 'chat · Hermes · session 3f1a', ts: now - 6 * 60e3, hic: 'HIC-1 · asks every time', preview: [{ text: '$ git status --short', color: 'var(--tx-1)' }, { text: 'folder  ~/projects/site · sandbox: no network', color: 'var(--tx-3)' }] },
+    ];
+    if (pid === 'p4') s.approvals = [];
+    s.runLog = [
+      { atMs: now - 3.1 * 3600e3, name: 'Repo digest', daemonId: 'd-digest', outcome: 'over_budget', tokens: 0, src: 'estimated' },
+      { atMs: now - 5.2 * 3600e3, name: 'Repo digest', daemonId: 'd-digest', outcome: 'answered', tokens: 5110, src: 'estimated' },
+      { atMs: now - 9.6 * 3600e3, name: 'Inbox triage', daemonId: 'd-inbox', outcome: 'answered', tokens: 4210, src: 'measured' },
+      { atMs: now - 26 * 3600e3, name: 'Release-notes watcher', daemonId: 'd-notes', outcome: 'failed', tokens: 1180, src: 'measured' },
+    ];
+    s.records = [
+      { seq: 41, atMs: now - 9.5 * 3600e3, kind: 'agent.tool_approval', decision: 'approved', subject: 'journal_append · “Inbox: 3 threads summarised”', reason: 'daemon Inbox triage' },
+      { seq: 40, atMs: now - 30 * 3600e3, kind: 'agent.tool_approval', decision: 'denied', subject: 'shell_run · rm -rf build/', reason: 'chat session 2c90' },
+      { seq: 39, atMs: now - 52 * 3600e3, kind: 'ceremony.approval', decision: 'approved', subject: 'memory_assert · “prefers short replies”', reason: 'chat session 2c90' },
+    ];
+    s.proposals = [
+      { id: 'lp-1', kind: 'skill', title: 'weekly-journal-rollup', evidence: 'verifier · 3 of 3 checks passed · no conflicts', blocked: false },
+    ];
+    s.learned = [
+      { name: 'repo-digest-format', sub: 'skill · accepted 2026-10-12 · sha256 9c41…e0d2', state: 'kept', bd: 'var(--ok)', fg: 'var(--ok)' },
+      { name: 'reply length: short', sub: 'memory · accepted 2026-10-09', state: 'contradicted', bd: 'var(--warn)', fg: 'var(--warn)' },
+    ];
+    s.recordedFiles = 0;
+    if (pid === 'p3') {
+      s.escEndpoints = [{ id: 'ep1', label: 'My Anthropic key', host: 'api.anthropic.com', model: 'claude-sonnet' }];
+      s.escHistory = [{ atMs: now - 20 * 3600e3, destination: 'My Anthropic key · api.anthropic.com', quoted: 6100, charged: 4200, mode: 'confirmed', outcome: 'answered' }];
+      s.learnSessions = true; s.recordedFiles = 12;
+    }
+  }
+
+  hgo(tab, extra) {
+    this.setState(Object.assign({ route: 'hermes', hTab: tab, legacy: null }, extra || {}));
+    try { const h = '#/hermes/' + tab; if (location.hash !== h) location.hash = h; } catch (e) {}
+    this.save();
+  }
+  rec(kind, decision, subject, reason) {
+    this.setState((st) => ({ records: [{ seq: (st.records[0] ? st.records[0].seq : 0) + 1, atMs: Date.now(), kind, decision, subject, reason }].concat(st.records) }));
+  }
+  patchDaemon(id, fn) {
+    this.setState((st) => ({ daemons: st.daemons.map((d) => (d.id === id ? Object.assign({}, d, fn(d)) : d)) }));
+  }
+  daemonStart(id) {
+    const s = this.state;
+    const d = s.daemons.find((x) => x.id === id);
+    if (!d) return;
+    if (s.allPaused) return this.toast('All daemons are paused in Controls. Resume them first.');
+    if (d.needsWeb && !s.webSearch) {
+      this.patchDaemon(id, () => ({ note: 'Can’t start: this daemon needs web search, which is off in Controls.', noteColor: 'var(--warn)' }));
+      return;
+    }
+    if (d.runsToday >= d.maxRuns) return this.toast('Budget used up today. It runs again after 00:00.');
+    this.patchDaemon(id, () => ({ paused: false, state: 'running', note: null, next: 'running now' }));
+    if (id === 'd-brief') this.setState((st) => ({ cp2: Object.assign({}, st.cp2, { started: true }) }));
+    clearTimeout(this['_run' + id]);
+    this['_run' + id] = setTimeout(() => this.daemonFinish(id), 2600);
+    this.save();
+  }
+  daemonFinish(id) {
+    const s = this.state;
+    const d = s.daemons.find((x) => x.id === id);
+    if (!d || d.state !== 'running') return;
+    const today = new Date().toISOString().slice(0, 10);
+    const tokens = id === 'd-brief' ? 3412 : 2200;
+    const writes = id === 'd-brief' || d.needsWeb;
+    this.setState((st) => ({
+      runLog: [{ atMs: Date.now(), name: d.name, daemonId: id, outcome: 'answered', tokens, src: 'measured' }].concat(st.runLog),
+      approvals: writes ? [{
+        id: 'a-' + id + '-' + Date.now(), kind: 'journal', daemonId: id, ts: Date.now(), hic: 'HIC-1 · asks every time',
+        title: id === 'd-brief' ? 'Add the page “Web brief · ' + today + '” to your Journal' : 'Add a note to today’s journal',
+        origin: 'daemon · ' + d.name + ' · first run',
+        preview: id === 'd-brief'
+          ? [{ text: '+ # Web brief · ' + today, color: 'var(--ok)' }, { text: '+ - 3 sources read through local search (SearXNG)', color: 'var(--ok)' }, { text: '+ - Summary drafted on this machine', color: 'var(--ok)' }, { text: 'journal · new page · nothing else changes', color: 'var(--tx-3)' }]
+          : [{ text: '+ ' + d.name + ': nothing new since the last run', color: 'var(--ok)' }],
+      }].concat(st.approvals) : st.approvals,
+      daemons: st.daemons.map((x) => (x.id === id ? Object.assign({}, x, { state: writes ? 'awaiting' : 'scheduled', runsToday: x.runsToday + 1, tokensToday: x.tokensToday + tokens, tokenSrc: 'measured', next: writes ? 'waiting for your review' : 'next run tomorrow' }) : x)),
+      hl: writes ? 'appr' : null,
+    }));
+    if (writes) this.toast(d.name + ' finished its run. Its change is waiting for your review.');
+    this.save();
+  }
+  resolveApproval(id, ok) {
+    const a = this.state.approvals.find((x) => x.id === id);
+    if (!a) return;
+    const today = new Date().toISOString().slice(0, 10);
+    this.setState((st) => {
+      const u = { approvals: st.approvals.filter((x) => x.id !== id), hl: null };
+      if (a.daemonId) u.daemons = st.daemons.map((d) => (d.id === a.daemonId ? Object.assign({}, d, { state: d.paused ? 'paused' : 'scheduled', next: 'next run tomorrow 08:00' }) : d));
+      if (ok && a.kind === 'journal' && a.daemonId === 'd-brief') {
+        const pid = 'p-brief-' + today;
+        if (!st.jPages.find((p) => p.id === pid)) u.jPages = st.jPages.concat([{ id: pid, title: 'Web brief · ' + today, kind: 'page', pinned: false, blocks: ['@agent Morning web brief · approved by you', '3 sources read through local search (SearXNG)', 'Summary drafted on this machine'] }]);
+        u.cp2 = Object.assign({}, st.cp2, { approved: true });
+      }
+      return u;
+    });
+    this.rec(a.kind === 'shell' ? 'agent.tool_approval' : 'agent.tool_approval', ok ? 'approved' : 'denied', a.title, a.origin);
+    this.toast(ok ? (a.kind === 'journal' ? 'Approved. The page is in your Journal.' : 'Approved.') : 'Declined. Nothing changed.');
+    this.save();
+  }
+  stubInstall() {
+    if (this.state.daemons.find((d) => d.id === 'd-brief')) return;
+    this.setState((st) => ({
+      daemons: [{ id: 'd-brief', name: 'Morning web brief', prompt: 'Search the web for the topics in my pinned journal pages and draft a short brief as a new journal page.', schedule: 'every day · 08:00', source: 'installed from Store', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: true, next: 'paused · arrived from Store', tokenSrc: null }].concat(st.daemons),
+      cp2: Object.assign({}, st.cp2, { installed: true }), hl: 'd-brief',
+    }));
+    this.toast('Installed paused. Start it from Hermes › Work.');
+    this.save();
+  }
+  setVariant(key, v) {
+    this.setState((st) => ({ variants: Object.assign({}, st.variants, { [key]: v }) }));
+  }
+
+  hermesVals(V, s, P) {
+    const FX = Component.FX();
+    const fmtI = (n) => Math.round(n).toLocaleString('en-US');
+    const ago = (ts) => { const m = (Date.now() - ts) / 60000; if (m < 1) return 'just now'; if (m < 60) return (m | 0) + ' min ago'; const h = m / 60; if (h < 24) return (h | 0) + ' h ago'; return ((h / 24) | 0) + ' d ago'; };
+    const when = (ts) => { const d = new Date(ts); return d.toISOString().slice(5, 10) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+    const sw = (on) => ({ on: on ? 'true' : 'false', trackBg: on ? 'var(--accent)' : 'var(--srf-inset)', trackBd: on ? 'var(--accent)' : 'var(--line-2)', knob: on ? '#0e0f0c' : 'var(--tx-3)', knobX: on ? '18px' : '0px' });
+    const usd = (micros) => '$' + (micros / 1e6).toFixed(micros > 0 && micros < 10000 ? 4 : 2);
+
+    const isH = s.route === 'hermes';
+    const tab = s.hTab || 'chat';
+    const vKey = tab === 'controls' ? 'ctl' + s.cDepth : tab;
+    const variant = (s.variants && s.variants[vKey]) || 'data';
+    const isEmpty = variant === 'empty';
+    V.rHermes = isH && !s.legacy;
+
+    // ----- tabs -----
+    const apprList = isEmpty ? [] : s.approvals;
+    const dmList = isEmpty ? [] : s.daemons;
+    const TABS = [['chat', 'Chat'], ['journal', 'Journal'], ['work', 'Work'], ['learn', 'Learn'], ['controls', 'Controls']];
+    V.hTabs = TABS.map(([id, label]) => ({
+      label, sel: tab === id ? 'true' : 'false',
+      weight: tab === id ? 500 : 400, bg: tab === id ? 'var(--srf-2)' : 'transparent', color: tab === id ? 'var(--tx-1)' : 'var(--tx-3)',
+      badge: id === 'work' && s.approvals.length ? String(s.approvals.length) : '',
+      go: () => this.hgo(id),
+    }));
+    V.goControls = (e) => { if (e && e.preventDefault) e.preventDefault(); this.hgo('controls', { cDepth: 1 }); };
+    V.goWork = (e) => { if (e && e.preventDefault) e.preventDefault(); this.hgo('work'); };
+    V.goLearn = (e) => { if (e && e.preventDefault) e.preventDefault(); this.hgo('learn'); };
+    V.goApprovalRecords = (e) => { if (e && e.preventDefault) e.preventDefault(); this.hgo('controls', { cDepth: 3, cAud: 'records' }); };
+    V.goRunHistory = (e) => { if (e && e.preventDefault) e.preventDefault(); this.hgo('controls', { cDepth: 3, cAud: 'runs' }); };
+    V.goStore = (e) => { if (e && e.preventDefault) e.preventDefault(); this.setState((st) => ({ cp2: Object.assign({}, st.cp2, { store: true }) })); this.go('store'); };
+    V.routeChip = s.routing === 'local' ? 'Local model only' : 'Ask before gateway';
+    V.routeDot = s.routing === 'local' ? 'var(--accent)' : 'var(--warn)';
+    const running = s.daemons.filter((d) => !d.paused && d.state !== 'paused').length;
+    V.dmChip = s.allPaused ? 'Daemons paused' : s.daemons.length ? running + ' of ' + s.daemons.length + ' daemons on' : 'No daemons';
+    V.dmDot = s.allPaused ? 'var(--warn)' : running ? 'var(--accent)' : 'var(--tx-3)';
+    V.personaName = 'default voice';
+
+    // ----- state card (error / unavailable, and empty where the screen has no list of its own) -----
+    const COPY = {
+      chat: { error: ['Hermes stopped answering', 'The Hermes sidecar exited during this conversation. Your messages are kept on this machine. Restart Hermes to carry on.', 'hermes_session_events → error: sidecar exited (code 101)', 'Restart Hermes'],
+              unavailable: ['Hermes is not running', 'Chat needs the Hermes sidecar, and it is off. Nothing is answered from a cached or invented reply.', 'hermes_status → { running: false }', 'Start Hermes'] },
+      journal: { empty: ['No pages yet', 'Your journal is local and yours. Write a line, or let a daemon propose a page; it is only written once you approve it.', '', 'New page'],
+                 error: ['Couldn’t open your journal', 'The journal could not be read, so nothing is shown and nothing was changed. The last good copy is kept.', 'local store: jPages failed to load', 'Try again'],
+                 unavailable: ['Journal is locked', 'The app is locked. Unlock it to read and write your journal.', 'custody.status → { unlocked: false }', 'Unlock'] },
+      work: { error: ['Couldn’t read daemons and approvals', 'Core could not read the daemon ledger. Counts are shown as unknown, never as zero.', 'daemons_list → error: ledger unreadable', 'Try again'],
+              unavailable: ['Work needs the desktop app', 'Daemons, approvals and the run log live in the app’s Rust side. The web preview has none, so this tab shows nothing rather than invented rows.', 'daemonsApi() → null (BRIDGE_MODE = sim)', ''] },
+      learn: { error: ['Couldn’t reach the learning service', 'Hermes did not answer the learning check. Proposals and learned items are kept; nothing is accepted while this is down.', 'hermes_learn_status → { sidecar: { error: "connection refused" } }', 'Try again'],
+               unavailable: ['Learning is off in this Hermes', 'This Hermes build was started without the learning service, so there is nothing to propose or accept.', 'hermes_learn_status → { sidecar: { enabled: false } }', ''] },
+      ctl1: { error: ['Couldn’t save that change', 'Core refused the write, so every switch shows what is actually saved, not what you tapped.', 'hermes_web_settings_set → error: settings file is read-only', 'Try again'],
+              unavailable: ['Controls need the desktop app', 'These switches write core’s settings files. The web preview has no core, so nothing can be read or saved.', 'BRIDGE_MODE = sim', ''] },
+      ctl2: { error: ['Couldn’t read these settings', 'The settings for this section could not be read. Nothing is shown as on or off until they can be.', 'ai_provider_status → error: keyring unavailable', 'Try again'],
+              unavailable: ['Not available here', 'This section needs the OS keyring and core. Neither exists in the web preview.', 'config.keyringStatus → "unavailable"', ''] },
+      ctl3: { error: ['The ledger could not be read', 'The spend ledger is unreadable, so every escalation asks you first until the cap is set again. Records are not rebuilt or guessed.', 'escalation_budget → { unreadable: true }', 'Set the cap again'],
+              unavailable: ['Records need the desktop app', 'Approval records, spend and run history are files the app keeps on this machine. The web preview has none.', 'BRIDGE_MODE = sim', ''] },
+    };
+    const SUB2 = { providers: 'ai_provider_status → error: keyring unavailable', escalation: 'escalation_endpoints → error: keyring unavailable', mcp: 'hermes_mcp_settings → error: allowlist file unreadable', web: 'hermes_web_settings_get → { loadError: "settings file unreadable" }', terminal: 'hermes_terminal_get → { loadError: … } (it then counts as off)', budgets: 'daemons_list → error: ledger unreadable', personas: 'hermes_personas → error: Hermes not answering' };
+    if (s.cDepth === 2) COPY.ctl2.error[2] = SUB2[s.cSec] || COPY.ctl2.error[2];
+    if (s.cDepth === 3 && s.cAud === 'records') COPY.ctl3.error = ['Couldn’t read approval records', 'The record file did not pass its check, so nothing is shown. Records are never rebuilt or guessed.', 'HicLog::records → error: record 42 failed its check (no command serves records yet)', 'Try again'];
+    if (s.cDepth === 3 && s.cAud === 'runs') COPY.ctl3.error = ['Couldn’t read the run log', 'The run log in the metering folder could not be read. Counts are unknown, not zero.', 'daemon_runs_between → error: metering folder unreadable', 'Try again'];
+    const card = (COPY[vKey] || {})[variant];
+    V.hStateCard = V.rHermes && !!card && tab !== 'controls';
+    V.cStateCard = V.rHermes && !!card && tab === 'controls';
+    if (card) {
+      V.hStateKind = variant === 'error' ? 'Error' : variant === 'unavailable' ? 'Unavailable' : 'Empty';
+      V.hStateLabel = 'Hermes ' + tab + ' ' + variant;
+      V.hStateTitle = card[0]; V.hStateBody = card[1]; V.hStateWhy = card[2]; V.hStateCta = card[3];
+      V.hStateBd = variant === 'error' ? 'var(--danger)' : 'var(--line-2)';
+      V.hStateFg = variant === 'error' ? 'var(--danger)' : 'var(--tx-3)';
+      V.onHStateCta = () => { this.setVariant(vKey, 'data'); this.toast('Back to the data state.'); };
+    }
+    const show = (t) => V.rHermes && tab === t && !card;
+    V.htChat = show('chat'); V.htWork = show('work'); V.htLearn = show('learn'); V.htControls = V.rHermes && tab === 'controls';
+    V.rJournal = show('journal');
+
+    // ----- chat -----
+    if (isEmpty && tab === 'chat') { V.msgs = []; V.showSuggestions = true; }
+    V.chatEmpty = !V.msgs.length;
+    V.chatBackendLabel = s.routing === 'local' ? 'local model · llama-server on this machine' : 'local first · asks before infer.citrate.ai';
+    V.askShow = !!s.askPending;
+    V.askText = s.askPending || '';
+    V.onAskAllow = () => { const t = s.askPending; this.setState({ askPending: null }); this.rec('agent.tool_approval', 'approved', 'gateway · one reply via infer.citrate.ai', 'chat · ask before gateway'); this.sendChat(t, { via: 'gateway' }); };
+    V.onAskLocal = () => { const t = s.askPending; this.setState({ askPending: null }); this.rec('agent.tool_approval', 'denied', 'gateway · kept the reply local', 'chat · ask before gateway'); this.sendChat(t, { via: 'local' }); };
+    V.apprCount = String(apprList.length);
+    V.apprEmpty = apprList.length === 0;
+    V.apprRail = apprList.slice(0, 3).map((a) => ({ title: a.title, origin: a.origin }));
+    V.dmEmpty = dmList.length === 0;
+    const pill = (d) => {
+      if (s.allPaused && d.state !== 'awaiting') return ['all paused', 'var(--warn)', 'var(--warn)', 'var(--warn-bg)'];
+      return {
+        paused: ['paused', 'var(--line-2)', 'var(--tx-2)', 'transparent'],
+        scheduled: ['scheduled', 'var(--ok)', 'var(--ok)', 'var(--ok-bg)'],
+        running: ['running', 'var(--info)', 'var(--info)', 'var(--info-bg)'],
+        over: ['budget used up today', 'var(--warn)', 'var(--warn)', 'var(--warn-bg)'],
+        awaiting: ['awaiting your review', 'var(--citrate-yellow)', 'var(--tx-1)', 'rgba(255,189,16,.18)'],
+      }[d.state] || [d.state, 'var(--line-2)', 'var(--tx-2)', 'transparent'];
+    };
+    V.dmRail = dmList.map((d) => { const p = pill(d); return { name: d.name, statusLabel: p[0], pillBd: p[1], pillFg: p[2], pillBg: p[3] }; });
+    V.fxRows = [
+      { k: 'Head height at read', v: fmtI(FX.block), src: 'eth_blockNumber · fixture' },
+      { k: 'Block time', v: '~' + FX.blockTime + ' s', src: 'timestamp delta over the last 100 blocks · fixture' },
+      { k: 'Active validators', v: String(FX.activeValidators), src: 'ValidatorRegistry.activeCount() · fixture' },
+      { k: 'Producing validators', v: '1', src: 'distinct proposerPubkey over 1,000 blocks · C1 contract v1 §2 (not in the fixture export)' },
+    ];
+    V.fxFoot = 'Read at block ' + fmtI(FX.block) + ', ' + FX.capturedAt + '. Checkpoint finality is not running on 40204 yet, so Hermes counts confirmations, never finality.';
+    V.suggestions = ['Network status', 'What is my bond?', 'Search the web for GhostDAG', 'Plan my week from my journal', 'Journal: shipped the slice 1 prototype'].map((t) => ({ label: t, use: () => this.sendChat(t) }));
+
+    // ----- work -----
+    V.apprRows = apprList.map((a) => ({
+      kindLabel: { shell: 'terminal command', journal: 'journal write', file: 'file change', chain: 'chain action', mcp: 'MCP call' }[a.kind] || a.kind,
+      title: a.title, origin: a.origin, age: ago(a.ts), preview: a.preview, hic: a.hic,
+      approveLabel: a.kind === 'shell' ? 'Allow once' : 'Approve',
+      rowClass: s.hl === 'appr' ? 'cc-row-stroke' : '',
+      approve: () => this.resolveApproval(a.id, true), decline: () => this.resolveApproval(a.id, false),
+    }));
+    V.pauseAllLabel = s.allPaused ? 'Resume all' : 'Pause all';
+    V.onPauseAll = () => { this.setState({ allPaused: !s.allPaused }); this.toast(s.allPaused ? 'Daemons resumed. Paused ones stay paused.' : 'All daemons paused. Nothing runs until you resume.'); this.save(); };
+    V.allPausedNote = s.allPaused && dmList.length > 0;
+    V.dmRows = dmList.map((d) => {
+      const p = pill(d);
+      const over = d.runsToday >= d.maxRuns;
+      return {
+        name: d.name, prompt: d.prompt, source: d.source, schedule: d.schedule,
+        statusLabel: p[0], pillBd: p[1], pillFg: p[2], pillBg: p[3],
+        runs: 'runs ' + d.runsToday + ' of ' + d.maxRuns + ' today', runsColor: over ? 'var(--warn)' : 'var(--tx-3)',
+        tokens: 'tokens ' + fmtI(d.tokensToday) + ' of ' + fmtI(d.maxTok) + (d.tokenSrc ? ' · ' + d.tokenSrc : ''), tokColor: d.tokensToday / d.maxTok > 0.9 ? 'var(--warn)' : 'var(--tx-3)',
+        spend: 'spend 0 SALT', next: d.next,
+        note: d.note || (d.needsWeb && !s.webSearch && d.state === 'paused' ? 'Needs web search, which is off in Controls.' : ''), noteColor: d.noteColor || 'var(--tx-3)',
+        canStart: d.state === 'paused' && !s.allPaused, canPause: (d.state === 'scheduled' || d.state === 'over' || d.state === 'running') && !s.allPaused,
+        canReview: d.state === 'awaiting',
+        rowClass: s.hl === d.id ? 'cc-row-stroke' : '',
+        start: () => this.daemonStart(d.id),
+        pause: () => { clearTimeout(this['_run' + d.id]); this.patchDaemon(d.id, () => ({ paused: true, state: 'paused', next: 'paused' })); this.save(); },
+        review: () => this.setState({ hl: 'appr' }),
+        history: () => this.hgo('controls', { cDepth: 3, cAud: 'runs', cRunPick: d.id }),
+      };
+    });
+    const outLabel = { answered: ['answered', 'var(--ok)'], failed: ['failed', 'var(--danger)'], stopped: ['stopped', 'var(--tx-3)'], timed_out: ['timed out', 'var(--warn)'], over_budget: ['skipped · over budget', 'var(--warn)'] };
+    const runs = isEmpty ? [] : s.runLog;
+    V.runEmpty = runs.length === 0;
+    V.runRows = runs.slice(0, 6).map((r) => ({ when: when(r.atMs), name: r.name, outcome: (outLabel[r.outcome] || [r.outcome])[0], outColor: (outLabel[r.outcome] || [0, 'var(--tx-2)'])[1], tokens: r.tokens ? fmtI(r.tokens) + ' tok · ' + r.src : '—' }));
+    V.agentRows = [
+      { name: 'Hermes', sub: (variant === 'unavailable' ? 'stopped' : 'running') + ' · sidecar · keyless, every chain effect goes through the ceremony', dot: 'var(--accent)' },
+      { name: 'Daemon runner', sub: s.allPaused ? 'paused from Controls' : 'claims due daemons every minute', dot: s.allPaused ? 'var(--warn)' : 'var(--accent)' },
+    ];
+    const skills = isEmpty ? [] : [{ name: 'journal-read', desc: 'Read your journal pages (read only)' }].concat(s.persona === 'p1' ? [] : [{ name: 'repo-digest-format', desc: 'Learned · format a commit digest' }, { name: 'contract-forge', desc: 'Draft and test a contract in a sandbox' }]);
+    V.skillsEmpty = skills.length === 0;
+    V.skillRows = skills;
+
+    // ----- learn -----
+    const props = isEmpty ? [] : s.proposals;
+    V.propEmpty = props.length === 0;
+    V.propRows = props.map((p) => ({
+      kind: p.kind, title: p.title, evidence: p.evidence, evColor: p.blocked ? 'var(--danger)' : 'var(--ok)', blocked: p.blocked,
+      accept: () => { this.setState((st) => ({ proposals: st.proposals.filter((x) => x.id !== p.id), learned: [{ name: p.title, sub: p.kind + ' · accepted just now', state: 'kept', bd: 'var(--ok)', fg: 'var(--ok)' }].concat(st.learned) })); this.rec('agent.tool_approval', 'approved', 'learn · ' + p.title, 'Learn tab'); this.toast('Accepted. Hermes can use it in the next conversation.'); this.save(); },
+      reject: () => { this.setState((st) => ({ proposals: st.proposals.filter((x) => x.id !== p.id) })); this.rec('agent.tool_approval', 'denied', 'learn · ' + p.title, 'Learn tab'); this.save(); },
+    }));
+    const learned = isEmpty ? [] : s.learned;
+    V.learnedEmpty = learned.length === 0;
+    V.learnedRows = learned;
+    V.setTeachTask = (el) => { this.teachTaskEl = el; };
+    V.setTeachCheck = (el) => { this.teachCheckEl = el; };
+    V.teachBusy = !!s.teachBusy;
+    V.teachLabel = s.teachBusy ? 'Running and checking…' : 'Run and check';
+    V.onTeach = () => {
+      const task = (this.teachTaskEl && this.teachTaskEl.value.trim()) || 'Summarise yesterday’s journal in three bullets';
+      this.setState({ teachBusy: true });
+      setTimeout(() => { this.setState((st) => ({ teachBusy: false, proposals: [{ id: 'lp-' + Date.now(), kind: 'skill', title: task.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40), evidence: 'verifier · 1 of 1 checks passed · no conflicts', blocked: false }].concat(st.proposals) })); this.toast('Check passed. A proposal is waiting above.'); }, 1800);
+    };
+    V.kiBusy = s.kiState === 'running';
+    V.kiLabel = s.kiState === 'done' ? 'Import again' : s.kiState === 'running' ? 'Importing…' : 'Import knowledge';
+    V.kiLines = (s.kiLines || []).map((t) => ({ t }));
+    V.onImport = () => {
+      this.setState({ kiState: 'running', kiLines: ['verifying manifest…'] });
+      setTimeout(() => this.setState({ kiLines: ['manifest verified', 'importing pages…'] }), 900);
+      setTimeout(() => this.setState({ kiState: 'done', kiLines: ['manifest verified', 'import finished · memory graph updated'] }), 2000);
+    };
+    const tsw = sw(s.learnSessions);
+    V.trainOn = tsw.on; V.trainTrackBg = tsw.trackBg; V.trainTrackBd = tsw.trackBd; V.trainKnob = tsw.knob; V.trainKnobX = tsw.knobX;
+    V.onTrainToggle = () => { this.setState({ learnSessions: !s.learnSessions }); this.save(); };
+    V.trainStatus = s.learnSessions ? 'On · ' + s.recordedFiles + ' session files recorded on this machine · applies when Hermes restarts' : 'Off · nothing is recorded';
+
+    // ----- controls -----
+    const DEPTHS = [[1, '1 · Switches'], [2, '2 · Details'], [3, '3 · Records']];
+    V.depthTabs = DEPTHS.map(([n, label]) => ({ label, weight: s.cDepth === n ? 500 : 400, bg: s.cDepth === n ? 'var(--srf-2)' : 'transparent', color: s.cDepth === n ? 'var(--tx-1)' : 'var(--tx-3)', go: () => { this.setState({ cDepth: n }); this.save(); } }));
+    V.depthHint = { 1: 'Six switches anyone can read.', 2: 'Providers, spend caps, MCP servers, budgets and personas.', 3: 'What happened: approvals, spend and every daemon run.' }[s.cDepth];
+    V.cd1 = s.cDepth === 1 && !card; V.cd2 = s.cDepth === 2 && !card; V.cd3 = s.cDepth === 3 && !card;
+    V.cpNudge = s.cDepth === 1 && s.webSearch && !s.daemons.find((d) => d.id === 'd-brief') && variant === 'data';
+    const C = isEmpty && s.cDepth === 1 ? { routing: 'ask', webSearch: false, terminal: false, allPaused: false, learnSessions: false, voice: false, daemons: [] } : s;
+    const nD = C.daemons.length;
+    const det = (sec) => () => { this.setState({ cDepth: 2, cSec: sec }); this.save(); };
+    const ctl = [
+      { key: 'routing', label: 'Where replies are made', isSeg: true,
+        desc: 'Hermes uses the model on this machine. Choose whether it may ever use the Citrate gateway.',
+        stateText: C.routing === 'local' ? 'Local model only · the gateway is never used' : 'Ask before gateway · local first; Hermes asks you each time it wants the gateway',
+        segs: [['local', 'Local model only'], ['ask', 'Ask before gateway']].map(([id, l]) => ({ label: l, bg: C.routing === id ? 'var(--tx-1)' : 'transparent', fg: C.routing === id ? 'var(--srf-0)' : 'var(--tx-2)', weight: C.routing === id ? 500 : 400, go: () => { this.setState({ routing: id }); this.toast(id === 'local' ? 'Local model only. The gateway is never used.' : 'Ask before gateway. Hermes asks each time.'); this.save(); } })),
+        details: det('providers') },
+      { key: 'web', label: 'Web search', on: C.webSearch,
+        desc: 'Let Hermes search the web and read pages to answer you.',
+        stateText: C.webSearch ? 'On · private search through local SearXNG · pages read on this machine' : 'Off · Hermes answers from this machine only',
+        toggle: () => { const on = !s.webSearch; this.setState((st) => ({ webSearch: on, cp2: Object.assign({}, st.cp2, { web: on || st.cp2.web }), daemons: st.daemons.map((d) => (d.needsWeb ? Object.assign({}, d, { note: null }) : d)) })); this.toast(on ? 'Web search on. It applies to new conversations.' : 'Web search off.'); this.save(); },
+        details: det('web') },
+      { key: 'terminal', label: 'Terminal access', on: C.terminal,
+        desc: 'Let Hermes run commands in folders you share. Every command asks you first.',
+        stateText: C.terminal ? 'On · sandboxed, no network · ' + (s.folders.length ? s.folders.length + ' shared folder' + (s.folders.length > 1 ? 's' : '') : 'no shared folders yet') : 'Off · Hermes cannot run commands',
+        toggle: () => { this.setState({ terminal: !s.terminal }); this.toast('Hermes restarts so the change applies to new conversations.'); this.save(); },
+        details: det('terminal') },
+      { key: 'daemons', label: 'Daemons running', on: !C.allPaused,
+        desc: 'Turn off to pause every daemon at once. Each one keeps its own schedule and budget.',
+        stateText: nD === 0 ? 'No daemons yet · they stay off until you create or install one' : C.allPaused ? 'All paused · nothing runs until you turn this back on' : nD + ' daemon' + (nD > 1 ? 's' : '') + ' · ' + C.daemons.filter((d) => d.state !== 'paused').length + ' on, the rest paused',
+        toggle: () => { this.setState({ allPaused: !s.allPaused }); this.save(); },
+        details: det('budgets') },
+      { key: 'learn', label: 'Learn from my sessions', on: C.learnSessions,
+        desc: 'Record sessions on this machine so Hermes can propose what to learn. Every proposal still needs your yes.',
+        stateText: C.learnSessions ? 'On · recorded locally · group rounds not live yet' : 'Off · Hermes learns only what you teach it',
+        toggle: () => { this.setState({ learnSessions: !s.learnSessions }); this.save(); },
+        details: () => this.hgo('learn') },
+      { key: 'voice', label: 'Voice', on: C.voice,
+        desc: 'Read replies aloud and dictate with the system’s speech engine.',
+        stateText: C.voice ? 'On · system voice · nothing leaves this machine' : 'Off',
+        toggle: () => { this.setState({ voice: !s.voice }); this.save(); },
+        details: det('personas') },
+    ];
+    V.ctlRows = ctl.map((c) => Object.assign({ isSwitch: !c.isSeg, isSeg: !!c.isSeg, stateColor: c.on || c.isSeg ? 'var(--accent-text)' : 'var(--tx-3)', rowClass: c.key === 'web' && s.cp2.store === false && s.cp2.web && !s.cp2.installed ? 'cc-row-stroke' : '', toggle: () => {}, segs: [] }, c.isSeg ? {} : sw(c.on), c));
+
+    // depth 2
+    const SECS = [['providers', 'Providers and keys'], ['escalation', 'Escalation and spend caps'], ['mcp', 'MCP servers'], ['web', 'Web search'], ['terminal', 'Terminal and folders'], ['budgets', 'Budgets'], ['personas', 'Personas and voice']];
+    V.d2Nav = SECS.map(([id, label]) => ({ label, weight: s.cSec === id ? 500 : 400, bg: s.cSec === id ? 'var(--srf-1)' : 'transparent', color: s.cSec === id ? 'var(--tx-1)' : 'var(--tx-2)', go: () => { this.setState({ cSec: id }); this.save(); } }));
+    const e2 = isEmpty && s.cDepth === 2;
+    const row = (o) => Object.assign({ value: '', valueColor: 'var(--tx-1)', isSwitch: false, btn: '', act: () => {} }, o);
+    const swRow = (name, sub, on, toggle) => row(Object.assign({ name, sub, isSwitch: true, toggle }, sw(on)));
+    let d2 = { title: '', lead: '', rows: [], empty: '', add: '', foot: '' };
+    const keys = Object.keys(s.aiKeys || {});
+    if (s.cSec === 'providers') d2 = {
+      title: 'Providers and keys', lead: 'Where Hermes may send a conversation. Keys are sealed in the OS keyring; this screen never shows one.',
+      rows: e2 ? [] : [
+        row({ name: 'Local model', sub: 'llama-server on this machine · used for every reply', value: 'ready', valueColor: 'var(--ok)' }),
+        row({ name: 'Citrate gateway', sub: 'infer.citrate.ai · ' + (s.routing === 'local' ? 'never used (Local model only)' : 'asked for each time (Ask before gateway)'), value: s.routing === 'local' ? 'off' : 'asks', valueColor: s.routing === 'local' ? 'var(--tx-3)' : 'var(--warn)' }),
+      ].concat(keys.map((k) => row({ name: k[0].toUpperCase() + k.slice(1) + ' key', sub: 'your own key · sealed in the keyring', btn: 'Remove', act: () => this.toast('ai_clear_provider would remove it.') }))),
+      empty: 'No local model and no keys yet. Download a model from Store (slice 2), or add your own provider key.', add: 'Add a provider key',
+      foot: 'ModelRegistry lists 1 model on chain (fixture, block 499,058). Downloads move to the Store in slice 2.',
+    };
+    if (s.cSec === 'escalation') {
+      const m0 = new Date(); m0.setHours(0, 0, 0, 0);
+      const used = s.escHistory.filter((h) => h.mode === 'budget' && h.atMs >= m0.getTime()).reduce((a, h) => a + h.charged, 0);
+      d2 = {
+        title: 'Escalation and spend caps', lead: 'Hermes can hand a hard question to one of your own endpoints. It always shows the price and the destination before anything is sent.',
+        rows: (e2 ? [] : s.escEndpoints.map((ep) => row({ name: ep.label, sub: ep.host + ' · ' + ep.model + ' · key in keyring', btn: 'Remove', act: () => this.toast('escalation_endpoint_remove would remove it.') }))).concat([
+          row({ name: 'Daily cap', sub: s.escCap === 0 ? 'At $0.00 every escalation asks you first (HIC-1)' : 'Under the cap, an escalation is a notice (HIC-2)', value: usd(s.escCap) + ' a day' }),
+          row({ name: 'Used today under the cap', sub: 'resets at local midnight', value: usd(used) }),
+        ]),
+        empty: '', add: 'Add an endpoint', foot: 'Amounts are what your own endpoints charge, in US dollars. Hermes never spends SALT.',
+      };
+    }
+    if (s.cSec === 'mcp') d2 = {
+      title: 'MCP servers', lead: 'Which tool servers Hermes may use. All start off. A change applies the next time Hermes starts.',
+      rows: e2 ? [] : [
+        swRow('Your memory graph', 'mem · stdio · read and propose writes, each write asks you', s.mcp.mem, () => this.setState({ mcp: Object.assign({}, s.mcp, { mem: !s.mcp.mem }) })),
+        swRow('CitrateScan', 'scan · explorer reads (block, tx, address)', s.mcp.scan, () => this.setState({ mcp: Object.assign({}, s.mcp, { scan: !s.mcp.scan }) })),
+        swRow('This node', 'node · your node’s own MCP server, connect token minted for Hermes', s.mcp.node, () => this.setState({ mcp: Object.assign({}, s.mcp, { node: !s.mcp.node }) })),
+      ],
+      empty: 'No MCP servers are available in this build.', add: '', foot: 'Connections (GitHub, Notion and others) stay in Settings › Connections and mount here as tools once connected.',
+    };
+    if (s.cSec === 'web') d2 = {
+      title: 'Web search', lead: 'Everything here is off or local until you change it. A choice that sends data to a third party says so.',
+      rows: [
+        swRow('Private search', 'local SearXNG · queries do not leave this machine except to the search engines it asks', s.webSearch, () => { this.setState((st) => ({ webSearch: !s.webSearch, cp2: Object.assign({}, st.cp2, { web: !s.webSearch || st.cp2.web }) })); this.save(); }),
+        swRow('Hermes’s own browser', 'managed Chromium · signed component · ' + (s.browser ? 'installed' : 'not installed yet'), s.browser, () => this.setState({ browser: !s.browser })),
+        row({ name: 'Page reader', sub: s.reader === 'local' ? 'local · pages are read on this machine' : 'Jina Reader · sends each page address to a third party', value: s.reader === 'local' ? 'local' : 'third party', valueColor: s.reader === 'local' ? 'var(--ok)' : 'var(--warn)', btn: s.reader === 'local' ? 'Use Jina' : 'Use local', act: () => this.setState({ reader: s.reader === 'local' ? 'jina' : 'local' }) }),
+      ],
+      empty: '', add: '', foot: 'Applies to new conversations; a running Hermes picks it up when it restarts.',
+    };
+    if (s.cSec === 'terminal') d2 = {
+      title: 'Terminal and folders', lead: 'Commands run in an OS sandbox with no network, only in folders you share, and each one waits for your yes.',
+      rows: [swRow('Terminal access', s.terminal ? 'on · Hermes restarts when you change this' : 'off', s.terminal, () => { this.setState({ terminal: !s.terminal }); this.save(); })].concat((e2 ? [] : s.folders).map((f) => row({ name: f, sub: 'shared folder · read and write', btn: 'Stop sharing', act: () => { this.setState({ folders: s.folders.filter((x) => x !== f) }); this.save(); } }))),
+      empty: '', add: 'Share a folder', foot: (e2 || !s.folders.length) ? 'No folders shared, so even with terminal access on there is nowhere for a command to run.' : 'Full disk access is never on by default and needs its own confirmation.',
+    };
+    if (s.cSec === 'budgets') d2 = {
+      title: 'Budgets', lead: 'Each daemon has its own daily budget. A daemon that reaches it skips runs until midnight; it never borrows from tomorrow.',
+      rows: (e2 ? [] : s.daemons).map((d) => row({ name: d.name, sub: d.maxRuns + ' runs a day · ' + fmtI(d.maxTok) + ' tokens a day · 6,000 a run · 0 SALT spend', value: d.runsToday >= d.maxRuns ? 'used up today' : '', valueColor: 'var(--warn)', btn: 'Edit', act: () => this.toast('daemon_save writes the new budget.') })).concat([
+        row({ name: 'Web sign-in budgets', sub: 'let Hermes sign in with Ethereum on one site you choose, a set number of times', value: 'none granted', valueColor: 'var(--tx-3)' }),
+      ]),
+      empty: '', add: '', foot: 'Default budget values are pending owner sign-off (4 runs, 20,000 tokens a day, 6,000 a run). Daemon spend is always 0 SALT in this release.',
+    };
+    if (s.cSec === 'personas') d2 = {
+      title: 'Personas and voice', lead: 'A persona changes how Hermes writes. It never grants a tool or changes an approval.',
+      rows: [
+        row({ name: 'Default voice', sub: 'no persona · Hermes as it ships', value: 'in use', valueColor: 'var(--ok)' }),
+        row({ name: 'Shipped personas', sub: 'listed by the Hermes runtime (hermes_personas); names pending sign-off are marked', btn: 'Browse', act: () => this.toast('Shipped personas come from the runtime list.') }),
+        swRow('Read replies aloud', 'system voice · nothing leaves this machine', s.voice, () => { this.setState({ voice: !s.voice }); this.save(); }),
+      ],
+      empty: '', add: 'Write your own persona', foot: '',
+    };
+    V.d2Title = d2.title; V.d2Lead = d2.lead; V.d2Rows = d2.rows;
+    V.d2Empty = d2.rows.length === 0; V.d2EmptyText = d2.empty || 'Nothing here yet.';
+    V.d2Add = d2.add; V.onD2Add = () => this.toast(d2.add + ': drawn as a sheet in v2.'); V.d2Foot = d2.foot;
+
+    // depth 3
+    const AUD = [['records', 'Approval records'], ['spend', 'Spend ledger'], ['runs', 'Daemon run history']];
+    V.d3Nav = AUD.map(([id, label]) => ({ label, cls: s.cAud === id ? 'btn-secondary' : 'btn-ghost', go: () => { this.setState({ cAud: id }); this.save(); } }));
+    const e3 = isEmpty && s.cDepth === 3;
+    V.d3Summary = false; V.d3Picker = false; V.d3Tiles = []; V.d3DaemonPick = [];
+    if (s.cAud === 'records') {
+      const recs = e3 ? [] : s.records;
+      V.d3Head = ['#', 'When', 'Kind', 'Decision', 'What'];
+      V.d3Cols = '50px 110px 150px 90px minmax(0,1fr)';
+      V.d3Rows = recs.map((r) => ({ cells: [{ t: String(r.seq), c: 'var(--tx-3)' }, { t: when(r.atMs), c: 'var(--tx-3)' }, { t: r.kind, c: 'var(--tx-2)' }, { t: r.decision, c: r.decision === 'approved' ? 'var(--ok)' : 'var(--danger)' }, { t: r.subject + ' · ' + r.reason, c: 'var(--tx-1)' }] }));
+      V.d3EmptyText = 'No decisions recorded yet. Every approve or decline you make is written here, newest first.';
+      V.d3Foot = 'Records are appended on this machine and never edited. Export to the agent anchor is drawn in v2.';
+    } else if (s.cAud === 'spend') {
+      const hist = e3 ? [] : s.escHistory;
+      const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+      const todays = hist.filter((h) => h.atMs >= midnight.getTime());
+      const used = todays.filter((h) => h.mode === 'budget').reduce((a, h) => a + h.charged, 0);
+      const conf = todays.filter((h) => h.mode === 'confirmed').reduce((a, h) => a + h.charged, 0);
+      V.d3Summary = true;
+      V.d3Tiles = [
+        { k: 'Daily cap', v: usd(s.escCap), sub: s.escCap === 0 ? 'every escalation asks' : 'notice under the cap' },
+        { k: 'Used under cap', v: usd(used), sub: 'today · your endpoints' },
+        { k: 'You confirmed', v: usd(conf), sub: 'today · outside the cap' },
+        { k: 'Daemon spend', v: '0 SALT', sub: 'always 0 in this release' },
+      ];
+      V.d3Head = ['When', 'Destination', 'Mode', 'Quoted', 'Charged', 'Outcome'];
+      V.d3Cols = '110px minmax(0,1fr) 90px 80px 80px 90px';
+      V.d3Rows = hist.map((h) => ({ cells: [{ t: when(h.atMs), c: 'var(--tx-3)' }, { t: h.destination, c: 'var(--tx-1)' }, { t: h.mode, c: 'var(--tx-2)' }, { t: usd(h.quoted), c: 'var(--tx-2)' }, { t: usd(h.charged), c: 'var(--tx-1)' }, { t: h.outcome, c: 'var(--ok)' }] }));
+      V.d3EmptyText = 'No spend. The daily cap is $0.00, so every escalation asks you first, and daemons cannot spend SALT in this release.';
+      V.d3Foot = 'US dollar amounts are what your own endpoints charge for a reply. There is no SALT price anywhere in the app.';
+    } else {
+      V.d3Picker = !e3 && s.daemons.length > 0;
+      V.d3DaemonPick = [{ id: 'all', name: 'All daemons' }].concat(s.daemons.map((d) => ({ id: d.id, name: d.name }))).map((d) => ({ label: d.name, cls: s.cRunPick === d.id ? 'btn-secondary' : 'btn-ghost', go: () => this.setState({ cRunPick: d.id }) }));
+      const rl = (e3 ? [] : s.runLog).filter((r) => s.cRunPick === 'all' || r.daemonId === s.cRunPick);
+      V.d3Head = ['Started', 'Daemon', 'Outcome', 'Tokens', 'Source'];
+      V.d3Cols = '110px minmax(0,1fr) 160px 90px 90px';
+      V.d3Rows = rl.map((r) => ({ cells: [{ t: when(r.atMs), c: 'var(--tx-3)' }, { t: r.name, c: 'var(--tx-1)' }, { t: (outLabel[r.outcome] || [r.outcome])[0], c: (outLabel[r.outcome] || [0, 'var(--tx-2)'])[1] }, { t: r.tokens ? fmtI(r.tokens) : '—', c: 'var(--tx-2)' }, { t: r.src, c: 'var(--tx-3)' }] }));
+      V.d3EmptyText = 'No runs recorded. A daemon’s runs appear here after its first run. Conversation content is never kept in this log.';
+      V.d3Foot = 'From the run log in the metering folder. Lines that could not be read are counted and skipped, never guessed.';
+    }
+    V.d3Empty = V.d3Rows.length === 0;
+
+    // ----- place stubs, Store stub, Settings -----
+    const STUBS = {
+      groups: { t: 'Groups', slice: 'slice 2 or later', lead: 'Chat with round cards, Rounds, Members and Cluster. Training becomes round cards in the chat plus a Rounds tab (group rounds ADR).', tabs: [['Chat', 'Group chat with round cards (unverified, fixture round, accepted, rejected)'], ['Rounds', 'Group rounds not live yet: FederatedRoundLedger and PatronageLedger are not deployed on 40204'], ['Members', 'Roster, roles, invites'], ['Cluster', 'Co-pinning and linked devices']], legacy: 'comms' },
+      wallet: { t: 'Wallet', slice: 'slice 2', lead: 'Overview, Staking, Activity and Identity, redrawn against UI truth contract v1: one definition of “staked” (stakeOf), the bond state words, and the grant explained one way everywhere.', tabs: [['Overview', 'Balance (eth_getBalance, “latest”; unknown on error, never 0)'], ['Staking', 'Bond locked · not staked until MemberBond.activated()'], ['Activity', 'Pending, Included in block N, N confirmations'], ['Identity', 'Membership SBT, linked identities']], legacy: 'wallet' },
+      node: { t: 'Node', slice: 'slice 2 · 2026-10-28', lead: 'Status, Services, Storage, Earnings and Advanced (core plan K3). Services follow the K1 services contract.', tabs: [['Status', 'One sentence in the contract’s words, start and stop, direct peers'], ['Services', 'Alive, Ready, Stopping, Quarantined; restart; bounded log'], ['Storage', 'Files, Memory and Pins (pin bonds not live yet)'], ['Earnings', 'Validator rewards from rewardsOf only; no projections'], ['Advanced', 'Configuration, full log, crash records, withdrawn-branch notice']], legacy: 'node' },
+      store: { t: 'Store', slice: 'slice 2 · 2026-10-28', lead: 'Catalog, listing, install sheet and installed, as a signed app and daemon store (core plan K5).', tabs: [['Catalog', 'Apps, Daemons, Widgets, Skills, Models, MCP servers'], ['Listing', 'Signature verified or failed, tier-locked'], ['Install sheet', 'Declared permissions and budget; installs paused'], ['Installed', 'Remove in one tap']], legacy: 'commissary' },
+    };
+    const stub = STUBS[s.route];
+    const storeHop = s.route === 'store' && s.cp2.store && !s.legacy;
+    V.rStoreStub = storeHop;
+    V.rStub = !!stub && !s.legacy && !storeHop;
+    if (stub) {
+      V.stubLabel = stub.t + ' stub'; V.stubTitle = stub.t; V.stubSlice = stub.slice; V.stubLead = stub.lead;
+      V.stubTabs = stub.tabs.map(([k, v]) => ({ k, v }));
+      V.stubHasLegacy = !!stub.legacy;
+      V.onStubLegacy = () => this.setState({ legacy: stub.legacy });
+    }
+    V.rLegacyBar = !!s.legacy;
+    V.onLegacyClose = () => this.setState({ legacy: null });
+    V.rWallet = s.legacy === 'wallet'; V.rNode = s.legacy === 'node'; V.rComms = s.legacy === 'comms'; V.rComm = s.legacy === 'commissary';
+    V.rStorage = false; V.rDash = false;
+    V.rSettings = s.route === 'settings';
+    const inst = !!s.daemons.find((d) => d.id === 'd-brief');
+    V.stInstalled = inst; V.stCanInstall = !inst;
+    V.stNeedsWeb = !s.webSearch;
+    V.stPerms = [
+      { t: 'Uses web search', state: s.webSearch ? 'on in Controls' : 'off in Controls', stateColor: s.webSearch ? 'var(--ok)' : 'var(--warn)', dot: s.webSearch ? 'var(--ok)' : 'var(--warn)' },
+      { t: 'Writes a new journal page, only after you approve it', state: 'asks every time', stateColor: 'var(--tx-3)', dot: 'var(--tx-3)' },
+      { t: 'No terminal, no files outside the journal, no chain actions', state: 'not requested', stateColor: 'var(--tx-3)', dot: 'var(--tx-3)' },
+    ];
+    V.onStubInstall = () => this.stubInstall();
+
+    // ----- annotations -----
+    const A = {
+      chat: ['Hermes › Chat', 'hermes/chat   (Sidebar.tsx today: dashboard)', 'agentHarness.sessionOpen / sessionSend / sessionEvents (hermes_session_open, hermes_session_send, hermes_session_events) · chat.backend · ask before gateway: none yet (core plan K1, S7.5a ask-first routing) · rail: daemonsApi.list (daemons_list), agentHarness.pendingApprovals (hermes_pending_approvals) · Network widget: C1 fixture only; live reads none yet (core plan K3)', 'none'],
+      journal: ['Hermes › Journal', 'hermes/journal   (today: journal)', 'none: local app state (store jPages, ensureDailyEntry); daemon bullets from the daemon run log; the journal chat uses the same Hermes session (hermes_session_send)', 'none'],
+      work: ['Hermes › Work', 'hermes/work   (today: agent)', 'agentHarness.status (hermes_status) · pendingApprovals / resolve (hermes_pending_approvals, hermes_resolve) · shellPending / shellDecide (hermes_shell_pending, hermes_shell_decide) · mcpPending / mcpDecide · daemonsApi.list / setPaused / setAllPaused (daemons_list, daemon_set_paused, daemons_set_all_paused) · run log: daemonsApi.runsBetween (daemon_runs_between) · skills: agentSkills.list, agentHarness.registrySkills · daemon state “awaiting your review”: none yet (core plan K2)', 'none'],
+      learn: ['Hermes › Learn', 'hermes/learn   (today: Agent and Settings)', 'agentHarness.learnStatus / learnProposals / learnAccept / learnReject / learnMemories (hermes_learn_status, hermes_learn_proposals, hermes_learn_accept, hermes_learn_reject, hermes_learn_memories) · Teach Hermes: agentHarness.workflowRun (hermes_workflow_run, learnLauncher.ts) · knowledge import: memory.importKnowledge (memory_import_knowledge) · training opt-in: flRounds.trajectoryStatus / setTrajectoryConsent (trajectories_settings_get, trajectories_settings_set)', 'none · rounds copy: “Group rounds not live yet” (contract §4)'],
+      ctl1: ['Hermes › Controls · depth 1', 'hermes/controls   (today: Settings › AI providers, Escalation, MCP, Web search, Budgets)', 'routing: none yet (core plan K1, S7.5a) · web search: hermes_web_settings_get / hermes_web_settings_set · terminal: hermes_terminal_get / hermes_terminal_set · daemons: daemons_set_all_paused · learn: trajectories_settings_set · voice: store hermesReadAloud (local, no bridge)', 'none'],
+      ctl2: ['Hermes › Controls · depth 2 · ' + (SECS.find((x) => x[0] === s.cSec) || [0, ''])[1], 'hermes/controls/' + s.cSec, {
+        providers: 'chat.providerStatus / setProvider / clearProvider (ai_provider_status, ai_set_provider, ai_clear_provider) · gateway mode: none yet (S7.5a) · ModelRegistry count: C1 fixture',
+        escalation: 'escalation.endpoints / addEndpoint / removeEndpoint / budget / setBudget (escalation_endpoints, escalation_endpoint_add, escalation_endpoint_remove, escalation_budget, escalation_budget_set)',
+        mcp: 'agentHarness.mcpSettings / mcpSet / mcpRuntime (hermes_mcp_settings, hermes_mcp_set, mcp_servers_runtime)',
+        web: 'hermes_web_settings_get / hermes_web_settings_set (agent/webSearch.ts) · managed Chromium: components.status',
+        terminal: 'hermes_terminal_get / hermes_terminal_set (agent/terminalAccess.ts) · folders: agent_grants_view / agent_grants_add_folder / agent_grants_revoke',
+        budgets: 'daemonsApi.save (daemon_save, Budget) · web sign-in budgets: web_budget_status / web_budget_grant / web_budget_revoke',
+        personas: 'agentHarness.personas / personaCheck (hermes_personas, hermes_persona_check) · read aloud: store hermesReadAloud (local)',
+      }[s.cSec], s.cSec === 'web' ? 'none · the browser needs the signed component key from the ceremony (components.status.keyConfigured)' : 'none'],
+      ctl3: ['Hermes › Controls · depth 3 · ' + (AUD.find((x) => x[0] === s.cAud) || [0, ''])[1], 'hermes/controls/' + s.cAud, {
+        records: 'writes: agentHarness.recordDecision (hic_record_decision) · read: none yet (core plan K2; HicLog::records exists in hic_records.rs but no command serves it) · web sign-in records: web_budget_status.snapshot.records',
+        spend: 'escalation.budget (escalation_budget → history, capMicros, usedMicros, confirmedMicros) · daemons_list (spendTodaySalt, always "0")',
+        runs: 'daemonsApi.runsBetween (daemon_runs_between → DaemonRunLog)',
+      }[s.cAud], 'none'],
+      groups: ['Groups (stub)', 'groups   (today: groups, people, cluster, train, comms)', 'groups.*, cluster.*, flRounds.* (drawn in slice 2 or later)', 'rounds: “Group rounds not live yet” (contract §4)'],
+      wallet: ['Wallet (stub)', 'wallet', 'wallet.balances / activity, membership.grantStatus (redrawn in slice 2)', 'none'],
+      node: ['Node (stub)', 'node   (today: node, storage, files)', 'node.status, K1 services registry (none yet), storage.list (slice 2)', 'K6 network switch at genesis'],
+      store: [storeHop ? 'Store stub · install sheet (click path 2 hop)' : 'Store (stub)', 'store   (today: commissary, models)', storeHop ? 'none yet (core plan K5): signed catalog, install path; installs via daemonsApi.save (daemon_save) with paused = true' : 'commissary.catalog today; signed catalog none yet (core plan K5)', 'catalog key from the key ceremony (K5)'],
+      settings: ['Settings', 'settings   (today: settings, connections)', 'auth.status / userinfo, membership.entitlement, connections.status, custody.status, config.read / write', 'none'],
+    };
+    const key = isH ? vKey : s.route;
+    const a = A[key] || ['—', s.route, '—', '—'];
+    V.annShow = s.annot && V.shell;
+    V.annScreen = s.legacy ? a[0] + ' · 0.5.1 reference' : a[0]; V.annRoute = a[1]; V.annBridge = a[2]; V.annFlag = a[3];
+    V.annHasVariants = isH && !s.legacy;
+    V.annVariants = ['data', 'empty', 'error', 'unavailable'].map((v) => ({
+      label: v, bd: variant === v ? 'var(--tx-1)' : 'var(--line-2)', bg: variant === v ? 'var(--tx-1)' : 'transparent', fg: variant === v ? 'var(--srf-0)' : 'var(--tx-2)',
+      go: () => this.setVariant(vKey, v),
+    }));
+
+    // ----- click path 2 checklist (prototype panel) -----
+    const cp = s.cp2;
+    const inst2 = s.daemons.find((d) => d.id === 'd-brief');
+    V.cpSteps = [
+      ['Turn on web search in Controls', cp.web || s.webSearch],
+      ['Open the Store (slice 2 stub)', cp.store],
+      ['Install the daemon; it arrives paused', !!inst2],
+      ['Start it from Work', cp.started],
+      ['Approve its first change', cp.approved],
+    ].map(([t, done], i) => ({ t: (i + 1) + '. ' + t, c: done ? 'var(--ok)' : 'var(--tx-2)', mark: done ? '✓' : '·' }));
+    V.onCpReset = () => {
+      this.setState((st) => ({ webSearch: false, cp2: { web: false, store: false, installed: false, started: false, approved: false }, daemons: st.daemons.filter((d) => d.id !== 'd-brief'), approvals: st.approvals.filter((x) => x.daemonId !== 'd-brief'), hl: null }));
+      this.hgo('controls', { cDepth: 1 });
+    };
+    V.onCpStart = () => { this.setState({ demoOpen: false }); this.hgo('controls', { cDepth: 1 }); };
+    V.demoAnnCls = s.annot ? 'btn-secondary' : 'btn-ghost';
+    V.onDemoAnn = () => { this.setState({ annot: !s.annot }); this.save(); };
+    V.demoLightCls = s.theme !== 'dark' ? 'btn-secondary' : 'btn-ghost';
+    V.demoDarkCls = s.theme === 'dark' ? 'btn-secondary' : 'btn-ghost';
+    V.onDemoLight = () => { this.setState({ theme: 'light' }); this.save(); };
+    V.onDemoDark = () => { this.setState({ theme: 'dark' }); this.save(); };
+    V.demoRouteLocalCls = s.routing === 'local' ? 'btn-secondary' : 'btn-ghost';
+    V.demoRouteAskCls = s.routing === 'ask' ? 'btn-secondary' : 'btn-ghost';
+    V.onDemoRouteLocal = () => { this.setState({ routing: 'local' }); this.save(); };
+    V.onDemoRouteAsk = () => { this.setState({ routing: 'ask' }); this.save(); };
   }
 
   startNode() {
