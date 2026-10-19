@@ -15,8 +15,9 @@
 import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
-import { noteRunning } from "./hermes/hermesRunning";
+import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
 import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
+import { writeWebSettingsUnlessStarting } from "../agent/webSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -138,17 +139,28 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   const set = (patch: Partial<HermesWebSettings>) => setDraft((d) => ({ ...d, ...patch }));
   const disabled = !desktop || saving;
 
+  // Hermes reads these at start: while a start or restart is in flight, Save waits.
+  const held = hermesRunningSlice.use().starting > 0;
+
   const save = async () => {
-    if (parsed.bad.length || tooMany) return;
+    if (parsed.bad.length || tooMany || hermesStarting()) return;
     setSaving(true);
     setError(null);
     try {
       const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
-      const fresh = await loadWebSettings(io);
-      // Hermes reads search at start: remember what it runs with before changing the saved value.
-      noteRunning("webSearch", fresh.settings.searchEnabled);
-      const st = await saveWebSettings(io, { ...fresh.settings, ...edits });
-      publishWebSettings(st, me);
+      // One write at a time across every view (webSettingsSync.ts): re-read, apply only the
+      // fields changed here, write, announce, then let the next writer in.
+      // Held (null) if a Hermes start began while this write waited: the draft stays unsaved and
+      // the "Hermes is starting" line shows; Save works again once Hermes is up.
+      const st = await writeWebSettingsUnlessStarting(async () => {
+        const fresh = await loadWebSettings(io);
+        // Hermes reads search at start: remember what it runs with before changing the saved value.
+        noteRunning("webSearch", fresh.settings.searchEnabled);
+        const saved = await saveWebSettings(io, { ...fresh.settings, ...edits });
+        publishWebSettings(saved, me);
+        return saved;
+      });
+      if (!st) return;
       setStatus(st);
       setDraft(st.settings);
       setBaseline(st.settings);
@@ -279,9 +291,14 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
         </ul>
         <span style={hint}>Changes apply the next time Hermes starts.</span>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button className="btn btn-secondary btn-sm" data-testid="web-save" disabled={disabled || parsed.bad.length > 0 || tooMany} onClick={() => void save()}>
+          <button className="btn btn-secondary btn-sm" data-testid="web-save" disabled={disabled || held || parsed.bad.length > 0 || tooMany} onClick={() => void save()}>
             {saving ? "Saving…" : "Save"}
           </button>
+          {held && (
+            <span data-testid="web-held" style={hint}>
+              {HELD_DURING_START}
+            </span>
+          )}
           {error && (
             <span data-testid="web-error" style={hint}>
               {error}

@@ -16,7 +16,7 @@ import type { SimHost } from "../../bridge/sim/index";
 import { store } from "../../shell/store";
 import { WebSearchSettings } from "../WebSearchSettings";
 import type { HermesRestartResult } from "../../shell/slices/agent";
-import { hermesRunningSlice } from "./hermesRunning";
+import { hermesRunningSlice } from "../../shell/slices/hermesRunning";
 import { TrajectoryConsent } from "../../fl/TrajectoryConsent";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
