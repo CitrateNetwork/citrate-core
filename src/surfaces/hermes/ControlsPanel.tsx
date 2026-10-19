@@ -29,7 +29,7 @@ import type { EscalationBudget, EscalationDomain, FlRoundsDomain, FlTrajectorySt
 import { loadWebSettings, saveWebSettings, type HermesWebStatus, type WebSettingsIo } from "../../agent/webSearch";
 import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
-import { startRuntime, stopRuntime } from "../../shell/slices/agent";
+import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -90,8 +90,9 @@ export interface ControlsIo {
   fl: Pick<FlRoundsDomain, "trajectoryStatus" | "setTrajectoryConsent">;
   daemons: Pick<DaemonActions, "available" | "refresh" | "setAllPaused">;
   escalation: Pick<EscalationDomain, "budget">;
-  /** Restart Hermes so saved sidecar settings apply. Optional: without it no restart button shows. */
-  restartHermes?: () => Promise<void>;
+  /** Restart Hermes so saved sidecar settings apply, confirmed against the harness status. Optional:
+   *  without it no restart button shows. */
+  restartHermes?: () => Promise<HermesRestartResult>;
 }
 
 /** The app's real calls: the same ones the Settings, Train and Daemons cards use. */
@@ -102,11 +103,8 @@ export function appControlsIo(): ControlsIo {
     fl: bridge.flRounds,
     daemons: { available: daemons.available, refresh: daemons.refresh, setAllPaused: daemons.setAllPaused },
     escalation: bridge.escalation,
-    // The same restart the Agent page's contract toolchain card uses.
-    restartHermes: async () => {
-      await stopRuntime("hermes");
-      await startRuntime("hermes");
-    },
+    // The Agent page's stop + start, each step confirmed by the harness status.
+    restartHermes: restartHermesConfirmed,
   };
 }
 
@@ -127,6 +125,7 @@ function Row({
   pending,
   onRestart,
   restarting,
+  restartError,
 }: {
   row: ControlRow;
   checked: boolean;
@@ -138,6 +137,8 @@ function Row({
   pending?: string | null;
   onRestart?: () => void;
   restarting?: boolean;
+  /** The last restart failed: what happened, shown until a restart is confirmed. */
+  restartError?: string | null;
 }) {
   return (
     <div
@@ -171,9 +172,14 @@ function Row({
             <span>Saved. Takes effect when Hermes restarts. {pending}</span>
             {onRestart && (
               <button className="btn btn-ghost btn-sm" data-testid={`restart-${row.id}`} disabled={restarting} onClick={onRestart}>
-                {restarting ? "Restarting…" : "Restart Hermes"}
+                {restarting ? "Restarting…" : restartError ? "Retry restart" : "Restart Hermes"}
               </button>
             )}
+          </span>
+        )}
+        {pending && restartError && (
+          <span className="mono" role="alert" data-testid={`restart-error-${row.id}`} style={{ ...note, color: "var(--danger)" }}>
+            {restartError}
           </span>
         )}
       </span>
@@ -210,6 +216,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const [webStarted, setWebStarted] = useState<boolean | null>(null);
   const [learnStarted, setLearnStarted] = useState<boolean | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
 
   // Reads only. Nothing here writes, so opening the panel changes no setting.
   useEffect(() => {
@@ -294,12 +301,26 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const restart = io.restartHermes
     ? async () => {
         setRestarting(true);
+        let r: HermesRestartResult;
         try {
-          await io.restartHermes?.();
-          if (web) setWebStarted(web.settings.searchEnabled);
-          if (learn) setLearnStarted(learn.settings.enabled);
+          r = (await io.restartHermes?.()) ?? { ok: false, stage: "stop", error: "no restart is available" };
         } catch (e) {
-          setWebErr(msg(e));
+          r = { ok: false, stage: "stop", error: msg(e) };
+        }
+        try {
+          if (r.ok) {
+            // Confirmed: Hermes stopped and is running again, so it read the saved settings.
+            setRestartError(null);
+            if (web) setWebStarted(web.settings.searchEnabled);
+            if (learn) setLearnStarted(learn.settings.enabled);
+          } else {
+            // Not confirmed: the notices stay, with what happened.
+            setRestartError(
+              r.stage === "stop"
+                ? `Hermes could not stop (${r.error}). It is still running with its previous settings.`
+                : `Hermes stopped but could not start again (${r.error}). Hermes is stopped.`,
+            );
+          }
         } finally {
           setRestarting(false);
         }
@@ -341,13 +362,13 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         }
       />
 
-      <Row row={rows["web-search"]} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search"} onChange={(on) => void setWebSearch(on)} reason={webReason} pending={webPending} onRestart={onRestart} restarting={restarting} />
+      <Row row={rows["web-search"]} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search"} onChange={(on) => void setWebSearch(on)} reason={webReason} pending={webPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
 
       <Row row={rows.terminal} checked={!!s.hermesTerminal} disabled={busy === "terminal"} onChange={(on) => void run("terminal", () => store.setHermesTerminal(on))} />
 
       <Row row={rows.daemons} checked={daemonsOn} disabled={daemonsDisabled} onChange={(on) => void setDaemonsOn(on)} reason={daemonReason} />
 
-      <Row row={rows.learn} checked={learnOn} disabled={learn === null || busy === "learn"} onChange={(on) => void setLearnOn(on)} reason={learnErr} pending={learnPending} onRestart={onRestart} restarting={restarting} />
+      <Row row={rows.learn} checked={learnOn} disabled={learn === null || busy === "learn"} onChange={(on) => void setLearnOn(on)} reason={learnErr} pending={learnPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
 
       <Row row={rows.voice} checked={!!s.hermesReadAloud} disabled={false} onChange={(on) => store.setHermesReadAloud(on)} />
     </div>

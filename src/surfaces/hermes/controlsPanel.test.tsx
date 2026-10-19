@@ -15,6 +15,7 @@ import { simEscalation } from "../../bridge/sim/escalation";
 import type { SimHost } from "../../bridge/sim/index";
 import { store } from "../../shell/store";
 import { WebSearchSettings } from "../WebSearchSettings";
+import type { HermesRestartResult } from "../../shell/slices/agent";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,7 +121,7 @@ function harness(
 ): Harness {
   const calls: Calls = [];
   const web: WebBacking = { current: o.web ?? webStatus() };
-  const restart = vi.fn(async () => {});
+  const restart = vi.fn(async (): Promise<HermesRestartResult> => ({ ok: true }));
   let learnOn = o.learn ?? false;
   const fl = {
     status: vi.fn(async () => ({ ...trajStatus(learnOn), appliesOnRestart: o.learnAppliesOnRestart ?? true })),
@@ -435,6 +436,52 @@ describe("Hermes › Controls, first depth (K2)", () => {
     expect(h.restart).toHaveBeenCalledTimes(1);
     expect($("pending-web-search")).toBeNull();
     expect($("pending-learn")).toBeNull();
+  });
+
+  it("restart: stop fails, so both notices stay and the error shows with a retry", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }), learn: true, withRestart: true });
+    h.restart.mockResolvedValueOnce({ ok: false, stage: "stop", error: "the sidecar did not exit" });
+    await mount(h);
+    await click($("toggle-web-search"));
+    await click($("toggle-learn"));
+    await click($("restart-web-search"));
+    expect($("pending-web-search")?.textContent).toContain("Saved. Takes effect when Hermes restarts");
+    expect($("pending-learn")?.textContent).toContain("Saved. Takes effect when Hermes restarts");
+    const err = $("restart-error-web-search")?.textContent ?? "";
+    expect(err).toContain("could not stop");
+    expect(err).toContain("the sidecar did not exit");
+    expect(err).toContain("still running with its previous settings");
+    expect($("restart-web-search")?.textContent).toContain("Retry");
+    // Retry, now confirmed: the notices clear.
+    await click($("restart-web-search"));
+    expect(h.restart).toHaveBeenCalledTimes(2);
+    expect($("pending-web-search")).toBeNull();
+    expect($("pending-learn")).toBeNull();
+    expect($("restart-error-web-search")).toBeNull();
+  });
+
+  it("restart: start fails, so the notice stays and says Hermes is stopped, with a retry", async () => {
+    const h = harness({ learn: true, withRestart: true });
+    h.restart.mockResolvedValueOnce({ ok: false, stage: "start", error: "llama-server is not running" });
+    await mount(h);
+    await click($("toggle-learn"));
+    await click($("restart-learn"));
+    expect($("pending-learn")).toBeTruthy();
+    const err = $("restart-error-learn")?.textContent ?? "";
+    expect(err).toContain("could not start again");
+    expect(err).toContain("llama-server is not running");
+    expect(err).toContain("Hermes is stopped");
+    expect($("restart-learn")?.textContent).toContain("Retry");
+  });
+
+  it("restart: a thrown error is a failure too, never a confirmed restart", async () => {
+    const h = harness({ learn: true, withRestart: true });
+    h.restart.mockRejectedValueOnce(new Error("bridge down"));
+    await mount(h);
+    await click($("toggle-learn"));
+    await click($("restart-learn"));
+    expect($("pending-learn")).toBeTruthy();
+    expect($("restart-error-learn")?.textContent).toContain("bridge down");
   });
 
   // ---------- field-specific web writes (#343 race) ----------

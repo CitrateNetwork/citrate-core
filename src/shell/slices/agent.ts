@@ -197,6 +197,39 @@ export async function stopRuntime(id: RuntimeId): Promise<void> {
   }
 }
 
+/** The outcome of a Hermes restart, confirmed against the harness status. */
+export type HermesRestartResult = { ok: true } | { ok: false; stage: "stop" | "start"; error: string };
+
+/**
+ * Restart Hermes and report whether it really happened. `stopRuntime` and `startRuntime` keep their
+ * contract (they catch into the slice for the Agent page), so this checks the harness status after
+ * each step: Hermes must report not running after the stop, and running after the start. A failed
+ * status read counts as a failure. Used where a saved sidecar setting only applies after a restart
+ * (Hermes › Controls), so "applied" is never claimed for a restart that did not happen.
+ */
+export async function restartHermesConfirmed(): Promise<HermesRestartResult> {
+  agentSlice.set({ error: null });
+  setHermes({ error: null });
+  const hermesError = () => agentSlice.get().attached.find((r) => r.id === "hermes")?.error ?? null;
+
+  await stopRuntime("hermes");
+  try {
+    const st = await bridge.agentHarness.status();
+    if (st.running) return { ok: false, stage: "stop", error: agentSlice.get().error ?? "Hermes is still running." };
+  } catch (e) {
+    return { ok: false, stage: "stop", error: message(e) };
+  }
+
+  await startRuntime("hermes");
+  try {
+    const st = await bridge.agentHarness.status();
+    if (!st.running) return { ok: false, stage: "start", error: hermesError() ?? agentSlice.get().error ?? "Hermes did not report running." };
+  } catch (e) {
+    return { ok: false, stage: "start", error: message(e) };
+  }
+  return { ok: true };
+}
+
 /** Attach a runtime to the node (adds a roster row). Duplicate-attach is guarded. */
 export function attachRuntime(id: RuntimeId): void {
   const opt = RUNTIME_OPTIONS.find((o) => o.id === id);
