@@ -504,8 +504,10 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
           return (
             <button
               key={id}
-              // HUP-S0.8: Connections has one home — the Connections tab of the Settings hub.
-              onClick={() => (id === "connections" ? store.go("connections") : setSec(id))}
+              // Five-place navigation (0.5.2): every section listed here opens here, Connections
+              // included (its Google services and connection status). The Settings › Connections
+              // tab is the separate Connections page (social identity, MCP, models).
+              onClick={() => setSec(id)}
               style={{
                 fontFamily: "var(--font-sans)",
                 textAlign: "left",

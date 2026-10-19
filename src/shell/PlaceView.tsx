@@ -163,7 +163,9 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "store/models":
       return <Models store={store} s={s} />;
     case "settings":
-      return <Settings store={store} s={{ ...s, sSec: sectionFor(ACCOUNT_SETTINGS, s.sSec === "connections" ? "account" : s.sSec) }} sections={ACCOUNT_SETTINGS} />;
+      // Every account-level section Settings owns opens here, Connections included. A moved section
+      // (AI providers, Node configuration, …) falls back to Account.
+      return <Settings store={store} s={{ ...s, sSec: sectionFor(ACCOUNT_SETTINGS, s.sSec) }} sections={ACCOUNT_SETTINGS} />;
     case "settings/connections":
       return <Connections store={store} s={s} />;
     default:
