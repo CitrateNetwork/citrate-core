@@ -1271,7 +1271,8 @@ pub(crate) fn revoke_invite<R: tauri::Runtime>(
     parse_ok(route(app, Request::RevokeInvite { token_hash })?)
 }
 
-/// INVITE-S2 — INVITEE: self-admit into `group` with the RAW invite `token` (hex), recording it
+/// INVITE-S2 — INVITEE: self-admit into `group` with the invite token in its daemon wire form
+/// (`invites::redeem_token_wire`: hex of the token's bytes, the bytes the relay hashes), recording it
 /// locally under `name`. No owner action; the relay records the referral attribution. `pub(crate)`.
 pub(crate) fn redeem_invite<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
