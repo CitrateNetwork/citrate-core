@@ -673,6 +673,9 @@ fn a_pending_record_left_by_an_install_that_is_not_running_is_removable() {
         target: "tiny-model.gguf".into(),
         installed_at: NOW,
         pending: true,
+        sha256: String::new(),
+        size: 0,
+        url: String::new(),
     };
     update_installs(&fx.root, |i| i.push(rec)).expect("seed record");
     assert_eq!(fx.fx_installed()[0].state, "missing");
@@ -987,6 +990,65 @@ fn the_check_reads_what_the_sidecar_inherits_from_the_launch_environment() {
     // Core's own value wins over an inherited one.
     let effective = crate::hermes::effective_child_env(env(&[("CITRATE_HERMES_SEARCH", "1")]).into_iter(), &env(&[("CITRATE_HERMES_SEARCH", "0")]));
     assert!(host_block_reason(&[], &effective).is_none());
+}
+
+// ---- a model install interrupted between the rename and the verify --------------------------
+
+/// A Store record and a completed-but-unverified model file, as the app leaves them when it
+/// exits after `ModelManager` renamed the download and before `verify()` recorded it.
+fn interrupted_model(tag: &str, body: &[u8]) -> Fx {
+    let fx = Fx::standard(tag);
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    fx.fx_install(&st.stage_id, 0).expect("install");
+    // Roll the disk back to the crash window: the record is pending and the verified flag is gone.
+    update_installs(&fx.root, |i| {
+        for r in i.iter_mut() {
+            r.pending = true;
+        }
+    })
+    .expect("pending");
+    std::fs::remove_file(fx.models.join("tiny-model.gguf.status.json")).expect("unverify");
+    std::fs::write(fx.models.join("tiny-model.gguf"), body).expect("bytes");
+    assert!(!crate::model::is_file_ready(&fx.models, "tiny-model.gguf"));
+    fx
+}
+
+#[test]
+fn an_interrupted_model_install_with_the_right_bytes_is_verified_on_the_next_start() {
+    let fx = interrupted_model("crash-ok", &model_bytes());
+    let listed = fx.fx_installed();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].state, "not_selected", "re-verified by its hash");
+    assert!(crate::model::is_file_ready(&fx.models, "tiny-model.gguf"));
+    let st = read_store_file(&fx.root).expect("state");
+    assert!(!st.installs[0].pending, "the record is confirmed");
+    // And it is removable as usual.
+    assert!(fx.fx_remove("tiny-model", &Usage(None)).is_ok());
+    assert!(!fx.models.join("tiny-model.gguf").exists());
+}
+
+#[test]
+fn an_interrupted_model_install_with_wrong_bytes_is_cleaned_up_with_its_record() {
+    let mut wrong = model_bytes();
+    wrong[10] = 1;
+    let fx = interrupted_model("crash-bad", &wrong);
+    assert!(fx.fx_installed().is_empty(), "the record goes with the bad file");
+    for suffix in ["", ".part", ".status.json", ".download.json"] {
+        assert!(!fx.models.join(format!("tiny-model.gguf{suffix}")).exists(), "{suffix}");
+    }
+    // The listing can be installed again.
+    let st = fx.fx_stage("tiny-model", 0).expect("stage again");
+    assert!(fx.fx_install(&st.stage_id, 0).is_ok());
+}
+
+#[test]
+fn removing_a_pending_model_record_also_removes_its_unverified_file() {
+    let fx = interrupted_model("crash-remove", &model_bytes());
+    // Removal before any reconcile: the Store's own unfinished file goes with its record.
+    assert!(fx.fx_remove("tiny-model", &Usage(None)).is_ok());
+    assert!(!fx.models.join("tiny-model.gguf").exists());
+    assert!(read_store_file(&fx.root).expect("state").installs.is_empty());
 }
 
 // ---- a sidecar that scopes host tool sets per session (citrate-agent-runtime#87) -------------

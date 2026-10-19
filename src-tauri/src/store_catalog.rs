@@ -412,6 +412,18 @@ pub(crate) struct InstallRecord {
     /// shows `installing` while an install runs, else `missing` (removable).
     #[serde(default)]
     pub pending: bool,
+    /// For a model: the pinned SHA-256, size and URL from the signed listing, so an install the
+    /// app left between the rename and the verify can be checked again on the next start.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -921,13 +933,86 @@ pub(crate) fn installed_sync(
     now_ms: u64,
 ) -> Result<Vec<InstalledView>, Refusal> {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let st = read_store_file(root)?;
     let installing = installing_listing(root);
+    reconcile_models(root, t, installing.as_deref())?;
+    let st = read_store_file(root)?;
     Ok(st
         .installs
         .iter()
         .map(|r| installed_view(r, t, now_ms, installing.as_deref()))
         .collect())
+}
+
+/// Remove the Store's own unfinished model file `file` (the GGUF, if it is NOT verified, and its
+/// side files) under the download lock. A verified model is never removed here.
+fn remove_unverified_model(models_dir: &Path, file: &str) -> Result<(), Refusal> {
+    let file = crate::model_delete::file_from_id(file)
+        .map_err(|e| refuse("install_failed", e.to_string()))?;
+    let _lock = crate::model::DownloadGuard::acquire(&models_dir.join(format!("{file}.part")))
+        .map_err(|_| refuse("in_use", "A download of this model is running"))?;
+    if crate::model::is_file_ready(models_dir, &file) {
+        return Ok(());
+    }
+    let mut paths = vec![models_dir.join(&file)];
+    paths.extend(
+        crate::model_delete::SIDE_SUFFIXES
+            .iter()
+            .map(|s| models_dir.join(format!("{file}{s}"))),
+    );
+    for p in paths {
+        match std::fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_refusal(e)),
+        }
+    }
+    Ok(())
+}
+
+/// Called with the Store lock held (from [`installed_sync`], so on the first read after a start).
+/// A model install the app left between the download's rename and its verify (a pending record,
+/// the file on disk, no verified flag, no install running) is checked again by its pinned hash:
+/// it is confirmed when it matches, and when it does not (or cannot be checked) the file and its
+/// record are removed together, so the listing can be installed again.
+fn reconcile_models(root: &Path, t: &Targets<'_>, installing: Option<&str>) -> Result<(), Refusal> {
+    let mut st = read_store_file(root)?;
+    let mut changed = false;
+    let mut keep = Vec::with_capacity(st.installs.len());
+    for mut r in std::mem::take(&mut st.installs) {
+        let interrupted = r.kind == ListingKind::Model
+            && r.pending
+            && installing != Some(r.listing_id.as_str())
+            && t.models_dir.join(&r.target).is_file()
+            && !crate::model::is_file_ready(&t.models_dir, &r.target);
+        if !interrupted {
+            keep.push(r);
+            continue;
+        }
+        changed = true;
+        let verified = !r.sha256.is_empty()
+            && r.size > 0
+            && crate::model::ModelManager::new(
+                t.models_dir.clone(),
+                (t.model_transport)(&r.url),
+                r.sha256.clone(),
+                r.size,
+            )
+            .with_file(r.target.clone())
+            .verify()
+            .is_ok();
+        if verified {
+            r.pending = false;
+            keep.push(r);
+        } else {
+            remove_unverified_model(&t.models_dir, &r.target)?;
+        }
+    }
+    st.installs = keep;
+    if changed {
+        st.version = STATE_VERSION;
+        write_store_file(root, &st)?;
+    }
+    Ok(())
 }
 
 fn take_stage(root: &Path, stage_id: &str, now: u64) -> Result<StagedFile, Refusal> {
@@ -1015,6 +1100,9 @@ pub(crate) fn install_sync(
         target,
         installed_at: now,
         pending: true,
+        sha256: listing.artifact.sha256.clone(),
+        size: listing.artifact.size,
+        url: listing.artifact.url.clone(),
     };
     // 1. The record first: if it cannot be saved, nothing is created, so the Store never
     //    leaves an install it does not track.
@@ -1218,7 +1306,14 @@ pub(crate) fn remove_sync(
                 &rec.target,
                 t.usage,
             ) {
-                Ok(_) | Err(crate::model_delete::DeleteRefusal::Unknown(_)) => {}
+                Ok(_) => {}
+                // Not a verified model on disk: for the Store's own unfinished install (a pending
+                // record), its unverified file and side files go with the record.
+                Err(crate::model_delete::DeleteRefusal::Unknown(_)) => {
+                    if rec.pending {
+                        remove_unverified_model(&t.models_dir, &rec.target)?;
+                    }
+                }
                 Err(e @ crate::model_delete::DeleteRefusal::InUse(_))
                 | Err(e @ crate::model_delete::DeleteRefusal::Downloading) => {
                     return Err(refuse("in_use", e.to_string()))
