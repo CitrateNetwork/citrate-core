@@ -481,11 +481,13 @@ export function pickChatProviderKind(
   const remote = statuses.some((p) => p.id === aiDefault && p.configured);
   // 2) A local model that is set up but stopped: hold the message and ask (SCL-S7.5a).
   if (inferenceState !== undefined && LOCAL_STOPPED_STATES.has(inferenceState)) return "ask";
+  // 2b) K2: Local model only with no local model serving. Never the demo agent (its scripted
+  //     replies and tool handlers) and never a remote route: the held message says it was not sent.
+  if (route === "local_only") return "ask";
   // 3) K2: nothing goes to the gateway without the member's choice for that message. Under
   //    ask_first a configured remote route asks every time (the old silent "gateway-only" and
   //    "downloading" routes are closed); under local_only the held message offers nothing remote.
   if (inferenceState === "ask-gateway" || inferenceState === "local-only" || remote) return "ask";
-  void route; // the route shapes what the held message offers (routeAskOptions), not whether it is held
   // 4) DEMO: the honest built-in agent.
   return "demo";
 }

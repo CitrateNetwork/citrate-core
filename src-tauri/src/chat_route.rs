@@ -37,11 +37,13 @@ pub enum ChatRoute {
     AskFirst,
 }
 
-/// The stored choice.
+/// The stored choice. A file that exists must name its `route`: only an ABSENT file gets the
+/// default ([`load`]), so a damaged file (`{}`, a timestamp alone) never reads as `ask_first`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase")]
 pub struct RouteSettings {
     pub route: ChatRoute,
+    #[serde(default)]
     pub changed_at_ms: Option<u64>,
 }
 
@@ -107,9 +109,9 @@ pub fn set(dir: &Path, route: ChatRoute, now_ms: u64) -> Result<RouteStatus, Str
 /// The inference state the app routes by, for this route.
 ///
 /// - `local_only`: `Ready` stays local; a local model that is set up but stopped is
-///   `LocalOnlyStopped` (offer only a restart); with a remote route configured and no local
-///   model, `LocalOnly` (nothing is sent). Without any remote route nothing can leave the device
-///   anyway, so the plain state (downloading, demo) is kept.
+///   `LocalOnlyStopped` (offer only a restart); anything else (no model, a download in flight,
+///   with or without a remote key) is `LocalOnly`: the message is not sent and the app says how
+///   to start the local model. Never the demo agent, never a remote route.
 /// - `ask_first`: the plain state, except that a remote route with no local model running
 ///   (`GatewayOnly`, or `Downloading` with a key) becomes `AskGateway`: asked, never routed.
 pub fn select_route(i: ProviderInputs, route: ChatRoute) -> InferenceState {
@@ -120,10 +122,8 @@ pub fn select_route(i: ProviderInputs, route: ChatRoute) -> InferenceState {
                 InferenceState::Ready
             } else if i.model_ready {
                 InferenceState::LocalOnlyStopped
-            } else if i.gateway_key_configured {
-                InferenceState::LocalOnly
             } else {
-                plain
+                InferenceState::LocalOnly
             }
         }
         ChatRoute::AskFirst => match plain {
