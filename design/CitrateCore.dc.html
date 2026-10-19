@@ -847,6 +847,19 @@
                 <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">{{ chatThinkingLabel }}</span>
               </div>
             </sc-if>
+            <!-- ask-first: the same pending decision as Chat, shown where the request was made -->
+            <sc-if value="{{ askShow }}" hint-placeholder-val="{{ false }}">
+              <div class="cc-fade-up" data-screen-label="Journal ask before gateway" style="border:1px solid var(--warn);background:var(--warn-bg);border-radius:var(--r-2);padding:12px 14px;display:flex;flex-direction:column;gap:7px;">
+                <span class="mono" style="font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:var(--warn);">Ask before gateway · HIC-1</span>
+                <span style="font-size:12.5px;font-weight:500;">Use the Citrate gateway for this reply?</span>
+                <span style="font-size:12px;line-height:1.5;color:var(--tx-2);">If you allow it, this conversation goes to <span class="mono">infer.citrate.ai</span> for one reply. Nothing is sent until you choose.</span>
+                <span class="mono" style="font-size:10px;color:var(--tx-3);">“{{ askText }}”</span>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button class="btn btn-primary btn-sm" onClick="{{ onAskAllow }}">Use gateway once</button>
+                  <button class="btn btn-ghost btn-sm" onClick="{{ onAskLocal }}">Keep it local</button>
+                </div>
+              </div>
+            </sc-if>
           </div>
           <sc-if value="{{ jInterimShow }}" hint-placeholder-val="{{ false }}">
             <div style="padding:8px 16px;border-top:1px dashed var(--line-2);">
@@ -3753,7 +3766,8 @@ class Component extends DCLogic {
     try { const h = '#/hermes/' + tab; if (location.hash !== h) location.hash = h; } catch (e) {}
     this.save();
   }
-  rec(kind, decision, subject, reason) {
+  // HIC decision record (prototype of hic_record_decision). Not `rec`: that name caches the speech recogniser.
+  recordDecision(kind, decision, subject, reason) {
     this.setState((st) => ({ records: [{ seq: (st.records[0] ? st.records[0].seq : 0) + 1, atMs: Date.now(), kind, decision, subject, reason }].concat(st.records) }));
   }
   patchDaemon(id, fn) {
@@ -3786,6 +3800,10 @@ class Component extends DCLogic {
       runLog: [{ atMs: Date.now(), name: d.name, daemonId: id, outcome: 'answered', tokens, src: 'measured' }].concat(st.runLog),
       approvals: writes ? [{
         id: 'a-' + id + '-' + Date.now(), kind: 'journal', daemonId: id, ts: Date.now(), hic: 'HIC-1 · asks every time',
+        // The proposed change itself: the page it writes and the lines it adds. Approving applies exactly this.
+        target: id === 'd-brief'
+          ? { pageId: 'p-brief-' + today, title: 'Web brief · ' + today, pageKind: 'page', blocks: ['@agent Morning web brief · approved by you', '3 sources read through local search (SearXNG)', 'Summary drafted on this machine'] }
+          : { pageId: 'd-' + today, title: today, pageKind: 'daily', blocks: ['@agent ' + d.name + ': nothing new since the last run'] },
         title: id === 'd-brief' ? 'Add the page “Web brief · ' + today + '” to your Journal' : 'Add a note to today’s journal',
         origin: 'daemon · ' + d.name + ' · first run',
         preview: id === 'd-brief'
@@ -3801,19 +3819,27 @@ class Component extends DCLogic {
   resolveApproval(id, ok) {
     const a = this.state.approvals.find((x) => x.id === id);
     if (!a) return;
-    const today = new Date().toISOString().slice(0, 10);
+    if (ok && a.kind === 'journal' && !a.target) {
+      // A journal change with no content to apply cannot be approved as written; record nothing as success.
+      this.toast('This change has no content to apply, so nothing was written.');
+      return;
+    }
     this.setState((st) => {
       const u = { approvals: st.approvals.filter((x) => x.id !== id), hl: null };
       if (a.daemonId) u.daemons = st.daemons.map((d) => (d.id === a.daemonId ? Object.assign({}, d, { state: d.paused ? 'paused' : 'scheduled', next: 'next run tomorrow 08:00' }) : d));
-      if (ok && a.kind === 'journal' && a.daemonId === 'd-brief') {
-        const pid = 'p-brief-' + today;
-        if (!st.jPages.find((p) => p.id === pid)) u.jPages = st.jPages.concat([{ id: pid, title: 'Web brief · ' + today, kind: 'page', pinned: false, blocks: ['@agent Morning web brief · approved by you', '3 sources read through local search (SearXNG)', 'Summary drafted on this machine'] }]);
-        u.cp2 = Object.assign({}, st.cp2, { approved: true });
+      if (ok && a.kind === 'journal' && a.target) {
+        // Apply the proposed content to its target page: append to an existing page, or create it.
+        const t = a.target;
+        const page = st.jPages.find((p) => p.id === t.pageId);
+        u.jPages = page
+          ? st.jPages.map((p) => (p.id === t.pageId ? Object.assign({}, p, { blocks: p.blocks.concat(t.blocks) }) : p))
+          : (t.pageKind === 'daily' ? [{ id: t.pageId, title: t.title, kind: 'daily', pinned: false, blocks: t.blocks.slice() }].concat(st.jPages) : st.jPages.concat([{ id: t.pageId, title: t.title, kind: t.pageKind, pinned: false, blocks: t.blocks.slice() }]));
+        if (a.daemonId === 'd-brief') u.cp2 = Object.assign({}, st.cp2, { approved: true });
       }
       return u;
     });
-    this.rec(a.kind === 'shell' ? 'agent.tool_approval' : 'agent.tool_approval', ok ? 'approved' : 'denied', a.title, a.origin);
-    this.toast(ok ? (a.kind === 'journal' ? 'Approved. The page is in your Journal.' : 'Approved.') : 'Declined. Nothing changed.');
+    this.recordDecision('agent.tool_approval', ok ? 'approved' : 'denied', a.title, a.origin);
+    this.toast(ok ? (a.kind === 'journal' ? 'Approved. Written to “' + a.target.title + '” in your Journal.' : 'Approved.') : 'Declined. Nothing changed.');
     this.save();
   }
   stubInstall() {
@@ -3911,8 +3937,8 @@ class Component extends DCLogic {
     V.chatBackendLabel = s.routing === 'local' ? 'local model · llama-server on this machine' : 'local first · asks before infer.citrate.ai';
     V.askShow = !!s.askPending;
     V.askText = s.askPending || '';
-    V.onAskAllow = () => { const t = s.askPending; this.setState({ askPending: null }); this.rec('agent.tool_approval', 'approved', 'gateway · one reply via infer.citrate.ai', 'chat · ask before gateway'); this.sendChat(t, { via: 'gateway' }); };
-    V.onAskLocal = () => { const t = s.askPending; this.setState({ askPending: null }); this.rec('agent.tool_approval', 'denied', 'gateway · kept the reply local', 'chat · ask before gateway'); this.sendChat(t, { via: 'local' }); };
+    V.onAskAllow = () => { const t = s.askPending; this.setState({ askPending: null }); this.recordDecision('agent.tool_approval', 'approved', 'gateway · one reply via infer.citrate.ai', 'chat · ask before gateway'); this.sendChat(t, { via: 'gateway' }); };
+    V.onAskLocal = () => { const t = s.askPending; this.setState({ askPending: null }); this.recordDecision('agent.tool_approval', 'denied', 'gateway · kept the reply local', 'chat · ask before gateway'); this.sendChat(t, { via: 'local' }); };
     V.apprCount = String(apprList.length);
     V.apprEmpty = apprList.length === 0;
     V.apprRail = apprList.slice(0, 3).map((a) => ({ title: a.title, origin: a.origin }));
@@ -3977,8 +4003,8 @@ class Component extends DCLogic {
     V.propEmpty = props.length === 0;
     V.propRows = props.map((p) => ({
       kind: p.kind, title: p.title, evidence: p.evidence, evColor: p.blocked ? 'var(--danger)' : 'var(--ok)', blocked: p.blocked,
-      accept: () => { this.setState((st) => ({ proposals: st.proposals.filter((x) => x.id !== p.id), learned: [{ name: p.title, sub: p.kind + ' · accepted just now', state: 'kept', bd: 'var(--ok)', fg: 'var(--ok)' }].concat(st.learned) })); this.rec('agent.tool_approval', 'approved', 'learn · ' + p.title, 'Learn tab'); this.toast('Accepted. Hermes can use it in the next conversation.'); this.save(); },
-      reject: () => { this.setState((st) => ({ proposals: st.proposals.filter((x) => x.id !== p.id) })); this.rec('agent.tool_approval', 'denied', 'learn · ' + p.title, 'Learn tab'); this.save(); },
+      accept: () => { this.setState((st) => ({ proposals: st.proposals.filter((x) => x.id !== p.id), learned: [{ name: p.title, sub: p.kind + ' · accepted just now', state: 'kept', bd: 'var(--ok)', fg: 'var(--ok)' }].concat(st.learned) })); this.recordDecision('agent.tool_approval', 'approved', 'learn · ' + p.title, 'Learn tab'); this.toast('Accepted. Hermes can use it in the next conversation.'); this.save(); },
+      reject: () => { this.setState((st) => ({ proposals: st.proposals.filter((x) => x.id !== p.id) })); this.recordDecision('agent.tool_approval', 'denied', 'learn · ' + p.title, 'Learn tab'); this.save(); },
     }));
     const learned = isEmpty ? [] : s.learned;
     V.learnedEmpty = learned.length === 0;
