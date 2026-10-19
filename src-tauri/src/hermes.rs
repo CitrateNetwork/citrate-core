@@ -911,9 +911,7 @@ impl HermesManager {
         if !self.is_running() {
             return None;
         }
-        let caps = self.remote_status().ok()?.capabilities?;
-        caps.session_prompt_snapshot
-            .then_some(caps.session_tool_sets)
+        scoping_tool_sets(&self.remote_status().ok()?)
     }
 
     /// `GET /status` — the sidecar's running/skills/pending snapshot.
@@ -1034,6 +1032,14 @@ impl HermesManager {
                 .insert(id.clone());
         }
         Ok(id)
+    }
+
+    /// K5a + citrate-agent-runtime#87: open a STORE daemon's session and verify the sidecar applied
+    /// the scoping. The 201 response must echo `toolSets` equal (as a set) to `sent_sets` and
+    /// `promptSnapshot: false`. A sidecar that ignored either (an older one, or a dropped field)
+    /// fails open, so its session is closed and the run refused.
+    pub fn session_open_store(&self, body: &str, _sent_sets: &[String]) -> Result<String> {
+        self.session_open(body)
     }
 
     /// HUP-S2.1: send `doc` (the whole grant document) to every session opened with grants. A
@@ -2296,6 +2302,14 @@ pub fn build_store_daemon_session_body(
     Ok(v.to_string())
 }
 
+/// The host tool sets a sidecar's `GET /status` says a session can be scoped to, or `None` unless
+/// it reports BOTH `sessionToolSets` and `sessionPromptSnapshot: true` (citrate-agent-runtime#87).
+pub(crate) fn scoping_tool_sets(status: &RemoteStatus) -> Option<Vec<String>> {
+    let caps = status.capabilities.as_ref()?;
+    caps.session_prompt_snapshot
+        .then(|| caps.session_tool_sets.clone())
+}
+
 /// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
 type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
 
@@ -2316,6 +2330,19 @@ fn open_local_session_with(
     tools_json: &str,
     build: impl FnOnce(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>,
 ) -> std::result::Result<String, String> {
+    open_local_session_via(app, system_prompt, tools_json, build, |m, body| {
+        m.session_open(body)
+    })
+}
+
+/// [`open_local_session_with`] with the call that opens the built body.
+fn open_local_session_via(
+    app: &tauri::AppHandle,
+    system_prompt: &str,
+    tools_json: &str,
+    build: impl FnOnce(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>,
+    open: impl FnOnce(&HermesManager, &str) -> Result<String>,
+) -> std::result::Result<String, String> {
     let serve = tauri::Manager::try_state::<crate::serve::ServeState>(app)
         .ok_or("internal: serve state unavailable")?;
     if !serve.0.is_running() {
@@ -2332,7 +2359,7 @@ fn open_local_session_with(
         &serve.0.current_model_file(),
         serve.0.ctx_size(),
     )?;
-    manager(app)?.session_open(&body).map_err(|e| e.to_string())
+    open(manager(app)?, &body).map_err(|e| e.to_string())
 }
 
 /// **hermes_session_open_unattended** — open a sidecar session for a scheduled daemon run, on the
@@ -2354,10 +2381,22 @@ pub async fn hermes_session_open_unattended(
         match store_allowed {
             // A Store daemon: only its approved core tools, exactly its approved host tool sets,
             // and no prompt additions from the sidecar.
-            Some(allowed) => {
-                open_local_session_with(&app, &system_prompt, &tools_json, |p, t, u, k, m, c| {
+            // On a sidecar that scopes host tool sets, the response must confirm the scoping
+            // (`session_open_store`); otherwise the env-hold fallback already found no uncovered
+            // set on, and the session opens as is.
+            Some(open) => {
+                let allowed = open.allowed;
+                let sets = crate::daemons::store_tool_sets(&allowed);
+                let build = |p: &str, t: &str, u: &str, k: &str, m: &str, c: u32| {
                     build_store_daemon_session_body(p, t, u, k, m, c, &allowed)
-                })
+                };
+                if open.scoped {
+                    open_local_session_via(&app, &system_prompt, &tools_json, build, |m, body| {
+                        m.session_open_store(body, &sets)
+                    })
+                } else {
+                    open_local_session_with(&app, &system_prompt, &tools_json, build)
+                }
             }
             None => {
                 open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)

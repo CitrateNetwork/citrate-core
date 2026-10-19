@@ -1473,13 +1473,23 @@ fn sidecar_facts(app: &tauri::AppHandle) -> SidecarFactsOwned {
     }
 }
 
+/// How a Store daemon's session may be opened, after [`check_store_daemon_open`].
+pub(crate) struct StoreOpen {
+    /// The daemon's approved tools (core tools plus `host:<set>` markers), from the book.
+    pub allowed: Vec<String>,
+    /// The sidecar scopes every host tool set per session (citrate-agent-runtime#87): the session
+    /// must then echo `toolSets` and `promptSnapshot: false` back, or it is closed and refused.
+    /// `false` = the env-hold fallback: no uncovered host set is on in the sidecar at all.
+    pub scoped: bool,
+}
+
 /// K5a: for a Store daemon, the open-time check (`store_open_check`) against the sidecar's
-/// current environment and capability. `Ok(Some(allowed))` for a Store daemon that may open
-/// (its session is then scoped to `allowed`); `Ok(None)` for a member daemon or an unknown id.
+/// current environment and capability. `Ok(Some(..))` for a Store daemon that may open;
+/// `Ok(None)` for a member daemon or an unknown id.
 pub(crate) fn check_store_daemon_open(
     app: &tauri::AppHandle,
     id: &str,
-) -> Result<Option<Vec<String>>, String> {
+) -> Result<Option<StoreOpen>, String> {
     let (allowed, claimed) = with_book(app, false, |b| {
         Ok((b.allowed_tools_of(id), b.claimed_host_sets(id)))
     })?;
@@ -1493,7 +1503,10 @@ pub(crate) fn check_store_daemon_open(
         current.as_deref(),
         sets.as_deref(),
     )?;
-    Ok(Some(allowed))
+    Ok(Some(StoreOpen {
+        allowed,
+        scoped: sidecar_scopes_host_sets(sets.as_deref()),
+    }))
 }
 
 fn views(book: &DaemonBook, now_ms: u64, offset_min: i32) -> DaemonsView {
