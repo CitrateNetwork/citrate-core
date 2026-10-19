@@ -292,7 +292,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     ? "Web search needs the desktop app. This preview cannot change it."
     : held
       ? HELD_DURING_START
-      : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (More, in Settings › Web search)." : null);
+      : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (set it in Hermes › Controls › Web search & decisions)." : null);
 
   const webPending =
     web && web.appliesOnRestart && webStarted !== null && web.settings.searchEnabled !== webStarted

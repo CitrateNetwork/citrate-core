@@ -11,11 +11,11 @@ import { DEFAULT_WEB_SETTINGS, type HermesWebSettings, type HermesWebStatus } fr
 vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
 
 // What core has saved. Every get returns it; every set replaces it with exactly what was sent.
-const saved: { settings: HermesWebSettings } = { settings: DEFAULT_WEB_SETTINGS };
+const saved: { settings: HermesWebSettings; searxngFound: boolean } = { settings: DEFAULT_WEB_SETTINGS, searxngFound: true };
 const status = (settings: HermesWebSettings): HermesWebStatus => ({
   settings,
   managedChromium: null,
-  searxngFound: true,
+  searxngFound: saved.searxngFound,
   jinaKeyFileFound: false,
   jevKeyFileFound: false,
   notices: [],
@@ -76,6 +76,7 @@ async function mountControls() {
 
 beforeEach(() => {
   saved.settings = { ...DEFAULT_WEB_SETTINGS };
+  saved.searxngFound = true;
 });
 
 afterEach(() => {
@@ -168,5 +169,15 @@ describe("Hermes › Controls with the Controls panel and the Web search form mo
     await click("web-save");
     expect(saved.settings.searchEnabled).toBe(true);
     expect($("toggle-web-search")?.checked).toBe(true);
+  });
+
+  it("with search on and no SearXNG program, the hint points to Web search in Hermes › Controls, not Settings", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: true };
+    saved.searxngFound = false;
+    await mountControls();
+    const hint = $("reason-web-search")?.textContent ?? "";
+    expect(hint).toContain("no SearXNG program is set yet");
+    expect(hint).toContain("Hermes › Controls › Web search");
+    expect(hint).not.toContain("Settings ›");
   });
 });
