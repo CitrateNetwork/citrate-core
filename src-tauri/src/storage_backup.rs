@@ -16,8 +16,10 @@
 //! The manifest lists every file with its size, SHA-256 and Unix mode (and, for Files, the CID),
 //! sorted by path; the memory store's directories with their modes (`dirs`); the parts it holds
 //! (`parts`, never a part that was skipped) and the parts the export skipped with the reason
-//! (`skippedParts`); and `entriesSha256`, a digest over all of that so an edited manifest is
-//! caught. A requested part with nothing to back up (no memory store, an empty one, no pinned
+//! (`skippedParts`); and `entriesSha256`, a plain SHA-256 over all of that. The digest catches a
+//! damaged manifest or an edit that did not recompute it; it is not a signature, so a deliberate
+//! edit that recomputes it (with matching files) is not detected. Modes read from the manifest
+//! are therefore masked on restore (never group- or world-writable). A requested part with nothing to back up (no memory store, an empty one, no pinned
 //! files) is skipped, never written as an empty part.
 //!
 //! ## Verification and refusal
@@ -41,8 +43,9 @@
 //! as `memory.before-restore-<time>`, never deleted. The live socket (`memdag.sock`) and the
 //! crash log are not member data and are never copied.
 //!
-//! The memory store is not encrypted at rest by core (see `memory.rs`); the copy is the store as
-//! it is on disk, so the backup folder is created owner-only (0700 on Unix) and the surface tells
+//! A backup is NOT encrypted. The memory store is not encrypted at rest by core (see `memory.rs`),
+//! and the Memory part is a plain copy of the store as it is on disk; Files are plain copies too.
+//! So the backup folder is created owner-only (0700 on Unix) and the surface tells
 //! the member to keep it somewhere private. Every dir and file this module creates (the backup
 //! folder, its contents, and the restore staging dir and everything in it) is owner-only from
 //! creation (0700 dirs via `DirBuilder` mode, 0600 files via `OpenOptions` mode), never created at
@@ -496,9 +499,12 @@ fn apply_mode(_path: &Path, _mode: u32) -> Result<(), BackupError> {
     Ok(())
 }
 
-/// Apply `mode` and check it took (a filesystem that drops modes is a mismatch, not a silent
-/// widening).
-fn apply_and_check_mode(path: &Path, rel: &str, mode: u32) -> Result<(), BackupError> {
+/// Apply a mode RECORDED IN A MANIFEST to a restored file or dir, and check it took (a filesystem
+/// that drops modes is a mismatch, not a silent widening). The manifest is not signed, so the
+/// recorded mode is masked: permission bits only, and never group- or world-writable. This is the
+/// only way the restore path sets a mode (`restore_path_applies_modes_only_through_the_mask`).
+fn apply_restored_mode(path: &Path, rel: &str, recorded: u32) -> Result<(), BackupError> {
+    let mode = recorded & 0o777 & !0o022;
     apply_mode(path, mode)?;
     if let Some(actual) = mode_of(path)? {
         if actual != mode {
@@ -732,7 +738,7 @@ fn restrict_to_owner(p: &Path) -> Result<(), BackupError> {
 #[cfg(not(unix))]
 fn restrict_to_owner(_p: &Path) -> Result<(), BackupError> {
     // Windows: the folder inherits the ACL of the member-chosen parent (documented in
-    // docs/storage/K4_STORAGE.md).
+    // docs/STORAGE_K4.md).
     Ok(())
 }
 
@@ -1180,7 +1186,8 @@ pub fn verify_folder(folder: &Path) -> Result<Manifest, BackupError> {
     }
     if manifest_digest(&m) != m.entries_sha256 {
         return Err(BackupError::Manifest(
-            "the entry list was changed after the backup was written".to_string(),
+            "its entry digest doesn't match its entries (the manifest is damaged or was edited)"
+                .to_string(),
         ));
     }
     let mut problems = Vec::new();
@@ -1525,8 +1532,8 @@ fn swap_in_memory(
                     path: e.path.clone(),
                 }]));
             }
-            // The original's mode, exactly; owner-only when the backup recorded none.
-            apply_and_check_mode(&to, &e.path, e.mode.unwrap_or(0o600))?;
+            // The original's mode (masked, see apply_restored_mode); owner-only when none recorded.
+            apply_restored_mode(&to, &e.path, e.mode.unwrap_or(0o600))?;
             on_progress(&Progress {
                 op: "restore",
                 phase: "memory",
@@ -1545,14 +1552,14 @@ fn swap_in_memory(
                 .find(|d| d.path == path)
                 .map(|d| d.mode)
                 .unwrap_or(0o700);
-            apply_and_check_mode(&staging.join(rel), &path, mode)?;
+            apply_restored_mode(&staging.join(rel), &path, mode)?;
         }
         let root_mode = dirs
             .iter()
             .find(|d| d.path == MEMORY_DIR)
             .map(|d| d.mode)
             .unwrap_or(0o700);
-        apply_and_check_mode(&staging, MEMORY_DIR, root_mode)?;
+        apply_restored_mode(&staging, MEMORY_DIR, root_mode)?;
         Ok(total)
     })();
     let n = match staged {

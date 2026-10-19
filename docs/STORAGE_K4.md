@@ -58,8 +58,20 @@ memory/<path>         the memory dir, copied with the mem-mcp daemon stopped
 Each manifest entry has `path`, `size`, `sha256`, the file's Unix `mode` and, for files, `cid`.
 `dirs` records each memory store directory with its mode. `parts` lists only the parts the backup
 holds; a requested part with nothing to back up (no memory store, an empty one, no pinned files)
-is listed in `skippedParts` with the reason instead. `entriesSha256` covers all of it, so an
-edited manifest is caught.
+is listed in `skippedParts` with the reason instead. `entriesSha256` is a plain SHA-256 over all
+of it.
+
+**What the manifest does and does not prove.** The manifest is not signed and the digest is not
+keyed. Verification catches a damaged backup, a changed or missing file, and a manifest edit that
+did not recompute the digest. It does **not** catch someone who edits both the files and the
+manifest and recomputes the digest: anyone who can write to the backup folder can produce a
+backup that verifies. Keep backups where only you can write. Because of this, modes read from the
+manifest are masked on restore (permission bits only, never group- or world-writable).
+
+**The Memory part of an export is not encrypted.** It is a plain copy of the memory store as it is
+on disk (core does not encrypt the store at rest today, see `memory.rs`). The Files part is a
+plain copy of each file. A backup is as private as the folder it is written to; the surface says
+so.
 
 **Verification** (`verify_folder`, run at the end of every export and at the start of every
 restore): the format matches; the entry digest matches; every path is a plain relative path under
@@ -75,8 +87,8 @@ and SHA-256; and nothing in the folder is unlisted.
 - Memory: the importer slot and the memory store lock are held (while the lock is held,
   `MemoryManager::start` refuses, so nothing can start the daemon mid-restore), a running daemon
   is stopped, the files are copied into a staging dir beside the store and hashed again there,
-  each file and directory gets its recorded mode back (0600 / 0700 when none was recorded) and
-  the restore checks it took, the current memory dir is moved to `memory.before-restore-<time>`
+  each file and directory gets its recorded mode back, masked so it is never group- or
+  world-writable (0600 / 0700 when none was recorded), and the restore checks it took, the current memory dir is moved to `memory.before-restore-<time>`
   (kept, not deleted), the staging dir takes its place, the lock is released, and the daemon is
   started again if it was running.
 - Files: each file's bytes are hashed again as read, re-added to kubo and pinned locally. If kubo
@@ -92,9 +104,17 @@ App quit during a long export or restore: shutdown closes the import registry be
 memory. The backup restarts a previously running daemon only through the registry gate
 (`unless_closed`), so after quit begins it does not start it again (the report notes this).
 
-Not backed up: the daemon socket (`memdag.sock`) and the crash log. Note that the memory store is
-not encrypted at rest by core today (see `memory.rs`), so a backup is as private as the folder it
-is written to; the surface says so.
+Not backed up: the daemon socket (`memdag.sock`) and the crash log.
+
+**Known limitations**
+
+- The memory swap is two renames: the live `memory/` dir moves to `memory.before-restore-<time>`,
+  then the staging dir becomes `memory/`. If the app is killed (or the machine loses power)
+  between them, there is no live `memory/` dir; the previous store is intact in
+  `memory.before-restore-<time>` and the restored copy in `memory.restore-staging-<time>`. There
+  is no automatic recovery yet: rename `memory.before-restore-<time>` back to `memory/` by hand
+  (with the app quit) to get the previous store back. This existed before K4's follow-ups.
+- Backups are not signed (see above).
 
 ## 4. Storage processes and the supervisor
 

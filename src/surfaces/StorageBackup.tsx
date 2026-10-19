@@ -115,8 +115,9 @@ export function StorageBackup({ store }: SurfaceProps) {
         <span className="eyebrow">Export a backup</span>
         <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
           Copies the files kept on this node and your memory graph into a new dated folder, with a manifest that lists
-          the SHA-256 of every file. The memory daemon pauses while its store is copied and starts again after. The
-          memory store isn&apos;t encrypted by the app, so keep the backup somewhere private.
+          the SHA-256 of every file. The memory daemon pauses while its store is copied and starts again after. The Memory
+          part of a backup is not encrypted (nor are the files), and the manifest is not signed, so keep the backup
+          somewhere only you can read and write.
         </p>
         <PartPicker parts={exportParts} setParts={setExportParts} allowed={["files", "memory"]} />
         <span>
