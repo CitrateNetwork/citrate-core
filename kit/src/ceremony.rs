@@ -370,6 +370,11 @@ pub enum CeremonyError {
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
     Broadcast(String),
+    /// The signed transaction was handed to the node and may have been accepted, but the outcome
+    /// is not known: the node accepted it and the receipt poll then failed, or the send itself
+    /// failed in transport (the node may have received it). Carries the tx hash so the member
+    /// can look it up before trying again; never reported as "not sent".
+    SubmittedOutcomeUnknown { tx_hash: String, reason: String },
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -397,6 +402,9 @@ impl std::fmt::Display for CeremonyError {
                 "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
+            CeremonyError::SubmittedOutcomeUnknown { tx_hash, reason } => {
+                write!(f, "ceremony: submitted, outcome unknown (tx {tx_hash}): {reason}")
+            }
         }
     }
 }
@@ -734,18 +742,41 @@ impl SignatureCeremony {
 
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
-        let tx_hash = rpc
-            .send_raw_transaction(&signed.raw)
-            .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
+        //
+        // C1-V #347 review: only a JSON-RPC error from the node on the send establishes that the
+        // tx was not accepted. A transport or malformed-response failure on the send may follow
+        // the node receiving it, so it is an unknown outcome carrying the locally computed hash
+        // (keccak256 of the signed raw tx, which is the tx hash).
+        let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
+            Ok(h) => h,
+            Err(crate::rpc::RpcError::Node(m)) => {
+                return Err(CeremonyError::Broadcast(
+                    crate::rpc::RpcError::Node(m).to_string(),
+                ))
+            }
+            Err(e) => {
+                use sha3::{Digest, Keccak256};
+                return Err(CeremonyError::SubmittedOutcomeUnknown {
+                    tx_hash: format!("0x{}", hex::encode(Keccak256::digest(&signed.raw))),
+                    reason: e.to_string(),
+                });
+            }
+        };
         let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
         let mined = match receipt {
             Ok(r) => Some(r),
             // The tx WAS accepted (we have a hash); the receipt just did not land
             // within the poll budget. Return the hash honestly with no block yet
-            // rather than failing (the caller can re-poll). A hard RPC error on
-            // the poll surfaces as a broadcast error.
+            // rather than failing (the caller can re-poll).
             Err(crate::rpc::RpcError::ReceiptTimeout) => None,
-            Err(e) => return Err(CeremonyError::Broadcast(e.to_string())),
+            // A hard RPC error on the poll comes AFTER the node accepted the tx: the outcome is
+            // unknown, never "not sent" (C1-V #347 review).
+            Err(e) => {
+                return Err(CeremonyError::SubmittedOutcomeUnknown {
+                    tx_hash,
+                    reason: e.to_string(),
+                })
+            }
         };
 
         Ok(BroadcastResult {
@@ -1073,6 +1104,16 @@ fn err_str(e: CeremonyError) -> String {
     e.to_string()
 }
 
+/// The error string `sign_and_broadcast` returns. Every failure established BEFORE the node could
+/// have received the tx is prefixed "not submitted: " so the app may say "not sent"; an unknown
+/// outcome after submission carries "submitted, outcome unknown (tx <hash>)" instead (C1-V #347).
+fn broadcast_err_str(e: CeremonyError) -> String {
+    match e {
+        CeremonyError::SubmittedOutcomeUnknown { .. } => err_str(e),
+        other => format!("not submitted: {}", err_str(other)),
+    }
+}
+
 /// **Command — sign_request.** Submit a [`SignatureIntent`]; returns a PENDING
 /// [`CeremonyView`] (id + true origin + decoded action). Signs NOTHING and
 /// returns NO key material. Any origin (user / agent / micro-app) reaches the
@@ -1202,7 +1243,7 @@ pub fn sign_and_broadcast_sync(
             poll_interval: std::time::Duration::from_secs(2),
         },
     )
-    .map_err(err_str)
+    .map_err(broadcast_err_str)
 }
 
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.

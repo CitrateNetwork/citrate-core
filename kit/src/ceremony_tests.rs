@@ -2093,3 +2093,88 @@ fn the_tripwire_scan_covers_the_whole_production_ceremony_module() {
         "the terminal test module is still cut off"
     );
 }
+
+// =========================================================================
+// C1-V #347 review (Codex P1): after the node has accepted a transaction, a later failure must
+// report an unknown outcome carrying the tx hash, never a failure that reads as "not sent".
+// =========================================================================
+
+fn submitted_outcome_unknown(r: &Result<BroadcastResult>) -> Option<String> {
+    match r {
+        Err(CeremonyError::SubmittedOutcomeUnknown { tx_hash, .. }) => Some(tx_hash.clone()),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_receipt_error_after_acceptance_reports_submitted_with_the_hash() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let accepted = format!("0x{}", "ab".repeat(32));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x0".into())),
+        ok(JsonValue::String("0x1".into())),
+        ok(JsonValue::String(accepted.clone())),
+        // The receipt poll hits a hard RPC failure (no further scripted response = transport error).
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(2));
+    assert_eq!(submitted_outcome_unknown(&r), Some(accepted.clone()), "got {r:?}");
+    let msg = err_str(r.expect_err("error"));
+    assert!(msg.contains("submitted, outcome unknown"), "{msg}");
+    assert!(msg.contains(&accepted), "{msg}");
+}
+
+#[test]
+fn a_transport_failure_on_send_is_an_unknown_outcome_with_the_locally_computed_hash() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![ok(JsonValue::String("0x0".into())), ok(JsonValue::String("0x1".into()))]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
+    let hash = submitted_outcome_unknown(&r).unwrap_or_else(|| panic!("expected unknown outcome, got {r:?}"));
+    // The hash is keccak256 of the raw tx that was handed to eth_sendRawTransaction.
+    let reqs = client.transport.requests.borrow();
+    let raw = reqs
+        .iter()
+        .find(|q| q["method"] == "eth_sendRawTransaction")
+        .and_then(|q| q["params"][0].as_str())
+        .expect("send was attempted")
+        .to_string();
+    use sha3::{Digest, Keccak256};
+    let bytes = hex::decode(raw.trim_start_matches("0x")).expect("hex");
+    assert_eq!(hash, format!("0x{}", hex::encode(Keccak256::digest(&bytes))));
+}
+
+#[test]
+fn a_node_rejection_on_send_is_marked_not_submitted() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x0".into())),
+        ok(JsonValue::String("0x1".into())),
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": "nonce too low" } }),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "got {r:?}");
+    assert!(broadcast_err_str(r.expect_err("error")).starts_with("not submitted: "));
+}
+
+#[test]
+fn errors_before_submission_are_marked_not_submitted_and_unknown_outcomes_are_not() {
+    assert!(broadcast_err_str(CeremonyError::VaultLocked).starts_with("not submitted: "));
+    assert!(broadcast_err_str(CeremonyError::UnknownCeremony).starts_with("not submitted: "));
+    let unknown = broadcast_err_str(CeremonyError::SubmittedOutcomeUnknown {
+        tx_hash: format!("0x{}", "cd".repeat(32)),
+        reason: "rpc transport error: down".into(),
+    });
+    assert!(!unknown.contains("not submitted"), "{unknown}");
+    assert!(unknown.contains("submitted, outcome unknown (tx 0xcdcd"), "{unknown}");
+}

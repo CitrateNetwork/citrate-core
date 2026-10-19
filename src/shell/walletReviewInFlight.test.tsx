@@ -94,7 +94,7 @@ describe("Feature: a decline cannot claim nothing was signed once signing has st
     vi.spyOn(bridge.signing, "broadcast").mockReturnValue(d.promise);
     const approving = store.approveWalletReview(false);
     await store.rejectWalletReview();
-    d.reject(new Error("rpc unreachable"));
+    d.reject(new Error("not submitted: ceremony: broadcast failed: rpc unreachable"));
     await approving;
     expect(lastToast()).toMatch(/not sent/i);
     expect(onResolved).toHaveBeenCalledTimes(1);
@@ -172,9 +172,68 @@ describe("C1-V §1 — wallet transaction toasts use the transaction words", () 
   });
 
   it("a failed broadcast says not sent, never 'not settled'", async () => {
-    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(new Error("rpc unreachable"));
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(new Error("not submitted: ceremony: broadcast failed: rpc unreachable"));
     await store.approveWalletReview(false);
     expect(lastToast()).toContain("not sent");
     expect(lastToast()).not.toMatch(/settle/i);
+  });
+});
+
+// C1-V #347 review: "not sent" only when the failure is established BEFORE submission. After the
+// node accepted the tx (or may have), the outcome is unknown and the member gets the tx hash.
+describe("C1-V #347 — a broadcast failure after submission is an unknown outcome", () => {
+  const HASH = "0x" + "ab".repeat(32);
+  let onResolved: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    vi.spyOn(bridge.signing, "reject").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshActivity").mockResolvedValue(undefined);
+    vi.spyOn(store, "save").mockImplementation(() => {});
+    onResolved = vi.fn();
+    store.setState({ walletReview: { kind: "send", label: "Send", view, rawAck: false, onResolved } });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ walletReview: null });
+  });
+
+  it("a receipt error after acceptance shows the tx hash and an unknown outcome, never 'not sent'", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    // Tauri rejects a command with the plain error string.
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(`ceremony: submitted, outcome unknown (tx ${HASH}): rpc transport error: down`);
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("outcome unknown");
+    expect(lastToast()).toContain(HASH);
+    expect(lastToast()).toContain("block explorer");
+    expect(lastToast()).not.toMatch(/not sent/i);
+    expect(onResolved).toHaveBeenCalledWith(false);
+  });
+
+  it("an error with no pre-submission marker (e.g. the IPC deadline) is never 'not sent'", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(new Error("sign_and_broadcast timed out after 120000 ms"));
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("outcome unknown");
+    expect(lastToast()).not.toMatch(/not sent/i);
+  });
+
+  it("a refresh error after a successful broadcast is not a broadcast failure", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xfeedbeef00", blockNumber: null });
+    vi.spyOn(store, "refreshWallet").mockRejectedValue(new Error("balance read failed"));
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("0xfeedbeef");
+    expect(lastToast()).toContain("balance read failed");
+    expect(lastToast()).not.toMatch(/not sent|outcome unknown/i);
+    expect(onResolved).toHaveBeenCalledWith(true);
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  it("a genuine pre-submission rejection says not sent", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue("not submitted: ceremony: broadcast failed: rpc node error: nonce too low");
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("not sent");
+    expect(lastToast()).toContain("nonce too low");
+    expect(lastToast()).not.toContain("not submitted:");
+    expect(onResolved).toHaveBeenCalledWith(false);
   });
 });

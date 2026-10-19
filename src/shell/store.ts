@@ -28,6 +28,8 @@ import {
   WalletReview,
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
+import { broadcastFailure } from "./broadcastOutcome";
+export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
@@ -4974,38 +4976,66 @@ export class Store {
       return;
     }
     // Tauri: sign + broadcast the real 40204 tx, then re-read balances from chain.
+    //
+    // C1-V #347 review: the broadcast and the follow-up refreshes are separate steps. "not sent"
+    // is said ONLY when the backend marks the failure as before submission; after the node has (or
+    // may have) accepted the tx, the outcome is unknown and the member gets the tx hash to check
+    // before trying again, so a payment is never reported as not sent when it may have gone out.
+    let result: Awaited<ReturnType<typeof bridge.signing.broadcast>>;
     try {
-      const result = await bridge.signing.broadcast(r.view.id, ack);
-      this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
-      // C1-V §1 transaction words: Pending until a receipt names the block, then Included in block N.
-      this.toast(
-        r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "… · " +
-          (result.blockNumber != null ? "Included in block " + result.blockNumber.toLocaleString("en-US") : "Pending; the balance re-reads once it is included in a block") + ".",
-      );
-      this.setState({ walletReview: null });
-      if (r.kind === "claim") await this.refreshEarnings();
-      else await this.refreshWallet();
-      // Activating the bond (MemberBond.activate) makes the clone bond its principal
-      // into the ValidatorRegistry — re-read the REAL bond now so the node flips to
-      // "validating" immediately instead of waiting for the next 2s poll.
-      if (r.kind === "stake") await this.refreshNode();
-      if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
-      await this.refreshActivity();
-      this.save();
-      // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
-      await r.onResolved?.(true);
+      result = await bridge.signing.broadcast(r.view.id, ack);
     } catch (err) {
-      // Honest failure — release the pending ceremony so it isn't left dangling.
+      const failure = broadcastFailure(err);
+      // Release the pending ceremony so it isn't left dangling (already consumed once submitted).
       try {
         await bridge.signing.reject(r.view.id);
       } catch {
         /* best-effort cleanup */
       }
       this.setState({ walletReview: null });
-      this.toast(r.label + " not sent — " + String((err as Error).message ?? err));
-      // The tx didn't settle → tell the sidecar to abort, not proceed.
+      if (failure.kind === "not-sent") {
+        this.toast(r.label + " not sent — " + failure.reason);
+      } else {
+        if (failure.txHash) this.addActivity(r.label + " · outcome unknown", r.view.decoded.cost || r.view.decoded.action, failure.txHash);
+        this.toast(
+          r.label +
+            " sent, outcome unknown — " +
+            (failure.txHash ? "check tx " + failure.txHash + " on the block explorer" : "check your recent transactions on the block explorer") +
+            " before trying again (" +
+            failure.reason +
+            ").",
+        );
+      }
+      // Not confirmed → the sidecar effect does not proceed.
       await r.onResolved?.(false);
+      return;
     }
+    this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
+    // C1-V §1 transaction words: Pending until a receipt names the block, then Included in block N.
+    const sentLine =
+      r.label +
+      " broadcast — tx " +
+      result.txHash.slice(0, 10) +
+      "… · " +
+      (result.blockNumber != null ? "Included in block " + result.blockNumber.toLocaleString("en-US") : "Pending; the balance re-reads once it is included in a block");
+    this.toast(sentLine + ".");
+    this.setState({ walletReview: null });
+    try {
+      if (r.kind === "claim") await this.refreshEarnings();
+      else await this.refreshWallet();
+      // Activating the bond (MemberBond.activate) makes the clone bond its principal
+      // into the ValidatorRegistry — re-read the REAL bond now so the node shows the
+      // registry state immediately instead of waiting for the next 2s poll.
+      if (r.kind === "stake") await this.refreshNode();
+      if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
+      await this.refreshActivity();
+      this.save();
+    } catch (err) {
+      // A failed re-read is NOT a broadcast failure: the tx went out with the hash above.
+      this.toast(sentLine + " · the balance could not be re-read: " + String((err as Error)?.message ?? err));
+    }
+    // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
+    await r.onResolved?.(true);
   }
 
   /**
