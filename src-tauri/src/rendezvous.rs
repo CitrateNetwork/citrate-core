@@ -189,6 +189,13 @@ pub(crate) fn classify_daemon_error(message: &str) -> RvError {
     }
 }
 
+/// True when a daemon error says the RELAY doesn't speak rendezvous (§12: the daemon maps a
+/// `malformed frame` answer on a Rendezvous op to `relay_unsupported`). §9 gives only the success
+/// shape for `rendezvousOpen`, so the stable code is accepted as the error message.
+pub(crate) fn is_relay_unsupported(err: &RvError) -> bool {
+    matches!(err, RvError::Daemon(m) if m.trim() == "relay_unsupported")
+}
+
 // ---------------------------------------------------------------------------
 // M4 — the tick.
 // ---------------------------------------------------------------------------

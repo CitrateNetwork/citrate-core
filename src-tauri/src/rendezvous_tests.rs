@@ -312,6 +312,14 @@ fn other_daemon_errors_stay_errors() {
     }
 }
 
+#[test]
+fn relay_unsupported_is_recognised_only_as_the_stable_code() {
+    assert!(is_relay_unsupported(&RvError::Daemon("relay_unsupported".into())));
+    assert!(!is_relay_unsupported(&RvError::Daemon("relay unreachable".into())));
+    assert!(!is_relay_unsupported(&RvError::DaemonUnsupported));
+    assert!(!is_relay_unsupported(&RvError::Ipc("relay_unsupported".into())));
+}
+
 // ---- M4 tick decisions ---------------------------------------------------------------------------
 
 #[test]
