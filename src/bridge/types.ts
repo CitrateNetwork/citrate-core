@@ -19,6 +19,19 @@ export type BridgeMode = "sim" | "tauri";
  * Rule-1 line: the real desktop app says a domain is unavailable rather than
  * showing sim data dressed as live.
  */
+/**
+ * Join-8 — `signing.sendPrepared` rejected because the ceremony dropped the signed tx before it
+ * was sent (`sign_send_prepared` error code `"signedTxExpired"`). NOTHING was sent. Callers branch
+ * on this TYPE, never on the message text: a node error after a real send can quote any text.
+ */
+export class SignedTxExpired extends Error {
+  readonly code = "signedTxExpired" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "SignedTxExpired";
+  }
+}
+
 export class Unavailable extends Error {
   readonly kind = "unavailable" as const;
   readonly domain: string;

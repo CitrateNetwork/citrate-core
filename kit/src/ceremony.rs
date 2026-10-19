@@ -574,6 +574,10 @@ impl SignatureCeremony {
             .store(ttl.as_millis() as u64, Ordering::SeqCst);
     }
 
+    /// Test seam: move a parked tx's wall-clock stamp back by `by` (red-commit stub: no effect).
+    #[cfg(test)]
+    fn backdate_wall(&self, _id: &str, _by: std::time::Duration) {}
+
     /// Test seam: how many signed txs are held unsent (live, not expired).
     #[cfg(test)]
     fn prepared_len(&self) -> usize {
@@ -1460,6 +1464,24 @@ pub fn sign_send_prepared_sync(
         .map_err(err_str)?;
     notify_broadcast(&result);
     Ok(result)
+}
+
+/// Join-8 — the structured error of [`sign_send_prepared`]. `code` is a stable machine field
+/// the app branches on (never the prose in `message`): `"signedTxExpired"` means the signed tx
+/// expired in the ceremony and NOTHING was sent; `"failed"` is every other outcome, including a
+/// node error after the send (which may already be in the mempool).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendPreparedError {
+    pub code: String,
+    pub message: String,
+}
+
+/// Map a send error to its structured form (red-commit stub: every error is `"failed"`).
+pub fn send_prepared_error(e: CeremonyError) -> SendPreparedError {
+    SendPreparedError {
+        code: "failed".to_string(),
+        message: e.to_string(),
+    }
 }
 
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.

@@ -2228,18 +2228,20 @@ fn join8_approve_and_broadcast_never_parks_its_tx_in_the_shared_map() {
     );
 }
 
-/// A transport that, on its FIRST call (the approval is consumed by then), meets a barrier
-/// with the rejecting thread, so the reject attempts deterministically start while the
-/// broadcast is in flight (no spin flag, no scheduling luck).
-struct BarrierRpc<'a> {
+/// A transport that pauses the broadcast INSIDE the signed-but-unsent window: when the
+/// `eth_sendRawTransaction` call arrives the tx is signed and not yet sent. It meets the
+/// rejecting thread at a barrier (A), waits while that thread makes its reject attempts, then
+/// meets it again (B) and only then lets the send proceed. So every reject attempt provably
+/// overlaps the window in which a parked tx would sit in the shared map.
+struct WindowRpc<'a> {
     inner: MockRpc,
     gate: &'a std::sync::Barrier,
-    met: std::cell::Cell<bool>,
 }
-impl RpcTransport for BarrierRpc<'_> {
+impl RpcTransport for WindowRpc<'_> {
     fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
-        if !self.met.replace(true) {
-            self.gate.wait();
+        if body["method"] == "eth_sendRawTransaction" {
+            self.gate.wait(); // A: signed, not yet sent
+            self.gate.wait(); // B: the rejecter has finished its attempts
         }
         self.inner.call(body)
     }
@@ -2247,19 +2249,16 @@ impl RpcTransport for BarrierRpc<'_> {
 
 #[test]
 fn join8_a_concurrent_reject_cannot_take_an_approve_and_broadcast_tx() {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
-    for round in 0..40 {
+    for round in 0..20 {
         let view = c.request(tx_intent(
             &canonical_addr_lower(),
             "0x3535353535353535353535353535353535353535",
             "0x1",
         ));
         let gate = std::sync::Barrier::new(2);
-        let done = AtomicBool::new(false);
-        let attempts = AtomicUsize::new(0);
-        let rpc = RpcClient::with_transport(BarrierRpc {
+        let rpc = RpcClient::with_transport(WindowRpc {
             inner: MockRpc::new(vec![
                 ok(JsonValue::String("0x7".into())),
                 ok(JsonValue::String("0x77359400".into())),
@@ -2267,30 +2266,27 @@ fn join8_a_concurrent_reject_cannot_take_an_approve_and_broadcast_tx() {
                 ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
             ]),
             gate: &gate,
-            met: std::cell::Cell::new(false),
         });
-        let (outcome, stolen) = std::thread::scope(|sc| {
+        let (outcome, (attempts, stolen)) = std::thread::scope(|sc| {
             let rejecter = sc.spawn(|| {
-                gate.wait(); // the approval is consumed and the broadcast is in flight
-                let mut n = 0usize;
-                loop {
-                    attempts.fetch_add(1, Ordering::SeqCst);
+                gate.wait(); // A: the broadcast is paused between sign and send
+                let mut attempts = 0usize;
+                let mut stolen = 0usize;
+                for _ in 0..50 {
+                    attempts += 1;
                     if c.reject(&view.id).is_ok() {
-                        n += 1;
-                    }
-                    if done.load(Ordering::SeqCst) {
-                        break;
+                        stolen += 1;
                     }
                 }
-                n
+                gate.wait(); // B: release the send
+                (attempts, stolen)
             });
             let r = c.approve_and_broadcast(&v, &rpc, &view.id, false, bcfg(2));
-            done.store(true, Ordering::SeqCst);
-            (r, rejecter.join().unwrap_or(usize::MAX))
+            (r, rejecter.join().unwrap_or((0, usize::MAX)))
         });
-        assert!(outcome.is_ok(), "round {round}: broadcast lost its tx: {outcome:?}");
+        assert_eq!(attempts, 50, "round {round}: every attempt ran inside the window");
         assert_eq!(stolen, 0, "round {round}: a concurrent reject took the in-flight tx");
-        assert!(attempts.load(Ordering::SeqCst) >= 1, "round {round}: the race was exercised");
+        assert!(outcome.is_ok(), "round {round}: broadcast lost its tx: {outcome:?}");
     }
 }
 
@@ -2328,7 +2324,7 @@ fn calls(body: &str, name: &str) -> bool {
         let at = i + off;
         let before = if at == 0 { b' ' } else { b[at - 1] };
         let is_decl = body[..at].ends_with("fn ");
-        if !(before.is_ascii_alphanumeric() || before == b'_') && !is_decl {
+        if !before.is_ascii_alphanumeric() && before != b'_' && !is_decl {
             return true;
         }
         i = at + pat.len();
@@ -2421,6 +2417,53 @@ fn join8_tripwire_catches_evasions() {
     let real = include_str!("ceremony.rs");
     let marker = "        let (_key, prepared, _hash) = self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id)?;\n        Self::send_signed(rpc, prepared, cfg)";
     assert!(real.contains(marker), "fixture anchor present");
+    let anchor = "    /// **Step 2' — reject.**";
+    assert!(real.contains(anchor), "insertion anchor present");
+    // DGX probes (#378 review): each must be flagged.
+    let injected: [(&str, &str, &str); 6] = [
+        (
+            "P1 fn pointer",
+            "        let f = Self::approve_and_sign;\n        f(self, vault, rpc, id, raw_ack, cfg.chain_id)?;\n        Self::send_signed(rpc, prepared_tx(), cfg)",
+            "",
+        ),
+        (
+            "P2 field alias",
+            "        self.stash()?;\n        Self::send_signed(rpc, prepared_tx(), cfg)",
+            "\n    fn stash(&self) -> Result<()> {\n        let p = &self.prepared;\n        let _ = p;\n        Ok(())\n    }\n",
+        ),
+        (
+            "P3 destructuring",
+            "        self.grab_store()?;\n        Self::send_signed(rpc, prepared_tx(), cfg)",
+            "\n    fn grab_store(&self) -> Result<()> {\n        let SignatureCeremony { prepared: p, .. } = self;\n        let _ = p;\n        Ok(())\n    }\n",
+        ),
+        (
+            "P4 macro-hidden lock",
+            "        lp!(self, lock_prepared);\n        Self::send_signed(rpc, prepared_tx(), cfg)",
+            "",
+        ),
+        (
+            "P6 UFCS insert in an allow-listed fn",
+            "",
+            "\n    fn prepared_len(&self) -> usize {\n        BTreeMap::insert(&mut *self.lock_prepared(), 9, Slot::Expired { at: std::time::Instant::now() });\n        0\n    }\n",
+        ),
+        (
+            "P7 entry().or_insert in an allow-listed fn",
+            "",
+            "\n    fn prepared_len(&self) -> usize {\n        self.lock_prepared().entry(9).or_insert(Slot::Expired { at: std::time::Instant::now() });\n        0\n    }\n",
+        ),
+    ];
+    let mut uncaught = Vec::new();
+    for (name, body, extra) in injected {
+        let mut src = if body.is_empty() { real.to_string() } else { real.replacen(marker, body, 1) };
+        if !extra.is_empty() {
+            let at = src.find(anchor).unwrap_or(0);
+            src.insert_str(at, extra);
+        }
+        if prepared_map_violations(&src).is_empty() {
+            uncaught.push(name);
+        }
+    }
+    assert!(uncaught.is_empty(), "uncaught evasions: {uncaught:?}");
     let evasions = [
         // UFCS spelling of the old round-trip.
         "        Self::approve_and_sign(self, vault, rpc, id, raw_ack, cfg.chain_id)?;\n        Self::send_prepared(self, rpc, id, cfg)".to_string(),
@@ -2521,4 +2564,52 @@ fn join8_a_prepared_tx_within_its_ttl_still_sends() {
 #[test]
 fn join8_the_default_ttl_is_two_minutes() {
     assert_eq!(PREPARED_TTL, std::time::Duration::from_secs(120));
+}
+
+// ---------------------------------------------------------------------------
+// Join-8 follow-up 2 — the send error is STRUCTURED, and expiry also counts
+// wall-clock time (Instant pauses during system sleep).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join8_send_errors_are_structured_and_only_expiry_says_nothing_was_sent() {
+    let e = send_prepared_error(CeremonyError::PreparedExpired);
+    assert_eq!(e.code, "signedTxExpired");
+    // A node error AFTER the send that quotes the expiry sentence is still just a failure.
+    let quoted = CeremonyError::Broadcast(format!(
+        "rpc error -32000: {}",
+        CeremonyError::PreparedExpired
+    ));
+    assert_eq!(send_prepared_error(quoted).code, "failed");
+    assert_eq!(send_prepared_error(CeremonyError::UnknownCeremony).code, "failed");
+}
+
+#[test]
+fn join8_expiry_counts_wall_clock_time_too() {
+    // Instant does not advance during system sleep (macOS CLOCK_UPTIME_RAW, Linux
+    // CLOCK_MONOTONIC). A tx parked before a long sleep must still expire by wall time.
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_secs(120));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    c.backdate_wall(&view.id, std::time::Duration::from_secs(200));
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    assert_eq!(
+        c.send_prepared(&send_rpc, &view.id, bcfg(2)).err(),
+        Some(CeremonyError::PreparedExpired)
+    );
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
 }

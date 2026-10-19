@@ -78,6 +78,7 @@ vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () =>
 import { Store } from "./store";
 import { PERSIST_KEYS, STORAGE_KEY } from "./state";
 import { activationPhase } from "../onboarding/activateValidator";
+import { SignedTxExpired } from "../bridge/types";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -422,13 +423,29 @@ describe("follow-up: a signed tx that expired before it was sent", () => {
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     await store.requestValidatorActivation();
-    sendPreparedMock.mockRejectedValueOnce(new Error("ceremony: the signed transaction expired before it was sent; nothing was sent"));
+    sendPreparedMock.mockRejectedValueOnce(new SignedTxExpired("ceremony: the signed transaction expired before it was sent; nothing was sent"));
     await store.approveWalletReview(false);
     expect(store.state.s7TxHash).toBeNull();
     expect(store.state.s7TxAt).toBeNull();
     expect(persisted().s7TxHash).toBeNull();
     expect(String(store.state.toast ?? "")).toMatch(/nothing was sent/i);
     expect(String(store.state.toast ?? "")).not.toMatch(/not settled/i);
+  });
+
+  it("B-1: a node error after the send that QUOTES the expiry sentence keeps the saved hash", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.requestValidatorActivation();
+    // DGX's probe: the text is node-supplied; only the structured error type means "not sent".
+    sendPreparedMock.mockRejectedValueOnce(
+      new Error("ceremony: broadcast failed: rpc error -32000: ceremony: the signed transaction expired before it was sent; nothing was sent"),
+    );
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    expect(persisted().s7TxHash).toBe("0xfeed");
+    expect(String(store.state.toast ?? "")).not.toMatch(/You can try again/i);
+    expect(String(store.state.toast ?? "")).toMatch(/not settled/i);
   });
 
   it("any other send failure still keeps the saved hash (it may have been sent)", async () => {
@@ -499,6 +516,24 @@ describe("follow-up: the Node surface's Activate is guarded like S7", () => {
   });
 });
 
+/** Surface files (non-test .ts/.tsx under src/, except the store) that bypass the guarded
+ *  activation entry: a direct activateValidator / registerValidator call in any spelling. */
+function guardOffenders(sources: [string, string][]): string[] {
+  // Red-commit form: the old rule (direct `.activateValidator(` only).
+  const bypass = [/\.activateValidator\(/];
+  return sources.filter(([rel, src]) => rel !== "shell/store.ts" && bypass.some((re) => re.test(src))).map(([rel]) => rel);
+}
+
+/** Store lines that decide a ceremony outcome by matching its prose (a regex literal or a
+ *  string search over ceremony text). Outcomes must come from a structured error type. */
+function proseDecisions(src: string): string[] {
+  const prose = /(ceremony:|nothing was sent|expired before it was sent|broadcast failed)/;
+  return src
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"))
+    .filter((l) => prose.test(l) && (/\/[^/\n]*(ceremony:|nothing was sent|expired before it was sent|broadcast failed)[^/\n]*\/[a-z]*/.test(l) || /\.(includes|startsWith|endsWith|match|search|indexOf)\(/.test(l)));
+}
+
 describe("follow-up tripwires", () => {
   const root = join(__dirname, "..");
   const files: string[] = [];
@@ -515,6 +550,24 @@ describe("follow-up tripwires", () => {
   it("only the store calls activateValidator (every surface goes through the guarded entry)", () => {
     const offenders = files.filter((f) => rel(f) !== "shell/store.ts" && /\.activateValidator\(/.test(readFileSync(f, "utf8")));
     expect(offenders.map(rel)).toEqual([]);
+  });
+
+  it("N-4: no surface reaches registerValidator or activateValidator in any spelling", () => {
+    const sources: [string, string][] = files.filter((f) => !rel(f).startsWith("bridge/")).map((f) => [rel(f), readFileSync(f, "utf8")]);
+    expect(guardOffenders(sources)).toEqual([]);
+    // Fixtures: each bypass spelling is flagged.
+    expect(guardOffenders([["surfaces/X.tsx", "void bridge.node.registerValidator();"]])).toEqual(["surfaces/X.tsx"]);
+    expect(guardOffenders([["surfaces/X.tsx", 'void (store as any)["activateValidator"]();']])).toEqual(["surfaces/X.tsx"]);
+    expect(guardOffenders([["surfaces/X.tsx", 'void bridge.node["registerValidator"]();']])).toEqual(["surfaces/X.tsx"]);
+    expect(guardOffenders([["shell/store.ts", "bridge.node.registerValidator();"]])).toEqual([]);
+  });
+
+  it("B-1 tripwire: the store never decides a ceremony outcome by matching its prose", () => {
+    const store = readFileSync(join(root, "shell/store.ts"), "utf8");
+    expect(proseDecisions(store)).toEqual([]);
+    expect(proseDecisions("if (/nothing was sent/.test(msg)) clear();")).toHaveLength(1);
+    expect(proseDecisions('if (msg.includes("ceremony: broadcast failed")) x();')).toHaveLength(1);
+    expect(proseDecisions("if (err instanceof SignedTxExpired) clear();")).toHaveLength(0);
   });
 
   it("only the store writes s7TxHash (no surface resets it around the read generation)", () => {
