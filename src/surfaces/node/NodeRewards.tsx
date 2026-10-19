@@ -35,6 +35,14 @@ export function saltFromWei2(wei: string): string | null {
   return whole.toLocaleString("en-US") + "." + frac + " SALT";
 }
 
+/** total and claimableNow as integers, or null when either isn't a non-negative decimal wei string. */
+export function parseRewards(d: ValidatorRewardsRead): { total: bigint; claimable: bigint } | null {
+  const one = (w: string): bigint | null => (typeof w === "string" && /^[0-9]+$/.test(w) ? BigInt(w) : null);
+  const total = one(d.totalWei);
+  const claimable = one(d.claimableWei);
+  return total == null || claimable == null ? null : { total, claimable };
+}
+
 /** A read error that means "no proposer key yet" (validator.rs: "proposer key not minted yet") rather than a failed chain read. */
 const NO_KEY = /proposer.?key/i;
 
@@ -94,7 +102,7 @@ export function NodeRewards({
       <StateCard
         kind="unavailable"
         title="Rewards need this node's key"
-        body="Rewards are read for this node's proposer key, which only exists once the block producer has been armed on a synced node. Activate validator on the Status tab does that."
+        body="Rewards are read for this node's proposer key. The key appears once this node has synced and armed block production."
         why={"node_validator_earnings → " + error}
       />,
     );
@@ -111,6 +119,19 @@ export function NodeRewards({
     );
   }
 
+  // Parse once: an empty or malformed wei string is unknown, never 0 (contract rule 2).
+  const parsed = data ? parseRewards(data) : null;
+  if (data && !parsed) {
+    return shell(
+      <StateCard
+        kind="error"
+        title="Couldn't read rewards"
+        body="The registry answered with a value this page can't read, so rewards are unknown, not zero."
+        why={"node_validator_earnings → totalWei " + JSON.stringify(data.totalWei) + ", claimableWei " + JSON.stringify(data.claimableWei)}
+        cta={{ label: "Try again", go: () => void load() }}
+      />,
+    );
+  }
   const notValidator = validatorWord != null && NOT_VALIDATOR_WORDS.includes(validatorWord);
   let rows: ReactNode;
   let note: string;
@@ -121,8 +142,7 @@ export function NodeRewards({
     rows = <Row k="Validator rewards" testid="reward-total" v={<span data-reward="total">{validatorWord}</span>} src="no registered stake for this node's key, so there is nothing to read" />;
     note = "Rewards are paid to validators that produce blocks. " + (validatorWord === "Not a validator" ? "This node is not a validator." : "Your bond is locked but not staked; activating it registers you as a validator.");
   } else {
-    const total = BigInt(data.totalWei || "0");
-    const claimable = BigInt(data.claimableWei || "0");
+    const { total, claimable } = parsed as { total: bigint; claimable: bigint };
     const maturing = total > claimable ? total - claimable : 0n;
     rows = (
       <>

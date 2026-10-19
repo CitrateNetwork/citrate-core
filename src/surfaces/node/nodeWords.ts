@@ -10,8 +10,10 @@
 //   - genesis check: block 0 of the public chain against the bundled address book's genesis
 //     (networkCompat.ts).
 // `eth_syncing` is not read by any command yet, so "Synced" uses the contract's "within 5 blocks of
-// the public RPC head" half and says so in its reason. Unknown is never zero: a local height of 0
-// means "RPC not answering yet" (the call returns 0x0 on error), never block 0.
+// a public RPC head read in the last 60 s" half and says so in its reason. A public head that is
+// missing, 0x0, errored or older than 60 s is "Sync unknown · network head unavailable" (contract
+// v1.1 §1), never Synced or Syncing. Unknown is never zero: a local height of 0 means "RPC not
+// answering yet" (the call returns 0x0 on error), never block 0.
 // =====================================================================
 import type { AppState } from "../../shell/state";
 import type { NetworkCompat } from "../../shell/networkCompat";
@@ -20,6 +22,10 @@ import type { NetworkCompat } from "../../shell/networkCompat";
 export const SYNCED_WITHIN_BLOCKS = 5;
 /** Contract §1: No peers means net_peerCount = 0 for at least this long. */
 export const NO_PEERS_AFTER_MS = 60_000;
+/** Contract §1: a read older than this is stale, so unknown (public head freshness, Sync stalled). */
+export const FRESH_MS = 60_000;
+/** The contract v1.1 §1 word for a node whose sync can't be checked against the network. */
+export const SYNC_UNKNOWN = "Sync unknown · network head unavailable";
 
 export type NodeTone = "off" | "busy" | "ok" | "warn" | "bad";
 
@@ -34,10 +40,16 @@ export interface NodeWordInput {
   localHeight: number;
   /** Public eth_blockNumber; null = not read. */
   publicHead: number | null;
+  /** Age of the last good public head read (ms); null = unknown. */
+  publicHeadAgeMs: number | null;
+  /** The latest public head poll failed (the last good value may still be held). */
+  publicHeadError: boolean;
   /** Local net_peerCount. */
   peers: number;
   /** How long the local peer count has read 0 while the node answers RPC (ms). */
   peersZeroForMs: number;
+  /** How long the local height has been unchanged while the node answers RPC (ms). */
+  localStillForMs: number;
 }
 
 export interface NodeWord {
@@ -76,7 +88,7 @@ export function nodeWord(i: NodeWordInput): NodeWord {
   if (i.node === "prov" || i.localHeight <= 0) {
     return { word: "Starting", why: "The process started but its RPC isn't answering yet.", tone: "busy", running: true };
   }
-  if (i.node === "stalled") {
+  if (i.node === "stalled" || (i.peers > 0 && i.localStillForMs >= FRESH_MS)) {
     return {
       word: "Sync stalled",
       why: "Peers are connected, but this node's height hasn't moved for 60 s or more.",
@@ -92,10 +104,10 @@ export function nodeWord(i: NodeWordInput): NodeWord {
       running: true,
     };
   }
-  if (i.publicHead == null || i.publicHead <= 0) {
+  if (!headFresh(i) || i.publicHead == null) {
     return {
-      word: "Syncing · — blocks behind",
-      why: "The public head hasn't been read yet, so how far behind this node is is unknown.",
+      word: SYNC_UNKNOWN,
+      why: "The public RPC head couldn't be read in the last 60 s (error, timeout, 0x0 or not read yet), so this node's height can't be checked against the network.",
       tone: "busy",
       running: true,
     };
@@ -104,7 +116,7 @@ export function nodeWord(i: NodeWordInput): NodeWord {
   if (behind <= SYNCED_WITHIN_BLOCKS) {
     return {
       word: "Synced",
-      why: `This node's height is within ${SYNCED_WITHIN_BLOCKS} blocks of the public RPC head. eth_syncing is not read by this build yet.`,
+      why: `This node's height is within ${SYNCED_WITHIN_BLOCKS} blocks of a public RPC head read in the last 60 s. eth_syncing is not read by this build yet.`,
       tone: "ok",
       running: true,
     };
@@ -115,6 +127,11 @@ export function nodeWord(i: NodeWordInput): NodeWord {
     tone: "busy",
     running: true,
   };
+}
+
+/** The public head is usable: read, not 0x0, the last poll answered, and no older than 60 s. */
+export function headFresh(i: Pick<NodeWordInput, "publicHead" | "publicHeadAgeMs" | "publicHeadError">): boolean {
+  return i.publicHead != null && i.publicHead > 0 && !i.publicHeadError && i.publicHeadAgeMs != null && i.publicHeadAgeMs <= FRESH_MS;
 }
 
 /** The one-sentence status: the node word, then the validator word when it has been read. */
@@ -131,9 +148,34 @@ export function directPeers(running: boolean, localHeight: number, peers: number
 /** Local height against the public head, as numbers that were actually read. */
 export function heightLine(localHeight: number, publicHead: number | null): string {
   if (localHeight <= 0) return "—";
-  if (publicHead == null || publicHead <= 0) return fmt(localHeight) + " · public head not read";
+  if (publicHead == null || publicHead <= 0) return fmt(localHeight) + " (this node) · network head unavailable";
   const behind = publicHead - localHeight;
   return fmt(localHeight) + (behind > 0 ? " · " + fmt(behind) + " behind the public head" : " · at the public head");
+}
+
+/**
+ * Whether Activate validator may be offered (contract §1 Validators). `MemberBond.activate` is
+ * one-shot (it reverts AlreadyActivated) and a slashed key may not register again, so Activate is
+ * offered only when the registry reads status None for this node's key AND the bond reads not
+ * activated. Anything unread offers nothing and says why.
+ *  - registryStatus: `ValidatorRegistry.validatorInfo(pubkey).status` (0 None, 1 Active, 2 Exiting,
+ *    3 Slashed); null = not read.
+ *  - bondActivated: `MemberBond.activated()`; null = not read.
+ */
+export function activateGate(registryStatus: number | null, bondActivated: boolean | null): { show: boolean; word: string; why: string } {
+  if (registryStatus === 2) return { show: false, word: "Exiting", why: "This node's key is exiting the validator registry (validatorInfo.status = 2)." };
+  if (registryStatus === 3) return { show: false, word: "Slashed", why: "This node's key was slashed (validatorInfo.status = 3). A slashed key can't register again." };
+  if (registryStatus == null || bondActivated == null) {
+    return {
+      show: false,
+      word: "—",
+      why: "Activate opens once ValidatorRegistry.validatorInfo(pubkey).status and MemberBond.activated() have been read for this node; they aren't read on this page yet.",
+    };
+  }
+  if (bondActivated || registryStatus !== 0) {
+    return { show: false, word: "—", why: "Your bond is already activated, so there is nothing to activate. The validator word comes from the registry." };
+  }
+  return { show: true, word: "", why: "" };
 }
 
 /** Dot colour for a tone (the 0.5.1 node palette). */

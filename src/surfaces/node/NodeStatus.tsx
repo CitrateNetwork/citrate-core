@@ -21,13 +21,15 @@ import { BRIDGE_MODE } from "../../bridge/mode";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
 import { useNetworkCompat, type NetworkCompat } from "../../shell/networkCompat";
-import { directPeers, heightLine, nodeWord, statusSentence, TONE_COLOR } from "./nodeWords";
+import { FRESH_MS, activateGate, headFresh, directPeers, heightLine, nodeWord, statusSentence, TONE_COLOR } from "./nodeWords";
 import { PAGE, Panel, Row, StateCard, errText } from "./parts";
 
 const VALIDATOR_REGISTRY = book.addresses.ValidatorRegistry as `0x${string}`;
 const ACTIVE_COUNT_ABI = [{ type: "function", name: "activeCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] }] as const;
 /** How often the tab checks that node_status still answers (its values come from the store's 2 s poll). */
 const STATUS_PROBE_MS = 10_000;
+/** How often read ages are re-evaluated, so a read going stale shows without another poll. */
+const AGE_TICK_MS = 5_000;
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
@@ -36,6 +38,12 @@ export interface NodeStatusViewProps {
   s: AppState;
   /** Public eth_blockNumber; null until read. */
   publicHead: number | null;
+  /** Age of the last good public head read (ms); null = unknown. */
+  publicHeadAgeMs: number | null;
+  /** The latest public head poll failed. */
+  publicHeadError: boolean;
+  /** Age of the last node_status answer (ms); null = none yet (the store's values stand). */
+  statusAgeMs: number | null;
   compat: NetworkCompat;
   mode: "tauri" | "sim";
   /** The last node_status failure, or null while it answers. */
@@ -44,11 +52,16 @@ export interface NodeStatusViewProps {
   registered?: number | null;
   /** The contract §1 validator word, once something reads it (C1-V); null = not read. */
   validatorWord?: string | null;
+  /** `ValidatorRegistry.validatorInfo(pubkey).status` for this node's key (C1-V); null = not read. */
+  registryStatus?: number | null;
+  /** `MemberBond.activated()` (C1-V); null = not read. */
+  bondActivated?: boolean | null;
 }
 
 /** Node › Status with its live reads. */
 export function NodeStatus({ store, s }: { store: Store; s: AppState }) {
-  const { data: head } = useBlockNumber({ watch: true, chainId: citrate.id });
+  const { data: head, dataUpdatedAt, isError: headError } = useBlockNumber({ watch: true, chainId: citrate.id });
+  const now = useNow(AGE_TICK_MS);
   const { status: compat } = useNetworkCompat();
   const { data: registered } = useReadContract({
     address: VALIDATOR_REGISTRY,
@@ -58,13 +71,18 @@ export function NodeStatus({ store, s }: { store: Store; s: AppState }) {
     query: { refetchInterval: 60_000 },
   });
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusOkAt, setStatusOkAt] = useState<number | null>(null);
   useEffect(() => {
     if (BRIDGE_MODE !== "tauri") return;
     let live = true;
     const probe = () =>
       bridge.node
         .status()
-        .then(() => live && setStatusError(null))
+        .then(() => {
+          if (!live) return;
+          setStatusError(null);
+          setStatusOkAt(Date.now());
+        })
         .catch((e) => live && setStatusError(errText(e)));
     void probe();
     const t = setInterval(probe, STATUS_PROBE_MS);
@@ -78,12 +96,39 @@ export function NodeStatus({ store, s }: { store: Store; s: AppState }) {
       store={store}
       s={s}
       publicHead={head != null ? Number(head) : null}
+      publicHeadAgeMs={head != null && dataUpdatedAt > 0 ? Math.max(0, now - dataUpdatedAt) : null}
+      publicHeadError={headError}
+      statusAgeMs={statusOkAt == null ? null : Math.max(0, now - statusOkAt)}
       compat={compat}
       mode={BRIDGE_MODE}
       statusError={statusError}
       registered={registered != null ? Number(registered) : null}
     />
   );
+}
+
+/** The current time, re-read every `ms`. */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+/** How long `value` has stayed the same while `active` (ms); 0 while inactive. */
+function useUnchangedFor(value: number, active: boolean): number {
+  const last = useRef<{ v: number; at: number } | null>(null);
+  const [, tick] = useState(0);
+  if (!active) last.current = null;
+  else if (!last.current || last.current.v !== value) last.current = { v: value, at: Date.now() };
+  useEffect(() => {
+    if (!active) return;
+    const t = setTimeout(() => tick((n) => n + 1), FRESH_MS + 1_000);
+    return () => clearTimeout(t);
+  }, [active, value]);
+  return last.current ? Date.now() - last.current.at : 0;
 }
 
 /** How long the local peer count has read 0 while the node answers RPC. */
@@ -101,9 +146,24 @@ function usePeersZeroFor(zero: boolean): number {
   return since.current == null ? 0 : Date.now() - since.current;
 }
 
-export function NodeStatusView({ store, s, publicHead, compat, mode, statusError, registered = null, validatorWord = null }: NodeStatusViewProps) {
+export function NodeStatusView({
+  store,
+  s,
+  publicHead,
+  publicHeadAgeMs,
+  publicHeadError,
+  statusAgeMs,
+  compat,
+  mode,
+  statusError,
+  registered = null,
+  validatorWord = null,
+  registryStatus = null,
+  bondActivated = null,
+}: NodeStatusViewProps) {
   const answering = s.height > 0 && s.node !== "off" && s.node !== "error";
   const peersZeroForMs = usePeersZeroFor(answering && s.peers === 0);
+  const localStillForMs = useUnchangedFor(s.height, answering);
 
   if (mode !== "tauri") {
     return (
@@ -129,6 +189,18 @@ export function NodeStatusView({ store, s, publicHead, compat, mode, statusError
       </div>
     );
   }
+  if (statusAgeMs != null && statusAgeMs > FRESH_MS) {
+    return (
+      <div data-node-tab="status" style={PAGE}>
+        <StateCard
+          kind="error"
+          title="The node's status is out of date"
+          body="node_status last answered more than 60 seconds ago, so its height, peers and state are unknown, not current. The page reads again every 10 seconds."
+          why={"node_status → last answer " + Math.round(statusAgeMs / 1000) + " s ago"}
+        />
+      </div>
+    );
+  }
 
   const w = nodeWord({
     node: s.node,
@@ -136,9 +208,13 @@ export function NodeStatusView({ store, s, publicHead, compat, mode, statusError
     compat,
     localHeight: s.height,
     publicHead,
+    publicHeadAgeMs,
+    publicHeadError,
     peers: s.peers,
     peersZeroForMs,
+    localStillForMs,
   });
+  const headOk = headFresh({ publicHead, publicHeadAgeMs, publicHeadError });
   const sentence = statusSentence(w, validatorWord);
   const canStart = s.node === "off" || s.node === "error" || s.node === "paused";
   const notice = noticeFor(w.word, store);
@@ -191,7 +267,7 @@ export function NodeStatusView({ store, s, publicHead, compat, mode, statusError
         <Panel title="This node" caption="local reads">
           <Row k="State" v={w.word} src="node_status (supervisor state, local eth_blockNumber) and the public head (contract §1)" />
           <Row k="Direct peers" v={directPeers(answering, s.height, s.peers)} src="local net_peerCount; unknown, not 0, while the node isn't answering" vColor={answering ? undefined : "var(--tx-3)"} />
-          <Row k="Height" v={heightLine(s.height, publicHead)} src="local eth_blockNumber against public eth_blockNumber on rpc.citrate.ai" />
+          <Row k="Height" v={heightLine(s.height, headOk ? publicHead : null)} src="local eth_blockNumber against a public eth_blockNumber on rpc.citrate.ai read in the last 60 s" />
           <Row
             k="Validator"
             testid="validator-word"
@@ -209,7 +285,12 @@ export function NodeStatusView({ store, s, publicHead, compat, mode, statusError
             vColor={compat === "retired" ? "var(--danger)" : compat === "unknown" ? "var(--tx-3)" : undefined}
             src="eth_chainId 0x9d0c and the genesis hash this build ships with (contract §6); chain id alone is not enough"
           />
-          <Row k="Network head" v={publicHead != null && publicHead > 0 ? fmtI(publicHead) : "—"} src="public eth_blockNumber on rpc.citrate.ai" />
+          <Row
+            k="Network head"
+            v={headOk && publicHead != null && publicHead > 0 ? fmtI(publicHead) : "— · network head unavailable"}
+            vColor={headOk ? undefined : "var(--tx-3)"}
+            src="public eth_blockNumber on rpc.citrate.ai; a failed poll, 0x0 or a read older than 60 s is unavailable"
+          />
           <Row
             k="Registered validators"
             v={registered != null ? fmtI(registered) : "—"}
@@ -221,7 +302,7 @@ export function NodeStatusView({ store, s, publicHead, compat, mode, statusError
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <ActivateCard store={store} s={s} />
+        <ActivateCard store={store} s={s} registryStatus={registryStatus} bondActivated={bondActivated} />
         <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
           <span className="eyebrow">Words on this page</span>
           <span style={{ fontSize: 12, lineHeight: 1.6, color: "var(--tx-2)" }}>
@@ -279,10 +360,23 @@ function noticeFor(word: string, store: Store): { title: string; body: string; r
 /**
  * Activate validator (moved from the 0.5.1 Node screen): on a synced node, link this device's wallet
  * first, then register the membership bond through the signature ceremony (store.activateValidator).
- * No amount is shown: the minimum stake is read by C1-V, never hard-coded here.
+ * Offered only when activateGate allows it: never for Exiting, Slashed, an activated bond, or while
+ * those reads are unread (MemberBond.activate reverts AlreadyActivated). No amount is shown: the
+ * minimum stake is read by C1-V, never hard-coded here.
  */
-function ActivateCard({ store, s }: { store: Store; s: AppState }) {
+function ActivateCard({ store, s, registryStatus, bondActivated }: { store: Store; s: AppState; registryStatus: number | null; bondActivated: boolean | null }) {
   if (s.node !== "synced") return null;
+  const gate = activateGate(registryStatus, bondActivated);
+  if (!gate.show) {
+    return (
+      <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+        <span className="eyebrow">Validator</span>
+        <span data-testid="activate-gate" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)" }}>
+          {gate.word} · {gate.why}
+        </span>
+      </div>
+    );
+  }
   const linked = store.walletIsLinked();
   return (
     <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>

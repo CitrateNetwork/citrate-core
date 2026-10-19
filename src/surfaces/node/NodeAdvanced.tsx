@@ -121,7 +121,7 @@ export function NodeAdvancedView({
                   : "Before trusting any read, the app checks the chain id and the genesis hash it ships with."}
               </span>
             </div>
-            <Row k="Chain id" v={"0x" + citrate.id.toString(16)} src="eth_chainId" />
+            <Row k="Chain id · expected" v={"0x" + citrate.id.toString(16)} src="this build's chain config (expected)" />
             <Row k="Genesis · expected" v={short(EXPECTED_GENESIS)} src="the genesis hash in this build's bundled address book" />
             <Row
               k="Genesis · on the network"
