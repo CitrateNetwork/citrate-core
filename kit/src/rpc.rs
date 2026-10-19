@@ -316,6 +316,92 @@ impl<T: RpcTransport> RpcClient<T> {
     /// `eth_blockNumber` → the node's current head height (real value from the
     /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
     /// a `0x`-prefixed hex quantity.
+    /// `citrate_executedHead` → `(number, hash)` of the node's executed (applied) tip, the last
+    /// block `eth_getLogs` serves (citrate-chain, stacked on #334). `None` when the node does not
+    /// have the method (JSON-RPC -32601: an older node) (C1-W).
+    pub fn executed_head(&self) -> Result<Option<(u64, String)>, RpcError> {
+        let body = self.build_request("citrate_executedHead", json!([]));
+        let resp = self.transport.call(body)?;
+        if resp.pointer("/error/code").and_then(Value::as_i64) == Some(RPC_METHOD_NOT_FOUND) {
+            return Ok(None);
+        }
+        let result = Self::result_of(resp)?;
+        let number = result
+            .get("number")
+            .ok_or_else(|| RpcError::MissingField("citrate_executedHead.number".into()))
+            .and_then(|v| parse_hex_quantity(v, "citrate_executedHead.number"))?;
+        let hash = result
+            .get("hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::MissingField("citrate_executedHead.hash".into()))?;
+        Ok(Some((number, hash.to_string())))
+    }
+
+    /// The hash of block `number` (`eth_getBlockByNumber(n, false).hash`), `None` when the node
+    /// returns no block (C1-W reorg check).
+    pub fn block_hash(&self, number: u64) -> Result<Option<String>, RpcError> {
+        let result = self.request(
+            "eth_getBlockByNumber",
+            json!([format!("0x{number:x}"), false]),
+        )?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        result
+            .get("hash")
+            .and_then(Value::as_str)
+            .map(|h| Some(h.to_string()))
+            .ok_or_else(|| RpcError::MissingField("block.hash".into()))
+    }
+
+    /// `eth_syncing` → the node's APPLIED (executed) tip when it reports that it is behind
+    /// (`{currentBlock, …}`), or `None` when it answers `false` (not behind) (C1-W).
+    pub fn syncing(&self) -> Result<Option<u64>, RpcError> {
+        let result = self.request("eth_syncing", json!([]))?;
+        if result == Value::Bool(false) {
+            return Ok(None);
+        }
+        let current = result
+            .get("currentBlock")
+            .ok_or_else(|| RpcError::MissingField("eth_syncing.currentBlock".into()))?;
+        parse_hex_quantity(current, "eth_syncing.currentBlock").map(Some)
+    }
+
+    /// Several `eth_call`s (`[call, "latest"]`) in ONE JSON-RPC batch (C1-W). Answers are matched
+    /// by id and returned in call order; any failed item fails the whole batch (no partial list).
+    pub fn eth_call_batch(&self, calls: &[Value]) -> Result<Vec<Vec<u8>>, RpcError> {
+        if calls.is_empty() {
+            return Ok(Vec::new());
+        }
+        let reqs: Vec<Value> = calls
+            .iter()
+            .map(|c| self.build_request("eth_call", json!([c, "latest"])))
+            .collect();
+        let resp = self.transport.call(Value::Array(reqs.clone()))?;
+        let answers = resp
+            .as_array()
+            .ok_or_else(|| RpcError::BadResponse("eth_call batch: not an array".into()))?;
+        reqs.iter()
+            .map(|req| {
+                let a = answers
+                    .iter()
+                    .find(|a| a.get("id") == req.get("id"))
+                    .ok_or_else(|| {
+                        RpcError::MissingField("eth_call batch: an answer is missing".into())
+                    })?;
+                let result = Self::result_of(a.clone())?;
+                let s = result.as_str().ok_or_else(|| {
+                    RpcError::MissingField("eth_call: result not a string".into())
+                })?;
+                let hexs = s
+                    .strip_prefix("0x")
+                    .ok_or_else(|| RpcError::MissingField("eth_call: missing 0x prefix".into()))?;
+                hex::decode(hexs)
+                    .map_err(|_| RpcError::MissingField(format!("eth_call: result not hex ({s})")))
+            })
+            .collect()
+    }
+
     pub fn block_number(&self) -> Result<u64, RpcError> {
         let result = self.request("eth_blockNumber", json!([]))?;
         parse_hex_quantity(&result, "eth_blockNumber")
@@ -471,6 +557,9 @@ pub const RPC_LIMIT_EXCEEDED: i64 = -32005;
 /// served yet (the node's cache fills over several requests), with `data.retryable = true`: retry
 /// the same range later. Without that flag it is an ordinary error.
 pub const RPC_RETRY: i64 = -32002;
+
+/// The JSON-RPC "method not found" code.
+pub const RPC_METHOD_NOT_FOUND: i64 = -32601;
 
 /// An `eth_getLogs` failure, telling a too-wide range apart from every other error (C1-W).
 #[derive(Debug, Clone, PartialEq, Eq)]

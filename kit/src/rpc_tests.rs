@@ -331,3 +331,52 @@ fn get_logs_range_reports_a_retry_answer() {
     assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "busy"));
     assert!(matches!(rpc.get_logs_range(f), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "busy"));
 }
+
+// C1-W — eth_syncing gives the applied tip only when the node is behind; eth_call_batch answers in
+// call order whatever order the batch reply comes back in.
+#[test]
+fn syncing_and_eth_call_batch() {
+    let behind = json!({ "jsonrpc": "2.0", "id": 1, "result": {
+        "startingBlock": "0x1", "currentBlock": "0xbb8", "highestBlock": "0x1388" } });
+    let caught_up = json!({ "jsonrpc": "2.0", "id": 2, "result": false });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![behind, caught_up]));
+    assert_eq!(rpc.syncing(), Ok(Some(3000)));
+    assert_eq!(rpc.syncing(), Ok(None));
+
+    // build_request ids continue from 3 on this client: answer them out of order.
+    let reply = json!([
+        { "jsonrpc": "2.0", "id": 4, "result": "0x02" },
+        { "jsonrpc": "2.0", "id": 3, "result": "0x01" },
+    ]);
+    let rpc2 = RpcClient::with_transport(MockTransport::new(vec![reply]));
+    let _ = rpc2.build_request("x", json!([]));
+    let _ = rpc2.build_request("x", json!([]));
+    let got = rpc2
+        .eth_call_batch(&[json!({"to": "0x01"}), json!({"to": "0x02"})])
+        .expect("batch");
+    assert_eq!(got, vec![vec![1u8], vec![2u8]]);
+    let failed = json!([
+        { "jsonrpc": "2.0", "id": 1, "result": "0x01" },
+        { "jsonrpc": "2.0", "id": 2, "error": { "code": -32000, "message": "boom" } },
+    ]);
+    let rpc3 = RpcClient::with_transport(MockTransport::new(vec![failed]));
+    assert!(rpc3.eth_call_batch(&[json!({}), json!({})]).is_err(), "no partial list");
+}
+
+// C1-W — citrate_executedHead: served → (number, hash); an older node (-32601) → None; any other
+// error is an error. block_hash: a missing block is None.
+#[test]
+fn executed_head_and_block_hash() {
+    let h = format!("0x{}", "ab".repeat(32));
+    let served = json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": "0xbb8", "hash": h } });
+    let absent = json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -32601, "message": "Method not found" } });
+    let broken = json!({ "jsonrpc": "2.0", "id": 3, "error": { "code": -32000, "message": "boom" } });
+    let block = json!({ "jsonrpc": "2.0", "id": 4, "result": { "number": "0x10", "hash": h } });
+    let none = json!({ "jsonrpc": "2.0", "id": 5, "result": null });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![served, absent, broken, block, none]));
+    assert_eq!(rpc.executed_head(), Ok(Some((3000, h.clone()))));
+    assert_eq!(rpc.executed_head(), Ok(None));
+    assert!(rpc.executed_head().is_err());
+    assert_eq!(rpc.block_hash(16), Ok(Some(h)));
+    assert_eq!(rpc.block_hash(17), Ok(None));
+}
