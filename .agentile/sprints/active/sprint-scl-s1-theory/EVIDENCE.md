@@ -67,3 +67,29 @@ Run on this host at the harness commit `4b69bd8` (on top of `b521d98`):
 
 What this does not show: the CI job has not run on hosted runners yet at the time of writing
 (it runs on the PR); there is no Windows lane (S13.1); the job is not a required check (S13.1).
+
+### SC1 (SCL-S2) status and deferrals
+
+Work landed in the stacked PRs #351 (S2.1, S2.2) and #352 (S2.3, S2.4), built on the S1.3
+harness. Counts on this host at #352's head:
+
+| Measure | Value |
+|---|---|
+| `cargo test --workspace --locked` | 2477 passed, 0 failed, 20 ignored (baseline 2434) |
+| kit `supervisor::tests` | 36 Unix, 15 Windows (baseline 24 / 3) |
+| `lifecycle_faults` suite | 31 passed |
+
+**Deferred: using credential-publication tickets in the managers.** Reason: the kit
+provides the ticket (`Supervisor::admit_publication`, `PublicationTicket::commit`,
+`StaleTicket::cleaned`), and a Stop waits for it, with fault fixtures to prove that. But the
+generation-specific bearer and seed files are written by the managers in `src-tauri`, not by the
+kit. Routing those writes through tickets, and making the files generation-specific, is the
+owner migration: SCL-S6.2 (node agent, memory), S7.2 (Comms, Cluster) and S7.3 (Hermes). It
+lands with those owners.
+
+Also not done in SC1:
+
+- the app-close deadline record and deadline-bound Start (both belong to the coordinator, S12.1);
+- the legacy `stop()`, which keeps its 10 s wait (consumers migrate in S6.4 / S7.4);
+- replacement descriptors and generation bumps (no replacement API until SC5 / SC6);
+- the INV-5, INV-6, INV-12 and INV-14 TLC re-runs, which belong to the formal lane.
