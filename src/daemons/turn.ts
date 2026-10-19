@@ -105,9 +105,12 @@ function annotatedDaemonTools(allowed: readonly string[] | null | undefined) {
 
 /** Run one claimed daemon turn and return its reply. Rejects when stopped or when it fails. */
 export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: TokenMeter, deps: DaemonTurnDeps): Promise<string> {
-  const system = deps.systemPrompt() + DAEMON_PREAMBLE;
-  const task = `Scheduled daemon "${claim.name}". Task:\n\n${claim.prompt}`;
   const allowed = claim.allowedTools ?? null;
+  // K5a: a Store daemon gets the plain agent prompt with NO live app snapshot (balances, wallet,
+  // node state); only what its approved tools return reaches it. A member daemon keeps the chat
+  // prompt with its context, as before.
+  const system = allowed != null ? AGENT_SYSTEM_PROMPT + DAEMON_PREAMBLE : deps.systemPrompt() + DAEMON_PREAMBLE;
+  const task = `Scheduled daemon "${claim.name}". Task:\n\n${claim.prompt}`;
   const toolsJson = JSON.stringify(daemonToolsFor(allowed));
   const opened: string[] = [];
   let provider: ChatProvider;
@@ -133,7 +136,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   } else {
     throw new Error("daemons run only on the local model, which is not serving right now");
   }
-  meter.begin(system.length + toolsJson.length + JSON.stringify(deps.context()).length, task.length);
+  meter.begin(system.length + toolsJson.length + (allowed != null ? 0 : JSON.stringify(deps.context()).length), task.length);
   const messages = [{ role: "user", content: task }];
   try {
     const reply = await provider.send({

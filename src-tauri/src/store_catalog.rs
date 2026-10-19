@@ -304,7 +304,9 @@ pub(crate) const PERMISSION_TOOLS: &[(&str, &[&str])] = &[
     ("schedule_read", &["schedule_list"]),
 ];
 
-/// The tools a set of approved permissions grants (sorted, without duplicates).
+/// The tools a set of approved permissions grants (sorted, without duplicates): core tools from
+/// [`PERMISSION_TOOLS`], plus a `host:<set>` marker for each sidecar-hosted tool set a
+/// permission covers (`daemons::HOST_TOOL_SETS`), which lets the daemon start while that set is on.
 pub(crate) fn tools_for_permissions(permissions: &[String]) -> Vec<String> {
     let mut out: Vec<String> = permissions
         .iter()
@@ -313,6 +315,12 @@ pub(crate) fn tools_for_permissions(permissions: &[String]) -> Vec<String> {
         .filter(|t| **t != "app_navigate")
         .map(|t| t.to_string())
         .collect();
+    out.extend(
+        crate::daemons::HOST_TOOL_SETS
+            .iter()
+            .filter(|set| permissions.iter().any(|p| p == set.permission))
+            .map(|set| crate::daemons::host_set_marker(set.id)),
+    );
     out.sort();
     out.dedup();
     out

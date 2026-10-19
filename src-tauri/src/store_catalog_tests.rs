@@ -830,6 +830,86 @@ fn an_expiry_must_be_a_whole_valid_rfc3339_value() {
     assert_eq!(ok(past_utc), 0);
 }
 
+// ---- sidecar-hosted tool sets a Store daemon was not approved for --------------------------
+
+fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+#[test]
+fn a_no_permission_store_daemon_refuses_to_start_with_web_search_on_and_starts_with_it_off() {
+    let fx = Fx::new("hostsets");
+    let listing = listing_json("bare", "daemon", "public", DAEMON_URL, &daemon_template(), BUDGET)
+        .replace(r#""permissions":[{"id":"local_model","reason":"Runs on your local model."},{"id":"files_read","reason":"Reads the folders you granted."}]"#, r#""permissions":[]"#);
+    assert!(listing.contains(r#""permissions":[]"#));
+    fx.fx_publish(&catalog_json(1, &[listing]));
+    fx.fx_view(0);
+    let st = fx.fx_stage("bare", 0).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 0).expect("install").target;
+    let search_on = env(&[("CITRATE_HERMES_SEARCH", "1"), ("CITRATE_HERMES_READER", "jina")]);
+    // Start (resume) is refused while Hermes offers web search to every session.
+    let err = crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_checked(&id, NOW_MS, Some(&search_on)))
+        .unwrap_err();
+    assert!(err.contains("Web search"), "{err}");
+    assert!(err.contains("Settings"), "says how to run it sandboxed: {err}");
+    assert!(fx.fx_daemon_book().daemons[0].paused, "still paused");
+    // With every host tool set off it starts.
+    crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_checked(&id, NOW_MS, Some(&[])))
+        .expect("starts");
+    assert!(!fx.fx_daemon_book().daemons[0].paused);
+    // A run that comes due while web search is on is not started, and says why.
+    let at = NOW_MS + 18 * 3_600_000;
+    let claims = crate::daemons::with_book_file(&fx.daemons, true, |b| b.claim_due_with(at, 0, Some(&search_on)))
+        .expect("claim");
+    assert!(claims.is_empty(), "not started");
+    let v = &fx.fx_daemon_book().daemons[0];
+    assert_eq!(v.last_outcome.as_deref(), Some("not_started"));
+    assert!(v.last_note.as_deref().unwrap_or("").contains("Web search"));
+    // The next due run with the set off is claimed.
+    let later = at + 24 * 3_600_000;
+    let claims = crate::daemons::with_book_file(&fx.daemons, true, |b| b.claim_due_with(later, 0, Some(&[])))
+        .expect("claim");
+    assert_eq!(claims.len(), 1);
+}
+
+#[test]
+fn every_sidecar_tool_set_blocks_a_store_daemon_not_approved_for_it() {
+    use crate::daemons::{host_block_reason, HOST_TOOL_SETS};
+    for set in HOST_TOOL_SETS {
+        // A flag set is on at its value; a path set is on at any non-empty value.
+        let value = if set.on_value.is_empty() { "/app/data/hermes/x" } else { set.on_value };
+        let on = env(&[(set.env_key, value)]);
+        assert!(host_block_reason(&[], &on).is_some(), "{} blocks a no-permission daemon", set.id);
+        // The permission that covers it lets it through.
+        let covered = tools_for_permissions(&[set.permission.to_string()]);
+        assert!(host_block_reason(&covered, &on).is_none(), "{} is covered by {}", set.id, set.permission);
+    }
+    // Nothing on: nothing blocks.
+    assert!(host_block_reason(&[], &[]).is_none());
+    // A value that does not turn a flag set on does not count.
+    assert!(host_block_reason(&[], &env(&[("CITRATE_HERMES_SEARCH", "0"), ("CITRATE_HERMES_MCP", "")])).is_none());
+}
+
+#[test]
+fn a_member_written_daemon_is_not_held_to_store_permissions() {
+    let mut book = crate::daemons::DaemonBook::default();
+    let v = book
+        .save(
+            crate::daemons::DaemonInput {
+                id: None,
+                name: "Mine".into(),
+                prompt: "Do my task.".into(),
+                schedule: "0 8 * * *".into(),
+                budget: None,
+            },
+            NOW_MS,
+            0,
+        )
+        .expect("saved");
+    book.set_paused(&v.id, true, NOW_MS).expect("pause");
+    assert!(book.resume_checked(&v.id, NOW_MS, Some(&env(&[("CITRATE_HERMES_SEARCH", "1")]))).is_ok());
+}
+
 // ---- wiring --------------------------------------------------------------------------------
 
 #[test]

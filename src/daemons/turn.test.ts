@@ -174,3 +174,22 @@ describe("a Store daemon's approved permissions bind its tools (deny by default)
     expect(daemonToolsFor([]).length).toBe(0);
   });
 });
+
+describe("a Store daemon's prompt carries no app snapshot", () => {
+  it("a Store daemon run's system prompt has no live app context; a member daemon's keeps it", async () => {
+    const done = () => [
+      { events: [{ seq: 1, event: { type: "final", content: "ok" } }, { seq: 2, event: { type: "done", outcome: "answered" } }], lastSeq: 2, busy: false },
+    ];
+    const marked = { ...ctx, walletAddr: "0xfeed5eed000000000000000000000000000000aa" };
+    const snapshotPrompt = () => "You are Hermes.\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(marked);
+    const store = sidecarFake(done());
+    await runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar: store, systemPrompt: snapshotPrompt }));
+    const storePrompt = (store.openUnattended.mock.calls[0] as unknown as [string, string])[0];
+    expect(storePrompt).not.toContain("Live app context");
+    expect(storePrompt).not.toContain(marked.walletAddr);
+    expect(storePrompt).toContain("SCHEDULED DAEMON RUN");
+    const mine = sidecarFake(done());
+    await runDaemonTurn(claim, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar: mine, systemPrompt: snapshotPrompt }));
+    expect((mine.openUnattended.mock.calls[0] as unknown as [string, string])[0]).toContain("Live app context");
+  });
+});

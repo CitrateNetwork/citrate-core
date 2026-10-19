@@ -107,11 +107,35 @@ member-daemon tool set.
 | `models_read` / `skills_read` | `models_list` / `skills_list` |
 | `calendar_read` / `sheets_read` / `schedule_read` | `calendar_list` / `gsheets_read` / `schedule_list` |
 
-Tools the Hermes sidecar hosts itself are outside this list: in a daemon run, shell commands and
-effectful MCP calls are declined (there is no one to approve them), and the session gets no file
-grants. Read-only MCP tools from servers the member enabled are governed by the sidecar; a
-session option to turn sidecar-hosted tools off for Store daemons is a follow-up in
-citrate-agent-runtime.
+### Tools the Hermes sidecar hosts itself
+
+The Hermes sidecar adds its own tool sets to **every** session while they are on, whatever core
+passes for that session. There is no per-session switch for them yet (follow-up in
+citrate-agent-runtime: a session flag to turn host tool sets off). Until there is, core does not
+start a Store daemon while any set its approved permissions do not cover is on: Start (resume)
+is refused with the reason and how to run it sandboxed, and a run that comes due is recorded as
+`not_started` instead of running (`daemons.rs::HOST_TOOL_SETS`, `resume_checked`,
+`claim_due_with`; the check reads the environment the running sidecar was started with).
+
+| Tool set | Tools | On when | Covering permission | How it is excluded today |
+|---|---|---|---|---|
+| Web search and page reading | `web_search`, `read_url` | `CITRATE_HERMES_SEARCH=1` | `web_search` | Daemon not started while on; the member turns it off in Settings > Web search & decisions |
+| Hermes's browser | `browser_*` | `CITRATE_HERMES_BROWSER=1` | `web_browse` | Daemon not started while on; Settings > Web search & decisions |
+| MCP servers | `mcp__<server>__<tool>` | an MCP allowlist is written (`CITRATE_HERMES_MCP`) | `mcp` | Daemon not started while any server is on; Settings > MCP servers |
+| Contract toolchain | `forge_test`, `slither_scan`, `aderyn_scan`, `medusa_fuzz` | `CITRATE_HERMES_TOOLCHAIN=1` | `toolchain` | Daemon not started while on; Agent > Contracts |
+| Installed skills | `skill_load` | a skills library is configured (`CITRATE_HERMES_SKILLS`) | `skills_read` | Daemon not started while on; no app switch yet |
+| Skill learning | `learn_propose` | `CITRATE_HERMES_LEARN_DIR` | `learn_propose` | Daemon not started while on; no app switch yet |
+| Installed capsules | the installed capsules | `CITRATE_HERMES_CAPSULES` | `capsules_run` | Daemon not started while on; no app switch yet |
+| File, sheet, project and undo tools | `file_*`, `fs_*`, `sheet_*`, `project_create` | a grant document in the session | none | Daemon sessions are opened with no grant document |
+| `shell_run` | `shell_run` | `CITRATE_HERMES_SHELL_RUN=1` and folder grants | none | No grant document; and in a daemon run every command is declined (no one approves it) |
+
+The app ships with the starter capsules and the bundled skills, so in practice **a Store daemon
+does not start until the runtime switch exists**, whatever its permissions. That is deliberate:
+"no tools" must be true, not approximately true.
+
+The prompt of a Store daemon run is the plain agent prompt with no live app snapshot (balances,
+wallet, node state); only what its approved tools return reaches it. A member-written daemon keeps
+the chat prompt with its context.
 
 ## Counts
 
@@ -127,4 +151,7 @@ never a count of catalog listings. The catalog is not cross-checked against the 
   `{name, prompt, schedule}` up to 64 KiB; model URLs end in a plain `.gguf` file name.
 - An HIC outbox decision kind for the install approval (the agent-runtime sidecar's
   `/records/core` must accept it first).
+- citrate-agent-runtime: a session flag to turn the sidecar-hosted tool sets off (all of them,
+  or all but the ones a Store daemon's permissions cover), so a sandboxed daemon run no longer
+  depends on the member turning sets off for every session.
 - Sign-off on the placeholders: catalog lifetime cap, stage expiry, template size cap.

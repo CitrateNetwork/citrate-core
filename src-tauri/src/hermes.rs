@@ -398,6 +398,9 @@ pub struct HermesManager {
     /// The current session bearer (minted on start; wiped on drop). Held for control calls (S6.2+).
     token: Mutex<Option<Zeroizing<String>>>,
     sup: Mutex<Option<Supervisor>>,
+    /// K5a: the environment the running child was started with (paths and flags; never a token,
+    /// which the child reads from a file). The daemon book reads which host tool sets are on.
+    started_env: Mutex<Option<Vec<(String, String)>>>,
     /// The bearer-authed control transport (production ureq; tests inject a mock).
     control: Box<dyn HermesControl>,
     /// S6.3 dedup: a chain effect's content key (hash of to+data) → the ceremony id minted for it.
@@ -450,6 +453,7 @@ impl HermesManager {
             spawn_args_override: None,
             token: Mutex::new(None),
             sup: Mutex::new(None),
+            started_env: Mutex::new(None),
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
             bridged_by_call: Mutex::new(HashMap::new()),
@@ -726,8 +730,10 @@ impl HermesManager {
             }
         }
         let token = mint_bearer();
+        let mut env_used: Option<Vec<(String, String)>> = None;
         let started = persist_bearer(&self.token_path, &token).and_then(|()| {
             let spec = self.build_spec();
+            env_used = Some(spec.env.clone());
             let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
             config.backoff = BackoffPolicy::new();
             config.healthy_after = HERMES_HEALTHY_AFTER;
@@ -746,6 +752,7 @@ impl HermesManager {
         };
         *guard = Some(sup);
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
+        *self.started_env.lock().unwrap_or_else(|e| e.into_inner()) = env_used;
         Ok(())
     }
 
@@ -755,6 +762,7 @@ impl HermesManager {
             let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
         };
+        *self.started_env.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Some(sup) = sup {
             sup.stop();
             drop(sup);
@@ -813,6 +821,18 @@ impl HermesManager {
                 other => return other,
             }
         }
+    }
+
+    /// K5a: the environment the running sidecar was started with, or `None` while it is not
+    /// running. Read for which sidecar-hosted tool sets every session is offered.
+    pub fn started_env(&self) -> Option<Vec<(String, String)>> {
+        if !self.is_running() {
+            return None;
+        }
+        self.started_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Whether the sidecar is currently Running (the control-call gate for S6.2+).
