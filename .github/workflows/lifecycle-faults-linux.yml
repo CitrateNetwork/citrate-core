@@ -36,8 +36,16 @@ jobs:
     name: supervisor fault suite (linux x86_64, pid namespace)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Dependency fetch: kit/Cargo.toml pulls citrate-wallet-core from citrate-chain over git.
+    # Same arrangement as ci.yml: when the read-only secret CITRATE_CHAIN_READ_TOKEN is available
+    # (pushes and same-repo pull requests) the system git fetches with it; when it is not (pull
+    # requests from forks get no secrets) the fetch is anonymous, which works because
+    # citrate-chain is public. If citrate-chain is ever private again, a fork PR fails in the
+    # build step with "build failed" before any test runs; it never runs the suite unbuilt.
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # secrets can't be referenced in a step `if:`, so map it into env first.
+      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
       RUSTUP_TOOLCHAIN: "1.98.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       LCF_TIMEOUT_SECS: "600"
@@ -46,6 +54,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Authenticate the dependency fetch (citrate-chain, read-only)
+        if: ${{ env.CHAIN_TOKEN != '' }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned toolchain action
         with:

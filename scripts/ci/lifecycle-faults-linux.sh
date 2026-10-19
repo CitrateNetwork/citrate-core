@@ -16,6 +16,9 @@
 #        LCF_TIMEOUT_SECS      per cargo-test run inside the namespace (default 600)
 #        LCF_MIN_SUPERVISOR    minimum passing supervisor lib tests (default 24, main b521d98)
 #
+# Temporary: until citrate-core#352 is on main, the leftover check tolerates the 4 known
+# `sleep 60` leaks from the non-exec supervisor fixtures (see "pre-#352 allowlist" below).
+#
 # Never falls back to running outside a namespace: if `unshare` cannot create one, it exits 2.
 set -uo pipefail
 
@@ -27,7 +30,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --log-dir) LOG_DIR="$2"; shift 2 ;;
     --inner) INNER=1; shift ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -128,6 +131,7 @@ fi
 # Negative control: an unmarked, orphaned `sleep` (reparented to PID 1, like a leaked fixture
 # descendant) must be reported by the scan. If it is not, the leftover check below cannot be
 # trusted and the lane fails. The control process is killed again before the suites run.
+# shellcheck disable=SC2217 # detach all three fds so the control holds nothing of ours open
 ( exec sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >"$LOG_DIR/negative-control.pid" )
 nc_pid="$(<"$LOG_DIR/negative-control.pid")"
 scan_strays
@@ -194,6 +198,39 @@ for _ in $(seq 1 20); do
   sleep 0.1
 done
 ps -e -o pid,ppid,stat,args >"$LOG_DIR/ps-at-exit.txt" 2>&1
+
+# ---- TEMPORARY pre-#352 allowlist (remove this block once citrate-core#352 is on main) -------
+# Three supervisor lib-test fixtures in kit/src/supervisor_tests.rs run `sh -c "...; sleep 60"`.
+# The shell forks the sleep, and stopping the supervised shell leaves the sleep running: 4 per
+# run (ring_survives_restart spawns two). #352 changes them to `exec sleep 60`. Until that is on
+# the commit under test, exactly those leaks are tolerated, and nothing else:
+#   - only while the fixture source still has a non-exec `; sleep 60"` line (so the allowlist
+#     switches itself off on any commit that carries the #352 fixtures, and the check is strict);
+#   - only processes whose argv is exactly `sleep 60`;
+#   - at most LCF_PRE352_MAX (4) of them. A fifth, or any other leftover, still fails the lane.
+# Tolerated leaks are listed in summary.txt and then killed.
+PRE352_SRC="$ROOT/kit/src/supervisor_tests.rs"
+PRE352_MAX=4
+pre352_fixtures=0
+[ -f "$PRE352_SRC" ] && pre352_fixtures="$(grep -cE '; sleep 60"' "$PRE352_SRC")"
+if [ "${#STRAYS[@]}" -ne 0 ] && [ "$pre352_fixtures" -gt 0 ]; then
+  kept=() tolerated=()
+  for l in "${STRAYS[@]}"; do
+    rest="${l#* }"; rest="${rest#* }" # drop "pid state "
+    if [ "$rest" = "sleep 60" ] && [ "${#tolerated[@]}" -lt "$PRE352_MAX" ]; then
+      tolerated+=("$l")
+    else
+      kept+=("$l")
+    fi
+  done
+  if [ "${#tolerated[@]}" -ne 0 ]; then
+    printf 'tolerated (pre-#352 fixture): %s\n' "${tolerated[@]}" | tee -a "$SUMMARY"
+    echo "::warning::tolerated ${#tolerated[@]} leaked 'sleep 60' from the $pre352_fixtures non-exec supervisor fixture(s); fixed by citrate-core#352" | tee -a "$SUMMARY"
+    for l in "${tolerated[@]}"; do kill -KILL "${l%% *}" 2>/dev/null; done
+  fi
+  STRAYS=("${kept[@]}")
+fi
+# ---- end TEMPORARY pre-#352 allowlist ---------------------------------------------------------
 if [ "${#STRAYS[@]}" -ne 0 ]; then
   printf '%s\n' "${STRAYS[@]}" | tee -a "$SUMMARY"
   echo "::error::the suites left ${#STRAYS[@]} process(es) behind in the namespace" | tee -a "$SUMMARY"

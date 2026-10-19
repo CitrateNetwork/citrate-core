@@ -37,7 +37,8 @@ The script:
    scan to report it, then kills it, so a scan that can't see leaks fails the lane. When the
    namespace's init exits the kernel kills everything left in it, so a check run after the
    namespace closes would hide a leak;
-5. writes `summary.txt`, the two test logs, `build.log` and `ps-at-exit.txt` into the log
+5. tolerates, **temporarily**, the four known leaks listed under "Pre-#352 allowlist" below;
+6. writes `summary.txt`, the two test logs, `build.log` and `ps-at-exit.txt` into the log
    directory.
 
 Inside the namespace, `ps` and `pgrep` see only the suite's processes (the remounted `/proc`),
@@ -50,6 +51,25 @@ outside. With `setsid`, PID 1 leads its own session and group (`pgid` = `sid` = 
 `kill(0, …)` stays inside too. The `pgid`/`sid` values were checked on the DGX on 2026-10-19;
 the `kill(0)` reach follows from `kill(2)` signalling the caller's group as the kernel tracks it,
 not as the namespace numbers it.
+
+## Pre-#352 allowlist (temporary)
+
+Three supervisor lib-test fixtures in `kit/src/supervisor_tests.rs` run
+`sh -c "...; sleep 60"`. The shell forks the sleep, so stopping the supervised shell leaves the
+`sleep 60` behind: four per run, because `ring_survives_restart` spawns two. citrate-core#352
+changes the fixtures to `exec sleep 60`. On a commit without that change the strict check fails
+even when every test passes.
+
+Until #352 is on `main`, the script tolerates exactly those leaks:
+
+- only while `kit/src/supervisor_tests.rs` still has a non-exec `; sleep 60"` fixture line, so
+  on any commit that carries the #352 fixtures the allowlist is off and the check is strict;
+- only processes whose argv is exactly `sleep 60`;
+- at most four of them. A fifth, or any other leftover, still fails the lane.
+
+Tolerated leaks are listed in `summary.txt` with a `::warning::` and then killed. Once #352 is
+on `main`, delete the block marked `TEMPORARY pre-#352 allowlist` in
+`scripts/ci/lifecycle-faults-linux.sh`, the matching header note, and this section.
 
 ## Doing it by hand
 
@@ -75,6 +95,11 @@ probe first and, only if it fails, runs
 change that sysctl on a desktop; if `unshare` fails there, stop and ask.
 
 ## CI
+
+The build fetches `citrate-wallet-core` from `citrate-chain` over git. As in `ci.yml`, the job
+uses the read-only secret `CITRATE_CHAIN_READ_TOKEN` for that fetch when it is available, and
+fetches anonymously when it is not (pull requests from forks get no secrets; `citrate-chain` is
+public, so the anonymous fetch works).
 
 `.github/workflows/lifecycle-faults-linux.yml` runs the same script on `ubuntu-24.04` (x86_64)
 for pushes to `main` / `release/**` and for pull requests that touch `kit/**`, `Cargo.toml`,
