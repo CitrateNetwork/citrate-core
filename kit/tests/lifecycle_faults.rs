@@ -513,6 +513,16 @@ fn explicit_start_after_stop_creates_exactly_one_incarnation() {
     let first_pid = running_pid(&sup, &fx);
     let first_incarnation = sup.lifecycle().map(|l| l.incarnation);
     sup.stop();
+    // On a heavily loaded host the old readers can take longer than the stop window to reach end
+    // of file; the Stop then settles Incomplete and the service is briefly Quarantined. This test
+    // is about a Start after a completed Stop, so wait until ownership is reconciled.
+    let reconciled = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        (sup.lifecycle().map(|l| l.phase) == Some(Phase::Stopped)).then_some(())
+    });
+    assert!(
+        reconciled.is_ok(),
+        "INCONCLUSIVE: the Stop never reconciled"
+    );
     let token = match sup.request_start() {
         ControlResult::Accepted(t) => t,
         other => panic!("Start after Stop: {other:?}"),
