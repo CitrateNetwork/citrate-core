@@ -125,3 +125,14 @@ fn the_command_layer_logs_nothing_itself() {
     assert!(!prod.contains("dbg!"));
     assert!(!prod.contains("log::"));
 }
+
+#[test]
+fn production_state_uses_the_redirect_free_client_and_redeem_keeps_on_failure() {
+    let src = include_str!("join.rs");
+    let prod = src.split("#[cfg(test)]").next().expect("prod part");
+    assert!(prod.contains("Box::new(JoinHttp)"));
+    assert!(!prod.contains("UreqClient"));
+    // join_redeem goes through redeem_opened (kept on failure), never take_opened (dropped first).
+    assert!(prod.contains("redeem_opened(&code"));
+    assert!(!prod.contains("take_opened("));
+}

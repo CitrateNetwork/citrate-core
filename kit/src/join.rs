@@ -35,7 +35,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::oidc::{AuthError, BearerSource, HttpClient};
+use crate::oidc::{classify_ureq, AuthError, BearerSource, HttpClient};
 
 // ---------------------------------------------------------------------------
 // Pinned contract constants
@@ -110,8 +110,9 @@ pub enum JoinError {
     Unauthorized,
     /// 503 or an identity outage behind the service.
     Unavailable,
-    /// 422: the cluster name is not allowed (a reserved or confusable term, or, for 0.5.2, any
-    /// non-Latin script). Distinct so the inviter UI can say what to change.
+    /// 422: the cluster name is not allowed: a reserved or confusable term, letters from a script
+    /// other than Latin, Greek, Cyrillic or Cherokee, or a mix of scripts (landing `checkClusterName`).
+    /// Distinct so the inviter UI can say what to change.
     NameNotAllowed,
     /// 429: quota or rate limit.
     RateLimited,
@@ -147,8 +148,9 @@ impl std::fmt::Display for JoinError {
             JoinError::Unauthorized => "join: session expired or not authorized, sign in again",
             JoinError::Unavailable => "join: invite links are temporarily unavailable",
             JoinError::NameNotAllowed => {
-                "join: that cluster name isn't allowed on an invite. Use Latin letters and digits, \
-                 and avoid reserved words such as \"official\" or \"support\""
+                "join: that cluster name isn't allowed on an invite. Use letters from one of Latin, \
+                 Greek, Cyrillic or Cherokee (not mixed), digits and spaces, and avoid reserved \
+                 words such as \"official\" or \"support\""
             }
             JoinError::RateLimited => "join: too many invite requests, try again later",
             JoinError::NotFound => "join: invite not found",
@@ -242,7 +244,8 @@ fn check_code(code: &str) -> Result<(), JoinError> {
     }
 }
 
-/// Invite kind: `direct` (single-use, carries an envelope) or `referral` (display only).
+/// Invite kind: `direct` (actionable: carries an envelope whose relay invite redeems once) or
+/// `referral` (display only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JoinKind {
@@ -912,6 +915,86 @@ fn now_secs() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// HTTP: a redirect-free client for the join service
+// ---------------------------------------------------------------------------
+
+/// Per-request deadline for join-service calls.
+const JOIN_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The production HTTP client for the join service: blocking `ureq` with **redirects disabled**
+/// (`max_redirects(0)`). A 3xx is never followed: the bearer and the request body are never replayed
+/// to another location, and any non-2xx (including a 3xx) surfaces as `Rejected(status)`.
+pub struct JoinHttp;
+
+impl JoinHttp {
+    fn agent() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(JOIN_HTTP_TIMEOUT))
+            .max_redirects(0)
+            .build()
+            .into()
+    }
+
+    fn run(
+        method: &str,
+        url: &str,
+        bearer: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<String, AuthError> {
+        let mut b = ureq::http::Request::builder()
+            .method(method)
+            .uri(url)
+            .header("Accept", "application/json");
+        if body.is_some() {
+            b = b.header("Content-Type", "application/json");
+        }
+        if let Some(tok) = bearer {
+            b = b.header("Authorization", format!("Bearer {tok}"));
+        }
+        let req = b
+            .body(body.unwrap_or("").to_string())
+            .map_err(|_| AuthError::Network)?;
+        let mut resp = Self::agent().run(req).map_err(|e| classify_ureq(&e))?;
+        let status = resp.status().as_u16();
+        // With redirects off, ureq hands a 3xx back as a response: refuse it.
+        if !(200..300).contains(&status) {
+            return Err(if status == 401 {
+                AuthError::Unauthorized
+            } else {
+                AuthError::Rejected(status)
+            });
+        }
+        resp.body_mut()
+            .read_to_string()
+            .map_err(|_| AuthError::Network)
+    }
+}
+
+impl HttpClient for JoinHttp {
+    fn get(&self, url: &str, bearer: Option<&str>) -> Result<String, AuthError> {
+        Self::run("GET", url, bearer, None)
+    }
+    fn post_form(&self, _url: &str, _form: &[(&str, &str)]) -> Result<String, AuthError> {
+        // The join service takes JSON only.
+        Err(AuthError::Network)
+    }
+    fn post_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String, AuthError> {
+        Self::run("POST", url, bearer, Some(body))
+    }
+    fn put_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String, AuthError> {
+        Self::run("PUT", url, bearer, Some(body))
+    }
+    fn delete_json(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+        body: &str,
+    ) -> Result<String, AuthError> {
+        Self::run("DELETE", url, bearer, Some(body))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The client
 // ---------------------------------------------------------------------------
 
@@ -1126,7 +1209,17 @@ impl JoinClient {
             k.kid
                 .as_deref()
                 .is_some_and(|kid| self.cfg.pinned_kids.contains(&kid))
+                && k.kty == "OKP"
+                && k.crv.as_deref() == Some("Ed25519")
+                && k.x
+                    .as_deref()
+                    .and_then(|x| URL_SAFE_NO_PAD.decode(x).ok())
+                    .is_some_and(|b| b.len() == 32)
         });
+        // No usable pinned key: nothing could verify a resolve, so don't spend one.
+        if jwks.keys.is_empty() {
+            return Err(JoinError::Signature);
+        }
         Ok(jwks)
     }
 
@@ -1134,8 +1227,10 @@ impl JoinClient {
     /// with its key, opens the envelope and holds the relay invite in memory for
     /// [`JoinClient::take_opened`]. Unauthenticated: no bearer is sent.
     ///
-    /// Note: the service counts a resolve against the code's `maxResolves` (1 for direct), so call
-    /// this once per link.
+    /// The JWKS is fetched and checked FIRST, so a key outage or an unusable key set fails before
+    /// the service counts a resolve. Resolve is not redeem: the service allows a code up to its
+    /// `maxResolves` (direct 1..=50, default 50; referral up to 5,000) and the relay redeem is the
+    /// single-use step. Each call still counts, so resolve on the member's action, not on a preview.
     pub fn resolve(&self, link: &str) -> Result<ResolvedView, JoinError> {
         self.prune();
         let (code, key) = match parse_link(link) {
@@ -1155,10 +1250,10 @@ impl JoinClient {
     }
 
     fn resolve_inner(&self, code: &str, key: Option<&LinkKey>) -> Result<ResolvedView, JoinError> {
+        let jwks = self.fetch_jwks()?;
         let url = format!("{}/{code}", self.cfg.api_base);
         let resp = self.http.get(&url, None).map_err(map_http_error)?;
         let body: ResolveBody = serde_json::from_str(&resp).map_err(|_| JoinError::BadResponse)?;
-        let jwks = self.fetch_jwks()?;
         let v = verify_resolve(&body, code, &jwks, &self.cfg.pinned_kids)?;
         let mut actionable = false;
         let mut key_missing = false;
@@ -1196,6 +1291,32 @@ impl JoinClient {
     pub fn take_opened(&self, code: &str) -> Option<InvitePayload> {
         self.prune();
         self.opened().remove(code).map(|o| o.payload)
+    }
+
+    /// Redeem the opened relay invite for `code` with `redeem` (the self-admit call). The invite is
+    /// forgotten only when `redeem` succeeds; on an error (relay unreachable, daemon down) it stays
+    /// held until it expires, so the member can retry. `NotFound` (as its message) when nothing is
+    /// held for the code.
+    pub fn redeem_opened(
+        &self,
+        code: &str,
+        redeem: impl FnOnce(&InvitePayload) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.prune();
+        let payload = self
+            .opened()
+            .get(code)
+            .map(|o| o.payload.clone())
+            .ok_or_else(|| JoinError::NotFound.to_string())?;
+        let out = redeem(&payload);
+        match &out {
+            Ok(()) => {
+                self.opened().remove(code);
+                emit("redeem", Some(code), None);
+            }
+            Err(_) => emit("redeem failed, invite kept for retry", Some(code), None),
+        }
+        out
     }
 
     /// Revoke one of the caller's codes. Idempotent at the service; drops any local state for it.

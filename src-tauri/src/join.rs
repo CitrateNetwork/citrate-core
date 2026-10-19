@@ -20,20 +20,21 @@
 //! UI wiring is tasks 11 (inviter) and 12 (invitee); this module only adds the commands.
 
 use citrate_core_kit::join::{
-    InvitePayload, JoinClient, JoinCodeEntry, JoinConfig, JoinError, MintRequest, MintView,
-    ResolvedView,
+    InvitePayload, JoinClient, JoinCodeEntry, JoinConfig, JoinError, JoinHttp, MintRequest,
+    MintView, ResolvedView,
 };
-use citrate_core_kit::oidc::{AuthState, UreqClient};
+use citrate_core_kit::oidc::AuthState;
 use tauri::Manager;
 
 /// Managed state: the process-wide join client (in-memory pending attaches + opened invites).
 pub struct JoinState(pub JoinClient);
 
-/// Production join client: the fixed citrate.ai endpoints + the kit's ureq HTTP client.
+/// Production join client: the fixed citrate.ai endpoints + the kit's redirect-free join HTTP
+/// client ([`JoinHttp`]: a 3xx is refused, so the bearer is never replayed elsewhere).
 pub fn build_join_state() -> JoinState {
     JoinState(JoinClient::new(
         JoinConfig::production(),
-        Box::new(UreqClient),
+        Box::new(JoinHttp),
     ))
 }
 
@@ -87,22 +88,27 @@ pub async fn join_attach(app: tauri::AppHandle, code: String) -> Result<MintView
 
 /// `join_resolve` — resolve and verify an invite link (`https://citrate.ai/join/<code>#K`,
 /// `citrate://join/<code>#K` or a bare code). Signed display data only; a direct invite that opened
-/// is held in Rust for `join_redeem`. The service counts this against the code's resolve limit
-/// (1 for direct), so call it once per link.
+/// is held in Rust for `join_redeem`. Resolve is not redeem: the service allows a code up to its
+/// `maxResolves` (direct 1..=50, default 50) and the relay redeem is the single-use step, but each
+/// call counts, so resolve on the member's action. The JWKS is checked before a resolve is spent.
 #[tauri::command]
 pub async fn join_resolve(app: tauri::AppHandle, link: String) -> Result<ResolvedView, String> {
     crate::blocking::off_main(move || with_states(&app, |join, _auth| join.resolve(&link))).await
 }
 
 /// `join_redeem` — the member's explicit Join for a resolved direct invite: hands the opened relay
-/// invite (held in Rust since `join_resolve`) to the existing self-admit path. One use.
+/// invite (held in Rust since `join_resolve`) to the existing self-admit path. The invite is
+/// forgotten only on success; if the self-admit fails (relay or daemon unreachable) it stays held
+/// until it expires, so the member can press Join again.
 #[tauri::command]
 pub async fn join_redeem(app: tauri::AppHandle, code: String) -> Result<(), String> {
     crate::blocking::off_main(move || {
-        let payload = with_states(&app, |join, _auth| {
-            join.take_opened(&code).ok_or(JoinError::NotFound)
-        })?;
-        crate::invites::redeem_link(&app, &payload.to_invite_link())
+        let join = app
+            .try_state::<JoinState>()
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        join.0.redeem_opened(&code, |payload| {
+            crate::invites::redeem_link(&app, &payload.to_invite_link())
+        })
     })
     .await
 }

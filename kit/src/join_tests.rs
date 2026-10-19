@@ -767,6 +767,12 @@ struct StubState {
     fail_next_put: Option<u16>,
     /// Answer the next attach with an envHash that is not the hash of what was sent.
     lie_about_env_hash: bool,
+    /// Answer every JWKS fetch with this status (an outage / misconfiguration).
+    fail_jwks: Option<u16>,
+    /// Serve a JWKS that carries only an unpinned kid.
+    jwks_unpinned_only: bool,
+    /// Answer every request (except the redirect target) with a 307 to `<base>/followed`.
+    redirect_everything: bool,
 }
 
 struct StubJoinService {
@@ -776,9 +782,13 @@ struct StubJoinService {
 
 fn respond(stream: &mut TcpStream, status: u16, body: &serde_json::Value) {
     let text = body.to_string();
+    let location = match body["location"].as_str() {
+        Some(l) if (300..400).contains(&status) => format!("Location: {l}\r\n"),
+        _ => String::new(),
+    };
     let _ = write!(
         stream,
-        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
         text.len()
     );
     let _ = stream.flush();
@@ -849,13 +859,18 @@ impl StubJoinService {
         let base = format!("http://{}/api/join", listener.local_addr().expect("addr"));
         let state = Arc::new(Mutex::new(StubState::default()));
         let st = state.clone();
+        let addr = listener.local_addr().expect("addr");
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
                 if let Some((method, path, auth, body, head)) = read_request(&mut stream) {
                     let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
                     s.requests.push(format!("{head}{body}"));
-                    let (status, out) = handle(&mut s, &method, &path, auth.as_deref(), &body);
+                    let (status, out) = if s.redirect_everything && path != "/api/join/followed" {
+                        (307, serde_json::json!({ "location": format!("http://{addr}/api/join/followed") }))
+                    } else {
+                        handle(&mut s, &method, &path, auth.as_deref(), &body)
+                    };
                     drop(s);
                     respond(&mut stream, status, &out);
                 }
@@ -865,7 +880,8 @@ impl StubJoinService {
     }
 
     fn client(&self) -> JoinClient {
-        JoinClient::new(JoinConfig::for_tests(&self.base), Box::new(UreqClient))
+        // The production join HTTP client (no redirects), as `build_join_state` uses.
+        JoinClient::new(JoinConfig::for_tests(&self.base), Box::new(JoinHttp))
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, StubState> {
@@ -933,7 +949,10 @@ fn handle(
                     goal: req["goal"].as_str().unwrap_or("general").to_string(),
                     env: None,
                     resolves: 0,
-                    max_resolves: if kind == JoinKind::Direct { 1 } else { 5000 },
+                    // landing MINT_CAPS: direct 1..=50 (default 50), referral up to 5,000.
+                    max_resolves: req["maxResolves"].as_u64().map(|n| n as u32).unwrap_or(
+                        if kind == JoinKind::Direct { 50 } else { 5000 },
+                    ),
                     revoked: false,
                     minter,
                 },
@@ -948,7 +967,11 @@ fn handle(
             }
             (201, out)
         }
-        ("GET", "/jwks") => (200, served_jwks()),
+        ("GET", "/jwks") => match (s.fail_jwks, s.jwks_unpinned_only) {
+            (Some(st), _) => (st, serde_json::json!({ "ok": false, "message": "not configured" })),
+            (None, true) => (200, serde_json::json!({ "keys": [jwk("rogue", PUB_ROGUE)] })),
+            (None, false) => (200, served_jwks()),
+        },
         ("GET", "/mine") => {
             let Some(minter) = minter_of(auth) else {
                 return unauthorized;
@@ -1141,11 +1164,17 @@ fn e2e_mint_attach_resolve_decrypt_equals_the_original_invite() {
 }
 
 #[test]
-fn e2e_direct_link_is_single_use_and_unknown_revoked_exhausted_are_one_not_found() {
+fn e2e_resolve_limit_and_unknown_revoked_exhausted_are_one_not_found() {
     let stub = StubJoinService::start();
     let c = stub.client();
+    // Resolve is not redeem: a direct code allows 1..=50 resolves (default 50); the relay redeem
+    // is the single-use step. Mint one with a limit of 1 to reach "exhausted".
+    let one = MintRequest {
+        max_resolves: Some(1),
+        ..direct_req()
+    };
     let m = c
-        .mint(&FixedBearer(BEARER), &direct_req(), Some(&sample_invite()))
+        .mint(&FixedBearer(BEARER), &one, Some(&sample_invite()))
         .expect("mint");
     let url = m.share_url.expect("url");
     assert!(c.resolve(&url).is_ok());
@@ -1271,7 +1300,7 @@ fn e2e_auth_and_policy_errors_surface_honestly() {
     // The message tells the inviter what to change (task 11 shows it as-is).
     assert!(JoinError::NameNotAllowed
         .to_string()
-        .contains("Latin letters and digits"));
+        .contains("Latin, Greek, Cyrillic or Cherokee"));
     // Shape errors never reach the network.
     let before = stub.state().requests.len();
     assert_eq!(
@@ -1337,5 +1366,96 @@ fn e2e_attach_reply_with_a_different_env_hash_is_not_trusted() {
     assert_eq!(
         m.attach_error.as_deref(),
         Some(JoinError::BadResponse.to_string().as_str())
+    );
+}
+
+fn resolves_of(stub: &StubJoinService, code: &str) -> u32 {
+    stub.state().rows.get(code).map(|r| r.resolves).unwrap_or(u32::MAX)
+}
+
+#[test]
+fn e2e_direct_link_resolves_more_than_once_within_its_limit() {
+    let stub = StubJoinService::start();
+    let c = stub.client();
+    let m = c
+        .mint(&FixedBearer(BEARER), &direct_req(), Some(&sample_invite()))
+        .expect("mint");
+    let url = m.share_url.expect("url");
+    assert!(c.resolve(&url).is_ok());
+    assert!(c.resolve(&url).is_ok(), "default direct limit is 50, not 1");
+    assert_eq!(resolves_of(&stub, &m.code), 2);
+}
+
+#[test]
+fn e2e_jwks_failure_does_not_spend_a_resolve() {
+    let stub = StubJoinService::start();
+    let c = stub.client();
+    let one = MintRequest {
+        max_resolves: Some(1),
+        ..direct_req()
+    };
+    let m = c
+        .mint(&FixedBearer(BEARER), &one, Some(&sample_invite()))
+        .expect("mint");
+    let url = m.share_url.expect("url");
+    stub.state().fail_jwks = Some(503);
+    assert_eq!(c.resolve(&url), Err(JoinError::Unavailable));
+    assert_eq!(resolves_of(&stub, &m.code), 0, "a JWKS outage spent a resolve");
+    stub.state().fail_jwks = None;
+    stub.state().jwks_unpinned_only = true;
+    assert_eq!(c.resolve(&url), Err(JoinError::Signature));
+    assert_eq!(resolves_of(&stub, &m.code), 0, "an unusable JWKS spent a resolve");
+    stub.state().jwks_unpinned_only = false;
+    // The single allowed resolve is still there.
+    assert!(c.resolve(&url).expect("resolve").actionable);
+    assert_eq!(resolves_of(&stub, &m.code), 1);
+}
+
+#[test]
+fn opened_invite_survives_a_failed_redeem_and_is_handed_over_once_on_success() {
+    let stub = StubJoinService::start();
+    let c = stub.client();
+    let m = c
+        .mint(&FixedBearer(BEARER), &direct_req(), Some(&sample_invite()))
+        .expect("mint");
+    let view = c.resolve(&m.share_url.expect("url")).expect("resolve");
+    assert!(view.actionable);
+    // A transient failure (relay down): the invite stays held for a retry.
+    let mut seen = Vec::new();
+    let first = c.redeem_opened(&m.code, |p| {
+        seen.push(p.to_invite_link().to_string());
+        Err("comms: relay unreachable".to_string())
+    });
+    assert_eq!(first, Err("comms: relay unreachable".to_string()));
+    let second = c.redeem_opened(&m.code, |p| {
+        seen.push(p.to_invite_link().to_string());
+        Ok(())
+    });
+    assert_eq!(second, Ok(()));
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0], sample_invite().to_invite_link().as_str());
+    assert_eq!(seen[0], seen[1]);
+    // Success consumed it.
+    let third = c.redeem_opened(&m.code, |_| Ok(()));
+    assert_eq!(third, Err(JoinError::NotFound.to_string()));
+    assert!(c.take_opened(&m.code).is_none());
+}
+
+#[test]
+fn e2e_join_http_never_follows_a_redirect() {
+    let stub = StubJoinService::start();
+    let c = stub.client();
+    stub.state().redirect_everything = true;
+    assert_eq!(
+        c.mint(&FixedBearer(BEARER), &referral_req(), None),
+        Err(JoinError::Rejected(307))
+    );
+    assert_eq!(c.resolve("https://citrate.ai/join/Ab3dE7gh"), Err(JoinError::Rejected(307)));
+    assert_eq!(c.list(&FixedBearer(BEARER)), Err(JoinError::Rejected(307)));
+    let s = stub.state();
+    assert!(!s.requests.is_empty());
+    assert!(
+        s.requests.iter().all(|r| !r.contains("/api/join/followed")),
+        "a redirect was followed"
     );
 }
