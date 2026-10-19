@@ -616,13 +616,6 @@ impl ChainStub {
                 None => Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1,
                     "error": { "code": -32601, "message": "Method not found" } })),
             },
-            Some("eth_getBlockByNumber") => {
-                let n = hex_q(&body["params"][0]);
-                if n > self.head {
-                    return Ok(ok(JsonValue::Null));
-                }
-                Ok(ok(serde_json::json!({ "number": format!("0x{n:x}"), "hash": self.hash_at(n) })))
-            }
             Some("eth_syncing") => match self.syncing.borrow().clone() {
                 Some(v) => Ok(ok(v)),
                 None => Err(RpcError::Transport("eth_syncing failed".into())),
@@ -790,8 +783,7 @@ fn a_refresh_is_incremental() {
     assert_eq!(a, 50_001 - SAFE_DEPTH_BLOCKS, "only the trailing window is re-read");
 }
 
-// A failed window is an error, never an empty (or partial) list; the blocks read before it are
-// kept, so the next refresh resumes there.
+// A failed window is an error, never an empty (or partial) list; the position does not move.
 #[test]
 fn a_failed_window_is_an_error_not_an_empty_list() {
     let rpc = RpcClient::with_transport(ChainStub::new(20_000, vec![(3, 2_000, false)]));
@@ -800,7 +792,8 @@ fn a_failed_window_is_an_error_not_an_empty_list() {
     let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect_err("must fail");
     let msg = err.to_string();
     assert!(msg.contains("8") && msg.contains("timed out"), "{msg}");
-    assert!(scan.next_block > LIQUID_STAKING_POOL_DEPLOY_BLOCK && scan.next_block <= 8_500);
+    // #337 protocol: an error commits nothing; the ids seen are kept (each is confirmed on chain).
+    assert_eq!(scan.next_block, 0, "an error never advances the position");
     assert!(scan.ids.contains(&3), "the withdrawal found before the failure is kept");
     *rpc.transport().fail_from.borrow_mut() = None;
     let pending = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("resumed");
@@ -1082,7 +1075,7 @@ fn an_executed_head_bounds_the_committed_position() {
     let mut scan = load_scan(&file, "k");
     assert!(read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 1").is_empty());
     assert_eq!(scan.next_block, 3_001 - EXECUTED_HEAD_MARGIN_BLOCKS, "up to the executed head, less the margin");
-    assert_eq!(scan.anchor, Some((3_000 - EXECUTED_HEAD_MARGIN_BLOCKS, stub_hash(3_000 - EXECUTED_HEAD_MARGIN_BLOCKS))));
+    assert_eq!(scan.anchor, Some((3_000, stub_hash(3_000))), "anchored on the executed head");
     save_scan(&file, "k", &scan).expect("save");
     *rpc.transport().applied_tip.borrow_mut() = None;
     *rpc.transport().executed_head.borrow_mut() = Some(5_000);
@@ -1116,6 +1109,8 @@ fn a_reorg_at_the_committed_position_rescans_the_window() {
         ..Default::default()
     };
     rpc.transport().reorged.borrow_mut().insert(6_000, format!("0x{}", "ee".repeat(32)));
+    // The anchored block left the executed chain: eth_getBlockByHash no longer serves it.
+    rpc.transport().unknown_hashes.borrow_mut().insert(stub_hash(6_000));
     let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
     assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["40"]);
     let first = rpc.transport().log_ranges()[0];
@@ -1307,8 +1302,12 @@ fn scan_position_violations(prod: &str) -> Vec<String> {
             }
         }
     }
-    if !prod.contains("rpc.executed_head()") {
-        bad.push("citrate_executedHead is not asked".into());
+    if prod.matches("rpc.executed_head()").count() < 2 {
+        bad.push("citrate_executedHead is not read twice (h1 before the logs, h2 after)".into());
+    }
+    // The reorg check is by hash: a block-by-number read can name a sibling.
+    if prod.contains(".block_hash(") || prod.contains("eth_getBlockByNumber") {
+        bad.push("a reorg or anchor check reads a block by number".into());
     }
     // getLogs never reads past the executed head: the window end is `scan_end`.
     if !prod.contains(".min(scan_end)") {
@@ -1340,6 +1339,7 @@ fn tripwire_no_scan_position_passes_executed_evidence() {
 fn tripwire_catches_a_fixed_depth_position() {
     // Negative control: the shape of the c38974a bug fails the tripwire.
     let old = "let x = rpc.executed_head();\n\
+               let a = rpc.block_hash(h);\n\
                let commit_cap = match e { Ok(Some(n)) => n.min(head - SAFE_DEPTH_BLOCKS), Ok(None) => match rpc.syncing() { _ => 0 } };\n\
                scan.next_block = (head + 1).saturating_sub(SAFE_DEPTH_BLOCKS);\n";
     let bad = scan_position_violations(old);
@@ -1348,4 +1348,6 @@ fn tripwire_catches_a_fixed_depth_position() {
     assert!(bad.iter().any(|b| b.contains("reorg margin")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("error advances")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("not capped at the executed head")), "{bad:?}");
+    assert!(bad.iter().any(|b| b.contains("read twice")), "{bad:?}");
+    assert!(bad.iter().any(|b| b.contains("by number")), "{bad:?}");
 }

@@ -337,26 +337,17 @@ impl<T: RpcTransport> RpcClient<T> {
         Ok(Some((number, hash.to_string())))
     }
 
-    /// The hash of block `number` (`eth_getBlockByNumber(n, false).hash`), `None` when the node
-    /// returns no block (C1-W reorg check).
-    pub fn block_hash(&self, number: u64) -> Result<Option<String>, RpcError> {
-        let result = self.request(
-            "eth_getBlockByNumber",
-            json!([format!("0x{number:x}"), false]),
-        )?;
+    /// The number of the block with hash `hash` (`eth_getBlockByHash(hash, false).number`),
+    /// `None` when the node serves no such block (C1-W reorg check: by hash, never by number).
+    pub fn block_number_by_hash(&self, hash: &str) -> Result<Option<u64>, RpcError> {
+        let result = self.request("eth_getBlockByHash", json!([hash, false]))?;
         if result.is_null() {
             return Ok(None);
         }
-        result
-            .get("hash")
-            .and_then(Value::as_str)
-            .map(|h| Some(h.to_string()))
-            .ok_or_else(|| RpcError::MissingField("block.hash".into()))
-    }
-
-    /// STD red stub (C1-W): not used by the current behaviour.
-    pub fn block_number_by_hash(&self, _hash: &str) -> Result<Option<u64>, RpcError> {
-        Ok(None)
+        let n = result
+            .get("number")
+            .ok_or_else(|| RpcError::MissingField("block.number".into()))?;
+        parse_hex_quantity(n, "block.number").map(Some)
     }
 
     /// `eth_syncing` → the node's APPLIED (executed) tip when it reports that it is behind

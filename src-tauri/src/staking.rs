@@ -568,9 +568,14 @@ pub const LOG_WINDOW_BLOCKS: u64 = 1000;
 /// finalized head: `finalized` returns genesis while finality is not running.
 pub const SAFE_DEPTH_BLOCKS: u64 = 1000;
 
-/// C1-W (citrate-chain#337) — how far below `citrate_executedHead.number` progress is committed.
-/// The executed head is not atomic with `eth_getLogs` and can go down on a reorg, so the last
-/// blocks are re-read every refresh. The chain's MAX_REORG_DEPTH.
+/// C1-W (citrate-chain#337) — how far below min(h1, h2) of `citrate_executedHead` progress is
+/// committed. It has to cover three things:
+/// - the head is not atomic with `eth_getLogs` (h1 = 5 was seen while getLogs served only up to 4);
+/// - the producer writes receipts AFTER it commits the tip, so the newest blocks can be executed
+///   but not yet served;
+/// - a reorg can move the head down.
+/// The first two are one or a few blocks. A reorg is bounded by the chain's MAX_REORG_DEPTH (100),
+/// so 100 covers all three with room to spare, at the cost of re-reading one window per refresh.
 pub const EXECUTED_HEAD_MARGIN_BLOCKS: u64 = 100;
 
 /// C1-W — how many `withdrawals(id)` reads go in one JSON-RPC batch.
@@ -693,14 +698,16 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         .block_number()
         .map_err(|e| StakingError::Rpc(e.to_string()))?;
 
-    // Reorg check on resume: the block just below the committed position must still carry the
-    // hash it had when it was committed. A changed (or missing) block rewinds one window.
+    // Reorg check on resume, by HASH: the executed head the position was committed against must
+    // still be served at its height (`eth_getBlockByHash`). `eth_getBlockByNumber` is not used:
+    // the height index can name a sibling. A missing block or another height rewinds one window.
     if let Some((h, hash)) = scan.anchor.clone() {
         let now = rpc
-            .block_hash(h)
+            .block_number_by_hash(&hash)
             .map_err(|e| StakingError::Rpc(e.to_string()))?;
-        if now.as_deref().map(|n| n.eq_ignore_ascii_case(&hash)) != Some(true) {
-            scan.next_block = (h + 1)
+        if now != Some(h) {
+            scan.next_block = scan
+                .next_block
                 .saturating_sub(LOG_WINDOW_BLOCKS)
                 .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
             scan.anchor = None;
@@ -710,8 +717,10 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
 
     // Evidence of what the node has EXECUTED: citrate-chain#334 serves eth_getLogs only up to the
     // applied tip, while eth_blockNumber is the stored height.
-    // The citrate-chain#337 scanner protocol: read the executed head, ask for logs only up to it,
-    // commit at most head.number - EXECUTED_HEAD_MARGIN_BLOCKS, never advance on an error.
+    // The citrate-chain#337 scanner protocol: h1 = the executed head, ask for logs only up to it,
+    // h2 = the executed head again, commit at most min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS, and
+    // never advance on an error (a window error, or an h2 that can't be read). h1 alone is never
+    // trusted: a rewind probe saw h1 = 5 while getLogs served only up to 4.
     // 1. `citrate_executedHead` {number, hash}: as above.
     // 2. The method is absent (-32601: an older node): `eth_syncing` gives the applied tip as
     //    `currentBlock` when the node is behind (`false` when not), and progress also stays
@@ -735,12 +744,15 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         },
         Err(_) => scan.next_block,
     };
-    let committed_before = scan.next_block;
     let mut from = scan.next_block.max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
+    // The last block of the contiguous range read in this call; committed only at the end.
+    let mut read_to: Option<u64> = None;
     let mut window = LOG_WINDOW_BLOCKS;
     let mut retries = 0u32;
     while from <= scan_end {
         if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            // Out of budget is not an error: commit what was read (bounded by h1 and h2).
+            commit_read(rpc, scan, &executed, commit_cap, read_to);
             return Err(StakingError::Incomplete {
                 scanned_to: from.saturating_sub(1),
                 head: scan_end,
@@ -767,7 +779,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
                         scan.ids.insert(decode_uint256_topic(id_topic)?);
                     }
                 }
-                scan.next_block = scan.next_block.max((to + 1).min(commit_cap));
+                read_to = Some(to);
                 from = to + 1;
                 retries = 0;
             }
@@ -796,11 +808,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         }
     }
 
-    // Anchor the committed position on the hash of the block just below it.
-    if scan.next_block != committed_before && scan.next_block > LIQUID_STAKING_POOL_DEPLOY_BLOCK {
-        let h = scan.next_block - 1;
-        scan.anchor = rpc.block_hash(h).ok().flatten().map(|hash| (h, hash));
-    }
+    commit_read(rpc, scan, &executed, commit_cap, read_to);
 
     let mut out = Vec::new();
     let mut claimed_ids = Vec::new();
@@ -852,6 +860,42 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         scan.claimed.insert(id);
     }
     Ok(out)
+}
+
+/// C1-W — commit the range read up to `read_to` into `scan`, bounded by `commit_cap` and, when the
+/// node serves `citrate_executedHead`, by a SECOND read of it (h2): the position never passes
+/// min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS. An h2 that can't be read commits nothing. The lower
+/// of the two heads becomes the anchor the next read checks by hash.
+fn commit_read<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    scan: &mut WithdrawalScan,
+    executed: &Result<Option<(u64, String)>, crate::rpc::RpcError>,
+    commit_cap: u64,
+    read_to: Option<u64>,
+) {
+    let Some(read_to) = read_to else {
+        return;
+    };
+    let (commit_cap, anchor) = match executed {
+        Ok(Some((h1, hash1))) => match rpc.executed_head() {
+            Ok(Some((h2, hash2))) => {
+                let low = if h2 < *h1 {
+                    (h2, hash2)
+                } else {
+                    (*h1, hash1.clone())
+                };
+                let cap = (low.0 + 1).saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS);
+                (commit_cap.min(cap), Some(low))
+            }
+            _ => return,
+        },
+        _ => (commit_cap, None),
+    };
+    let before = scan.next_block;
+    scan.next_block = scan.next_block.max((read_to + 1).min(commit_cap));
+    if scan.next_block != before {
+        scan.anchor = anchor;
+    }
 }
 
 /// The `eth_call` object for `withdrawals(id)` on the pool: `{to, data}`.

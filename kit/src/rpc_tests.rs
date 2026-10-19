@@ -364,21 +364,17 @@ fn syncing_and_eth_call_batch() {
 }
 
 // C1-W — citrate_executedHead: served → (number, hash); an older node (-32601) → None; any other
-// error is an error. block_hash: a missing block is None.
+// error (citrate-chain#337: -32603 when there is no applied tip) is an error, never "absent".
 #[test]
-fn executed_head_and_block_hash() {
+fn executed_head_answers() {
     let h = format!("0x{}", "ab".repeat(32));
     let served = json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": "0xbb8", "hash": h } });
     let absent = json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -32601, "message": "Method not found" } });
-    let broken = json!({ "jsonrpc": "2.0", "id": 3, "error": { "code": -32000, "message": "boom" } });
-    let block = json!({ "jsonrpc": "2.0", "id": 4, "result": { "number": "0x10", "hash": h } });
-    let none = json!({ "jsonrpc": "2.0", "id": 5, "result": null });
-    let rpc = RpcClient::with_transport(MockTransport::new(vec![served, absent, broken, block, none]));
-    assert_eq!(rpc.executed_head(), Ok(Some((3000, h.clone()))));
+    let no_tip = json!({ "jsonrpc": "2.0", "id": 3, "error": { "code": -32603, "message": "citrate_executedHead: no applied tip" } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![served, absent, no_tip]));
+    assert_eq!(rpc.executed_head(), Ok(Some((3000, h))));
     assert_eq!(rpc.executed_head(), Ok(None));
-    assert!(rpc.executed_head().is_err());
-    assert_eq!(rpc.block_hash(16), Ok(Some(h)));
-    assert_eq!(rpc.block_hash(17), Ok(None));
+    assert!(rpc.executed_head().is_err(), "-32603 is an error, not an older node");
 }
 
 // C1-W: eth_getBlockByHash gives the number of the block with that hash, None when it is not served.
