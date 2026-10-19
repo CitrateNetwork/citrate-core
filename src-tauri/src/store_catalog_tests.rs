@@ -946,17 +946,17 @@ fn opening_a_store_daemon_session_rechecks_the_current_environment() {
     let search_on = env(&[("CITRATE_HERMES_SEARCH", "1")]);
     let claimed_off = enabled_host_set_ids(&off);
     // Same (all off) at claim and at open: opens.
-    assert!(store_open_check(&none, Some(&claimed_off), Some(&off)).is_ok());
+    assert!(store_open_check(&none, Some(&claimed_off), Some(&off), None).is_ok());
     // Hermes is restarting at open: refused.
-    assert!(store_open_check(&none, Some(&claimed_off), None).is_err());
+    assert!(store_open_check(&none, Some(&claimed_off), None, None).is_err());
     // Web search was turned on between the claim and the open: refused.
-    let err = store_open_check(&none, Some(&claimed_off), Some(&search_on)).unwrap_err();
+    let err = store_open_check(&none, Some(&claimed_off), Some(&search_on), None).unwrap_err();
     assert!(err.contains("changed") || err.contains("Web search"), "{err}");
     // Covered by the approved permission but still a change since the claim: refused.
     let covered = tools_for_permissions(&["web_search".to_string()]);
-    assert!(store_open_check(&covered, Some(&claimed_off), Some(&search_on)).is_err());
+    assert!(store_open_check(&covered, Some(&claimed_off), Some(&search_on), None).is_err());
     // Claimed with no record of the sets (an older book): refused.
-    assert!(store_open_check(&none, None, Some(&off)).is_err());
+    assert!(store_open_check(&none, None, Some(&off), None).is_err());
 }
 
 #[test]
@@ -987,6 +987,70 @@ fn the_check_reads_what_the_sidecar_inherits_from_the_launch_environment() {
     // Core's own value wins over an inherited one.
     let effective = crate::hermes::effective_child_env(env(&[("CITRATE_HERMES_SEARCH", "1")]).into_iter(), &env(&[("CITRATE_HERMES_SEARCH", "0")]));
     assert!(host_block_reason(&[], &effective).is_none());
+}
+
+// ---- a sidecar that scopes host tool sets per session (citrate-agent-runtime#87) -------------
+
+fn all_sets() -> Vec<String> {
+    // What a #87 sidecar reports in `capabilities.sessionToolSets` (core's permission names).
+    ["web_search", "web_browse", "mcp", "toolchain", "skills_read", "learn_propose", "capsules_run", "files", "shell_run"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn bare_store_daemon(tag: &str) -> (Fx, String) {
+    let fx = Fx::new(tag);
+    let listing = listing_json("bare", "daemon", "public", DAEMON_URL, &daemon_template(), BUDGET)
+        .replace(r#""permissions":[{"id":"local_model","reason":"Runs on your local model."},{"id":"files_read","reason":"Reads the folders you granted."}]"#, r#""permissions":[]"#);
+    fx.fx_publish(&catalog_json(1, &[listing]));
+    fx.fx_view(0);
+    let st = fx.fx_stage("bare", 0).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 0).expect("install").target;
+    (fx, id)
+}
+
+#[test]
+fn an_older_sidecar_without_session_tool_sets_keeps_the_refusal() {
+    use crate::daemons::SidecarFacts;
+    let (fx, id) = bare_store_daemon("oldsidecar");
+    let on = env(&[("CITRATE_HERMES_SEARCH", "1")]);
+    let old = SidecarFacts { env: &on, session_tool_sets: None };
+    assert!(crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_with(&id, NOW_MS, Some(&old))).is_err());
+    // A sidecar that scopes only some sets is treated as an older one.
+    let partial: Vec<String> = all_sets().into_iter().filter(|s| s != "capsules_run").collect();
+    let some = SidecarFacts { env: &on, session_tool_sets: Some(&partial) };
+    assert!(crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_with(&id, NOW_MS, Some(&some))).is_err());
+    assert!(fx.fx_daemon_book().daemons[0].paused);
+}
+
+#[test]
+fn a_new_sidecar_lets_a_no_permission_store_daemon_start_with_sets_on() {
+    use crate::daemons::SidecarFacts;
+    let (fx, id) = bare_store_daemon("newsidecar");
+    let on = env(&[("CITRATE_HERMES_SEARCH", "1"), ("CITRATE_HERMES_CAPSULES", "/x"), ("CITRATE_HERMES_SKILLS", "/y")]);
+    let sets = all_sets();
+    let new = SidecarFacts { env: &on, session_tool_sets: Some(&sets) };
+    crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_with(&id, NOW_MS, Some(&new))).expect("starts");
+    let at = NOW_MS + 18 * 3_600_000;
+    let claims = crate::daemons::with_book_file(&fx.daemons, true, |b| b.claim_due_facts(at, 0, Some(&new))).expect("claim");
+    assert_eq!(claims.len(), 1);
+    // Its session asks for no host tool sets at all.
+    let allowed = claims[0].allowed_tools.clone().expect("a Store daemon");
+    assert_eq!(crate::daemons::store_tool_sets(&allowed), Vec::<String>::new());
+    // And its session opens on that sidecar right after the claim, sets on and all.
+    let claimed = crate::daemons::with_book_file(&fx.daemons, false, |b| Ok(b.claimed_host_sets(&id))).expect("read");
+    assert!(crate::daemons::store_open_check(&allowed, claimed.as_deref(), Some(&on), Some(&sets)).is_ok());
+    // The same open on an older sidecar is refused.
+    assert!(crate::daemons::store_open_check(&allowed, claimed.as_deref(), Some(&on), None).is_err());
+}
+
+#[test]
+fn a_web_search_only_daemon_asks_for_exactly_web_search() {
+    let allowed = tools_for_permissions(&["web_search".to_string(), "local_model".to_string()]);
+    assert_eq!(crate::daemons::store_tool_sets(&allowed), vec!["web_search".to_string()]);
+    let several = tools_for_permissions(&["capsules_run".to_string(), "web_search".to_string(), "memory_read".to_string()]);
+    assert_eq!(crate::daemons::store_tool_sets(&several), vec!["web_search".to_string(), "capsules_run".to_string()]);
 }
 
 // ---- wiring --------------------------------------------------------------------------------

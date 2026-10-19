@@ -306,6 +306,21 @@ pub struct RemoteStatus {
     pub running: bool,
     pub skills: usize,
     pub pending_approvals: usize,
+    /// citrate-agent-runtime#87: what the session API supports. Absent on an older sidecar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<SessionCapabilities>,
+}
+
+/// `GET /status` → `capabilities` (citrate-agent-runtime#87).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCapabilities {
+    /// The host tool-set names a session's `toolSets` allowlist accepts (core's permission names).
+    #[serde(default)]
+    pub session_tool_sets: Vec<String>,
+    /// `promptSnapshot: false` is honoured (the sidecar adds nothing to core's system prompt).
+    #[serde(default)]
+    pub session_prompt_snapshot: bool,
 }
 
 /// One installed skill (a capsule).
@@ -886,6 +901,19 @@ impl HermesManager {
         let bearer = self.bearer()?;
         self.control
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
+    }
+
+    /// K5a + citrate-agent-runtime#87: the host tool sets this sidecar can scope per session, read
+    /// fresh from `GET /status`. `None` while not running, on any error, for an older sidecar
+    /// without `capabilities`, or when it cannot honour `promptSnapshot: false` (both are needed
+    /// to open a Store daemon's session exactly as core sends it).
+    pub fn session_tool_sets(&self) -> Option<Vec<String>> {
+        if !self.is_running() {
+            return None;
+        }
+        let caps = self.remote_status().ok()?.capabilities?;
+        caps.session_prompt_snapshot
+            .then_some(caps.session_tool_sets)
     }
 
     /// `GET /status` — the sidecar's running/skills/pending snapshot.
@@ -1752,6 +1780,7 @@ pub fn hermes_status_sync(app: tauri::AppHandle) -> std::result::Result<RemoteSt
             running: false,
             skills: 0,
             pending_approvals: 0,
+            capabilities: None,
         });
     }
     m.remote_status().map_err(|e| e.to_string())
@@ -2225,6 +2254,48 @@ pub fn build_daemon_session_body(
     Ok(v.to_string())
 }
 
+/// K5a + citrate-agent-runtime#87: the body for a STORE daemon run's session: the daemon body with
+/// only the core tools the daemon was approved for, `toolSets` naming exactly the host tool sets
+/// its approved permissions cover (empty = none; a sidecar without the field ignores it, which is
+/// why core also gates the start on the sidecar's capability), and `promptSnapshot: false` so the
+/// sidecar adds nothing to the prompt.
+#[allow(clippy::too_many_arguments)]
+pub fn build_store_daemon_session_body(
+    system_prompt: &str,
+    tools_json: &str,
+    base_url: &str,
+    bearer: &str,
+    model: &str,
+    context_tokens: u32,
+    allowed: &[String],
+) -> std::result::Result<String, String> {
+    let body = build_daemon_session_body(
+        system_prompt,
+        tools_json,
+        base_url,
+        bearer,
+        model,
+        context_tokens,
+    )?;
+    let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let o = v
+        .as_object_mut()
+        .ok_or_else(|| "internal: the session body is not an object".to_string())?;
+    if let Some(serde_json::Value::Array(tools)) = o.get_mut("tools") {
+        tools.retain(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| allowed.iter().any(|a| a == n))
+        });
+    }
+    o.insert(
+        "toolSets".into(),
+        serde_json::json!(crate::daemons::store_tool_sets(allowed)),
+    );
+    o.insert("promptSnapshot".into(), serde_json::Value::Bool(false));
+    Ok(v.to_string())
+}
+
 /// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
 type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
 
@@ -2234,6 +2305,16 @@ fn open_local_session(
     system_prompt: &str,
     tools_json: &str,
     build: SessionBodyFn,
+) -> std::result::Result<String, String> {
+    open_local_session_with(app, system_prompt, tools_json, build)
+}
+
+/// [`open_local_session`] over any body builder (a Store daemon's carries its approved tools).
+fn open_local_session_with(
+    app: &tauri::AppHandle,
+    system_prompt: &str,
+    tools_json: &str,
+    build: impl FnOnce(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>,
 ) -> std::result::Result<String, String> {
     let serve = tauri::Manager::try_state::<crate::serve::ServeState>(app)
         .ok_or("internal: serve state unavailable")?;
@@ -2266,10 +2347,22 @@ pub async fn hermes_session_open_unattended(
     daemon_id: Option<String>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
-        if let Some(id) = &daemon_id {
-            crate::daemons::check_store_daemon_open(&app, id)?;
+        let store_allowed = match &daemon_id {
+            Some(id) => crate::daemons::check_store_daemon_open(&app, id)?,
+            None => None,
+        };
+        match store_allowed {
+            // A Store daemon: only its approved core tools, exactly its approved host tool sets,
+            // and no prompt additions from the sidecar.
+            Some(allowed) => {
+                open_local_session_with(&app, &system_prompt, &tools_json, |p, t, u, k, m, c| {
+                    build_store_daemon_session_body(p, t, u, k, m, c, &allowed)
+                })
+            }
+            None => {
+                open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
+            }
         }
-        open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
     })
     .await
 }

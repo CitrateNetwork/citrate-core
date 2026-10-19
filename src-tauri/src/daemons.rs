@@ -158,6 +158,49 @@ pub(crate) fn enabled_host_set_ids(env: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
+/// What core knows about the running sidecar when it decides whether a Store daemon may start.
+pub(crate) struct SidecarFacts<'a> {
+    /// The effective environment the sidecar was started with (which host tool sets every
+    /// session gets unless scoped).
+    pub env: &'a [(String, String)],
+    /// citrate-agent-runtime#87: `GET /status` → `capabilities.sessionToolSets`, the host tool sets
+    /// a session can be scoped to with `toolSets` (reported only together with
+    /// `sessionPromptSnapshot`). `None` = an older sidecar without the capability.
+    pub session_tool_sets: Option<&'a [String]>,
+}
+
+/// Whether the sidecar can scope EVERY host tool set per session, so a Store daemon's session is
+/// opened with exactly its approved sets whatever is on for other sessions. A sidecar that
+/// reports only some of them is treated as an older one.
+pub(crate) fn sidecar_scopes_host_sets(session_tool_sets: Option<&[String]>) -> bool {
+    session_tool_sets.is_some_and(|names| {
+        HOST_TOOL_SETS
+            .iter()
+            .all(|set| names.iter().any(|n| n == set.permission))
+    })
+}
+
+/// [`host_block_reason`] relaxed only for a sidecar that scopes every set per session.
+pub(crate) fn host_block_reason_for(
+    allowed: &[String],
+    facts: &SidecarFacts<'_>,
+) -> Option<String> {
+    if sidecar_scopes_host_sets(facts.session_tool_sets) {
+        return None;
+    }
+    host_block_reason(allowed, facts.env)
+}
+
+/// The `toolSets` a Store daemon's session asks for: the host tool-set permissions its approved
+/// permissions cover, in [`HOST_TOOL_SETS`] order (empty = none).
+pub(crate) fn store_tool_sets(allowed: &[String]) -> Vec<String> {
+    HOST_TOOL_SETS
+        .iter()
+        .filter(|set| allowed.contains(&host_set_marker(set.id)))
+        .map(|set| set.permission.to_string())
+        .collect()
+}
+
 /// Said when core cannot see the sidecar's environment (not running, or restarting).
 pub(crate) const HOST_ENV_UNKNOWN: &str = "Not started: Hermes is not running or is restarting, so the tools it offers could not be checked. It runs at its next scheduled time.";
 
@@ -169,6 +212,7 @@ pub(crate) fn store_open_check(
     allowed: &[String],
     claimed: Option<&[String]>,
     current: Option<&[(String, String)]>,
+    session_tool_sets: Option<&[String]>,
 ) -> Result<(), String> {
     let env = current.ok_or_else(|| HOST_ENV_UNKNOWN.to_string())?;
     let now = enabled_host_set_ids(env);
@@ -181,7 +225,11 @@ pub(crate) fn store_open_check(
             )
         }
     }
-    match host_block_reason(allowed, env) {
+    let facts = SidecarFacts {
+        env,
+        session_tool_sets,
+    };
+    match host_block_reason_for(allowed, &facts) {
         Some(why) => Err(why),
         None => Ok(()),
     }
@@ -973,15 +1021,30 @@ impl DaemonBook {
     /// Resume (start) a daemon. A Store daemon is refused while the running sidecar offers a host
     /// tool set its approved permissions do not cover, with the reason and how to run it
     /// sandboxed. `host_env` `None` = Hermes is not running (the check runs again at claim time).
+    #[cfg(test)]
     pub(crate) fn resume_checked(
         &mut self,
         id: &str,
         now_ms: u64,
         host_env: Option<&[(String, String)]>,
     ) -> Result<(), String> {
+        let facts = host_env.map(|env| SidecarFacts {
+            env,
+            session_tool_sets: None,
+        });
+        self.resume_with(id, now_ms, facts.as_ref())
+    }
+
+    /// [`Self::resume_checked`] with everything core knows about the running sidecar.
+    pub(crate) fn resume_with(
+        &mut self,
+        id: &str,
+        now_ms: u64,
+        host: Option<&SidecarFacts<'_>>,
+    ) -> Result<(), String> {
         let r = self.find_mut(id)?;
-        if let (Some(allowed), Some(env)) = (&r.allowed_tools, host_env) {
-            if let Some(why) = host_block_reason(allowed, env) {
+        if let (Some(allowed), Some(facts)) = (&r.allowed_tools, host) {
+            if let Some(why) = host_block_reason_for(allowed, facts) {
                 return Err(why);
             }
         }
@@ -1015,11 +1078,28 @@ impl DaemonBook {
     /// started while a host tool set its permissions do not cover is on (it is recorded as
     /// `not_started`, with the reason). `None` = no sidecar environment known (nothing runs then
     /// anyway: daemons run only in Hermes).
+    #[cfg(test)]
     pub(crate) fn claim_due_with(
         &mut self,
         now_ms: u64,
         offset_min: i32,
         host_env: Option<&[(String, String)]>,
+    ) -> Result<Vec<Claim>, String> {
+        let facts = host_env.map(|env| SidecarFacts {
+            env,
+            session_tool_sets: None,
+        });
+        self.claim_due_facts(now_ms, offset_min, facts.as_ref())
+    }
+
+    /// [`Self::claim_due_with`] with everything core knows about the running sidecar: one that
+    /// scopes every host tool set per session (citrate-agent-runtime#87) lets a Store daemon be
+    /// claimed with sets on, because its session is opened with exactly its approved sets.
+    pub(crate) fn claim_due_facts(
+        &mut self,
+        now_ms: u64,
+        offset_min: i32,
+        host: Option<&SidecarFacts<'_>>,
     ) -> Result<Vec<Claim>, String> {
         check_offset(offset_min)?;
         let today = LocalTime::from_utc_ms(now_ms, offset_min).day_key();
@@ -1061,9 +1141,9 @@ impl DaemonBook {
             // not running, in crash backoff, or restarting) blocks it like an uncovered set does.
             let mut host_sets = None;
             if let Some(allowed) = &r.allowed_tools {
-                let why = match host_env {
+                let why = match host {
                     None => Some(HOST_ENV_UNKNOWN.to_string()),
-                    Some(env) => host_block_reason(allowed, env),
+                    Some(facts) => host_block_reason_for(allowed, facts),
                 };
                 if let Some(why) = why {
                     r.skipped_today = r.skipped_today.saturating_add(1);
@@ -1071,7 +1151,7 @@ impl DaemonBook {
                     r.last_note = Some(one_line(&why, NOTE_MAX));
                     continue;
                 }
-                host_sets = host_env.map(enabled_host_set_ids);
+                host_sets = host.map(|f| enabled_host_set_ids(f.env));
             }
             let remaining = u64::from(r.budget.max_tokens_per_day).saturating_sub(r.tokens_today);
             let tokens_allowed = u64::from(r.budget.max_tokens_per_run).min(remaining) as u32;
@@ -1382,19 +1462,38 @@ pub(crate) fn with_book_file<T>(
     Ok(out)
 }
 
+/// The running sidecar's effective start environment and its per-session tool-set capability
+/// (`None`s while Hermes is not running, or for a sidecar without the capability).
+type SidecarFactsOwned = (Option<Vec<(String, String)>>, Option<Vec<String>>);
+
+fn sidecar_facts(app: &tauri::AppHandle) -> SidecarFactsOwned {
+    match crate::hermes::manager(app) {
+        Ok(m) => (m.started_env(), m.session_tool_sets()),
+        Err(_) => (None, None),
+    }
+}
+
 /// K5a: for a Store daemon, the open-time check (`store_open_check`) against the sidecar's
-/// current environment. A member daemon (or an unknown id) passes unchanged.
-pub(crate) fn check_store_daemon_open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+/// current environment and capability. `Ok(Some(allowed))` for a Store daemon that may open
+/// (its session is then scoped to `allowed`); `Ok(None)` for a member daemon or an unknown id.
+pub(crate) fn check_store_daemon_open(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<Option<Vec<String>>, String> {
     let (allowed, claimed) = with_book(app, false, |b| {
         Ok((b.allowed_tools_of(id), b.claimed_host_sets(id)))
     })?;
     let Some(allowed) = allowed else {
-        return Ok(());
+        return Ok(None);
     };
-    let current = crate::hermes::manager(app)
-        .ok()
-        .and_then(|m| m.started_env());
-    store_open_check(&allowed, claimed.as_deref(), current.as_deref())
+    let (current, sets) = sidecar_facts(app);
+    store_open_check(
+        &allowed,
+        claimed.as_deref(),
+        current.as_deref(),
+        sets.as_deref(),
+    )?;
+    Ok(Some(allowed))
 }
 
 fn views(book: &DaemonBook, now_ms: u64, offset_min: i32) -> DaemonsView {
@@ -1446,12 +1545,12 @@ pub async fn daemon_set_paused(
         if paused {
             return with_book(&app, true, |b| b.set_paused(&id, true, now_ms));
         }
-        let env = crate::hermes::manager(&app)
-            .ok()
-            .and_then(|m| m.started_env());
-        with_book(&app, true, |b| {
-            b.resume_checked(&id, now_ms, env.as_deref())
-        })
+        let (env, sets) = sidecar_facts(&app);
+        let facts = env.as_deref().map(|env| SidecarFacts {
+            env,
+            session_tool_sets: sets.as_deref(),
+        });
+        with_book(&app, true, |b| b.resume_with(&id, now_ms, facts.as_ref()))
     })
     .await
 }
@@ -1487,11 +1586,13 @@ pub async fn daemons_claim_due(
 ) -> Result<Vec<Claim>, String> {
     crate::blocking::off_main(move || {
         // K5a: the sidecar's environment decides whether a Store daemon may start now.
-        let env = crate::hermes::manager(&app)
-            .ok()
-            .and_then(|m| m.started_env());
+        let (env, sets) = sidecar_facts(&app);
+        let facts = env.as_deref().map(|env| SidecarFacts {
+            env,
+            session_tool_sets: sets.as_deref(),
+        });
         with_book(&app, true, |b| {
-            b.claim_due_with(now_ms, offset_min, env.as_deref())
+            b.claim_due_facts(now_ms, offset_min, facts.as_ref())
         })
     })
     .await

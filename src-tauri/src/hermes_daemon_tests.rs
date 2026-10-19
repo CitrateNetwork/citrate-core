@@ -159,3 +159,43 @@ fn both_daemon_session_commands_are_async_registered_and_in_the_main_window_acl(
         );
     }
 }
+
+// K5a + citrate-agent-runtime#87: a Store daemon's session names exactly the host tool sets its
+// approved permissions cover, asks the sidecar to add nothing to the prompt, and carries only the
+// core tools it was approved for.
+const STORE_TOOLS: &str = r#"[{"name":"node_status","description":"Read node vitals","parameters":{"type":"object"},"annotations":{"effect":"none","trust":"trusted"}},{"name":"memory_recall","description":"Recall","parameters":{"type":"object"},"annotations":{"effect":"none","trust":"trusted"}}]"#;
+
+fn store_body(allowed: &[&str]) -> serde_json::Value {
+    let allowed: Vec<String> = allowed.iter().map(|s| s.to_string()).collect();
+    let body = build_store_daemon_session_body("p", STORE_TOOLS, "http://127.0.0.1:18080/v1", "k", "m.gguf", 8192, &allowed)
+        .expect("body");
+    serde_json::from_str(&body).expect("json")
+}
+
+#[test]
+fn a_no_permission_store_daemon_session_has_no_tool_sets_no_snapshot_and_no_tools() {
+    let b = store_body(&[]);
+    assert_eq!(b["toolSets"], serde_json::json!([]));
+    assert_eq!(b["promptSnapshot"], false);
+    assert_eq!(b["unattended"], true);
+    assert_eq!(b["tools"], serde_json::json!([]), "only approved core tools are sent");
+}
+
+#[test]
+fn a_web_search_only_store_daemon_session_names_exactly_web_search() {
+    let b = store_body(&["host:search", "memory_recall"]);
+    assert_eq!(b["toolSets"], serde_json::json!(["web_search"]));
+    assert_eq!(b["promptSnapshot"], false);
+    let names: Vec<&str> = b["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(names, vec!["memory_recall"]);
+}
+
+#[test]
+fn the_sidecar_status_capabilities_are_read_when_present_and_absent_on_an_older_sidecar() {
+    let new: RemoteStatus = serde_json::from_str(r#"{"running":true,"skills":2,"pendingApprovals":0,"capabilities":{"sessionToolSets":["web_search","capsules_run"],"sessionPromptSnapshot":true}}"#).expect("new");
+    let caps = new.capabilities.expect("caps");
+    assert_eq!(caps.session_tool_sets, vec!["web_search".to_string(), "capsules_run".to_string()]);
+    assert!(caps.session_prompt_snapshot);
+    let old: RemoteStatus = serde_json::from_str(r#"{"running":true,"skills":2,"pendingApprovals":0}"#).expect("old");
+    assert!(old.capabilities.is_none());
+}
