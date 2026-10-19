@@ -568,9 +568,10 @@ pub const LOG_WINDOW_BLOCKS: u64 = 1000;
 /// finalized head: `finalized` returns genesis while finality is not running.
 pub const SAFE_DEPTH_BLOCKS: u64 = 1000;
 
-/// STD red stub (C1-W, citrate-chain#337): the margin below the executed head; the old behaviour
-/// uses none.
-pub const EXECUTED_HEAD_MARGIN_BLOCKS: u64 = 0;
+/// C1-W (citrate-chain#337) — how far below `citrate_executedHead.number` progress is committed.
+/// The executed head is not atomic with `eth_getLogs` and can go down on a reorg, so the last
+/// blocks are re-read every refresh. The chain's MAX_REORG_DEPTH.
+pub const EXECUTED_HEAD_MARGIN_BLOCKS: u64 = 100;
 
 /// C1-W — how many `withdrawals(id)` reads go in one JSON-RPC batch.
 pub const WITHDRAWAL_READ_BATCH: usize = 50;
@@ -709,32 +710,43 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
 
     // Evidence of what the node has EXECUTED: citrate-chain#334 serves eth_getLogs only up to the
     // applied tip, while eth_blockNumber is the stored height.
-    // 1. `citrate_executedHead` {number, hash}: progress is committed up to exactly that block.
-    // 2. Without it (an older node): `eth_syncing` gives the applied tip as `currentBlock` when the
-    //    node is behind (`false` when not), and progress also stays SAFE_DEPTH_BLOCKS behind the head.
-    // 3. No evidence at all: the committed position does not move.
-    let executed = rpc.executed_head().ok().flatten();
+    // The citrate-chain#337 scanner protocol: read the executed head, ask for logs only up to it,
+    // commit at most head.number - EXECUTED_HEAD_MARGIN_BLOCKS, never advance on an error.
+    // 1. `citrate_executedHead` {number, hash}: as above.
+    // 2. The method is absent (-32601: an older node): `eth_syncing` gives the applied tip as
+    //    `currentBlock` when the node is behind (`false` when not), and progress also stays
+    //    SAFE_DEPTH_BLOCKS behind the head.
+    // 3. Any other error (e.g. -32603, no applied tip yet), or no eth_syncing either: no evidence,
+    //    so the committed position does not move.
+    let executed = rpc.executed_head();
+    let scan_end = match &executed {
+        Ok(Some((n, _))) => (*n).min(current_block),
+        _ => current_block,
+    };
     let commit_cap = match &executed {
-        Some((n, _)) => (n.min(&current_block) + 1).max(LIQUID_STAKING_POOL_DEPLOY_BLOCK),
-        None => match rpc.syncing() {
+        Ok(Some((n, _))) => (n.min(&current_block) + 1)
+            .saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS)
+            .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK),
+        Ok(None) => match rpc.syncing() {
             Ok(s) => (s.unwrap_or(current_block).min(current_block) + 1)
                 .min((current_block + 1).saturating_sub(SAFE_DEPTH_BLOCKS))
                 .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK),
             Err(_) => scan.next_block,
         },
+        Err(_) => scan.next_block,
     };
     let committed_before = scan.next_block;
     let mut from = scan.next_block.max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
     let mut window = LOG_WINDOW_BLOCKS;
     let mut retries = 0u32;
-    while from <= current_block {
+    while from <= scan_end {
         if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             return Err(StakingError::Incomplete {
                 scanned_to: from.saturating_sub(1),
-                head: current_block,
+                head: scan_end,
             });
         }
-        let to = from.saturating_add(window - 1).min(current_block);
+        let to = from.saturating_add(window - 1).min(scan_end);
         // topic2 = staker (the SECOND indexed arg -> topics[2]); topic1 (id) left null.
         let filter = serde_json::json!({
             "address": liquid_staking_pool(),
@@ -787,10 +799,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
     // Anchor the committed position on the hash of the block just below it.
     if scan.next_block != committed_before && scan.next_block > LIQUID_STAKING_POOL_DEPLOY_BLOCK {
         let h = scan.next_block - 1;
-        scan.anchor = match &executed {
-            Some((n, hash)) if *n == h => Some((h, hash.clone())),
-            _ => rpc.block_hash(h).ok().flatten().map(|hash| (h, hash)),
-        };
+        scan.anchor = rpc.block_hash(h).ok().flatten().map(|hash| (h, hash));
     }
 
     let mut out = Vec::new();

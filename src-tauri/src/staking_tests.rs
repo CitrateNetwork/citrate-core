@@ -1049,15 +1049,15 @@ fn an_executed_head_bounds_the_committed_position() {
     *rpc.transport().executed_head.borrow_mut() = Some(3_000);
     let mut scan = load_scan(&file, "k");
     assert!(read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 1").is_empty());
-    assert_eq!(scan.next_block, 3_001, "up to the executed head");
-    assert_eq!(scan.anchor, Some((3_000, stub_hash(3_000))));
+    assert_eq!(scan.next_block, 3_001 - EXECUTED_HEAD_MARGIN_BLOCKS, "up to the executed head, less the margin");
+    assert_eq!(scan.anchor, Some((3_000 - EXECUTED_HEAD_MARGIN_BLOCKS, stub_hash(3_000 - EXECUTED_HEAD_MARGIN_BLOCKS))));
     save_scan(&file, "k", &scan).expect("save");
     *rpc.transport().applied_tip.borrow_mut() = None;
     *rpc.transport().executed_head.borrow_mut() = Some(5_000);
     let mut scan = load_scan(&file, "k");
     let second = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 2");
     assert_eq!(second.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["22"]);
-    assert_eq!(scan.next_block, 5_001);
+    assert_eq!(scan.next_block, 5_001 - EXECUTED_HEAD_MARGIN_BLOCKS);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1208,17 +1208,27 @@ fn scan_position_violations(prod: &str) -> Vec<String> {
         None => bad.push("no commit_cap".into()),
         Some(i) => {
             let def = &prod[i..i + prod[i..].find("};").unwrap_or(prod.len() - i)];
-            let (exec_arm, fallback) = def.split_once("None =>").unwrap_or((def, ""));
+            let (exec_arm, fallback) = def.split_once("Ok(None) =>").unwrap_or((def, ""));
             if exec_arm.contains("SAFE_DEPTH_BLOCKS") {
                 bad.push("the executed-head arm falls back to a fixed depth".into());
             }
+            if !exec_arm.contains("EXECUTED_HEAD_MARGIN_BLOCKS") {
+                bad.push("the executed-head arm commits without the reorg margin".into());
+            }
             if !fallback.contains("syncing") {
                 bad.push("the fallback is not bounded by the eth_syncing applied tip".into());
+            }
+            if !fallback.contains("Err(_) => scan.next_block") {
+                bad.push("an executed-head error advances the position".into());
             }
         }
     }
     if !prod.contains("rpc.executed_head()") {
         bad.push("citrate_executedHead is not asked".into());
+    }
+    // getLogs never reads past the executed head: the window end is `scan_end`.
+    if !prod.contains(".min(scan_end)") {
+        bad.push("the log windows are not capped at the executed head".into());
     }
     let uses = prod.matches("SAFE_DEPTH_BLOCKS").count();
     let defined = prod.matches("pub const SAFE_DEPTH_BLOCKS").count();
@@ -1246,9 +1256,12 @@ fn tripwire_no_scan_position_passes_executed_evidence() {
 fn tripwire_catches_a_fixed_depth_position() {
     // Negative control: the shape of the c38974a bug fails the tripwire.
     let old = "let x = rpc.executed_head();\n\
-               let commit_cap = match e { Some(n) => n.min(head - SAFE_DEPTH_BLOCKS), None => match rpc.syncing() { _ => 0 } };\n\
+               let commit_cap = match e { Ok(Some(n)) => n.min(head - SAFE_DEPTH_BLOCKS), Ok(None) => match rpc.syncing() { _ => 0 } };\n\
                scan.next_block = (head + 1).saturating_sub(SAFE_DEPTH_BLOCKS);\n";
     let bad = scan_position_violations(old);
     assert!(bad.iter().any(|b| b.contains("unbounded scan-position write")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("fixed depth")), "{bad:?}");
+    assert!(bad.iter().any(|b| b.contains("reorg margin")), "{bad:?}");
+    assert!(bad.iter().any(|b| b.contains("error advances")), "{bad:?}");
+    assert!(bad.iter().any(|b| b.contains("not capped at the executed head")), "{bad:?}");
 }
