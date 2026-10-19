@@ -9,12 +9,14 @@
 // card stays clickable on top of it. It deliberately does not start a second
 // updater instance (useAppUpdate holds per-instance state).
 // =====================================================================
-import { useNetworkCompat, EXPECTED_GENESIS } from "./networkCompat";
+import { useNetworkCompat } from "./networkCompat";
+import type { NetworkProfile } from "../network/profile";
 
 const short = (h: string | null) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : "unknown");
 
-export function NetworkCompatGate() {
-  const { status, live } = useNetworkCompat();
+/** `profile` defaults to the active one; tests pass others. */
+export function NetworkCompatGate({ profile }: { profile?: NetworkProfile | null } = {}) {
+  const { status, live, expected } = useNetworkCompat(profile);
   if (status !== "retired" && status !== "unset") return null;
   const unset = status === "unset";
 
@@ -52,7 +54,7 @@ export function NetworkCompatGate() {
           Update required
         </h2>
         {unset ? (
-          // K6: the build's network profile has no genesis set. Nothing is read or signed.
+          // K6: the build's network profile is not fully set. Nothing is read or signed.
           <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)" }}>
             This version of Citrate Core does not have the network it should connect to set, so it
             does not sync or sign anything. Update to a version built for the current network.
@@ -65,7 +67,7 @@ export function NetworkCompatGate() {
               keep using your node, wallet and membership.
             </p>
             <p className="mono" style={{ margin: 0, fontSize: 11, color: "var(--tx-3)" }}>
-              this build: {short(EXPECTED_GENESIS)} · live network: {short(live)}
+              this build: {short(expected)} · live network: {short(live)}
             </p>
           </>
         )}

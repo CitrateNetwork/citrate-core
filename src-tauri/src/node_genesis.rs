@@ -20,7 +20,7 @@
 //! | `noise.key` (and any `noise.key.*` copy) | node (P2P Noise static identity) | kept |
 //! | `peer.id` | node (legacy peer id) | kept |
 //! | `encryption.meta` | node (at-rest key commitment for the keyring storage key) | kept |
-//! | `node.toml` | core (`ensure_node_config`) | kept |
+//! | `node.toml` | core (`ensure_node_config`) | set aside as `node.toml.<old genesis>` (K6) |
 //! | `crash-records.jsonl` | core (supervisor) | kept |
 //! | [`GENESIS_MARKER_FILE`] | core (this module) | rewritten last |
 //!
@@ -32,11 +32,18 @@
 //! 1. Validate the book genesis; a zero or unparsable hash refuses the start.
 //! 2. Marker equal to the book genesis: nothing to do.
 //! 3. Otherwise delete every chain DB entry (`CURRENT` first, so a partly
-//!    deleted directory never looks like a complete database), then write the
-//!    marker atomically (temp file, fsync, rename).
+//!    deleted directory never looks like a complete database), then set the
+//!    previous network's `node.toml` aside ([`retire_node_config`]; K6), make
+//!    both durable (directory fsync), and only then write the marker
+//!    atomically (temp file, fsync, rename, directory fsync).
 //!
-//! A crash anywhere before step 3's rename leaves the old marker or none, so
-//! the next start runs the reset again; it is idempotent.
+//! The marker is the commit point of the whole migration, database AND node
+//! config. A crash or error anywhere before its rename leaves the old marker or
+//! none, so the next start runs every step again; each is idempotent (a
+//! `node.toml` already set aside is simply absent). Once the marker names the
+//! new genesis, the old `node.toml` is already gone, so `ensure_node_config`
+//! can only write a fresh one from the active profile: the previous network's
+//! bootnodes and chain id never survive a completed migration.
 //!
 //! ## Who may hold the database (SCL-S8.5a, red-team RT-11)
 //! Before deleting anything the reset takes the chain database lock (RocksDB's
@@ -114,7 +121,7 @@ pub enum GenesisOutcome {
     /// No chain data and no marker for another genesis: a fresh data dir, marked.
     FreshMarked,
     /// The data belonged to another genesis (or to none recorded): the chain
-    /// DB was deleted and the marker rewritten.
+    /// DB was deleted, the previous `node.toml` set aside and the marker rewritten.
     Reset {
         /// The genesis the old marker named, if there was one.
         previous: Option<String>,
@@ -122,6 +129,9 @@ pub enum GenesisOutcome {
         removed: Vec<String>,
         /// Their total size in bytes.
         bytes: u64,
+        /// Where the previous network's `node.toml` was set aside; `None` when there was
+        /// none (or an interrupted earlier attempt already set it aside).
+        retired_config: Option<PathBuf>,
     },
 }
 
@@ -261,6 +271,61 @@ pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), Genes
     Ok((names, bytes))
 }
 
+/// K6: on a genesis change, set the previous network's `node.toml` aside as
+/// `node.toml.<first 10 characters of its genesis>` (or `node.toml.unrecorded`), so the next
+/// spawn writes a fresh one from the active profile. A member's hand edits are in that file.
+/// Returns where it went; `None` when there was no `node.toml`. An existing file of that name is
+/// never overwritten (a numeric suffix is added).
+pub(crate) fn retire_node_config(
+    data_dir: &Path,
+    previous_genesis: Option<&str>,
+) -> std::io::Result<Option<PathBuf>> {
+    #[cfg(test)]
+    if test_hooks::FAIL_RETIRE.with(|f| f.get()) {
+        return Err(std::io::Error::other("injected retire failure (test)"));
+    }
+    let path = data_dir.join("node.toml");
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Ok(None);
+    }
+    let tag: String = previous_genesis
+        .map(|g| g.chars().take(10).collect())
+        .unwrap_or_else(|| "unrecorded".to_string());
+    let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let mut dest = data_dir.join(format!("node.toml.{tag}"));
+    let mut n = 1;
+    while std::fs::symlink_metadata(&dest).is_ok() {
+        dest = data_dir.join(format!("node.toml.{tag}.{n}"));
+        n += 1;
+    }
+    std::fs::rename(&path, &dest)?;
+    Ok(Some(dest))
+}
+
+/// Make the directory entries of `dir` (deletions, renames) durable before a later step
+/// depends on them. A no-op where directories cannot be opened for sync (Windows).
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
+}
+
+/// Test-only fault injection for the migration steps (see the crash-safety tests).
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::cell::Cell;
+    thread_local! {
+        /// `retire_node_config` fails as if the rename had failed.
+        pub static FAIL_RETIRE: Cell<bool> = const { Cell::new(false) };
+    }
+}
+
 fn marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(GENESIS_MARKER_FILE)
 }
@@ -286,6 +351,7 @@ fn write_marker(data_dir: &Path, genesis: &str) -> Result<(), GenesisGateError> 
         f.sync_all().map_err(io)?;
     }
     std::fs::rename(&tmp, marker_path(data_dir)).map_err(io)?;
+    sync_dir(data_dir).map_err(io)?;
     Ok(())
 }
 
@@ -325,12 +391,18 @@ pub fn reconcile_genesis(
         return Err(GenesisGateError::NodeStillRunning);
     }
     let (removed, bytes) = wipe_chain_db(data_dir)?;
+    // K6: the previous network's node.toml goes before the marker commits the switch, so a
+    // crash or a failure here leaves the old marker and the next start repeats the migration.
+    let retired_config = retire_node_config(data_dir, marker.as_deref())
+        .map_err(|e| GenesisGateError::Io(format!("set the previous node.toml aside: {e}")))?;
+    sync_dir(data_dir).map_err(|e| GenesisGateError::Io(format!("sync the node data dir: {e}")))?;
     write_marker(data_dir, &book)?;
     drop(lock);
     Ok(GenesisOutcome::Reset {
         previous: marker,
         removed,
         bytes,
+        retired_config,
     })
 }
 
@@ -348,7 +420,6 @@ mod tests {
         "noise.key.fresh-20260930T073048Z",
         "peer.id",
         "encryption.meta",
-        "node.toml",
         "crash-records.jsonl",
         "unknown-future-key.bin",
     ];
@@ -381,10 +452,30 @@ mod tests {
         p
     }
 
+    /// The previous network's node config (K6): set aside, never deleted, on a reset.
+    const OLD_CONFIG: &str = "# old network bootnodes, hand-edited\n";
+    /// Where a reset from [`OLD`] sets it aside.
+    const OLD_CONFIG_ASIDE: &str = "node.toml.0x0f2b567f";
+
     fn populate(dir: &Path) {
         for f in KEPT.iter().chain(DB.iter()) {
             std::fs::write(dir.join(f), f.as_bytes()).unwrap();
         }
+        std::fs::write(dir.join("node.toml"), OLD_CONFIG).unwrap();
+    }
+
+    /// The K6 invariant: once the marker names the new genesis, no `node.toml` of the old
+    /// network is left for `ensure_node_config` to keep, and the old one is preserved aside.
+    fn assert_config_set_aside(dir: &Path, aside: &str) {
+        assert!(
+            !dir.join("node.toml").exists(),
+            "the old node.toml must not survive a completed migration"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(aside)).unwrap(),
+            OLD_CONFIG,
+            "the old node.toml is kept aside as {aside}"
+        );
     }
 
     /// C3 finding 2: the reset log line names removed files as removed and the
@@ -398,6 +489,7 @@ mod tests {
             previous,
             removed,
             bytes,
+            ..
         } = out
         else {
             panic!("expected a reset: {out:?}");
@@ -554,7 +646,9 @@ mod tests {
         assert_keys_kept(&d);
         assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW));
 
-        // Crash after the full delete, before the marker write.
+        assert_config_set_aside(&d, OLD_CONFIG_ASIDE);
+
+        // Crash after the full delete, before the node.toml is set aside.
         let d = tmp("crash-full");
         populate(&d);
         write_marker(&d, OLD).unwrap();
@@ -571,16 +665,133 @@ mod tests {
                 previous: Some(OLD.to_string()),
                 removed: vec![],
                 bytes: 0,
+                retired_config: Some(d.join(OLD_CONFIG_ASIDE)),
             },
             "a rerun still reports the reset so the member sees the notice"
         );
         assert_keys_kept(&d);
+        assert_config_set_aside(&d, OLD_CONFIG_ASIDE);
         assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW));
         // And a third start keeps everything.
         assert_eq!(
             reconcile_genesis(&d, NEW, never_running).unwrap(),
             GenesisOutcome::Kept
         );
+    }
+
+    /// K6 (Codex P2 on core#363): setting node.toml aside is part of the migration the
+    /// marker commits. A crash after it but before the marker write leaves the old marker; the
+    /// next start completes the switch without setting anything aside twice.
+    #[test]
+    fn crash_after_the_config_is_set_aside_but_before_the_marker_completes_next_start() {
+        let d = tmp("crash-after-retire");
+        populate(&d);
+        write_marker(&d, OLD).unwrap();
+        wipe_chain_db(&d).unwrap();
+        retire_node_config(&d, Some(OLD)).unwrap();
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(OLD));
+        let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+        assert_eq!(
+            out,
+            GenesisOutcome::Reset {
+                previous: Some(OLD.to_string()),
+                removed: vec![],
+                bytes: 0,
+                retired_config: None,
+            }
+        );
+        assert_config_set_aside(&d, OLD_CONFIG_ASIDE);
+        assert!(
+            !d.join(format!("{OLD_CONFIG_ASIDE}.1")).exists(),
+            "nothing set aside twice"
+        );
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW));
+        assert_eq!(
+            reconcile_genesis(&d, NEW, never_running).unwrap(),
+            GenesisOutcome::Kept
+        );
+    }
+
+    /// K6 (Codex P2 on core#363): if setting node.toml aside fails, the start is refused with
+    /// the OLD marker still in place (the old code had already committed the new one, so the
+    /// next start returned Kept and the old network's config survived). The next start retries
+    /// and completes the migration.
+    #[test]
+    fn a_failed_config_set_aside_does_not_commit_the_marker_and_is_retried() {
+        let d = tmp("retire-fails");
+        populate(&d);
+        write_marker(&d, OLD).unwrap();
+        test_hooks::FAIL_RETIRE.with(|f| f.set(true));
+        let err = reconcile_genesis(&d, NEW, never_running);
+        test_hooks::FAIL_RETIRE.with(|f| f.set(false));
+        let err = err.expect_err("a failed set-aside refuses the start");
+        assert!(
+            matches!(&err, GenesisGateError::Io(m) if m.contains("node.toml")),
+            "{err:?}"
+        );
+        assert_eq!(
+            read_marker(&d).unwrap().as_deref(),
+            Some(OLD),
+            "the new marker is not committed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("node.toml")).unwrap(),
+            OLD_CONFIG
+        );
+        assert_db_gone(&d);
+
+        let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+        let GenesisOutcome::Reset { retired_config, .. } = out else {
+            panic!("the retry completes the reset: {out:?}");
+        };
+        assert_eq!(retired_config, Some(d.join(OLD_CONFIG_ASIDE)));
+        assert_config_set_aside(&d, OLD_CONFIG_ASIDE);
+        assert_keys_kept(&d);
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW));
+    }
+
+    /// Every interruption point of the migration, followed by a fresh start: the result is the
+    /// same completed state, and a marker naming the new genesis never coexists with the old
+    /// network's node.toml.
+    #[test]
+    fn every_interruption_point_converges_on_a_completed_migration() {
+        type Step = fn(&Path);
+        let steps: &[(&str, Step)] = &[
+            ("nothing done", |_| {}),
+            ("CURRENT deleted", |d| {
+                std::fs::remove_file(d.join("CURRENT")).unwrap()
+            }),
+            ("database wiped", |d| {
+                wipe_chain_db(d).unwrap();
+            }),
+            ("database wiped, config set aside", |d| {
+                wipe_chain_db(d).unwrap();
+                retire_node_config(d, Some(OLD)).unwrap();
+            }),
+            ("marker temp written", |d| {
+                wipe_chain_db(d).unwrap();
+                retire_node_config(d, Some(OLD)).unwrap();
+                std::fs::write(d.join(format!("{GENESIS_MARKER_FILE}.tmp")), NEW).unwrap();
+            }),
+        ];
+        for (name, crash_at) in steps {
+            let d = tmp("interrupt");
+            populate(&d);
+            write_marker(&d, OLD).unwrap();
+            crash_at(&d);
+            if read_marker(&d).unwrap().as_deref() == Some(NEW) {
+                panic!("{name}: the marker cannot be committed before the config is aside");
+            }
+            let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+            assert!(
+                matches!(out, GenesisOutcome::Reset { .. }),
+                "{name}: {out:?}"
+            );
+            assert_db_gone(&d);
+            assert_keys_kept(&d);
+            assert_config_set_aside(&d, OLD_CONFIG_ASIDE);
+            assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW), "{name}");
+        }
     }
 
     #[test]

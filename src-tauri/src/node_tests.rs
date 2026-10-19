@@ -1154,6 +1154,82 @@ fn k6_a_genesis_change_sets_the_old_node_config_aside_and_writes_a_new_one() {
     );
 }
 
+/// K6 (Codex P2 on core#363): a failure setting the old node.toml aside refuses the start
+/// WITHOUT committing the new genesis marker, so the next start retries the migration and
+/// writes a fresh node.toml. The old code committed the marker first; the retry then saw a
+/// matching marker and kept the old network's config.
+#[test]
+fn k6_a_failed_config_set_aside_is_retried_on_the_next_start() {
+    let (mgr, _fake, data) = stub_manager("k6-retire-retry");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("CURRENT"), b"old chain").unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    std::fs::write(data.join("node.toml"), "# old network, hand-edited\n").unwrap();
+
+    crate::node_genesis::test_hooks::FAIL_RETIRE.with(|f| f.set(true));
+    let first = mgr.start();
+    crate::node_genesis::test_hooks::FAIL_RETIRE.with(|f| f.set(false));
+    assert!(first.is_err(), "the start is refused: {first:?}");
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_OLD_GENESIS),
+        "the new marker is not committed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml")).unwrap(),
+        "# old network, hand-edited\n",
+        "no spawn ran with it"
+    );
+
+    mgr.start().expect("the retry completes the migration and starts");
+    mgr.stop();
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_NEW_GENESIS)
+    );
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(!fresh.contains("hand-edited"), "{fresh}");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.0x0f2b567f")).unwrap(),
+        "# old network, hand-edited\n"
+    );
+}
+
+/// K6: a crash after the old node.toml was set aside but before the marker was written leaves
+/// the old marker and no node.toml; the next start completes the switch and writes a fresh one.
+#[test]
+fn k6_a_crash_after_the_config_was_set_aside_completes_on_the_next_start() {
+    let (mgr, _fake, data) = stub_manager("k6-retire-crash");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    std::fs::write(data.join("node.toml.0x0f2b567f"), "# old\n").unwrap();
+
+    mgr.start().expect("starts");
+    mgr.stop();
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_NEW_GENESIS)
+    );
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.0x0f2b567f")).unwrap(),
+        "# old\n"
+    );
+    assert!(!data.join("node.toml.0x0f2b567f.1").exists());
+}
+
 /// K6: setting aside never overwrites an earlier one, and a missing node.toml is not an error.
 #[test]
 fn k6_retire_node_config_never_overwrites() {

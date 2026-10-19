@@ -477,6 +477,7 @@ impl NodeManager {
             previous,
             removed,
             bytes,
+            retired_config,
         } = outcome
         {
             eprintln!(
@@ -494,24 +495,15 @@ impl NodeManager {
                 .chain_reset_notice
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(CHAIN_RESET_NOTICE.to_string());
-            // K6: the old node.toml names the old network's bootnodes and chain id. Keep it
-            // beside the data dir under a name that says which network it was for, and let the
-            // spawn write a fresh one from the active profile.
-            match retire_node_config(&self.data_dir, previous.as_deref()) {
-                Ok(Some(kept)) => eprintln!(
+            // K6: reconcile_genesis set the old node.toml (the old network's bootnodes and
+            // chain id) aside BEFORE committing the new marker; the spawn writes a fresh one
+            // from the active profile.
+            if let Some(kept) = retired_config {
+                eprintln!(
                     "[node] the previous network's node.toml was kept as {}; a new one is written \
                      from the network profile",
                     kept.display()
-                ),
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("[node] could not set the previous network's node.toml aside: {e}");
-                    return Err(NodeError::Genesis(
-                        crate::node_genesis::GenesisGateError::Io(format!(
-                            "set the previous node.toml aside: {e}"
-                        )),
-                    ));
-                }
+                );
             }
         }
         Ok(())
@@ -1373,32 +1365,8 @@ fn ensure_node_config(
     Ok(path)
 }
 
-/// K6: on a genesis change, set the previous network's `node.toml` aside as
-/// `node.toml.<first 10 characters of its genesis>` (or `node.toml.unrecorded`), so the next
-/// spawn writes a fresh one from the active profile. A member's hand edits are in that file.
-/// Returns where it went; `None` when there was no `node.toml`. An existing file of that name is
-/// never overwritten (a numeric suffix is added).
-pub(crate) fn retire_node_config(
-    data_dir: &std::path::Path,
-    previous_genesis: Option<&str>,
-) -> std::io::Result<Option<PathBuf>> {
-    let path = data_dir.join("node.toml");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let tag: String = previous_genesis
-        .map(|g| g.chars().take(10).collect())
-        .unwrap_or_else(|| "unrecorded".to_string());
-    let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-    let mut dest = data_dir.join(format!("node.toml.{tag}"));
-    let mut n = 1;
-    while dest.exists() {
-        dest = data_dir.join(format!("node.toml.{tag}.{n}"));
-        n += 1;
-    }
-    std::fs::rename(&path, &dest)?;
-    Ok(Some(dest))
-}
+#[cfg(test)]
+pub(crate) use crate::node_genesis::retire_node_config;
 
 /// Build the managed node state from a live app handle: the real OS keyring, the
 /// bundled binary, an encrypted `node` data dir inside the app data dir, and the

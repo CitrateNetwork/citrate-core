@@ -13,18 +13,22 @@
 // errored. Only a definite, different block-0 hash is "retired".
 //
 // K6: the expected genesis comes from the active network profile
-// (src/network/profile.ts), the same file the Rust network gate reads. When the
-// profile has no genesis set the status is "unset": there is nothing to compare
-// against, and the gate blocks rather than letting the app read or sign.
+// (src/network/profile.ts), the same file the Rust network gate reads, and only
+// when the WHOLE profile is ready by the Rust `ready()` rule (gateGenesis). Any
+// unset or malformed value (not only the genesis: a missing addressBook, RPC,
+// bootnodes ...) makes the status "unset": Rust refuses node starts and every
+// signature then, chain.ts has no RPC, and the gate blocks rather than waiting
+// on a block-0 read that can never answer.
 // =====================================================================
 import { useBlock } from "wagmi";
 import { citrate } from "../chain";
-import { expectedGenesis } from "../network/profile";
+import { ACTIVE_PROFILE, gateGenesis, type NetworkProfile } from "../network/profile";
 
 export type NetworkCompat = "unknown" | "compatible" | "retired" | "unset";
 
-/** The genesis this build targets (lowercase 0x + 64 hex), or null when not set. */
-export const EXPECTED_GENESIS: string | null = expectedGenesis();
+/** The genesis this build targets (lowercase 0x + 64 hex), or null when the active profile is
+ *  not fully ready. */
+export const EXPECTED_GENESIS: string | null = gateGenesis(ACTIVE_PROFILE);
 
 const HASH = /^0x[0-9a-f]{64}$/;
 
@@ -37,13 +41,19 @@ export function networkCompat(expected: string | null, live: string | null | und
   return want === got ? "compatible" : "retired";
 }
 
-/** Live block-0 hash of the target chain, checked against this build's genesis. */
-export function useNetworkCompat(): { status: NetworkCompat; live: string | null } {
+/** Live block-0 hash of the target chain, checked against this build's genesis. The block-0
+ *  read is made only for a fully ready profile. */
+export function useNetworkCompat(profile: NetworkProfile | null = ACTIVE_PROFILE): {
+  status: NetworkCompat;
+  live: string | null;
+  expected: string | null;
+} {
+  const expected = gateGenesis(profile);
   const { data } = useBlock({
     blockNumber: 0n,
     chainId: citrate.id,
-    query: { staleTime: Infinity, enabled: EXPECTED_GENESIS !== null },
+    query: { staleTime: Infinity, enabled: expected !== null },
   });
-  const live = data?.hash ?? null;
-  return { status: networkCompat(EXPECTED_GENESIS, live), live };
+  const live = expected === null ? null : (data?.hash ?? null);
+  return { status: networkCompat(expected, live), live, expected };
 }
