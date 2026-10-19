@@ -19,6 +19,30 @@
 // install's own local storage for the pending / sent step sets.
 // =====================================================================
 import { STORAGE_KEY } from "../shell/state";
+import fields from "./telemetry-fields.json";
+
+/** The disclosure version that added `joinSteps` (telemetry-fields.json `version`). A consent
+ *  recorded at this version or later saw the field on the consent screen. */
+export const JOIN_STEPS_CONSENT_VERSION: number = fields.version;
+/** The marker written for a consent given before 0.5.2 (or one with no marker at all). */
+export const PRE_052_CONSENT_VERSION = 1;
+
+/** Whether join steps may be recorded: telemetry is on AND the member consented to (or
+ *  acknowledged the note about) the disclosure that lists `joinSteps`. A missing marker counts
+ *  as pre-0.5.2. */
+export function funnelConsented(telemetry: boolean, consentVersion: number | null | undefined): boolean {
+  return telemetry === true && (consentVersion ?? PRE_052_CONSENT_VERSION) >= JOIN_STEPS_CONSENT_VERSION;
+}
+
+/** Whether the one-time note is due: telemetry was turned on under an older disclosure. */
+export function needsJoinStepsNote(telemetry: boolean, consentVersion: number | null | undefined): boolean {
+  return telemetry === true && (consentVersion ?? PRE_052_CONSENT_VERSION) < JOIN_STEPS_CONSENT_VERSION;
+}
+
+/** The state patch for turning telemetry on or off through the consent screen (or the note). */
+export function telemetryConsentPatch(on: boolean): { telemetry: boolean; telemetryConsentVersion: number | null } {
+  return { telemetry: on, telemetryConsentVersion: on ? JOIN_STEPS_CONSENT_VERSION : null };
+}
 
 /** The join path, in order. Mirrors `JOIN_STEPS` in src-tauri/src/telemetry.rs. */
 export const JOIN_STEPS = [
@@ -49,7 +73,8 @@ const inPathOrder = (xs: Iterable<JoinStep>): JoinStep[] =>
 function persistedConsent(): boolean {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? Boolean(JSON.parse(raw).telemetry) : false;
+    const r = raw ? JSON.parse(raw) : null;
+    return r ? funnelConsented(Boolean(r.telemetry), r.telemetryConsentVersion) : false;
   } catch {
     return false;
   }
@@ -57,7 +82,7 @@ function persistedConsent(): boolean {
 
 let consentSource: (() => boolean) | null = null;
 
-/** Bind the live telemetry toggle (the app binds `() => store.state.telemetry` at startup).
+/** Bind the live consent (the app binds `funnelConsented(telemetry, telemetryConsentVersion)`).
  *  `null` falls back to the persisted toggle. */
 export function setJoinFunnelConsent(source: (() => boolean) | null): void {
   consentSource = source;

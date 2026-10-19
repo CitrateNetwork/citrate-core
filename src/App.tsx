@@ -18,7 +18,8 @@ import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal,
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
-import { reachedStep, setJoinFunnelConsent, stepForStage } from "./privacy/joinFunnel";
+import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, telemetryConsentPatch, clearJoinSteps } from "./privacy/joinFunnel";
+import { JoinStepsNote } from "./privacy/JoinStepsNote";
 
 const queryClient = new QueryClient();
 
@@ -232,16 +233,17 @@ function AuthGate() {
 function Root() {
   const s = useStore();
 
-  // 0.5.2 Join funnel — gated on the live telemetry toggle (Settings › Telemetry, off by default).
+  // 0.5.2 Join funnel — gated on the live telemetry toggle (Settings › Telemetry, off by default)
+  // AND on a consent that covers `joinSteps` (a pre-0.5.2 opt-in first sees JoinStepsNote).
   // Records the bare step id locally; it only leaves the machine inside a reviewed report.
   useEffect(() => {
-    setJoinFunnelConsent(() => store.state.telemetry);
+    setJoinFunnelConsent(() => funnelConsented(store.state.telemetry, store.state.telemetryConsentVersion));
   }, []);
   useEffect(() => {
     reachedStep("open_app");
     const step = stepForStage(s.stage);
     if (step) reachedStep(step);
-  }, [s.telemetry, s.stage]);
+  }, [s.telemetry, s.telemetryConsentVersion, s.stage]);
 
   useEffect(() => {
     store.start();
@@ -296,6 +298,23 @@ function Root() {
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />
       <Toast s={s} />
+      {/* 0.5.2 Join — one-time note for a pre-0.5.2 telemetry opt-in (the report gained joinSteps). */}
+      <JoinStepsNote
+        telemetry={s.telemetry}
+        consentVersion={s.telemetryConsentVersion}
+        onAcknowledge={() => {
+          store.setState({ telemetryConsentVersion: telemetryConsentPatch(true).telemetryConsentVersion });
+          store.save();
+        }}
+        onTurnOff={() => {
+          store.setState(telemetryConsentPatch(false));
+          clearJoinSteps();
+          bridge.config.write({ telemetry: false }).catch(() => {
+            /* honest no-op: on the Tauri path a failed persist surfaces on next read */
+          });
+          store.save();
+        }}
+      />
       {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
       <SignedForYou />
       {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}

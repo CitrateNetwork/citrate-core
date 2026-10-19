@@ -1,6 +1,6 @@
 {
   "format": "citrate-telemetry-fields",
-  "version": 1,
+  "version": 2,
   "default": "off",
   "endpoint": "https://telemetry.citrate.ai/report",
   "sends": "Only when you prepare a report, review it, and press Send. Nothing is sent in the background.",
@@ -13,6 +13,7 @@
     { "key": "uiErrors", "what": "Recent error messages from the app's screens." },
     { "key": "joinSteps", "what": "Which steps of joining you have reached since your last report, by step name only (for example sign_in or wallet). Each step is sent once. No invite code, group, wallet address, email or time goes with it." }
   ],
+  "joinStepsNeverIncluded": ["invite codes or links", "group or cluster names and ids", "wallet addresses", "email addresses", "times or dates", "any id for you or this computer"],
   "joinSteps": ["arrive", "download", "open_app", "sign_in", "kyc", "membership", "wallet", "bond", "node_synced", "activate_validator", "join_group"],
   "neverSent": [
     "Chat, journal or message content",

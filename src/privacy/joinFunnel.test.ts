@@ -62,7 +62,7 @@ describe("join funnel — gating on the telemetry toggle", () => {
     setJoinFunnelConsent(null);
     reachedStep("arrive");
     expect(pendingJoinSteps()).toEqual([]);
-    localStorage.setItem("citrate-core-proto-v2", JSON.stringify({ telemetry: true }));
+    localStorage.setItem("citrate-core-proto-v2", JSON.stringify({ telemetry: true, telemetryConsentVersion: 2 }));
     reachedStep("arrive");
     expect(pendingJoinSteps()).toEqual(["arrive"]);
   });
