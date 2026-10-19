@@ -7,11 +7,16 @@
 // mounting only reads. A switch with no backing setting is shown disabled with the reason.
 //
 //   Local model only        no setting exists yet (disabled); spend line read from escalation_budget
-//   Web search              hermes_web_settings_get / _set (Settings › Web search & decisions)
+//   Web search              hermes_web_settings_get / _set (Settings › Web search & decisions); each write
+//                           re-reads the saved settings first and changes only searchEnabled
 //   Terminal access         store.setHermesTerminal → hermes_terminal_set (Settings › App)
 //   Daemons running         daemons_list / daemons_set_all_paused (Hermes home › Daemons, "Pause all")
 //   Learn from my sessions  trajectories_settings_get / _set (Train › federated rounds › Training data)
 //   Voice                   store.setHermesReadAloud, AppState.hermesReadAloud (Settings › App › persona)
+//
+// Saved is not effective: web search and learning are read by Hermes when it starts (core answers
+// `appliesOnRestart`), so after a change the row says the running Hermes keeps its previous setting
+// until it restarts, with the existing restart (the Agent page's stop + start) when one is wired.
 //
 // Depth 2 (providers, escalation and spend caps, MCP servers, budgets, personas) opens from each
 // row's "more"; until it lands the affordance is inert and says so.
@@ -24,6 +29,7 @@ import type { EscalationBudget, EscalationDomain, FlRoundsDomain, FlTrajectorySt
 import { loadWebSettings, saveWebSettings, type HermesWebStatus, type WebSettingsIo } from "../../agent/webSearch";
 import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
+import { startRuntime, stopRuntime } from "../../shell/slices/agent";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -84,6 +90,8 @@ export interface ControlsIo {
   fl: Pick<FlRoundsDomain, "trajectoryStatus" | "setTrajectoryConsent">;
   daemons: Pick<DaemonActions, "available" | "refresh" | "setAllPaused">;
   escalation: Pick<EscalationDomain, "budget">;
+  /** Restart Hermes so saved sidecar settings apply. Optional: without it no restart button shows. */
+  restartHermes?: () => Promise<void>;
 }
 
 /** The app's real calls: the same ones the Settings, Train and Daemons cards use. */
@@ -94,6 +102,11 @@ export function appControlsIo(): ControlsIo {
     fl: bridge.flRounds,
     daemons: { available: daemons.available, refresh: daemons.refresh, setAllPaused: daemons.setAllPaused },
     escalation: bridge.escalation,
+    // The same restart the Agent page's contract toolchain card uses.
+    restartHermes: async () => {
+      await stopRuntime("hermes");
+      await startRuntime("hermes");
+    },
   };
 }
 
@@ -111,6 +124,9 @@ function Row({
   onChange,
   reason,
   extra,
+  pending,
+  onRestart,
+  restarting,
 }: {
   row: ControlRow;
   checked: boolean;
@@ -118,6 +134,10 @@ function Row({
   onChange?: (on: boolean) => void;
   reason?: string | null;
   extra?: React.ReactNode;
+  /** Saved but not yet in effect: what the running Hermes still does. */
+  pending?: string | null;
+  onRestart?: () => void;
+  restarting?: boolean;
 }) {
   return (
     <div
@@ -146,6 +166,16 @@ function Row({
           </span>
         )}
         {extra}
+        {pending && (
+          <span data-testid={`pending-${row.id}`} style={{ ...note, color: "var(--warn)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span>Saved. Takes effect when Hermes restarts. {pending}</span>
+            {onRestart && (
+              <button className="btn btn-ghost btn-sm" data-testid={`restart-${row.id}`} disabled={restarting} onClick={onRestart}>
+                {restarting ? "Restarting…" : "Restart Hermes"}
+              </button>
+            )}
+          </span>
+        )}
       </span>
       <button
         className="btn btn-ghost btn-sm"
@@ -175,18 +205,23 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const [busy, setBusy] = useState<ControlId | null>(null);
   const [daemonErr, setDaemonErr] = useState<string | null>(null);
   const daemons = daemonsSlice.use();
+  // What the running Hermes started with, as far as this panel knows: the saved value when the
+  // panel opened, or after the last restart from here. Saved differs from it = pending a restart.
+  const [webStarted, setWebStarted] = useState<boolean | null>(null);
+  const [learnStarted, setLearnStarted] = useState<boolean | null>(null);
+  const [restarting, setRestarting] = useState(false);
 
   // Reads only. Nothing here writes, so opening the panel changes no setting.
   useEffect(() => {
     let live = true;
     if (webDesktop) {
       loadWebSettings(io.web).then(
-        (st) => live && (setWeb(st), setWebErr(st.loadError ?? null)),
+        (st) => live && (setWeb(st), setWebErr(st.loadError ?? null), setWebStarted(st.settings.searchEnabled)),
         (e) => live && setWebErr(msg(e)),
       );
     }
     io.fl.trajectoryStatus().then(
-      (st) => live && (setLearn(st), setLearnErr(st.loadError)),
+      (st) => live && (setLearn(st), setLearnErr(st.loadError), setLearnStarted(st.settings.enabled)),
       (e) => live && setLearnErr(msg(e)),
     );
     io.escalation.budget().then(
@@ -214,7 +249,10 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     run("web-search", async () => {
       if (!web) return;
       try {
-        const st = await saveWebSettings(io.web, { ...web.settings, searchEnabled: on });
+        // Field-specific: re-read what is saved now (another form may have changed it since this
+        // panel loaded), change only searchEnabled, and show what core answers.
+        const fresh = await loadWebSettings(io.web);
+        const st = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
         setWeb(st);
         setWebErr(st.loadError ?? null);
       } catch (e) {
@@ -224,6 +262,13 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const webReason = !webDesktop
     ? "Web search needs the desktop app. This preview cannot change it."
     : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (More, in Settings › Web search)." : null);
+
+  const webPending =
+    web && web.appliesOnRestart && webStarted !== null && web.settings.searchEnabled !== webStarted
+      ? webStarted
+        ? "Until then the running Hermes still has web search on."
+        : "Until then the running Hermes does not have web search."
+      : null;
 
   // ---------- learn from my sessions ----------
   const learnOn = learn?.settings.enabled === true;
@@ -238,6 +283,29 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         setLearnErr(msg(e));
       }
     });
+
+  const learnPending =
+    learn && learn.appliesOnRestart && learnStarted !== null && learn.settings.enabled !== learnStarted
+      ? learnStarted
+        ? "Until then the running Hermes still records sessions."
+        : "Until then the running Hermes does not record sessions."
+      : null;
+
+  const restart = io.restartHermes
+    ? async () => {
+        setRestarting(true);
+        try {
+          await io.restartHermes?.();
+          if (web) setWebStarted(web.settings.searchEnabled);
+          if (learn) setLearnStarted(learn.settings.enabled);
+        } catch (e) {
+          setWebErr(msg(e));
+        } finally {
+          setRestarting(false);
+        }
+      }
+    : null;
+  const onRestart = restart ? () => void restart() : undefined;
 
   // ---------- daemons ----------
   const total = daemons.view?.daemons.length ?? 0;
@@ -273,13 +341,13 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         }
       />
 
-      <Row row={rows["web-search"]} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search"} onChange={(on) => void setWebSearch(on)} reason={webReason} />
+      <Row row={rows["web-search"]} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search"} onChange={(on) => void setWebSearch(on)} reason={webReason} pending={webPending} onRestart={onRestart} restarting={restarting} />
 
       <Row row={rows.terminal} checked={!!s.hermesTerminal} disabled={busy === "terminal"} onChange={(on) => void run("terminal", () => store.setHermesTerminal(on))} />
 
       <Row row={rows.daemons} checked={daemonsOn} disabled={daemonsDisabled} onChange={(on) => void setDaemonsOn(on)} reason={daemonReason} />
 
-      <Row row={rows.learn} checked={learnOn} disabled={learn === null || busy === "learn"} onChange={(on) => void setLearnOn(on)} reason={learnErr} />
+      <Row row={rows.learn} checked={learnOn} disabled={learn === null || busy === "learn"} onChange={(on) => void setLearnOn(on)} reason={learnErr} pending={learnPending} onRestart={onRestart} restarting={restarting} />
 
       <Row row={rows.voice} checked={!!s.hermesReadAloud} disabled={false} onChange={(on) => store.setHermesReadAloud(on)} />
     </div>

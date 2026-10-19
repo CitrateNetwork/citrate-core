@@ -35,13 +35,19 @@ const flush = () => act(async () => await new Promise((r) => setTimeout(r, 0)));
 
 type Calls = { cmd: string; args?: unknown }[];
 
-function webIo(initial: HermesWebStatus, calls: Calls, mode: "tauri" | "sim" = "tauri"): WebSettingsIo {
+/** A stand-in for core's hermes_web.rs store: one saved settings object that any writer (this
+ *  panel, or the Settings form next to it) reads and replaces. */
+interface WebBacking {
+  current: HermesWebStatus;
+}
+function webIo(backing: WebBacking, calls: Calls, mode: "tauri" | "sim" = "tauri"): WebSettingsIo {
   return {
     mode,
     invoke: (async (cmd: string, args?: Record<string, unknown>) => {
       calls.push({ cmd, args });
-      if (cmd === "hermes_web_settings_get") return initial;
-      return { ...initial, settings: (args?.settings ?? DEFAULT_WEB_SETTINGS) as HermesWebStatus["settings"] };
+      if (cmd === "hermes_web_settings_get") return backing.current;
+      backing.current = { ...backing.current, settings: (args?.settings ?? DEFAULT_WEB_SETTINGS) as HermesWebStatus["settings"] };
+      return backing.current;
     }) as WebSettingsIo["invoke"],
   };
 }
@@ -101,19 +107,25 @@ const daemonView = (allPaused: boolean, n: number): DaemonsView => ({
 interface Harness {
   io: ControlsIo;
   calls: Calls;
+  web: WebBacking;
+  restart: ReturnType<typeof vi.fn>;
   fl: { status: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> };
   daemons: { refresh: ReturnType<typeof vi.fn>; setAllPaused: ReturnType<typeof vi.fn> };
   budget: ReturnType<typeof vi.fn>;
 }
 
-function harness(o: { web?: HermesWebStatus; webMode?: "tauri" | "sim"; learn?: boolean; daemons?: DaemonsView | null; daemonsAvailable?: boolean } = {}): Harness {
+function harness(
+  o: { web?: HermesWebStatus; webMode?: "tauri" | "sim"; learn?: boolean; learnAppliesOnRestart?: boolean; daemons?: DaemonsView | null; daemonsAvailable?: boolean; withRestart?: boolean } = {},
+): Harness {
   const calls: Calls = [];
+  const web: WebBacking = { current: o.web ?? webStatus() };
+  const restart = vi.fn(async () => {});
   let learnOn = o.learn ?? false;
   const fl = {
-    status: vi.fn(async () => trajStatus(learnOn)),
+    status: vi.fn(async () => ({ ...trajStatus(learnOn), appliesOnRestart: o.learnAppliesOnRestart ?? true })),
     set: vi.fn(async (enabled: boolean, _del: boolean) => {
       learnOn = enabled;
-      return trajStatus(enabled);
+      return { ...trajStatus(enabled), appliesOnRestart: o.learnAppliesOnRestart ?? true };
     }),
   };
   const daemons = {
@@ -129,11 +141,14 @@ function harness(o: { web?: HermesWebStatus; webMode?: "tauri" | "sim"; learn?: 
   const budget = vi.fn(async () => zeroBudget);
   return {
     calls,
+    web,
+    restart,
     fl,
     daemons,
     budget,
     io: {
-      web: webIo(o.web ?? webStatus(), calls, o.webMode ?? "tauri"),
+      ...(o.withRestart ? { restartHermes: restart } : {}),
+      web: webIo(web, calls, o.webMode ?? "tauri"),
       fl: { trajectoryStatus: fl.status, setTrajectoryConsent: fl.set },
       daemons: { available: o.daemonsAvailable ?? true, refresh: daemons.refresh, setAllPaused: daemons.setAllPaused },
       escalation: { budget },
@@ -361,6 +376,91 @@ describe("Hermes › Controls, first depth (K2)", () => {
     await click($("toggle-voice"));
     expect(spy).toHaveBeenCalledWith(false);
     expect(store.state.hermesReadAloud).toBe(false);
+  });
+
+  // ---------- saved vs. effective (Codex P2): web search and learn apply when Hermes restarts ----------
+  it("web search: after turning it off, the row says it is saved and takes effect when Hermes restarts", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }) });
+    await mount(h);
+    expect($("pending-web-search")).toBeNull();
+    await click($("toggle-web-search"));
+    expect($("toggle-web-search")?.checked).toBe(false);
+    const pending = $("pending-web-search")?.textContent ?? "";
+    expect(pending).toContain("Saved. Takes effect when Hermes restarts");
+    expect(pending).toContain("still has web search on");
+  });
+
+  it("learn: after turning it off, the row says it is saved and takes effect when Hermes restarts", async () => {
+    const h = harness({ learn: true });
+    await mount(h);
+    expect($("pending-learn")).toBeNull();
+    await click($("toggle-learn"));
+    expect($("toggle-learn")?.checked).toBe(false);
+    const pending = $("pending-learn")?.textContent ?? "";
+    expect(pending).toContain("Saved. Takes effect when Hermes restarts");
+    expect(pending).toContain("still records sessions");
+  });
+
+  it("pending restart: switching back to the value Hermes started with clears the notice", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }) });
+    await mount(h);
+    await click($("toggle-web-search"));
+    expect($("pending-web-search")).toBeTruthy();
+    await click($("toggle-web-search"));
+    expect($("pending-web-search")).toBeNull();
+  });
+
+  it("pending restart: no notice when core says the change applies now", async () => {
+    const h = harness({ learn: true, learnAppliesOnRestart: false });
+    await mount(h);
+    await click($("toggle-learn"));
+    expect($("pending-learn")).toBeNull();
+  });
+
+  it("pending restart: without a restart action there is no restart button (none is invented)", async () => {
+    const h = harness({ learn: true });
+    await mount(h);
+    await click($("toggle-learn"));
+    expect($("restart-learn")).toBeNull();
+  });
+
+  it("pending restart: the existing Hermes restart (stop + start) clears both notices", async () => {
+    const h = harness({ web: webStatus({ searchEnabled: true }), learn: true, withRestart: true });
+    await mount(h);
+    await click($("toggle-web-search"));
+    await click($("toggle-learn"));
+    expect($("restart-learn")).toBeTruthy();
+    await click($("restart-web-search"));
+    expect(h.restart).toHaveBeenCalledTimes(1);
+    expect($("pending-web-search")).toBeNull();
+    expect($("pending-learn")).toBeNull();
+  });
+
+  // ---------- field-specific web writes (#343 race) ----------
+  it("web search: re-reads the saved settings right before writing, so another form's change is kept", async () => {
+    const h = harness({ web: webStatus({ browserEnabled: true }) });
+    await mount(h);
+    // Another writer (the Settings › Web search form mounted below) turns the browser off.
+    h.web.current = { ...h.web.current, settings: { ...h.web.current.settings, browserEnabled: false, reader: "jina" } };
+    await click($("toggle-web-search"));
+    const cmds = h.calls.map((c) => c.cmd);
+    expect(cmds.slice(-2)).toEqual(["hermes_web_settings_get", "hermes_web_settings_set"]);
+    const written = (h.calls[h.calls.length - 1].args as { settings: HermesWebStatus["settings"] }).settings;
+    expect(written).toEqual({ ...DEFAULT_WEB_SETTINGS, browserEnabled: false, reader: "jina", searchEnabled: true });
+    expect(h.web.current.settings.browserEnabled).toBe(false);
+  });
+
+  it("web search: if the re-read fails, nothing is written and the error shows", async () => {
+    const h = harness();
+    await mount(h);
+    const inv = h.io.web.invoke;
+    h.io.web.invoke = (async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "hermes_web_settings_get") throw new Error("core went away");
+      return inv(cmd, args);
+    }) as WebSettingsIo["invoke"];
+    await click($("toggle-web-search"));
+    expect(h.calls.some((c) => c.cmd === "hermes_web_settings_set")).toBe(false);
+    expect($("reason-web-search")?.textContent).toContain("core went away");
   });
 
   it("uses HIC wording, never HITL", async () => {
