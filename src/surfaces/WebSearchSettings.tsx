@@ -16,7 +16,8 @@ import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
-import { publishWebSettings, subscribeWebSettings, withWebSettingsLock } from "../agent/webSettingsSync";
+import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
+import { writeWebSettingsUnlessStarting } from "../agent/webSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -149,7 +150,9 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
       const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
       // One write at a time across every view (webSettingsSync.ts): re-read, apply only the
       // fields changed here, write, announce, then let the next writer in.
-      const st = await withWebSettingsLock(async () => {
+      // Held (null) if a Hermes start began while this write waited: the draft stays unsaved and
+      // the "Hermes is starting" line shows; Save works again once Hermes is up.
+      const st = await writeWebSettingsUnlessStarting(async () => {
         const fresh = await loadWebSettings(io);
         // Hermes reads search at start: remember what it runs with before changing the saved value.
         noteRunning("webSearch", fresh.settings.searchEnabled);
@@ -157,6 +160,7 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
         publishWebSettings(saved, me);
         return saved;
       });
+      if (!st) return;
       setStatus(st);
       setDraft(st.settings);
       setBaseline(st.settings);
