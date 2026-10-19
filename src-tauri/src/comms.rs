@@ -1415,7 +1415,6 @@ pub(crate) fn rendezvous_open<R: tauri::Runtime>(
 }
 
 /// INVITEE — ask to join through the rendezvous (§9). Returns the daemon's view of the join.
-#[allow(dead_code)] // called by the invitee join path (M3, stacked on the v2 invite-link commands)
 pub(crate) fn rendezvous_join<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     group: String,

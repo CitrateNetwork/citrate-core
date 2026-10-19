@@ -1871,6 +1871,21 @@ export interface JoinCodeEntry {
   exp: string;
   resolveCount: number;
 }
+/** GROW-S2 (Join 9) — what `join.redeem` did. `join` is the member daemon's view (camelCase), no secrets. */
+export type JoinRedeemResult =
+  | {
+      path: "rendezvous";
+      join: {
+        group: string;
+        name: string;
+        state: string;
+        reason: string | null;
+        expiresAt: number | null;
+        graceUntil: number | null;
+        updatedAt: number | null;
+      };
+    }
+  | { path: "legacy" };
 export interface JoinDomain {
   /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
   mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
@@ -1879,9 +1894,11 @@ export interface JoinDomain {
   /** Resolve + verify a link (or bare code). Each call counts against the code's resolve limit
    *  (direct 1–50, default 50); resolve on the member's action, not on a preview. */
   resolve(link: string): Promise<JoinResolved>;
-  /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
-   *  stays held (until it expires), so calling it again retries. */
-  redeem(code: string): Promise<void>;
+  /** The member's explicit Join for a resolved, actionable direct invite. GROW-S2: joins through
+   *  the relay rendezvous (`path: "rendezvous"`, with the daemon's join view) and falls back to the
+   *  older self-admit (`path: "legacy"`) only when the relay has no rendezvous for it. On failure,
+   *  and while the join is still `requesting`, the invite stays held, so calling it again retries. */
+  redeem(code: string): Promise<JoinRedeemResult>;
   /** Revoke one of the member's codes. */
   revoke(code: string): Promise<void>;
   /** The member's codes, newest first. */

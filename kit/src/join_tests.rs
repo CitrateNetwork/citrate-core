@@ -1448,6 +1448,37 @@ fn opened_invite_survives_a_failed_redeem_and_is_handed_over_once_on_success() {
 }
 
 #[test]
+fn an_unfinished_redeem_keeps_the_opened_invite_and_a_finished_one_forgets_it() {
+    let stub = StubJoinService::start();
+    let c = stub.client();
+    let m = c
+        .mint(&FixedBearer(BEARER), &direct_req(), Some(&sample_invite()))
+        .expect("mint");
+    assert!(c.resolve(&m.share_url.expect("url")).expect("resolve").actionable);
+    // Accepted but not finished (GROW-S2 `requesting`): kept, the value comes back.
+    assert_eq!(c.redeem_opened_with(&m.code, |_| Ok(("requesting", false))), Ok("requesting"));
+    // An error keeps it too.
+    assert_eq!(
+        c.redeem_opened_with::<()>(&m.code, |_| Err("daemon down".into())),
+        Err("daemon down".to_string())
+    );
+    // The same payload is handed over each time, and a finished redeem forgets it.
+    let mut seen = Vec::new();
+    assert_eq!(
+        c.redeem_opened_with(&m.code, |p| {
+            seen.push(p.to_invite_link().to_string());
+            Ok(("waiting", true))
+        }),
+        Ok("waiting")
+    );
+    assert_eq!(seen, vec![sample_invite().to_invite_link().to_string()]);
+    assert_eq!(
+        c.redeem_opened_with(&m.code, |_| Ok(((), true))),
+        Err(JoinError::NotFound.to_string())
+    );
+}
+
+#[test]
 fn e2e_join_http_never_follows_a_redirect() {
     let stub = StubJoinService::start();
     let c = stub.client();

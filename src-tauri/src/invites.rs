@@ -294,14 +294,21 @@ pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<
 
 /// The self-admit body shared by [`group_invite_redeem`] and the v2 invite-link redeem
 /// (`join::join_redeem`, which rebuilds this link from an opened envelope in Rust).
+/// The local display name for a group joined from an invite: the link's hex `n` decoded, or
+/// "Invited group" when it is absent or not UTF-8. Shared by the legacy redeem and the GROW-S2
+/// rendezvous join.
+pub(crate) fn invite_display_name(n_hex: &str) -> String {
+    hex::decode(n_hex)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Invited group".to_string())
+}
+
 pub(crate) fn redeem_link(app: &tauri::AppHandle, link: &str) -> Result<(), String> {
     let group = link_param(link, "g").ok_or("invite link missing group")?;
     let token = link_param(link, "t").ok_or("invite link missing token")?;
-    let name = link_param(link, "n")
-        .and_then(|h| hex::decode(h).ok())
-        .and_then(|b| String::from_utf8(b).ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Invited group".to_string());
+    let name = invite_display_name(link_param(link, "n").as_deref().unwrap_or(""));
     crate::comms::redeem_invite(app, group.clone(), token.clone(), name.clone())?;
     append_referral(
         app,

@@ -254,7 +254,6 @@ fn record_active_joins(app: &tauri::AppHandle, views: &TickViews) {
 
 /// Note that this device asked to join `group` (M3 calls this once the daemon has the join), so a
 /// restart resumes ticking even before the next tick wrote the marker.
-#[allow(dead_code)] // called by the invitee join path (M3)
 pub(crate) fn note_active_join(app: &tauri::AppHandle, group: &str) {
     let Some(path) = active_joins_path(app) else {
         return;
@@ -295,6 +294,85 @@ pub fn spawn_ticker(app: tauri::AppHandle) {
                 }
                 std::thread::sleep(TICK_INTERVAL);
             }
+        });
+}
+
+// ---------------------------------------------------------------------------
+// M3 — the invitee's Join.
+// ---------------------------------------------------------------------------
+
+/// What `join_redeem` does after `rendezvousJoin` answered (§12, §15 M3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JoinNext {
+    /// Use the legacy self-admit (`redeemInvite`): only when the relay doesn't speak rendezvous
+    /// (`relay_unsupported`), or it has no record for this invite (`unknown` / `no_rendezvous`).
+    Legacy,
+    /// The rendezvous owns this join. `forget` = the opened invite can be dropped: the daemon has
+    /// the join persisted with a definite answer (`state ≠ requesting`). Kept while `requesting`
+    /// (no definite answer yet) and `relay_unreachable` (Retry presses Join again).
+    Rendezvous { forget: bool },
+}
+
+/// Decide from the daemon's answer to `rendezvousJoin`. A daemon without the op (an older sidecar,
+/// until the pin bump M6) is treated like `relay_unsupported`: the legacy path is what that daemon
+/// can do. Never legacy on `requesting`, `relay_unreachable` or `unknown` / `purged`.
+pub(crate) fn decide_join(answer: &Result<JoinView, RvError>) -> Option<JoinNext> {
+    match answer {
+        Err(RvError::DaemonUnsupported) => Some(JoinNext::Legacy),
+        Err(_) => None,
+        Ok(v) => Some(match v.state {
+            JoinState::RelayUnsupported => JoinNext::Legacy,
+            JoinState::Unknown if v.reason.as_deref() == Some("no_rendezvous") => JoinNext::Legacy,
+            JoinState::Requesting | JoinState::RelayUnreachable => {
+                JoinNext::Rendezvous { forget: false }
+            }
+            _ => JoinNext::Rendezvous { forget: true },
+        }),
+    }
+}
+
+/// What `join_redeem` returns to the webview: which path ran, and the rendezvous view when it was
+/// the rendezvous. A legacy self-admit that returned is a joined group (the daemon committed it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "path")]
+pub enum JoinRedeemView {
+    Rendezvous { join: JoinView },
+    Legacy,
+}
+
+/// The invitee's Join for an opened invite `(g, t, n)`: `rendezvousJoin`, then the legacy redeem
+/// only per [`decide_join`]. Returns the view and whether the opened invite can be forgotten.
+pub(crate) fn join_opened(
+    app: &tauri::AppHandle,
+    group: &str,
+    token: &str,
+    name_hex: &str,
+    legacy_link: &str,
+) -> Result<(JoinRedeemView, bool), String> {
+    let name = crate::invites::invite_display_name(name_hex);
+    let answer = crate::comms::rendezvous_join(app, group.to_string(), token_ipc_hex(token), name);
+    match decide_join(&answer) {
+        Some(JoinNext::Legacy) => {
+            crate::invites::redeem_link(app, legacy_link)?;
+            Ok((JoinRedeemView::Legacy, true))
+        }
+        Some(JoinNext::Rendezvous { forget }) => {
+            let join = answer.map_err(|e| e.to_string())?;
+            note_active_join(app, group);
+            Ok((JoinRedeemView::Rendezvous { join }, forget))
+        }
+        None => Err(answer.err().map(|e| e.to_string()).unwrap_or_default()),
+    }
+}
+
+/// After a deep-link join: one tick right away (off the caller's thread), so the views reach the
+/// webview without waiting for the next scheduled tick.
+pub(crate) fn tick_soon(app: &tauri::AppHandle) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("rendezvous-tick-join".into())
+        .spawn(move || {
+            let _ = tick_and_emit(&app);
         });
 }
 

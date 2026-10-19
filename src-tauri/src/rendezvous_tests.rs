@@ -366,3 +366,82 @@ fn active_join_groups_lists_each_live_group_once() {
     };
     assert_eq!(active_join_groups(&views), vec!["aa".to_string(), "bb".to_string()]);
 }
+
+// ---- M3: the invitee's Join (§12 fallback, forget rule) ----------------------------------------
+
+fn view(state: JoinState, reason: Option<&str>) -> JoinView {
+    JoinView {
+        group: "g".into(),
+        name: "n".into(),
+        state,
+        reason: reason.map(str::to_string),
+        expires_at: None,
+        grace_until: None,
+        updated_at: None,
+    }
+}
+
+#[test]
+fn legacy_fallback_only_on_relay_unsupported_or_no_rendezvous() {
+    assert_eq!(decide_join(&Ok(view(JoinState::RelayUnsupported, None))), Some(JoinNext::Legacy));
+    assert_eq!(
+        decide_join(&Ok(view(JoinState::Unknown, Some("no_rendezvous")))),
+        Some(JoinNext::Legacy)
+    );
+    // A daemon from before the rendezvous ops can only do the legacy path.
+    assert_eq!(decide_join(&Err(RvError::DaemonUnsupported)), Some(JoinNext::Legacy));
+}
+
+#[test]
+fn never_legacy_on_requesting_relay_unreachable_or_purged() {
+    for (state, reason) in [
+        (JoinState::Requesting, None),
+        (JoinState::RelayUnreachable, None),
+        (JoinState::Unknown, Some("purged")),
+        (JoinState::Unknown, None),
+    ] {
+        assert_ne!(decide_join(&Ok(view(state, reason))), Some(JoinNext::Legacy), "{state:?} {reason:?}");
+    }
+    // An IPC or daemon error is an error, not a fallback.
+    assert_eq!(decide_join(&Err(RvError::Ipc("socket".into()))), None);
+    assert_eq!(decide_join(&Err(RvError::Daemon("bad".into()))), None);
+}
+
+#[test]
+fn the_opened_invite_is_kept_until_the_daemon_has_a_definite_answer() {
+    use JoinState::*;
+    for s in [Requesting, RelayUnreachable] {
+        assert_eq!(decide_join(&Ok(view(s, None))), Some(JoinNext::Rendezvous { forget: false }), "{s:?}");
+    }
+    for s in [
+        Waiting, Joining, Joined, Expired, Revoked, Taken, Dropped, Withdrawn, WelcomeExpired,
+        ReplyUnverified, Failed,
+    ] {
+        assert_eq!(decide_join(&Ok(view(s, None))), Some(JoinNext::Rendezvous { forget: true }), "{s:?}");
+    }
+    assert_eq!(
+        decide_join(&Ok(view(Unknown, Some("purged")))),
+        Some(JoinNext::Rendezvous { forget: true })
+    );
+}
+
+#[test]
+fn join_redeem_view_names_the_path_and_carries_only_the_view() {
+    let r = serde_json::to_value(JoinRedeemView::Rendezvous { join: view(JoinState::Waiting, None) })
+        .expect("ser");
+    assert_eq!(r["path"], "rendezvous");
+    assert_eq!(r["join"]["state"], "waiting");
+    assert_eq!(serde_json::to_value(JoinRedeemView::Legacy).expect("ser"), serde_json::json!({"path":"legacy"}));
+}
+
+#[test]
+fn the_join_path_sends_the_hex_token_and_falls_back_only_through_decide_join() {
+    let src = include_str!("rendezvous.rs");
+    let body = &src[src.find("pub(crate) fn join_opened").expect("fn")..];
+    let body = &body[..body.find("\n}\n").expect("end")];
+    assert!(body.contains("token_ipc_hex(token)"));
+    let decide = body.find("decide_join(&answer)").expect("decide");
+    let legacy = body.find("redeem_link(app, legacy_link)").expect("legacy");
+    assert!(decide < legacy);
+    assert_eq!(body.matches("redeem_link(").count(), 1);
+}

@@ -5,8 +5,9 @@
 //! session (the kit [`AuthState`] bearer, never handed to the webview), seals the relay invite in
 //! Rust, and gets back one share URL `https://citrate.ai/join/<code>#<K>`. The invitee's app
 //! resolves the code, verifies the signature against the pinned kids, opens the envelope, and holds
-//! the relay invite in Rust until the member clicks Join (`join_redeem`), which runs the existing
-//! self-admit path ([`crate::invites::redeem_link`]).
+//! the relay invite in Rust until the member clicks Join (`join_redeem`), which joins through the
+//! GROW-S2 relay rendezvous (falling back to the self-admit path, [`crate::invites::redeem_link`],
+//! only where the contract allows).
 //!
 //! What crosses `invoke`: [`MintView`] (code, kind, status, expiry, and the final share URL, the only
 //! value that contains `K`), [`ResolvedView`] (signed display data and two flags), and
@@ -96,19 +97,33 @@ pub async fn join_resolve(app: tauri::AppHandle, link: String) -> Result<Resolve
     crate::blocking::off_main(move || with_states(&app, |join, _auth| join.resolve(&link))).await
 }
 
-/// `join_redeem` — the member's explicit Join for a resolved direct invite: hands the opened relay
-/// invite (held in Rust since `join_resolve`) to the existing self-admit path. The invite is
-/// forgotten only on success; if the self-admit fails (relay or daemon unreachable) it stays held
-/// until it expires, so the member can press Join again.
+/// `join_redeem` — the member's explicit Join for a resolved direct invite (GROW-S2 M3). Asks the
+/// member daemon to join through the relay rendezvous (`rendezvousJoin(g, t, n)`); only when the
+/// relay doesn't speak rendezvous or has no record of this invite does it fall back to the existing
+/// self-admit ([`crate::invites::redeem_link`]). The opened invite (held in Rust since
+/// `join_resolve`) is forgotten once the daemon holds the join with a definite answer; while the
+/// join is still `requesting`, or on an error, it stays held so Join can be pressed again. Runs a
+/// tick right after, so the views reach the webview on `join://state`.
 #[tauri::command]
-pub async fn join_redeem(app: tauri::AppHandle, code: String) -> Result<(), String> {
+pub async fn join_redeem(
+    app: tauri::AppHandle,
+    code: String,
+) -> Result<crate::rendezvous::JoinRedeemView, String> {
     crate::blocking::off_main(move || {
         let join = app
             .try_state::<JoinState>()
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        join.0.redeem_opened(&code, |payload| {
-            crate::invites::redeem_link(&app, &payload.to_invite_link())
-        })
+        let out = join.0.redeem_opened_with(&code, |payload| {
+            crate::rendezvous::join_opened(
+                &app,
+                &payload.g,
+                &payload.t,
+                &payload.n,
+                &payload.to_invite_link(),
+            )
+        });
+        crate::rendezvous::tick_soon(&app);
+        out
     })
     .await
 }

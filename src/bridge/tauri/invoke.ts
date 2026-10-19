@@ -91,6 +91,9 @@ const LONG: Record<string, number> = {
   join_mint: 35_000,
   join_attach: 20_000,
   join_resolve: 35_000,
+  // GROW-S2 M3: rendezvousJoin (daemon IPC, ≤ 3 s connect + 5 s answer) and, only on the §12
+  // fallback, the legacy redeem (the same bound again).
+  join_redeem: 20_000,
   join_revoke: 20_000,
   join_list: 20_000,
   // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.

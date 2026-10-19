@@ -1332,21 +1332,39 @@ impl JoinClient {
         code: &str,
         redeem: impl FnOnce(&InvitePayload) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.redeem_opened_with(code, |p| redeem(p).map(|()| ((), true)))
+    }
+
+    /// Like [`JoinClient::redeem_opened`], for a redeem that can succeed without being finished
+    /// (GROW-S2: the daemon has the join request but no definite relay answer yet). `redeem`
+    /// returns its value and whether the opened invite may now be forgotten; it is kept on `false`
+    /// and on an error, so the member can press Join again.
+    pub fn redeem_opened_with<T>(
+        &self,
+        code: &str,
+        redeem: impl FnOnce(&InvitePayload) -> Result<(T, bool), String>,
+    ) -> Result<T, String> {
         self.prune();
         let payload = self
             .opened()
             .get(code)
             .map(|o| o.payload.clone())
             .ok_or_else(|| JoinError::NotFound.to_string())?;
-        let out = redeem(&payload);
-        match &out {
-            Ok(()) => {
+        match redeem(&payload) {
+            Ok((v, true)) => {
                 self.opened().remove(code);
                 emit("redeem", Some(code), None);
+                Ok(v)
             }
-            Err(_) => emit("redeem failed, invite kept for retry", Some(code), None),
+            Ok((v, false)) => {
+                emit("redeem in progress, invite kept", Some(code), None);
+                Ok(v)
+            }
+            Err(e) => {
+                emit("redeem failed, invite kept for retry", Some(code), None);
+                Err(e)
+            }
         }
-        out
     }
 
     /// Revoke one of the caller's codes. Idempotent at the service; drops any local state for it.
