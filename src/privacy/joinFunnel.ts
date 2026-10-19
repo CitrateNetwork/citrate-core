@@ -1,0 +1,169 @@
+// =====================================================================
+// 0.5.2 Join — anonymous step-reached funnel events, through the EXISTING opt-in telemetry.
+//
+// No new endpoint and no new consent surface. The existing telemetry is off by default and sends
+// nothing in the background: a member prepares a diagnostic report, reviews the exact JSON and
+// presses Send (DiagnosticReport, the ConsentGate). Join steps ride inside that same reviewed
+// report as one more disclosed field (`joinSteps`, listed in telemetry-fields.json).
+//
+// What a step record is: the bare step id. Nothing else. No invite code, group id, cluster name,
+// wallet address, email, per-install id or time. The pipeline already carries the app version
+// and OS family; its only id is the random per-report `reportId`, so no identifier is added here.
+//
+// Rules this module enforces (joinFunnel.test.ts):
+//   - telemetry off: `reachedStep` records nothing and `pendingJoinSteps` returns nothing;
+//   - only allowlisted step ids are kept (the Rust send path re-checks the same list);
+//   - one record per install per step: a step already pending, or already sent in a report, is
+//     never queued again.
+// Data source (Rule 7): the telemetry toggle in app state (Settings › Telemetry), and this
+// install's own local storage for the pending / sent step sets.
+// =====================================================================
+import { STORAGE_KEY } from "../shell/state";
+
+/** The join path, in order. Mirrors `JOIN_STEPS` in src-tauri/src/telemetry.rs. */
+export const JOIN_STEPS = [
+  "arrive",
+  "download",
+  "open_app",
+  "sign_in",
+  "kyc",
+  "membership",
+  "wallet",
+  "bond",
+  "node_synced",
+  "activate_validator",
+  "join_group",
+] as const;
+
+export type JoinStep = (typeof JOIN_STEPS)[number];
+
+/** Local storage key for this install's step sets. */
+export const JOIN_FUNNEL_STORAGE_KEY = "citrate-core-join-funnel-v1";
+
+const ORDER = new Map<string, number>(JOIN_STEPS.map((s, i) => [s, i]));
+const isStep = (s: unknown): s is JoinStep => typeof s === "string" && ORDER.has(s);
+const inPathOrder = (xs: Iterable<JoinStep>): JoinStep[] =>
+  [...new Set(xs)].sort((a, b) => (ORDER.get(a) ?? 0) - (ORDER.get(b) ?? 0));
+
+/** The persisted telemetry toggle, read without the store (default off). */
+function persistedConsent(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? Boolean(JSON.parse(raw).telemetry) : false;
+  } catch {
+    return false;
+  }
+}
+
+let consentSource: (() => boolean) | null = null;
+
+/** Bind the live telemetry toggle (the app binds `() => store.state.telemetry` at startup).
+ *  `null` falls back to the persisted toggle. */
+export function setJoinFunnelConsent(source: (() => boolean) | null): void {
+  consentSource = source;
+}
+
+function consented(): boolean {
+  try {
+    return consentSource ? consentSource() === true : persistedConsent();
+  } catch {
+    return false;
+  }
+}
+
+interface Record_ {
+  v: 1;
+  pending: JoinStep[];
+  sent: JoinStep[];
+}
+
+// In-memory copy so a webview with blocked storage still dedupes for this session.
+let memory: Record_ | null = null;
+
+function load(): Record_ {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(JOIN_FUNNEL_STORAGE_KEY);
+  } catch {
+    return memory ?? { v: 1, pending: [], sent: [] }; // storage blocked: this session's copy
+  }
+  if (!raw) return { v: 1, pending: [], sent: [] };
+  try {
+    const r = JSON.parse(raw) as Partial<Record_>;
+    return {
+      v: 1,
+      pending: inPathOrder((Array.isArray(r.pending) ? r.pending : []).filter(isStep)),
+      sent: inPathOrder((Array.isArray(r.sent) ? r.sent : []).filter(isStep)),
+    };
+  } catch {
+    return { v: 1, pending: [], sent: [] }; // unreadable: start over rather than guess
+  }
+}
+
+function store(r: Record_): void {
+  memory = r;
+  try {
+    localStorage.setItem(JOIN_FUNNEL_STORAGE_KEY, JSON.stringify({ v: 1, pending: r.pending, sent: r.sent }));
+  } catch {
+    /* storage unavailable: the in-memory copy still dedupes for this session */
+  }
+}
+
+/**
+ * Note that this install reached a join step. A no-op unless telemetry is on, and a no-op for a
+ * step already pending or already sent. Never sends anything: the step waits for the member's
+ * next reviewed diagnostic report. Safe to call from anywhere (it never throws).
+ */
+export function reachedStep(step: JoinStep): void {
+  if (!isStep(step) || !consented()) return;
+  const r = load();
+  if (r.pending.includes(step) || r.sent.includes(step)) return;
+  store({ v: 1, pending: inPathOrder([...r.pending, step]), sent: r.sent });
+}
+
+/** The steps waiting to ride in the next reviewed report, in path order. Empty when telemetry is off. */
+export function pendingJoinSteps(): JoinStep[] {
+  if (!consented()) return [];
+  return [...load().pending];
+}
+
+/** After a report was sent: move its steps from pending to sent so they are never sent twice. */
+export function markJoinStepsSent(steps: readonly string[]): void {
+  const done = steps.filter(isStep);
+  if (!done.length) return;
+  const r = load();
+  store({
+    v: 1,
+    pending: r.pending.filter((s) => !done.includes(s)),
+    sent: inPathOrder([...r.sent, ...done]),
+  });
+}
+
+/** Forget every recorded step (called when the member turns telemetry off). */
+export function clearJoinSteps(): void {
+  memory = null;
+  try {
+    localStorage.removeItem(JOIN_FUNNEL_STORAGE_KEY);
+  } catch {
+    /* nothing stored */
+  }
+}
+
+/** The join step an onboarding stage reaches, or null (S0 is `open_app`, recorded at launch;
+ *  S6 is node ignition, and the step that counts there is `node_synced`). */
+export function stepForStage(stage: string): JoinStep | null {
+  switch (stage) {
+    case "s1":
+      return "sign_in";
+    case "s2":
+      return "kyc";
+    case "s3":
+      return "membership";
+    case "s4":
+      return "wallet";
+    case "s5":
+      return "bond";
+    default:
+      return null;
+  }
+}

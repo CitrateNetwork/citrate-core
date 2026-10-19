@@ -18,6 +18,7 @@ import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal,
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
+import { reachedStep, setJoinFunnelConsent, stepForStage } from "./privacy/joinFunnel";
 
 const queryClient = new QueryClient();
 
@@ -230,6 +231,17 @@ function AuthGate() {
 
 function Root() {
   const s = useStore();
+
+  // 0.5.2 Join funnel — gated on the live telemetry toggle (Settings › Telemetry, off by default).
+  // Records the bare step id locally; it only leaves the machine inside a reviewed report.
+  useEffect(() => {
+    setJoinFunnelConsent(() => store.state.telemetry);
+  }, []);
+  useEffect(() => {
+    reachedStep("open_app");
+    const step = stepForStage(s.stage);
+    if (step) reachedStep(step);
+  }, [s.telemetry, s.stage]);
 
   useEffect(() => {
     store.start();

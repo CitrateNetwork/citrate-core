@@ -8,6 +8,7 @@ import { useState } from "react";
 import { bridge } from "../bridge";
 import type { DiagnosticBundle } from "../bridge/domains";
 import { getUiErrors, clearUiErrors } from "../shell/errorRing";
+import { pendingJoinSteps, markJoinStepsSent } from "../privacy/joinFunnel";
 
 export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?: (m: string) => void }) {
   const [bundle, setBundle] = useState<DiagnosticBundle | null>(null);
@@ -35,7 +36,7 @@ export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?:
   const prepare = async () => {
     setBusy(true);
     try {
-      setBundle(await bridge.telemetry.bundle(getUiErrors()));
+      setBundle(await bridge.telemetry.bundle(getUiErrors(), pendingJoinSteps()));
     } catch (e) {
       say("Couldn’t prepare a report — " + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -49,6 +50,7 @@ export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?:
     try {
       await bridge.telemetry.send(JSON.stringify(bundle)); // sends exactly what was reviewed
       clearUiErrors();
+      markJoinStepsSent(bundle.joinSteps ?? []); // each join step is sent once per install
       setBundle(null);
       setSent(true);
     } catch (e) {

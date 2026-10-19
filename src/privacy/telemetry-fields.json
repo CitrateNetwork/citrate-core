@@ -10,8 +10,10 @@
     { "key": "os", "what": "The operating system family: macos, linux or windows." },
     { "key": "crashTail", "what": "The last lines of the app's own crash log, if it crashed." },
     { "key": "nodeLogTail", "what": "The last lines of the node's crash records, if it crashed." },
-    { "key": "uiErrors", "what": "Recent error messages from the app's screens." }
+    { "key": "uiErrors", "what": "Recent error messages from the app's screens." },
+    { "key": "joinSteps", "what": "Which steps of joining you have reached since your last report, by step name only (for example sign_in or wallet). Each step is sent once. No invite code, group, wallet address, email or time goes with it." }
   ],
+  "joinSteps": ["arrive", "download", "open_app", "sign_in", "kyc", "membership", "wallet", "bond", "node_synced", "activate_validator", "join_group"],
   "neverSent": [
     "Chat, journal or message content",
     "Keys, passphrases or recovery phrases",
