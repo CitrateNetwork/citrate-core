@@ -31,6 +31,7 @@ import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
+import { publishWebSettings, subscribeWebSettings } from "../../agent/webSettingsSync";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -224,6 +225,19 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const [restarting, setRestarting] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
 
+  // One source of truth with the Settings › Web search form mounted below: when it saves, show
+  // what core saved (webSettingsSync.ts). This panel announces its own saves the same way.
+  const [me] = useState(() => Symbol("controls-panel"));
+  useEffect(
+    () =>
+      subscribeWebSettings((st, source) => {
+        if (source === me) return;
+        setWeb(st);
+        setWebErr(st.loadError ?? null);
+      }),
+    [me],
+  );
+
   // Reads only. Nothing here writes, so opening the panel changes no setting.
   useEffect(() => {
     let live = true;
@@ -267,6 +281,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         const fresh = await loadWebSettings(io.web);
         noteRunning("webSearch", fresh.settings.searchEnabled);
         const st = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
+        publishWebSettings(st, me);
         setWeb(st);
         setWebErr(st.loadError ?? null);
       } catch (e) {

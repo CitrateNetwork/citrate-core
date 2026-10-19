@@ -12,10 +12,11 @@
 // fields that differ from what the form loaded, and writes that. Another writer (Hermes › Controls,
 // mounted next to this form) may have changed other fields since the form loaded; those are kept.
 // =====================================================================
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
+import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -92,6 +93,28 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   const [originsText, setOriginsText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // This form's id on the web-settings channel (webSettingsSync.ts), and its latest state for the
+  // listener below, which runs outside a render.
+  const [me] = useState(() => Symbol("web-search-form"));
+  const latest = useRef({ draft, baseline, originsText });
+  latest.current = { draft, baseline, originsText };
+
+  // Another view (the Controls panel's Web search switch) saved: show what core saved now, and
+  // re-baseline so Save compares against it. The member's own unsaved edits here are kept.
+  useEffect(
+    () =>
+      subscribeWebSettings((st, source) => {
+        if (source === me) return;
+        const cur = latest.current;
+        const edits = changedFields(cur.baseline, { ...cur.draft, jevOrigins: parseOrigins(cur.originsText).origins });
+        const next = { ...st.settings, ...edits };
+        setStatus(st);
+        setBaseline(st.settings);
+        setDraft(next);
+        if (!("jevOrigins" in edits)) setOriginsText(next.jevOrigins.join("\n"));
+      }),
+    [me],
+  );
 
   useEffect(() => {
     if (!desktop) return;
@@ -128,6 +151,7 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
       // Hermes reads search at start: remember what it runs with before changing the saved value.
       noteRunning("webSearch", fresh.settings.searchEnabled);
       const st = await saveWebSettings(io, { ...fresh.settings, ...edits });
+      publishWebSettings(st, me);
       setStatus(st);
       setDraft(st.settings);
       setBaseline(st.settings);
