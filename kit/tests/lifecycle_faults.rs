@@ -32,12 +32,24 @@ fn fast_backoff(max_retries: u32) -> BackoffPolicy {
     }
 }
 
-fn running_pid(sup: &Supervisor) -> u32 {
+/// Wait until the service is Running and its child has really started executing (it wrote its
+/// pid to the fixture's pid file). A control raced against a child that has not run its first
+/// line yet would observe nothing about it, so every fixture waits for both.
+fn running_pid(sup: &Supervisor, fx: &OwnedFixture) -> u32 {
     let st = sup.wait_until(|s| *s == SupervisorState::Running, ACQUIRE);
-    match (st.state, st.pid) {
+    let pid = match (st.state, st.pid) {
         (SupervisorState::Running, Some(pid)) => pid,
         (state, pid) => panic!("INCONCLUSIVE: service not Running with a pid: {state:?} {pid:?}"),
-    }
+    };
+    let recorded = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        fx.pidfile_pids().contains(&pid).then_some(())
+    });
+    assert!(
+        recorded.is_ok(),
+        "INCONCLUSIVE: child {pid} never recorded itself (pid file {:?})",
+        fx.pidfile_pids()
+    );
+    pid
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +208,7 @@ fn pc_fresh_start_creates_exactly_one_incarnation() {
         fx.path("crash.jsonl"),
     ))
     .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let pid = running_pid(&sup);
+    let pid = running_pid(&sup, &fx);
     fx.expect_pids(1, ACQUIRE);
     let samples = sample_over(Duration::from_secs(2), Duration::from_millis(100), || {
         fx.pidfile_pids().len()
@@ -220,7 +232,7 @@ fn pc_single_stop_ends_the_child_and_stays_off() {
     cfg.stop_grace = Duration::from_millis(500);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let pid = running_pid(&sup);
+    let pid = running_pid(&sup, &fx);
     sup.stop();
     let st = sup.status();
     assert_eq!(st.state, SupervisorState::Off);
@@ -248,7 +260,7 @@ fn pc_crash_respawns_a_distinct_incarnation() {
     cfg.backoff = fast_backoff(5);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let first = running_pid(&sup);
+    let first = running_pid(&sup, &fx);
     fx.expect_pids(1, ACQUIRE);
     lifecycle::fixture::kill(first, libc::SIGKILL);
     let pids = fx.expect_pids(2, ACQUIRE);
