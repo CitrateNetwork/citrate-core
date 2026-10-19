@@ -128,61 +128,129 @@ fn accepted_schemes_match_tauri_conf() {
     );
 }
 
-// --- fragment redaction -----------------------------------------------------------------------
+// --- log redaction: scheme and host only ------------------------------------------------------
 
-const SECRET: &str = "s3cr3t-fragment-value";
+/// Secret-looking values placed in every part of a link a log must not carry.
+const SECRETS: &[&str] = &[
+    "tok3n-T-value",
+    "s1g-S-value",
+    "c0de-C-value",
+    "k3y-K-value",
+    "member@example.org",
+    "ord3r-O-value",
+    "pAth-s3gment",
+    "fr4gment-value",
+];
 
-#[test]
-fn redaction_removes_everything_after_the_hash() {
-    let raw = format!("citrate://join/abc?x=1#{SECRET}");
-    let out = redact_fragment(&raw);
-    assert!(!out.contains(SECRET));
-    assert_eq!(out, "citrate://join/abc?x=1#<redacted>");
+fn secret_links() -> Vec<String> {
+    vec![
+        "citrate://invite/pAth-s3gment?t=tok3n-T-value&s=s1g-S-value#fr4gment-value".to_string(),
+        "citrate://pair/pAth-s3gment?c=c0de-C-value&k=k3y-K-value#fr4gment-value".to_string(),
+        "citrate://claim/pAth-s3gment?email=member%40example.org&order=ord3r-O-value#fr4gment-value"
+            .to_string(),
+        "citrate://claim?email=member@example.org&order=ord3r-O-value&t=tok3n-T-value".to_string(),
+    ]
+}
+
+fn assert_clean(out: &str) {
+    for secret in SECRETS {
+        assert!(!out.contains(secret), "{secret} appears in: {out}");
+    }
+    assert!(!out.contains("member%40example.org"), "{out}");
+    assert!(!out.contains('?'), "query marker appears in: {out}");
+    assert!(!out.contains('#'), "fragment marker appears in: {out}");
 }
 
 #[test]
-fn redaction_leaves_a_fragmentless_url_unchanged() {
-    assert_eq!(redact_fragment("citrate://join/abc"), "citrate://join/abc");
-    assert_eq!(redact_fragment(""), "");
-}
-
-#[test]
-fn redaction_cuts_at_the_first_hash() {
-    let raw = format!("citrate://join/a#{SECRET}#more-{SECRET}");
-    let out = redact_fragment(&raw);
-    assert!(!out.contains(SECRET));
-    assert!(!out.contains("more"));
-    assert_eq!(out, "citrate://join/a#<redacted>");
-}
-
-#[test]
-fn redaction_handles_an_empty_fragment_and_non_ascii() {
+fn log_redact_keeps_only_scheme_and_host() {
+    let urls = urls_from_argv(&argv(
+        &std::iter::once("app".to_string())
+            .chain(secret_links())
+            .collect::<Vec<_>>()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    ));
+    assert_eq!(urls.len(), 4);
+    let redacted: Vec<String> = urls.iter().map(log_redact).collect();
     assert_eq!(
-        redact_fragment("citrate://join/a#"),
-        "citrate://join/a#<redacted>"
+        redacted,
+        vec![
+            "citrate://invite",
+            "citrate://pair",
+            "citrate://claim",
+            "citrate://claim"
+        ]
     );
-    let out = redact_fragment("citrate://join/é#ü-secret");
-    assert_eq!(out, "citrate://join/é#<redacted>");
+    for r in &redacted {
+        assert_clean(r);
+    }
 }
 
 #[test]
-fn the_delivery_log_line_never_contains_a_fragment() {
-    let raw = argv(&[
-        "app",
-        &format!("citrate://join/abc#{SECRET}"),
-        &format!("citrate://pair?v=1#{SECRET}"),
-        &format!("https://citrate.ai/join/abc#{SECRET}"),
-        "--flag",
-    ]);
+fn delivery_keeps_the_full_url_while_the_log_does_not() {
+    let raw = argv(&["app", &secret_links()[0]]);
     let urls = urls_from_argv(&raw);
-    assert_eq!(urls.len(), 2);
+    assert_eq!(
+        urls[0].as_str(),
+        secret_links()[0],
+        "the app receives the link unchanged"
+    );
+    assert_eq!(log_redact(&urls[0]), "citrate://invite");
+}
+
+#[test]
+fn the_delivery_log_line_records_scheme_host_and_counts_only() {
+    let mut args = vec!["app".to_string()];
+    args.extend(secret_links());
+    args.push("https://citrate.ai/join/pAth-s3gment?t=tok3n-T-value#fr4gment-value".to_string());
+    args.push("--flag".to_string());
+    let raw: Vec<&str> = args.iter().map(String::as_str).collect();
+    let raw = argv(&raw);
+    let urls = urls_from_argv(&raw);
     let line = delivery_log_line(&urls, ignored_count(&raw, &urls));
-    assert!(!line.contains(SECRET), "log line leaked a fragment: {line}");
-    assert!(line.contains("citrate://join/abc#<redacted>"));
+    assert_clean(&line);
+    assert!(line.contains("4 link(s) delivered"), "{line}");
+    assert!(
+        line.contains("citrate://invite, citrate://pair, citrate://claim"),
+        "{line}"
+    );
     assert!(line.contains("2 ignored"), "{line}");
     // Ignored arguments are counted, never echoed.
     assert!(!line.contains("https://"));
     assert!(!line.contains("--flag"));
+}
+
+#[test]
+fn a_single_link_logs_as_one_link_delivered() {
+    let raw = argv(&["app", "citrate://invite?t=tok3n-T-value"]);
+    let urls = urls_from_argv(&raw);
+    let line = delivery_log_line(&urls, ignored_count(&raw, &urls));
+    assert_clean(&line);
+    assert!(
+        line.contains("1 link(s) delivered to the running app: citrate://invite"),
+        "{line}"
+    );
+}
+
+#[test]
+fn log_redact_text_reduces_urls_in_free_text() {
+    for link in secret_links() {
+        let msg = format!("xdg-mime failed for '{link}' (exit 1) k=k3y-K-value#x");
+        let out = log_redact_text(&msg);
+        assert_clean(&out);
+        assert!(out.contains("citrate://"), "{out}");
+        assert!(out.contains("xdg-mime failed for"), "{out}");
+    }
+    assert_eq!(log_redact_text("plain error text"), "plain error text");
+    assert_eq!(log_redact_text(""), "");
+}
+
+#[test]
+fn log_redact_text_hides_an_unparseable_url() {
+    let out = log_redact_text("bad citrate://[pAth-s3gment?t=tok3n-T-value");
+    assert_clean(&out);
+    assert!(out.contains("<url>"), "{out}");
 }
 
 #[test]
@@ -213,11 +281,10 @@ fn appimage_registration_runs_only_on_linux_with_appimage_set() {
 #[test]
 fn appimage_registration_log_lines_carry_no_url() {
     let ok = appimage_register_log_line(&Ok(()));
-    let err = appimage_register_log_line(&Err(format!(
-        "xdg-mime failed for citrate://join/a#{SECRET}"
-    )));
+    let err =
+        appimage_register_log_line(&Err(format!("xdg-mime failed for {}", secret_links()[1])));
     for line in [&ok, &err] {
-        assert!(!line.contains(SECRET), "{line}");
+        assert_clean(line);
     }
     assert!(ok.contains("registered"));
     assert!(err.contains("failed"));

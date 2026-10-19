@@ -1,4 +1,5 @@
-//! Join-13: deliver deep links to the running app on Linux and Windows; never log URL fragments.
+//! Join-13: deliver deep links to the running app on Linux and Windows; log only the link scheme
+//! and host.
 //!
 //! On macOS the OS hands a clicked `citrate://` link to the running app (an Apple Event), and
 //! `tauri-plugin-deep-link` emits it. On Linux and Windows the OS starts a SECOND process with the
@@ -11,9 +12,14 @@
 //! unfiltered argv (and only when it is exactly one argument), and running it next to this filter
 //! would deliver a link twice.
 //!
-//! Links may carry a value in the URL fragment (after `#`). The app needs it, so delivery keeps it
-//! intact; nothing logged here ever contains it ([`redact_fragment`]). Arguments that are not
-//! accepted links are counted in the log, never echoed.
+//! Delivery hands the app the full URL. Logging records only each link's `scheme://host`
+//! ([`log_redact`], [`log_redact_text`]) and counts: no path, no query, no fragment. Arguments
+//! that are not accepted links are counted in the log, never echoed.
+//!
+//! Windows: `tauri-plugin-single-instance` sends the second instance's argv to the running one
+//! joined with `|` and splits it on `|` again, so an argument containing `|` arrives truncated
+//! (cut at the first `|`, the rest becoming separate arguments). The app's link formats are
+//! URL-encoded and never contain a literal `|`, so this does not affect them.
 //!
 //! An AppImage is not installed through a `.desktop` file, so its scheme is never registered.
 //! On Linux, when `APPIMAGE` is set, [`register_appimage_schemes`] registers the configured
@@ -23,7 +29,6 @@
 // (the AppImage helpers, Linux only, carry their own allow).
 #![cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 
-use std::borrow::Cow;
 use std::ffi::OsStr;
 
 /// The schemes this app accepts from argv. Must equal `plugins.deep-link.desktop.schemes` in
@@ -37,13 +42,33 @@ pub const MAX_LINK_LEN: usize = 4096;
 #[cfg(any(target_os = "linux", windows))]
 const ARGV0: &str = "citrate-core";
 
-/// `s` with everything after its first `#` replaced by `<redacted>`. Use for every URL that is
-/// logged, traced, written to a crash record or put in an error message.
-pub fn redact_fragment(s: &str) -> Cow<'_, str> {
-    match s.find('#') {
-        Some(i) => Cow::Owned(format!("{}#<redacted>", &s[..i])),
-        None => Cow::Borrowed(s),
-    }
+/// A link as it may be logged: `scheme://host` only (no path, query or fragment). Use for every
+/// URL that is logged, traced, written to a crash record or put in an error message.
+pub fn log_redact(url: &url::Url) -> String {
+    format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""))
+}
+
+/// Free text (an error message) as it may be logged: every word that looks like a URL is reduced
+/// to `scheme://host`, or `<url>` when it does not parse; any other word holding `?`, `#` or `=`
+/// is cut there.
+pub fn log_redact_text(text: &str) -> String {
+    text.split_whitespace()
+        .map(|word| {
+            if word.contains("://") {
+                let start = word.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(0);
+                match url::Url::parse(&word[start..]) {
+                    Ok(u) if u.host_str().is_some() => log_redact(&u),
+                    _ => "<url>".to_string(),
+                }
+            } else {
+                match word.find(['?', '#', '=']) {
+                    Some(i) => word[..i].to_string(),
+                    None => word.to_string(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One argument as a link, if it is an accepted one. Surrounding whitespace and one balanced pair
@@ -85,12 +110,11 @@ pub fn ignored_count<S: AsRef<str>>(argv: &[S], urls: &[url::Url]) -> usize {
     argv.len().saturating_sub(1).saturating_sub(urls.len())
 }
 
-/// The log line for one second-instance hand-off. Fragments are redacted; ignored arguments are
-/// only counted.
+/// The log line for one second-instance hand-off: each link's `scheme://host` and counts only.
 pub fn delivery_log_line(urls: &[url::Url], ignored: usize) -> String {
-    let links: Vec<Cow<'_, str>> = urls.iter().map(|u| redact_fragment(u.as_str())).collect();
+    let links: Vec<String> = urls.iter().map(log_redact).collect();
     format!(
-        "[deep-link] second launch: {} link(s) delivered to the running app [{}], {} ignored",
+        "[deep-link] second launch: {} link(s) delivered to the running app: {}; {} ignored",
         urls.len(),
         links.join(", "),
         ignored
@@ -103,7 +127,8 @@ pub fn should_register_appimage_schemes(is_linux: bool, appimage: Option<&OsStr>
     is_linux && appimage.is_some_and(|v| !v.is_empty())
 }
 
-/// The log line for the AppImage registration outcome. Never contains a URL fragment.
+/// The log line for the AppImage registration outcome. URLs in an error appear as scheme and host
+/// only.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn appimage_register_log_line(result: &Result<(), String>) -> String {
     match result {
@@ -113,7 +138,7 @@ pub fn appimage_register_log_line(result: &Result<(), String>) -> String {
         ),
         Err(e) => format!(
             "[deep-link] AppImage: scheme registration failed: {}",
-            redact_fragment(e)
+            log_redact_text(e)
         ),
     }
 }
