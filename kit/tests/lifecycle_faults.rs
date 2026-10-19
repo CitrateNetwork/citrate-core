@@ -2073,7 +2073,11 @@ fn late_probe_answers_never_make_ready_or_credit() {
         sup.lifecycle().map(|l| (l.phase, l.readiness))
     });
     let st = sup.status();
-    assert_eq!(st.state, SupervisorState::Failed, "late answers spend the budget");
+    assert_eq!(
+        st.state,
+        SupervisorState::Failed,
+        "late answers spend the budget"
+    );
     assert!(
         samples
             .iter()
@@ -2081,7 +2085,10 @@ fn late_probe_answers_never_make_ready_or_credit() {
         "a late answer never makes the service Ready"
     );
     assert!(fx.pidfile_pids().len() <= 2, "{:?}", fx.pidfile_pids());
-    assert!(load.calls.load(Ordering::SeqCst) >= 2, "INCONCLUSIVE: the probe ran");
+    assert!(
+        load.calls.load(Ordering::SeqCst) >= 2,
+        "INCONCLUSIVE: the probe ran"
+    );
     assert_eq!(load.max(), 1, "probe workers never overlap");
     drop(sup);
     fx.assert_clean();
@@ -2118,7 +2125,11 @@ fn probe_workers_never_overlap_across_incarnations() {
         fx.pidfile_pids()
     );
     hold_for(Duration::from_millis(500));
-    assert_eq!(load.max(), 1, "at most one probe worker per service at any time");
+    assert_eq!(
+        load.max(),
+        1,
+        "at most one probe worker per service at any time"
+    );
     drop(sup);
     fx.assert_clean();
 }
@@ -2162,7 +2173,10 @@ fn a_stale_probe_success_never_makes_the_new_incarnation_ready() {
         let st = sup.status();
         (st.state == SupervisorState::Running && st.pid == Some(pids[1])).then_some(())
     });
-    assert!(second.is_ok(), "INCONCLUSIVE: the second incarnation never ran");
+    assert!(
+        second.is_ok(),
+        "INCONCLUSIVE: the second incarnation never ran"
+    );
     assert_eq!(
         sup.lifecycle().map(|l| l.readiness),
         Some(Readiness::Awaiting),
@@ -2173,9 +2187,11 @@ fn a_stale_probe_success_never_makes_the_new_incarnation_ready() {
         *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
         cv.notify_all();
     }
-    let samples = sample_over(Duration::from_millis(600), Duration::from_millis(10), || {
-        sup.lifecycle().map(|l| l.readiness)
-    });
+    let samples = sample_over(
+        Duration::from_millis(600),
+        Duration::from_millis(10),
+        || sup.lifecycle().map(|l| l.readiness),
+    );
     assert!(
         samples.iter().all(|(_, r)| *r != Some(Readiness::Ready)),
         "the earlier incarnation's success never counts: {samples:?}"
@@ -2200,9 +2216,11 @@ fn a_probed_service_is_awaiting_then_ready_then_unavailable() {
     let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     let pid = running_pid(&sup, &fx);
-    let cold = sample_over(Duration::from_millis(300), Duration::from_millis(10), || {
-        sup.lifecycle().map(|l| (l.phase, l.readiness))
-    });
+    let cold = sample_over(
+        Duration::from_millis(300),
+        Duration::from_millis(10),
+        || sup.lifecycle().map(|l| (l.phase, l.readiness)),
+    );
     assert!(
         cold.iter()
             .all(|(_, s)| *s == Some((Phase::Alive, Readiness::Awaiting))),
@@ -2244,9 +2262,11 @@ fn a_liveness_only_service_is_alive_and_never_assessed() {
     ))
     .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     running_pid(&sup, &fx);
-    let samples = sample_over(Duration::from_millis(500), Duration::from_millis(20), || {
-        sup.lifecycle().map(|l| (l.phase, l.readiness))
-    });
+    let samples = sample_over(
+        Duration::from_millis(500),
+        Duration::from_millis(20),
+        || sup.lifecycle().map(|l| (l.phase, l.readiness)),
+    );
     assert!(
         samples
             .iter()
@@ -2365,7 +2385,10 @@ fn automated_restarts_never_reset_the_budget() {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(automated >= 2, "INCONCLUSIVE: {automated} automated restarts ran");
+    assert!(
+        automated >= 2,
+        "INCONCLUSIVE: {automated} automated restarts ran"
+    );
     assert_eq!(
         sup.status().restarts,
         3,
@@ -2403,7 +2426,10 @@ fn an_automated_start_carries_the_budget_over() {
         ControlResult::Accepted(t) => t,
         other => panic!("INCONCLUSIVE: Stop: {other:?}"),
     };
-    assert!(matches!(settle(&sup, stop, ACQUIRE), Receipt::Complete { .. }));
+    assert!(matches!(
+        settle(&sup, stop, ACQUIRE),
+        Receipt::Complete { .. }
+    ));
     let before = sup.status().restarts;
     assert!(
         (1..=3).contains(&before),
