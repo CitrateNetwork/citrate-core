@@ -2541,3 +2541,42 @@ fn a_ceremony_built_without_a_record_location_is_never_certain() {
     let (first, hash) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
     assert_eq!(submitted_outcome_unknown(&first), Some(hash), "never \"not sent\" without a durable record");
 }
+
+// ---- STD tripwire: every eth_sendRawTransaction call site classifies its errors ----
+
+/// Every non-test source file that sends a raw transaction must classify the send's errors with
+/// the contract v1.1 allowlist and record the bytes in the shared first-submission record. A new
+/// send path that skips either fails this test.
+#[test]
+fn tripwire_every_raw_send_uses_the_classifier_and_the_first_submission_record() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut dirs = vec![root.join("src"), root.join("../src-tauri/src")];
+    let mut offenders = Vec::new();
+    let mut sites = 0;
+    while let Some(d) = dirs.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+                continue;
+            }
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "rpc.rs" {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap_or_default();
+            if !src.contains(".send_raw_transaction(") {
+                continue;
+            }
+            sites += 1;
+            let classifies = src.contains("is_definitive_send_error(") || src.contains("send_refused(&e)");
+            let records = src.contains(".record(&") || src.contains(".try_record(&");
+            if !(classifies && records) {
+                offenders.push(p.display().to_string());
+            }
+        }
+    }
+    assert!(sites >= 1, "the scan found no send site at all; it is not looking in the right place");
+    assert!(offenders.is_empty(), "raw sends without the contract v1.1 classifier: {offenders:?}");
+}
