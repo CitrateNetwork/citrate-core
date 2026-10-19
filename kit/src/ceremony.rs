@@ -452,6 +452,11 @@ struct Pending {
 /// gated `wallet::sign_message`.
 pub struct SignatureCeremony {
     pending: Mutex<BTreeMap<u64, Pending>>,
+    /// keccak256 hashes of every signed transaction this process has handed to
+    /// `eth_sendRawTransaction`. A node error on a RE-submission of the same bytes never proves the
+    /// tx was refused (the first may have been accepted and mined), so only a first submission can
+    /// be "not sent" (UI truth contract v1.1 §1).
+    submitted: Mutex<std::collections::BTreeSet<String>>,
     next_id: AtomicU64,
     /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
     abis: crate::abi_book::AbiBook,
@@ -467,6 +472,7 @@ impl SignatureCeremony {
     pub fn new() -> Self {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
+            submitted: Mutex::new(std::collections::BTreeSet::new()),
             next_id: AtomicU64::new(1),
             abis: crate::abi_book::AbiBook::default(),
         }
@@ -743,23 +749,29 @@ impl SignatureCeremony {
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
         //
-        // C1-V #347 review: only a JSON-RPC error from the node on the send establishes that the
-        // tx was not accepted. A transport or malformed-response failure on the send may follow
-        // the node receiving it, so it is an unknown outcome carrying the locally computed hash
-        // (keccak256 of the signed raw tx, which is the tx hash).
+        // UI truth contract v1.1 §1: a send error proves the node refused the tx ONLY when it is
+        // on the definitive list AND this is the first submission of these signed bytes. Anything
+        // else (a transport failure, an unlisted or ambiguous message, any error on a re-send) is
+        // an unknown outcome carrying keccak256 of the signed raw tx, which is the tx hash.
+        let local_hash = {
+            use sha3::{Digest, Keccak256};
+            format!("0x{}", hex::encode(Keccak256::digest(&signed.raw)))
+        };
+        let first_submission = self
+            .submitted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(local_hash.clone());
         let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
             Ok(h) => h,
-            Err(crate::rpc::RpcError::Node(m)) => {
-                return Err(CeremonyError::Broadcast(
-                    crate::rpc::RpcError::Node(m).to_string(),
-                ))
+            Err(e) if first_submission && is_definitive_send_error(&e) => {
+                return Err(CeremonyError::Broadcast(e.to_string()))
             }
             Err(e) => {
-                use sha3::{Digest, Keccak256};
                 return Err(CeremonyError::SubmittedOutcomeUnknown {
-                    tx_hash: format!("0x{}", hex::encode(Keccak256::digest(&signed.raw))),
+                    tx_hash: local_hash,
                     reason: e.to_string(),
-                });
+                })
             }
         };
         let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
@@ -1102,6 +1114,37 @@ use tauri::State;
 
 fn err_str(e: CeremonyError) -> String {
     e.to_string()
+}
+
+/// UI truth contract v1.1 §1 (chain#326, verified against the node's send handler and mempool):
+/// the `eth_sendRawTransaction` errors that prove the node did not accept the tx. Every handler
+/// error uses code -32602, so the MESSAGE decides, matched exactly or by its fixed prefix. Only
+/// meaningful on the first submission of the signed bytes; the caller checks that.
+fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
+    const EXACT: &[&str] = &[
+        "Rate limit exceeded. Try again later.",
+        "Missing transaction data",
+        "Invalid tx hex",
+        "Invalid hex",
+        "Failed to submit transaction: Full",
+        "Failed to submit transaction: SenderLimitExceeded",
+        "Failed to submit transaction: InvalidSignature",
+    ];
+    const PREFIX: &[&str] = &[
+        "Failed to parse transaction: ",
+        "Insufficient funds: account balance ",
+        "Failed to submit transaction: GasPriceTooLow {",
+        "Failed to submit transaction: InsufficientBalance {",
+        "Failed to submit transaction: InvalidTransaction(",
+        "Failed to submit transaction: NonceTooLow {",
+    ];
+    match e {
+        crate::rpc::RpcError::RateLimited => true,
+        crate::rpc::RpcError::Node(m) => {
+            EXACT.contains(&m.as_str()) || PREFIX.iter().any(|p| m.starts_with(p))
+        }
+        _ => false,
+    }
 }
 
 /// The error string `sign_and_broadcast` returns. Every failure established BEFORE the node could

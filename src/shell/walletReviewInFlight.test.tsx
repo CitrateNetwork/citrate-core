@@ -227,6 +227,18 @@ describe("C1-V #347 — a broadcast failure after submission is an unknown outco
     expect(store.state.walletReview).toBeNull();
   });
 
+  // Contract v1.1 §1: a NonceTooLow on a first send means the nonce is already used; say so and
+  // point the member at their recent transactions before offering another send.
+  it("a first-send NonceTooLow says 'nonce already used'", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(
+      "not submitted: ceremony: broadcast failed: rpc node error: Failed to submit transaction: NonceTooLow { expected: 3, got: 0 }",
+    );
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("not sent — nonce already used");
+    expect(lastToast()).toContain("check your recent transactions");
+  });
+
   it("a genuine pre-submission rejection says not sent", async () => {
     vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
     vi.spyOn(bridge.signing, "broadcast").mockRejectedValue("not submitted: ceremony: broadcast failed: rpc node error: nonce too low");

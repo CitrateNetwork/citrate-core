@@ -4994,7 +4994,14 @@ export class Store {
       }
       this.setState({ walletReview: null });
       if (failure.kind === "not-sent") {
-        this.toast(r.label + " not sent — " + failure.reason);
+        // Contract v1.1 §1: a first-send NonceTooLow means the nonce is already used.
+        this.toast(
+          r.label +
+            " not sent — " +
+            (/NonceTooLow/.test(failure.reason)
+              ? "nonce already used; check your recent transactions before sending again (" + failure.reason + ")"
+              : failure.reason),
+        );
       } else {
         if (failure.txHash) this.addActivity(r.label + " · outcome unknown", r.view.decoded.cost || r.view.decoded.action, failure.txHash);
         this.toast(

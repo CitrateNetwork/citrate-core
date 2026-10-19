@@ -1536,13 +1536,13 @@ fn b1_4_broadcast_node_error_surfaces_no_fake_hash() {
         ok(JsonValue::String("0x0".into())),
         ok(JsonValue::String("0x1".into())),
         serde_json::json!({ "jsonrpc": "2.0", "id": 1,
-            "error": { "code": -32000, "message": "insufficient funds for gas * price + value" } }),
+            "error": { "code": -32602, "message": "Insufficient funds: account balance 0 < required 21000" } }),
     ]);
     let client = RpcClient::with_transport(mock);
     let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
     match r {
         Err(CeremonyError::Broadcast(m)) => assert!(
-            m.contains("insufficient funds"),
+            m.contains("Insufficient funds"),
             "node reason surfaced: {m}"
         ),
         other => panic!("expected a Broadcast error carrying the node reason, got {other:?}"),
@@ -2159,7 +2159,8 @@ fn a_node_rejection_on_send_is_marked_not_submitted() {
     let mock = MockRpc::new(vec![
         ok(JsonValue::String("0x0".into())),
         ok(JsonValue::String("0x1".into())),
-        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": "nonce too low" } }),
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32602,
+            "message": "Failed to submit transaction: NonceTooLow { expected: 3, got: 0 }" } }),
     ]);
     let client = RpcClient::with_transport(mock);
     let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
@@ -2177,4 +2178,147 @@ fn errors_before_submission_are_marked_not_submitted_and_unknown_outcomes_are_no
     });
     assert!(!unknown.contains("not submitted"), "{unknown}");
     assert!(unknown.contains("submitted, outcome unknown (tx 0xcdcd"), "{unknown}");
+}
+
+// =========================================================================
+// UI truth contract v1.1 §1 (chain#326): "Not sent" only for a pre-submission failure, or for a
+// DEFINITIVE node error on the FIRST submission of these signed bytes. Every other send error, and
+// any error on a re-submission of the same bytes, is "Sent, outcome unknown" with the tx hash.
+// The node returns every eth_sendRawTransaction error as -32602, so the message decides.
+// =========================================================================
+
+/// The definitive messages, exactly as the node words them (contract §1).
+const DEFINITIVE: &[&str] = &[
+    "Rate limit exceeded. Try again later.",
+    "Missing transaction data",
+    "Invalid tx hex",
+    "Invalid hex",
+    "Failed to parse transaction: RLP error: unexpected end",
+    "Insufficient funds: account balance 0 < required 21000",
+    "Failed to submit transaction: Full",
+    "Failed to submit transaction: SenderLimitExceeded",
+    "Failed to submit transaction: InvalidSignature",
+    "Failed to submit transaction: GasPriceTooLow { minimum: 1000000000, got: 1 }",
+    "Failed to submit transaction: InsufficientBalance { required: 21000, available: 0 }",
+    "Failed to submit transaction: InvalidTransaction(\"chain id mismatch\")",
+    "Failed to submit transaction: NonceTooLow { expected: 3, got: 0 }",
+];
+
+/// Messages that never prove the node refused the tx.
+const AMBIGUOUS: &[&str] = &[
+    "Failed to submit transaction: DuplicateTransaction(0xabc)",
+    "Failed to submit transaction: DuplicateNonce { nonce: 0 }",
+    "already known",
+    "known transaction: 0xabc",
+    "Internal error",
+    "nonce too low",
+    "insufficient funds for gas * price + value",
+    "Failed to submit transaction: Full of surprises",
+];
+
+fn node_error(message: &str) -> JsonValue {
+    serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32602, "message": message } })
+}
+
+/// One approval of the canonical 1-wei tx against a node that answers the send with `send`.
+/// The same ceremony + same nonce and gas price sign the same bytes (deterministic ECDSA), so a
+/// second call on the same `c` re-submits identical signed bytes.
+fn send_once(c: &SignatureCeremony, v: &CustodyVault, send: JsonValue) -> (Result<BroadcastResult>, String) {
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![ok(JsonValue::String("0x0".into())), ok(JsonValue::String("0x1".into())), send]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(v, &client, &view.id, false, bcfg(1));
+    let reqs = client.transport.requests.borrow();
+    let raw = reqs
+        .iter()
+        .find(|q| q["method"] == "eth_sendRawTransaction")
+        .and_then(|q| q["params"][0].as_str())
+        .expect("send was attempted")
+        .to_string();
+    use sha3::{Digest, Keccak256};
+    let bytes = hex::decode(raw.trim_start_matches("0x")).expect("hex");
+    (r, format!("0x{}", hex::encode(Keccak256::digest(&bytes))))
+}
+
+#[test]
+fn each_definitive_message_is_not_sent_on_first_send_and_unknown_on_resend() {
+    for msg in DEFINITIVE {
+        let (v, _p) = vault_with_wallet();
+        let c = SignatureCeremony::new();
+        let (first, _) = send_once(&c, &v, node_error(msg));
+        assert!(matches!(first, Err(CeremonyError::Broadcast(_))), "first send of {msg:?}: {first:?}");
+        assert!(broadcast_err_str(first.expect_err("error")).starts_with("not submitted: "), "{msg}");
+        // The same signed bytes again: the first may have been accepted and mined, which is exactly
+        // when NonceTooLow / Insufficient funds come back. Never "not sent".
+        let (again, hash) = send_once(&c, &v, node_error(msg));
+        assert_eq!(submitted_outcome_unknown(&again), Some(hash), "re-send of {msg:?}: {again:?}");
+    }
+}
+
+#[test]
+fn each_ambiguous_message_is_unknown_even_on_first_send() {
+    for msg in AMBIGUOUS {
+        let (v, _p) = vault_with_wallet();
+        let c = SignatureCeremony::new();
+        let (first, hash) = send_once(&c, &v, node_error(msg));
+        assert_eq!(submitted_outcome_unknown(&first), Some(hash), "first send of {msg:?}: {first:?}");
+        let s = broadcast_err_str(first.expect_err("error"));
+        assert!(!s.starts_with("not submitted"), "{msg}: {s}");
+    }
+}
+
+#[test]
+fn the_error_code_does_not_decide() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let internal = serde_json::json!({ "jsonrpc": "2.0", "id": 1,
+        "error": { "code": -32603, "message": "Failed to submit transaction: DuplicateTransaction(0xabc)" } });
+    let (r, hash) = send_once(&c, &v, internal);
+    assert_eq!(submitted_outcome_unknown(&r), Some(hash));
+}
+
+#[test]
+fn a_definitive_first_send_still_marks_the_bytes_as_sent() {
+    // After a definitive refusal, the same bytes sent again are a re-submission: even a different
+    // definitive message on the re-send is an unknown outcome.
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let (first, h1) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
+    assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
+    let (again, h2) = send_once(&c, &v, node_error("Invalid hex"));
+    assert_eq!(h1, h2, "same intent, nonce and gas price sign the same bytes");
+    assert_eq!(submitted_outcome_unknown(&again), Some(h2));
+    // A different ceremony object (e.g. a separate signer) has its own record.
+    let other = SignatureCeremony::new();
+    let (fresh, _) = send_once(&other, &v, node_error("Invalid hex"));
+    assert!(matches!(fresh, Err(CeremonyError::Broadcast(_))));
+}
+
+/// A transport that returns one scripted `Err` for the send.
+struct RateLimitedSend {
+    inner: MockRpc,
+}
+impl RpcTransport for RateLimitedSend {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        if body["method"] == "eth_sendRawTransaction" {
+            self.inner.requests.borrow_mut().push(body);
+            return Err(RpcError::RateLimited);
+        }
+        self.inner.call(body)
+    }
+}
+
+#[test]
+fn http_429_is_definitive_on_first_send_only() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let run = |c: &SignatureCeremony| {
+        let from = canonical_addr_lower();
+        let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+        let t = RateLimitedSend { inner: MockRpc::new(vec![ok(JsonValue::String("0x0".into())), ok(JsonValue::String("0x1".into()))]) };
+        c.approve_and_broadcast(&v, &RpcClient::with_transport(t), &view.id, false, bcfg(1))
+    };
+    assert!(matches!(run(&c), Err(CeremonyError::Broadcast(_))));
+    assert!(submitted_outcome_unknown(&run(&c)).is_some());
 }
