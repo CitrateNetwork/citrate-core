@@ -220,6 +220,14 @@ export interface CerSpec {
  * `spendSummary` is an optional plain-language line the caller can pass (the
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
+/** C1-V3 — a signed transaction that was (or may have been) submitted, with no known outcome. */
+export interface CeremonyOutcomeUnknown {
+  kind: "outcome-unknown";
+  /** The tx hash when the ceremony knows it; null when the failure carried none. */
+  txHash: string | null;
+  reason: string;
+}
+
 export interface WalletReview {
   kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
@@ -237,8 +245,11 @@ export interface WalletReview {
    * Called after the review resolves (approved=true on a successful broadcast, false on
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
+   * C1-V3: `outcome` is set when the member approved and the transaction was (or may have been)
+   * submitted but its outcome is unknown; `approved` is then false (not confirmed), and the agent
+   * path must report it as submitted with an unknown outcome, never as rejected.
    */
-  onResolved?: (approved: boolean) => void | Promise<void>;
+  onResolved?: (approved: boolean, outcome?: CeremonyOutcomeUnknown) => void | Promise<void>;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;

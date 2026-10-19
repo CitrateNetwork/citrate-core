@@ -205,7 +205,8 @@ describe("C1-V #347 — a broadcast failure after submission is an unknown outco
     expect(lastToast()).toContain(HASH);
     expect(lastToast()).toContain("block explorer");
     expect(lastToast()).not.toMatch(/not sent/i);
-    expect(onResolved).toHaveBeenCalledWith(false);
+    // C1-V3: not confirmed, and typed as an unknown outcome with the hash (never a plain rejection).
+    expect(onResolved).toHaveBeenCalledWith(false, { kind: "outcome-unknown", txHash: HASH, reason: "rpc transport error: down" });
   });
 
   it("an error with no pre-submission marker (e.g. the IPC deadline) is never 'not sent'", async () => {
