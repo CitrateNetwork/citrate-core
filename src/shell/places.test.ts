@@ -41,6 +41,7 @@ const OLD_ROUTES: Record<string, [string, string, string | null, string | null]>
 
 // Settings section → [new leaf route, place, tab label, section the new home opens on]
 const SETTINGS_SECTIONS: Record<string, [string, string, string, string | null]> = {
+  hermes: ["hermes/controls", "hermes", "Controls", "hermes"],
   ai: ["hermes/controls", "hermes", "Controls", "ai"],
   escalation: ["hermes/controls", "hermes", "Controls", "escalation"],
   mcp: ["hermes/controls", "hermes", "Controls", "mcp"],
@@ -79,9 +80,9 @@ describe("five places", () => {
     expect(visibleTabs(g, true).map((t) => t.label)).toEqual(["Chat", "Rounds", "Members", "Cluster", "ALF"]);
   });
 
-  it("Node has Status, Services, Storage, Earnings, Advanced, and Storage holds Files, Memory, Pins", () => {
+  it("Node has Status, Services, Storage, Rewards, Advanced, and Storage holds Files, Memory, Pins", () => {
     const n = placeOf("node");
-    expect(n?.tabs.map((t) => t.label)).toEqual(["Status", "Services", "Storage", "Earnings", "Advanced"]);
+    expect(n?.tabs.map((t) => t.label)).toEqual(["Status", "Services", "Storage", "Rewards", "Advanced"]);
     expect(n?.tabs.find((t) => t.label === "Storage")?.sub?.map((x) => x.label)).toEqual(["Files", "Memory", "Pins"]);
   });
 
@@ -91,7 +92,7 @@ describe("five places", () => {
 
   it("Settings keeps only account-level sections", () => {
     expect([...ACCOUNT_SETTINGS].sort()).toEqual(["account", "api", "app", "billing", "connections", "keys", "privacy"]);
-    for (const moved of [...CONTROLS_SETTINGS, "node"]) expect(ACCOUNT_SETTINGS as readonly string[]).not.toContain(moved);
+    for (const moved of [...CONTROLS_SETTINGS, "node", "hermes"]) expect(ACCOUNT_SETTINGS as readonly string[]).not.toContain(moved);
   });
 });
 
@@ -110,7 +111,8 @@ describe("every old route id opens its new home", () => {
   }
 
   it("the router knows no old id beyond the ones above", () => {
-    const legacyIds = Object.keys(LEGACY_ROUTES).filter((k) => !k.startsWith("settings/"));
+    // Pre-0.5.2 ids are flat; `settings/<id>` sections and `node/earnings` are tested separately.
+    const legacyIds = Object.keys(LEGACY_ROUTES).filter((k) => !k.includes("/"));
     expect(legacyIds.sort()).toEqual(Object.keys(OLD_ROUTES).sort());
   });
 });
@@ -128,7 +130,24 @@ describe("every Settings section deep link opens its new home", () => {
   }
 
   it("AI providers, Escalation and spend, MCP servers, Web search and Budgets all land on Hermes › Controls", () => {
-    for (const sec of CONTROLS_SETTINGS) expect(resolveRoute("settings/" + sec)?.route).toBe("hermes/controls");
+    for (const sec of ["ai", "escalation", "mcp", "web", "budgets"]) expect(resolveRoute("settings/" + sec)?.route).toBe("hermes/controls");
+  });
+
+  it("the Controls panel section (settings/hermes) lands on Hermes › Controls", () => {
+    expect(CONTROLS_SETTINGS as readonly string[]).toContain("hermes");
+    expect(resolveRoute("settings/hermes")).toEqual({ route: "hermes/controls", patch: { sSec: "hermes" } });
+    expect(locate("#/settings/hermes").place).toBe("hermes");
+  });
+});
+
+describe("Node › Rewards (UI truth contract §1)", () => {
+  it("the tab is Rewards at node/rewards, and the earlier node/earnings id redirects to it", () => {
+    const node = PLACES.find((p) => p.id === "node");
+    expect(node?.tabs.find((t) => t.route === "node/rewards")?.label).toBe("Rewards");
+    expect(node?.tabs.some((t) => /earning/i.test(t.label) || t.route === "node/earnings")).toBe(false);
+    expect(resolveRoute("node/earnings")).toEqual({ route: "node/rewards" });
+    expect(locate("node/earnings").route).toBe("node/rewards");
+    expect(ROUTABLE).toContain("node/earnings");
   });
 });
 

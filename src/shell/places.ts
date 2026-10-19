@@ -34,8 +34,10 @@ export interface Place {
   tabs: PlaceTab[];
 }
 
-/** Settings sections that moved to Hermes › Controls (the K2 Controls panel fills that tab). */
-export const CONTROLS_SETTINGS = ["ai", "escalation", "mcp", "web", "budgets"] as const;
+/** Settings sections that live in Hermes › Controls: the Controls panel (`hermes`) and the five that moved. */
+export const CONTROLS_SETTINGS = ["hermes", "ai", "escalation", "mcp", "web", "budgets"] as const;
+/** The five Settings sections that moved to Hermes › Controls; the tab lists them under the panel. */
+export const MOVED_CONTROLS_SETTINGS = ["ai", "escalation", "mcp", "web", "budgets"] as const;
 /** The Settings section that moved to Node › Advanced. */
 export const NODE_SETTINGS = ["node"] as const;
 /** Account-level Settings sections, the only ones Settings keeps. */
@@ -95,7 +97,7 @@ export const PLACES: Place[] = [
           { label: "Pins", route: "node/storage/pins" },
         ],
       },
-      { label: "Earnings", route: "node/earnings" },
+      { label: "Rewards", route: "node/rewards" },
       { label: "Advanced", route: "node/advanced" },
     ],
   },
@@ -150,7 +152,10 @@ export const LEGACY_ROUTES: Record<string, Redirect> = {
   models: { route: "store/models" },
   settings: { route: "settings" },
   connections: { route: "settings/connections" },
-  // Settings sections that moved to Hermes › Controls.
+  // Earlier name of Node › Rewards (UI truth contract §1: the tab is "Rewards").
+  "node/earnings": { route: "node/rewards" },
+  // Settings sections that moved to Hermes › Controls. `hermes` is the Controls panel itself.
+  "settings/hermes": { route: "hermes/controls", patch: { sSec: "hermes" } },
   "settings/ai": { route: "hermes/controls", patch: { sSec: "ai" } },
   "settings/escalation": { route: "hermes/controls", patch: { sSec: "escalation" } },
   "settings/mcp": { route: "hermes/controls", patch: { sSec: "mcp" } },
@@ -271,7 +276,7 @@ const REGISTER_BY_ROUTE: Record<string, "instrument" | "charter"> = {
   "node/storage/files": "instrument",
   "node/storage/memory": "instrument",
   "node/storage/pins": "instrument",
-  "node/earnings": "instrument",
+  "node/rewards": "instrument",
   "node/advanced": "charter",
   "store/apps": "charter",
   "store/models": "instrument",

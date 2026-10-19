@@ -63,6 +63,15 @@ describe("Hermes", () => {
     expect(h).toContain("Not available yet");
   });
 
+  it("Controls mounts the Controls panel once, above the moved sections, including from settings/hermes", () => {
+    for (const sSec of ["hermes", "ai"]) {
+      const h = html("hermes/controls", { sSec });
+      expect(h.match(/data-testid="hermes-controls"/g)?.length, sSec).toBe(1);
+      expect(h.indexOf('data-testid="hermes-controls"')).toBeLessThan(h.indexOf("AI providers"));
+      expect(h).not.toContain(">Hermes controls<");
+    }
+  });
+
   it("Controls hosts the five moved Settings sections and nothing account-level", () => {
     const h = html("hermes/controls", { sSec: "escalation" });
     expect(h).toContain('data-surface="hermes/controls"');
@@ -102,16 +111,23 @@ describe("Wallet", () => {
 });
 
 describe("Node", () => {
-  it("shows Status, Services, Storage, Earnings, Advanced with Status selected on the old node route", () => {
+  it("shows Status, Services, Storage, Rewards, Advanced with Status selected on the old node route", () => {
     const h = html("node");
-    expect(tabs(h, "place-tabs")).toEqual(["Status", "Services", "Storage", "Earnings", "Advanced"]);
+    expect(tabs(h, "place-tabs")).toEqual(["Status", "Services", "Storage", "Rewards", "Advanced"]);
     expect(selected(h)).toEqual(["Status"]);
     expect(h).toContain('data-surface="node/status"');
   });
 
-  it("Services and Earnings are honest not-available-yet states", () => {
+  it("Services and Rewards are honest not-available-yet states", () => {
     expect(html("node/services")).toContain('data-not-available="node/services"');
-    expect(html("node/earnings")).toContain('data-not-available="node/earnings"');
+    expect(html("node/rewards")).toContain('data-not-available="node/rewards"');
+  });
+
+  it("the earlier node/earnings route opens Rewards", () => {
+    const h = html("node/earnings");
+    expect(selected(h)).toEqual(["Rewards"]);
+    expect(h).toContain('data-not-available="node/rewards"');
+    expect(h).not.toContain(">Earnings<");
   });
 
   it("Storage holds Files, Memory and Pins; the old files and storage routes open them", () => {
@@ -142,7 +158,7 @@ describe("Settings", () => {
   it("keeps only the account-level sections, even if a moved section was last open", () => {
     const h = html("settings", { sSec: "ai" });
     for (const label of ["Account &amp; RBAC", "Connections", "API endpoints &amp; keys", "Keys &amp; security", "Memberships &amp; billing", "Privacy &amp; recovery", "App"]) expect(h).toContain(label);
-    for (const label of ["AI providers", "Escalation &amp; spend", "MCP servers", "Web search &amp; decisions", "Node configuration"]) expect(h).not.toContain(">" + label + "<");
+    for (const label of ["Hermes controls", "AI providers", "Escalation &amp; spend", "MCP servers", "Web search &amp; decisions", "Node configuration"]) expect(h).not.toContain(">" + label + "<");
   });
 });
 

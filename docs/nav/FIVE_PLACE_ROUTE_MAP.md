@@ -29,9 +29,12 @@ written out by hand) and
 | Hermes | Chat `hermes/chat` · Journal `hermes/journal` · Work `hermes/work` · Learn `hermes/learn` · Controls `hermes/controls` |
 | Groups | Chat `groups/chat` (sub-tabs Groups `groups/chat`, Alerts `groups/chat/alerts`) · Rounds `groups/rounds` · Members `groups/members` · Cluster `groups/cluster` · ALF `groups/alf` (ALF members only) |
 | Wallet | `wallet` (no tabs) |
-| Node | Status `node/status` · Services `node/services` · Storage (sub-tabs Files `node/storage/files`, Memory `node/storage/memory`, Pins `node/storage/pins`) · Earnings `node/earnings` · Advanced `node/advanced` |
+| Node | Status `node/status` · Services `node/services` · Storage (sub-tabs Files `node/storage/files`, Memory `node/storage/memory`, Pins `node/storage/pins`) · Rewards `node/rewards` · Advanced `node/advanced` |
 | Store | Apps `store/apps` · Models `store/models` |
 | Settings | Settings `settings` · Connections `settings/connections` |
+
+The Node tab is named Rewards, per the chain team's UI truth contract §1.
+An earlier draft called it Earnings; `node/earnings` redirects to `node/rewards`.
 
 A bare place id (`hermes`, `store`) or a tab with sub-tabs (`node/storage`)
 opens its first leaf. `groups/community` is routable but in no tab strip, as
@@ -59,6 +62,7 @@ Community was hidden from the old sidebar (its data is not wired).
 | `models` | `store/models` | Store › Models |
 | `settings` | `settings` | Settings (keeps the last account-level section) |
 | `connections` | `settings/connections` | Settings › Connections |
+| `node/earnings` (earlier draft name) | `node/rewards` | Node › Rewards |
 
 ## Settings sections (`#/settings/<id>`)
 
@@ -67,6 +71,7 @@ to their new home and open on that section.
 
 | Section | Opens | Place › tab |
 |----|----|----|
+| `settings/hermes` (Hermes controls, the Controls panel) | `hermes/controls`, section `hermes` | Hermes › Controls |
 | `settings/ai` (AI providers) | `hermes/controls`, section `ai` | Hermes › Controls |
 | `settings/escalation` (Escalation and spend) | `hermes/controls`, section `escalation` | Hermes › Controls |
 | `settings/mcp` (MCP servers) | `hermes/controls`, section `mcp` | Hermes › Controls |
@@ -93,7 +98,7 @@ surface unchanged:
 | Tab | Content |
 |----|----|
 | Hermes › Chat, Journal, Work | Dashboard, Journal, Agent surfaces |
-| Hermes › Controls | The five moved Settings sections, unchanged, under a "Controls" heading. They write the same config as before. The Controls toggle panel replaces this slot. |
+| Hermes › Controls | The Controls panel (`src/surfaces/hermes/ControlsPanel.tsx`) at the top, then the five moved Settings sections, unchanged, under a "Controls" heading. They write the same config as before. The panel is not repeated in the section list, so `settings/hermes` opens the tab with the panel on top and AI providers below. |
 | Groups › Chat, Alerts, Rounds, Members, Cluster, ALF | Groups, Comms, Train, People, Cluster, ALF surfaces |
 | Wallet | Wallet surface |
 | Node › Status | Node surface (its Operations, Earning and Pinning views) |
@@ -109,7 +114,7 @@ today. They show no data:
 - **Hermes › Learn**: points to Hermes › Work, where learned-skill proposals are reviewed today.
 - **Node › Services**: points to Node › Status.
 - **Node › Storage › Pins**: opens the Pinning view on Node › Status.
-- **Node › Earnings**: opens the Earning view on Node › Status.
+- **Node › Rewards**: opens the Earning view on Node › Status.
 
 ## Follow-ups
 
