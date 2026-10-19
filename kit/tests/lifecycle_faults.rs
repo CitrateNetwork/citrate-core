@@ -15,12 +15,14 @@
 
 mod lifecycle;
 
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use citrate_core_kit::supervisor::{
-    BackoffPolicy, ChildWatch, ControlResult, ControlToken, DeadlinePublisher, DeadlineState,
-    Desired, HealthCheck, Phase, PublicationRefused, Receipt, SidecarSpec, Supervisor,
-    SupervisorConfig, SupervisorState, DEADLINE_RECORDS,
+    BackoffPolicy, ChildWatch, Clock, ControlResult, ControlToken, DeadlinePublisher,
+    DeadlineState, Desired, HealthCheck, Phase, PublicationRefused, Readiness, Receipt,
+    SidecarSpec, Supervisor, SupervisorConfig, SupervisorState, DEADLINE_RECORDS,
 };
 use lifecycle::fixture::{pgrep, pid_alive, sleep_bin, OwnedFixture, SUITE_PREFIX};
 use lifecycle::timing::{hold_for, sample_over, wait_for, Deadline};
@@ -1968,6 +1970,357 @@ fn publisher_exit_leaves_admission_unavailable_without_replacement() {
         "no replacement"
     );
     assert_eq!(sup.status().state, SupervisorState::Running);
+    drop(sup);
+    fx.assert_clean();
+}
+
+// ---------------------------------------------------------------------------
+// SCL-S3 (SC2): readiness separate from liveness, attested retry credit (bug b)
+// ---------------------------------------------------------------------------
+
+/// A probe that counts how many of its workers run at once, and the most that ever did.
+#[derive(Default)]
+struct ProbeLoad {
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+    calls: AtomicUsize,
+}
+
+impl ProbeLoad {
+    fn enter(&self) {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+    }
+
+    fn leave(&self) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn max(&self) -> usize {
+        self.max_in_flight.load(Ordering::SeqCst)
+    }
+}
+
+/// A probed service whose probe never answers `true`, with a start grace longer than
+/// `healthy_after`, reaches Failed after `max_retries`: the grace and elapsed time never reset
+/// the retry budget (bug (b); 04 E2 "Grace longer than healthy_after does not reset the retry
+/// budget"; INV-7, INV-8).
+#[test]
+fn grace_longer_than_healthy_after_never_credits_a_failing_probe() {
+    let fx = OwnedFixture::new("grace-credit");
+    let mut spec = fx.leaf_spec("lcf-grace-credit");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(20),
+        grace: Duration::from_millis(120),
+        probe: Arc::new(|| false),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.healthy_after = Duration::from_millis(40);
+    cfg.backoff = fast_backoff(1);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(3));
+    let pids = fx.pidfile_pids();
+    assert_eq!(
+        st.state,
+        SupervisorState::Failed,
+        "an always-failing probe must spend the budget; {} children so far",
+        pids.len()
+    );
+    hold_for(Duration::from_millis(500));
+    let pids = fx.pidfile_pids();
+    assert!(
+        pids.len() <= 2,
+        "first run plus max_retries (1) retry at most: {pids:?}"
+    );
+    assert!(
+        sup.lifecycle()
+            .is_some_and(|l| l.readiness != Readiness::Ready),
+        "never Ready"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A probe that only ever answers after its interval (late) never makes the service Ready and
+/// never earns credit; and its workers never overlap, even inside the grace where a timeout is
+/// tolerated (one probe at a time per service).
+#[test]
+fn late_probe_answers_never_make_ready_or_credit() {
+    let fx = OwnedFixture::new("late-probe");
+    let load = Arc::new(ProbeLoad::default());
+    let probe_load = load.clone();
+    let mut spec = fx.leaf_spec("lcf-late-probe");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(30),
+        grace: Duration::from_millis(200),
+        probe: Arc::new(move || {
+            probe_load.enter();
+            std::thread::sleep(Duration::from_millis(70));
+            probe_load.leave();
+            true
+        }),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.healthy_after = Duration::from_millis(40);
+    cfg.backoff = fast_backoff(1);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let samples = sample_over(Duration::from_secs(3), Duration::from_millis(10), || {
+        sup.lifecycle().map(|l| (l.phase, l.readiness))
+    });
+    let st = sup.status();
+    assert_eq!(st.state, SupervisorState::Failed, "late answers spend the budget");
+    assert!(
+        samples
+            .iter()
+            .all(|(_, s)| !matches!(s, Some((_, Readiness::Ready)))),
+        "a late answer never makes the service Ready"
+    );
+    assert!(fx.pidfile_pids().len() <= 2, "{:?}", fx.pidfile_pids());
+    assert!(load.calls.load(Ordering::SeqCst) >= 2, "INCONCLUSIVE: the probe ran");
+    assert_eq!(load.max(), 1, "probe workers never overlap");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A probe worker that outlives its incarnation still holds the service's one probe slot: the
+/// next incarnation does not start a second worker beside it.
+#[test]
+fn probe_workers_never_overlap_across_incarnations() {
+    let fx = OwnedFixture::new("probe-slot");
+    let load = Arc::new(ProbeLoad::default());
+    let probe_load = load.clone();
+    let mut spec = fx.leaf_spec("lcf-probe-slot");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(30),
+        grace: Duration::ZERO,
+        probe: Arc::new(move || {
+            probe_load.enter();
+            std::thread::sleep(Duration::from_millis(400));
+            probe_load.leave();
+            true
+        }),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(3);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
+    assert!(
+        fx.pidfile_pids().len() >= 2,
+        "INCONCLUSIVE: more than one incarnation ran: {:?}",
+        fx.pidfile_pids()
+    );
+    hold_for(Duration::from_millis(500));
+    assert_eq!(load.max(), 1, "at most one probe worker per service at any time");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A probe success that belongs to an earlier incarnation never makes the current one Ready.
+#[test]
+fn a_stale_probe_success_never_makes_the_new_incarnation_ready() {
+    let fx = OwnedFixture::new("stale-ok");
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (probe_gate, probe_calls) = (gate.clone(), calls.clone());
+    let mut spec = fx.leaf_spec("lcf-stale-ok");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(30),
+        grace: Duration::from_secs(30),
+        probe: Arc::new(move || {
+            if probe_calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return false;
+            }
+            // The first worker waits for the test to release it, then answers healthy.
+            let (lock, cv) = &*probe_gate;
+            let mut open = lock.lock().unwrap_or_else(|p| p.into_inner());
+            while !*open {
+                open = cv.wait(open).unwrap_or_else(|p| p.into_inner());
+            }
+            true
+        }),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(5);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let first = running_pid(&sup, &fx);
+    let begun = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        (calls.load(Ordering::SeqCst) >= 1).then_some(())
+    });
+    assert!(begun.is_ok(), "INCONCLUSIVE: the first probe never started");
+    lifecycle::fixture::kill(first, libc::SIGKILL);
+    let pids = fx.expect_pids(2, ACQUIRE);
+    let second = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        let st = sup.status();
+        (st.state == SupervisorState::Running && st.pid == Some(pids[1])).then_some(())
+    });
+    assert!(second.is_ok(), "INCONCLUSIVE: the second incarnation never ran");
+    assert_eq!(
+        sup.lifecycle().map(|l| l.readiness),
+        Some(Readiness::Awaiting),
+        "a new incarnation of a probed service awaits its own first success"
+    );
+    {
+        let (lock, cv) = &*gate;
+        *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        cv.notify_all();
+    }
+    let samples = sample_over(Duration::from_millis(600), Duration::from_millis(10), || {
+        sup.lifecycle().map(|l| l.readiness)
+    });
+    assert!(
+        samples.iter().all(|(_, r)| *r != Some(Readiness::Ready)),
+        "the earlier incarnation's success never counts: {samples:?}"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A probed service is Alive and Awaiting until a fresh success, then Ready; a failed sample
+/// inside the grace makes it Unavailable without a restart. Liveness and readiness move apart.
+#[test]
+fn a_probed_service_is_awaiting_then_ready_then_unavailable() {
+    let fx = OwnedFixture::new("ready");
+    let healthy = Arc::new(AtomicBool::new(false));
+    let probe_healthy = healthy.clone();
+    let mut spec = fx.leaf_spec("lcf-ready");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(30),
+        grace: Duration::from_secs(30),
+        probe: Arc::new(move || probe_healthy.load(Ordering::SeqCst)),
+    });
+    let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let pid = running_pid(&sup, &fx);
+    let cold = sample_over(Duration::from_millis(300), Duration::from_millis(10), || {
+        sup.lifecycle().map(|l| (l.phase, l.readiness))
+    });
+    assert!(
+        cold.iter()
+            .all(|(_, s)| *s == Some((Phase::Alive, Readiness::Awaiting))),
+        "Alive and Awaiting while cold: {cold:?}"
+    );
+    healthy.store(true, Ordering::SeqCst);
+    let ready = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        sup.lifecycle()
+            .filter(|l| l.readiness == Readiness::Ready)
+            .map(|l| l.phase)
+    });
+    assert!(
+        matches!(ready, Ok((Phase::Alive, _))),
+        "Ready after a fresh success: {ready:?}"
+    );
+    healthy.store(false, Ordering::SeqCst);
+    let unavailable = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        sup.lifecycle()
+            .filter(|l| l.readiness == Readiness::Unavailable)
+            .map(|l| l.phase)
+    });
+    assert!(
+        matches!(unavailable, Ok((Phase::Alive, _))),
+        "a failed sample in the grace: Unavailable, still Alive: {unavailable:?}"
+    );
+    assert_eq!(fx.pidfile_pids(), vec![pid], "no restart inside the grace");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A service without a configured probe is Alive and `NotAssessed`, never `Ready`.
+/// (Positive control for D-6; 04 E2 "A liveness-only service is never called ready".)
+#[test]
+fn a_liveness_only_service_is_alive_and_never_assessed() {
+    let fx = OwnedFixture::new("not-assessed");
+    let sup = Supervisor::start(SupervisorConfig::new(
+        fx.leaf_spec("lcf-not-assessed"),
+        fx.path("crash.jsonl"),
+    ))
+    .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let samples = sample_over(Duration::from_millis(500), Duration::from_millis(20), || {
+        sup.lifecycle().map(|l| (l.phase, l.readiness))
+    });
+    assert!(
+        samples
+            .iter()
+            .all(|(_, s)| *s == Some((Phase::Alive, Readiness::NotAssessed))),
+        "{samples:?}"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A wall clock that jumps forward grants no credit: the liveness-only reset is measured on
+/// the monotonic clock, so a child that never stays up `healthy_after` spends its budget.
+#[test]
+fn a_forward_wall_clock_jump_never_grants_credit() {
+    struct JumpingClock(AtomicU64);
+    impl Clock for JumpingClock {
+        fn now_unix_ms(&self) -> u64 {
+            // One hour later on every read.
+            self.0.fetch_add(3_600_000, Ordering::SeqCst)
+        }
+    }
+    let fx = OwnedFixture::new("clock-jump");
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_after_spec("lcf-clock-jump", "0.15"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.healthy_after = Duration::from_secs(10);
+    cfg.clock = Arc::new(JumpingClock(AtomicU64::new(1_000_000)));
+    cfg.backoff = fast_backoff(2);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    assert_eq!(
+        st.state,
+        SupervisorState::Failed,
+        "wall-clock jumps must not reset the budget: {} children",
+        fx.pidfile_pids().len()
+    );
+    assert_eq!(fx.pidfile_pids().len(), 3, "first run plus two retries");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// Sustained fresh successes over `healthy_after` reset the retry budget: a probed child that
+/// is healthy between crashes is never Failed. (Positive control: 04 E2 "Sustained health
+/// earns credit".)
+#[test]
+fn sustained_fresh_success_resets_the_retry_budget() {
+    let fx = OwnedFixture::new("credit");
+    let mut spec = fx.leaf_spec("lcf-credit");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(20),
+        grace: Duration::ZERO,
+        probe: Arc::new(|| true),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.healthy_after = Duration::from_millis(100);
+    cfg.backoff = fast_backoff(1);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    for round in 0..4 {
+        let pid = running_pid(&sup, &fx);
+        // Healthy well past healthy_after, then a crash.
+        hold_for(Duration::from_millis(300));
+        assert_ne!(sup.status().state, SupervisorState::Failed, "round {round}");
+        lifecycle::fixture::kill(pid, libc::SIGKILL);
+        fx.expect_pids(round + 2, ACQUIRE);
+    }
+    let st = sup.wait_until(|s| *s == SupervisorState::Running, ACQUIRE);
+    assert_eq!(
+        st.state,
+        SupervisorState::Running,
+        "four crashes, each after a credited window, never spend a budget of one retry"
+    );
     drop(sup);
     fx.assert_clean();
 }
