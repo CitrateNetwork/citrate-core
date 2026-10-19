@@ -12,7 +12,9 @@ files are and how to run them.
   `supervise_running`). CORE-C1.0b wrote the first version (F-1 consecutive counter, fork-bomb
   bound); SCL-S1.1 extends it with intents, spawn tickets, generations and incarnations, the
   probe permit and its in-flight workers, attested retry credit, readiness and quarantine.
-  INV-1 to INV-15. Each action names the Rust arm it models today and the WP that changes it.
+  INV-1 to INV-17 (INV-16: Stopped owns nothing; INV-17: the crash bound holds between member
+  Starts, with automated starts and restarts carrying the budget). Each action names the Rust arm
+  it models today and the WP that changes it.
 - `AppExitCoordinator.tla`: the app exit coordinator (SCL-S12, not yet in code): several owners,
   the app gate, one absolute deadline, every exit trigger, the final action, and the Hermes
   runtime as a nested owner with its own admission gate. X-1 to X-12, L-1.
@@ -22,7 +24,7 @@ model. Each config's first line states what TLC must report:
 
 | Kind | Files | `EXPECT` |
 |---|---|---|
-| Green | `SidecarSupervisor.cfg`, `_Probed`, `_ForkBomb`, `_ProbedForkBomb`; `AppExitCoordinator.cfg` | `pass` |
+| Green | `SidecarSupervisor.cfg`, `_Probed`, `_ForkBomb`, `_ProbedForkBomb`, `_ForkBombAutoRestart`, `_ProbedForkBombAutoRestart`; `AppExitCoordinator.cfg` | `pass` |
 | Mutant | `*_Mut*.cfg`, one per reintroduced defect | `violated <the named invariant>` |
 | Reachability witness (RT-17) | `*_Reach*.cfg`, one per mutant, on that mutant's green constants | `violated <W_ invariant>` |
 
@@ -48,7 +50,7 @@ witnesses fail); use `tlc_expect.py` for them.
 | INV-3 `INV_StopIsNotACrash` + `StopNeverCounts` | `graceful_stop_kills_child_and_does_not_restart`, `stop_during_backoff_cancels_pending_restart` |
 | INV-4 `INV_NoOrphan` | `drop_kills_child_no_orphan`, `drop_with_bounded_join_returns_promptly` |
 
-INV-5 to INV-15 pin behaviour that does not exist in code yet (SCL-S2 to S4); their regression
+INV-5 to INV-17 pin behaviour that does not exist in code yet (SCL-S2 to S4); their regression
 tests land with those WPs. Negative control kept from C1.0b: removing the counter reset in
 `ResetCredit` makes TLC report `INV_NeverFailedWhenRecovering` violated, on both the
 LivenessOnly and the Probed recovering configs.

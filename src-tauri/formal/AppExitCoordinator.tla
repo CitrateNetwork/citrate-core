@@ -23,12 +23,22 @@
 (*    concern; here it is Running, Draining, Complete or Incomplete.        *)
 (*  - "An owner stalls" is the absence of its progress: owner steps carry   *)
 (*    no fairness, so TLC explores owners that never finish.               *)
+(*  - Fairness IS assumed for the coordinator's own steps and for Tick. So  *)
+(*    "Quit always ends" (X-11) is only as strong as the coordinator thread *)
+(*    and the deadline publisher: in code (S12.1, S12.6) the coordinator    *)
+(*    path never takes an owner or lifecycle lock, never joins, never       *)
+(*    blocks on an owner, FinalActuation only signals and never waits on a  *)
+(*    reap, and in the synchronous Terminate mode the main thread is free   *)
+(*    of webview and IPC waits.                                             *)
 (*  - The async (preventable request) and synchronous (Exit callback) entry *)
 (*    modes of RT-01 run the same actions over the same owners and the same *)
 (*    deadline; the model does not distinguish them beyond the Terminate    *)
 (*    trigger, which cannot be prevented or cancelled.                      *)
-(*  - ForceExit is crash and external SIGKILL. Logout and Dock Quit reach   *)
-(*    the app as an unpreventable Exit, so they are Terminate (RT-01).      *)
+(*  - ForceExit is crash and external SIGKILL (and SIGTERM, which core does *)
+(*    not handle). Logout and Dock Quit reach the app as an unpreventable   *)
+(*    Exit, so they are Terminate (RT-01). ForceExit sets reported in one   *)
+(*    step; a killed process writes nothing, so in code the report comes    *)
+(*    from a close-in-progress marker written before the drain (S12).       *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -226,7 +236,9 @@ RuntimeClosing ==
                     retries >>
 
 \* The runtime admits a child (an MCP reconnect, a turn reaching a shell,
-\* a lazy browser start). Mutant "ReconnectAfterReport": admitted after the
+\* a lazy browser start). This stays possible after the app gate closes and
+\* until RuntimeClosing: the runtime is another process with its own gate,
+\* and that window is by design; the child report is what must wait for it. Mutant "ReconnectAfterReport": admitted after the
 \* runtime's Closing gate, so after the child report.
 RuntimeAdmit ==
     /\ app # "Exited"
@@ -498,7 +510,9 @@ X9_HermesDrainsFirst ==
           => (HermesSettled \/ SubPassed)]_vars
 
 \* X-11, liveness half (D-15): under fairness of Tick and the coordinator,
-\* every Quit-like trigger ends with the app Exited and a report.
+\* every Quit-like trigger ends with the app Exited and a report. No
+\* fairness is assumed for owners or the runtime; the coordinator's own
+\* progress is an obligation on the code (see the header).
 X11_QuitAlwaysTerminates ==
     \A t \in QuitLike :
         (trigger = t) ~> (app = "Exited" /\ reported \in {"Complete", "Incomplete"})

@@ -3,6 +3,7 @@ created: 2026-10-19T01:10:00Z
 branch: beta/k1a-gate0-tla
 author: "Larry Klosowski + Claude Opus 5.5 (MAC lane)"
 status: active
+updated: 2026-10-19 (review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
 sprint: SCL-S1
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -136,7 +137,7 @@ The S1.5 baseline (full test counts on the release line) is its own WP and is no
 5. **Action properties where the statement is about a step.** INV-6, INV-12, INV-14, INV-15 (its
    step half), X-6 and X-9 are `[][A]_vars` properties. TLC reports them as "Action property ... is
    violated", and `tlc_expect.py` accepts that form.
-6. **An explicit Start gets a fresh retry budget** (`failures' = 0` in `RequestStart`). SPEC-001
+6. *(Superseded in review round 1, B2: only a member Start resets; see below.)* **An explicit Start gets a fresh retry budget** (`failures' = 0` in `RequestStart`). SPEC-001
    says a new explicit Start requires complete old teardown. It does not say whether the budget
    resets. The model reads an explicit Start as a new intent, so INV-7 constrains only automatic
    credit. If the owner wants the budget to carry over, the model changes in one line. SCL-S3.2
@@ -165,6 +166,149 @@ The S1.5 baseline (full test counts on the release line) is its own WP and is no
 13. **The spawn-fail arm is split** into `SpawnFailCurrent` (counts) and `SpawnFailStale` (a late
     failure after Stop or replacement, counts nothing). This keeps INV-3 (`StopNeverCounts`) true
     for late returns.
+
+## Review round 1: DGX changes requested at `94d6384` (S1.1, S1.7)
+
+The DGX lane reproduced all 29 results with the same TLC rev (2.19, OpenJDK 1.8). It asked for two
+blocking changes and agreed to decisions (b) and (c) on conditions. Both blocking items are fixed in
+the model, not only in text.
+
+### B1: Stopped owns nothing
+
+Nothing tied Stopped to "no probe workers". A `StopComplete` that ignored workers passed every green
+config. Added:
+
+- **INV-16 `INV_StoppedOwnsNothing`**: `phase = "Stopped" => Cleanup = {}` (no child, no ticket, no
+  probe worker). This is SPEC-001 line 92: Stopped has "no owned resources from the completed
+  control". It is in all green configs.
+- **Mutant `MutStopIgnoresWorkers`**: `StopComplete` checks only `~child /\ tickets = {}`. It must fail
+  on INV-16.
+- **Witnesses**: `ReachStopWaitsOnWorker` (green base: a stop has released the child and the tickets
+  while a worker still runs, which is where the mutant fires) and `ReachStoppedWithWorker` (on the
+  mutant: the cell reaches Stopped with a live worker).
+
+### B2: the retry budget resets only on a member Start
+
+Decision 6 is narrowed. The Start action is split:
+
+- **`MemberStart`**: a person asks (a Start button, a toggle the member flips). New intent, fresh
+  budget. It is the only action besides `ResetCredit` that resets `failures`. `RequestStart` is kept
+  as an alias for it.
+- **`AutoStart`**: no member asked (auto-start at launch, a lazy `ensure_started` from Hermes tools
+  or another service). It carries the budget over and is refused while Failed or Quarantined.
+- **`AutoRestart`**: an internal stop-then-start of a running service, as one new Run intent.
+  Today's callers are `NodeManager::arm_mining` and `disarm_mining`
+  (`self.stop(); let _ = self.start();`, `src-tauri/src/node.rs` 511-521 and 599-608). A watchdog
+  restart has the same shape. It carries the budget over.
+- **INV-17 `INV_CrashBoundBetweenMemberStarts`**: for a never-healthy child, the failures recorded
+  since the last member Start stay at most `MaxRetries + 1` (history variable `sinceMember`).
+- **New spec `AutoRestartSpec`** and green configs `_ForkBombAutoRestart` (LivenessOnly) and
+  `_ProbedForkBombAutoRestart`. These are the fork bomb plus automated restarts and starts, with no
+  member Start. Teardown and stop completion are fair. They check INV-17 and that the run still
+  reaches Failed.
+- **Mutant `MutAutoStartResets`**: the automated paths reset the budget, as every caller of
+  `SidecarSupervisor::start` does today. It must violate INV-17. Its counterexample: three
+  failures, an `AutoRestart` resets the budget, then two more crashes, so 5 > 4.
+- **Witness `ReachAutoRestartAfterFailures`**: an automated restart can fire after failures were
+  recorded.
+
+**The crash bound (INV-2, INV-17) holds between member Starts, not over the app's lifetime.** A
+member Start is a new budget by decision. No automated caller can give one. SCL-S3.2 implements
+this split and S6.1 migrates the node's mining arm and disarm paths. Until then, today's code resets
+on every `start()`, which is exactly the mutant.
+
+### Conditions recorded on decisions (b) and (c)
+
+- **(b), X-11 fairness.** Quit always ending is only as strong as the coordinator thread and the
+  deadline publisher. The module header and the X-11 comment now say so. Conditions for S12.1 and
+  S12.6:
+  - the coordinator path never takes an owner or lifecycle lock, never joins, and never blocks on an
+    owner;
+  - `FinalActuation` only signals and never waits on a reap;
+  - a test has an owner hold its lock forever and checks that Quit still exits by the deadline;
+  - in the synchronous Terminate mode (inside `applicationWillTerminate`) the main thread is free of
+    webview and IPC waits.
+- **(c), logout and Dock Quit as Terminate.** RT-01 holds. Limits:
+  - sudden termination (if `NSSupportsSuddenTermination` is ever enabled) is a straight kill;
+  - at logout or shutdown, launchd may send SIGTERM then SIGKILL, and core installs no SIGTERM
+    handler, so SIGTERM is ForceExit;
+  - a 15 s main-thread drain during logout may outlast what loginwindow tolerates, which S12.6 must
+    measure natively.
+- **S12 requirement (not implemented here): a "close in progress" marker written before the drain
+  starts.** In the model `ForceExit` sets `reported = Incomplete` in one step. A killed process
+  writes nothing, so the next launch can only report Incomplete if the coordinator has already
+  persisted a marker at `BeginClosing`, before any drain work. The marker is cleared only by a
+  Complete exit. The module header notes this.
+
+### Non-blocking review items
+
+| # | Item | Disposition |
+|---|---|---|
+| 1 | INV-5's `~ENABLED AdmitSpawn` half is true by construction | Done: the comment says the teeth are in the ticket clause |
+| 2 | INV-12 is true by construction; the real defect is ProbeOk accepting an old tag | Done: mutant `MutStaleSuccess` (fails on INV-13) with witness `ReachStaleWorker` |
+| 4 | Failed with a timed-out worker never shows Quarantined | Done: `ProbeNeverEnds` includes Failed |
+| 7 | RuntimeAdmit after the app gate and before RuntimeClosing | Done: the comment names the window as by design |
+| 3 | No mixed case (some successes, then a crash before healthy_after) in the recovering configs | Open, for S3.2's re-run: add a partly healthy, early-crashing config |
+| 5 | No single-cell liveness that a Stop ends in Stopped or Quarantined | Open, for S2.4's re-run |
+| 6 | No owner-reported Incomplete in the coordinator, so Quit waits out the deadline | Open, for S12.1 (`OwnerIncomplete(o)`) |
+| 8 | After an expired Restart or Install the only ways out are retry or Quit | S12.2 UX must say so |
+| 9 | O-12 and 02 line 283 say logout is never Complete; X-10 allows Complete | Open: annotate O-12 in a planset docs pass |
+| 10 | Reset exits at the deadline with owners Incomplete; a later wipe could race a live sidecar | S12.7: the wipe requires Complete or runs at next launch after cleanup |
+| 11 | Pre-push hook skipped | Same reason as before (no PyYAML). Same manual gates run, for this PR only |
+
+### TLC results after round 1
+
+Same machine and toolchain as above, 2026-10-19. `tlc_expect.py` exit 0. It picks up every
+`<Spec>_*.cfg`, so the new configs run without a change to the script. All 38 configs match: 7
+green, 16 mutants, 15 witnesses.
+
+On `SidecarSupervisor.cfg` the distinct states go from 437 to 858, and on `_Probed` from 9415 to
+10164. The cause is the new `sinceMember` history and the automated start actions. AppExitCoordinator
+only had comments changed, and its green count is unchanged at 64904.
+
+| Config | Expected | TLC result | Distinct states | Depth | Match |
+|---|---|---|---|---|---|
+| `SidecarSupervisor` | no error | no error | 858 | 35 | yes |
+| `SidecarSupervisor_ForkBomb` | no error | no error | 24 | 14 | yes |
+| `SidecarSupervisor_ForkBombAutoRestart` | no error | no error | 188 | 22 | yes |
+| `SidecarSupervisor_MutAutoStartResets` | violated INV_CrashBoundBetweenMemberStarts | violated INV_CrashBoundBetweenMemberStarts | 413 | 20 | yes |
+| `SidecarSupervisor_MutElapsedCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 40 | 10 | yes |
+| `SidecarSupervisor_MutStaleSuccess` | violated INV_ReadyIsCurrent | violated INV_ReadyIsCurrent | 2110 | 20 | yes |
+| `SidecarSupervisor_MutStopIgnoresWorkers` | violated INV_StoppedOwnsNothing | violated INV_StoppedOwnsNothing | 286 | 12 | yes |
+| `SidecarSupervisor_MutStopOff` | violated INV_StopNeverSpawns | violated INV_StopNeverSpawns | 158 | 13 | yes |
+| `SidecarSupervisor_MutTimeoutFrees` | violated INV_ProbePermitBounded | violated INV_ProbePermitBounded | 236 | 10 | yes |
+| `SidecarSupervisor_Probed` | no error | no error | 10164 | 50 | yes |
+| `SidecarSupervisor_ProbedForkBomb` | no error | no error | 108 | 16 | yes |
+| `SidecarSupervisor_ProbedForkBombAutoRestart` | no error | no error | 783 | 25 | yes |
+| `SidecarSupervisor_ReachAutoRestartAfterFailures` | violated W_AutoRestartAfterFailures | violated W_AutoRestartAfterFailures | 98 | 24 | yes |
+| `SidecarSupervisor_ReachStaleWorker` | violated W_StaleWorkerWhileAlive | violated W_StaleWorkerWhileAlive | 184 | 11 | yes |
+| `SidecarSupervisor_ReachStopInStopped` | violated W_StopInStopped | violated W_StopInStopped | 98 | 12 | yes |
+| `SidecarSupervisor_ReachStopWaitsOnWorker` | violated W_StopWaitsOnWorker | violated W_StopWaitsOnWorker | 196 | 10 | yes |
+| `SidecarSupervisor_ReachStoppedWithWorker` | violated W_StoppedWithWorker | violated W_StoppedWithWorker | 342 | 12 | yes |
+| `SidecarSupervisor_ReachTimedOutWorker` | violated W_TimedOutWorkerHeldWhileAlive | violated W_TimedOutWorkerHeldWhileAlive | 175 | 12 | yes |
+| `SidecarSupervisor_ReachUnattestedTick` | violated W_UnattestedTickPastHealthy | violated W_UnattestedTickPastHealthy | 15 | 10 | yes |
+| `AppExitCoordinator` | no error | no error | 64904 | 27 | yes |
+| `AppExitCoordinator_MutAdmitWhileClosing` | violated X3_ClosingRejectsAdmission | violated X3_ClosingRejectsAdmission | 62 | 4 | yes |
+| `AppExitCoordinator_MutFinalAfterExpiry` | violated X5_ExpiredNeverAuthorizes | violated X5_ExpiredNeverAuthorizes | 23459 | 16 | yes |
+| `AppExitCoordinator_MutHermesCompleteEarly` | violated X7_HermesChildrenScope | violated X7_HermesChildrenScope | 284 | 6 | yes |
+| `AppExitCoordinator_MutInstallWinNoClosing` | violated X1_EveryExitPathRoutes | violated X1_EveryExitPathRoutes | 120 | 6 | yes |
+| `AppExitCoordinator_MutOthersFirst` | violated X9_HermesDrainsFirst | violated X9_HermesDrainsFirst | 118 | 6 | yes |
+| `AppExitCoordinator_MutQuitNoActuation` | violated X12_QuitActuatesHeldScopes | violated X12_QuitActuatesHeldScopes | 3399 | 11 | yes |
+| `AppExitCoordinator_MutQuitWaitsForever` | violated X11_QuitAlwaysTerminates | violated X11_QuitAlwaysTerminates | 43120 | - | yes |
+| `AppExitCoordinator_MutReconnectAfterReport` | violated X7_HermesChildrenScope | violated X7_HermesChildrenScope | 1090 | 8 | yes |
+| `AppExitCoordinator_MutTerminateNoDrain` | violated X10_UnpreventableExitDrains | violated X10_UnpreventableExitDrains | 64 | 5 | yes |
+| `AppExitCoordinator_ReachExpiredQuit` | violated W_ExpiredQuitExits | violated W_ExpiredQuitExits | 12013 | 14 | yes |
+| `AppExitCoordinator_ReachFinalActuation` | violated W_FinalActuationFires | violated W_FinalActuationFires | 3686 | 11 | yes |
+| `AppExitCoordinator_ReachHermesComplete` | violated W_HermesCompleteWhileClosing | violated W_HermesCompleteWhileClosing | 522 | 7 | yes |
+| `AppExitCoordinator_ReachHermesDraining` | violated W_HermesDrainingChildrenRun | violated W_HermesDrainingChildrenRun | 324 | 5 | yes |
+| `AppExitCoordinator_ReachInstallWin` | violated W_InstallWinCompletes | violated W_InstallWinCompletes | 8851 | 13 | yes |
+| `AppExitCoordinator_ReachLateCompletion` | violated W_LateCompletionAfterExpiry | violated W_LateCompletionAfterExpiry | 24344 | 16 | yes |
+| `AppExitCoordinator_ReachOthersDrain` | violated W_OthersDrainWhileHermesDrains | violated W_OthersDrainWhileHermesDrains | 497 | 6 | yes |
+| `AppExitCoordinator_ReachTerminate` | violated W_TerminateExits | violated W_TerminateExits | 8400 | 12 | yes |
+| `AppExitCoordinator_ReachTicketWhileDraining` | violated W_TicketOwnedWhileDraining | violated W_TicketOwnedWhileDraining | 352 | 6 | yes |
+
+Rule-2 record for round 1: TLC configs for these modules go from 29 to 38, and `SidecarSupervisor`
+properties from 18 to 20 (INV-16, INV-17). There is still no Rust or TypeScript change.
 
 ### Not done here
 

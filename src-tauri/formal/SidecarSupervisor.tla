@@ -19,6 +19,9 @@
 (*   "StopOff"        Stop in Stopped continues the spawn loop  -> INV-5   *)
 (*   "ElapsedCredit"  a tick grants retry credit for Probed     -> INV-7   *)
 (*   "TimeoutFrees"   a probe timeout frees the permit          -> INV-10  *)
+(*   "StopIgnoresWorkers" StopComplete ignores probe workers    -> INV-16  *)
+(*   "AutoStartResets" an automated restart resets the budget   -> INV-17  *)
+(*   "StaleSuccess"   ProbeOk accepts an older incarnation      -> INV-13  *)
 (*                                                                         *)
 (* Refinement notes. Every action names the Rust arm it models today, and  *)
 (* the SCL work package that changes it. A WP that changes one of those    *)
@@ -58,7 +61,8 @@ CONSTANTS
     Mutant             \* "none" or one of the mutant names in the header
 
 Profiles == {"LivenessOnly", "Probed"}
-Mutants  == {"none", "StopOff", "ElapsedCredit", "TimeoutFrees"}
+Mutants  == {"none", "StopOff", "ElapsedCredit", "TimeoutFrees", "StopIgnoresWorkers",
+             "AutoStartResets", "StaleSuccess"}
 
 ASSUME MaxRetries \in Nat /\ MaxCrashes \in Nat /\ MaxInc \in Nat
 ASSUME MaxIntents \in Nat \ {0} /\ MaxGen \in Nat
@@ -90,12 +94,13 @@ VARIABLES
     readiness,     \* readiness, independent of phase
     lastOk,        \* [g, i] of the last successful sample
     failures,      \* consecutive retry-budget counter
-    crashes        \* recorded failures (monotone; bounded by CONSTRAINT)
+    crashes,       \* recorded failures (monotone; bounded by CONSTRAINT)
+    sinceMember    \* recorded failures since the last member Start (INV-17)
 
 ctrl    == << phase, desired, intentSeq, gen, inc, tickets, child, replacing >>
 probing == << probe, workers >>
 health  == << okWindow, okSinceSpawn, credited, age, sinceOk, readiness, lastOk >>
-vars    == << ctrl, probing, health, failures, crashes >>
+vars    == << ctrl, probing, health, failures, crashes, sinceMember >>
 
 Min(a, b) == IF a < b THEN a ELSE b
 
@@ -141,6 +146,7 @@ TypeOK ==
     /\ lastOk.g \in 0..MaxGen /\ lastOk.i \in Nat
     /\ failures \in 0..(MaxRetries + 1)
     /\ crashes \in Nat
+    /\ sinceMember \in Nat
 
 \* Supervisor::start publishes Starting with a Run intent already committed.
 Init ==
@@ -163,6 +169,7 @@ Init ==
     /\ lastOk = [g |-> 0, i |-> 0]
     /\ failures = 0
     /\ crashes = 0
+    /\ sinceMember = 0
 
 (***************************************************************************)
 (* A failed incarnation: record it, consume one unit of retry budget, and  *)
@@ -173,6 +180,7 @@ Init ==
 FailStep ==
     /\ child' = FALSE
     /\ crashes' = crashes + 1
+    /\ sinceMember' = sinceMember + 1
     /\ failures' = failures + 1
     /\ phase' = IF failures + 1 > MaxRetries THEN "Failed" ELSE "Backoff"
     /\ ResetWindow
@@ -181,12 +189,15 @@ FailStep ==
 (* Control intents (SPEC-001 "Ownership, intent and generations").         *)
 (***************************************************************************)
 
-\* Explicit Start: a new intent with a fresh retry budget. Admitted from a
-\* settled phase only once old teardown is complete, or queued behind a
-\* teardown in progress (it then waits for StopComplete).
-\* Today: SidecarSupervisor::start creates a new monitor; there is no
-\* intent cell. Target: SCL-S2.1, S2.3.
-RequestStart ==
+\* Member Start: a person asks for the service (a Start button, a settings
+\* toggle the member flips). A new intent with a fresh retry budget, so the
+\* fork-bomb bound (INV-2, INV-17) holds between member Starts, not over the
+\* app's lifetime. Admitted from a settled phase only once old teardown is
+\* complete, or queued behind a teardown in progress (it then waits for
+\* StopComplete). Only this action resets `failures` outside ResetCredit.
+\* Today: SidecarSupervisor::start creates a new monitor (every caller resets,
+\* member or not); there is no intent cell. Target: SCL-S2.1, S2.3, S3.2.
+MemberStart ==
     /\ intentSeq < MaxIntents
     /\ \/ phase \in {"Stopped", "Failed", "Quarantined"} /\ Cleanup = {}
        \/ phase = "Stopping" /\ desired = "Stop"
@@ -194,7 +205,46 @@ RequestStart ==
     /\ intentSeq' = intentSeq + 1
     /\ phase' = IF phase = "Stopping" THEN "Stopping" ELSE "Starting"
     /\ failures' = 0
-    /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes >>
+    /\ sinceMember' = 0
+    /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes, sinceMember >>
+
+\* Kept for readers of the first version: the explicit Start is the member's.
+RequestStart == MemberStart
+
+\* Automated Start: no member asked (auto-start at launch, a lazy
+\* ensure_started from Hermes tools or another service). It carries the
+\* retry budget over, and it is refused while Failed or Quarantined: only a
+\* member Start revives those. Target: SCL-S2.3, S3.2.
+\* Mutant "AutoStartResets": it resets the budget as a member Start does.
+AutoStart ==
+    /\ intentSeq < MaxIntents
+    /\ \/ phase = "Stopped" /\ Cleanup = {}
+       \/ phase = "Stopping" /\ desired = "Stop"
+    /\ desired' = "Run"
+    /\ intentSeq' = intentSeq + 1
+    /\ phase' = IF phase = "Stopping" THEN "Stopping" ELSE "Starting"
+    /\ failures' = IF Mutant = "AutoStartResets" THEN 0 ELSE failures
+    /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes, sinceMember >>
+
+\* Automated restart: an internal stop then start of a running service, as
+\* one new Run intent (tickets of the old intent go to teardown, then
+\* StopComplete re-enters Starting). Today: `NodeManager::arm_mining` and
+\* `disarm_mining` (`self.stop(); let _ = self.start();`, src-tauri/src/node.rs
+\* 511-521 and 599-608); a watchdog restart is the same shape. These must not
+\* reset the budget: a crash-looping node under a flapping mining gate would
+\* otherwise get a fresh budget on every flip. Target: SCL-S2.3, S3.2, S6.1.
+\* Mutant "AutoStartResets": it resets the budget.
+AutoRestart ==
+    /\ intentSeq < MaxIntents
+    /\ desired = "Run"
+    /\ ~replacing
+    /\ phase \in {"Starting", "Alive", "Backoff"}
+    /\ intentSeq' = intentSeq + 1
+    /\ phase' = "Stopping"
+    /\ ResetWindow
+    /\ failures' = IF Mutant = "AutoStartResets" THEN 0 ELSE failures
+    /\ UNCHANGED << desired, gen, inc, tickets, child, replacing, probing, lastOk,
+                    crashes, sinceMember >>
 
 \* Stop commits desired = Stop under a new sequence, closes spawn admission
 \* in every phase, and invalidates a pending replacement. A repeated
@@ -211,7 +261,7 @@ RequestStop ==
               /\ tickets' = {[s |-> intentSeq, g |-> gen, i |-> inc + 1]}
               /\ inc' = inc + 1
               /\ UNCHANGED << desired, intentSeq, gen, child, replacing,
-                              probing, health, failures, crashes >>
+                              probing, health, failures, crashes, sinceMember >>
          ELSE UNCHANGED vars
     ELSE /\ intentSeq < MaxIntents
          /\ desired' = "Stop"
@@ -220,7 +270,7 @@ RequestStop ==
          /\ phase' = IF phase \in {"Starting", "Alive", "Backoff", "Stopping"}
                      THEN "Stopping" ELSE phase
          /\ ResetWindow
-         /\ UNCHANGED << gen, inc, tickets, child, probing, lastOk, failures, crashes >>
+         /\ UNCHANGED << gen, inc, tickets, child, probing, lastOk, failures, crashes, sinceMember >>
 
 \* Replacement configuration: keep old resources, tear the old incarnation
 \* down, commit the new generation only after cleanup (ReplaceConfig).
@@ -235,7 +285,7 @@ RequestReplace ==
     /\ replacing' = TRUE
     /\ phase' = "Stopping"
     /\ ResetWindow
-    /\ UNCHANGED << desired, gen, inc, tickets, child, probing, lastOk, failures, crashes >>
+    /\ UNCHANGED << desired, gen, inc, tickets, child, probing, lastOk, failures, crashes, sinceMember >>
 
 (***************************************************************************)
 (* Spawn admission and its ticket.                                         *)
@@ -255,7 +305,7 @@ AdmitSpawn ==
     /\ tickets' = {[s |-> intentSeq, g |-> gen, i |-> inc + 1]}
     /\ inc' = inc + 1
     /\ UNCHANGED << phase, desired, intentSeq, gen, child, replacing,
-                    probing, health, failures, crashes >>
+                    probing, health, failures, crashes, sinceMember >>
 
 \* The OS spawn returns a child. A ticket of the current intent and
 \* generation publishes Alive; a late return (Stop or replacement won the
@@ -274,7 +324,7 @@ SpawnReturns(t) ==
             /\ sinceOk' = 0
             /\ readiness' = SpawnReadiness
        ELSE UNCHANGED << phase, okWindow, okSinceSpawn, credited, age, sinceOk, readiness >>
-    /\ UNCHANGED << desired, intentSeq, gen, inc, replacing, probing, lastOk, failures, crashes >>
+    /\ UNCHANGED << desired, intentSeq, gen, inc, replacing, probing, lastOk, failures, crashes, sinceMember >>
 
 \* The OS spawn fails (bad path, EACCES). Counted only for the current
 \* intent (SpawnFailCurrent); a late failure after Stop or replacement
@@ -294,7 +344,7 @@ SpawnFailStale(t) ==
     /\ ~(t.s = intentSeq /\ t.g = gen /\ desired = "Run" /\ phase = "Starting")
     /\ tickets' = tickets \ {t}
     /\ UNCHANGED << phase, desired, intentSeq, gen, inc, child, replacing,
-                    probing, health, failures, crashes >>
+                    probing, health, failures, crashes, sinceMember >>
 
 (***************************************************************************)
 (* Alive: crashes, retry credit, backoff.                                  *)
@@ -325,7 +375,7 @@ ResetCredit ==
        ELSE CanHealthy /\ age >= HealthyAfterTicks
     /\ failures' = 0
     /\ credited' = TRUE
-    /\ UNCHANGED << ctrl, probing, okWindow, okSinceSpawn, age, sinceOk, readiness, lastOk, crashes >>
+    /\ UNCHANGED << ctrl, probing, okWindow, okSinceSpawn, age, sinceOk, readiness, lastOk, crashes, sinceMember >>
 
 \* Backoff elapsed: back to Starting; admission still checks the intent.
 \* Today: `backoff_or_control` Timeout arm.
@@ -334,7 +384,7 @@ RetryFromBackoff ==
     /\ desired = "Run"
     /\ phase' = "Starting"
     /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, child, replacing,
-                    probing, health, failures, crashes >>
+                    probing, health, failures, crashes, sinceMember >>
 
 (***************************************************************************)
 (* Time. Ticks advance one incarnation's age. A Ready readiness whose last *)
@@ -356,7 +406,7 @@ TickStep ==
            /\ okWindow' = IF stale THEN 0 ELSE okWindow
            /\ credited' = IF mutCredit THEN TRUE ELSE IF stale THEN FALSE ELSE credited
            /\ failures' = IF mutCredit THEN 0 ELSE failures
-    /\ UNCHANGED << ctrl, probing, okSinceSpawn, lastOk, crashes >>
+    /\ UNCHANGED << ctrl, probing, okSinceSpawn, lastOk, crashes, sinceMember >>
 
 GraceTick   == InGrace /\ TickStep
 ElapsedTick == ~InGrace /\ TickStep
@@ -377,22 +427,25 @@ ProbeBegin ==
     /\ probe = "Free"
     /\ probe' = "Busy"
     /\ workers' = workers \cup {[g |-> gen, i |-> inc, t |-> FALSE]}
-    /\ UNCHANGED << ctrl, health, failures, crashes >>
+    /\ UNCHANGED << ctrl, health, failures, crashes, sinceMember >>
 
 \* A fresh success of the current incarnation: Ready at once, no credit by
 \* itself (credit is ResetCredit). Today: `runner.poll()` returns true.
+\* Mutant "StaleSuccess": a success of an older incarnation (or a timed-out
+\* worker) is accepted, the stale-completion defect INV-12 is about.
 ProbeOk(w) ==
     /\ CanHealthy
     /\ w \in workers
-    /\ CurrentWorker(w)
+    /\ \/ CurrentWorker(w)
+       \/ Mutant = "StaleSuccess" /\ phase = "Alive" /\ child
     /\ workers' = workers \ {w}
     /\ probe' = "Free"
     /\ okWindow' = Min(okWindow + 1, HealthyAfterTicks)
     /\ okSinceSpawn' = TRUE
     /\ readiness' = "Ready"
-    /\ lastOk' = Tag
+    /\ lastOk' = [g |-> w.g, i |-> w.i]
     /\ sinceOk' = 0
-    /\ UNCHANGED << ctrl, credited, age, failures, crashes >>
+    /\ UNCHANGED << ctrl, credited, age, failures, crashes, sinceMember >>
 
 \* A failed sample. Inside the grace it is tolerated but ends the window;
 \* outside it the incarnation is unhealthy (teardown, one failure).
@@ -407,7 +460,7 @@ ProbeFail(w) ==
        THEN /\ okWindow' = 0
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
-            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes >>
+            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
        ELSE /\ FailStep
             /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, replacing, lastOk >>
 
@@ -426,7 +479,7 @@ ProbeTimeout(w) ==
        THEN /\ okWindow' = 0
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
-            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes >>
+            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
        ELSE /\ FailStep
             /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, replacing, lastOk >>
 
@@ -439,21 +492,23 @@ ProbeWorkerEnds(w) ==
     /\ ~CurrentWorker(w)
     /\ workers' = workers \ {w}
     /\ probe' = IF workers \ {w} = {} THEN "Free" ELSE probe
-    /\ UNCHANGED << ctrl, health, failures, crashes >>
+    /\ UNCHANGED << ctrl, health, failures, crashes, sinceMember >>
 
 \* A worker that never ends: once it is past its observer deadline (or a
 \* Stop is waiting on it), the owner kills the child, keeps the permit and
 \* the slot, and reports Quarantined. Leaving needs ProbeWorkerEnds plus an
-\* explicit Start (INV-15). Today: no such state. Target: SCL-S4.2.
+\* explicit Start (INV-15). Failed is included: a Failed cell whose timed-out
+\* worker never ends is Quarantined too (SPEC-001), not Failed with the
+\* permit silently held. Today: no such state. Target: SCL-S4.2.
 ProbeNeverEnds ==
     /\ \E w \in workers : w.t \/ phase = "Stopping"
-    /\ phase \in {"Alive", "Starting", "Backoff", "Stopping"}
+    /\ phase \in {"Alive", "Starting", "Backoff", "Stopping", "Failed"}
     /\ tickets = {}
     /\ phase' = "Quarantined"
     /\ child' = FALSE
     /\ replacing' = FALSE
     /\ ResetWindow
-    /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, probing, lastOk, failures, crashes >>
+    /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, probing, lastOk, failures, crashes, sinceMember >>
 
 (***************************************************************************)
 (* Teardown.                                                               *)
@@ -466,17 +521,20 @@ TeardownChild ==
     /\ child
     /\ child' = FALSE
     /\ UNCHANGED << phase, desired, intentSeq, gen, inc, tickets, replacing,
-                    probing, health, failures, crashes >>
+                    probing, health, failures, crashes, sinceMember >>
 
 \* Every owned resource is released: Stopped, or Starting for a Start queued
-\* behind the teardown. Today: `shared.set_state(Off)` after terminate_child.
+\* behind the teardown. Stopped attests "no owned resources from the
+\* completed control" (SPEC-001 line 92), probe workers included (INV-16).
+\* Today: `shared.set_state(Off)` after terminate_child.
+\* Mutant "StopIgnoresWorkers": completes with a probe worker still running.
 StopComplete ==
     /\ phase = "Stopping"
     /\ ~replacing
-    /\ Cleanup = {}
+    /\ IF Mutant = "StopIgnoresWorkers" THEN ~child /\ tickets = {} ELSE Cleanup = {}
     /\ phase' = IF desired = "Run" THEN "Starting" ELSE "Stopped"
     /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, child, replacing,
-                    probing, health, failures, crashes >>
+                    probing, health, failures, crashes, sinceMember >>
 
 \* The replacement commits its generation only after cleanup (INV-14).
 \* Target: SCL-S2.3.
@@ -487,7 +545,7 @@ ReplaceConfig ==
     /\ gen' = gen + 1
     /\ replacing' = FALSE
     /\ phase' = "Starting"
-    /\ UNCHANGED << desired, intentSeq, inc, tickets, child, probing, health, failures, crashes >>
+    /\ UNCHANGED << desired, intentSeq, inc, tickets, child, probing, health, failures, crashes, sinceMember >>
 
 \* Settled phases may idle (behaviours are infinite, no deadlock artefact).
 TerminalStutter ==
@@ -495,7 +553,9 @@ TerminalStutter ==
     /\ UNCHANGED vars
 
 Next ==
-    \/ RequestStart
+    \/ MemberStart
+    \/ AutoStart
+    \/ AutoRestart
     \/ RequestStop
     \/ RequestReplace
     \/ AdmitSpawn
@@ -532,9 +592,7 @@ ForkBombNext ==
     \/ \E w \in workers : ProbeOk(w) \/ ProbeFail(w) \/ ProbeTimeout(w) \/ ProbeWorkerEnds(w)
     \/ TerminalStutter
 
-ForkBombSpec ==
-    /\ Init
-    /\ [][ForkBombNext]_vars
+ForkBombFairness ==
     /\ WF_vars(AdmitSpawn)
     /\ WF_vars(\E t \in tickets : SpawnReturns(t) \/ SpawnFailCurrent(t))
     /\ WF_vars(Crash)
@@ -543,6 +601,28 @@ ForkBombSpec ==
     /\ WF_vars(ProbeBegin)
     /\ WF_vars(\E w \in workers : ProbeFail(w) \/ ProbeTimeout(w))
     /\ WF_vars(\E w \in workers : ProbeWorkerEnds(w))
+
+ForkBombSpec == Init /\ [][ForkBombNext]_vars /\ ForkBombFairness
+
+(***************************************************************************)
+(* Fork bomb under automated restarts (B2): the never-healthy child also   *)
+(* gets automated stop-then-start (a flapping mining gate) and automated   *)
+(* starts, but no member Start. The run must still reach Failed, and       *)
+(* INV-17 bounds the crashes. Automated intents are bounded by MaxIntents. *)
+(***************************************************************************)
+AutoRestartNext ==
+    \/ ForkBombNext
+    \/ AutoRestart
+    \/ AutoStart
+    \/ TeardownChild
+    \/ StopComplete
+
+AutoRestartSpec ==
+    /\ Init
+    /\ [][AutoRestartNext]_vars
+    /\ ForkBombFairness
+    /\ WF_vars(TeardownChild)
+    /\ WF_vars(StopComplete)
 
 (***************************************************************************)
 (* INVARIANTS (03 section 1). State invariants unless marked "action".     *)
@@ -565,7 +645,10 @@ INV_StopIsNotACrash == (phase = "Stopped") => ~child
 INV_NoOrphan == (phase \in {"Stopped", "Failed"}) => (~child /\ tickets = {})
 
 \* INV-5 (defect (a)): under a Stop intent no spawn can be admitted, in
-\* every phase, and every outstanding ticket predates that intent.
+\* every phase, and every outstanding ticket predates that intent. The
+\* `~ENABLED AdmitSpawn` half is true by construction (AdmitSpawn checks
+\* desired = "Run"); the teeth are in the ticket clause, which MutStopOff
+\* breaks.
 INV_StopNeverSpawns ==
     desired = "Stop" => (~ENABLED AdmitSpawn /\ \A t \in tickets : t.s < intentSeq)
 
@@ -601,6 +684,17 @@ INV_ReadyIsCurrent ==
         /\ lastOk = Tag
         /\ sinceOk <= FreshTicks
 
+\* INV-16 (B1): Stopped owns nothing: no child, no ticket and no probe
+\* worker (SPEC-001 line 92, "no owned resources from the completed
+\* control"). The supervisor form of "Complete attests only its named scope".
+INV_StoppedOwnsNothing == (phase = "Stopped") => (Cleanup = {})
+
+\* INV-17 (B2): for a never-healthy child the recorded failures since the
+\* last member Start stay within the fork-bomb bound, whatever automated
+\* starts and restarts happen. The bound holds between member Starts; a
+\* member Start is a new budget by decision.
+INV_CrashBoundBetweenMemberStarts == ~CanHealthy => (sinceMember <= MaxRetries + 1)
+
 \* INV-15 (state part): Quarantined holds no child and no ticket.
 INV_QuarantineHoldsNoChild == (phase = "Quarantined") => (~child /\ tickets = {})
 
@@ -614,10 +708,12 @@ StopNeverCounts ==
     [][(desired' = "Stop") => (crashes' = crashes /\ failures' <= failures)]_vars
 
 \* INV-12 (action): a stale completion changes no readiness, counter,
-\* ticket, child or phase.
+\* ticket, child or phase. True by construction of ProbeWorkerEnds; the real
+\* stale-result defect (ProbeOk accepting an old tag) is MutStaleSuccess,
+\* which INV-13 catches.
 INV_StaleCompletionInert ==
     [][\A w \in workers : ProbeWorkerEnds(w) =>
-          UNCHANGED << phase, child, tickets, health, failures, crashes >>]_vars
+          UNCHANGED << phase, child, tickets, health, failures, crashes, sinceMember >>]_vars
 
 \* INV-14 (action): the generation advances only when cleanup is empty.
 INV_ReplaceAfterCleanup == [][(gen' # gen) => (Cleanup = {})]_vars
@@ -655,6 +751,25 @@ W_UnattestedTickPastHealthy ==
 \* Alive (where a freed permit would admit a second worker).
 W_TimedOutWorkerHeldWhileAlive ==
     ~(phase = "Alive" /\ \E w \in workers : w.t)
+
+\* StopIgnoresWorkers (on the green base): a stop has released the child
+\* and the tickets but a probe worker is still running.
+W_StopWaitsOnWorker ==
+    ~(phase = "Stopping" /\ ~replacing /\ ~child /\ tickets = {} /\ workers # {})
+
+\* StopIgnoresWorkers (on the mutant): the cell reaches Stopped with a live
+\* worker. Shows the mutant's counterexample is the defect itself.
+W_StoppedWithWorker == ~(phase = "Stopped" /\ workers # {})
+
+\* AutoStartResets: an automated restart or start can fire after failures
+\* were recorded under the current member Start.
+W_AutoRestartAfterFailures ==
+    ~(failures > 0 /\ ENABLED (AutoRestart \/ AutoStart))
+
+\* StaleSuccess: an Alive incarnation has a worker of an older incarnation,
+\* or a timed-out one, still in flight.
+W_StaleWorkerWhileAlive ==
+    ~(phase = "Alive" /\ child /\ \E w \in workers : ~(w.g = gen /\ w.i = inc /\ ~w.t))
 
 (***************************************************************************)
 (* State constraint (model checking only) for the recovering configs,      *)
