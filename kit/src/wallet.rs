@@ -70,8 +70,8 @@ use citrate_wallet_core::{
 // it; `wallet` gets the network-gated `key::signing_key` and the non-signing helpers, nothing more.
 #[path = "wallet_key.rs"]
 mod key;
-pub(crate) use key::WalletKeyAccess;
 use key::signing_key;
+pub(crate) use key::WalletKeyAccess;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::custody::{CustodyError, CustodyVault};

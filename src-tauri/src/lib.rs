@@ -274,9 +274,10 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
-            // K6 — install the network gate before anything can sign: every ceremony signature
-            // and every transaction send checks the RPC's chain id and block-0 hash against the
-            // active network profile, and refuses when they differ or the profile is not set.
+            // K6 — install the network gate before anything can sign. Every wallet signature is
+            // checked locally against the active network profile (refused when no network is set,
+            // or when it commits to another chain id). Transaction sends additionally check the
+            // RPC's chain id and block-0 hash against the profile before broadcasting.
             network_profile::install_network_gate();
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
