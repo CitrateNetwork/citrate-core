@@ -27,4 +27,17 @@ stop_without_a_monitor_is_observation_unknown | regression | SCL-S2.2 | with the
 start_after_a_crash_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after a crash leaves its output held and the budget is spent, a Start spawns nothing until cleanup
 start_after_health_failures_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after health failures exhaust the budget with output held, a Start spawns nothing until cleanup
 start_after_shutdown_is_rejected_closing | regression | SCL-S2.2 | a Start after shutdown begins is RejectedClosing and spawns nothing
+late_spawn_after_stop_goes_straight_to_teardown | regression | SCL-S2.3 | a spawn admitted before Stop is torn down unpublished; the Stop stays Pending until the ticket resolves (INV-12)
+a_start_overtaken_during_its_spawn_reads_superseded | regression | SCL-S2.3 | a Start overtaken by Stop during its spawn reads Superseded, never Started
+late_spawn_after_shutdown_is_torn_down | regression | SCL-S2.3 | a spawn admitted before shutdown is torn down; no Start after Closing
+publication_ticket_released_before_stop_settles_is_in_the_complete_scope | regression | SCL-S2.3 | a publication admitted before Stop cannot become active after it; its cleanup is in the Complete scope
+held_publication_ticket_makes_stop_incomplete_until_released | regression | SCL-S2.3 | a held publication ticket makes Stop Incomplete and Quarantined until released
+stop_deadline_expires_while_teardown_is_held | regression | SCL-S2.4 | the publisher marks expiry; late completion never turns DeadlineExpired into Complete
+receipt_reports_expiry_even_if_the_publisher_never_ran | regression | SCL-S2.4 | a receipt read after the deadline reports expiry without the publisher (RT-16)
+stop_settled_before_its_deadline_is_complete | positive-control | SCL-S2.4 | a Stop inside its deadline is Complete and frees its record
+concurrent_deadline_stops_arm_one_record | regression | SCL-S2.4 | concurrent deadline Stops arm one record; a joining call does not restart the deadline
+deadline_overlay_is_fixed_and_full_admission_commits_nothing | regression | SCL-S2.4 | the overlay holds DEADLINE_RECORDS records; arming beyond is Busy and commits nothing
+expired_stop_followed_by_later_controls_never_reads_complete | regression | SCL-S2.4 | an expired Stop followed by later controls never reads Complete
+publisher_creation_failure_leaves_deadline_admission_unavailable | regression | SCL-S2.4 | creation failure: Unavailable, nothing committed, no replacement (RT-16)
+publisher_exit_leaves_admission_unavailable_without_replacement | regression | SCL-S2.4 | a publisher that ends leaves admission Unavailable, no replacement (RT-16)
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures
