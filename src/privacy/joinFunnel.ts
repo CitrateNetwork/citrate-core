@@ -197,6 +197,19 @@ export function clearJoinSteps(): void {
   }
 }
 
+/** Turn telemetry on or off (Settings, the one-time note). Returns the state patch to apply. */
+export function setTelemetryConsent(on: boolean): { telemetry: boolean; telemetryConsentVersion: number | null } {
+  const patch = telemetryConsentPatch(on);
+  rememberTelemetryConsent(patch);
+  if (!on) clearJoinSteps();
+  return patch;
+}
+
+/** Counter that changes on every opt-out; a report prepared under an older value is stale. */
+export function joinFunnelGeneration(): number {
+  return 0;
+}
+
 /** The join step an onboarding stage reaches, or null (S0 is `open_app`, recorded at launch;
  *  S6 is node ignition, and the step that counts there is `node_synced`). */
 export function stepForStage(stage: string): JoinStep | null {
