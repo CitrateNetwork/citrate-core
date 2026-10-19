@@ -237,6 +237,11 @@ export function Train({ store }: SurfaceProps) {
         </>
       )}
 
+      {!ROUNDS_LIVE && (
+        <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+          below: local adapter rounds through a coordinator · on-chain group rounds are not live yet
+        </span>
+      )}
       {/* HUP-S9.4: Hermes plans, explains and starts federated rounds; adapters pass the eval gate. */}
       <FlRoundsPanel fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />
     </div>

@@ -13,6 +13,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
+import { readFileSync } from "node:fs";
 
 vi.mock("../bridge/mode", () => ({
   BRIDGE_MODE: "tauri" as const,
@@ -180,5 +181,70 @@ describe("V11 — group rounds are not live on 40204", () => {
     expect(el.textContent).not.toContain("read live from 40204 (PatronageLedger)");
     expect(status).not.toHaveBeenCalled();
     act(() => root.unmount());
+  });
+});
+
+// Review follow-up on #347 (chain team): an unread height (0) must render "—" everywhere a height
+// is drawn, not "0": the Sidebar, the ALF surface and the built-in "Block height" widget.
+import { Sidebar } from "../shell/Sidebar";
+import { ALF } from "./ALF";
+import { WIDGET_TEMPLATES } from "../widgets/gallery";
+import { resolveQuery, type WidgetSources } from "../widgets/catalog";
+
+/** Run a gallery widget's script against one query result and return what it shows. */
+async function runWidget(key: string, data: unknown): Promise<string> {
+  const t = WIDGET_TEMPLATES.find((w) => w.key === key)!;
+  const host = document.createElement("div");
+  host.innerHTML = t.html.replace(/<script>[\s\S]*<\/script>/, "");
+  const script = /<script>([\s\S]*)<\/script>/.exec(t.html)![1];
+  const doc = { getElementById: (id: string) => host.querySelector("#" + id), createElement: (n: string) => document.createElement(n) };
+  vi.useFakeTimers();
+  new Function("citrate", "document", script)({ query: () => Promise.resolve(data) }, doc);
+  await vi.advanceTimersByTimeAsync(0);
+  vi.clearAllTimers();
+  return host.textContent || "";
+}
+
+describe("V10 follow-up — an unread height is '—' on every surface", () => {
+  const sidebarStore = { identity: () => ({ sub: "", name: "Tester", initials: "TE", role: "member" }) } as unknown as Store;
+
+  it("Sidebar and ALF show '—' for height 0 while the node is up", () => {
+    for (const node of ["error", "stalled", "synced"] as const) {
+      const s = { ...freshState("p1"), alfMember: true, node, height: 0 };
+      const side = renderToStaticMarkup(<Sidebar store={sidebarStore} s={s} />);
+      expect(side).not.toMatch(/ · 0</);
+      expect(side).toContain(" · —");
+      const alf = renderToStaticMarkup(<ALF store={stub} s={s} />);
+      expect(alf).not.toMatch(/ · 0</);
+      expect(alf).toContain(" · —");
+    }
+  });
+
+  it("node.status returns height null when it has not been read", () => {
+    const sources = { context: () => ({ height: 0, peers: 0, nodeState: "off", staked: 0, liquid: 0, claimable: 0 }) } as unknown as WidgetSources;
+    expect((resolveQuery("node.status", sources) as { height: number | null }).height).toBeNull();
+  });
+
+  it("the Block height widget shows '—' for a null height, and the height when read", async () => {
+    expect(await runWidget("block-height", { height: null, peers: 0, state: "off" })).toContain("—");
+    expect(await runWidget("block-height", { height: null, peers: 0, state: "off" })).not.toMatch(/^0/);
+    expect(await runWidget("block-height", { height: 499058, peers: 3, state: "synced" })).toContain("499,058");
+  });
+});
+
+describe("V2/V3 follow-up — no heartbeat or pin-projection copy left anywhere", () => {
+  it("the Commissary handbook entry makes no slashing-protection claim", async () => {
+    const { CATALOG } = await import("../data/seed");
+    expect(JSON.stringify(CATALOG)).not.toMatch(/slashing protection/i);
+  });
+
+  it("the sim personas make no heartbeat claim", () => {
+    for (const p of ["p1", "p2", "p3", "p4"]) expect(JSON.stringify(freshState(p))).not.toMatch(/heartbeat/i);
+  });
+
+  it("the prototype drawer has no pin-bond projection", () => {
+    const src = readFileSync("src/shell/Chrome.tsx", "utf8");
+    expect(src).not.toContain("at current demand");
+    expect(src).not.toContain("challenges begin next window");
   });
 });

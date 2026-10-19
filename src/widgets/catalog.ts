@@ -39,7 +39,8 @@ export function resolveQuery(q: WidgetQuery, s: WidgetSources): unknown {
   switch (q) {
     case "node.status": {
       const c = s.context();
-      return { height: c.height, peers: c.peers, state: c.nodeState };
+      // C1-V V10: 0 means the height has not been read (eth_blockNumber returns 0x0 on error).
+      return { height: c.height > 0 ? c.height : null, peers: c.peers, state: c.nodeState };
     }
     case "wallet.summary": {
       const c = s.context();

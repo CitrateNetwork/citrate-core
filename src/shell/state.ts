@@ -905,7 +905,7 @@ export function freshState(pid: string): AppState {
         pinned: true,
         blocks: [
           "Keep stake ≥ 32,000 — eligibility is a hard floor.",
-          "The heartbeat is slashing protection. Never kill -9 the agent mid-job.",
+          "Stop the node from the Node page rather than killing it mid-job.",
           "Claims batch until ≥ 5 SALT to avoid dust gas.",
           "Pause before OS upgrades; resume re-attests the machine.",
         ],
@@ -954,7 +954,7 @@ export function freshState(pid: string): AppState {
       s.earnComp = 9.31;
       s.earnToday = 3.86;
       s.selfStake = 2500;
-      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s; heartbeat continuity held." }];
+      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
       s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Add stake|−2,500.00 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";

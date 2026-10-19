@@ -418,32 +418,6 @@ export function DemoPanel({ store, s }: { store: Store; s: AppState }) {
                   className="btn btn-ghost btn-sm"
                   onClick={() => {
                     store.setState({ demoOpen: false });
-                    store.requestSig({
-                      origin: "node-agent",
-                      requester: "node-agent · PIN planner 127.0.0.1:19600",
-                      title: "Bond 120 SALT to pin a CID",
-                      rows: [
-                        { k: "Action", v: "plan_pin(bafybeigd4x…kq4e) → bond" },
-                        { k: "Bond", v: "120 SALT · slashable on failed challenge" },
-                        { k: "Projected", v: "~0.9 SALT / month at current demand" },
-                      ],
-                      cost: "est. gas 0.0019 SALT",
-                      sponsor: "gas sponsored — standard daily budget",
-                      sponsorColor: "var(--ok)",
-                      apply: (h) => {
-                        store.addActivity("Pin bond", "−120.00 SALT", h);
-                        store.setState((st) => ({ liquid: Math.max(0, st.liquid - 120), pins: [{ cid: "bafybeigd4x…kq4e", bond: 120, cadH: 6, nextIn: 6 * 3600, last: "attested" }].concat(st.pins) }));
-                        store.toast("Bond posted — challenges begin next window");
-                      },
-                    });
-                  }}
-                >
-                  node-agent · pin bond
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => {
-                    store.setState({ demoOpen: false });
                     store.openMicroApp({ name: "Lattice Observatory", capabilities: ["identity token hand-off", "EIP-1193 provider (read + propose)"] });
                   }}
                 >

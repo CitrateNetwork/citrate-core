@@ -67,7 +67,7 @@ export const CATALOG = {
     { id: 'citrate-sdk-marketplace', name: 'Marketplace SDK', registry: 'npm', install: 'npm i @citratelabs/marketplace-sdk@0.1.0', desc: 'x402 marketplace bidding and settlement.', minTier: 'free', docs: 'atlas/sdk/marketplace' },
   ],
   docs: [
-    { id: 'd1', name: 'Validator operations handbook', tier: 'member', minTier: 'pilot', desc: 'Sync, heartbeat, slashing protection, claim batching.' },
+    { id: 'd1', name: 'Validator operations handbook', tier: 'member', minTier: 'pilot', desc: 'Sync, validator activation, rewards and claim batching.' },
     { id: 'd2', name: 'Network primer — GhostDAG on chain 40204', tier: 'public', minTier: 'free', desc: 'Consensus, checkpoints, finality for operators.' },
     { id: 'd3', name: 'Memory graph — agent integration guide', tier: 'member', minTier: 'pilot', desc: 'MCP socket, capability grants, assert/recall semantics.' },
     { id: 'd4', name: 'LVM precompile reference', tier: 'commercial', minTier: 'pilot', desc: 'The 10 precompiles: 7 AI, 3 x402.' },

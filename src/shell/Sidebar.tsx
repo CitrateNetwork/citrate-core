@@ -106,7 +106,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
   const tierColor = s.entitlement === "active" ? "rgba(205,231,214,.6)" : s.entitlement === "lapsed" ? "#dd7259" : "#ffbd10";
   const sideDotColor = s.node === "off" ? "rgba(205,231,214,.35)" : nodeColors[s.node];
   const sideDotAnim = s.node === "validating" || s.node === "syncing" ? "ccPulse 2.4s var(--ease-standard) infinite" : "none";
-  const sideNodeText = s.node === "off" ? "node off" : s.node === "syncing" ? "syncing " + (s.syncPct | 0) + "%" : nodeLabel(s.node) + " · " + fmtI(s.height);
+  const sideNodeText = s.node === "off" ? "node off" : s.node === "syncing" ? "syncing " + (s.syncPct | 0) + "%" : nodeLabel(s.node) + " · " + (s.height > 0 ? fmtI(s.height) : "—"); // 0 = not read (C1-V V10)
 
   return (
     <aside style={{ background: "var(--deep-evergreen)", color: "#cde7d6", display: "flex", flexDirection: "column", padding: "18px 12px 12px", minHeight: 0 }}>
