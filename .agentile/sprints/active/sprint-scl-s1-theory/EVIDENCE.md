@@ -71,13 +71,14 @@ What this does not show: the CI job has not run on hosted runners yet at the tim
 ### SC1 (SCL-S2) status and deferrals
 
 Work landed in the stacked PRs #351 (S2.1, S2.2) and #352 (S2.3, S2.4), built on the S1.3
-harness. Counts on this host after the review rounds (#351 at `cca5a85`, #352 at `c39db6b`):
+harness. Counts on this host after the review rounds (#351 at `cca5a85`, #352 at `21ed683`):
 
 | Measure | Value |
 |---|---|
-| `cargo test --workspace --locked` | #351: 2463 passed; #352: 2488 passed; 0 failed, 20 ignored (baseline 2434) |
+| `cargo test --workspace --locked` | #351: 2463 passed; #352 (`21ed683`): 2490 passed; 0 failed, 20 ignored (baseline 2434) |
 | kit `supervisor::tests` | #351: 32 Unix / 11 Windows; #352: 38 / 17 (baseline 24 / 3) |
-| `lifecycle_faults` suite | #351: 21; #352: 40 |
+| `lifecycle_faults` suite | #351: 21; #352: 42 |
+| Concurrency proof (#352 `21ed683`) | 180 of 180 runs green (10 rounds of 18 concurrent suite copies, load average 80 to 140, own target dir) |
 
 **Deferred: using credential-publication tickets in the managers.** Reason: the kit
 provides the ticket (`Supervisor::admit_publication`, `PublicationTicket::commit`,
@@ -120,3 +121,9 @@ The fault suite covers these orderings today (`start_during_held_reader_teardown
 **Also still open:** retries within one Start intent (crash, then backoff, then respawn) do not
 wait for the previous incarnation's readers. That is reader handover, part of the bounded-capture
 work (SC4, SCL-S5).
+
+**Concurrency note.** Counts and stress runs must use a cargo target dir private to the
+worktree. Path crates hash the same in every checkout, so a shared target dir can run another
+checkout's stale test binary. "18 concurrent copies" means 18 started at once, not 6 at a time:
+only the former exposed the shutdown-reader and timing issues fixed in #352 `75272cc` and
+`21ed683`.
