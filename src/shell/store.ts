@@ -394,6 +394,9 @@ export function foldNodeLogs(lines: { ts: number; stream: "out" | "err"; line: s
  * its stake meets the threshold, else `synced`. This is the seam that replaces
  * the sim `tick()` node state in a Tauri build.
  */
+/** The ceremony's `PreparedExpired` message (kit/src/ceremony.rs): nothing was sent. */
+const SIGNED_TX_EXPIRED = /signed transaction expired before it was sent; nothing was sent/;
+
 export function mapNodeState(state: string, syncPct: number, staked: number): AppState["node"] {
   switch (state) {
     case "starting":
@@ -1480,7 +1483,7 @@ export class Store {
    * clone; the member then ACTIVATES it via `MemberBond.activate(pubkey, sig)` (from their own
    * EOA, the clone's `onlyMember`), which bonds the clone's principal into the registry. This
    * only ARMS the producer so the node mints its proposer key; the activation itself is the
-   * member's explicit click on S7 (`onS7Activate`), which opens the Signature Ceremony. Guards
+   * member's explicit click (`requestValidatorActivation`, from S7 or Node), which opens the Signature Ceremony. Guards
    * fail closed — a not-ready node / unlinked wallet / not-yet-granted member does not trigger.
    */
   private maybeAutoBond(): void {
@@ -1572,10 +1575,21 @@ export class Store {
   /** S7 — forget an activation tx the chain never saw (see `canForgetActivationTx`). */
   onS7ForgetTx(): void {
     if (!this.canForgetActivationTx(Date.now())) return;
-    this.activationGen++;
-    this.setState({ s7TxHash: null, s7TxAt: null });
-    this.saveNow();
+    this.clearActivationTx();
     void this.refreshActivation();
+  }
+
+  /**
+   * Drop the recorded activation tx: bump the read generation (a read in flight that was asked
+   * with it can no longer apply), clear the hash and its time, drop the read's tx view, and
+   * write it to disk now. Every path that clears the hash goes through here.
+   */
+  private clearActivationTx(): void {
+    this.activationGen++;
+    this.activationInFlight = false;
+    const a = this.state.activation;
+    this.setState({ s7TxHash: null, s7TxAt: null, activation: a ? { ...a, tx: null } : a });
+    this.saveNow();
   }
 
   /** S6 → S7 for a member with a granted bond; anyone else enters the app (there is no bond). */
@@ -1596,12 +1610,15 @@ export class Store {
    * Signature Ceremony: nothing is approved or broadcast here. On approval the broadcast's tx hash
    * is persisted so the step resumes to "Pending" after a quit.
    */
-  async onS7Activate(): Promise<boolean> {
+  async requestValidatorActivation(): Promise<boolean> {
     if (this.state.s7TxHash) {
       // An activation is already sent and not yet observed: never offer a second one.
       this.toast("Activation already sent — waiting for it to be included.");
       return false;
     }
+    // The Node surface can call this without S7 ever having read the chain: read first.
+    if (!this.state.activation) await this.refreshActivation();
+    if (this.state.s7TxHash) return false;
     const gate = activationGate(this.state.activation, this.walletIsLinked());
     if (!gate.ready) {
       const why = gate.checks.find((c) => c.ok !== true);
@@ -1611,6 +1628,8 @@ export class Store {
     return this.activateValidator({
       // Persist the signed tx's hash before it is sent (and before any receipt poll).
       onSigned: (txHash) => this.recordActivationTx(txHash),
+      // The signed tx expired in the ceremony before it was sent: nothing was sent, so clear it.
+      onNotSent: () => this.clearActivationTx(),
       // The re-read is a separate, later step.
       onResolved: async (approved) => {
         if (approved) await this.refreshActivation();
@@ -1618,16 +1637,10 @@ export class Store {
     });
   }
 
-  /** S7 — "Try again" after a reverted activation (red-commit stub: the old inline reset). */
+  /** S7 — "Try again" after a reverted activation: clears the reverted tx (and resets the read
+   *  generation) so the step offers activation again on the next read. */
   onS7RetryAfterRevert(): void {
-    const a = this.state.activation;
-    this.setState({ s7TxHash: null, s7TxAt: null, activation: a ? { ...a, tx: null } : a });
-    this.save();
-  }
-
-  /** The Node surface's Activate (red-commit stub: the old unguarded call). */
-  async requestValidatorActivation(): Promise<boolean> {
-    return this.activateValidator();
+    this.clearActivationTx();
   }
 
   /** S7 — "Explore free": enter the app without activating. Membership and tier are unchanged;
@@ -4539,7 +4552,11 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
-  async activateValidator(hooks?: { onSigned?: WalletReview["onSigned"]; onResolved?: WalletReview["onResolved"] }): Promise<boolean> {
+  private async activateValidator(hooks?: {
+    onSigned?: WalletReview["onSigned"];
+    onNotSent?: WalletReview["onNotSent"];
+    onResolved?: WalletReview["onResolved"];
+  }): Promise<boolean> {
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
@@ -4580,7 +4597,7 @@ export class Store {
     const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
     this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, hooks?.onResolved);
     if (hooks?.onSigned && this.state.walletReview) {
-      this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned } });
+      this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned, onNotSent: hooks.onNotSent } });
     }
     return true;
   }
@@ -5153,7 +5170,14 @@ export class Store {
         /* best-effort cleanup */
       }
       this.setState({ walletReview: null });
-      this.toast(r.label + " not settled — " + String((err as Error).message ?? err));
+      const msg = String((err as Error).message ?? err);
+      if (r.onSigned && SIGNED_TX_EXPIRED.test(msg)) {
+        // The ceremony dropped the signed tx before it was sent: nothing reached the network.
+        r.onNotSent?.();
+        this.toast(r.label + " — the signed transaction expired before it was sent; nothing was sent. You can try again.");
+      } else {
+        this.toast(r.label + " not settled — " + msg);
+      }
       // The tx didn't settle → tell the sidecar to abort, not proceed.
       await r.onResolved?.(false);
     }

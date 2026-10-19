@@ -445,9 +445,31 @@ struct Pending {
     requires_raw_ack: bool,
 }
 
-/// Join-8: how long a signed, unsent transaction may wait for its send (red-commit stub: not
-/// enforced yet).
-pub const PREPARED_TTL: std::time::Duration = std::time::Duration::from_secs(0);
+/// Join-8: how long a signed, unsent transaction may wait for its send before it is dropped.
+///
+/// Why 120 s. The only caller sends right after it writes the hash to disk (a synchronous
+/// localStorage write, milliseconds), so a healthy flow uses a tiny fraction of this. A tx still
+/// unsent after 2 minutes means the webview went away mid-flow; keeping it would let a later
+/// `send_prepared` broadcast a signature the member approved long before, against a nonce and
+/// gas price read at signing time. 120 s also sits well inside S7's 10-minute "Forget this
+/// transaction" window, so by the time the app offers to forget an unseen tx, the app can no
+/// longer send the old signed one.
+pub const PREPARED_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long an expired entry's tombstone is kept so a late send can say "expired, nothing was
+/// sent" rather than "unknown id". The signed raw is dropped at expiry; only the id remains.
+const EXPIRED_TOMBSTONE_KEEP: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// A slot in the prepared map: a live signed tx, or the tombstone of one that expired unsent.
+enum Slot {
+    Live {
+        tx: Prepared,
+        at: std::time::Instant,
+    },
+    Expired {
+        at: std::time::Instant,
+    },
+}
 
 /// A signed transaction awaiting its send (public facts + the signed raw RLP; no key material).
 struct Prepared {
@@ -467,7 +489,9 @@ pub struct SignatureCeremony {
     /// [`approve_and_sign`](Self::approve_and_sign) (the approval is already consumed), drained by
     /// [`send_prepared`](Self::send_prepared) or [`reject`](Self::reject). Single-use: one
     /// approval, one signature, at most one send.
-    prepared: Mutex<BTreeMap<u64, Prepared>>,
+    prepared: Mutex<BTreeMap<u64, Slot>>,
+    /// The signed-tx time-to-live in milliseconds ([`PREPARED_TTL`]; tests shorten it).
+    prepared_ttl_ms: AtomicU64,
     /// Test seam: how many signed txs were parked in `prepared` (inspection only).
     #[cfg(test)]
     prepared_parks: std::sync::atomic::AtomicUsize,
@@ -487,6 +511,7 @@ impl SignatureCeremony {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
             prepared: Mutex::new(BTreeMap::new()),
+            prepared_ttl_ms: AtomicU64::new(PREPARED_TTL.as_millis() as u64),
             #[cfg(test)]
             prepared_parks: std::sync::atomic::AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
@@ -542,19 +567,40 @@ impl SignatureCeremony {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Test seam: set the signed-tx time-to-live (red-commit stub: no effect yet).
+    /// Test seam: set the signed-tx time-to-live.
     #[cfg(test)]
-    fn set_prepared_ttl(&self, _ttl: std::time::Duration) {}
+    fn set_prepared_ttl(&self, ttl: std::time::Duration) {
+        self.prepared_ttl_ms
+            .store(ttl.as_millis() as u64, Ordering::SeqCst);
+    }
 
-    /// Test seam: how many signed txs are held unsent.
+    /// Test seam: how many signed txs are held unsent (live, not expired).
     #[cfg(test)]
     fn prepared_len(&self) -> usize {
-        self.lock_prepared().len()
+        self.lock_prepared()
+            .values()
+            .filter(|s| matches!(s, Slot::Live { .. }))
+            .count()
     }
 
     /// Lock the prepared (signed, unsent) map, recovering from poison like [`Self::lock`].
-    fn lock_prepared(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Prepared>> {
-        self.prepared.lock().unwrap_or_else(|e| e.into_inner())
+    /// Every lock first expires what outlived [`PREPARED_TTL`]: the signed raw is dropped and a
+    /// tombstone stays (for [`EXPIRED_TOMBSTONE_KEEP`]) so a late send reports the truth.
+    fn lock_prepared(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Slot>> {
+        let mut map = self.prepared.lock().unwrap_or_else(|e| e.into_inner());
+        let ttl = std::time::Duration::from_millis(self.prepared_ttl_ms.load(Ordering::SeqCst));
+        for slot in map.values_mut() {
+            if let Slot::Live { at, .. } = slot {
+                if at.elapsed() >= ttl {
+                    *slot = Slot::Expired { at: *at };
+                }
+            }
+        }
+        map.retain(|_, s| match s {
+            Slot::Live { .. } => true,
+            Slot::Expired { at } => at.elapsed() < EXPIRED_TOMBSTONE_KEEP,
+        });
+        map
     }
 
     /// Parse a `CeremonyId` string back to its numeric key. A malformed id is
@@ -712,7 +758,13 @@ impl SignatureCeremony {
         #[cfg(test)]
         self.prepared_parks
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.lock_prepared().insert(key, prepared);
+        self.lock_prepared().insert(
+            key,
+            Slot::Live {
+                tx: prepared,
+                at: std::time::Instant::now(),
+            },
+        );
         Ok(tx_hash)
     }
 
@@ -819,11 +871,15 @@ impl SignatureCeremony {
         cfg: BroadcastConfig,
     ) -> Result<BroadcastResult> {
         let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
-        let prepared = self
+        let slot = self
             .lock_prepared()
             .remove(&key)
             .ok_or(CeremonyError::UnknownCeremony)?;
-        Self::send_signed(rpc, prepared, cfg)
+        match slot {
+            Slot::Live { tx, .. } => Self::send_signed(rpc, tx, cfg),
+            // Held past its TTL: the signed raw is gone and nothing was sent.
+            Slot::Expired { .. } => Err(CeremonyError::PreparedExpired),
+        }
     }
 
     /// Send a signed tx the caller owns and poll its receipt. Signs nothing.

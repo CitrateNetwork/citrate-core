@@ -196,7 +196,7 @@ describe("no silent signing", () => {
     await store.refreshActivation();
     // The producer is already armed in this session, so activation goes straight to the ceremony.
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    const opened = await store.onS7Activate();
+    const opened = await store.requestValidatorActivation();
     expect(opened).toBe(true);
     expect(registerValidatorMock).toHaveBeenCalledTimes(1);
     expect(store.state.walletReview?.kind).toBe("stake");
@@ -212,7 +212,7 @@ describe("no silent signing", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     expect(store.state.walletReview?.label).toContain("10,000 SALT");
     expect(store.state.walletReview?.label).not.toContain("32,000");
   });
@@ -221,7 +221,7 @@ describe("no silent signing", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     let onDiskAtSend: unknown = "unset";
     sendPreparedMock.mockImplementationOnce(async () => {
       onDiskAtSend = persisted().s7TxHash;
@@ -238,7 +238,7 @@ describe("no silent signing", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     // sign_send_prepared polls for the receipt before returning; the member quits meanwhile.
     sendPreparedMock.mockImplementationOnce(() => new Promise(() => {}));
     void store.approveWalletReview(false);
@@ -257,7 +257,7 @@ describe("no silent signing", () => {
     expect(activationPhase(reopened.state.activation, true, reopened.state.s7TxHash)).toBe("pending");
     (reopened as unknown as { validatorArmed: boolean }).validatorArmed = true;
     const calls = registerValidatorMock.mock.calls.length;
-    expect(await reopened.onS7Activate()).toBe(false);
+    expect(await reopened.requestValidatorActivation()).toBe(false);
     expect(registerValidatorMock.mock.calls.length).toBe(calls);
   });
 
@@ -265,7 +265,7 @@ describe("no silent signing", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     const resolved = vi.fn();
     const r = store.state.walletReview;
     if (r) store.setState({ walletReview: { ...r, onResolved: resolved } });
@@ -280,7 +280,7 @@ describe("no silent signing", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     const resolved = vi.fn();
     const r = store.state.walletReview;
     if (r) store.setState({ walletReview: { ...r, onResolved: resolved } });
@@ -293,7 +293,7 @@ describe("no silent signing", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     sendPreparedMock.mockRejectedValueOnce(new Error("rpc timeout"));
     await store.approveWalletReview(false);
     expect(store.state.s7TxHash).toBe("0xfeed");
@@ -318,7 +318,7 @@ describe("no silent signing", () => {
     await store.refreshActivation();
     expect(activationPhase(store.state.activation, true, store.state.s7TxHash)).toBe("pending");
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    expect(await store.onS7Activate()).toBe(false);
+    expect(await store.requestValidatorActivation()).toBe(false);
     expect(registerValidatorMock).not.toHaveBeenCalled();
   });
 
@@ -327,7 +327,7 @@ describe("no silent signing", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    const opened = await store.onS7Activate();
+    const opened = await store.requestValidatorActivation();
     expect(opened).toBe(false);
     expect(registerValidatorMock).not.toHaveBeenCalled();
     expect(store.state.walletReview).toBeNull();
@@ -421,7 +421,7 @@ describe("follow-up: a signed tx that expired before it was sent", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     sendPreparedMock.mockRejectedValueOnce(new Error("ceremony: the signed transaction expired before it was sent; nothing was sent"));
     await store.approveWalletReview(false);
     expect(store.state.s7TxHash).toBeNull();
@@ -435,7 +435,7 @@ describe("follow-up: a signed tx that expired before it was sent", () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
+    await store.requestValidatorActivation();
     sendPreparedMock.mockRejectedValueOnce(new Error("ceremony: broadcast failed: timeout"));
     await store.approveWalletReview(false);
     expect(store.state.s7TxHash).toBe("0xfeed");

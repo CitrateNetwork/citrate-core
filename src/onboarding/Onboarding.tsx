@@ -1218,7 +1218,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
       {phase === "ready" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div>
-            <button className="btn btn-primary btn-lg" onClick={() => void store.onS7Activate()} data-testid="s7-activate">
+            <button className="btn btn-primary btn-lg" onClick={() => void store.requestValidatorActivation()} data-testid="s7-activate">
               Activate validator
             </button>
           </div>
@@ -1264,10 +1264,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
           <div>
             <button
               className="btn btn-ghost btn-sm"
-              onClick={() => {
-                store.setState({ s7TxHash: null, s7TxAt: null, activation: { ...a, tx: null } });
-                store.save();
-              }}
+              onClick={() => store.onS7RetryAfterRevert()}
             >
               Try again
             </button>

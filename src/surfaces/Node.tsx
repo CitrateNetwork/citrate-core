@@ -388,7 +388,7 @@ export function Node({ store, s }: SurfaceProps) {
                         <button
                           className="btn btn-primary btn-sm"
                           style={{ alignSelf: "flex-start" }}
-                          onClick={() => void store.activateValidator()}
+                          onClick={() => void store.requestValidatorActivation()}
                         >
                           Activate validator · bond 32,000 SALT
                         </button>

@@ -245,6 +245,8 @@ export interface WalletReview {
    * point after signing (S7 records the activation tx) persists here.
    */
   onSigned?: (txHash: string) => void;
+  /** Join-8 — with `onSigned`: the signed tx expired in the ceremony before it was sent. */
+  onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;

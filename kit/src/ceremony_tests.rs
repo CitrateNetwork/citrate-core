@@ -2294,21 +2294,116 @@ fn join8_a_concurrent_reject_cannot_take_an_approve_and_broadcast_tx() {
     }
 }
 
-/// The structural prepared-map rule, as a function so it can be checked against evasions.
+/// Split code into `(fn name, body)` chunks: each `fn NAME` up to the next `fn`.
+fn split_fns(code: &str) -> Vec<(String, String)> {
+    let bytes = code.as_bytes();
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while let Some(off) = code[i..].find("fn ") {
+        let at = i + off;
+        let before_ok = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+        let name: String = code[at + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if before_ok && !name.is_empty() {
+            starts.push((at, name));
+        }
+        i = at + 3;
+    }
+    let mut out = Vec::new();
+    for (k, (at, name)) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).map(|(e, _)| *e).unwrap_or(code.len());
+        out.push((name.clone(), code[*at..end].to_string()));
+    }
+    out
+}
+
+/// True when `body` calls `name` in any spelling (`self.name(`, `Self::name(`, `Type::name(`).
+fn calls(body: &str, name: &str) -> bool {
+    let pat = format!("{name}(");
+    let b = body.as_bytes();
+    let mut i = 0;
+    while let Some(off) = body[i..].find(&pat) {
+        let at = i + off;
+        let before = if at == 0 { b' ' } else { b[at - 1] };
+        let is_decl = body[..at].ends_with("fn ");
+        if !(before.is_ascii_alphanumeric() || before == b'_') && !is_decl {
+            return true;
+        }
+        i = at + pat.len();
+    }
+    false
+}
+
+/// The STRUCTURAL prepared-map rule (Join-8 follow-up). It works on functions and calls,
+/// not on one spelling:
+///   * only the allow-listed functions may touch the shared map (through `lock_prepared(`
+///     or the `prepared` field directly);
+///   * among them, only `approve_and_sign` inserts, and it does so exactly once;
+///   * `approve_and_broadcast` must not reach ANY map-touching function through the call
+///     graph (UFCS, `Self::`, wrappers and helpers included).
+///
 /// Returns one message per violation (empty = clean).
 fn prepared_map_violations(src: &str) -> Vec<String> {
+    const ALLOWED: [&str; 5] = [
+        "lock_prepared",
+        "approve_and_sign",
+        "send_prepared",
+        "reject",
+        "prepared_len",
+    ];
     let src = strip_test_module(src);
+    let code: String = src
+        .lines()
+        .map(|l| match l.find("//") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fns = split_fns(&code);
+    let touches = |b: &str| b.contains("lock_prepared(") || b.contains(".prepared.") || b.contains(".prepared\n");
     let mut out = Vec::new();
-    if src.matches("lock_prepared().insert(").count() != 1 {
-        out.push("exactly one place may insert into the prepared map".to_string());
-    }
-    if let Some(start) = src.find("pub fn approve_and_broadcast") {
-        let body = &src[start..];
-        let end = body.find("\n    }\n").map(|i| i + 6).unwrap_or(body.len());
-        let body = &body[..end];
-        if body.contains("self.approve_and_sign(") || body.contains("self.send_prepared(") {
-            out.push("approve_and_broadcast round-trips through the shared map".to_string());
+    let mut touchers = Vec::new();
+    for (name, body) in &fns {
+        if !touches(body) {
+            continue;
         }
+        touchers.push(name.clone());
+        if !ALLOWED.contains(&name.as_str()) {
+            out.push(format!("fn {name} touches the shared prepared map but is not allow-listed"));
+        }
+        let inserts = body.matches(".insert(").count();
+        if name == "approve_and_sign" {
+            if inserts != 1 {
+                out.push(format!("approve_and_sign must insert exactly once (found {inserts})"));
+            }
+        } else if inserts > 0 && name != "lock_prepared" {
+            out.push(format!("fn {name} inserts into the shared prepared map"));
+        }
+    }
+    // Reachability from approve_and_broadcast over the crate-local call graph.
+    let names: Vec<&String> = fns.iter().map(|(n, _)| n).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack: Vec<String> = vec!["approve_and_broadcast".to_string()];
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur.clone()) {
+            continue;
+        }
+        for (n, body) in fns.iter().filter(|(n, _)| *n == cur) {
+            if n != "approve_and_broadcast" && touchers.contains(n) {
+                out.push(format!("approve_and_broadcast reaches {n}, which touches the shared prepared map"));
+            }
+            for callee in &names {
+                if *callee != n && calls(body, callee) {
+                    stack.push((*callee).clone());
+                }
+            }
+        }
+    }
+    if !fns.iter().any(|(n, _)| n == "approve_and_broadcast") {
+        out.push("approve_and_broadcast not found".to_string());
     }
     out
 }
