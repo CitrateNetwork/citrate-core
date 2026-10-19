@@ -101,7 +101,7 @@ surface unchanged:
 | Hermes › Controls | The Controls panel (`src/surfaces/hermes/ControlsPanel.tsx`) at the top, then the five moved Settings sections, unchanged, under a "Controls" heading. They write the same config as before. The panel is not repeated in the section list, so `settings/hermes` opens the tab with the panel on top and AI providers below. |
 | Groups › Chat, Alerts, Rounds, Members, Cluster, ALF | Groups, Comms, Train, People, Cluster, ALF surfaces |
 | Wallet | Wallet surface |
-| Node › Status | Node surface (its Operations, Earning and Pinning views) |
+| Node › Status | Node surface (its Operations, Rewards and Pinning views) |
 | Node › Storage › Files, Memory | StorageFiles and Storage surfaces |
 | Node › Advanced | The Node configuration Settings section |
 | Store › Apps, Models | Commissary and Models surfaces |
@@ -114,7 +114,7 @@ today. They show no data:
 - **Hermes › Learn**: points to Hermes › Work, where learned-skill proposals are reviewed today.
 - **Node › Services**: points to Node › Status.
 - **Node › Storage › Pins**: opens the Pinning view on Node › Status.
-- **Node › Rewards**: opens the Earning view on Node › Status.
+- **Node › Rewards**: opens the Rewards view on Node › Status.
 
 ## Follow-ups
 
