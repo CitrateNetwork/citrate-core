@@ -34,6 +34,8 @@ publication_ticket_released_before_stop_settles_is_in_the_complete_scope | regre
 held_publication_ticket_makes_stop_incomplete_until_released | regression | SCL-S2.3 | a held publication ticket makes Stop Incomplete and Quarantined until released
 start_during_teardown_waits_for_an_old_publication_ticket | regression | SCL-S2.3 | a Start superseding a Stop spawns nothing while an old-intent publication ticket is held
 shutdown_with_an_open_publication_ticket_is_incomplete | regression | SCL-S2.3 | Stop plus immediate shutdown with an open ticket is Incomplete and stays Quarantined; a late release reconciles
+after_shutdown_quarantine_clears_once_readers_and_tickets_are_done | regression | SCL-S2.3 | after shutdown, releasing the last ticket re-checks the readers and reconciles to Stopped
+after_shutdown_a_late_reader_end_clears_quarantine | regression | SCL-S2.3 | after shutdown, a late reader end is observed by a snapshot read
 shutdown_keeps_a_held_ticket_quarantine | regression | SCL-S2.3 | shutdown does not flip a service Quarantined on a held ticket to Stopped
 a_deadline_stop_joining_a_plain_stop_applies_the_tighter_deadline | regression | SCL-S2.4 | a deadline Stop joining a pending Stop arms or tightens its deadline
 a_deadline_stop_without_a_monitor_holds_no_record | regression | SCL-S2.4 | with the monitor gone, a deadline Stop leaves no overlay record behind

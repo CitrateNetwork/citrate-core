@@ -1258,6 +1258,88 @@ fn shutdown_with_an_open_publication_ticket_is_incomplete() {
     fx.assert_clean();
 }
 
+/// Shutdown while a descendant still holds the output open and a ticket is open: the service
+/// stays Quarantined. Once the descendant ends and the ticket is released, ownership reconciles
+/// to Stopped without a monitor: the release path checks the readers itself.
+#[test]
+fn after_shutdown_quarantine_clears_once_readers_and_tickets_are_done() {
+    let fx = OwnedFixture::new("close-both");
+    let mut cfg = SupervisorConfig::new(
+        fx.descendants_spec("lcf-close-both", 1),
+        fx.path("crash.jsonl"),
+    );
+    cfg.stop_grace = Duration::from_millis(300);
+    let mut sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let descendant = fx.expect_pids(2, ACQUIRE)[1];
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("admission while running: {e:?}"));
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    sup.shutdown();
+    match sup.receipt(stop) {
+        Receipt::Incomplete { remaining, .. } => {
+            assert!(
+                remaining.iter().any(|r| r.starts_with("reader")),
+                "{remaining:?}"
+            );
+            assert!(
+                remaining.iter().any(|r| r == "publication:bearer"),
+                "{remaining:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(sup.lifecycle().map(|l| l.phase), Some(Phase::Quarantined));
+    // The descendant ends: the old readers reach end of file. Then the ticket is released.
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    hold_for(Duration::from_millis(300));
+    drop(ticket);
+    let snap = sup
+        .lifecycle()
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_eq!(snap.open_tickets, 0);
+    assert_eq!(
+        snap.phase,
+        Phase::Stopped,
+        "readers and tickets are done: {snap:?}"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// Shutdown while a descendant holds the output open (no ticket): Quarantined, and once the
+/// descendant ends, a snapshot read observes the readers finished and reports Stopped.
+#[test]
+fn after_shutdown_a_late_reader_end_clears_quarantine() {
+    let fx = OwnedFixture::new("close-reader");
+    let mut cfg = SupervisorConfig::new(
+        fx.descendants_spec("lcf-close-reader", 1),
+        fx.path("crash.jsonl"),
+    );
+    cfg.stop_grace = Duration::from_millis(300);
+    let mut sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let descendant = fx.expect_pids(2, ACQUIRE)[1];
+    sup.shutdown();
+    assert_eq!(sup.lifecycle().map(|l| l.phase), Some(Phase::Quarantined));
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    let cleared = wait_for(ACQUIRE, Duration::from_millis(20), || {
+        (sup.lifecycle().map(|l| l.phase) == Some(Phase::Stopped)).then_some(())
+    });
+    assert!(
+        cleared.is_ok(),
+        "a late reader end is observed after shutdown"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
 /// A service already Quarantined on a held ticket stays Quarantined through shutdown.
 #[test]
 fn shutdown_keeps_a_held_ticket_quarantine() {
