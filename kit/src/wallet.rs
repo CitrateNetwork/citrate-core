@@ -35,8 +35,10 @@
 //! rejects any INVOKE-path `custody_put` that targets a reserved slot (the A3-01 /
 //! DR-3 guard). B1.1 EXTENDS that same guard to `wallet-` so a compromised/XSS'd
 //! webview can never plant or overwrite the wallet key via the raw
-//! `invoke("custody_put", ...)`. The in-process `put`/`custody_get` (used here) is
-//! unrestricted — that is how the backend legitimately stores the key.
+//! `invoke("custody_put", ...)`. The in-process `put` (used here) is unrestricted:
+//! that is how the backend legitimately stores the key. Reads are not: K6 makes the
+//! in-process `custody_get` refuse every `wallet-` slot, and the entropy is read only
+//! by the private key module (`wallet_key.rs`) through `CustodyVault::wallet_slot_get`.
 //!
 //! ## Unlock-gated, fail-closed, zeroized
 //! Every operation REQUIRES the vault UNLOCKED and fails closed (`Denied`) if
@@ -63,6 +65,13 @@ use citrate_wallet_core::{
     secp256k1_from_mnemonic, sign_eip155_legacy_tx, sign_recoverable, LegacyTxFields, SignedTx,
     UnifiedKey,
 };
+
+// K6: the only code that can read the sealed wallet entropy. Its raw-key functions are private to
+// it; `wallet` gets the network-gated `key::signing_key` and the non-signing helpers, nothing more.
+#[path = "wallet_key.rs"]
+mod key;
+pub(crate) use key::WalletKeyAccess;
+use key::signing_key;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::custody::{CustodyError, CustodyVault};
@@ -168,30 +177,6 @@ impl From<CustodyError> for WalletError {
 
 type Result<T> = std::result::Result<T, WalletError>;
 
-/// Derive the `UnifiedKey` for the default account from raw BIP39 entropy,
-/// in-process. The entropy → mnemonic → seed → `m/44'/60'/0'/0/0` chain is the
-/// single derivation used by create/import/sign so they cannot diverge.
-///
-/// The intermediate mnemonic string is held in a `Zeroizing` buffer and wiped on
-/// return; the returned `UnifiedKey`'s inner `k256::SigningKey` zeroizes on drop.
-/// The caller owns `entropy`'s lifetime and MUST zeroize it (it arrives in a
-/// `Zeroizing` from `custody_get`).
-fn derive_key_from_entropy(entropy: &[u8]) -> Result<UnifiedKey> {
-    // Re-encode entropy → mnemonic (the total, loss-less inverse of `to_entropy`).
-    let mnemonic =
-        bip39::Mnemonic::from_entropy(entropy).map_err(|_| WalletError::InvalidMnemonic)?;
-    // `Mnemonic` does not zeroize without the crate's `zeroize` feature (we did
-    // not enable it — flagged for the reviewer), so render to a
-    // `Zeroizing<String>` we control. The `Mnemonic` itself carries no secret-
-    // wiping Drop, so an explicit `drop` would be a no-op (clippy `drop_non_drop`);
-    // it falls out of scope at return with the same effect.
-    let phrase: Zeroizing<String> = Zeroizing::new(mnemonic.to_string());
-    let key = secp256k1_from_mnemonic(&phrase, DEFAULT_ACCOUNT_INDEX)
-        .map_err(|_| WalletError::Derivation)?;
-    // `phrase` zeroizes here on drop.
-    Ok(key)
-}
-
 /// The non-secret display identity of a `UnifiedKey`.
 fn info_of(key: &UnifiedKey) -> WalletInfo {
     WalletInfo {
@@ -217,11 +202,7 @@ fn info_of(key: &UnifiedKey) -> WalletInfo {
 pub fn create(vault: &CustodyVault) -> Result<WalletCreate> {
     // Refuse to overwrite an existing wallet. This read requires an unlocked
     // vault; a locked vault fails closed here (`Custody`) before we mint anything.
-    match vault.custody_get(WALLET_ENTROPY_SLOT) {
-        Ok(_existing) => return Err(WalletError::AlreadyExists),
-        Err(CustodyError::Denied) => { /* not found OR locked — probe distinguishes below */ }
-        Err(e) => return Err(e.into()),
-    }
+    key::refuse_if_present(vault)?;
     // Fail closed if the vault is locked: attempt the store on a fresh slot only
     // when unlocked. `custody_get` returns `Denied` for BOTH "locked" and "absent
     // slot" (no oracle), so we cannot tell them apart on the read; the `put` below
@@ -267,11 +248,7 @@ pub fn create(vault: &CustodyVault) -> Result<WalletCreate> {
 /// seal, and zeroize our copies. Errors (never panics) on an empty/short/
 /// checksum-invalid mnemonic (`InvalidMnemonic`).
 pub fn import(vault: &CustodyVault, mnemonic: &str) -> Result<WalletInfo> {
-    match vault.custody_get(WALLET_ENTROPY_SLOT) {
-        Ok(_existing) => return Err(WalletError::AlreadyExists),
-        Err(CustodyError::Denied) => {}
-        Err(e) => return Err(e.into()),
-    }
+    key::refuse_if_present(vault)?;
 
     // Parse + checksum-validate the mnemonic (the crate normalizes + validates).
     let parsed =
@@ -302,10 +279,7 @@ pub fn import(vault: &CustodyVault, mnemonic: &str) -> Result<WalletInfo> {
 /// to re-derive — the secret is unwrapped in-process and zeroized here; only the
 /// address/pubkey leave.
 pub fn address(vault: &CustodyVault) -> Result<WalletInfo> {
-    let entropy = read_entropy(vault)?;
-    let key = derive_key_from_entropy(&entropy)?;
-    Ok(info_of(&key))
-    // `entropy` (Zeroizing) + `key` zeroize on drop here.
+    key::stored_info(vault)
 }
 
 /// [`address`], but self-healing the passphrase-less vault first.
@@ -328,55 +302,6 @@ pub fn address(vault: &CustodyVault) -> Result<WalletInfo> {
 pub fn address_auto_unlocked(vault: &CustodyVault) -> Result<WalletInfo> {
     vault.ensure_auto_unlocked()?;
     address(vault)
-}
-
-/// **In-process only.** Read the sealed entropy from the vault. `custody_get`
-/// requires an unlocked session (fails closed `Denied` when locked) and returns
-/// a `Zeroizing` buffer.
-///
-/// B1.2-R2 (CLOSED in B1.5): custody's `custody_get` returns the SAME opaque
-/// `Denied` for BOTH "locked" and "absent slot" — deliberately, so the passphrase
-/// path has no wrong-vs-empty oracle (see custody.rs). That opacity is a *custody
-/// crypto* property and must NOT change. But the wallet layer can still give a
-/// crisper UX signal WITHOUT re-introducing that oracle: `is_unlocked()` reflects
-/// only the SESSION state (a boolean the app already exposes via `custody_status`
-/// on the invoke surface), never anything passphrase-derived. So on a `Denied`
-/// read we consult it: a LOCKED vault → `Custody` (→ `VaultLocked` at the ceremony,
-/// "unlock" hint); an UNLOCKED vault where the read still denied → `NotFound`
-/// (absent slot, "create a wallet" hint). This is fail-closed either way (no key
-/// is read, no signature produced); it only improves the ADV-3 signal
-/// (locked-approve now surfaces `VaultLocked`, not `NoWallet`). It adds no
-/// oracle: `is_unlocked` is passphrase-independent and already invoke-observable.
-fn read_entropy(vault: &CustodyVault) -> Result<Zeroizing<Vec<u8>>> {
-    match vault.custody_get(WALLET_ENTROPY_SLOT) {
-        Ok(e) => Ok(e),
-        Err(CustodyError::Denied) => {
-            if vault.is_unlocked() {
-                // Unlocked but the slot read denied → the slot is genuinely absent.
-                Err(WalletError::NotFound)
-            } else {
-                // Locked → fail closed with the locked signal (B1.2-R2).
-                Err(WalletError::Custody)
-            }
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// **The one way a signer gets the wallet key (K6).** Checks the network gate first
-/// ([`crate::rpc::check_wallet_signing`]: refuses when no network is set, and a chain-committing
-/// `scope` must be the target chain), and only then reads the sealed entropy and derives the key.
-/// Every signer below calls this and nothing else derives the key for signing; the structural
-/// test `wallet_tests::every_signer_takes_the_key_through_the_network_gate` keeps it that way, so
-/// a new signer (EIP-712, say, with `SignatureScope::Chain(domain.chainId)`) cannot skip the gate.
-fn signing_key(vault: &CustodyVault, scope: SignatureScope) -> Result<UnifiedKey> {
-    crate::rpc::check_wallet_signing(scope).map_err(|e| match e {
-        crate::rpc::RpcError::WrongNetwork(m) => WalletError::WrongNetwork(m),
-        other => WalletError::WrongNetwork(other.to_string()),
-    })?;
-    let entropy = read_entropy(vault)?;
-    derive_key_from_entropy(&entropy)
-    // `entropy` zeroizes on drop here.
 }
 
 /// What a `personal_sign` message commits to. A Sign-In with Ethereum message (EIP-4361) names
@@ -430,15 +355,12 @@ pub(crate) fn sign_message(vault: &CustodyVault, message: &[u8]) -> Result<Vec<u
     // `key` zeroizes on drop here.
 }
 
-/// HKDF salt (domain) for [`derive_scoped_secret`]. Fixed forever — changing it re-derives every
-/// scoped secret (a different comms identity), so it is a hard versioning boundary.
-const SCOPED_SECRET_SALT: &[u8] = b"citrate/wallet/scoped-secret/v1";
-
 /// **In-process only.** Derive a DETERMINISTIC, scoped 32-byte secret from the stored wallet's
 /// sealed BIP39 entropy via HKDF-SHA256, domain-separated by `info`. The same wallet (same sealed
 /// entropy) yields the same secret on every device, so a key built from it is PORTABLE across
 /// installs — this is what lets a member's comms identity follow their wallet to a new machine
-/// (CONNECT-S5). Requires the vault UNLOCKED (fails closed via `read_entropy` if locked/absent).
+/// (CONNECT-S5). Requires the vault UNLOCKED (fails closed if locked/absent). The derivation lives
+/// in the key module (`key::scoped_secret`); this returns only its output.
 ///
 /// ## Why this is NOT under the Rule-3 ceremony mandate
 /// [`sign_message`]/[`sign_transaction`]/[`sign_personal`] are `pub(crate)` and reachable only from
@@ -457,25 +379,7 @@ const SCOPED_SECRET_SALT: &[u8] = b"citrate/wallet/scoped-secret/v1";
 /// value >= n or 0, it re-expands with an incremented counter — deterministically, so it is still
 /// stable across devices.
 pub fn derive_scoped_secret(vault: &CustodyVault, info: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
-    use hkdf::Hkdf;
-    use sha2::Sha256;
-    let entropy = read_entropy(vault)?;
-    let hk = Hkdf::<Sha256>::new(Some(SCOPED_SECRET_SALT), &entropy);
-    // Deterministic valid-scalar search: info ‖ counter(LE). counter 0 succeeds with overwhelming
-    // probability; the loop only exists so the derivation can never fail on a bad-scalar draw.
-    for counter in 0u16..=u16::MAX {
-        let mut okm = Zeroizing::new([0u8; 32]);
-        let mut ctx = Vec::with_capacity(info.len() + 2);
-        ctx.extend_from_slice(info);
-        ctx.extend_from_slice(&counter.to_le_bytes());
-        hk.expand(&ctx, &mut okm[..])
-            .map_err(|_| WalletError::Derivation)?;
-        if k256::ecdsa::SigningKey::from_slice(&okm[..]).is_ok() {
-            return Ok(okm);
-        }
-    }
-    Err(WalletError::Derivation)
-    // `entropy` zeroizes on drop; each rejected `okm` zeroizes as it leaves scope.
+    key::scoped_secret(vault, info)
 }
 
 /// **In-process only.** Sign a REAL legacy EIP-155 transaction with the stored

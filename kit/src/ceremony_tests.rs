@@ -259,6 +259,7 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     // preserved and hardened, not dropped.
     let sources: &[(&str, &str)] = &[
         ("wallet.rs", include_str!("wallet.rs")),
+        ("wallet_key.rs", include_str!("wallet_key.rs")),
         ("custody.rs", include_str!("custody.rs")),
         ("oidc.rs", include_str!("oidc.rs")),
         ("config.rs", include_str!("config.rs")),

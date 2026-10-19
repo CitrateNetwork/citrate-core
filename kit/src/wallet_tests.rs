@@ -775,26 +775,14 @@ fn k6_an_added_gate_never_loosens_signing() {
     });
 }
 
-/// STRUCTURAL: the wallet key is derived for signing in exactly one place, `signing_key`, which
-/// runs the network gate first. Every function in wallet.rs that signs takes its key from it, and
-/// only `address` (no signature) derives the key otherwise.
-///
-/// NEGATIVE CONTROL: write a new signer that calls `read_entropy` + `derive_key_from_entropy`
-/// itself (an EIP-712 signer, say), or call `sign_recoverable` from a function that does not use
-/// `signing_key`, and this test fails.
-#[test]
-fn every_signer_takes_the_key_through_the_network_gate() {
-    let src = include_str!("wallet.rs");
-    let non_test = match src.rfind("#[cfg(test)]\nmod tests") {
-        Some(i) => &src[..i],
-        None => src,
-    };
-    // Split into top-level functions by their signature lines.
+/// Split a source into its top-level (column-0) functions, comments dropped: `(name, body)`.
+fn k6_top_level_fns(src: &str) -> Vec<(String, String)> {
     let mut fns: Vec<(String, String)> = Vec::new();
-    for line in non_test.lines() {
+    for line in src.lines() {
         let t = line.trim_start();
         let is_fn_head = line == t
-            && (t.starts_with("fn ") || t.starts_with("pub fn ") || t.starts_with("pub(crate) fn "));
+            && (t.starts_with("fn ") || t.starts_with("pub fn ") || t.starts_with("pub(crate) fn ")
+                || t.starts_with("pub(super) fn "));
         if is_fn_head {
             let name = t
                 .split("fn ")
@@ -811,20 +799,56 @@ fn every_signer_takes_the_key_through_the_network_gate() {
             }
         }
     }
-    let derive = "derive_key_from_entropy".to_string() + "(";
-    let gate = "signing_key".to_string() + "(";
-    let primitives = [
+    fns
+}
+
+/// Every k256 / wallet-core signing primitive, assembled from parts so this file's prose and
+/// needles cannot self-match.
+fn k6_signing_primitives() -> Vec<String> {
+    vec![
         "sign_recoverable".to_string() + "(",
         "sign_eip155_legacy_tx".to_string() + "(",
+        "sign_prehash_recoverable".to_string() + "(",
+        "sign_prehash".to_string() + "(",
+        "try_sign".to_string() + "(",
+        "sign_digest".to_string(),
         ".sign".to_string() + "(",
-    ];
+    ]
+}
+
+/// STRUCTURAL: every function in wallet.rs that signs takes its key from `signing_key`, which runs
+/// the network gate first. Since K6 the raw entropy and the entropy-to-key derivation live in the
+/// private key module (`wallet_key.rs`) and do not compile from wallet.rs; this test is the
+/// backstop for what remains: a wallet.rs function that signs (any k256 signing method) or is
+/// named `sign_*` must call `signing_key(`, and only create/import (which derive from a fresh or
+/// user-supplied mnemonic, never the stored one) may call the mnemonic derivation.
+///
+/// NEGATIVE CONTROL: add a wallet.rs `typed_data_signature` that calls `sk.sign_prehash_recoverable`
+/// on a key it did not take from `signing_key` (or a `sign_typed_data` that skips it), and this
+/// test fails.
+#[test]
+fn every_signer_takes_the_key_through_the_network_gate() {
+    let src = include_str!("wallet.rs");
+    let non_test = match src.rfind("#[cfg(test)]\nmod tests") {
+        Some(i) => &src[..i],
+        None => src,
+    };
+    let fns = k6_top_level_fns(non_test);
+    let gate = "signing_key".to_string() + "(";
+    let mnemonic_derive = "secp256k1_from_mnemonic".to_string() + "(";
+    let entropy_decode = "from_entropy".to_string() + "(";
+    let primitives = k6_signing_primitives();
     let mut signers = 0;
     for (name, body) in &fns {
         let body_after_head = body.split_once('\n').map(|x| x.1).unwrap_or("");
-        if body_after_head.contains(&derive) {
+        assert!(
+            !body_after_head.contains(&entropy_decode),
+            "wallet.rs `{name}` decodes entropy; only the key module may"
+        );
+        if body_after_head.contains(&mnemonic_derive) {
             assert!(
-                name == "signing_key" || name == "address",
-                "wallet.rs `{name}` derives the wallet key outside the network gate"
+                name == "create" || name == "import",
+                "wallet.rs `{name}` derives a key from a mnemonic outside create/import"
             );
         }
         let signs = primitives.iter().any(|p| body_after_head.contains(p.as_str()));
@@ -837,12 +861,246 @@ fn every_signer_takes_the_key_through_the_network_gate() {
         }
     }
     assert!(signers >= 3, "sign_message, sign_transaction and sign_personal were found");
-    let gate_fn = fns
+
+    // The gate itself, in the key module: the network check runs before the key is read.
+    let key_src = include_str!("wallet_key.rs");
+    let key_fns = k6_top_level_fns(key_src);
+    let gate_fn = key_fns
         .iter()
         .find(|(n, _)| n == "signing_key")
         .map(|(_, b)| b.as_str())
-        .unwrap_or("");
+        .expect("wallet_key.rs defines signing_key");
     let check = gate_fn.find("check_wallet_signing").expect("the gate checks the network");
     let read = gate_fn.find("read_entropy").expect("then reads the key");
     assert!(check < read, "the network check runs before the key is read");
+    // Inside the key module, the raw-key functions stay private and only the four sanctioned
+    // functions are exported to `wallet`.
+    for (name, body) in &key_fns {
+        let head = body.lines().next().unwrap_or("");
+        let exported = head.starts_with("pub");
+        let sanctioned = ["signing_key", "stored_info", "scoped_secret", "refuse_if_present"];
+        assert_eq!(
+            exported,
+            sanctioned.contains(&name.as_str()),
+            "wallet_key.rs `{name}`: only {sanctioned:?} may be visible outside the key module"
+        );
+        if exported {
+            assert!(head.starts_with("pub(super) fn "), "`{name}` must be pub(super), no wider");
+        }
+    }
+}
+
+/// Drop every `#[cfg(test)]` item (a `mod x;` line, or a braced item to its closing brace) and
+/// every comment line, keeping all other code. Only whole items are removed, never a file tail,
+/// so production code after a test helper stays in scope.
+fn k6_strip_test_items(src: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim();
+        if t == "#[cfg(test)]" {
+            i += 1;
+            while i < lines.len() && lines[i].trim().starts_with("#[") {
+                i += 1;
+            }
+            if i < lines.len() && lines[i].trim_end().ends_with(';') {
+                i += 1;
+                continue;
+            }
+            let mut depth = 0i64;
+            let mut opened = false;
+            while i < lines.len() {
+                for c in lines[i].chars() {
+                    if c == '{' {
+                        depth += 1;
+                        opened = true;
+                    } else if c == '}' {
+                        depth -= 1;
+                    }
+                }
+                i += 1;
+                if opened && depth <= 0 {
+                    break;
+                }
+            }
+            continue;
+        }
+        if !t.starts_with("//") {
+            out.push_str(lines[i]);
+            out.push('\n');
+        }
+        i += 1;
+    }
+    out
+}
+
+fn k6_collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name != "target" && name != "tests" {
+                k6_collect_rs(&path, out);
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// STRUCTURAL (K6, lexical backstop): wallet key material is reachable only through the key
+/// module. The compiler already enforces most of this: `read_entropy` and
+/// `derive_key_from_entropy` are private to `wallet_key.rs`, `custody_get` refuses `wallet-`
+/// slots, and `wallet_slot_get` needs a `WalletKeyAccess` only that module can build. This scan
+/// covers the rest, in the non-test code of every .rs file under kit/src and src-tauri/src:
+/// - the entropy and key-derivation names, the mnemonic derivation, `SigningKey::from*`, and every
+///   signing primitive appear only where listed below, with the count listed;
+/// - any new caller (a file not listed, or one more call in a listed file) fails, so it gets
+///   reviewed and either goes through `signing_key` or is added here with its key named.
+///
+/// The wallet.rs signers are further pinned per function by
+/// `every_signer_takes_the_key_through_the_network_gate`.
+///
+/// NEGATIVE CONTROL: add `bip39::Mnemonic::from_entropy`, `secp256k1_from_mnemonic(` or
+/// `.sign_prehash_recoverable(` to any kit or app module (or one more in a listed file), or name
+/// `WALLET_ENTROPY_SLOT` / `wallet_slot_get` outside the files below, and this test fails.
+#[test]
+fn wallet_key_material_is_reachable_only_through_the_key_module() {
+    let kit_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let app_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/src");
+    assert!(app_src.is_dir(), "the app sources must be scanned too: {}", app_src.display());
+    let mut files = Vec::new();
+    k6_collect_rs(&kit_src, &mut files);
+    k6_collect_rs(&app_src, &mut files);
+
+    let mut needles: Vec<String> = vec![
+        "read_".to_string() + "entropy",
+        "derive_key_".to_string() + "from_entropy",
+        "from_".to_string() + "entropy(",
+        "secp256k1_".to_string() + "from_mnemonic(",
+        "SigningKey::".to_string() + "from",
+        "WALLET_ENTROPY".to_string() + "_SLOT",
+        "wallet_slot".to_string() + "_get",
+        "WalletKey".to_string() + "Access",
+    ];
+    needles.extend(k6_signing_primitives());
+
+    // (file, needle, count): every sanctioned non-test occurrence outside the key module.
+    let allowed: &[(&str, &str, usize)] = &[
+        // wallet.rs: the slot name constant, and create/import sealing the new entropy (a write).
+        ("kit/src/wallet.rs", "WALLET_ENTROPY_SLOT", 3),
+        // wallet.rs: create/import derive the display identity from the fresh / supplied mnemonic.
+        ("kit/src/wallet.rs", "secp256k1_from_mnemonic(", 2),
+        // wallet.rs: re-export of the capability type so custody.rs can name it.
+        ("kit/src/wallet.rs", "WalletKeyAccess", 1),
+        // wallet.rs signers, each taking its key from `signing_key` (pinned per function).
+        ("kit/src/wallet.rs", ".sign(", 1),
+        ("kit/src/wallet.rs", "sign_eip155_legacy_tx(", 1),
+        ("kit/src/wallet.rs", "sign_recoverable(", 1),
+        // custody.rs: the capability-gated read itself.
+        ("kit/src/custody.rs", "wallet_slot_get", 1),
+        ("kit/src/custody.rs", "WalletKeyAccess", 1),
+        // anchor.rs: the anchor key from its own keyring account, not the wallet key.
+        ("kit/src/ceremony/anchor.rs", "SigningKey::from", 1),
+        ("kit/src/ceremony/anchor.rs", "sign_eip155_legacy_tx(", 1),
+        // comms.rs: the comms identity key (an HKDF output via `derive_scoped_secret`).
+        ("src-tauri/src/comms.rs", "SigningKey::from", 3),
+        // device_link.rs: the device-link key, not the wallet key.
+        ("src-tauri/src/device_link.rs", "SigningKey::from", 4),
+        ("src-tauri/src/device_link.rs", "sign_prehash_recoverable(", 1),
+        // validator.rs: the block proposer key.
+        ("src-tauri/src/validator.rs", "SigningKey::from", 2),
+        ("src-tauri/src/validator.rs", ".sign(", 1),
+        // fleet_pairing.rs: the fleet pairing key.
+        ("src-tauri/src/fleet_pairing.rs", "SigningKey::from", 1),
+        ("src-tauri/src/fleet_pairing.rs", ".sign(", 2),
+        // recovery_kit.rs: renders the node storage keys as words; not the wallet entropy.
+        ("src-tauri/src/recovery_kit.rs", "from_entropy(", 1),
+    ];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = root.canonicalize().expect("workspace root");
+    let mut found: Vec<(String, String, usize)> = Vec::new();
+    for path in &files {
+        let rel = path
+            .canonicalize()
+            .expect("source path")
+            .strip_prefix(&root)
+            .expect("under the workspace")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if rel == "kit/src/wallet_key.rs" || name.ends_with("_tests.rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(path).expect("read source");
+        let code = k6_strip_test_items(&src);
+        for needle in &needles {
+            let n = code.matches(needle.as_str()).count();
+            if n > 0 {
+                found.push((rel.clone(), needle.clone(), n));
+            }
+        }
+    }
+    let mut unexpected = Vec::new();
+    for (file, needle, n) in &found {
+        let ok = allowed
+            .iter()
+            .any(|(f, nd, c)| f == file && nd == needle && c == n);
+        if !ok {
+            unexpected.push(format!("{file}: `{needle}` x{n}"));
+        }
+    }
+    assert!(
+        unexpected.is_empty(),
+        "wallet key material or a signing primitive is used outside the key module, or a listed \
+         count changed; route it through `signing_key` or review and list it: {unexpected:?}"
+    );
+    // Every listed entry is still present, so the list cannot rot into a blanket pass.
+    for (file, needle, c) in allowed {
+        assert!(
+            found.iter().any(|(f, nd, n)| f == file && nd == needle && n == c),
+            "allowlist entry no longer matches the source: {file} `{needle}` x{c}"
+        );
+    }
+    // The scan saw the key module's neighbours (positive control).
+    assert!(files.iter().any(|p| p.ends_with("wallet.rs")) && files.len() > 50);
+}
+
+/// K6 strip helper: a `#[cfg(test)]` helper is removed without dropping the code after it.
+#[test]
+fn k6_strip_test_items_keeps_code_after_a_test_item() {
+    let src = "fn a() {}\n#[cfg(test)]\nmod x_tests;\n#[cfg(test)]\nfn helper() {\n    t();\n}\nfn b() {}\n// c()\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn d() {}\n";
+    let out = k6_strip_test_items(src);
+    assert!(out.contains("fn a()") && out.contains("fn b()") && out.contains("fn d()"));
+    assert!(!out.contains("x_tests") && !out.contains("t()") && !out.contains("c()"));
+}
+
+/// K6: plain `custody_get` refuses the wallet slot even on an unlocked vault holding a wallet, so
+/// a module that knows the slot name still cannot read the entropy. The capability-gated read in
+/// the key module still works (address derivation succeeds).
+#[test]
+fn k6_custody_get_refuses_the_wallet_slot() {
+    let (v, _p) = init_and_unlock();
+    import(&v, CANONICAL_MNEMONIC).expect("import");
+    assert!(v.is_unlocked());
+    assert_eq!(v.custody_get(WALLET_ENTROPY_SLOT).unwrap_err(), CustodyError::Denied);
+    assert_eq!(v.custody_get("wallet-anything").unwrap_err(), CustodyError::Denied);
+    let info = address(&v).expect("the key module still reads it");
+    assert!(info.address.eq_ignore_ascii_case(CANONICAL_ADDRESS));
+}
+
+/// K6: create still refuses to clobber an existing wallet now that its probe goes through the key
+/// module, and a non-wallet slot is still readable through plain `custody_get`.
+#[test]
+fn k6_create_probe_still_sees_an_existing_wallet() {
+    let (v, _p) = init_and_unlock();
+    import(&v, CANONICAL_MNEMONIC).expect("import");
+    assert_eq!(create(&v).unwrap_err(), WalletError::AlreadyExists);
+    assert_eq!(import(&v, CANONICAL_MNEMONIC).unwrap_err(), WalletError::AlreadyExists);
+    let mut other = b"not-a-wallet".to_vec();
+    v.put("app-other", &mut other).expect("put");
+    assert_eq!(v.custody_get("app-other").expect("read").as_slice(), b"not-a-wallet");
 }
