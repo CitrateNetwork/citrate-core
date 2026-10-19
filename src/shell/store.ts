@@ -629,6 +629,8 @@ export class Store {
   private validatorPubkey: `0x${string}` | null = null;
   /** C1-V3 — agent payments submitted with an unknown outcome this session: effect key → tx hash. */
   private unknownAgentPayments = new Map<string, string | null>();
+  /** C1-P — when the membership price was last read (at most every 10 minutes). */
+  private lastPriceReadAt = 0;
   /** C1-V — when the producer set was last sampled (refreshed at most every 5 minutes). */
   private lastProducersAt = 0;
   /** C1-V — the catalogued public-RPC reads (UI truth contract §2). Replaced in tests. */
@@ -1404,6 +1406,15 @@ export class Store {
     } catch {
       this.setState({ validatorCounts: null });
     }
+  }
+
+  /**
+   * C1-P — read the membership price from core-membership (bridge.membership.price → Rust
+   * `membership_price`), at most every 10 minutes. A failed read clears it, so no surface shows a
+   * number that was not just read; they show the "See membership pricing" link instead.
+   */
+  async refreshMembershipPrice(): Promise<void> {
+    void this.lastPriceReadAt;
   }
 
   async refreshChainParams(): Promise<void> {

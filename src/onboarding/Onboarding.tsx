@@ -537,6 +537,10 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
 
 export function S3({ store, s }: { store: Store; s: AppState }) {
   const [entOpen, setEntOpen] = useState(false);
+  // C1-P: the price shown on this step is read from core-membership (cached in the store).
+  useEffect(() => {
+    void store.refreshMembershipPrice();
+  }, [store]);
   // #31 (Luke 2026-09-11) — auto-open checkout once the wallet is LINKED, so the member
   // doesn't hunt for a second button. The "Link your wallet" click is the explicit intent
   // signal (or the wallet was linked in a prior session); once linked + idle on S3 we open
@@ -589,7 +593,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>Pilot · selected</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>
             {/* C1-V V12: no in-app price until core-membership serves one (chain-team ruling). */}
-            <PricingLink open={(u) => void store.openExternal(u)} style={{ fontSize: 15 }} />
+            <PricingLink open={(u) => void store.openExternal(u)} price={s.membershipPrice} style={{ fontSize: 15 }} />
           </div>
           <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0 }}>Full membership. Everything listed below.</p>
         </div>

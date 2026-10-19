@@ -694,6 +694,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async checkout(): Promise<void> {
         assertSimAllowed("membership.checkout");
       },
+      // C1-P — the web build has no price source: never a number.
+      async price() {
+        throw new Error("membership price: not available in the web preview");
+      },
       // SIM: no real backend in web-dev — resolve so the enterprise form flow proceeds (guarded out of
       // packaged builds). The real POST is the Tauri path.
       async enterpriseLead(): Promise<void> {

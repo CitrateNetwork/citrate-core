@@ -655,6 +655,14 @@ export interface MembershipDomain {
    */
   grantStatus(memberAddress: string): Promise<GrantStatus>;
   /**
+   * C1-P — the membership price from core-membership's public price route
+   * (`{coreMembershipUrl}/api/membership/price`), read in Rust (the route sends no CORS headers).
+   * Rejects on a 503, any non-200, or a body whose displayAmount disagrees with unitAmount; the
+   * caller then shows the "See membership pricing" link and no number. The sim impl always
+   * rejects: the web build has no price source.
+   */
+  price(): Promise<import("../data/membership").MembershipPrice>;
+  /**
    * CORE-D3.C — open the REAL core-membership checkout in an in-app popup
    * (`{coreMembershipUrl}/checkout`). Resolves once the popup is OPENED — it does
    * NOT report payment success. The money + entitlement grant happen server-side

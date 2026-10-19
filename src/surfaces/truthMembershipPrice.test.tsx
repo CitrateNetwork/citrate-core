@@ -1,0 +1,98 @@
+// C1-P — the membership price comes from core-membership's live price route, read in Rust
+// (no CORS), and is shown only when it was read. On a 503 or any error the app keeps the
+// "See membership pricing" link and shows no number (UI truth contract §5.3).
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+
+vi.mock("../bridge/mode", () => ({
+  BRIDGE_MODE: "tauri" as const,
+  assertSimAllowed: () => {},
+}));
+vi.mock("wagmi", () => ({
+  useBlockNumber: () => ({ data: undefined, isPending: true, error: null }),
+  useReadContract: () => ({ data: undefined }),
+}));
+vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
+vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
+vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
+
+import { S3 } from "../onboarding/Onboarding";
+import { Settings } from "./Settings";
+import { Commissary } from "./Commissary";
+import { membershipPriceLabel, type MembershipPrice } from "../data/membership";
+import { store, type Store } from "../shell/store";
+import { freshState, type AppState } from "../shell/state";
+import { bridge } from "../bridge";
+
+const PRICE: MembershipPrice = { currency: "usd", unitAmount: 4800, interval: "year", displayAmount: "$48" };
+
+const stub = {
+  walletIsLinked: () => true,
+  refreshMembershipPrice: () => {},
+  openExternal: async () => {},
+  toast: () => {},
+  identity: () => ({ sub: "sub-1", wallet: "0x" + "0".repeat(40) }),
+} as unknown as Store;
+
+function member(over: Partial<AppState> = {}): AppState {
+  return { ...freshState("p1"), signedIn: true, ...over };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  store.setState({ membershipPrice: null });
+  (store as unknown as { lastPriceReadAt: number }).lastPriceReadAt = 0;
+});
+
+describe("C1-P — the membership price is read, never assumed", () => {
+  it("labels a read price with its interval", () => {
+    expect(membershipPriceLabel(PRICE)).toBe("$48 a year");
+    expect(membershipPriceLabel({ ...PRICE, interval: "month", displayAmount: "$4", unitAmount: 400 })).toBe("$4 a month");
+    expect(membershipPriceLabel(null)).toBeNull();
+  });
+
+  it("the store reads the price through the bridge and keeps it", async () => {
+    const price = vi.spyOn(bridge.membership, "price").mockResolvedValue(PRICE);
+    await store.refreshMembershipPrice();
+    expect(price).toHaveBeenCalledTimes(1);
+    expect(store.state.membershipPrice).toEqual(PRICE);
+    // Cached for a while: a second call does not hit the route again.
+    await store.refreshMembershipPrice();
+    expect(price).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed read (503) leaves no price, and clears an earlier one", async () => {
+    store.setState({ membershipPrice: PRICE });
+    vi.spyOn(bridge.membership, "price").mockRejectedValue("membership price unavailable (HTTP 503)");
+    await store.refreshMembershipPrice();
+    expect(store.state.membershipPrice).toBeNull();
+  });
+
+  it("S3 shows the read price, and the link with no number when there is none", () => {
+    const read = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false, membershipPrice: PRICE })} />);
+    expect(read).toContain("$48 a year");
+    expect(read).toContain("does not buy SALT");
+    const none = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false, membershipPrice: null })} />);
+    expect(none).toContain("See membership pricing");
+    expect(none).not.toMatch(/\$\s?\d/);
+  });
+
+  it("Settings shows the read price on the plan line", () => {
+    const html = renderToStaticMarkup(<Settings store={stub} s={member({ sSec: "billing", tier: "pilot", membershipPrice: PRICE })} />);
+    expect(html).toContain("$48 a year");
+  });
+
+  it("the Commissary join label uses the read price, else 'see pricing'", () => {
+    const read = renderToStaticMarkup(<Commissary store={stub} s={member({ tier: "free", membershipPrice: PRICE })} />);
+    const none = renderToStaticMarkup(<Commissary store={stub} s={member({ tier: "free", membershipPrice: null })} />);
+    expect(none).toContain("Join · see pricing");
+    expect(read).toContain("Join · $48 a year");
+    expect(read).not.toContain("Join · see pricing");
+    expect(none).not.toMatch(/\$\s?\d/);
+  });
+
+  it("the web build has no price source and never shows a number", async () => {
+    const { createSimBridge } = await import("../bridge/sim");
+    await expect(createSimBridge({} as never).membership.price()).rejects.toBeTruthy();
+  });
+});

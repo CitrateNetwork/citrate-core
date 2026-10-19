@@ -46,6 +46,7 @@ describe("S3 enterprise custom-pricing form", () => {
       linkWallet: vi.fn(),
       onS3Pay: vi.fn(),
       recheckMembership: vi.fn(),
+      refreshMembershipPrice: vi.fn(),
     } as unknown as Store;
 
     const s = freshState("p1");

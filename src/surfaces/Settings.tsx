@@ -174,6 +174,10 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   // when signed in, falling back to the sim persona only in web-dev.
   const id = store.identity();
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
+  // C1-P: the plan line's price is read from core-membership (cached in the store).
+  useEffect(() => {
+    if (s.sSec === "billing") void store.refreshMembershipPrice();
+  }, [s.sSec, store]);
 
   // ---------- CORE-AI1 (@rule8) — live provider status (keyring-sealed) ----------
   // The provider KEY is never in AppState — it lives sealed in the OS keyring. This
@@ -1051,7 +1055,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     {effTier !== "free" && effTier !== "enterprise" && (
                       <>
                         {" · "}
-                        <PricingLink open={(u) => void store.openExternal(u)} style={{ fontSize: 12, fontWeight: 400 }} />
+                        <PricingLink open={(u) => void store.openExternal(u)} price={s.membershipPrice} style={{ fontSize: 12, fontWeight: 400 }} />
                       </>
                     )}
                   </span>
