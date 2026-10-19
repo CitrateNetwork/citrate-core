@@ -15,6 +15,7 @@
 import { useEffect, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
+import { localOnlyDoesNotApply, remoteServiceLine } from "../agent/remoteServices";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
 import {
   DEFAULT_WEB_SETTINGS,
@@ -83,7 +84,7 @@ function PathField({
   );
 }
 
-export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
+export function WebSearchSettings({ io = defaultIo, localOnly = false }: { io?: WebSettingsIo; localOnly?: boolean }) {
   const desktop = io.mode === "tauri";
   const [status, setStatus] = useState<HermesWebStatus | null>(null);
   const [draft, setDraft] = useState<HermesWebSettings>(DEFAULT_WEB_SETTINGS);
@@ -208,6 +209,14 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
       {/* ---------- Jev ---------- */}
       <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
         <span className="eyebrow">Fast decisions</span>
+        <span style={hint} data-testid="jev-remote">
+          {remoteServiceLine("TypeSafe Jev")}
+        </span>
+        {localOnly && (
+          <span style={hint} data-testid="jev-local-only-note">
+            {localOnlyDoesNotApply("TypeSafe Jev")}
+          </span>
+        )}
         <span style={hint}>
           Hermes makes quick choices (which button to press, which result fits) with your local model. You can let TypeSafe Jev, a third-party service, make them instead for sites you list.
         </span>

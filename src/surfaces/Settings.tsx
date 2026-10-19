@@ -752,7 +752,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {s.sSec === "escalation" && <EscalationSettings />}
 
         {/* ---------- Web search & decisions (HUP-S5.2 / S5.3) ---------- */}
-        {s.sSec === "web" && <WebSearchSettings />}
+        {s.sSec === "web" && <WebSearchSettings localOnly={s.chatRoute === "local_only"} />}
 
         {/* ---------- Node configuration ---------- */}
         {s.sSec === "node" && (
