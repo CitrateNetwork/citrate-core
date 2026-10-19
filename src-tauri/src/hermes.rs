@@ -2251,10 +2251,17 @@ pub(crate) fn effective_child_env(
 pub(crate) fn effective_child_env_for(
     inherited: impl Iterator<Item = (String, String)>,
     set: &[(String, String)],
-    _case_insensitive: bool,
+    case_insensitive: bool,
 ) -> Vec<(String, String)> {
+    use crate::daemons::env_name_eq;
+    let citrate = |k: &str| {
+        k.get(..8)
+            .is_some_and(|p| env_name_eq(p, "CITRATE_", case_insensitive))
+    };
     let mut out: Vec<(String, String)> = inherited
-        .filter(|(k, _)| k.starts_with("CITRATE_") && !set.iter().any(|(s, _)| s == k))
+        .filter(|(k, _)| {
+            citrate(k) && !set.iter().any(|(s, _)| env_name_eq(s, k, case_insensitive))
+        })
         .collect();
     out.extend(set.iter().cloned());
     out
@@ -2420,10 +2427,8 @@ pub async fn hermes_session_open_unattended(
     daemon_id: Option<String>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
-        let store_allowed = match &daemon_id {
-            Some(id) => crate::daemons::check_store_daemon_open(&app, id)?,
-            None => None,
-        };
+        // DGX R3: fail closed. A missing or unknown daemon id is refused inside the check.
+        let store_allowed = crate::daemons::check_store_daemon_open(&app, daemon_id.as_deref())?;
         match store_allowed {
             // A Store daemon: only its approved core tools, exactly its approved host tool sets,
             // and no prompt additions from the sidecar.

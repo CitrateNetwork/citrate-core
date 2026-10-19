@@ -883,9 +883,9 @@ fn every_sidecar_tool_set_blocks_a_store_daemon_not_approved_for_it() {
         let value = if set.on_value.is_empty() { "/app/data/hermes/x" } else { set.on_value };
         let on = env(&[(set.env_key, value)]);
         assert!(host_block_reason(&[], &on).is_some(), "{} blocks a no-permission daemon", set.id);
-        // The permission that covers it lets it through.
+        // The permission that covers it lets it through, unless no permission may grant it.
         let covered = tools_for_permissions(&[set.permission.to_string()]);
-        assert!(host_block_reason(&covered, &on).is_none(), "{} is covered by {}", set.id, set.permission);
+        assert_eq!(host_block_reason(&covered, &on).is_none(), set.grantable, "{} and {}", set.id, set.permission);
     }
     // Nothing on: nothing blocks.
     assert!(host_block_reason(&[], &[]).is_none());

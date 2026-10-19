@@ -16,6 +16,7 @@
 // `runDaemonTurn`; this file is kept free of the store so its paths are testable.
 // =====================================================================
 import { TurnStopped } from "../agent/harness";
+import { DaemonNotStarted } from "./turn";
 import { TokenMeter } from "./tokenMeter";
 import type { Claim, DaemonRunEntry, DaemonsApi, RunOutcome } from "./api";
 
@@ -130,6 +131,11 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
       const reason = current?.reason ?? null;
       if (reason) ({ outcome, note } = NOTES[reason]);
       else if (e instanceof TurnStopped) ({ outcome, note } = NOTES.stopped);
+      // Core refused to open the run's session (DGX R5): it never started.
+      else if (e instanceof DaemonNotStarted) {
+        outcome = "not_started";
+        note = e.message;
+      }
       else {
         outcome = "failed";
         note = e instanceof Error ? e.message : String(e);

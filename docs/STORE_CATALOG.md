@@ -142,7 +142,8 @@ daemon may run with them depends on the sidecar:
 | Installed skills | `skill_load` | a skills library is configured (`CITRATE_HERMES_SKILLS`) | `skills_read` | Off unless in `toolSets` | Not started while on; no app switch yet |
 | Skill learning | `learn_propose` | `CITRATE_HERMES_LEARN_DIR` | `learn_propose` | Off unless in `toolSets` | Not started while on; no app switch yet |
 | Installed capsules | the installed capsules | `CITRATE_HERMES_CAPSULES` | `capsules_run` | Off unless in `toolSets` | Not started while on; no app switch yet |
-| File, sheet, project and undo tools | `file_*`, `fs_*`, `sheet_*`, `project_create` | a grant document in the session | `files` (runtime name; never sent by core) | Off: not in `toolSets`, and no grant document | Daemon sessions get no grant document |
+| File tools from the launch environment | `fs_*` | `CITRATE_HERMES_FILES=1` and a grants file (no grant document needed); core never sets it | `files` (never granted, never sent) | Off: not in `toolSets` | Daemon not started while on; start Citrate Core without `CITRATE_HERMES_FILES` |
+| File, sheet, project and undo tools from a grant document | `file_*`, `fs_*`, `sheet_*`, `project_create` | a grant document in the session | `files` (never granted, never sent) | Off: not in `toolSets`, and no grant document | Daemon sessions get no grant document |
 | `shell_run` | `shell_run` | `CITRATE_HERMES_SHELL_RUN=1` and folder grants | `shell_run` (runtime name; never sent by core) | Off: not in `toolSets` | No grant document; every command is declined in a daemon run |
 
 With an older sidecar: the app ships with the starter capsules and the bundled skills (and turns
@@ -159,6 +160,10 @@ Three more rules close the gaps around restarts and the launch environment:
 - **Re-checked right before the session opens.** The claim records which host sets were on.
   `hermes_session_open_unattended` (given the daemon id) refuses the open when the environment is
   now unknown, when the sets changed since the claim, or when an uncovered set is on.
+- **Fail closed at open.** The daemon session open must name a daemon the book holds; a missing
+  or unknown id is refused. A refusal at open is recorded as `not_started`, not `failed`.
+- **Environment names follow the platform.** On Windows, where variable names are
+  case-insensitive, `citrate_hermes_search` counts as `CITRATE_HERMES_SEARCH`.
 - **The effective environment is checked.** The sidecar inherits the app's own environment, so a
   `CITRATE_HERMES_*` flag in the launch environment would turn a set on without core setting it.
   Core records what the child actually sees (the inherited `CITRATE_*` variables overlaid with

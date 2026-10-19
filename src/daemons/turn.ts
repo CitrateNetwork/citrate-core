@@ -122,13 +122,21 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   const task = `Scheduled daemon "${claim.name}". Task:\n\n${claim.prompt}`;
   const toolsJson = JSON.stringify(daemonToolsFor(allowed));
   const opened: string[] = [];
+  // An open core refused (an open-time check) means the run never started (DGX R5).
+  let openRefused: string | null = null;
   let provider: ChatProvider;
   if (deps.providerKind === "sidecar" && deps.sidecar) {
     const sc = deps.sidecar;
     provider = createSidecarProvider(
       {
         open: async (p, t) => {
-          const id = await sc.openUnattended(p, t, claim.daemonId);
+          let id: string;
+          try {
+            id = await sc.openUnattended(p, t, claim.daemonId);
+          } catch (e) {
+            openRefused = e instanceof Error ? e.message : String(e);
+            throw e;
+          }
           opened.push(id);
           return id;
         },
@@ -169,6 +177,9 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
       },
     });
     return reply.content;
+  } catch (e) {
+    if (openRefused !== null) throw new DaemonNotStarted(openRefused);
+    throw e;
   } finally {
     for (const id of opened) deps.sidecar?.close(id).catch(() => undefined);
   }

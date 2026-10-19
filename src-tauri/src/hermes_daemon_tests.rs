@@ -293,7 +293,8 @@ fn the_store_session_body_is_explicit_and_carries_no_persona_or_grant_tool_sets(
     let b = store_body(&allowed);
     let sets: Vec<&str> = b["toolSets"].as_array().expect("an explicit array").iter().filter_map(|v| v.as_str()).collect();
     assert!(!sets.contains(&"files") && !sets.contains(&"shell_run"), "{sets:?}");
-    assert_eq!(sets.len(), crate::daemons::HOST_TOOL_SETS.len());
+    let grantable = crate::daemons::HOST_TOOL_SETS.iter().filter(|s| s.grantable).count();
+    assert_eq!(sets.len(), grantable, "every grantable set, and no other");
     // Never omitted or null, even for none.
     let none = store_body(&[]);
     assert!(none["toolSets"].is_array());
@@ -388,7 +389,12 @@ fn tripwire_every_store_session_body_has_an_explicit_tool_set_allowlist() {
             .expect("body");
         let b: serde_json::Value = serde_json::from_str(&body).expect("json");
         let sets = b["toolSets"].as_array().unwrap_or_else(|| panic!("mask {mask}: toolSets must be an explicit array"));
-        assert_eq!(sets.len(), mask.count_ones() as usize, "mask {mask}");
+        let want = crate::daemons::HOST_TOOL_SETS
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| s.grantable && mask & (1 << i) != 0)
+            .count();
+        assert_eq!(sets.len(), want, "mask {mask}");
         assert!(sets.iter().all(|s| s.as_str().is_some_and(|s| s != "files" && s != "shell_run")), "mask {mask}");
         assert_eq!(b["promptSnapshot"], false, "mask {mask}");
         assert_eq!(b["unattended"], true, "mask {mask}");

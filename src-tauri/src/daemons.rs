@@ -64,11 +64,15 @@ pub(crate) struct HostToolSet {
     pub permission: &'static str,
     /// How the member turns it off, or `None` when the app has no switch for it yet.
     pub turn_off: Option<&'static str>,
+    /// Whether a declared permission may grant it to a Store daemon. `false` = never granted
+    /// and never named in `toolSets`: the daemon does not start while it is on.
+    pub grantable: bool,
 }
 
-/// Every sidecar-hosted tool set that can reach a daemon session. The file, sheet, project,
-/// shell and undo tools need a grant document, which daemon sessions are never given, so they
-/// are not listed (docs/STORE_CATALOG.md).
+/// Every sidecar-hosted tool set that can reach a daemon session. The sheet, project, shell and
+/// undo tools need a grant document, which daemon sessions are never given (see
+/// [`GRANT_DOC_ONLY_SETS`]); the file tools have a row because a launch-environment flag can
+/// offer them without one (docs/STORE_CATALOG.md).
 pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
     HostToolSet {
         id: "search",
@@ -77,6 +81,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "1",
         permission: "web_search",
         turn_off: Some("turn off \"Let Hermes search the web and read pages\" in Settings > Web search & decisions"),
+        grantable: true,
     },
     HostToolSet {
         id: "browser",
@@ -85,6 +90,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "1",
         permission: "web_browse",
         turn_off: Some("turn off \"Let Hermes open and use web pages in its own browser\" in Settings > Web search & decisions"),
+        grantable: true,
     },
     HostToolSet {
         id: "mcp",
@@ -93,6 +99,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "mcp",
         turn_off: Some("turn off every server in Settings > MCP servers"),
+        grantable: true,
     },
     HostToolSet {
         id: "toolchain",
@@ -101,6 +108,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "1",
         permission: "toolchain",
         turn_off: Some("turn off the contract toolchain in Agent > Contracts"),
+        grantable: true,
     },
     HostToolSet {
         id: "skills",
@@ -109,6 +117,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "skills_read",
         turn_off: None,
+        grantable: true,
     },
     HostToolSet {
         id: "learn",
@@ -117,6 +126,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "learn_propose",
         turn_off: None,
+        grantable: true,
     },
     HostToolSet {
         id: "capsules",
@@ -125,6 +135,18 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "capsules_run",
         turn_off: None,
+        grantable: true,
+    },
+    // DGX R1: with CITRATE_HERMES_FILES=1 and a grants file, the sidecar offers the fs_* tools to
+    // sessions opened WITHOUT a grant document. Core never sets it; the launch environment can.
+    HostToolSet {
+        id: "files",
+        label: "file tools enabled by the launch environment (fs_*)",
+        env_key: "CITRATE_HERMES_FILES",
+        on_value: "1",
+        permission: "files",
+        turn_off: Some("start Citrate Core without CITRATE_HERMES_FILES in its environment"),
+        grantable: false,
     },
 ];
 
@@ -157,16 +179,26 @@ pub(crate) fn enabled_host_sets(env: &[(String, String)]) -> Vec<&'static HostTo
     enabled_host_sets_for(env, cfg!(windows))
 }
 
+/// Whether two environment variable names are the same name: exact on Unix, ASCII
+/// case-insensitive where the platform's names are (Windows, DGX R2).
+pub(crate) fn env_name_eq(a: &str, b: &str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
 /// [`enabled_host_sets`] with the platform's env-name rule made explicit (tests drive both).
 pub(crate) fn enabled_host_sets_for(
     env: &[(String, String)],
-    _case_insensitive: bool,
+    case_insensitive: bool,
 ) -> Vec<&'static HostToolSet> {
     HOST_TOOL_SETS
         .iter()
         .filter(|set| {
             env.iter().any(|(k, v)| {
-                k == set.env_key
+                env_name_eq(k, set.env_key, case_insensitive)
                     && if set.on_value.is_empty() {
                         !v.trim().is_empty()
                     } else {
@@ -223,7 +255,7 @@ pub(crate) fn host_block_reason_for(
 pub(crate) fn store_tool_sets(allowed: &[String]) -> Vec<String> {
     HOST_TOOL_SETS
         .iter()
-        .filter(|set| allowed.contains(&host_set_marker(set.id)))
+        .filter(|set| set.grantable && allowed.contains(&host_set_marker(set.id)))
         .map(|set| set.permission.to_string())
         .collect()
 }
@@ -267,7 +299,7 @@ pub(crate) fn store_open_check(
 pub(crate) fn host_block_reason(allowed: &[String], env: &[(String, String)]) -> Option<String> {
     let uncovered: Vec<&HostToolSet> = enabled_host_sets(env)
         .into_iter()
-        .filter(|set| !allowed.contains(&host_set_marker(set.id)))
+        .filter(|set| !set.grantable || !allowed.contains(&host_set_marker(set.id)))
         .collect();
     if uncovered.is_empty() {
         return None;
@@ -656,6 +688,8 @@ pub(crate) enum RunOutcome {
     Stopped,
     TimedOut,
     OverBudget,
+    /// Core refused to open the run's session (an open-time check, DGX R5).
+    NotStarted,
 }
 
 impl RunOutcome {
@@ -666,6 +700,7 @@ impl RunOutcome {
             RunOutcome::Stopped => "stopped",
             RunOutcome::TimedOut => "timed_out",
             RunOutcome::OverBudget => "over_budget",
+            RunOutcome::NotStarted => "not_started",
         }
     }
 }
@@ -1024,6 +1059,11 @@ impl DaemonBook {
             .iter()
             .find(|r| r.id == id)
             .and_then(|r| r.allowed_tools.clone())
+    }
+
+    /// Whether the book holds daemon `id`.
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.records.iter().any(|r| r.id == id)
     }
 
     /// The host tool sets the daemon's run in flight was claimed against.
@@ -1502,11 +1542,19 @@ fn sidecar_facts(app: &tauri::AppHandle) -> SidecarFactsOwned {
 
 /// What the daemon session open is for: `Ok(None)` a member daemon, `Ok(Some(allowed))` a Store
 /// daemon bound to `allowed`.
+/// FAIL-CLOSED (DGX R3): no daemon id, or an id the book does not hold, is refused instead of
+/// being opened unchecked.
 pub(crate) fn open_target(
     book: &DaemonBook,
     daemon_id: Option<&str>,
 ) -> Result<Option<Vec<String>>, String> {
-    Ok(daemon_id.and_then(|id| book.allowed_tools_of(id)))
+    let id = daemon_id.ok_or_else(|| {
+        "Not started: the daemon run did not say which daemon it is for.".to_string()
+    })?;
+    if !book.contains(id) {
+        return Err("Not started: that daemon is no longer in the daemon list.".into());
+    }
+    Ok(book.allowed_tools_of(id))
 }
 
 /// How a Store daemon's session may be opened, after [`check_store_daemon_open`].
@@ -1524,10 +1572,11 @@ pub(crate) struct StoreOpen {
 /// `Ok(None)` for a member daemon or an unknown id.
 pub(crate) fn check_store_daemon_open(
     app: &tauri::AppHandle,
-    id: &str,
+    id: Option<&str>,
 ) -> Result<Option<StoreOpen>, String> {
     let (allowed, claimed) = with_book(app, false, |b| {
-        Ok((b.allowed_tools_of(id), b.claimed_host_sets(id)))
+        let allowed = open_target(b, id)?;
+        Ok((allowed, id.and_then(|id| b.claimed_host_sets(id))))
     })?;
     let Some(allowed) = allowed else {
         return Ok(None);
