@@ -18,25 +18,25 @@ const join = (state: JoinViewDto["state"], over: Partial<JoinViewDto> = {}): Joi
 
 describe("JoinRequests", () => {
   it("renders nothing with no joins", () => {
-    expect(renderToStaticMarkup(<JoinRequests joins={[]} lastKnown={{}} listedGroups={[]} busy={null} onRetry={noop} onCancel={noop} onForget={noop} />)).toBe("");
+    expect(renderToStaticMarkup(<JoinRequests joins={[]} lastKnown={{}} listedGroups={[]} busy={null} receivedAt={1} now={1} onRetry={noop} onCancel={noop} onForget={noop} />)).toBe("");
   });
 
   it("shows the waiting words with Cancel, and Joined only once the group is listed", () => {
     const html = renderToStaticMarkup(
-      <JoinRequests joins={[join("waiting"), join("joined", { group: "g2" })]} lastKnown={{}} listedGroups={["g2"]} busy={null} onRetry={noop} onCancel={noop} onForget={noop} />,
+      <JoinRequests joins={[join("waiting"), join("joined", { group: "g2" })]} lastKnown={{}} listedGroups={["g2"]} busy={null} receivedAt={1} now={1} onRetry={noop} onCancel={noop} onForget={noop} />,
     );
     expect(html).toContain("Waiting for the person who invited you to let you in");
     expect(html).toContain("Cancel");
     expect(html).toContain("Joined Aperture");
     const unlisted = renderToStaticMarkup(
-      <JoinRequests joins={[join("joined")]} lastKnown={{}} listedGroups={[]} busy={null} onRetry={noop} onCancel={noop} onForget={noop} />,
+      <JoinRequests joins={[join("joined")]} lastKnown={{}} listedGroups={[]} busy={null} receivedAt={1} now={1} onRetry={noop} onCancel={noop} onForget={noop} />,
     );
     expect(unlisted).not.toContain("Joined Aperture");
   });
 
   it("relay_unreachable renders Retry and the last known state, never expired", () => {
     const html = renderToStaticMarkup(
-      <JoinRequests joins={[join("relay_unreachable")]} lastKnown={{ g1: join("waiting") }} listedGroups={[]} busy={null} onRetry={noop} onCancel={noop} onForget={noop} />,
+      <JoinRequests joins={[join("relay_unreachable")]} lastKnown={{ g1: join("waiting") }} listedGroups={[]} busy={null} receivedAt={1} now={1} onRetry={noop} onCancel={noop} onForget={noop} />,
     );
     expect(html).toContain("Couldn&#x27;t check your invite · relay unreachable");
     expect(html).toContain("last known: Waiting…");
@@ -45,10 +45,21 @@ describe("JoinRequests", () => {
   });
 });
 
+describe("freshness in the rendered rows", () => {
+  it("a Waiting row whose updatedAt is over 60 s old renders the unreachable copy", () => {
+    const html = renderToStaticMarkup(
+      <JoinRequests joins={[join("waiting", { updatedAt: 1_000 })]} lastKnown={{}} listedGroups={[]} busy={null} now={200_000} receivedAt={200_000} onRetry={noop} onCancel={noop} onForget={noop} />,
+    );
+    expect(html).toContain("relay unreachable");
+    expect(html).toContain("last known: Waiting…");
+    expect(html).not.toContain("Waiting for");
+  });
+});
+
 describe("InviteStateLine", () => {
   const view: InviteViewDto = { lookup: "l", group: "g", state: "welcome_expired", joiner: "0x12aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab", expiresAt: 1, updatedAt: 1, reason: null, dropped: 0 };
   it("offers Remove on welcome_expired", () => {
-    const html = renderToStaticMarkup(<InviteStateLine view={view} lastKnown={undefined} onRetry={noop} onRemove={noop} />);
+    const html = renderToStaticMarkup(<InviteStateLine view={view} lastKnown={undefined} now={1} receivedAt={1} onRetry={noop} onRemove={noop} />);
     expect(html).toContain("Not picked up · Remove 0x12…ab?");
     expect(html).toContain(">Remove<");
   });

@@ -18,6 +18,9 @@ export interface RendezvousState {
   invites: InviteViewDto[];
   lastKnownJoin: Record<string, JoinViewDto>;
   lastKnownInvite: Record<string, InviteViewDto>;
+  /** When the app last got views from the daemon (ms, app clock); 0 = never. The freshness rule
+   *  (§11) uses it for a view with no relay answer yet. */
+  receivedAt: number;
   /** A cancel / forget / retry in flight, by group or lookup. */
   busy: string | null;
   /** The last action error (never a join state), or null. */
@@ -29,17 +32,18 @@ export const rendezvousSlice = createSlice<RendezvousState>({
   invites: [],
   lastKnownJoin: {},
   lastKnownInvite: {},
+  receivedAt: 0,
   busy: null,
   error: null,
 });
 
 /** Fold a fresh set of views in (pure on the slice state; exported for tests). */
-export function applyViews(s: RendezvousState, v: RendezvousViews): Partial<RendezvousState> {
+export function applyViews(s: RendezvousState, v: RendezvousViews, at: number = Date.now()): Partial<RendezvousState> {
   const lastKnownJoin = { ...s.lastKnownJoin };
   for (const j of v.joins) if (j.state !== "relay_unreachable") lastKnownJoin[j.group] = j;
   const lastKnownInvite = { ...s.lastKnownInvite };
   for (const i of v.invites) if (i.state !== "relay_unreachable") lastKnownInvite[i.lookup] = i;
-  return { joins: v.joins, invites: v.invites, lastKnownJoin, lastKnownInvite };
+  return { joins: v.joins, invites: v.invites, lastKnownJoin, lastKnownInvite, receivedAt: at };
 }
 
 export function ingest(v: RendezvousViews): void {
@@ -73,7 +77,8 @@ function upsertJoin(view: JoinViewDto): void {
     const joins = s.joins.some((j) => j.group === view.group)
       ? s.joins.map((j) => (j.group === view.group ? view : j))
       : [...s.joins, view];
-    return applyViews(s, { joins, invites: s.invites });
+    // A cancel answer is one join's view, not a full tick: keep the tick's receivedAt.
+    return { ...applyViews(s, { joins, invites: s.invites }), receivedAt: s.receivedAt };
   });
 }
 

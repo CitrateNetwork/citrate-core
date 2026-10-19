@@ -41,7 +41,25 @@ export interface JoinCopyContext {
   fmtDate: (ms: number) => string;
   /** Time formatter for the "last known (⟨time⟩)" line. */
   fmtTime: (ms: number) => string;
+  /** The current time (ms), for the freshness rule. */
+  now: number;
+  /** When the app last got views from the daemon (ms). */
+  receivedAt: number;
 }
+
+/** §9 / §11: a state is shown as live only while its `updated_at` is at most this old. */
+export const FRESH_MS = 60_000;
+
+/** Whether a live view is too old to show as live. `updatedAt` is the daemon's last definite relay
+ *  answer; a view with none yet (a `requesting` join) is judged on when the app last heard from the
+ *  daemon at all (`receivedAt`). Covers the app losing the daemon, which the daemon can't report. */
+export function isStale(updatedAt: number | null, receivedAt: number, now: number): boolean {
+  const at = updatedAt ?? receivedAt;
+  return now - at > FRESH_MS;
+}
+
+const LIVE_JOIN_STATES = new Set<JoinViewDto["state"]>(["requesting", "waiting", "joining", "reply_unverified"]);
+const LIVE_INVITE_STATES = new Set<InviteViewDto["state"]>(["open", "adding", "added"]);
 
 /** §11 fallback when the inviter's signed name isn't known. */
 export const INVITER_FALLBACK = "the person who invited you";
@@ -97,6 +115,9 @@ function lastKnownWord(v: JoinViewDto, ctx: JoinCopyContext): string | undefined
 
 /** Invitee: one `JoinView` → its §11 copy. */
 export function joinCopy(v: JoinViewDto, ctx: JoinCopyContext): StateCopy {
+  if (LIVE_JOIN_STATES.has(v.state) && isStale(v.updatedAt, ctx.receivedAt, ctx.now)) {
+    return joinCopy({ ...v, state: "relay_unreachable" }, { ...ctx, lastKnown: v, now: v.updatedAt ?? ctx.receivedAt });
+  }
   const inviter = ctx.inviter?.trim() || INVITER_FALLBACK;
   switch (v.state) {
     case "requesting":
@@ -173,6 +194,10 @@ export function joinCopy(v: JoinViewDto, ctx: JoinCopyContext): StateCopy {
 export interface InviteCopyContext {
   fmtDate: (ms: number) => string;
   fmtTime: (ms: number) => string;
+  /** The current time (ms), for the freshness rule. */
+  now: number;
+  /** When the app last got views from the daemon (ms). */
+  receivedAt: number;
   /** The last view of this invite that wasn't `relay_unreachable`. */
   lastKnown?: InviteViewDto;
 }
@@ -212,6 +237,9 @@ function inviteLastKnownWord(v: InviteViewDto, ctx: InviteCopyContext): string |
 
 /** Inviter: one `InviteView` → its §11 copy. */
 export function inviteCopy(v: InviteViewDto, ctx: InviteCopyContext): StateCopy {
+  if (LIVE_INVITE_STATES.has(v.state) && isStale(v.updatedAt, ctx.receivedAt, ctx.now)) {
+    return inviteCopy({ ...v, state: "relay_unreachable" }, { ...ctx, lastKnown: v, now: v.updatedAt ?? ctx.receivedAt });
+  }
   const who = shortJoiner(v.joiner);
   switch (v.state) {
     case "open":

@@ -2,7 +2,7 @@
 // word. relay_unreachable shows the last known state and never "expired" or a failure.
 import { describe, it, expect } from "vitest";
 import type { InviteViewDto, JoinStateWord, JoinViewDto, InviteStateWord } from "../bridge/domains";
-import { inviteCopy, joinCopy, readyToJoinCopy, shortJoiner, type JoinCopyContext } from "./joinCopy";
+import { FRESH_MS, inviteCopy, joinCopy, readyToJoinCopy, shortJoiner, type JoinCopyContext } from "./joinCopy";
 import { applyViews, type RendezvousState } from "../shell/slices/rendezvous";
 
 const fmtDate = (ms: number) => `D${ms}`;
@@ -11,8 +11,10 @@ const fmtTime = (ms: number) => `T${ms}`;
 function jv(state: JoinStateWord, over: Partial<JoinViewDto> = {}): JoinViewDto {
   return { group: "g1", name: "Aperture", state, reason: null, expiresAt: 100, graceUntil: 200, updatedAt: 50, ...over };
 }
+// `updatedAt` is 50 in the fixtures; "now" 10 s later is fresh.
+const NOW = 10_050;
 function ctx(over: Partial<JoinCopyContext> = {}): JoinCopyContext {
-  return { cluster: "Aperture", groupListed: false, fmtDate, fmtTime, ...over };
+  return { cluster: "Aperture", groupListed: false, fmtDate, fmtTime, now: NOW, receivedAt: NOW, ...over };
 }
 function iv(state: InviteStateWord, over: Partial<InviteViewDto> = {}): InviteViewDto {
   return {
@@ -122,30 +124,84 @@ describe("inviter copy (§11)", () => {
       ["unknown", { reason: "purged" }, "No longer on the relay · check the member list"],
       ["unknown", { reason: "legacy_redeemed" }, "No longer on the relay · check the member list"],
     ];
-    for (const [state, v, title] of cases) expect(inviteCopy(iv(state, v), { fmtDate, fmtTime }).title, state).toBe(title);
+    for (const [state, v, title] of cases) expect(inviteCopy(iv(state, v), { fmtDate, fmtTime, now: NOW, receivedAt: NOW }).title, state).toBe(title);
   });
 
   it("welcome_expired offers Remove", () => {
-    expect(inviteCopy(iv("welcome_expired"), { fmtDate, fmtTime }).remove).toBe(true);
+    expect(inviteCopy(iv("welcome_expired"), { fmtDate, fmtTime, now: NOW, receivedAt: NOW }).remove).toBe(true);
   });
 
   it("relay_unreachable shows the last known state, never expired or picked up", () => {
-    const c = inviteCopy(iv("relay_unreachable"), { fmtDate, fmtTime, lastKnown: iv("added") });
+    const c = inviteCopy(iv("relay_unreachable"), { fmtDate, fmtTime, now: NOW, receivedAt: NOW, lastKnown: iv("added") });
     expect(c.lastKnown).toBe("last known: Added 0x12…ab · waiting for them to open Citrate (T40)");
-    const d = inviteCopy(iv("relay_unreachable"), { fmtDate, fmtTime, lastKnown: iv("expired") });
+    const d = inviteCopy(iv("relay_unreachable"), { fmtDate, fmtTime, now: NOW, receivedAt: NOW, lastKnown: iv("expired") });
     expect(d.lastKnown).toBeUndefined();
     expect(d.title.toLowerCase()).not.toContain("expired");
   });
 
   it("unknown is never shown as expired or picked up", () => {
-    const t = inviteCopy(iv("unknown", { reason: "purged" }), { fmtDate, fmtTime }).title.toLowerCase();
+    const t = inviteCopy(iv("unknown", { reason: "purged" }), { fmtDate, fmtTime, now: NOW, receivedAt: NOW }).title.toLowerCase();
     expect(t).not.toContain("expired");
     expect(t).not.toContain("picked up");
   });
 });
 
+describe("freshness (§9 / §11: a state is live only while updated_at is ≤ 60 s old)", () => {
+  it("exposes the §9 threshold", () => {
+    expect(FRESH_MS).toBe(60_000);
+  });
+
+  it("a stale Waiting reads as relay unreachable with the last known state", () => {
+    const c = joinCopy(jv("waiting", { updatedAt: 1_000 }), ctx({ now: 1_000 + 60_001 }));
+    expect(c.title).toBe("Couldn't check your invite · relay unreachable");
+    expect(c.lastKnown).toBe("last known: Waiting… (T1000)");
+    expect(c.retry).toBe(true);
+    expect(c.cancel).toBeFalsy();
+  });
+
+  it("exactly 60 s old is still fresh", () => {
+    expect(joinCopy(jv("waiting", { updatedAt: 1_000 }), ctx({ now: 61_000 })).title).toContain("Waiting for");
+  });
+
+  it("applies to every live invitee state, never to a terminal one", () => {
+    const old = { updatedAt: 1 };
+    for (const st of ["waiting", "joining", "reply_unverified"] as JoinStateWord[]) {
+      expect(joinCopy(jv(st, old), ctx({ now: 100_000 })).title, st).toBe("Couldn't check your invite · relay unreachable");
+    }
+    for (const st of ["joined", "expired", "revoked", "taken", "withdrawn", "unknown", "failed"] as JoinStateWord[]) {
+      expect(joinCopy(jv(st, old), ctx({ now: 100_000, groupListed: true })).title, st).not.toContain("relay unreachable");
+    }
+  });
+
+  it("a requesting join with no relay answer yet goes stale on when the app last heard from the daemon", () => {
+    const v = jv("requesting", { updatedAt: null });
+    expect(joinCopy(v, ctx({ now: 70_000, receivedAt: 69_000 })).title).toBe("Asking to join…");
+    const c = joinCopy(v, ctx({ now: 70_000, receivedAt: 5_000 }));
+    expect(c.title).toBe("Couldn't check your invite · relay unreachable");
+    expect(c.lastKnown).toBe("last known: Asking to join…");
+  });
+
+  it("a stale view never reads as expired", () => {
+    const c = joinCopy(jv("waiting", { updatedAt: 1 }), ctx({ now: 10_000_000 }));
+    expect(`${c.title} ${c.lastKnown}`.toLowerCase()).not.toContain("expired");
+  });
+
+  it("inviter rows: stale open / adding / added read as unreachable with the last known state", () => {
+    const now = 40 + 60_001;
+    const c = inviteCopy(iv("added"), { fmtDate, fmtTime, now, receivedAt: now });
+    expect(c.title).toBe("Couldn't check · relay unreachable");
+    expect(c.lastKnown).toBe("last known: Added 0x12…ab · waiting for them to open Citrate (T40)");
+    for (const st of ["open", "adding"] as InviteStateWord[]) {
+      expect(inviteCopy(iv(st), { fmtDate, fmtTime, now, receivedAt: now }).title, st).toBe("Couldn't check · relay unreachable");
+    }
+    for (const st of ["picked_up", "expired", "revoked", "unknown", "welcome_expired"] as InviteStateWord[]) {
+      expect(inviteCopy(iv(st), { fmtDate, fmtTime, now, receivedAt: now }).title, st).not.toContain("relay unreachable");
+    }
+  });
+});
+
 describe("rendezvous slice: last known", () => {
-  const empty: RendezvousState = { joins: [], invites: [], lastKnownJoin: {}, lastKnownInvite: {}, busy: null, error: null };
+  const empty: RendezvousState = { joins: [], invites: [], lastKnownJoin: {}, lastKnownInvite: {}, receivedAt: 0, busy: null, error: null };
 
   it("keeps the last non-unreachable view across an unreachable tick", () => {
     const a = { ...empty, ...applyViews(empty, { joins: [jv("waiting")], invites: [iv("added")] }) };
@@ -153,5 +209,10 @@ describe("rendezvous slice: last known", () => {
     expect(b.joins[0].state).toBe("relay_unreachable");
     expect(b.lastKnownJoin.g1.state).toBe("waiting");
     expect(b.lastKnownInvite.ll.state).toBe("added");
+  });
+
+  it("records when the app last heard from the daemon", () => {
+    const a = { ...empty, ...applyViews(empty, { joins: [], invites: [] }, 1234) };
+    expect(a.receivedAt).toBe(1234);
   });
 });

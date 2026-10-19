@@ -1,6 +1,7 @@
 // GROW-S2 (Join 9, task M5) — the invitee's join requests (Groups banner, onboarding) and the
 // inviter's per-invite state line. Copy comes from joinCopy.ts (contract §11); data from the
 // rendezvous slice (member daemon views, Rule 7). Nothing here invents a state.
+import { useEffect, useState } from "react";
 import type { InviteViewDto, JoinViewDto } from "../bridge/domains";
 import { inviteCopy, joinCopy, type StateCopy } from "./joinCopy";
 
@@ -8,6 +9,17 @@ export const fmtDate = (ms: number): string =>
   new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 export const fmtTime = (ms: number): string =>
   new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+/** The current time, re-read every 10 s, so a view that goes stale while on screen turns into the
+ *  unreachable copy without waiting for another event (§11 freshness). */
+export function useNow(intervalMs = 10_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
 
 const toneColor: Record<StateCopy["tone"], string> = {
   info: "var(--tx-1)",
@@ -22,13 +34,19 @@ export interface JoinRequestsProps {
   /** Group ids in the daemon's group list (`listGroups`): "Joined" needs the group there. */
   listedGroups: string[];
   busy: string | null;
+  /** When the app last got views from the daemon (the slice's `receivedAt`). */
+  receivedAt: number;
+  /** Override the clock (tests). */
+  now?: number;
   onRetry: () => void;
   onCancel: (group: string) => void;
   onForget: (group: string) => void;
 }
 
 /** One row per join the daemon tracks. Renders nothing when there are none. */
-export function JoinRequests({ joins, lastKnown, listedGroups, busy, onRetry, onCancel, onForget }: JoinRequestsProps) {
+export function JoinRequests({ joins, lastKnown, listedGroups, busy, receivedAt, now, onRetry, onCancel, onForget }: JoinRequestsProps) {
+  const clock = useNow();
+  const t = now ?? clock;
   if (joins.length === 0) return null;
   return (
     <div className="surface" data-testid="join-requests" style={{ display: "flex", flexDirection: "column" }}>
@@ -39,6 +57,8 @@ export function JoinRequests({ joins, lastKnown, listedGroups, busy, onRetry, on
           lastKnown: lastKnown[j.group],
           fmtDate,
           fmtTime,
+          now: t,
+          receivedAt,
         });
         const isBusy = busy === j.group;
         return (
@@ -61,15 +81,20 @@ export function JoinRequests({ joins, lastKnown, listedGroups, busy, onRetry, on
 export interface InviteStateLineProps {
   view: InviteViewDto | undefined;
   lastKnown: InviteViewDto | undefined;
+  /** When the app last got views from the daemon (the slice's `receivedAt`). */
+  receivedAt: number;
+  /** Override the clock (tests). */
+  now?: number;
   onRetry: () => void;
   onRemove: (joiner: string) => void;
 }
 
 /** The inviter's state for one invite, under its row in the invites list. Nothing until the
  *  daemon reports the rendezvous (an invite minted without one keeps its existing line). */
-export function InviteStateLine({ view, lastKnown, onRetry, onRemove }: InviteStateLineProps) {
+export function InviteStateLine({ view, lastKnown, receivedAt, now, onRetry, onRemove }: InviteStateLineProps) {
+  const clock = useNow();
   if (!view) return null;
-  const c = inviteCopy(view, { fmtDate, fmtTime, lastKnown });
+  const c = inviteCopy(view, { fmtDate, fmtTime, lastKnown, now: now ?? clock, receivedAt });
   return (
     <span data-testid="invite-state" data-state={view.state} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: toneColor[c.tone] }}>
       <span>{c.title}</span>

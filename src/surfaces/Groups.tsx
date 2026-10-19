@@ -534,6 +534,7 @@ export function Groups({ store, s }: SurfaceProps) {
         lastKnown={rv.lastKnownJoin}
         listedGroups={st.groups.map((g) => g.id)}
         busy={rv.busy}
+        receivedAt={rv.receivedAt}
         onRetry={() => void refreshRendezvous().then(() => refreshGroups())}
         onCancel={(g) => void cancelJoin(g)}
         onForget={(g) => void forgetJoin(g)}
@@ -951,6 +952,7 @@ export function Groups({ store, s }: SurfaceProps) {
                           <InviteStateLine
                             view={rv.invites.find((i) => i.lookup === pi.lookup)}
                             lastKnown={rv.lastKnownInvite[pi.lookup]}
+                            receivedAt={rv.receivedAt}
                             onRetry={() => void refreshRendezvous()}
                             onRemove={doOffboard}
                           />
