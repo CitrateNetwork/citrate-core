@@ -530,6 +530,20 @@ mod tests {
         }
     }
 
+    /// The relay contract's §13 vector (citrate-federation JOIN_GROW_S2_RELAY.md, G1 / task M0): the
+    /// IPC `token` is the hex of the token's UTF-8 bytes, and BLAKE3 of those bytes is the published
+    /// `token_hash`.
+    #[test]
+    fn redeem_token_wire_matches_the_relay_contract_vector() {
+        const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        const TOKEN_UTF8_HEX: &str = "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838";
+        const TOKEN_HASH: &str = "0807456e11ea80a0cabf51014bdab6bb6ae59402cacb3b323853203b178e28d3";
+        assert_eq!(super::redeem_token_wire(T).as_deref(), Ok(TOKEN_UTF8_HEX));
+        assert_eq!(super::blake3_token_hash(T), TOKEN_HASH);
+        let bytes = hex::decode(TOKEN_UTF8_HEX).expect("hex");
+        assert_eq!(hex::encode(blake3::hash(&bytes).as_bytes()), TOKEN_HASH);
+    }
+
     /// The raw string a real token used to be sent as is NOT valid hex, which is the failure this
     /// fixes ("token must be hex" from the daemon).
     #[test]
