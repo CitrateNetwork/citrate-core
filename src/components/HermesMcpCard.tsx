@@ -10,7 +10,7 @@
 // the runtime view and a toggle handler.
 // =====================================================================
 import { useEffect, useState } from "react";
-import type { HermesMcpSettings, HermesMcpView, McpRuntimeView } from "../bridge/domains";
+import type { AgentHarnessDomain, HermesMcpSettings, HermesMcpView, McpRuntimeView } from "../bridge/domains";
 import { bridge } from "../bridge";
 import { runtimeLine, type RuntimeTone } from "../surfaces/mcpRuntime";
 
@@ -91,34 +91,46 @@ export function HermesMcpCard({ view, error, onToggle, runtime = null }: HermesM
   );
 }
 
-/** The card wired to the bridge: loads the view, saves a toggle, reports failures in place. */
-export function HermesMcpPanel() {
+/** The calls the wired card uses (the Hermes harness bridge by default; tests pass their own). */
+export type HermesMcpApi = Pick<AgentHarnessDomain, "mcpSettings" | "mcpSet" | "mcpRuntime">;
+
+/** The card wired to the bridge: loads the view, saves a toggle, reports failures in place.
+ *  K2 (0.5.2): a save is read-modify-write (#341/#343): it re-reads what core has saved, changes only
+ *  the switches the member pressed, and writes that, so a change saved elsewhere since this card
+ *  loaded is kept. A failed re-read writes nothing. */
+export function HermesMcpPanel({ api = bridge.agentHarness }: { api?: HermesMcpApi } = {}) {
   const [view, setView] = useState<HermesMcpView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<McpRuntimeView | null>(null);
   useEffect(() => {
     let live = true;
-    bridge.agentHarness
+    api
       .mcpSettings()
       .then((v) => live && setView(v))
       .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
     // HUP-S4.1: the live state is informative only; a failure to read it leaves the rows as they are.
-    bridge.agentHarness
+    api
       .mcpRuntime()
       .then((r) => live && setRuntime(r))
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, []);
+  }, [api]);
   const onToggle = (next: HermesMcpSettings) => {
-    bridge.agentHarness
-      .mcpSet(next)
-      .then((v) => {
-        setView(v);
+    if (!view) return;
+    const keys = (Object.keys(next) as (keyof HermesMcpSettings)[]).filter((k) => next[k] !== view.settings[k]);
+    void (async () => {
+      try {
+        const fresh = await api.mcpSettings();
+        const merged: HermesMcpSettings = { ...fresh.settings };
+        for (const k of keys) merged[k] = next[k];
+        setView(await api.mcpSet(merged));
         setError(null);
-      })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
   };
   return <HermesMcpCard view={view} error={error} onToggle={onToggle} runtime={runtime} />;
 }

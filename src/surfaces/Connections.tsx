@@ -275,8 +275,8 @@ export function Connections({ store }: SurfaceProps) {
               <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Cloud providers</span>
               <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>OpenAI, Anthropic, or your gateway key — sealed in the keyring</span>
             </span>
-            {/* AI providers moved to Hermes › Controls (five-place navigation, 0.5.2). */}
-            <a href="#/settings/ai" data-testid="cloud-providers-link" onClick={(e) => { e.preventDefault(); store.go("settings/ai"); }} className="mono" style={{ fontSize: 10.5, color: "var(--accent-text)", textDecoration: "none" }}>Manage in Hermes › Controls →</a>
+            {/* AI providers moved to Hermes › Controls › Details › Providers & keys (0.5.2). */}
+            <a href="#/settings/ai" data-testid="cloud-providers-link" onClick={(e) => { e.preventDefault(); store.go("settings/ai"); }} className="mono" style={{ fontSize: 10.5, color: "var(--accent-text)", textDecoration: "none" }}>Manage in Hermes › Controls › Details →</a>
           </div>
         </div>
       </Section>
