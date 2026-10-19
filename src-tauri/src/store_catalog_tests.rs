@@ -519,6 +519,62 @@ fn a_target_removed_outside_the_store_shows_missing_and_still_removes() {
     assert!(fx.fx_installed().is_empty());
 }
 
+// ---- the install record is kept with the install --------------------------------------------
+
+#[test]
+fn the_install_record_is_saved_before_the_target_so_a_failed_save_creates_nothing() {
+    let fx = Fx::standard("recordfirst");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    // The Store state file cannot be written (its temporary file path is a folder).
+    std::fs::create_dir_all(fx.root.join("state.tmp")).expect("block");
+    let err = fx.fx_install(&st.stage_id, 1).unwrap_err();
+    assert_eq!(err.code, "install_failed", "{err:?}");
+    assert!(fx.fx_daemon_book().daemons.is_empty(), "no untracked daemon");
+}
+
+#[test]
+fn an_install_stays_tracked_when_the_final_record_save_fails() {
+    let fx = Fx::standard("tracked");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    let usage = Usage(None);
+    let root = fx.root.clone();
+    // The model target is created after the record; block the record's final save meanwhile.
+    let transport = move |_: &str| -> Box<dyn crate::model::ModelTransport> {
+        let _ = std::fs::create_dir_all(root.join("state.tmp"));
+        Box::new(MemTransport(model_bytes()))
+    };
+    let t = fx.fx_targets(&usage, &transport);
+    let iv = install_sync(&fx.root, &fx.key.root(), &t, 0, &st.stage_id, NOW, NOW_MS, 0, &mut |_, _| {})
+        .expect("the install itself succeeded");
+    assert_eq!(iv.state, "not_selected");
+    std::fs::remove_dir_all(fx.root.join("state.tmp")).expect("unblock");
+    let listed = fx.fx_installed();
+    assert_eq!(listed.len(), 1, "the Store still tracks it");
+    assert_eq!(listed[0].target, "tiny-model.gguf");
+    assert_eq!(listed[0].state, "not_selected");
+    assert!(fx.fx_remove("tiny-model", &Usage(None)).is_ok());
+    assert!(!fx.models.join("tiny-model.gguf").exists());
+}
+
+#[test]
+fn a_failed_target_leaves_no_record_behind() {
+    let fx = Fx::standard("failedtarget");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    let mut wrong = model_bytes();
+    wrong[10] = 1;
+    assert_eq!(
+        fx.fx_install_with(&st.stage_id, 0, wrong, &Usage(None), NOW).unwrap_err().code,
+        "hash_failed"
+    );
+    assert!(fx.fx_installed().is_empty());
+    // And it can be reviewed and installed again.
+    let st = fx.fx_stage("tiny-model", 0).expect("stage again");
+    assert!(fx.fx_install(&st.stage_id, 0).is_ok());
+}
+
 // ---- wiring --------------------------------------------------------------------------------
 
 #[test]

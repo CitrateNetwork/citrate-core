@@ -178,7 +178,10 @@ fn expiry_secs(s: &str) -> Option<u64> {
     u64::try_from(secs).ok()
 }
 
-/// The member's rank on the listing ladder (public 0, member 1, enterprise 2), FAIL-CLOSED:
+/// The member's rank on the listing ladder (public 0, member 1, enterprise 2), FAIL-CLOSED.
+/// The tier names are a hard-coded allowlist on purpose: a tier added in identity later locks
+/// its members out of every listing (public included) until core ships it here
+/// (docs/STORE_CATALOG.md, "Tier gating"). The rules:
 /// signed out, no tier claim or a lapsed entitlement is 0 (public listings only); a tier this
 /// app does not recognise is -1 (nothing, not even public). An expiry that does not parse counts
 /// as lapsed.
@@ -301,9 +304,15 @@ pub(crate) struct InstallRecord {
     pub kind: ListingKind,
     pub name: String,
     pub version: String,
-    /// The daemon id, or the model file name.
+    /// The daemon id, or the model file name. Known before the target is created: the record
+    /// is saved first, so an install the Store made is always tracked.
     pub target: String,
     pub installed_at: u64,
+    /// Saved before the target was created and not yet confirmed. A pending record whose target
+    /// exists is a full install (only the confirming write was lost); one whose target is absent
+    /// shows `installing` while an install runs, else `missing` (removable).
+    #[serde(default)]
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -751,12 +760,25 @@ pub struct InstalledView {
     pub target: String,
     pub installed_at: u64,
     /// `paused` (a daemon that does not run until started), `active` (a daemon the member
-    /// started), `not_selected` (a model on disk, not in use until selected in Models), or
-    /// `missing` (removed outside the Store).
+    /// started), `not_selected` (a model on disk, not in use until selected in Models),
+    /// `installing` (recorded, target still being created), or `missing` (removed outside the
+    /// Store, or an install that did not finish).
     pub state: String,
 }
 
-fn installed_view(r: &InstallRecord, t: &Targets<'_>, now_ms: u64) -> InstalledView {
+fn install_running(root: &Path) -> bool {
+    INSTALLS_RUNNING
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains(root)
+}
+
+fn installed_view(
+    r: &InstallRecord,
+    t: &Targets<'_>,
+    now_ms: u64,
+    installing: bool,
+) -> InstalledView {
     let state = match r.kind {
         ListingKind::Daemon => crate::daemons::with_book_file(&t.daemons_path, false, |b| {
             Ok(b.view(&r.target, now_ms, 0))
@@ -768,6 +790,7 @@ fn installed_view(r: &InstallRecord, t: &Targets<'_>, now_ms: u64) -> InstalledV
         ListingKind::Model if crate::model::is_file_ready(&t.models_dir, &r.target) => {
             "not_selected"
         }
+        _ if r.pending && installing => "installing",
         _ => "missing",
     };
     InstalledView {
@@ -789,10 +812,11 @@ pub(crate) fn installed_sync(
 ) -> Result<Vec<InstalledView>, Refusal> {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let st = read_store_file(root)?;
+    let installing = install_running(root);
     Ok(st
         .installs
         .iter()
-        .map(|r| installed_view(r, t, now_ms))
+        .map(|r| installed_view(r, t, now_ms, installing))
         .collect())
 }
 
@@ -851,36 +875,77 @@ pub(crate) fn install_sync(
         let st = read_store_file(root)?;
         require_installable(listing, rank, &st)?;
     }
-    let target = match listing.kind {
-        ListingKind::Daemon => {
-            install_daemon(listing, staged.payload.as_deref(), t, now_ms, offset_min)?
-        }
-        ListingKind::Model => install_model(listing, t, on_progress)?,
+    // Everything that can be checked before anything is written, and the target's name.
+    let plan = match listing.kind {
+        ListingKind::Daemon => Plan::Daemon(
+            crate::daemons::DaemonBook::fresh_id(),
+            daemon_input(listing, staged.payload.as_deref())?,
+        ),
+        ListingKind::Model => Plan::Model(model_target(listing, t)?),
         _ => return Err(refuse("not_installable", "this kind does not install yet")),
     };
-    let record = InstallRecord {
+    let target = match &plan {
+        Plan::Daemon(id, _) => id.clone(),
+        Plan::Model(file) => file.clone(),
+    };
+    let mut record = InstallRecord {
         listing_id: listing.id.clone(),
         kind: listing.kind,
         name: listing.name.clone(),
         version: listing.version.clone(),
         target,
         installed_at: now,
+        pending: true,
     };
+    // 1. The record first: if it cannot be saved, nothing is created, so the Store never
+    //    leaves an install it does not track.
+    update_installs(root, |installs| {
+        installs.push(record.clone());
+    })?;
+    // 2. The target. On failure the record is taken back out (if even that fails, the record
+    //    shows `missing` and Remove clears it).
+    let created = match plan {
+        Plan::Daemon(id, input) => create_daemon(id, input, t, now_ms, offset_min),
+        Plan::Model(_) => install_model(listing, t, on_progress),
+    };
+    if let Err(e) = created {
+        let _ = update_installs(root, |installs| {
+            installs.retain(|i| !(i.listing_id == record.listing_id && i.pending));
+        });
+        return Err(e);
+    }
+    // 3. Confirm. A failed confirming write keeps the pending record, which still tracks the
+    //    install (its target exists), so the install is reported as done.
+    record.pending = false;
+    let _ = update_installs(root, |installs| {
+        for i in installs.iter_mut() {
+            if i.listing_id == record.listing_id {
+                i.pending = false;
+            }
+        }
+    });
+    Ok(installed_view(&record, t, now_ms, false))
+}
+
+enum Plan {
+    Daemon(String, crate::daemons::DaemonInput),
+    Model(String),
+}
+
+/// Load, change and store the install list under the Store lock.
+fn update_installs(root: &Path, f: impl FnOnce(&mut Vec<InstallRecord>)) -> Result<(), Refusal> {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut st = read_store_file(root)?;
     st.version = STATE_VERSION;
-    st.installs.push(record.clone());
-    write_store_file(root, &st)?;
-    Ok(installed_view(&record, t, now_ms))
+    f(&mut st.installs);
+    write_store_file(root, &st)
 }
 
-fn install_daemon(
+/// The daemon a listing installs, from the staged template (re-hashed) and the declared budget.
+fn daemon_input(
     listing: &Listing,
     payload: Option<&str>,
-    t: &Targets<'_>,
-    now_ms: u64,
-    offset_min: i32,
-) -> Result<String, Refusal> {
+) -> Result<crate::daemons::DaemonInput, Refusal> {
     let text = payload.ok_or_else(|| {
         refuse(
             "stage_expired",
@@ -899,7 +964,7 @@ fn install_daemon(
         .budget
         .as_ref()
         .ok_or_else(|| refuse("invalid", "a daemon listing must declare a budget"))?;
-    let input = crate::daemons::DaemonInput {
+    Ok(crate::daemons::DaemonInput {
         id: None,
         name: tpl.name,
         prompt: tpl.prompt,
@@ -910,21 +975,26 @@ fn install_daemon(
             max_tokens_per_run: b.max_tokens_per_run,
             max_spend_salt: b.max_spend_salt.clone(),
         }),
-    };
-    // Saved and paused in one write: the daemon never exists unpaused on disk.
+    })
+}
+
+fn create_daemon(
+    id: String,
+    input: crate::daemons::DaemonInput,
+    t: &Targets<'_>,
+    now_ms: u64,
+    offset_min: i32,
+) -> Result<(), Refusal> {
+    // Created paused in one write: the daemon never exists unpaused on disk.
     crate::daemons::with_book_file(&t.daemons_path, true, |book| {
-        let v = book.save(input, now_ms, offset_min)?;
-        book.set_paused(&v.id, true, now_ms)?;
-        Ok(v.id)
+        book.create_paused_with_id(id, input, now_ms, offset_min)
+            .map(|_| ())
     })
     .map_err(|e| refuse("install_failed", format!("Could not add the daemon: {e}")))
 }
 
-fn install_model(
-    listing: &Listing,
-    t: &Targets<'_>,
-    on_progress: &mut dyn FnMut(u64, u64),
-) -> Result<String, Refusal> {
+/// The model file a listing installs as, refused when a file of that name is already here.
+fn model_target(listing: &Listing, t: &Targets<'_>) -> Result<String, Refusal> {
     let file = model_file_for(listing)?;
     if t.models_dir.join(&file).exists() {
         return Err(refuse(
@@ -932,6 +1002,15 @@ fn install_model(
             format!("{file} is already on this machine; manage it in Models"),
         ));
     }
+    Ok(file)
+}
+
+fn install_model(
+    listing: &Listing,
+    t: &Targets<'_>,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> Result<(), Refusal> {
+    let file = model_target(listing, t)?;
     std::fs::create_dir_all(&t.models_dir).map_err(io_refusal)?;
     let mgr = crate::model::ModelManager::new(
         t.models_dir.clone(),
@@ -956,7 +1035,7 @@ fn install_model(
         ),
         other => refuse("install_failed", other.to_string()),
     })?;
-    Ok(file)
+    Ok(())
 }
 
 /// Remove an install: one call, no key needed. A target already gone counts as removed.

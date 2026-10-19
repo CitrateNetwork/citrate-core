@@ -747,7 +747,7 @@ export function freshState(pid: string): AppState {
     route: "dashboard",
     wTab: "overview",
     nTab: "ops",
-    cTab: "catalog",
+    cTab: "apps",
     sSec: "account",
     coach: -1,
     coachDone: !P.fresh,

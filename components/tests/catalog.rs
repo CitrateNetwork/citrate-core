@@ -305,3 +305,54 @@ fn the_catalog_key_must_differ_from_the_app_updater_key() {
     let key = TestKey::generate();
     assert!(citrate_components::catalog::catalog_trust_root_from(Some(&key.public_b64())).is_ok());
 }
+
+#[test]
+fn the_catalog_key_is_refused_when_it_is_the_component_key_under_any_key_id() {
+    use citrate_components::catalog::catalog_trust_root_with;
+    let component = TestKey::generate();
+    let line = component.public_b64();
+    // Exactly the component key line.
+    let err = catalog_trust_root_with(Some(&line), &[line.as_str()]).unwrap_err();
+    assert!(matches!(err, CatalogError::BadKey(_)), "{err:?}");
+    // The same public key with a different key id: decoded comparison still refuses it.
+    let reid = component.public_b64_with_key_id([7u8; 8]);
+    let err = catalog_trust_root_with(Some(&reid), &[line.as_str()]).unwrap_err();
+    assert!(matches!(err, CatalogError::BadKey(_)), "{err:?}");
+    // The app-updater key under another key id is refused by the production rule too.
+    let app = citrate_components::key::app_updater_key_line().unwrap();
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut raw = b64.decode(&app).unwrap();
+    raw[2..10].copy_from_slice(&[3u8; 8]);
+    let err =
+        citrate_components::catalog::catalog_trust_root_from(Some(&b64.encode(raw))).unwrap_err();
+    assert!(matches!(err, CatalogError::BadKey(_)), "{err:?}");
+    // An empty slot is still KeyNotIssued first.
+    assert_eq!(
+        catalog_trust_root_with(None, &[line.as_str()]).unwrap_err(),
+        CatalogError::KeyNotIssued
+    );
+}
+
+#[test]
+fn clearing_the_recorded_sequence_leaves_only_the_lifetime_cap_as_the_rollback_bound() {
+    // Documented in docs/STORE_CATALOG.md: the high-water mark lives in app data. Without it
+    // (a cleared app data folder), an older catalog is accepted again while it is unexpired,
+    // and refused once its lifetime (at most MAX_CATALOG_LIFETIME_SECS) runs out.
+    use citrate_components::catalog::MAX_CATALOG_LIFETIME_SECS;
+    let key = TestKey::generate();
+    let json = good();
+    let sig = sign(&key, &json);
+    assert!(verify_catalog(json.as_bytes(), &sig, &root(&key), None, NOW).is_ok());
+    assert_eq!(
+        verify_catalog(
+            json.as_bytes(),
+            &sig,
+            &root(&key),
+            None,
+            NOW - 60 + MAX_CATALOG_LIFETIME_SECS
+        )
+        .unwrap_err(),
+        CatalogError::Expired
+    );
+}

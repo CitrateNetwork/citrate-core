@@ -2342,8 +2342,8 @@ export interface StoreInstalled {
   version: string;
   target: string;
   installedAt: number;
-  /** paused | active (daemon); not_selected (model on disk, not in use); missing. */
-  state: "paused" | "active" | "not_selected" | "missing";
+  /** paused | active (daemon); not_selected (model on disk, not in use); installing; missing. */
+  state: "paused" | "active" | "not_selected" | "installing" | "missing";
 }
 
 export interface StoreDomain {

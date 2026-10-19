@@ -239,13 +239,18 @@ describe("install flow through the slice", () => {
 });
 
 describe("the surface", () => {
-  it("is labelled Store and opens on the signed catalog tab", () => {
-    const s = freshState("p1");
-    expect(s.cTab).toBe("catalog");
-    const stub = { setState: () => {}, save: () => {}, copy: () => {} } as unknown as Store;
-    const out = renderToStaticMarkup(<Commissary store={stub} s={s} />);
-    expect(out).toContain(">Store<");
-    expect(out).not.toContain(">Commissary<");
-    expect(out).not.toContain("$48");
-  });
+  const stub = { setState: () => {}, save: () => {}, copy: () => {} } as unknown as Store;
+  it.each(["catalog", "apps", "sdks", "docs", "services"])(
+    "is labelled Store and shows only the signed catalog, whatever the saved tab (%s)",
+    (cTab) => {
+      const out = renderToStaticMarkup(<Commissary store={stub} s={{ ...freshState("p1"), cTab, tier: "enterprise" }} />);
+      expect(out).toContain(">Store<");
+      expect(out).not.toContain(">Commissary<");
+      // The local seed is gone from under the Store heading: no seed tabs, cards or actions.
+      for (const seed of ["local seed", ">SDKs<", ">Services<", "Download", "Open panel", "Lattice Observatory", "Requires "]) {
+        expect(out).not.toContain(seed);
+      }
+      expect(out).not.toContain("$48");
+    },
+  );
 });

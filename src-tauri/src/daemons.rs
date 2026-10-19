@@ -643,6 +643,43 @@ impl DaemonBook {
         now_ms: u64,
         offset_min: i32,
     ) -> Result<DaemonView, String> {
+        self.save_with_new_id(input, None, now_ms, offset_min)
+    }
+
+    /// A new daemon id in the book's format (`d` + 16 hex). The Store (K5a) takes one before it
+    /// creates the daemon, so its install record can name the daemon first.
+    pub(crate) fn fresh_id() -> String {
+        new_id("d")
+    }
+
+    /// Create a daemon under a given new id (from [`Self::fresh_id`]), PAUSED from the first
+    /// write. Refused when the id is already in use or `input.id` is set.
+    pub(crate) fn create_paused_with_id(
+        &mut self,
+        id: String,
+        input: DaemonInput,
+        now_ms: u64,
+        offset_min: i32,
+    ) -> Result<DaemonView, String> {
+        if input.id.is_some() {
+            return Err("internal: a new daemon has no id yet".into());
+        }
+        if self.records.iter().any(|r| r.id == id) {
+            return Err("internal: that daemon id is already in use".into());
+        }
+        let v = self.save_with_new_id(input, Some(id), now_ms, offset_min)?;
+        self.set_paused(&v.id, true, now_ms)?;
+        self.view(&v.id, now_ms, offset_min)
+            .ok_or_else(|| "internal: the saved daemon is missing".to_string())
+    }
+
+    fn save_with_new_id(
+        &mut self,
+        input: DaemonInput,
+        preset_id: Option<String>,
+        now_ms: u64,
+        offset_min: i32,
+    ) -> Result<DaemonView, String> {
         check_offset(offset_min)?;
         let name = one_line(&input.name, NAME_MAX + 1);
         if name.is_empty() || name.chars().count() > NAME_MAX {
@@ -677,7 +714,7 @@ impl DaemonBook {
                 if self.records.len() >= MAX_DAEMONS {
                     return Err(format!("at most {MAX_DAEMONS} daemons"));
                 }
-                let id = new_id("d");
+                let id = preset_id.unwrap_or_else(|| new_id("d"));
                 self.records.push(Record {
                     id: id.clone(),
                     name,

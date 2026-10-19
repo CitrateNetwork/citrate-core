@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
 use crate::error::ComponentError;
-use crate::key::{app_updater_key_line, TrustRoot, PRODUCTION_COMPONENT_PUBKEY};
+use crate::key::{
+    app_updater_key_line, is_same_key_as_any, TrustRoot, PRODUCTION_COMPONENT_PUBKEY,
+};
 use crate::manifest::{is_https_url, verify_detached};
 
 pub const CATALOG_SCHEMA: u32 = 1;
@@ -102,17 +104,30 @@ pub fn catalog_trust_root() -> Result<TrustRoot, CatalogError> {
     catalog_trust_root_from(PRODUCTION_CATALOG_PUBKEY)
 }
 
-/// [`catalog_trust_root`] over a given slot (the slot value is a compile-time constant in
-/// production; this form lets the key-separation rule be tested).
+/// [`catalog_trust_root`] over a given slot, refusing the app-updater key and the production
+/// component key (when that slot is set).
 pub fn catalog_trust_root_from(slot: Option<&str>) -> Result<TrustRoot, CatalogError> {
-    let key = slot.ok_or(CatalogError::KeyNotIssued)?;
-    let app_key = app_updater_key_line().map_err(from_component)?;
-    let mut forbidden = vec![app_key];
-    if let Some(c) = PRODUCTION_COMPONENT_PUBKEY {
-        forbidden.push(c.trim().to_string());
+    // An empty slot is refused before anything else is read.
+    if slot.is_none() {
+        return Err(CatalogError::KeyNotIssued);
     }
-    let refs: Vec<&str> = forbidden.iter().map(String::as_str).collect();
-    if refs.iter().any(|f| f.trim() == key.trim()) {
+    let app_key = app_updater_key_line().map_err(from_component)?;
+    let mut forbidden = vec![app_key.as_str()];
+    if let Some(c) = PRODUCTION_COMPONENT_PUBKEY {
+        forbidden.push(c);
+    }
+    catalog_trust_root_with(slot, &forbidden)
+}
+
+/// The key-separation rule over an explicit forbidden list (the seam that lets the component-key
+/// branch be tested before the ceremony fills that slot). Keys are compared DECODED: the same
+/// Ed25519 public key under another key id is still the same key.
+pub fn catalog_trust_root_with(
+    slot: Option<&str>,
+    forbidden: &[&str],
+) -> Result<TrustRoot, CatalogError> {
+    let key = slot.ok_or(CatalogError::KeyNotIssued)?;
+    if is_same_key_as_any(key, forbidden) {
         return Err(CatalogError::BadKey(
             "the catalog key must not be the app-updater key or the component key".into(),
         ));

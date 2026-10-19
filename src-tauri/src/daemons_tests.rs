@@ -901,3 +901,27 @@ fn a_run_log_past_the_read_cap_still_yields_its_newest_runs() {
     );
     let _ = std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).expect("dir"));
 }
+
+// K5a — the Store creates a daemon under an id it chose first (so its install record names the
+// daemon before the daemon exists), paused from the first write.
+#[test]
+fn a_daemon_created_under_a_given_id_is_paused_and_the_id_is_single_use() {
+    let mut book = DaemonBook::default();
+    let id = DaemonBook::fresh_id();
+    let input = || DaemonInput {
+        id: None,
+        name: "Daily brief".into(),
+        prompt: "Summarise today.".into(),
+        schedule: "0 8 * * *".into(),
+        budget: None,
+    };
+    let v = book.create_paused_with_id(id.clone(), input(), 1_790_000_000_000, 0).expect("created");
+    assert_eq!(v.id, id);
+    assert!(v.paused);
+    assert_eq!(v.next_run_ms, None);
+    let err = book.create_paused_with_id(id, input(), 1_790_000_000_000, 0).unwrap_err();
+    assert!(err.contains("already in use"), "{err}");
+    let mut edit = input();
+    edit.id = Some("d0".into());
+    assert!(book.create_paused_with_id(DaemonBook::fresh_id(), edit, 1_790_000_000_000, 0).is_err());
+}

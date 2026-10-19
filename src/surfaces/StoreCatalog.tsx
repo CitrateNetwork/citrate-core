@@ -8,6 +8,10 @@
 // now), this sheet shows the declared permissions and budget, the member approves, and the
 // listing installs paused. Removal is one call.
 //
+// No counts: this screen shows no "N skills / N models" figure. Any such figure must read
+// SkillRegistry.totalSkills() / ModelRegistry.totalModels() on chain (UI truth contract §2),
+// never a count of catalog listings.
+//
 // Honest states: no key, fetch failed, signature failed, catalog invalid / expired / older than
 // the one already seen, hash failed, tier-locked, not installable yet, desktop only.
 // =====================================================================
@@ -241,6 +245,7 @@ export const INSTALLED_STATE_TEXT: Record<string, string> = {
   paused: "paused, does nothing until you start it",
   active: "started",
   not_selected: "on this machine, not in use until you select it in Models",
+  installing: "installing",
   missing: "removed outside the Store",
 };
 
