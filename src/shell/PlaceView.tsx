@@ -7,8 +7,9 @@
 import type { ReactNode } from "react";
 import type { Store } from "./store";
 import type { AppState } from "./state";
-import { ACCOUNT_SETTINGS, CONTROLS_SETTINGS, NODE_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
+import { ACCOUNT_SETTINGS, MOVED_CONTROLS_SETTINGS, NODE_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "../surfaces";
+import { ControlsPanel } from "../surfaces/hermes/ControlsPanel";
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "../surfaces";
 
 function TabStrip({ id, items, active, store, sub }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean }) {
@@ -67,10 +68,18 @@ export function NotAvailableYet({ route, title, body, action }: { route: string;
   );
 }
 
-/** Hermes › Controls. Until the Controls panel lands, this tab hosts the Settings sections that
- *  moved here, unchanged: they write the same config they wrote under Settings. */
+/** Hermes › Controls: the Controls panel first, then the five Settings sections that moved here,
+ *  unchanged (they write the same config they wrote under Settings). The panel is not repeated in
+ *  the section list below it, so `settings/hermes` opens this tab on the first moved section. */
 function HermesControlsSlot({ store, s }: { store: Store; s: AppState }) {
-  return <Settings store={store} s={{ ...s, sSec: sectionFor(CONTROLS_SETTINGS, s.sSec) }} sections={CONTROLS_SETTINGS} heading="Controls" />;
+  return (
+    <>
+      <div style={{ padding: "20px 26px 0", maxWidth: 1000 }}>
+        <ControlsPanel store={store} s={s} />
+      </div>
+      <Settings store={store} s={{ ...s, sSec: sectionFor(MOVED_CONTROLS_SETTINGS, s.sSec) }} sections={MOVED_CONTROLS_SETTINGS} heading="Controls" />
+    </>
+  );
 }
 
 /** Open a sub-view of the Node surface (its own Operations / Earning / Pinning switch). */
@@ -138,11 +147,11 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
           action={{ label: "Open the Pinning view", go: openNodeTab(store, "pin") }}
         />
       );
-    case "node/earnings":
+    case "node/rewards":
       return (
         <NotAvailableYet
           route={route}
-          title="Earnings"
+          title="Rewards"
           body="One view of validator, pin and round rewards read from chain is not available in this build. What this build reads today is in the Earning view on Node › Status."
           action={{ label: "Open the Earning view", go: openNodeTab(store, "earn") }}
         />
