@@ -72,7 +72,7 @@ pub(crate) const COMMANDS: [&str; 5] = [
 /// Why a Store call did not go ahead. `code` is one of: `no_key`, `fetch_failed`,
 /// `signature_failed`, `invalid`, `expired`, `rollback`, `hash_failed`, `tier_locked`,
 /// `not_installable`, `not_listed`, `stage_expired`, `changed`, `already_installed`,
-/// `not_installed`, `in_use`, `install_running`, `install_failed`.
+/// `not_installed`, `in_use`, `install_running`, `daemon_running`, `install_failed`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Refusal {
@@ -144,38 +144,88 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// An entitlement expiry in unix seconds: digits (seconds, or milliseconds when >= 1e12) or an
-/// ISO date / date-time (`YYYY-MM-DD` with an optional `THH:MM[:SS]` in UTC). `None` when it
-/// does not parse.
-fn expiry_secs(s: &str) -> Option<u64> {
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        _ => 28,
+    }
+}
+
+/// `n` ASCII digits of `b` from `at`, as a number; `None` unless all are digits.
+fn digits(b: &[u8], at: usize, n: usize) -> Option<i64> {
+    let part = b.get(at..at + n)?;
+    if !part.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(
+        part.iter()
+            .fold(0i64, |acc, d| acc * 10 + i64::from(d - b'0')),
+    )
+}
+
+/// An entitlement expiry in unix seconds, parsed STRICTLY. Accepted: all digits (unix seconds,
+/// or milliseconds when >= 1e12); an RFC 3339 full-date `YYYY-MM-DD` (midnight UTC); or an RFC
+/// 3339 date-time `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)` (`T`/`t`/space, `Z`/`z`), with a real
+/// calendar date, in-range time fields and the offset applied. Anything else (trailing text, a
+/// missing offset, an impossible date) is `None`, which the caller treats as lapsed.
+pub(crate) fn expiry_secs(s: &str) -> Option<u64> {
     let s = s.trim();
-    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+    let b = s.as_bytes();
+    if !b.is_empty() && b.iter().all(u8::is_ascii_digit) {
+        if b.len() > 16 {
+            return None;
+        }
         let n: u64 = s.parse().ok()?;
         return Some(if n >= 1_000_000_000_000 { n / 1000 } else { n });
     }
-    let b = s.as_bytes();
     if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
         return None;
     }
-    let num = |r: std::ops::Range<usize>| -> Option<i64> {
-        let t = s.get(r)?;
-        t.bytes()
-            .all(|c| c.is_ascii_digit())
-            .then(|| t.parse().ok())?
-    };
-    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    let (y, m, d) = (digits(b, 0, 4)?, digits(b, 5, 2)?, digits(b, 8, 2)?);
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
         return None;
     }
-    let mut secs = days_from_civil(y, m, d) * 86_400;
-    if b.len() >= 16 && (b[10] == b'T' || b[10] == b' ') && b[13] == b':' {
-        let (h, mi) = (num(11..13)?, num(14..16)?);
-        secs += h * 3600 + mi * 60;
-        if b.len() >= 19 && b[16] == b':' {
-            secs += num(17..19)?;
-        }
+    let day_secs = days_from_civil(y, m, d) * 86_400;
+    if b.len() == 10 {
+        return u64::try_from(day_secs).ok();
     }
-    u64::try_from(secs).ok()
+    // Date-time: the separator, HH:MM:SS, optional fraction, then the offset, and nothing after.
+    if !matches!(b[10], b'T' | b't' | b' ') || b.len() < 20 || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (h, mi, sec) = (digits(b, 11, 2)?, digits(b, 14, 2)?, digits(b, 17, 2)?);
+    // 60 is a leap second (RFC 3339 §5.7); it counts as the last second of the minute.
+    if h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    let mut i = 19;
+    if b.get(i) == Some(&b'.') {
+        let frac = b[i + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if frac == 0 {
+            return None;
+        }
+        i += 1 + frac;
+    }
+    let offset = match b.get(i..)? {
+        [b'Z'] | [b'z'] => 0,
+        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
+            let (oh, om) = (digits(b, i + 1, 2)?, digits(b, i + 4, 2)?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let o = oh * 3600 + om * 60;
+            if *sign == b'+' {
+                o
+            } else {
+                -o
+            }
+        }
+        _ => return None,
+    };
+    let local = day_secs + h * 3600 + mi * 60 + sec.min(59);
+    u64::try_from(local - offset).ok()
 }
 
 /// The member's rank on the listing ladder (public 0, member 1, enterprise 2), FAIL-CLOSED.
@@ -226,6 +276,47 @@ fn lock_reason(listing: &Listing, rank: i32) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Installers: only kinds with a real target in core today
 // ---------------------------------------------------------------------------
+
+/// K5a: the agent tools each declared permission grants a Store daemon. DENY BY DEFAULT: a
+/// daemon installed from the Store is offered and may call only the tools its approved
+/// permissions map to here; a permission not in this table (or one that names no core tool,
+/// like `local_model` or `files_read`) grants nothing. `app_navigate` is never granted.
+pub(crate) const PERMISSION_TOOLS: &[(&str, &[&str])] = &[
+    ("local_model", &[]),
+    ("memory_read", &["memory_recall", "memory_search"]),
+    ("memory_write", &["memory_assert"]),
+    ("journal_read", &["journal_read"]),
+    ("journal_write", &["journal_append"]),
+    (
+        "chain_read",
+        &[
+            "node_status",
+            "staking_status",
+            "contract_view",
+            "get_verified_source",
+        ],
+    ),
+    ("groups_read", &["groups_list", "group_roster"]),
+    ("models_read", &["models_list"]),
+    ("skills_read", &["skills_list"]),
+    ("calendar_read", &["calendar_list"]),
+    ("sheets_read", &["gsheets_read"]),
+    ("schedule_read", &["schedule_list"]),
+];
+
+/// The tools a set of approved permissions grants (sorted, without duplicates).
+pub(crate) fn tools_for_permissions(permissions: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = permissions
+        .iter()
+        .filter_map(|p| PERMISSION_TOOLS.iter().find(|(id, _)| id == p))
+        .flat_map(|(_, tools)| tools.iter())
+        .filter(|t| **t != "app_navigate")
+        .map(|t| t.to_string())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
 
 /// `None` when the kind installs; otherwise the honest reason it does not yet.
 pub(crate) fn not_installable_reason(kind: ListingKind) -> Option<&'static str> {
@@ -892,12 +983,20 @@ pub(crate) fn install_sync(
         ListingKind::Daemon => Plan::Daemon(
             crate::daemons::DaemonBook::fresh_id(),
             daemon_input(listing, staged.payload.as_deref())?,
+            // The permissions the member approved on the install sheet bind the daemon's tools.
+            tools_for_permissions(
+                &listing
+                    .permissions
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect::<Vec<_>>(),
+            ),
         ),
         ListingKind::Model => Plan::Model(model_target(listing, t)?),
         _ => return Err(refuse("not_installable", "this kind does not install yet")),
     };
     let target = match &plan {
-        Plan::Daemon(id, _) => id.clone(),
+        Plan::Daemon(id, _, _) => id.clone(),
         Plan::Model(file) => file.clone(),
     };
     let mut record = InstallRecord {
@@ -917,7 +1016,7 @@ pub(crate) fn install_sync(
     // 2. The target. On failure the record is taken back out (if even that fails, the record
     //    shows `missing` and Remove clears it).
     let created = match plan {
-        Plan::Daemon(id, input) => create_daemon(id, input, t, now_ms, offset_min),
+        Plan::Daemon(id, input, tools) => create_daemon(id, input, tools, t, now_ms, offset_min),
         Plan::Model(_) => install_model(listing, t, on_progress),
     };
     if let Err(e) = created {
@@ -940,7 +1039,7 @@ pub(crate) fn install_sync(
 }
 
 enum Plan {
-    Daemon(String, crate::daemons::DaemonInput),
+    Daemon(String, crate::daemons::DaemonInput, Vec<String>),
     Model(String),
 }
 
@@ -993,13 +1092,14 @@ fn daemon_input(
 fn create_daemon(
     id: String,
     input: crate::daemons::DaemonInput,
+    allowed_tools: Vec<String>,
     t: &Targets<'_>,
     now_ms: u64,
     offset_min: i32,
 ) -> Result<(), Refusal> {
     // Created paused in one write: the daemon never exists unpaused on disk.
     crate::daemons::with_book_file(&t.daemons_path, true, |book| {
-        book.create_paused_with_id(id, input, now_ms, offset_min)
+        book.create_paused_with_id(id, input, allowed_tools, now_ms, offset_min)
             .map(|_| ())
     })
     .map_err(|e| refuse("install_failed", format!("Could not add the daemon: {e}")))
@@ -1055,6 +1155,7 @@ pub(crate) fn remove_sync(
     root: &Path,
     t: &Targets<'_>,
     listing_id: &str,
+    now_ms: u64,
 ) -> Result<String, Refusal> {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // K5-F: never pull a listing out from under its own install. Checked under the Store lock,
@@ -1079,16 +1180,27 @@ pub(crate) fn remove_sync(
     let rec = st.installs[idx].clone();
     match rec.kind {
         ListingKind::Daemon => {
-            crate::daemons::with_book_file(&t.daemons_path, true, |b| match b.delete(&rec.target) {
-                Ok(()) => Ok(()),
-                Err(e) if e == "no such daemon" => Ok(()),
-                Err(e) => Err(e),
+            // A daemon with a run in flight is not deleted under it: the app stops and waits for
+            // the run first (the Store's Remove does), and core refuses until then.
+            crate::daemons::with_book_file(&t.daemons_path, true, |b| {
+                match b.delete_idle(&rec.target, now_ms) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e == "no such daemon" => Ok(()),
+                    Err(e) => Err(e),
+                }
             })
             .map_err(|e| {
-                refuse(
-                    "install_failed",
-                    format!("Could not remove the daemon: {e}"),
-                )
+                if e == crate::daemons::DAEMON_RUN_IN_FLIGHT {
+                    refuse(
+                        "daemon_running",
+                        "Its run is still going. Stop the run, then remove it.",
+                    )
+                } else {
+                    refuse(
+                        "install_failed",
+                        format!("Could not remove the daemon: {e}"),
+                    )
+                }
             })?
         }
         ListingKind::Model => {
@@ -1294,7 +1406,10 @@ pub async fn store_remove(
 ) -> Result<Outcome<String>, String> {
     crate::blocking::off_main(move || {
         let root = store_root(&app)?;
-        with_targets(&app, |t| Ok(remove_sync(&root, t, &listing_id).into()))
+        let now_ms = now_secs().saturating_mul(1000);
+        with_targets(&app, |t| {
+            Ok(remove_sync(&root, t, &listing_id, now_ms).into())
+        })
     })
     .await
 }

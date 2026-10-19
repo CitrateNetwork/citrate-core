@@ -53,7 +53,10 @@ Core enforces the tier, fail-closed, from the claim-derived `AuthStatus`:
 | `enterprise`, `confidential` | 2 | everything |
 | Any other tier name | -1 | nothing, not even `public` |
 
-An expiry that does not parse counts as lapsed. The tier names are a hard-coded allowlist **on
+An expiry is parsed strictly: all digits (unix seconds, or milliseconds), an RFC 3339 full-date
+(`YYYY-MM-DD`, midnight UTC), or an RFC 3339 date-time with a real calendar date, in-range time
+fields and an explicit offset (`Z` or `±HH:MM`, applied). Anything else, including trailing text
+or a date-time without an offset, counts as lapsed. The tier names are a hard-coded allowlist **on
 purpose**: a tier added in identity later locks its members out of every listing, public
 included, until core ships the new name. Adding a tier to identity therefore needs a core release
 alongside it.
@@ -72,12 +75,43 @@ Verify → stage → review → approve (HIC) → install paused.
   the target fails, the record is taken back out; if only the final confirming write fails, the
   record stays and still tracks the install. Daemons are created paused in one write of the
   daemon book; models are downloaded and verified and not selected.
-- **Remove.** One call, no key. A target removed elsewhere counts as removed. A listing whose
+- **Remove.** One call, no key. A target removed elsewhere counts as removed. For a started
+  daemon the app first pauses it, stops its run and any queued claim of it, and waits until
+  each has ended and been recorded; core refuses to delete a daemon with a run in flight
+  (`daemon_running`) unless that run is past the stale-run release. A run that ends after its
+  daemon is gone is refused and is not written to the journal. A listing whose
   install is still running cannot be removed (K5-F): core refuses it with `install_running`
   and the screen shows "Installing…" instead of Remove until the install ends. A pending record
   left by an install that is no longer running is removable.
 
 Apps, widgets, skills and MCP servers are listed but answer "Not installable yet".
+
+## Daemon permissions bind its tools (deny by default)
+
+A daemon installed from the Store is stored with the tools its approved permissions grant, and
+its runs are offered and may call only those (`store_catalog.rs::PERMISSION_TOOLS`, enforced in
+`src/daemons/turn.ts`). A permission not in the table, or one that names no core tool, grants
+nothing; no permissions means no tools. Every effectful tool it may call still needs the member's
+explicit decision in each run. A daemon the member writes in the Daemons panel keeps the
+member-daemon tool set.
+
+| Permission | Tools |
+|---|---|
+| `local_model` | none (it is where the daemon runs) |
+| `memory_read` | `memory_recall`, `memory_search` |
+| `memory_write` | `memory_assert` |
+| `journal_read` | `journal_read` |
+| `journal_write` | `journal_append` |
+| `chain_read` | `node_status`, `staking_status`, `contract_view`, `get_verified_source` |
+| `groups_read` | `groups_list`, `group_roster` |
+| `models_read` / `skills_read` | `models_list` / `skills_list` |
+| `calendar_read` / `sheets_read` / `schedule_read` | `calendar_list` / `gsheets_read` / `schedule_list` |
+
+Tools the Hermes sidecar hosts itself are outside this list: in a daemon run, shell commands and
+effectful MCP calls are declined (there is no one to approve them), and the session gets no file
+grants. Read-only MCP tools from servers the member enabled are governed by the sidecar; a
+session option to turn sidecar-hosted tools off for Store daemons is a follow-up in
+citrate-agent-runtime.
 
 ## Counts
 

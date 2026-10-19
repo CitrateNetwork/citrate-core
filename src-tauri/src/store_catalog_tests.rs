@@ -228,7 +228,7 @@ impl Fx {
 
     fn fx_remove(&self, id: &str, usage: &Usage) -> Result<String, Refusal> {
         let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> { Box::new(MemTransport(Vec::new())) };
-        remove_sync(&self.root, &self.fx_targets(usage, &transport), id)
+        remove_sync(&self.root, &self.fx_targets(usage, &transport), id, NOW_MS)
     }
 
     fn fx_installed(&self) -> Vec<InstalledView> {
@@ -677,6 +677,157 @@ fn a_pending_record_left_by_an_install_that_is_not_running_is_removable() {
     update_installs(&fx.root, |i| i.push(rec)).expect("seed record");
     assert_eq!(fx.fx_installed()[0].state, "missing");
     assert!(fx.fx_remove("tiny-model", &Usage(None)).is_ok());
+}
+
+// ---- the approved permissions bind the daemon's tools (deny by default) -------------------
+
+#[test]
+fn permissions_map_to_tools_deny_by_default() {
+    let none: Vec<String> = Vec::new();
+    assert!(tools_for_permissions(&none).is_empty(), "no permission, no tool");
+    let local = vec!["local_model".to_string()];
+    assert!(tools_for_permissions(&local).is_empty(), "the local model is not a tool");
+    let unknown = vec!["everything".to_string(), "files_read".to_string()];
+    assert!(tools_for_permissions(&unknown).is_empty(), "unknown and sidecar-only permissions grant nothing here");
+    let mem = vec!["memory_read".to_string(), "local_model".to_string()];
+    assert_eq!(tools_for_permissions(&mem), vec!["memory_recall".to_string(), "memory_search".to_string()]);
+    let journal = vec!["journal_read".to_string()];
+    assert_eq!(tools_for_permissions(&journal), vec!["journal_read".to_string()]);
+    // Never the UI mover, whatever is declared.
+    let all: Vec<String> = PERMISSION_TOOLS.iter().map(|(p, _)| p.to_string()).collect();
+    assert!(!tools_for_permissions(&all).iter().any(|t| t == "app_navigate"));
+}
+
+#[test]
+fn every_mapped_tool_is_a_real_agent_tool() {
+    // AGENT_TOOLS is defined in harness.ts; its memory_search entry lives in knowledgeSearch.ts.
+    let sources = [include_str!("../../src/agent/harness.ts"), include_str!("../../src/agent/knowledgeSearch.ts")];
+    for (perm, tools) in PERMISSION_TOOLS {
+        for t in *tools {
+            let needle = format!("name: \"{t}\"");
+            assert!(sources.iter().any(|s| s.contains(&needle)), "{perm} maps to {t}, which is not an agent tool");
+        }
+    }
+}
+
+fn claim_tools(fx: &Fx, daemon_id: &str) -> Option<Vec<String>> {
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(daemon_id, false, NOW_MS)?;
+        let claims = b.claim_due(NOW_MS + 18 * 3_600_000, 0)?;
+        Ok(claims.into_iter().find(|c| c.daemon_id == daemon_id).map(|c| c.allowed_tools))
+    })
+    .expect("claim")
+    .expect("the daemon is due at 08:00 the next day")
+}
+
+#[test]
+fn a_store_daemon_with_only_local_model_and_files_read_gets_no_tools() {
+    let fx = Fx::standard("perm-none");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let iv = fx.fx_install(&st.stage_id, 1).expect("install");
+    assert_eq!(claim_tools(&fx, &iv.target), Some(Vec::new()), "no memory, journal or any other tool");
+}
+
+#[test]
+fn a_store_daemon_with_memory_read_gets_only_memory_reads() {
+    let fx = Fx::new("perm-mem");
+    let listing = listing_json("mem-brief", "daemon", "public", DAEMON_URL, &daemon_template(), BUDGET)
+        .replace(r#"{"id":"files_read","reason":"Reads the folders you granted."}"#, r#"{"id":"memory_read","reason":"Reads your memory."}"#);
+    fx.fx_publish(&catalog_json(1, &[listing]));
+    fx.fx_view(0);
+    let st = fx.fx_stage("mem-brief", 0).expect("stage");
+    let iv = fx.fx_install(&st.stage_id, 0).expect("install");
+    let tools = claim_tools(&fx, &iv.target).expect("restricted");
+    assert_eq!(tools, vec!["memory_recall".to_string(), "memory_search".to_string()]);
+    assert!(!tools.iter().any(|t| t.starts_with("journal")));
+}
+
+// ---- removing a started daemon ------------------------------------------------------------------
+
+#[test]
+fn removing_a_daemon_with_a_run_in_flight_is_refused_until_the_run_ends() {
+    let fx = Fx::standard("running");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let iv = fx.fx_install(&st.stage_id, 1).expect("install");
+    let at = NOW_MS + 18 * 3_600_000;
+    let run_id = crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(&iv.target, false, NOW_MS)?;
+        Ok(b.claim_due(at, 0)?.remove(0).run_id)
+    })
+    .expect("claimed");
+    let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> { Box::new(MemTransport(Vec::new())) };
+    let usage = Usage(None);
+    let t = fx.fx_targets(&usage, &transport);
+    let err = remove_sync(&fx.root, &t, "daily-brief", at + 1_000).unwrap_err();
+    assert_eq!(err.code, "daemon_running", "{err:?}");
+    assert_eq!(fx.fx_daemon_book().daemons.len(), 1, "still there");
+    // The run ends (the app stopped it); now removal goes ahead.
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.finish_run(&iv.target, &run_id, 0, crate::daemons::RunOutcome::Stopped, "stopped", at + 2_000)
+    })
+    .expect("finished");
+    assert!(remove_sync(&fx.root, &t, "daily-brief", at + 3_000).is_ok());
+    // A completion arriving for the removed daemon is refused.
+    let late = crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.finish_run(&iv.target, &run_id, 0, crate::daemons::RunOutcome::Answered, "late", at + 4_000)
+    });
+    assert!(late.is_err());
+}
+
+#[test]
+fn a_released_stale_run_does_not_block_removal() {
+    let fx = Fx::standard("stale");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let iv = fx.fx_install(&st.stage_id, 1).expect("install");
+    let at = NOW_MS + 18 * 3_600_000;
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(&iv.target, false, NOW_MS)?;
+        b.claim_due(at, 0).map(|_| ())
+    })
+    .expect("claimed");
+    let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> { Box::new(MemTransport(Vec::new())) };
+    let usage = Usage(None);
+    let t = fx.fx_targets(&usage, &transport);
+    assert!(remove_sync(&fx.root, &t, "daily-brief", at + crate::daemons::STALE_RUN_MS + 1).is_ok());
+}
+
+// ---- entitlement expiry is parsed strictly -------------------------------------------------------
+
+#[test]
+fn an_expiry_must_be_a_whole_valid_rfc3339_value() {
+    let ok = |e: &str| member_rank(true, Some("commercial"), Some(e), NOW);
+    // Trailing text, impossible dates and times, and a date-time with no offset all fail closed.
+    for bad in [
+        "2099-01-01garbage",
+        "2099-01-01T00:00:00Zjunk",
+        "2099-02-30",
+        "2027-02-29",
+        "2099-13-01",
+        "2099-01-01T24:00:00Z",
+        "2099-01-01T10:60:00Z",
+        "2099-01-01T10:00:61Z",
+        "2099-01-01T10:00:00",
+        "2099-01-01T10:00Z",
+        "2099-01-01T10:00:00+24:00",
+        "2099-01-01T10:00:00+0100",
+        "2099-1-01",
+        "+2099-01-01",
+        "2099-01-01T10:00:00.Z",
+    ] {
+        assert_eq!(ok(bad), 0, "{bad:?} must count as lapsed");
+    }
+    for good in ["2099-01-01", "2028-02-29", "2099-01-01T10:00:00Z", "2099-01-01t10:00:00.123z", "2099-01-01T10:00:00-05:30"] {
+        assert_eq!(ok(good), 1, "{good:?}");
+    }
+    // The offset is applied: 01:00+02:00 is 23:00 UTC the day before.
+    assert_eq!(expiry_secs("2026-09-21T01:00:00+02:00"), expiry_secs("2026-09-20T23:00:00Z"));
+    assert_eq!(expiry_secs("2026-09-20T23:00:00-01:00"), expiry_secs("2026-09-21T00:00:00Z"));
+    // A just-future local time whose UTC instant is past is lapsed.
+    let past_utc = "2026-09-21T15:00:00+12:00"; // 03:00Z, before NOW (2026-09-21T14:13:20Z)
+    assert_eq!(ok(past_utc), 0);
 }
 
 // ---- wiring --------------------------------------------------------------------------------

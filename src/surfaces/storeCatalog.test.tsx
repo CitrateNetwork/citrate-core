@@ -12,7 +12,7 @@ import {
   CATALOG_STATE_TEXT,
 } from "./StoreCatalog";
 import { Commissary } from "./Commissary";
-import { storeSlice, beginInstall, approveInstall, closeSheet, removeInstall, type StoreSheet } from "../shell/slices/store";
+import { storeSlice, beginInstall, approveInstall, closeSheet, removeInstall, registerDaemonCanceller, type StoreSheet } from "../shell/slices/store";
 import { bridge } from "../bridge";
 import { freshState } from "../shell/state";
 import type { Store } from "../shell/store";
@@ -291,6 +291,47 @@ describe("K5-F: no Remove while an install is in flight", () => {
     await removeInstall("tiny-model");
     expect(remove).toHaveBeenCalledWith("tiny-model");
     expect(storeSlice.get().notice).toContain("still installing");
+  });
+});
+
+describe("removing a started daemon stops its run first", () => {
+  it("cancels the daemon's run (and waits) before asking core to remove it", async () => {
+    vi.restoreAllMocks();
+    closeSheet();
+    const order: string[] = [];
+    registerDaemonCanceller(async (id) => {
+      order.push("cancel:" + id);
+      await new Promise((r) => setTimeout(r, 5));
+      order.push("cancelled:" + id);
+    });
+    vi.spyOn(bridge.store, "remove").mockImplementation(async (id) => {
+      order.push("remove:" + id);
+      return { ok: "removed" };
+    });
+    vi.spyOn(bridge.store, "catalog").mockResolvedValue({
+      state: "no_key", message: null, catalogUrl: "", keyFingerprint: null, sequence: null, expiresAt: null, listings: [],
+    });
+    vi.spyOn(bridge.store, "installed").mockResolvedValue([]);
+    storeSlice.set({
+      installed: [{ listingId: "daily-brief", kind: "daemon", name: "Daily brief", version: "1.0.0", target: "d0a", installedAt: 1, state: "active" }],
+    });
+    await removeInstall("daily-brief");
+    expect(order).toEqual(["cancel:d0a", "cancelled:d0a", "remove:daily-brief"]);
+  });
+
+  it("a cancel that fails stops the removal and says why", async () => {
+    vi.restoreAllMocks();
+    registerDaemonCanceller(async () => {
+      throw new Error("could not stop it");
+    });
+    const remove = vi.spyOn(bridge.store, "remove").mockResolvedValue({ ok: "removed" });
+    storeSlice.set({
+      installed: [{ listingId: "daily-brief", kind: "daemon", name: "Daily brief", version: "1.0.0", target: "d0a", installedAt: 1, state: "active" }],
+    });
+    await removeInstall("daily-brief");
+    expect(remove).not.toHaveBeenCalled();
+    expect(storeSlice.get().notice).toContain("could not stop it");
+    registerDaemonCanceller(null);
   });
 });
 

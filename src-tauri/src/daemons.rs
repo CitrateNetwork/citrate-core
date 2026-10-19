@@ -44,6 +44,9 @@ pub(crate) const COMMANDS: [&str; 8] = [
     "daemon_runs_between",
 ];
 
+/// Why [`DaemonBook::delete_idle`] refused.
+pub(crate) const DAEMON_RUN_IN_FLIGHT: &str = "a run of this daemon is in flight";
+
 /// The file the book lives in, under the app's local data dir.
 pub(crate) const FILE_NAME: &str = "daemons.json";
 /// File format version.
@@ -452,6 +455,11 @@ struct Record {
     #[serde(default)]
     last_token_source: Option<String>,
     running: Option<Running>,
+    /// K5a: the agent tools a Store-installed daemon may be offered and may call, from the
+    /// permissions the member approved at install (deny by default: an empty list is no tools).
+    /// `None` for a daemon the member wrote here, which keeps the member-daemon tool set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allowed_tools: Option<Vec<String>>,
 }
 
 /// One claimed run, handed to the runner.
@@ -464,6 +472,8 @@ pub(crate) struct Claim {
     pub prompt: String,
     pub tokens_allowed: u32,
     pub started_ms: u64,
+    /// K5a: the only tools this run may be offered and call; `None` = the member-daemon set.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// What the UI and the Activity monitor show for one daemon.
@@ -653,11 +663,13 @@ impl DaemonBook {
     }
 
     /// Create a daemon under a given new id (from [`Self::fresh_id`]), PAUSED from the first
-    /// write. Refused when the id is already in use or `input.id` is set.
+    /// write, bound to `allowed_tools` (the tools its approved permissions grant; empty = none).
+    /// Refused when the id is already in use or `input.id` is set.
     pub(crate) fn create_paused_with_id(
         &mut self,
         id: String,
         input: DaemonInput,
+        allowed_tools: Vec<String>,
         now_ms: u64,
         offset_min: i32,
     ) -> Result<DaemonView, String> {
@@ -669,6 +681,7 @@ impl DaemonBook {
         }
         let v = self.save_with_new_id(input, Some(id), now_ms, offset_min)?;
         self.set_paused(&v.id, true, now_ms)?;
+        self.find_mut(&v.id)?.allowed_tools = Some(allowed_tools);
         self.view(&v.id, now_ms, offset_min)
             .ok_or_else(|| "internal: the saved daemon is missing".to_string())
     }
@@ -733,12 +746,26 @@ impl DaemonBook {
                     last_note: None,
                     last_token_source: None,
                     running: None,
+                    allowed_tools: None,
                 });
                 id
             }
         };
         self.view(&id, now_ms, offset_min)
             .ok_or_else(|| "internal: the saved daemon is missing".to_string())
+    }
+
+    /// K5a: delete a daemon only when no run of it is in flight. A run the app has not reported
+    /// back within [`STALE_RUN_MS`] no longer counts (the same release `claim_due` applies).
+    pub(crate) fn delete_idle(&mut self, id: &str, now_ms: u64) -> Result<(), String> {
+        if let Some(r) = self.records.iter().find(|r| r.id == id) {
+            if let Some(run) = &r.running {
+                if now_ms < run.started_ms.saturating_add(STALE_RUN_MS) {
+                    return Err(DAEMON_RUN_IN_FLIGHT.into());
+                }
+            }
+        }
+        self.delete(id)
     }
 
     pub(crate) fn delete(&mut self, id: &str) -> Result<(), String> {
@@ -822,6 +849,7 @@ impl DaemonBook {
                 prompt: r.prompt.clone(),
                 tokens_allowed,
                 started_ms: now_ms,
+                allowed_tools: r.allowed_tools.clone(),
             });
         }
         Ok(claims)

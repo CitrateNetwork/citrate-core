@@ -302,3 +302,71 @@ describe("daemon runner: pausing claims that have not started yet (review)", () 
     expect(api.finished.map((f) => f.outcome)).toEqual(["stopped", "answered"]);
   });
 });
+
+describe("cancelling a daemon before it is removed", () => {
+  it("cancel aborts the run in flight and resolves only after its end is recorded", async () => {
+    const api = fakeApi([[claim()]]);
+    let started!: () => void;
+    const begun = new Promise<void>((res) => (started = res));
+    const turn: DaemonTurn = (_c, signal) =>
+      new Promise((_, reject) => {
+        started();
+        // The turn takes a moment to unwind after the abort.
+        signal.addEventListener("abort", () => setTimeout(() => reject(new TurnStopped()), 5));
+      });
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    await r.cancel("d1");
+    // By the time cancel resolves the run is over and recorded: nothing is left to finish later.
+    expect(api.setPaused).toHaveBeenCalledWith("d1", true, 0);
+    expect(api.finished).toHaveLength(1);
+    expect(api.finished[0].outcome).toBe("stopped");
+    expect(r.state().running).toBeNull();
+    await t;
+    expect(api.finished).toHaveLength(1);
+  });
+
+  it("cancel holds back a claim still queued in this tick and waits for it", async () => {
+    const api = fakeApi([[claim(), claim({ daemonId: "d2", runId: "r2" })]]);
+    let started!: () => void;
+    const begun = new Promise<void>((res) => (started = res));
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    const ran: string[] = [];
+    const turn: DaemonTurn = async (c) => {
+      ran.push(c.daemonId);
+      if (c.daemonId === "d1") {
+        started();
+        await gate;
+      }
+      return "done";
+    };
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    const cancelled = r.cancel("d2");
+    release();
+    await cancelled;
+    expect(ran).toEqual(["d1"]);
+    expect(api.finished.find((f) => f.id === "d2")?.outcome).toBe("stopped");
+    await t;
+  });
+
+  it("cancel of a daemon with nothing in flight resolves at once", async () => {
+    const api = fakeApi([]);
+    const r = createDaemonRunner(deps(api, async () => "x"));
+    await r.cancel("d9");
+    expect(api.setPaused).toHaveBeenCalledWith("d9", true, 0);
+  });
+
+  it("a run whose end core refuses (the daemon is gone) is not written to the journal", async () => {
+    const api = fakeApi([[claim()]]);
+    (api.finishRun as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("no such daemon"));
+    const onFinished = vi.fn();
+    const r = createDaemonRunner(deps(api, async () => "answer", { onFinished }));
+    await r.tick();
+    expect(onFinished).not.toHaveBeenCalled();
+    expect(r.state().error).toMatch(/no such daemon/);
+  });
+});

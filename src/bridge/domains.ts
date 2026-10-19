@@ -2261,6 +2261,7 @@ export type StoreRefusalCode =
   | "not_installed"
   | "in_use"
   | "install_running"
+  | "daemon_running"
   | "install_failed"
   | "desktop_only";
 

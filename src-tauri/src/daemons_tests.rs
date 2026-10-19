@@ -915,13 +915,13 @@ fn a_daemon_created_under_a_given_id_is_paused_and_the_id_is_single_use() {
         schedule: "0 8 * * *".into(),
         budget: None,
     };
-    let v = book.create_paused_with_id(id.clone(), input(), 1_790_000_000_000, 0).expect("created");
+    let v = book.create_paused_with_id(id.clone(), input(), Vec::new(), 1_790_000_000_000, 0).expect("created");
     assert_eq!(v.id, id);
     assert!(v.paused);
     assert_eq!(v.next_run_ms, None);
-    let err = book.create_paused_with_id(id, input(), 1_790_000_000_000, 0).unwrap_err();
+    let err = book.create_paused_with_id(id, input(), Vec::new(), 1_790_000_000_000, 0).unwrap_err();
     assert!(err.contains("already in use"), "{err}");
     let mut edit = input();
     edit.id = Some("d0".into());
-    assert!(book.create_paused_with_id(DaemonBook::fresh_id(), edit, 1_790_000_000_000, 0).is_err());
+    assert!(book.create_paused_with_id(DaemonBook::fresh_id(), edit, Vec::new(), 1_790_000_000_000, 0).is_err());
 }

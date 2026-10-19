@@ -5,7 +5,10 @@
 //   - it runs on the LOCAL model only, in the Hermes sidecar loop (HUP-S1.1: the webview has no
 //     tool loop for the local model). A daemon's spend budget is 0, so it never uses a paid
 //     gateway. While the sidecar is down, daemon runs wait and say why.
-//   - it gets every agent tool except `app_navigate` (it never moves the member's screen).
+//   - it gets every agent tool except `app_navigate` (it never moves the member's screen). A daemon
+//     installed from the Store is bound to the tools its approved permissions grant (the claim's
+//     `allowedTools`, set in core at install): DENY BY DEFAULT, only those are offered and only
+//     those run; an empty list is no tools at all.
 //   - read-only tools run as in chat. EVERY other tool call is marked HIC-required, so it goes to
 //     the member as an explicit decision (an approval card or the SignatureCeremony), with the
 //     daemon's name in the reason. Nothing that changes state, and nothing that signs, happens
@@ -32,6 +35,13 @@ import type { Claim } from "./api";
 
 /** The tools a daemon turn is offered: every agent tool except moving the UI. */
 export const DAEMON_TOOLS = AGENT_TOOLS.filter((t) => t.function.name !== "app_navigate");
+
+/** The tools offered to one run: the member-daemon set, or exactly the approved ones. */
+export function daemonToolsFor(allowed: readonly string[] | null | undefined) {
+  if (allowed == null) return DAEMON_TOOLS;
+  const ok = new Set(allowed);
+  return DAEMON_TOOLS.filter((t) => ok.has(t.function.name));
+}
 
 /** Added to the system prompt of every daemon run. */
 export const DAEMON_PREAMBLE =
@@ -74,8 +84,9 @@ export function daemonToolDecision(
   call: ToolCall,
   daemonName: string,
   sidecarMeta?: ToolCallMeta,
+  allowed?: readonly string[] | null,
 ): { run: false; result: string } | { run: true; meta: ToolCallMeta | undefined } {
-  if (call.name === "app_navigate" || !annotationFor(call.name)) {
+  if (call.name === "app_navigate" || !annotationFor(call.name) || (allowed != null && !allowed.includes(call.name))) {
     return { run: false, result: `${call.name} is not available in a scheduled daemon run; nothing was done.` };
   }
   if (READ_ONLY_AGENT_TOOLS.has(call.name)) return { run: true, meta: sidecarMeta };
@@ -88,15 +99,16 @@ export function daemonToolDecision(
   };
 }
 
-function annotatedDaemonTools() {
-  return DAEMON_TOOLS.map((t) => ({ ...t, annotations: AGENT_TOOL_ANNOTATIONS[t.function.name] }));
+function annotatedDaemonTools(allowed: readonly string[] | null | undefined) {
+  return daemonToolsFor(allowed).map((t) => ({ ...t, annotations: AGENT_TOOL_ANNOTATIONS[t.function.name] }));
 }
 
 /** Run one claimed daemon turn and return its reply. Rejects when stopped or when it fails. */
 export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: TokenMeter, deps: DaemonTurnDeps): Promise<string> {
   const system = deps.systemPrompt() + DAEMON_PREAMBLE;
   const task = `Scheduled daemon "${claim.name}". Task:\n\n${claim.prompt}`;
-  const toolsJson = JSON.stringify(DAEMON_TOOLS);
+  const allowed = claim.allowedTools ?? null;
+  const toolsJson = JSON.stringify(daemonToolsFor(allowed));
   const opened: string[] = [];
   let provider: ChatProvider;
   if (deps.providerKind === "sidecar" && deps.sidecar) {
@@ -114,7 +126,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         stop: sc.stop,
       },
       () => system,
-      () => annotatedDaemonTools(),
+      () => annotatedDaemonTools(allowed),
     );
   } else if (deps.providerKind === "local") {
     throw new Error(DAEMON_NEEDS_HERMES);
@@ -137,7 +149,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         onToolCall: async (call, meta) => {
           throwIfStopped(signal);
           meter.context(call.arguments.length);
-          const d = daemonToolDecision(call, claim.name, meta);
+          const d = daemonToolDecision(call, claim.name, meta, allowed);
           const out = d.run ? await deps.handleTool(call, d.meta, signal) : d.result;
           meter.context(out.length);
           return out;

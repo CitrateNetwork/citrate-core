@@ -102,6 +102,7 @@ export const REFUSAL_TITLE: Record<string, string> = {
   not_installed: "Not installed",
   in_use: "In use",
   install_running: "Still installing",
+  daemon_running: "Its run is still going",
   install_failed: "The install did not finish",
   desktop_only: "The Store needs the desktop app",
 };

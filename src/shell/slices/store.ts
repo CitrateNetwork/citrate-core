@@ -57,6 +57,14 @@ export const storeSlice = createSlice<StoreState>(initial);
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** Stops a daemon's run and waits for it (the daemon runner registers this in the app). */
+type DaemonCanceller = (daemonId: string) => Promise<void>;
+let cancelDaemon: DaemonCanceller | null = null;
+
+export function registerDaemonCanceller(f: DaemonCanceller | null): void {
+  cancelDaemon = f;
+}
+
 /** Fetch and verify the catalog, and read what is installed. */
 export async function refreshStore(): Promise<void> {
   storeSlice.set({ loading: true, error: null });
@@ -136,6 +144,17 @@ export async function removeInstall(listingId: string): Promise<void> {
     return;
   }
   storeSlice.set({ removing: listingId, notice: null });
+  // A started daemon's run (and any queued claim of it) is stopped and waited for before core
+  // deletes it; if it cannot be stopped, nothing is removed.
+  const rec = storeSlice.get().installed.find((i) => i.listingId === listingId);
+  if (rec?.kind === "daemon" && cancelDaemon) {
+    try {
+      await cancelDaemon(rec.target);
+    } catch (e) {
+      storeSlice.set({ removing: null, notice: "Could not stop its run, so it was not removed: " + msg(e) });
+      return;
+    }
+  }
   try {
     const out = await bridge.store.remove(listingId);
     storeSlice.set({ removing: null, notice: out.ok ?? out.refused?.message ?? null });
