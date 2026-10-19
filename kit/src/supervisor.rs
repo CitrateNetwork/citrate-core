@@ -784,6 +784,26 @@ impl Cell {
         }
     }
 
+    /// Publish a legacy state and its phase. A committed Stop owns the phase until it settles
+    /// (`Stopping`, then `Stopped` or `Quarantined`); a late state write from the monitor does
+    /// not overwrite it.
+    fn apply_state(&mut self, state: SupervisorState) {
+        let stop_pending = self.desired == Desired::Stopped
+            && matches!(self.phase, Phase::Stopping | Phase::Quarantined);
+        self.status.state = state.clone();
+        self.touch();
+        if stop_pending {
+            return;
+        }
+        self.phase = match state {
+            SupervisorState::Off => Phase::Stopped,
+            SupervisorState::Starting => Phase::Starting,
+            SupervisorState::Running => Phase::Alive,
+            SupervisorState::Backoff { .. } => Phase::Backoff,
+            SupervisorState::Failed => Phase::Failed,
+        };
+    }
+
     fn touch(&mut self) {
         self.revision = self.revision.saturating_add(1);
     }
@@ -972,23 +992,7 @@ impl Shared {
     }
 
     fn set_state(&self, state: SupervisorState) {
-        let mut c = self.lock();
-        // A committed Stop owns the phase until it settles (`Stopping`, then `Stopped` or
-        // `Quarantined`); a late state write from the monitor does not overwrite it.
-        let stop_pending = c.desired == Desired::Stopped
-            && matches!(c.phase, Phase::Stopping | Phase::Quarantined);
-        c.status.state = state.clone();
-        c.touch();
-        if stop_pending {
-            return;
-        }
-        c.phase = match state {
-            SupervisorState::Off => Phase::Stopped,
-            SupervisorState::Starting => Phase::Starting,
-            SupervisorState::Running => Phase::Alive,
-            SupervisorState::Backoff { .. } => Phase::Backoff,
-            SupervisorState::Failed => Phase::Failed,
-        };
+        self.lock().apply_state(state);
     }
 
     fn snapshot(&self) -> SupervisorStatus {
@@ -2255,17 +2259,22 @@ fn after_teardown(shared: &Shared) {
 
 /// The retry budget for intent `seq` is spent: Failed, and a pending Start receipt says why.
 fn enter_failed(shared: &Shared, seq: u64, reason: &str) {
-    shared.set_state(SupervisorState::Failed);
+    // One critical section: a Start that lands after the Failed phase is visible must find the
+    // failing intent already settled, so it commits a fresh intent instead of joining this one.
+    {
+        let mut c = shared.lock();
+        c.apply_state(SupervisorState::Failed);
+        c.settle(
+            seq,
+            IntentKind::Start,
+            Receipt::Failed {
+                reason: reason.to_string(),
+            },
+        );
+    }
     if let Some(barrier) = &shared.failed_barrier {
         barrier();
     }
-    shared.lock().settle(
-        seq,
-        IntentKind::Start,
-        Receipt::Failed {
-            reason: reason.to_string(),
-        },
-    );
 }
 
 /// What a Stop's teardown resolved, for its `Complete` scope.
