@@ -172,6 +172,33 @@ fn harness_sweep_finds_marked_processes_missing_from_the_record() {
     assert!(!pid_alive(unrecorded));
 }
 
+/// The harness never signals pid 0 (this test's own process group) or a pid that would wrap
+/// negative, whatever a pid file or a record contains.
+#[test]
+fn harness_never_signals_pid_zero_or_a_wrapping_pid() {
+    use lifecycle::fixture::{kill, positive_pid};
+    assert_eq!(positive_pid(0), None);
+    assert_eq!(positive_pid(u32::MAX), None);
+    assert_eq!(positive_pid(i32::MAX as u32 + 1), None);
+    assert_eq!(
+        positive_pid(std::process::id()),
+        i32::try_from(std::process::id()).ok()
+    );
+    // Signal 0 only probes, so a broken guard here could not hurt the test runner.
+    assert!(!kill(0, 0));
+    assert!(!kill(u32::MAX, 0));
+    assert!(!pid_alive(0) && !pid_alive(u32::MAX));
+    // A recorded 0 is skipped by cleanup, never signalled.
+    let fx = OwnedFixture::new("pidzero");
+    fx.record(0);
+    fx.record(u32::MAX);
+    let report = fx.assert_clean();
+    assert!(
+        report.signalled.is_empty() && report.foreign.is_empty(),
+        "{report:?}"
+    );
+}
+
 /// Waits and observation windows are measured on the monotonic clock and never end early.
 #[test]
 fn harness_timing_windows_are_monotonic_and_never_short() {
@@ -997,6 +1024,7 @@ fn late_spawn_after_stop_goes_straight_to_teardown() {
     assert_eq!(held.open_tickets, 1, "the admitted spawn is an open ticket");
     let start = ControlToken {
         app_epoch: held.app_epoch,
+        instance: held.instance,
         intent_sequence: 1,
     };
     let stop = match sup.request_stop() {
@@ -1076,9 +1104,13 @@ fn a_start_overtaken_during_its_spawn_reads_superseded() {
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     gate.wait_entered(1);
-    let epoch = sup.lifecycle().map(|l| l.app_epoch).unwrap_or_default();
+    let (epoch, instance) = sup
+        .lifecycle()
+        .map(|l| (l.app_epoch, l.instance))
+        .unwrap_or_default();
     let start = ControlToken {
         app_epoch: epoch,
+        instance,
         intent_sequence: 1,
     };
     assert!(matches!(sup.request_stop(), ControlResult::Accepted(_)));

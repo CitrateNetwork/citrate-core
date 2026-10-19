@@ -44,6 +44,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
         readiness: Readiness::NotAssessed,
         desired: Desired::Stopped,
         app_epoch: u64::MAX,
+        instance: 7,
         intent_sequence: 9_007_199_254_740_993, // 2^53 + 1: not exact as a JS number
         generation: 1,
         incarnation: 2,
@@ -55,6 +56,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
     };
     let v = serde_json::to_value(&snap).unwrap_or_default();
     assert_eq!(v["appEpoch"], "18446744073709551615");
+    assert_eq!(v["instance"], "7");
     assert_eq!(v["intentSequence"], "9007199254740993");
     assert_eq!(v["generation"], "1");
     assert_eq!(v["incarnation"], "2");
@@ -162,6 +164,7 @@ fn start_receipt_reports_failed_and_foreign_tokens_are_expired() {
     assert_eq!(snap.intent_sequence, 1);
     let first = ControlToken {
         app_epoch: snap.app_epoch,
+        instance: snap.instance,
         intent_sequence: 1,
     };
     assert!(
@@ -171,11 +174,13 @@ fn start_receipt_reports_failed_and_foreign_tokens_are_expired() {
     );
     let other_run = ControlToken {
         app_epoch: snap.app_epoch.wrapping_add(1),
+        instance: snap.instance,
         intent_sequence: 1,
     };
     assert_eq!(sup.receipt(other_run), Receipt::Expired);
     let never_issued = ControlToken {
         app_epoch: snap.app_epoch,
+        instance: snap.instance,
         intent_sequence: 99,
     };
     assert_eq!(sup.receipt(never_issued), Receipt::Expired);
@@ -275,6 +280,7 @@ fn a_deadline_read_compares_the_monotonic_clock_without_the_publisher() {
     std::thread::sleep(Duration::from_millis(40));
     let token = ControlToken {
         app_epoch: 1,
+        instance: 1,
         intent_sequence: 1,
     };
     assert_eq!(p.record_state(1, token), Some(DeadlineState::Armed), "never marked");
@@ -288,6 +294,7 @@ fn a_stale_expiry_mark_never_applies_to_a_rewritten_record() {
     p.observe(); // marks the expired record
     let a = ControlToken {
         app_epoch: 1,
+        instance: 1,
         intent_sequence: 1,
     };
     assert_eq!(p.record_state(1, a), Some(DeadlineState::Expired));
@@ -295,6 +302,7 @@ fn a_stale_expiry_mark_never_applies_to_a_rewritten_record() {
     assert!(p.arm(2, 1, 5, Duration::from_secs(60)), "the same record, rewritten");
     let b = ControlToken {
         app_epoch: 1,
+        instance: 2,
         intent_sequence: 5,
     };
     assert_eq!(p.record_state(2, b), Some(DeadlineState::Armed));
@@ -308,6 +316,7 @@ fn the_publisher_marks_expiry_within_its_cadence() {
     assert!(p.arm(3, 1, 1, Duration::from_millis(30)));
     let token = ControlToken {
         app_epoch: 1,
+        instance: 3,
         intent_sequence: 1,
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -340,7 +349,67 @@ fn releasing_an_owner_frees_only_its_records() {
     assert_eq!(p.armed_records(), 1);
     let other = ControlToken {
         app_epoch: 1,
+        instance: 6,
         intent_sequence: 1,
     };
     assert_eq!(p.record_state(6, other), Some(DeadlineState::Armed));
+}
+
+/// Identical concurrent Starts after Failed join one intent: none supersedes another.
+#[test]
+fn concurrent_starts_after_failed_join_one_intent() {
+    for round in 0..20 {
+        let sup = Arc::new(
+            Supervisor::start(missing_bin_config(&format!("join-{round}"), 0)).expect("start"),
+        );
+        sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+        let starters: Vec<_> = (0..4)
+            .map(|_| {
+                let s = sup.clone();
+                std::thread::spawn(move || s.request_start())
+            })
+            .collect();
+        let tokens: Vec<ControlToken> = starters
+            .into_iter()
+            .filter_map(|t| t.join().ok())
+            .filter_map(|r| match r {
+                ControlResult::Accepted(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        for t in &tokens {
+            assert_ne!(
+                wait_receipt(&sup, *t),
+                Receipt::Superseded,
+                "round {round}: a concurrent identical Start superseded another: {tokens:?}"
+            );
+        }
+    }
+}
+
+/// A token is bound to the supervisor that issued it: another supervisor (another service, or
+/// a replacement for the same one) never answers for it.
+#[test]
+fn a_token_is_only_answered_by_the_supervisor_that_issued_it() {
+    let a = Supervisor::start(missing_bin_config("token-a", 0)).expect("start a");
+    let b = Supervisor::start(missing_bin_config("token-b", 0)).expect("start b");
+    a.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    b.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let ta = match a.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("{other:?}"),
+    };
+    let tb = match b.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(wait_receipt(&a, ta), Receipt::Complete { .. }));
+    assert!(matches!(wait_receipt(&b, tb), Receipt::Complete { .. }));
+    assert_eq!(b.receipt(ta), Receipt::Expired, "B never answers for A's token");
+    assert_eq!(a.receipt(tb), Receipt::Expired, "A never answers for B's token");
+    drop(a);
+    let a2 = Supervisor::start(missing_bin_config("token-a", 0)).expect("start a2");
+    a2.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let _ = a2.request_stop();
+    assert_eq!(a2.receipt(ta), Receipt::Expired, "a replacement never answers for the old one");
 }

@@ -416,13 +416,20 @@ impl Drop for OwnedFixture {
 
 /// Whether `pid` names a live process. A zombie (exited, not yet reaped) is not alive.
 pub fn pid_alive(pid: u32) -> bool {
-    if pid == 0 {
+    let Some(target) = positive_pid(pid) else {
         return false;
-    }
-    // SAFETY: kill(pid, 0) checks existence and permission without delivering a signal.
-    let exists = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+    };
+    // SAFETY: kill(target, 0) on a positive pid checks existence and permission without
+    // delivering a signal.
+    let exists = unsafe { libc::kill(target, 0) } == 0
         || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
     exists && !is_zombie(pid)
+}
+
+/// `pid` as a positive `pid_t`, or `None` for 0 (the caller's process group) and values above
+/// `i32::MAX` (which would wrap to a negative pid: a group, or every process for -1).
+pub fn positive_pid(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)
 }
 
 fn is_zombie(pid: u32) -> bool {
@@ -467,10 +474,11 @@ pub fn pgrep(pattern: &str) -> Vec<u32> {
         .collect()
 }
 
-pub fn kill(pid: u32, signal: i32) {
-    // SAFETY: kill(2) with a pid and a signal number has no memory effects. Callers check the
-    // marker first, so only fixture processes are signalled.
-    unsafe {
-        libc::kill(pid as libc::pid_t, signal);
-    }
+pub fn kill(pid: u32, signal: i32) -> bool {
+    let Some(target) = positive_pid(pid) else {
+        return false;
+    };
+    // SAFETY: kill(2) with a positive pid and a signal number has no memory effects. Callers
+    // check the marker first, so only fixture processes are signalled.
+    unsafe { libc::kill(target, signal) == 0 }
 }
