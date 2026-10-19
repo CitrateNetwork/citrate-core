@@ -316,3 +316,31 @@ fn the_publisher_marks_expiry_within_its_cadence() {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
+#[test]
+fn joining_a_deadline_only_ever_tightens_it() {
+    let p = idle_publisher();
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(60)), "arms when absent");
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)), "a looser join is accepted");
+    assert_eq!(p.expired(4, 1, 1), Some(false));
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::ZERO), "a tighter join moves it earlier");
+    assert_eq!(p.expired(4, 1, 1), Some(true));
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)));
+    assert_eq!(p.expired(4, 1, 1), Some(true), "never moved later again");
+    assert_eq!(p.armed_records(), 1);
+}
+
+#[test]
+fn releasing_an_owner_frees_only_its_records() {
+    let p = idle_publisher();
+    assert!(p.arm(5, 1, 1, Duration::from_secs(60)));
+    assert!(p.arm(5, 1, 2, Duration::from_secs(60)));
+    assert!(p.arm(6, 1, 1, Duration::from_secs(60)));
+    p.release_owner(5);
+    assert_eq!(p.armed_records(), 1);
+    let other = ControlToken {
+        app_epoch: 1,
+        intent_sequence: 1,
+    };
+    assert_eq!(p.record_state(6, other), Some(DeadlineState::Armed));
+}

@@ -1573,8 +1573,7 @@ fn a_deadline_stop_joining_a_plain_stop_applies_the_tighter_deadline() {
     let publisher = DeadlinePublisher::start(Duration::from_millis(20));
     let sups: Vec<Supervisor> = (0..2)
         .map(|i| {
-            let mut cfg =
-                stubborn_config(&fx, &format!("lcf-join-{i}"), Duration::from_millis(1500));
+            let mut cfg = stubborn_config(&fx, &format!("lcf-join-{i}"), Duration::from_secs(4));
             cfg.deadlines = Some(publisher.clone());
             Supervisor::start(cfg)
                 .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"))
@@ -1603,11 +1602,11 @@ fn a_deadline_stop_joining_a_plain_stop_applies_the_tighter_deadline() {
     );
     assert_eq!(publisher.armed_records(), 2, "one record per Stop");
     assert_eq!(
-        settle(&sups[0], plain, Duration::from_secs(5)),
+        settle(&sups[0], plain, Duration::from_secs(10)),
         Receipt::DeadlineExpired
     );
     assert_eq!(
-        settle(&sups[1], loose, Duration::from_secs(5)),
+        settle(&sups[1], loose, Duration::from_secs(10)),
         Receipt::DeadlineExpired
     );
     drop(sups);

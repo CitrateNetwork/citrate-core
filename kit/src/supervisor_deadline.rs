@@ -209,6 +209,44 @@ impl DeadlinePublisher {
         false
     }
 
+    /// Arm (owner, epoch, seq), or, if it already has a record, move its deadline earlier when
+    /// `within` is tighter. A deadline is never moved later. `false` if a new record was needed
+    /// and every record is in use.
+    fn arm_or_tighten(&self, owner: u64, epoch: u64, seq: u64, within: Duration) -> bool {
+        let deadline_ns = self
+            .now_ns()
+            .saturating_add(u64::try_from(within.as_nanos()).unwrap_or(u64::MAX));
+        for r in &self.records {
+            if r.state.load(Ordering::Acquire) == REC_ARMED
+                && r.owner.load(Ordering::Acquire) == owner
+                && r.epoch.load(Ordering::Acquire) == epoch
+                && r.seq.load(Ordering::Acquire) == seq
+            {
+                if deadline_ns < r.deadline_ns.load(Ordering::Acquire) {
+                    r.version.fetch_add(1, Ordering::AcqRel);
+                    r.deadline_ns.store(deadline_ns, Ordering::Release);
+                    r.version.fetch_add(1, Ordering::AcqRel);
+                    self.wake();
+                }
+                return true;
+            }
+        }
+        self.arm(owner, epoch, seq, within)
+    }
+
+    /// Free every record held by `owner` (a supervisor that is being dropped).
+    fn release_owner(&self, owner: u64) {
+        for r in &self.records {
+            if r.state.load(Ordering::Acquire) == REC_ARMED
+                && r.owner.load(Ordering::Acquire) == owner
+            {
+                let epoch = r.epoch.load(Ordering::Acquire);
+                let seq = r.seq.load(Ordering::Acquire);
+                self.release(owner, epoch, seq);
+            }
+        }
+    }
+
     /// Free the record of (owner, epoch, seq), if there is one.
     fn release(&self, owner: u64, epoch: u64, seq: u64) {
         for r in &self.records {

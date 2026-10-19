@@ -730,6 +730,9 @@ struct Cell {
     /// (bounded at [`MAX_SCOPE_PUBLICATIONS`]).
     resolved_publications: Vec<String>,
     next_ticket: u64,
+    /// Set by shutdown: whether a log reader was still held when the monitor exited. `None`
+    /// until then.
+    closed_readers_held: Option<bool>,
 }
 
 impl Cell {
@@ -1066,6 +1069,7 @@ impl Supervisor {
                 publications: Vec::new(),
                 resolved_publications: Vec::new(),
                 next_ticket: 1,
+                closed_readers_held: None,
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1112,12 +1116,29 @@ impl Supervisor {
             return ControlResult::RejectedClosing;
         }
         if c.desired == Desired::Stopped {
+            // Joining a pending Stop (plain or with a deadline) applies this deadline to it if
+            // it is the tighter one.
+            if let Some((token, IntentKind::Stop)) = c.active {
+                if !self.deadlines.arm_or_tighten(
+                    self.owner,
+                    token.app_epoch,
+                    token.intent_sequence,
+                    within,
+                ) {
+                    return ControlResult::Busy;
+                }
+                return ControlResult::Accepted(token);
+            }
             return c.repeated_stop(self.shared.epoch);
         }
         let seq = c.intent_sequence.saturating_add(1);
-        if !self
-            .deadlines
-            .arm(self.owner, self.shared.epoch, seq, within)
+        // With the monitor gone nothing would ever settle (and so free) a deadline record: the
+        // Stop is committed without one and reported ObservationUnknown.
+        let monitor_alive = self.monitor_running();
+        if monitor_alive
+            && !self
+                .deadlines
+                .arm(self.owner, self.shared.epoch, seq, within)
         {
             return ControlResult::Busy;
         }
@@ -1515,6 +1536,15 @@ fn release_publication(shared: &Shared, id: u64) {
                 c.resolved_publications.push(format!("publication:{name}"));
             }
         }
+        // After shutdown no monitor reconciles a quarantine: the last ticket's release does,
+        // when nothing else (a held reader) was left at shutdown.
+        if c.closed_readers_held == Some(false)
+            && c.publications.is_empty()
+            && c.quarantine.is_some()
+        {
+            c.quarantine = None;
+            c.phase = Phase::Stopped;
+        }
         c.wake = true;
         c.touch();
     }
@@ -1526,6 +1556,8 @@ impl Drop for Supervisor {
     /// joins it, so the child is dead before the process exits.
     fn drop(&mut self) {
         self.shutdown();
+        // Nothing can settle this supervisor's controls any more: free its deadline records.
+        self.deadlines.release_owner(self.owner);
     }
 }
 
@@ -2238,10 +2270,18 @@ fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornD
 /// Shutdown: the child is already torn down. Settle what is pending without waiting (teardown
 /// is bounded by the join timeout), leave the legacy view Off, and let the monitor exit.
 fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: bool) {
-    let remaining = drain_readers(readers, Duration::ZERO);
+    let held_readers = drain_readers(readers, Duration::ZERO);
     let mut c = shared.lock();
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
+    // Open publication tickets are owned work too: shutdown never reports them done.
+    let mut remaining = held_readers.clone();
+    remaining.extend(
+        c.publications
+            .iter()
+            .map(|(_, _, n)| format!("publication:{n}")),
+    );
+    c.closed_readers_held = Some(!held_readers.is_empty());
     if let Some((token, kind)) = c.active {
         let receipt = match kind {
             IntentKind::Start => Receipt::Superseded,
@@ -2251,20 +2291,30 @@ fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: b
                     scope.push("child".to_string());
                 }
                 scope.push("readers".to_string());
+                scope.append(&mut c.resolved_publications);
                 Receipt::Complete { scope }
             }
             IntentKind::Stop => Receipt::Incomplete {
                 remaining: remaining.clone(),
-                reason: "shutdown: a log reader had not reached end of file".to_string(),
+                reason: "shutdown: owned work had not ended (a log reader still open, or a \
+                         credential publication not yet resolved)"
+                    .to_string(),
             },
         };
         c.settle(token.intent_sequence, kind, receipt);
     }
-    c.phase = if remaining.is_empty() {
-        Phase::Stopped
+    if remaining.is_empty() {
+        c.phase = Phase::Stopped;
+        c.quarantine = None;
     } else {
-        Phase::Quarantined
-    };
+        c.phase = Phase::Quarantined;
+        if c.quarantine.is_none() {
+            c.quarantine = Some(format!(
+                "shutdown left owned work running: {}",
+                remaining.join(", ")
+            ));
+        }
+    }
     c.touch();
 }
 
