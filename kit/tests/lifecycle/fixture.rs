@@ -175,6 +175,19 @@ impl OwnedFixture {
         )
     }
 
+    /// A supervised child that starts one long-lived descendant (which inherits its output
+    /// pipes), records both pids, then exits with code 3: a crash that leaves its output open.
+    pub fn crash_with_descendant_spec(&self, name: &str) -> SidecarSpec {
+        SidecarSpec::new(
+            name,
+            sh_bin(),
+            self.sh_args(&format!(
+                "echo $$ >>\"$1\"; {} -f \"$2\" & echo $! >>\"$1\"; exit 3",
+                tail_bin().display()
+            )),
+        )
+    }
+
     /// argv for a parent shell that starts `n` long-lived leaf descendants in the background,
     /// records every pid, then waits. The bug (e) reproduction shape.
     pub fn descendants_args(&self, n: u32) -> Vec<String> {

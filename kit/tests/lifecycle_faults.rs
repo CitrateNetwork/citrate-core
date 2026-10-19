@@ -18,7 +18,7 @@ mod lifecycle;
 use std::time::Duration;
 
 use citrate_core_kit::supervisor::{
-    BackoffPolicy, ChildWatch, ControlResult, Desired, Phase, Receipt, Supervisor,
+    BackoffPolicy, ChildWatch, ControlResult, Desired, HealthCheck, Phase, Receipt, Supervisor,
     SupervisorConfig, SupervisorState,
 };
 use lifecycle::fixture::{pgrep, pid_alive, sleep_bin, OwnedFixture, SUITE_PREFIX};
@@ -719,7 +719,7 @@ fn stop_without_a_monitor_is_observation_unknown() {
     });
     assert!(gone.is_ok(), "INCONCLUSIVE: the monitor did not end");
     let before = sup.lifecycle().map(|l| l.intent_sequence);
-    match sup.request_stop() {
+    let stop = match sup.request_stop() {
         ControlResult::ObservationUnknown(token, reason) => {
             assert!(!reason.is_empty());
             let snap = sup
@@ -731,11 +731,124 @@ fn stop_without_a_monitor_is_observation_unknown() {
                 Desired::Stopped,
                 "the intent is committed and visible"
             );
+            token
         }
         other => panic!("expected ObservationUnknown, got {other:?}"),
+    };
+    // Joining the pending Stop stays ObservationUnknown: never Accepted for a token nobody can
+    // settle.
+    match sup.request_stop() {
+        ControlResult::ObservationUnknown(token, _) => assert_eq!(token, stop),
+        other => panic!("a repeated Stop without a monitor: {other:?}"),
+    }
+    // The legacy stop() returns at once instead of waiting out its bound.
+    let t = Deadline::after(Duration::from_secs(10));
+    sup.stop();
+    assert!(
+        t.elapsed() < Duration::from_secs(1),
+        "stop() took {:?}",
+        t.elapsed()
+    );
+    // A Start, and a Start joining it, are ObservationUnknown too.
+    let start = match sup.request_start() {
+        ControlResult::ObservationUnknown(token, _) => token,
+        other => panic!("a Start without a monitor: {other:?}"),
+    };
+    match sup.request_start() {
+        ControlResult::ObservationUnknown(token, _) => assert_eq!(token, start),
+        other => panic!("a repeated Start without a monitor: {other:?}"),
     }
     drop(sup);
     fx.assert_clean();
+}
+
+/// A child that crashes leaving a descendant holding its output open: after the retry budget
+/// is spent, an explicit Start spawns nothing until the old readers are reconciled.
+#[test]
+fn start_after_a_crash_with_a_held_reader_waits_for_cleanup() {
+    let fx = OwnedFixture::new("crash-held");
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_with_descendant_spec("lcf-crash-held"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.backoff = fast_backoff(0);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let failed = sup.wait_until(|s| *s == SupervisorState::Failed, ACQUIRE);
+    assert_eq!(
+        failed.state,
+        SupervisorState::Failed,
+        "INCONCLUSIVE: {failed:?}"
+    );
+    held_reader_blocks_the_next_start(&sup, &fx);
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A child whose health check keeps failing, leaving a descendant holding its output open:
+/// after the retry budget is spent, an explicit Start spawns nothing until the old readers are
+/// reconciled.
+#[test]
+fn start_after_health_failures_with_a_held_reader_waits_for_cleanup() {
+    let fx = OwnedFixture::new("health-held");
+    let mut spec = fx.descendants_spec("lcf-health-held", 1);
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(50),
+        grace: Duration::ZERO,
+        probe: std::sync::Arc::new(|| false),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(0);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let failed = sup.wait_until(|s| *s == SupervisorState::Failed, ACQUIRE);
+    assert_eq!(
+        failed.state,
+        SupervisorState::Failed,
+        "INCONCLUSIVE: {failed:?}"
+    );
+    held_reader_blocks_the_next_start(&sup, &fx);
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// Shared tail of the two fixtures above: the first incarnation (a parent and one descendant)
+/// has ended and been given up on; its descendant still holds the output pipe.
+fn held_reader_blocks_the_next_start(sup: &Supervisor, fx: &OwnedFixture) {
+    let pids = fx.expect_pids(2, ACQUIRE);
+    let descendant = pids[1];
+    assert!(
+        pid_alive(descendant),
+        "INCONCLUSIVE: the descendant should hold the pipe"
+    );
+    let start = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start after Failed: {other:?}"),
+    };
+    let samples = sample_over(
+        Duration::from_millis(1500),
+        Duration::from_millis(50),
+        || (fx.pidfile_pids().len(), sup.lifecycle().map(|l| l.phase)),
+    );
+    let spawned: Vec<_> = samples
+        .iter()
+        .filter(|(_, (n, phase))| *n != 2 || *phase == Some(Phase::Alive))
+        .collect();
+    assert!(
+        spawned.is_empty(),
+        "a new incarnation started while the old reader was held: {spawned:?}"
+    );
+    assert_eq!(sup.receipt(start), Receipt::Pending);
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    let started = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        (fx.pidfile_pids().len() > 2).then_some(())
+    });
+    assert!(
+        started.is_ok(),
+        "the Start proceeds after cleanup: {:?}",
+        sup.receipt(start)
+    );
 }
 
 /// After shutdown begins, a Start is refused as `RejectedClosing`.
