@@ -7,6 +7,7 @@ import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import book from "../../src-tauri/addresses/40204.json";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -833,7 +834,8 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
       <div className="mono" style={dataSrc}>
-        Data sources — MembershipStakeVault.attributedStake 0x0ace…267e · CitrateMemberSBT.balanceOf 0x7be0…a7c4 · /userinfo entitlement
+        {/* C1-V V9: addresses come from the bundled address book (a reroll moves them). */}
+        Data sources — MembershipStakeVault.attributedStake {short(book.addresses.MembershipStakeVault)} · CitrateMemberSBT.balanceOf {short(book.addresses.CitrateMemberSBT)} · /userinfo entitlement
       </div>
     </div>
   );
@@ -862,8 +864,8 @@ function S6({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S6 · Node ignition</div>
       <div style={h1}>Run your node</div>
       <p style={body}>
-        A full node — it validates, executes, and builds blocks. It runs as a supervised process with encryption at rest on by default, and it survives this window
-        closing.
+        A full node follows the chain, checks and executes every block, and serves your reads locally. It produces blocks only once it is an active validator. It
+        runs as a supervised process with encryption at rest on by default, and it survives this window closing.
       </p>
       <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
         {s.node === "off" && (
@@ -937,17 +939,15 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             )}
           </div>
         )}
-        {/* VALIDATING is now gated on the REAL ValidatorRegistry bond (s.bondedStake
-            from pubkeyOfStaker→stakeOf), not on `hasGrant`. A funded-but-unbonded
-            node is `synced`, not `validating` — so this "eligible for proposer" line
-            only shows when the 32k is genuinely bonded (Rule 1). */}
+        {/* C1-V V4: `validating` is set only from ValidatorRegistry.isActive(pubkey) (UI truth
+            contract §1), never from a stake amount, so this card uses the §1 word. */}
         {s.node === "validating" && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", animation: "ccPulse 2.4s var(--ease-standard) infinite", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Validating</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Validator active</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · bonded {fmtI(s.bondedStake)} SALT ≥ minimum · eligible for proposer election
+                synced · in the active set (ValidatorRegistry.isActive) · stake {fmtI(s.bondedStake)} SALT
               </div>
             </div>
           </div>
@@ -963,11 +963,11 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Synced — not yet a validator</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                bond 32,000 SALT to enter the active set and earn the proposer subsidy
+                stake your membership bond to join the active set at the next epoch snapshot
               </div>
             </div>
             <button className="btn btn-primary" onClick={() => void store.activateValidator()}>
-              Bond 32,000 SALT
+              Stake my bond
             </button>
           </div>
         )}

@@ -36,8 +36,10 @@ export interface AgentContext {
   nodeState: string;
   staked: number;
   liquid: number;
-  claimable: number;
-  earningsToday: number;
+  /** `ValidatorRegistry.rewardsOf(pubkey).claimableNow` in SALT; null = not a validator / not read. */
+  claimable: number | null;
+  /** `ValidatorRegistry.rewardsOf(pubkey).total` in SALT; null = not a validator / not read. */
+  rewardsTotal: number | null;
   walletAddr: string;
   tier: string;
 }
@@ -433,7 +435,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "node_status",
-      description: "Read the member's node: sync state, block height, peer count, and whether it is validating. Read-only, live from the local node.",
+      description: "Read the member's node: sync state, block height, peer count, and whether its validator is in the active set (ValidatorRegistry.isActive). Read-only, live from the local node.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -995,15 +997,20 @@ function routeIntent(t: string): Plan {
   if (has("earn", "reward", "claim", "income", "made today")) {
     return {
       toolCalls: [tc("chain_read", { query: "earnings.claimable" })],
+      // C1-V V8: only the on-chain rewardsOf read, named as rewards for producing blocks. No
+      // per-day figure (no source exists) and no pinning/compute split (no contract exposes one).
       compose: (c) =>
-        `Today your node has earned **${c.earningsToday.toFixed(2)} SALT** — validation makes up most of it, with smaller pinning and compute shares. Your claimable balance is **${c.claimable.toFixed(2)} SALT**; claims batch until they clear the dust threshold, and claiming signs a claimRewards() transaction through the ceremony. Want me to take you to the earnings view?`,
+        c.rewardsTotal == null || c.claimable == null
+          ? "I have no validator rewards reading for you: your node is not a registered validator, or the read failed. Validator rewards are paid only for producing blocks, and come from ValidatorRegistry.rewardsOf."
+          : `Validator rewards (ValidatorRegistry.rewardsOf): **${c.rewardsTotal.toFixed(2)} SALT** in total, **${c.claimable.toFixed(2)} SALT** claimable now, and the rest is maturing. Rewards are paid for producing blocks. Claiming signs a claimRewards() transaction through the ceremony. Want me to take you to the earnings view?`,
     };
   }
   if (has("balance", "wallet", "how much salt")) {
     return {
       toolCalls: [tc("chain_read", { query: "wallet.balances" })],
       compose: (c) =>
-        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (earned rewards — the 32,000 grant sits staked, not liquid). Staked: **${fmt(c.staked)} SALT**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from your local node.`,
+        // C1-V V8/V9: the balance is eth_getBalance on the public RPC, not "earned rewards"; staked is stakeOf.
+        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (eth_getBalance, latest). Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from rpc.citrate.ai.`,
     };
   }
   if (has("network", "height", "peers", "block", "finality", "status")) {

@@ -1,0 +1,307 @@
+// C1-V (UI truth contract v1, citrate-chain docs/ui-truth/UI_TRUTH_CONTRACT.md) — validator,
+// stake and rewards. Live 40204: ~2 s blocks, 5 active validators with 1 producing,
+// blockSubsidy 10 SALT, minStake 32,000.
+//
+//   V4 "validating" from stake >= 32k (incl. LiquidStakingPool self-stake), "producing again",
+//      "every full node builds blocks"     -> ValidatorRegistry.isActive only
+//   V6 withdrawal time assumes 12 s blocks -> blocks x measured block time
+//   V7 four definitions of "staked", one hard-coding 32,000 -> stakeOf only; minStake is read
+//   V8 liquid captioned "earned rewards"; rewardsOf labelled "off-chain estimate"; Claimable
+//      caption names ContributionAccounting; "Today" has no source
+//   V9 "source · local node" when reads go to rpc.citrate.ai; stale vault/SBT addresses
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+
+vi.mock("../bridge/mode", () => ({
+  BRIDGE_MODE: "tauri" as const,
+  assertSimAllowed: () => {},
+}));
+vi.mock("wagmi", () => ({
+  useBlockNumber: () => ({ data: undefined, isPending: true, error: null }),
+  useReadContract: () => ({ data: undefined }),
+}));
+vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
+vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
+vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
+
+import { Dashboard } from "./Dashboard";
+import { Node } from "./Node";
+import { Wallet } from "./Wallet";
+import { S5, Onboarding } from "../onboarding/Onboarding";
+import { blocksWithTime, measuredBlockSeconds, validatorWord, type ChainReads } from "../shell/chainTruth";
+import { mapNodeState, store, type Store } from "../shell/store";
+import { freshState, nodeLabel, type AppState } from "../shell/state";
+import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
+import { bridge } from "../bridge";
+import type { GrantStatus } from "../bridge/domains";
+import book from "../../src-tauri/addresses/40204.json";
+
+const WEI = 10n ** 18n;
+const wei = (salt: number) => (BigInt(salt) * WEI).toString();
+
+const stub = {
+  walletIsLinked: () => true,
+  refreshEarnings: () => {},
+  refreshWallet: () => {},
+  refreshPendingWithdrawals: () => {},
+  refreshActivity: () => {},
+  refreshChainParams: () => {},
+  toast: () => {},
+  identity: () => ({ sub: "sub-1", wallet: "0x" + "0".repeat(40) }),
+} as unknown as Store;
+
+function member(over: Partial<AppState> = {}): AppState {
+  return { ...freshState("p1"), signedIn: true, node: "synced", peers: 3, syncPct: 100, height: 499_058, hasGrant: true, s5StakeWei: wei(32000), ...over };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("chainTruth helpers", () => {
+  it("measures the block time from two block timestamps", () => {
+    expect(measuredBlockSeconds({ number: 499_100n, timestamp: 1_000_200n }, { number: 499_000n, timestamp: 1_000_000n })).toBe(2);
+    expect(measuredBlockSeconds({ number: 5n, timestamp: 9n }, { number: 5n, timestamp: 9n })).toBeNull();
+  });
+
+  it("gives a duration in blocks both ways, from the measured time (V6)", () => {
+    expect(blocksWithTime(50_400, 2)).toBe("50,400 blocks (~28 h)");
+    expect(blocksWithTime(50_400, null)).toBe("50,400 blocks");
+  });
+
+  it("derives the §1 validator word from the registry only (V4)", () => {
+    expect(validatorWord(0, null, false)).toBe("Not a validator");
+    expect(validatorWord(0, null, true)).toBe("Bond locked · not staked");
+    expect(validatorWord(32_000, false, true)).toBe("Staked · active from next epoch");
+    expect(validatorWord(32_000, true, true)).toBe("Validator active");
+    expect(validatorWord(32_000, null, true)).toBeNull();
+  });
+});
+
+describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
+  it("mapNodeState takes the isActive reading, not a stake amount", () => {
+    expect(mapNodeState("running", 100, true)).toBe("validating");
+    expect(mapNodeState("running", 100, false)).toBe("synced");
+    expect(mapNodeState("running", 100, null)).toBe("synced");
+    expect(mapNodeState("running", 40, true)).toBe("syncing");
+  });
+
+  it("the node label uses the §1 word", () => {
+    expect(nodeLabel("validating")).toBe("validator active");
+  });
+
+  function grant(stakeSalt: number): GrantStatus {
+    return {
+      attributedStakeWei: wei(32000),
+      attributedPrincipalWei: wei(32000),
+      hasSbt: true,
+      bondAddress: "0x" + "b".repeat(40),
+      bondDeployed: true,
+      bondedStakeWei: wei(stakeSalt),
+      hasValidator: stakeSalt > 0,
+      unlockBlock: 16_000_000,
+      isUnlocked: false,
+      isKycVerified: false,
+    };
+  }
+
+  async function poll(stakeSalt: number, active: boolean, over: Partial<AppState> = {}) {
+    const reads: ChainReads = { isActive: vi.fn(async () => active), minStakeWei: async () => 32_000n * WEI, blockSeconds: async () => 2 };
+    (store as unknown as { chainReads: ChainReads }).chainReads = reads;
+    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActive: null, ...over });
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
+    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+    vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: "0x" + "11".repeat(32) });
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant(stakeSalt));
+    await store.refreshNode();
+    return reads;
+  }
+
+  it("registered stake that is not in the active set is not 'validating'", async () => {
+    await poll(32_000, false);
+    expect(store.state.validatorActive).toBe(false);
+    expect(store.state.node).toBe("synced");
+  });
+
+  it("isActive = true makes the node a validator", async () => {
+    const reads = await poll(32_000, true);
+    expect(reads.isActive).toHaveBeenCalledWith("0x" + "11".repeat(32));
+    expect(store.state.node).toBe("validating");
+  });
+
+  it("LiquidStakingPool self-stake never makes a validator", async () => {
+    const reads = await poll(0, true, { selfStake: 40_000 });
+    expect(store.state.node).toBe("synced");
+    expect(reads.isActive).not.toHaveBeenCalled();
+  });
+
+  it("the re-arm toast does not say 'producing again'", async () => {
+    const toast = vi.spyOn(store, "toast");
+    vi.spyOn(bridge.node, "armMining").mockResolvedValue(true);
+    await poll(32_000, true);
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = false;
+    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
+    await store.refreshNode();
+    await Promise.resolve();
+    await Promise.resolve();
+    const said = toast.mock.calls.map((c) => String(c[0])).join(" ");
+    expect(said).not.toContain("producing again");
+  });
+
+  it("the Node surface shows the §1 word and no made-up election odds", () => {
+    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: false })} />);
+    expect(html).toContain("Staked · active from next epoch");
+    expect(html).not.toContain("Election odds");
+    const active = renderToStaticMarkup(<Node store={stub} s={member({ node: "validating", bondedStake: 32_000, validatorActive: true })} />);
+    expect(active).toContain("Validator active");
+  });
+
+  it("onboarding never says every full node builds blocks", () => {
+    const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "synced" })} />);
+    expect(html).not.toContain("builds blocks");
+    const v = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "validating", bondedStake: 32_000, validatorActive: true })} />);
+    expect(v).toContain("Validator active");
+    expect(v).not.toContain(">Validating<");
+  });
+});
+
+describe("V6 — durations use the measured block time", () => {
+  it("a pending withdrawal 50,400 blocks out reads ~28 h at 2 s blocks, not ~7 days", () => {
+    const s = member({
+      wTab: "staking",
+      blockSecs: 2,
+      pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+    });
+    const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
+    expect(html).toContain("50,400 blocks (~28 h)");
+    expect(html).not.toContain("7.0d");
+    expect(html).not.toContain("~7 days");
+    expect(html).not.toContain("~7-day");
+  });
+
+  it("without a measured block time it shows blocks only", () => {
+    const s = member({
+      wTab: "staking",
+      blockSecs: null,
+      pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+    });
+    const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
+    expect(html).toContain("50,400 blocks left");
+    expect(html).not.toMatch(/\d+\.\dd\)/);
+  });
+});
+
+describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
+  it("Wallet: the grant in a locked bond and LSP self-stake are not 'staked'", () => {
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500 })} />);
+    expect(html).not.toContain("32,500");
+    expect(html).not.toContain("32,000 grant vaulted");
+    expect(html).toContain("Bond locked · not staked");
+  });
+
+  it("Wallet: staked equals the registry stake once activated", () => {
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", bondedStake: 32_000, selfStake: 500 })} />);
+    expect(html).toContain("ValidatorRegistry.stakeOf");
+    expect(html).not.toContain("32,500");
+  });
+
+  it("Wallet: the validator minimum is read from minStake, not hard-coded", () => {
+    const read = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", minStakeWei: wei(50_000) })} />);
+    expect(read).toContain("50,000 SALT");
+    const unread = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", minStakeWei: null })} />);
+    expect(unread).toContain("— · reading minStake");
+  });
+
+  it("Dashboard: Staked is stakeOf, never grant + self-stake, and never 'LiquidStakingPool shares'", () => {
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500 })} />);
+    expect(html).not.toContain("LiquidStakingPool shares");
+    expect(html).not.toContain("34,500");
+    expect(html).not.toContain(">2,500<");
+    expect(html).toContain("bond locked · not staked");
+  });
+
+  it("the model context's staked is the registry stake only", () => {
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), bondedStake: 0, selfStake: 2_500 });
+    expect(store.snapshot().staked).toBe(0);
+  });
+});
+
+describe("V8 — reward and balance captions per §1 Rewards", () => {
+  it("the liquid balance is not captioned as earned rewards", () => {
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview" })} />);
+    expect(html).not.toContain("earned rewards");
+  });
+
+  it("the Node Earning tab names rewardsOf, splits claimable/maturing, and has no off-chain estimates", () => {
+    const s = member({ nTab: "earn", bondedStake: 32_000, validatorActive: true, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
+    const html = renderToStaticMarkup(<Node store={stub} s={s} />);
+    expect(html).not.toContain("off-chain estimate");
+    expect(html).not.toContain("ContributionAccounting.claimable");
+    expect(html).toContain("Validator rewards");
+    expect(html).toContain("Claimable now");
+    expect(html).toContain("Maturing");
+    expect(html).toContain("ValidatorRegistry.rewardsOf");
+    expect(html).toContain("30.00");
+    expect(html).toContain("20.00");
+    expect(html).toContain("10.00");
+  });
+
+  it("a member who is not a validator sees no rewards figure", () => {
+    const html = renderToStaticMarkup(<Node store={stub} s={member({ nTab: "earn", bondedStake: 0, rewards: null, claimable: 9.41 })} />);
+    expect(html).not.toContain("9.41");
+    expect(html).toContain("Not a validator");
+  });
+
+  it("the Dashboard has no 'Today' tile", () => {
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member()} />);
+    expect(html).not.toContain(">Today<");
+    expect(html).not.toContain("SALT earned");
+  });
+
+  it("the model context has no earnings-today figure", () => {
+    expect(Object.keys(store.snapshot())).not.toContain("earningsToday");
+  });
+
+  it("the built-in agent never reports today's earnings or calls the liquid balance earned rewards", async () => {
+    vi.useFakeTimers();
+    const ctx: AgentContext = { height: 499_058, peers: 3, nodeState: "synced", staked: 0, liquid: 12.5, claimable: null, rewardsTotal: null, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "pilot" };
+    const ask = async (q: string) => {
+      let text = "";
+      const done = createDemoProvider(() => ctx).send({
+        messages: [{ role: "user", content: q }],
+        callbacks: { onStatus: () => {}, onToken: (t: string) => (text += t), onToolCall: async (_c: ToolCall) => "ok" },
+      });
+      await vi.runAllTimersAsync();
+      await done;
+      return text;
+    };
+    const earn = await ask("what did i earn?");
+    expect(earn).not.toMatch(/today/i);
+    expect(earn).not.toMatch(/pinning and compute/);
+    expect(earn).toContain("not a registered validator");
+    const bal = await ask("what's my wallet balance?");
+    expect(bal).not.toContain("earned rewards");
+    expect(bal).not.toContain("local node");
+    expect(bal).toContain("rpc.citrate.ai");
+  });
+});
+
+describe("V9 — captions name the real source and the address book", () => {
+  it("Wallet says its reads come from rpc.citrate.ai, also while the node runs", () => {
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", node: "synced" })} />);
+    expect(html).toContain("source · rpc.citrate.ai");
+    expect(html).not.toContain("source · local node");
+  });
+
+  it("the grant step's data-source line uses the bundled address book", () => {
+    const html = renderToStaticMarkup(<S5 store={stub} s={member({ s5: "idle" })} />);
+    expect(html).not.toContain("0x0ace…267e");
+    expect(html).not.toContain("0x7be0…a7c4");
+    expect(html).toContain(book.addresses.MembershipStakeVault.slice(0, 6));
+    expect(html).toContain(book.addresses.CitrateMemberSBT.slice(0, 6));
+  });
+});

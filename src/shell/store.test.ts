@@ -495,15 +495,17 @@ describe("mapNodeState — supervisor state → app node lifecycle", () => {
     expect(mapNodeState("restarting", 0, 0)).toBe("prov");
     expect(mapNodeState("failed", 0, 0)).toBe("error");
   });
+  // C1-V V4: the third argument is ValidatorRegistry.isActive(pubkey), not a stake amount. A stake
+  // >= 32k used to mean "validating"; the UI truth contract §1 bans that (only isActive does).
   it("running while not fully synced → syncing", () => {
-    expect(mapNodeState("running", 42, 32000)).toBe("syncing");
+    expect(mapNodeState("running", 42, true)).toBe("syncing");
   });
-  it("running + synced + staked at/above threshold → validating", () => {
-    expect(mapNodeState("running", 100, 32000)).toBe("validating");
+  it("running + synced + isActive → validating", () => {
+    expect(mapNodeState("running", 100, true)).toBe("validating");
   });
-  it("running + synced but under-staked → synced (not validating)", () => {
-    expect(mapNodeState("running", 100, 31999)).toBe("synced");
-    expect(mapNodeState("running", 100, 0)).toBe("synced");
+  it("running + synced but not in the active set (or unread) → synced", () => {
+    expect(mapNodeState("running", 100, false)).toBe("synced");
+    expect(mapNodeState("running", 100, null)).toBe("synced");
   });
 });
 
@@ -517,17 +519,18 @@ describe("staked = REAL registry bond, not hasGrant (W1.3 Rule-1 fix)", () => {
   it("hasGrant alone does NOT count as staked", () => {
     store.setState({ hasGrant: true, bondedStake: 0, selfStake: 0 });
     expect(store.snapshot().staked).toBe(0);
-    // …and that 0 keeps the node OUT of the validating set.
-    expect(mapNodeState("running", 100, store.snapshot().staked)).toBe("synced");
+    // …and with no registered stake the node is not active (isActive is never true unread).
+    expect(mapNodeState("running", 100, null)).toBe("synced");
   });
   it("a real registry bond counts as staked", () => {
     store.setState({ hasGrant: true, bondedStake: 32000, selfStake: 0 });
     expect(store.snapshot().staked).toBe(32000);
-    expect(mapNodeState("running", 100, store.snapshot().staked)).toBe("validating");
   });
-  it("bonded stake and self-stake add", () => {
+  // C1-V V7: LiquidStakingPool self-stake is not validator stake (UI truth contract §1, §2), so it
+  // no longer adds to "staked". This replaces "bonded stake and self-stake add" (34,500).
+  it("self-stake does not add to staked", () => {
     store.setState({ hasGrant: false, bondedStake: 32000, selfStake: 2500 });
-    expect(store.snapshot().staked).toBe(34500);
+    expect(store.snapshot().staked).toBe(32000);
   });
 });
 

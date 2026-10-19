@@ -115,7 +115,7 @@ export function fmtSaltFromWei(wei: string | null | undefined): string {
 }
 export function nodeLabel(n: string): string {
   return (
-    { off: "off", prov: "provisioning", syncing: "syncing", synced: "synced", paused: "paused", validating: "validating", stalled: "sync stalled", error: "error" } as Record<string, string>
+    { off: "off", prov: "provisioning", syncing: "syncing", synced: "synced", paused: "paused", validating: "validator active", stalled: "sync stalled", error: "error" } as Record<string, string>
   )[n] || n;
 }
 
@@ -410,10 +410,23 @@ export interface AppState {
   pendingWithdrawals: PendingWithdrawal[];
   hasGrant: boolean;
   hasSbt: boolean;
-  earnVal: number;
-  earnPin: number;
-  earnComp: number;
-  earnToday: number;
+  /**
+   * C1-V V8 — the member's validator rewards, from `ValidatorRegistry.rewardsOf(pubkey)` only
+   * (UI truth contract §1 Rewards): `totalWei` is the total, `claimableWei` is `claimableNow`, and
+   * the difference is maturing. null = not a registered validator, or not read yet. There is no
+   * per-day or per-source split: no contract exposes one, so none is shown.
+   */
+  rewards: { totalWei: string; claimableWei: string } | null;
+  /**
+   * C1-V V4 — `ValidatorRegistry.isActive(pubkey)` for this node's validator key. The ONLY input to
+   * "Validator active" (contract §1); stake amounts and LiquidStakingPool self-stake never are.
+   * null = not read (no registered stake yet, or the read failed). Observed, never persisted.
+   */
+  validatorActive: boolean | null;
+  /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
+  blockSecs: number | null;
+  /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
+  minStakeWei: string | null;
   claimable: number;
   /**
    * CORE-C2 — where `claimable` currently comes from. "chain" once the real
@@ -775,10 +788,10 @@ export function freshState(pid: string): AppState {
     pendingWithdrawals: [],
     hasGrant: false,
     hasSbt: false,
-    earnVal: 0,
-    earnPin: 0,
-    earnComp: 0,
-    earnToday: 0,
+    rewards: null,
+    validatorActive: null,
+    blockSecs: null,
+    minStakeWei: null,
     claimable: 0,
     earnSource: "sim",
     activity: [],
@@ -949,10 +962,6 @@ export function freshState(pid: string): AppState {
       s.peers = 23;
       s.liquid = 142.63;
       s.claimable = 9.41;
-      s.earnVal = 96.42;
-      s.earnPin = 21.7;
-      s.earnComp = 9.31;
-      s.earnToday = 3.86;
       s.selfStake = 2500;
       s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
       s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Add stake|−2,500.00 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
@@ -960,9 +969,6 @@ export function freshState(pid: string): AppState {
       s.node = "off";
       s.liquid = 58.02;
       s.claimable = 2.14;
-      s.earnVal = 30.11;
-      s.earnPin = 4.02;
-      s.earnComp = 6.4;
       s.gwKey = "cgk_9f31•••••••••••••7f2a";
       s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
@@ -970,10 +976,6 @@ export function freshState(pid: string): AppState {
       s.peers = 26;
       s.liquid = 301.44;
       s.claimable = 18.92;
-      s.earnVal = 240.5;
-      s.earnPin = 51.2;
-      s.earnComp = 22.8;
-      s.earnToday = 5.12;
       s.selfStake = 8000;
       s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Add stake|−8,000.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     }
@@ -992,7 +994,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // Every launch starts signed-out; identity is re-derived only from a live
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
-  "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
+  "liquid", "selfStake", "bondedStake", "claimable", "activity",
   "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
   "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
