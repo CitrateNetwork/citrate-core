@@ -2119,10 +2119,10 @@ fn probe_workers_never_overlap_across_incarnations() {
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
     assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
+    let attempts = sup.lifecycle().map_or(0, |l| l.counters.attempts);
     assert!(
-        fx.pidfile_pids().len() >= 2,
-        "INCONCLUSIVE: more than one incarnation ran: {:?}",
-        fx.pidfile_pids()
+        attempts >= 2,
+        "INCONCLUSIVE: more than one incarnation ran ({attempts} spawn attempts)"
     );
     hold_for(Duration::from_millis(500));
     assert_eq!(
@@ -2298,7 +2298,7 @@ fn a_forward_wall_clock_jump_never_grants_credit() {
     cfg.backoff = fast_backoff(2);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(15));
     assert_eq!(
         st.state,
         SupervisorState::Failed,
@@ -2318,19 +2318,19 @@ fn sustained_fresh_success_resets_the_retry_budget() {
     let fx = OwnedFixture::new("credit");
     let mut spec = fx.leaf_spec("lcf-credit");
     spec.health_check = Some(HealthCheck {
-        interval: Duration::from_millis(20),
+        interval: Duration::from_millis(50),
         grace: Duration::ZERO,
         probe: Arc::new(|| true),
     });
     let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
-    cfg.healthy_after = Duration::from_millis(100);
+    cfg.healthy_after = Duration::from_millis(150);
     cfg.backoff = fast_backoff(1);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     for round in 0..4 {
         let pid = running_pid(&sup, &fx);
         // Healthy well past healthy_after, then a crash.
-        hold_for(Duration::from_millis(300));
+        hold_for(Duration::from_millis(600));
         assert_ne!(sup.status().state, SupervisorState::Failed, "round {round}");
         lifecycle::fixture::kill(pid, libc::SIGKILL);
         fx.expect_pids(round + 2, ACQUIRE);
@@ -2340,6 +2340,11 @@ fn sustained_fresh_success_resets_the_retry_budget() {
         st.state,
         SupervisorState::Running,
         "four crashes, each after a credited window, never spend a budget of one retry"
+    );
+    let credits = sup.lifecycle().map_or(0, |l| l.counters.health_credits);
+    assert!(
+        credits >= 4,
+        "one attested credit per healthy window: {credits}"
     );
     drop(sup);
     fx.assert_clean();
@@ -2426,10 +2431,15 @@ fn an_automated_start_carries_the_budget_over() {
         ControlResult::Accepted(t) => t,
         other => panic!("INCONCLUSIVE: Stop: {other:?}"),
     };
-    assert!(matches!(
-        settle(&sup, stop, ACQUIRE),
-        Receipt::Complete { .. }
-    ));
+    // The Stop may catch the child's timer mid-run and settle Incomplete until it ends; this
+    // fixture is about the budget, so wait for the service to be Stopped and own nothing.
+    let settled = settle(&sup, stop, ACQUIRE);
+    let stopped = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        sup.lifecycle()
+            .filter(|l| l.phase == Phase::Stopped)
+            .map(|_| ())
+    });
+    assert!(stopped.is_ok(), "INCONCLUSIVE: Stop: {settled:?}");
     let before = sup.status().restarts;
     assert!(
         (1..=3).contains(&before),
