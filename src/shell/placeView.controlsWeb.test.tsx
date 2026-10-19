@@ -123,4 +123,50 @@ describe("Hermes › Controls with the Controls panel and the Web search form mo
     // The form now shows what core saved, not its stale draft.
     expect($("web-search-toggle")?.checked).toBe(false);
   });
+
+  // Review finding on #343 (P2): the two views held separate snapshots, so the form kept showing
+  // search off after the top switch turned it on, and its dirty-tracking baseline was stale too.
+  it("the top switch enables search; the form shows it on; the member turns it off in the form and saves; search is off", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: false };
+    await mountControls();
+    expect($("web-search-toggle")?.checked).toBe(false);
+
+    await click("toggle-web-search");
+    expect(saved.settings.searchEnabled).toBe(true);
+    // One source of truth: the lower form now shows what the top switch saved.
+    expect($("web-search-toggle")?.checked).toBe(true);
+
+    // The repro: the member works the lower checkbox until it shows off (on → off from a stale
+    // "off" took two clicks), then saves. What they see is what gets saved.
+    let clicks = 0;
+    while ($("web-search-toggle")?.checked !== false && clicks < 3) {
+      await click("web-search-toggle");
+      clicks++;
+    }
+    expect($("web-search-toggle")?.checked).toBe(false);
+    await click("web-save");
+    expect(saved.settings.searchEnabled).toBe(false);
+    expect($("toggle-web-search")?.checked).toBe(false);
+  });
+
+  it("the stale-form sequence (on, then off, then save) after the top switch enabled search saves off", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: false };
+    await mountControls();
+    await click("toggle-web-search");
+    // Exactly the reported clicks: on, back off, save.
+    if ($("web-search-toggle")?.checked === false) await click("web-search-toggle");
+    await click("web-search-toggle");
+    expect($("web-search-toggle")?.checked).toBe(false);
+    await click("web-save");
+    expect(saved.settings.searchEnabled).toBe(false);
+  });
+
+  it("the form saves search on; the top switch shows it on", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: false };
+    await mountControls();
+    await click("web-search-toggle");
+    await click("web-save");
+    expect(saved.settings.searchEnabled).toBe(true);
+    expect($("toggle-web-search")?.checked).toBe(true);
+  });
 });

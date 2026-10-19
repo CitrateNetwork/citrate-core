@@ -123,5 +123,13 @@ today. They show no data:
   the sidecar loop (App section, still correct). The one user-facing pointer
   to a moved section, the escalation "no endpoint" message, now names
   Hermes › Controls.
+- In-app links to a moved section use its `settings/<id>` route so they land
+  on the new home. Connections › Cloud providers links to `settings/ai`
+  (Hermes › Controls, AI providers). No caller links to plain `settings` for
+  a moved section.
+- Hermes › Controls shows two views of the saved web settings (the Controls
+  panel's Web search switch and the Web search form). After either saves, it
+  announces what core saved (`src/agent/webSettingsSync.ts`) and the other
+  shows it and re-baselines, so neither shows or diffs against a stale copy.
 - The Hermes `app_navigate` tool still takes old route ids. They redirect, so
   it keeps working; a later change can teach it the canonical routes.
