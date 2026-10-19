@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { HermesMcpCard } from "./HermesMcpCard";
+import { HermesMcpCard, HermesMcpPanel } from "./HermesMcpCard";
 import type { HermesMcpView } from "../bridge/domains";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -124,5 +124,71 @@ describe("HermesMcpCard — the node row (HUP-S4.2 / S8.5)", () => {
     act(() => node.click());
     expect(onToggle).toHaveBeenCalledWith({ mem: true, scan: false, node: true });
     act(() => root.unmount());
+  });
+});
+
+// K2 (0.5.2): the card moved to Hermes › Controls › Details › MCP servers. Its save follows the
+// read-modify-write rule from #341/#343: re-read what core has saved, change only the switch the
+// member pressed, write that. A change saved elsewhere since the card loaded is kept.
+describe("HermesMcpPanel — read-modify-write", () => {
+  async function mountPanel(api: Parameters<typeof HermesMcpPanel>[0]["api"]) {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<HermesMcpPanel api={api} />);
+    });
+    await act(async () => await new Promise((r) => setTimeout(r, 0)));
+    return { host, root };
+  }
+  const press = async (host: HTMLElement, label: string) => {
+    const el = host.querySelector(`[aria-label="${label}"]`) as HTMLButtonElement | null;
+    expect(el).toBeTruthy();
+    await act(async () => {
+      el?.click();
+    });
+    await act(async () => await new Promise((r) => setTimeout(r, 0)));
+  };
+
+  it("keeps a switch another writer turned on after the card loaded", async () => {
+    let saved = { mem: false, scan: false, node: false };
+    const api = {
+      mcpSettings: vi.fn(async () => view({ settings: { ...saved } })),
+      mcpSet: vi.fn(async (next: typeof saved) => {
+        saved = { ...next };
+        return view({ settings: { ...saved } });
+      }),
+      mcpRuntime: vi.fn(async () => Promise.reject(new Error("not running"))),
+    };
+    const { host, root } = await mountPanel(api);
+    // Another view turns CitrateScan on after this card loaded.
+    saved = { ...saved, scan: true };
+    await press(host, "Your memory graph");
+    expect(api.mcpSet).toHaveBeenCalledTimes(1);
+    expect(api.mcpSet).toHaveBeenCalledWith({ mem: true, scan: true, node: false });
+    expect(saved).toEqual({ mem: true, scan: true, node: false });
+    // The card now shows what core saved, including the other writer's change.
+    expect((host.querySelector('[aria-label="CitrateScan explorer"]') as HTMLElement).getAttribute("aria-checked")).toBe("true");
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  it("a failed re-read writes nothing and says why", async () => {
+    let reads = 0;
+    const api = {
+      mcpSettings: vi.fn(async () => {
+        reads++;
+        if (reads > 1) throw new Error("settings file locked");
+        return view();
+      }),
+      mcpSet: vi.fn(async () => view()),
+      mcpRuntime: vi.fn(async () => Promise.reject(new Error("not running"))),
+    };
+    const { host, root } = await mountPanel(api);
+    await press(host, "Your memory graph");
+    expect(api.mcpSet).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("settings file locked");
+    act(() => root.unmount());
+    host.remove();
   });
 });
