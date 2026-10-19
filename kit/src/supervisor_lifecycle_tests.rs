@@ -44,6 +44,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
         readiness: Readiness::NotAssessed,
         desired: Desired::Stopped,
         app_epoch: u64::MAX,
+        instance: 7,
         intent_sequence: 9_007_199_254_740_993, // 2^53 + 1: not exact as a JS number
         generation: 1,
         incarnation: 2,
@@ -54,6 +55,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
     };
     let v = serde_json::to_value(&snap).unwrap_or_default();
     assert_eq!(v["appEpoch"], "18446744073709551615");
+    assert_eq!(v["instance"], "7");
     assert_eq!(v["intentSequence"], "9007199254740993");
     assert_eq!(v["generation"], "1");
     assert_eq!(v["incarnation"], "2");
@@ -160,6 +162,7 @@ fn start_receipt_reports_failed_and_foreign_tokens_are_expired() {
     assert_eq!(snap.intent_sequence, 1);
     let first = ControlToken {
         app_epoch: snap.app_epoch,
+        instance: snap.instance,
         intent_sequence: 1,
     };
     assert!(
@@ -169,11 +172,13 @@ fn start_receipt_reports_failed_and_foreign_tokens_are_expired() {
     );
     let other_run = ControlToken {
         app_epoch: snap.app_epoch.wrapping_add(1),
+        instance: snap.instance,
         intent_sequence: 1,
     };
     assert_eq!(sup.receipt(other_run), Receipt::Expired);
     let never_issued = ControlToken {
         app_epoch: snap.app_epoch,
+        instance: snap.instance,
         intent_sequence: 99,
     };
     assert_eq!(sup.receipt(never_issued), Receipt::Expired);

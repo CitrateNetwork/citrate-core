@@ -537,6 +537,9 @@ const READER_DRAIN: Duration = Duration::from_millis(250);
 /// While quarantined, how often the monitor re-checks whether the held work has ended.
 const QUARANTINE_POLL: Duration = Duration::from_millis(50);
 
+/// Distinguishes supervisor instances within one app run; never reused.
+static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// This application run's identity. Ephemeral: it orders controls and receipts within one run
 /// and is never a credential or a persistent replay id.
 fn app_epoch() -> u64 {
@@ -589,6 +592,9 @@ pub enum Readiness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ControlToken {
     pub app_epoch: u64,
+    /// The supervisor instance that issued it (unique within the app run, never reused), so
+    /// equal sequences from two services, or from a replacement supervisor, never collide.
+    pub instance: u64,
     pub intent_sequence: u64,
 }
 
@@ -651,6 +657,9 @@ pub struct LifecycleSnapshot {
     /// This application run.
     #[serde(serialize_with = "decimal_u64")]
     pub app_epoch: u64,
+    /// This supervisor instance (unique within the app run, never reused).
+    #[serde(serialize_with = "decimal_u64")]
+    pub instance: u64,
     /// Bumped by every distinct accepted Start or Stop.
     #[serde(serialize_with = "decimal_u64")]
     pub intent_sequence: u64,
@@ -700,6 +709,8 @@ struct Cell {
     quarantine: Option<String>,
     active: Option<(ControlToken, IntentKind)>,
     settled: Option<(ControlToken, Receipt)>,
+    /// This supervisor instance, carried in every token it issues.
+    instance: u64,
 }
 
 impl Cell {
@@ -710,6 +721,7 @@ impl Cell {
             readiness: Readiness::NotAssessed,
             desired: self.desired,
             app_epoch: epoch,
+            instance: self.instance,
             intent_sequence: self.intent_sequence,
             generation: self.generation,
             incarnation: self.incarnation,
@@ -734,6 +746,7 @@ impl Cell {
         self.desired = desired;
         let token = ControlToken {
             app_epoch: epoch,
+            instance: self.instance,
             intent_sequence: self.intent_sequence,
         };
         self.active = Some((token, kind));
@@ -947,6 +960,8 @@ pub struct Supervisor {
     name: String,
     /// Hard cap on how long teardown blocks joining the monitor thread (F-2).
     join_timeout: Duration,
+    /// This supervisor instance (see [`ControlToken::instance`]).
+    instance: u64,
 }
 
 impl Supervisor {
@@ -969,8 +984,10 @@ impl Supervisor {
         let name = config.spec.name.clone();
         let join_timeout = config.join_timeout;
         let epoch = app_epoch();
+        let instance = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let first = ControlToken {
             app_epoch: epoch,
+            instance,
             intent_sequence: 1,
         };
         let shared = Arc::new(Shared {
@@ -993,6 +1010,7 @@ impl Supervisor {
                 quarantine: None,
                 active: Some((first, IntentKind::Start)),
                 settled: None,
+                instance,
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1008,6 +1026,7 @@ impl Supervisor {
             monitor: Some(monitor),
             name,
             join_timeout,
+            instance,
         })
     }
 
@@ -1093,15 +1112,16 @@ impl Supervisor {
         if let Some(reason) = &c.quarantine {
             return ControlResult::Quarantined(reason.clone());
         }
+        // A pending Start is joined in every phase (the phase can still read Failed until the
+        // monitor picks the new intent up), so identical concurrent Starts never supersede each
+        // other.
+        if let Some((token, IntentKind::Start)) = c.active {
+            drop(c);
+            // Joining a pending Start is only Accepted while a monitor can settle it.
+            return self.observed(token);
+        }
         if c.desired == Desired::Running && c.phase != Phase::Failed {
-            return match c.active {
-                Some((token, IntentKind::Start)) => {
-                    drop(c);
-                    // Joining a pending Start is only Accepted while a monitor can settle it.
-                    self.observed(token)
-                }
-                _ => ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch)),
-            };
+            return ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch));
         }
         let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
         drop(c);
@@ -1127,7 +1147,9 @@ impl Supervisor {
     /// Only the pending and the most recently settled receipt are kept; older tokens and tokens
     /// from another app run are `Expired`.
     pub fn receipt(&self, token: ControlToken) -> Receipt {
-        if token.app_epoch != self.shared.epoch {
+        // A token from another app run or another supervisor instance is never answered here,
+        // even when its sequence matches one of ours.
+        if token.app_epoch != self.shared.epoch || token.instance != self.instance {
             return Receipt::Expired;
         }
         let Some(c) = self.shared.lock_bounded() else {
@@ -1419,21 +1441,31 @@ fn append_crash_record(path: &std::path::Path, record: &CrashRecord) {
 /// in the dependency tree (via tauri/tokio), so this adds no new crate. A failure
 /// (e.g. the process already reaped) is ignored — the caller re-checks liveness.
 #[cfg(unix)]
-fn signal_pid(pid: u32, signal: i32) {
-    // SAFETY: `kill(2)` with a pid and a signal number is a well-defined libc
-    // call with no memory effects. A stale pid returns ESRCH which we ignore.
-    unsafe {
-        libc::kill(pid as libc::pid_t, signal);
-    }
+fn signal_pid(pid: u32, signal: i32) -> bool {
+    let Some(target) = checked_pid(pid) else {
+        return false;
+    };
+    // SAFETY: `kill(2)` with a positive pid and a signal number is a well-defined libc call
+    // with no memory effects. A stale pid returns ESRCH, which the caller handles by
+    // re-checking liveness.
+    unsafe { libc::kill(target, signal) == 0 }
+}
+
+/// `pid` as a positive `pid_t`, or `None`. Zero would address the caller's own process group
+/// and a value above `i32::MAX` would wrap to a negative pid (a group, or every process for
+/// -1), so neither is ever passed to `kill(2)`.
+#[cfg(unix)]
+fn checked_pid(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)
 }
 
 /// Whether `pid` is still alive on Unix (signal 0 = existence probe, sends no
 /// signal). Used to confirm SIGTERM took effect before the grace timeout.
 #[cfg(unix)]
 fn pid_alive(pid: u32) -> bool {
-    // SAFETY: `kill(pid, 0)` performs the permission/existence check without
-    // delivering a signal. Returns 0 if the process exists and we may signal it.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    // SAFETY: `kill(p, 0)` on a positive pid performs the existence check without delivering a
+    // signal.
+    checked_pid(pid).is_some_and(|p| unsafe { libc::kill(p, 0) == 0 })
 }
 
 /// Gracefully terminate a child: SIGTERM, wait up to `grace` for exit, then
@@ -1448,7 +1480,7 @@ fn terminate_child(child: &mut Child, grace: Duration, watch: Option<&ChildWatch
         if let Some(w) = watch {
             (w.observe)(pid);
         }
-        signal_pid(pid, libc::SIGTERM);
+        let _ = signal_pid(pid, libc::SIGTERM);
         let deadline = std::time::Instant::now() + grace;
         loop {
             // Non-blocking reap: if the child has exited, `try_wait` returns Some.
@@ -1467,7 +1499,7 @@ fn terminate_child(child: &mut Child, grace: Duration, watch: Option<&ChildWatch
         if let Some(w) = watch {
             (w.observe)(pid);
         }
-        signal_pid(pid, libc::SIGKILL);
+        let _ = signal_pid(pid, libc::SIGKILL);
         let _ = child.wait();
     }
     #[cfg(not(unix))]
