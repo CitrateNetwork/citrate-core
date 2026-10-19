@@ -1130,3 +1130,77 @@ fn read_self_shares_reads_pool_shares_over_mock_rpc() {
     let data = body["params"][0]["data"].as_str().unwrap();
     assert!(data.starts_with("0xce7c2ac2"), "shares(address) selector: {data}");
 }
+
+// ---------------------------------------------------------------------------
+// STD tripwire (C1-W). The bug class: a withdrawal-scan position committed past what the node has
+// shown it executed, e.g. a fixed depth below eth_blockNumber, which skips unserved blocks for
+// good once saved. Structural checks over the production source:
+//  1. every write to a scan position is bounded by `commit_cap` (executed evidence) or is a reorg
+//     rewind (`saturating_sub(LOG_WINDOW_BLOCKS)`);
+//  2. `commit_cap` asks `citrate_executedHead` first, and its executed-head arm uses no fixed depth;
+//  3. the fixed depth (SAFE_DEPTH_BLOCKS) appears only in the no-executed-head fallback, next to
+//     the eth_syncing applied tip.
+// ---------------------------------------------------------------------------
+fn scan_position_violations(prod: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    for stmt in prod.split(';') {
+        let mut rest = stmt;
+        while let Some(i) = rest.find("next_block =") {
+            let after = &rest[i + "next_block =".len()..];
+            if !after.starts_with('=') {
+                let ok = stmt.contains("commit_cap") || stmt.contains("saturating_sub(LOG_WINDOW_BLOCKS)");
+                if !ok {
+                    bad.push(format!("unbounded scan-position write: {}", stmt.trim()));
+                }
+            }
+            rest = after;
+        }
+    }
+    match prod.find("let commit_cap") {
+        None => bad.push("no commit_cap".into()),
+        Some(i) => {
+            let def = &prod[i..i + prod[i..].find("};").unwrap_or(prod.len() - i)];
+            let (exec_arm, fallback) = def.split_once("None =>").unwrap_or((def, ""));
+            if exec_arm.contains("SAFE_DEPTH_BLOCKS") {
+                bad.push("the executed-head arm falls back to a fixed depth".into());
+            }
+            if !fallback.contains("syncing") {
+                bad.push("the fallback is not bounded by the eth_syncing applied tip".into());
+            }
+        }
+    }
+    if !prod.contains("rpc.executed_head()") {
+        bad.push("citrate_executedHead is not asked".into());
+    }
+    let uses = prod.matches("SAFE_DEPTH_BLOCKS").count();
+    let defined = prod.matches("pub const SAFE_DEPTH_BLOCKS").count();
+    if uses - defined != 1 {
+        bad.push(format!("SAFE_DEPTH_BLOCKS used {} times outside its definition", uses - defined));
+    }
+    bad
+}
+
+#[test]
+fn tripwire_no_scan_position_passes_executed_evidence() {
+    let src = include_str!("staking.rs");
+    let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src);
+    // Doc comments may name the constants; only code counts.
+    let code: String = prod
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bad = scan_position_violations(&code);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn tripwire_catches_a_fixed_depth_position() {
+    // Negative control: the shape of the c38974a bug fails the tripwire.
+    let old = "let x = rpc.executed_head();\n\
+               let commit_cap = match e { Some(n) => n.min(head - SAFE_DEPTH_BLOCKS), None => match rpc.syncing() { _ => 0 } };\n\
+               scan.next_block = (head + 1).saturating_sub(SAFE_DEPTH_BLOCKS);\n";
+    let bad = scan_position_violations(old);
+    assert!(bad.iter().any(|b| b.contains("unbounded scan-position write")), "{bad:?}");
+    assert!(bad.iter().any(|b| b.contains("fixed depth")), "{bad:?}");
+}
