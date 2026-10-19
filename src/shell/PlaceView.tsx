@@ -1,15 +1,20 @@
 // Five-place navigation (0.5.2) — the tab strip and the surface for the current place.
 //
-// This is composition only: every tab renders an existing surface (Dashboard, Agent, Groups, Node,
-// Settings, …) unchanged. A tab with no content in this build renders <NotAvailableYet>, an honest
-// statement of what is missing, never placeholder data (Rule 1). Routes and redirects live in
+// This is composition only: every tab renders an existing surface (Dashboard, Agent, Groups,
+// Settings, …) unchanged, and Node's tabs render the K3 Node page (surfaces/node). A tab with no
+// content in this build renders <NotAvailableYet>, an honest statement of what is missing, never
+// placeholder data (Rule 1). Routes and redirects live in
 // places.ts; the map is docs/nav/FIVE_PLACE_ROUTE_MAP.md.
 import type { ReactNode } from "react";
 import type { Store } from "./store";
 import type { AppState } from "./state";
-import { ACCOUNT_SETTINGS, MOVED_CONTROLS_SETTINGS, NODE_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
-import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "../surfaces";
+import { ACCOUNT_SETTINGS, MOVED_CONTROLS_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
+import { Dashboard, Wallet, Storage, Comms, Commissary, Settings, Journal, ALF } from "../surfaces";
 import { ControlsPanel } from "../surfaces/hermes/ControlsPanel";
+import { NodeStatus } from "../surfaces/node/NodeStatus";
+import { NodeServices } from "../surfaces/node/NodeServices";
+import { NodeRewards } from "../surfaces/node/NodeRewards";
+import { NodeAdvanced } from "../surfaces/node/NodeAdvanced";
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "../surfaces";
 
 function TabStrip({ id, items, active, store, sub }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean }) {
@@ -82,12 +87,6 @@ function HermesControlsSlot({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
-/** Open a sub-view of the Node surface (its own Operations / Earning / Pinning switch). */
-const openNodeTab = (store: Store, nTab: string) => () => {
-  store.setState({ nTab });
-  store.go("node/status");
-};
-
 function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
   switch (route) {
     case "hermes/chat":
@@ -124,16 +123,9 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "wallet":
       return <Wallet store={store} s={s} />;
     case "node/status":
-      return <Node store={store} s={s} />;
+      return <NodeStatus store={store} s={s} />;
     case "node/services":
-      return (
-        <NotAvailableYet
-          route={route}
-          title="Services"
-          body="A list of the processes this app supervises, each with its state, a restart control and a bounded log, is not available in this build. The node's own state is on the Status tab."
-          action={{ label: "Open Node › Status", go: () => store.go("node/status") }}
-        />
-      );
+      return <NodeServices store={store} s={s} />;
     case "node/storage/files":
       return <StorageFiles store={store} s={s} />;
     case "node/storage/memory":
@@ -143,21 +135,14 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
         <NotAvailableYet
           route={route}
           title="Pins"
-          body="Pins with their bonds and on-chain state are not available in this build. The pins this build tracks are in the Pinning view on Node › Status."
-          action={{ label: "Open the Pinning view", go: openNodeTab(store, "pin") }}
+          body="Pins, each with its bond and on-chain state, are not available in this build. Pin bonds not live yet. Files you add on the Files tab stay on this node's IPFS."
+          action={{ label: "Open Files", go: () => store.go("node/storage/files") }}
         />
       );
     case "node/rewards":
-      return (
-        <NotAvailableYet
-          route={route}
-          title="Rewards"
-          body="One view of validator, pin and round rewards read from chain is not available in this build. What this build reads today is in the Earning view on Node › Status."
-          action={{ label: "Open the Earning view", go: openNodeTab(store, "earn") }}
-        />
-      );
+      return <NodeRewards />;
     case "node/advanced":
-      return <Settings store={store} s={{ ...s, sSec: sectionFor(NODE_SETTINGS, s.sSec) }} sections={NODE_SETTINGS} heading="Advanced" />;
+      return <NodeAdvanced store={store} s={s} />;
     case "store/apps":
       return <Commissary store={store} s={s} />;
     case "store/models":
