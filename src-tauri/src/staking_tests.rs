@@ -513,6 +513,11 @@ struct ChainStub {
     /// citrate-chain#337: `citrate_executedHead` answers this JSON-RPC error code instead (e.g.
     /// -32603 when the node has no persisted applied tip).
     executed_head_error: RefCell<Option<i64>>,
+    /// Answers for the next `citrate_executedHead` calls, in order (Ok(number) or Err(code)), before
+    /// the fields above apply: h1 and h2 of one read.
+    executed_next: RefCell<std::collections::VecDeque<Result<u64, i64>>>,
+    /// Hashes `eth_getBlockByHash` no longer serves (the block left the executed chain).
+    unknown_hashes: RefCell<std::collections::HashSet<String>>,
     /// Block hashes that differ from the default `stub_hash(n)` (a reorg).
     reorged: RefCell<std::collections::HashMap<u64, String>>,
     requests: RefCell<Vec<JsonValue>>,
@@ -533,6 +538,8 @@ impl ChainStub {
             syncing: RefCell::new(Some(JsonValue::Bool(false))),
             executed_head: RefCell::new(None),
             executed_head_error: RefCell::new(None),
+            executed_next: RefCell::new(Default::default()),
+            unknown_hashes: RefCell::new(Default::default()),
             reorged: RefCell::new(Default::default()),
             requests: RefCell::new(Vec::new()),
         }
@@ -574,6 +581,31 @@ impl ChainStub {
     }
     fn one(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
         match body["method"].as_str() {
+            Some("citrate_executedHead") if !self.executed_next.borrow().is_empty() => {
+                match self.executed_next.borrow_mut().pop_front() {
+                    Some(Ok(n)) => Ok(ok(serde_json::json!({ "number": format!("0x{n:x}"), "hash": self.hash_at(n) }))),
+                    Some(Err(code)) => Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1,
+                        "error": { "code": code, "message": "citrate_executedHead: read failed" } })),
+                    None => Err(RpcError::Transport("unreachable".into())),
+                }
+            }
+            Some("eth_getBlockByHash") => {
+                let h = body["params"][0].as_str().unwrap_or_default().to_ascii_lowercase();
+                if self.unknown_hashes.borrow().contains(&h) {
+                    return Ok(ok(JsonValue::Null));
+                }
+                let n = self
+                    .reorged
+                    .borrow()
+                    .iter()
+                    .find(|(_, v)| v.eq_ignore_ascii_case(&h))
+                    .map(|(n, _)| *n)
+                    .or_else(|| u64::from_str_radix(h.trim_start_matches("0x"), 16).ok());
+                match n {
+                    Some(n) if n <= self.head => Ok(ok(serde_json::json!({ "number": format!("0x{n:x}"), "hash": h }))),
+                    _ => Ok(ok(JsonValue::Null)),
+                }
+            }
             Some("citrate_executedHead") if self.executed_head_error.borrow().is_some() => {
                 let code = self.executed_head_error.borrow().unwrap_or(-32603);
                 Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1,
@@ -1148,6 +1180,58 @@ fn progress_is_persisted_a_margin_below_the_executed_head() {
     read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
     assert_eq!(scan.next_block, 3_001 - 100, "head.number - the reorg margin");
     assert_eq!(EXECUTED_HEAD_MARGIN_BLOCKS, 100, "citrate-chain MAX_REORG_DEPTH");
+}
+
+// The refined #337 scanner protocol (RPC review): h1 = executedHead, getLogs up to min(target, h1),
+// h2 = executedHead again, commit at most min(h1, h2) - margin. A rewind probe saw h1 = 5 while
+// getLogs served only up to 4, so h1 alone is never trusted.
+#[test]
+fn progress_is_committed_below_the_lower_of_two_executed_head_reads() {
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![]));
+    rpc.transport().executed_next.borrow_mut().extend([Ok(3_000), Ok(2_950)]);
+    let mut scan = WithdrawalScan::default();
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    assert_eq!(scan.next_block, 2_951 - EXECUTED_HEAD_MARGIN_BLOCKS, "min(h1, h2) - margin");
+    let heads = rpc.transport().requests.borrow().iter().filter(|r| r["method"] == "citrate_executedHead").count();
+    assert_eq!(heads, 2, "h1 before the logs, h2 after");
+}
+
+#[test]
+fn a_failed_second_executed_head_read_never_advances() {
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![(3, 2_000, false)]));
+    rpc.transport().executed_next.borrow_mut().extend([Ok(3_000), Err(-32603)]);
+    let mut scan = WithdrawalScan::default();
+    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    assert_eq!(got.len(), 1, "the list is still read and confirmed from contract state");
+    assert_eq!(scan.next_block, 0, "no h2: nothing committed");
+}
+
+#[test]
+fn a_window_error_never_advances_the_position() {
+    let rpc = RpcClient::with_transport(ChainStub::new(9_000, vec![(3, 2_000, false)]));
+    *rpc.transport().executed_head.borrow_mut() = Some(9_000);
+    *rpc.transport().fail_from.borrow_mut() = Some(5_000);
+    let mut scan = WithdrawalScan::default();
+    assert!(read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).is_err());
+    assert_eq!(scan.next_block, 0, "an error commits nothing");
+    assert!(scan.ids.contains(&3), "ids seen are kept (each is confirmed from contract state)");
+}
+
+// A reorg is detected by HASH (eth_getBlockByHash of the anchored executed head), never by
+// eth_getBlockByNumber, which can name a sibling at that height.
+#[test]
+fn a_reorg_is_detected_by_hash_not_by_number() {
+    let rpc = RpcClient::with_transport(ChainStub::new(9_000, vec![(41, 5_500, false)]));
+    *rpc.transport().executed_head.borrow_mut() = Some(9_000);
+    let gone = stub_hash(6_000);
+    // The height index still names the same hash at 6000, but the block left the executed chain.
+    rpc.transport().unknown_hashes.borrow_mut().insert(gone.clone());
+    let mut scan = WithdrawalScan { next_block: 6_001, anchor: Some((6_000, gone)), ..Default::default() };
+    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["41"], "rewound and re-read");
+    assert_eq!(scan.generation, 1);
+    let by_number = rpc.transport().requests.borrow().iter().any(|r| r["method"] == "eth_getBlockByNumber");
+    assert!(!by_number, "the reorg check never uses eth_getBlockByNumber");
 }
 
 #[test]

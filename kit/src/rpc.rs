@@ -354,6 +354,11 @@ impl<T: RpcTransport> RpcClient<T> {
             .ok_or_else(|| RpcError::MissingField("block.hash".into()))
     }
 
+    /// STD red stub (C1-W): not used by the current behaviour.
+    pub fn block_number_by_hash(&self, _hash: &str) -> Result<Option<u64>, RpcError> {
+        Ok(None)
+    }
+
     /// `eth_syncing` → the node's APPLIED (executed) tip when it reports that it is behind
     /// (`{currentBlock, …}`), or `None` when it answers `false` (not behind) (C1-W).
     pub fn syncing(&self) -> Result<Option<u64>, RpcError> {

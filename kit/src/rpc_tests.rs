@@ -380,3 +380,17 @@ fn executed_head_and_block_hash() {
     assert_eq!(rpc.block_hash(16), Ok(Some(h)));
     assert_eq!(rpc.block_hash(17), Ok(None));
 }
+
+// C1-W: eth_getBlockByHash gives the number of the block with that hash, None when it is not served.
+#[test]
+fn block_number_by_hash() {
+    let h = format!("0x{}", "cd".repeat(32));
+    let block = json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": "0x1770", "hash": h } });
+    let none = json!({ "jsonrpc": "2.0", "id": 2, "result": null });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![block, none]));
+    assert_eq!(rpc.block_number_by_hash(&h), Ok(Some(6000)));
+    assert_eq!(rpc.block_number_by_hash(&h), Ok(None));
+    let sent = rpc.transport().requests();
+    assert_eq!(sent[0]["method"], "eth_getBlockByHash");
+    assert_eq!(sent[0]["params"][0], json!(h));
+}
