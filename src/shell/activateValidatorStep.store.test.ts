@@ -259,6 +259,34 @@ describe("no silent signing", () => {
     expect(registerValidatorMock.mock.calls.length).toBe(calls);
   });
 
+  it("the node's returned hash must equal the hash S7 saved, or the send is reported as failed", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    const resolved = vi.fn();
+    const r = store.state.walletReview;
+    if (r) store.setState({ walletReview: { ...r, onResolved: resolved } });
+    sendPreparedMock.mockResolvedValueOnce({ txHash: "0xother", blockNumber: 501 });
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash).toBe("0xfeed"); // the signed tx stays recorded; the chain decides
+    expect(resolved).not.toHaveBeenCalledWith(true, expect.anything());
+    expect(String(store.state.toast ?? "")).toMatch(/different transaction hash/i);
+  });
+
+  it("a matching returned hash resolves with exactly the saved hash", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    const resolved = vi.fn();
+    const r = store.state.walletReview;
+    if (r) store.setState({ walletReview: { ...r, onResolved: resolved } });
+    await store.approveWalletReview(false);
+    expect(resolved).toHaveBeenCalledWith(true, store.state.s7TxHash ?? "0xfeed");
+    expect(resolved).toHaveBeenCalledWith(true, "0xfeed");
+  });
+
   it("a failed send keeps the recorded hash (the chain decides) and reports the failure", async () => {
     const store = memberStore();
     await store.refreshActivation();

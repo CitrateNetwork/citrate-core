@@ -457,6 +457,9 @@ pub struct SignatureCeremony {
     /// [`send_prepared`](Self::send_prepared) or [`reject`](Self::reject). Single-use: one
     /// approval, one signature, at most one send.
     prepared: Mutex<BTreeMap<u64, Prepared>>,
+    /// Test seam: how many signed txs were parked in `prepared` (inspection only).
+    #[cfg(test)]
+    prepared_parks: std::sync::atomic::AtomicUsize,
     next_id: AtomicU64,
     /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
     abis: crate::abi_book::AbiBook,
@@ -473,6 +476,8 @@ impl SignatureCeremony {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
             prepared: Mutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            prepared_parks: std::sync::atomic::AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
             abis: crate::abi_book::AbiBook::default(),
         }
@@ -750,6 +755,9 @@ impl SignatureCeremony {
         // gated signer reads the sealed entropy via the A2 session gate).
         let signed = wallet::sign_transaction(vault, &fields, chain_id)?;
         let tx_hash = format!("0x{}", hex::encode(signed.hash));
+        #[cfg(test)]
+        self.prepared_parks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.lock_prepared().insert(
             key,
             Prepared {

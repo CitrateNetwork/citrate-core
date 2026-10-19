@@ -105,6 +105,10 @@ describe("S7 · Activate validator", () => {
     s.activation = st({ tx: pendingTx });
     s.s7TxHash = "0xabc";
     expect(renderToStaticMarkup(<S7 store={store} s={s} />)).toContain('data-testid="s7-forget"');
+    // Truthful: "not seen yet" (it may simply not be mined), never "the network has no record".
+    const html = renderToStaticMarkup(<S7 store={store} s={s} />);
+    expect(html).toContain("not seen on the network yet after 10 minutes");
+    expect(html).not.toMatch(/no record/i);
     const recent = { ...store, canForgetActivationTx: () => false } as unknown as Store;
     expect(renderToStaticMarkup(<S7 store={recent} s={s} />)).not.toContain('data-testid="s7-forget"');
   });

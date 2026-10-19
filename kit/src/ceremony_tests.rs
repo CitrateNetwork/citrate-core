@@ -2197,3 +2197,112 @@ fn join8_reject_discards_a_prepared_tx() {
     );
     assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
 }
+
+// ---------------------------------------------------------------------------
+// Join-8 follow-up — approve_and_broadcast keeps its signed tx PRIVATE. It must
+// never park the tx in the shared `prepared` map (where a concurrent reject or
+// send_prepared on the same id could take it between the sign and the send).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join8_approve_and_broadcast_never_parks_its_tx_in_the_shared_map() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    c.approve_and_broadcast(&v, &rpc, &view.id, false, bcfg(2))
+        .expect("broadcast");
+    assert_eq!(
+        c.prepared_parks.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the one-call path must not round-trip its tx through the shared prepared map"
+    );
+}
+
+/// A transport that flags when the first RPC arrives (the approval is consumed by then).
+struct FlagRpc {
+    inner: MockRpc,
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl RpcTransport for FlagRpc {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        self.started.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.call(body)
+    }
+}
+
+#[test]
+fn join8_a_concurrent_reject_cannot_take_an_approve_and_broadcast_tx() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    for round in 0..40 {
+        let view = c.request(tx_intent(
+            &canonical_addr_lower(),
+            "0x3535353535353535353535353535353535353535",
+            "0x1",
+        ));
+        let started = Arc::new(AtomicBool::new(false));
+        let done = AtomicBool::new(false);
+        let rpc = RpcClient::with_transport(FlagRpc {
+            inner: MockRpc::new(vec![
+                ok(JsonValue::String("0x7".into())),
+                ok(JsonValue::String("0x77359400".into())),
+                ok(JsonValue::String("0xabc".into())),
+                ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+            ]),
+            started: started.clone(),
+        });
+        let mut stolen = 0usize;
+        let outcome = std::thread::scope(|sc| {
+            let rejecter = sc.spawn(|| {
+                let mut n = 0usize;
+                // Once the approval is consumed (first RPC seen), hammer reject on the same id.
+                while !done.load(Ordering::SeqCst) {
+                    if started.load(Ordering::SeqCst) && c.reject(&view.id).is_ok() {
+                        n += 1;
+                    }
+                }
+                n
+            });
+            let r = c.approve_and_broadcast(&v, &rpc, &view.id, false, bcfg(2));
+            done.store(true, Ordering::SeqCst);
+            stolen = rejecter.join().unwrap_or(usize::MAX);
+            r
+        });
+        assert!(outcome.is_ok(), "round {round}: broadcast lost its tx: {outcome:?}");
+        assert_eq!(stolen, 0, "round {round}: a concurrent reject took the in-flight tx");
+    }
+}
+
+/// TRIPWIRE: only `approve_and_sign` may park a signed tx in the shared map, and the
+/// one-call `approve_and_broadcast` must not route through the two public halves.
+#[test]
+fn join8_tripwire_only_approve_and_sign_parks_a_signed_tx() {
+    let src = strip_test_module(include_str!("ceremony.rs"));
+    assert_eq!(
+        src.matches("lock_prepared().insert(").count(),
+        1,
+        "exactly one place may insert into the prepared map"
+    );
+    let start = src
+        .find("pub fn approve_and_broadcast")
+        .expect("approve_and_broadcast exists");
+    let body = &src[start..];
+    let end = body.find("\n    }\n").map(|i| i + 6).unwrap_or(body.len());
+    let body = &body[..end];
+    assert!(
+        !body.contains("self.approve_and_sign(") && !body.contains("self.send_prepared("),
+        "approve_and_broadcast must keep its tx private, not round-trip it through the shared map"
+    );
+}
