@@ -431,6 +431,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("node.registerValidator");
         throw new Unavailable("node", "registerValidator");
       },
+      // No chain and no node in the web preview: the step shows its unavailable state (Rule 1).
+      async activationStatus(): Promise<never> {
+        assertSimAllowed("node.activationStatus");
+        throw new Unavailable("node", "activationStatus");
+      },
       // No real node to arm in the web preview → honest no-op (never a fabricated arm).
       async armMining() {
         assertSimAllowed("node.armMining");
@@ -795,7 +800,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
  */
 function simAuthStatus(st: AppState): AuthStatus {
   const p = PERSONAS[st.persona] || PERSONAS.p1;
-  const signedIn = st.stage === "done" || ["s2", "s3", "s4", "s5", "s6"].includes(st.stage) || st.s1 === "done";
+  const signedIn = st.stage === "done" || ["s2", "s3", "s4", "s5", "s6", "s7"].includes(st.stage) || st.s1 === "done";
   if (!signedIn) return SIGNED_OUT_AUTH;
   const effTier = st.entitlement === "lapsed" ? "free" : st.tier;
   const kyc = st.hasSbt || st.s2 === "verified" ? "verified" : st.s2 === "none" ? "none" : st.s2;

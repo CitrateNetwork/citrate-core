@@ -56,6 +56,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { activationGate } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -639,9 +640,6 @@ export class Store {
   // W1.x — true once the producer has been armed this session (the node respawns
   // with --mine and mints proposer.key). Gate for `maybeAutoBond` step 1.
   private validatorArmed = false;
-  // W1.3 — true once the onboarding S6 auto bond-activation ceremony has been opened this
-  // session, so `maybeAutoBond` does not re-open the wallet review every 2s poll.
-  private autoBondAttempted = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
@@ -1473,58 +1471,98 @@ export class Store {
   }
 
   /**
-   * W1.3 (@rule8 · Rule 3) — auto-open the validator bond-activation ceremony during
-   * onboarding S6. Under the bond-clone model (2026-08-05) the membership grant
-   * deploys + funds the member's `MemberBond` clone with the 32k; the member must
-   * then ACTIVATE it via `MemberBond.activate(pubkey, sig)` on the clone (from their
-   * own EOA, the clone's `onlyMember`), which makes the clone bond into the registry.
-   * Until activation the 32k just sits in the clone and the node is never a real
-   * validator (the gap the pre-fix flow left open). This fires the EXISTING
-   * `activateValidator` path — it builds the ceremony and STOPS for explicit human
-   * approval (no auto-approve).
-   *
-   * Fires at most once per session (`autoBondAttempted`): if the member dismisses
-   * the review, S6 keeps its manual "bond" affordance rather than re-opening the
-   * modal every 2s. Guards fail closed — a not-ready node / unlinked wallet / not-yet-
-   * granted member simply does not trigger (and `node_register_validator`'s own
-   * on-chain guards — bond deployed + funded, not already activated — fail closed
-   * again behind it).
+   * W1.3 (@rule8 · Rule 3) — prepare validator activation during onboarding S6/S7. Under the
+   * bond-clone model (2026-08-05) the membership grant deploys + funds the member's `MemberBond`
+   * clone; the member then ACTIVATES it via `MemberBond.activate(pubkey, sig)` (from their own
+   * EOA, the clone's `onlyMember`), which bonds the clone's principal into the registry. This
+   * only ARMS the producer so the node mints its proposer key; the activation itself is the
+   * member's explicit click on S7 (`onS7Activate`), which opens the Signature Ceremony. Guards
+   * fail closed — a not-ready node / unlinked wallet / not-yet-granted member does not trigger.
    */
   private maybeAutoBond(): void {
     if (BRIDGE_MODE !== "tauri") return;
     const s = this.state;
-    if (s.stage !== "s6") return; // only during node ignition; the dashboard has its own button
+    // Node ignition and the Activate-validator step (Join-8) only; the dashboard has its own button.
+    if (s.stage !== "s6" && s.stage !== "s7") return;
     if (s.bondedStake >= 32000) return; // already a bonded validator — nothing to do
     if (!this.walletIsLinked()) return; // S4: the EOA must be the member's wallet_address
     if (!s.hasGrant) return; // the grant must have deployed + funded the bond clone (settled S5)
 
-    // STEP 1 — ARM the producer so the node mints `proposer.key` (the validator
-    // identity activation needs). The node runs as a plain follower and NEVER mints
-    // the key on its own; arming respawns it with `--mine --coinbase`, which does.
-    // Gate on the node being "synced" (mapNodeState requires syncPct==100) — and
-    // `arm_mining_if_synced` re-checks the network tip on the backend, so a premature
-    // call is a safe no-op. Retry each 2s poll until it actually arms (returns true);
-    // only THEN advance to activation, so we never open a doomed ceremony against a
-    // missing key.
-    if (!this.validatorArmed) {
-      if (s.node === "synced" || s.node === "validating") {
-        void bridge.node.armMining().then((armed) => {
-          if (armed) this.validatorArmed = true;
-        });
-      }
-      return; // wait for the arm + the proposer.key mint before activating
+    // ARM the producer so the node mints `proposer.key` (the validator identity activation
+    // needs). The node runs as a plain follower and NEVER mints the key on its own; arming
+    // respawns it with `--mine --coinbase`, which does. `arm_mining_if_synced` re-checks the
+    // mining gate on the backend, so a premature call is a safe no-op.
+    //
+    // Join-8: this NO LONGER opens the activation review by itself. Activation is the member's
+    // explicit choice on the S7 step, after it explains what the transaction does; the review it
+    // opens is still the Signature Ceremony (Rule 3: no auto-approve, never silent).
+    if (!this.validatorArmed && (s.node === "synced" || s.node === "validating")) {
+      void bridge.node.armMining().then((armed) => {
+        if (armed) this.validatorArmed = true;
+      });
     }
+  }
 
-    // STEP 2 — the producer is armed and proposer.key is (being) minted. Auto-open
-    // the MemberBond.activate ceremony. `activateValidator` returns false WITHOUT
-    // consuming the attempt if the key isn't on disk yet (respawn still in flight),
-    // so the poll retries until it opens. Rule 3: this only OPENS the review — the
-    // human approves once.
-    if (s.walletReview) return; // a review is already open
-    if (this.autoBondAttempted) return; // opened once this session
-    void this.activateValidator().then((opened) => {
-      if (opened) this.autoBondAttempted = true;
+  // ---------- Join-8 · S7 Activate validator ----------
+
+  /**
+   * Re-read everything the S7 step shows (`bridge.node.activationStatus`: bond, membership,
+   * registry status + isActive, local sync, measured block time, and the sent activation's
+   * receipt). A failed read keeps the last honest status and records why (unknown is not zero).
+   * Once the chain shows the bond activated, the persisted tx hash is no longer needed.
+   */
+  async refreshActivation(): Promise<void> {
+    const member = this.identity().wallet;
+    if (!member) return;
+    try {
+      const st = await bridge.node.activationStatus(member, this.state.s7TxHash);
+      const patch: Partial<AppState> = { activation: st, activationError: null };
+      if (st.bondActivated === true && this.state.s7TxHash) patch.s7TxHash = null;
+      this.setState(patch);
+      if (patch.s7TxHash === null) this.save();
+    } catch (err) {
+      this.setState({ activationError: String((err as Error)?.message ?? err) });
+    }
+  }
+
+  /** S6 → S7 for a member with a granted bond; anyone else enters the app (there is no bond). */
+  onS6Continue(): void {
+    if (this.state.stage === "s6" && this.state.hasGrant) {
+      this.setState({ stage: "s7" });
+      this.save();
+      void this.refreshActivation();
+      return;
+    }
+    this.onEnter();
+  }
+
+  /**
+   * S7 — the member chose to activate. Fails closed unless the gate (contract §1 conditions) is
+   * met on the latest read. Then runs the EXISTING ceremony path (`activateValidator` →
+   * `node_register_validator` → a PENDING MemberBond.activate ceremony) and STOPS at the
+   * Signature Ceremony: nothing is approved or broadcast here. On approval the broadcast's tx hash
+   * is persisted so the step resumes to "Pending" after a quit.
+   */
+  async onS7Activate(): Promise<boolean> {
+    const gate = activationGate(this.state.activation, this.walletIsLinked());
+    if (!gate.ready) {
+      const why = gate.checks.find((c) => c.ok !== true);
+      this.toast("Activation not available yet — " + (why ? why.detail : "the chain has not been read"));
+      return false;
+    }
+    return this.activateValidator(async (approved, txHash) => {
+      if (!approved || !txHash) return;
+      this.setState({ s7TxHash: txHash });
+      this.save();
+      await this.refreshActivation();
     });
+  }
+
+  /** S7 — "Explore free": enter the app without activating. Membership and tier are unchanged;
+   *  the bond stays locked, not staked, and can be activated later from Node. */
+  onS7Skip(): void {
+    this.setState({ validatorSkipped: true });
+    this.onEnter();
   }
 
   /**
@@ -4420,7 +4458,7 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
-  async activateValidator(): Promise<boolean> {
+  async activateValidator(onResolved?: WalletReview["onResolved"]): Promise<boolean> {
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
@@ -4455,7 +4493,7 @@ export class Store {
       this.toast("Validator activation unavailable — " + String((err as Error).message ?? err));
       return false;
     }
-    this.openWalletReview("stake", "Activate validator · bond 32,000 SALT", view, "32,000 SALT validator bond");
+    this.openWalletReview("stake", "Activate validator · bond 32,000 SALT", view, "32,000 SALT validator bond", onResolved);
     return true;
   }
 
@@ -5000,7 +5038,8 @@ export class Store {
       await this.refreshActivity();
       this.save();
       // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
-      await r.onResolved?.(true);
+      // Join-8: the tx hash goes with it, so the Activate-validator step can resume to "Pending".
+      await r.onResolved?.(true, result.txHash);
     } catch (err) {
       // Honest failure — release the pending ceremony so it isn't left dangling.
       try {

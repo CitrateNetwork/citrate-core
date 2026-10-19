@@ -32,6 +32,7 @@ import type {
   PendingWithdrawal,
   AiProviderStatus,
   GrantStatus,
+  ActivationStatusView,
   ModelStatus,
   NodeLogLine,
   NodeStatusView,
@@ -239,6 +240,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // as a pending ceremony; returns the decoded view for human approval.
       async registerValidator() {
         return invoke<CeremonyView>("node_register_validator");
+      },
+      // Join-8 — the Activate-validator step's read (bond, membership, registry, sync, block time).
+      async activationStatus(memberAddress: string, txHash?: string | null) {
+        return invoke<ActivationStatusView>("validator_activation_status", { memberAddress, txHash: txHash ?? null });
       },
       async lastCrash() {
         return invoke<{ reason: string; atUnixMs: number } | null>("node_last_crash");

@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
+import type { ActivationStatusView, Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -237,7 +237,7 @@ export interface WalletReview {
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
-  onResolved?: (approved: boolean) => void | Promise<void>;
+  onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
@@ -294,7 +294,7 @@ export interface AppState {
    */
   authExpiresAt: string | null;
   entitlement: "active" | "expiring" | "grace" | "lapsed";
-  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "done";
+  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7" | "done";
   s1: "idle" | "waiting" | "attest" | "done";
   s2: "none" | "pending" | "verified" | "failed" | "review";
   s3: "idle" | "paying" | "settled";
@@ -567,6 +567,18 @@ export interface AppState {
   dataReady: boolean;
   s6ready?: boolean;
   /**
+   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate, kept so a member who
+   * quits before it is included comes back to "Pending" rather than a fresh button. Persisted;
+   * cleared once the chain shows the bond activated.
+   */
+  s7TxHash: string | null;
+  /** Join-8 — the member chose "Explore free" at S7 (activate later from Node). Persisted. */
+  validatorSkipped: boolean;
+  /** Join-8 — the step's last chain read (NOT persisted: chain is the truth, re-read on launch). */
+  activation: ActivationStatusView | null;
+  /** Join-8 — why the last read failed (the last honest read is kept), or null. */
+  activationError: string | null;
+  /**
    * CORE-C3 runtime memory graph (NOT persisted). In a Tauri build the Storage
    * surface fetches this from the REAL mcp_serve daemon via
    * `bridge.memory.constellation()`; nodes/links/tenant-totals come from the
@@ -788,6 +800,10 @@ export function freshState(pid: string): AppState {
     cerStep: 0,
     cerHash: "",
     walletReview: null,
+    s7TxHash: null,
+    validatorSkipped: false,
+    activation: null,
+    activationError: null,
     chatMsgs: [],
     chatStatus: "ready",
     chatRouteHold: null,
@@ -994,7 +1010,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "s7TxHash", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.

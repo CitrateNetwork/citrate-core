@@ -131,6 +131,7 @@ mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
+mod validator_activation;
 mod verified_source;
 mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
@@ -744,6 +745,8 @@ pub fn run() {
             // ceremony sends MemberBond.activate to the funded clone; the clone (=
             // staker) forwards its principal to registerValidator.
             node::node_register_validator,
+            // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
+            validator_activation::validator_activation_status,
             // W1.x — arm the producer once synced (consensus-gated); the respawn
             // mints proposer.key, the validator identity the bond activation needs.
             node::node_arm_mining,

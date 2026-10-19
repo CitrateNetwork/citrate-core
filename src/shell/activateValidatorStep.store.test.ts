@@ -1,0 +1,191 @@
+// Join-8 — the Activate-validator step in the store: resume after quit, the skip path, the
+// S6 → S7 hand-off, and NO SILENT SIGNING (Rule 3: activation only OPENS the Signature Ceremony;
+// the member approves it there).
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ActivationStatusView } from "../bridge/domains";
+
+const WEI_32K = (32000n * 10n ** 18n).toString();
+const WALLET = "0x1111111111111111111111111111111111111111";
+
+function readyStatus(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
+  return {
+    bondAddress: "0x2222222222222222222222222222222222222222",
+    bondDeployed: true,
+    bondActivated: false,
+    principalWei: WEI_32K,
+    unlockBlock: 16_200_000,
+    unlockTimestamp: 1_822_000_000,
+    memberTokenId: "4",
+    membershipActive: true,
+    validatorPubkey: "0x" + "07".repeat(32),
+    pubkeySource: "node",
+    nodeKeyReady: true,
+    registryStatus: 0,
+    activationEpoch: 0,
+    registryActive: false,
+    epochBlocks: 1000,
+    headBlock: 500_000,
+    blockTimeMs: 2000,
+    localBlock: 499_999,
+    localSyncing: false,
+    tx: null,
+    ...over,
+  };
+}
+
+const chain = { current: readyStatus() };
+const activationStatusMock = vi.fn(async (_member: string, _tx?: string | null) => chain.current);
+const registerValidatorMock = vi.fn(async () => ({
+  id: "cer_1",
+  decoded: { action: "MemberBond.activate", cost: "gas only" },
+}));
+const armMiningMock = vi.fn(async () => false);
+const broadcastMock = vi.fn(async () => ({ txHash: "0xfeed" }));
+const approveMock = vi.fn(async () => ({}));
+
+vi.mock("../bridge", () => ({
+  bindSimHost: () => {},
+  bridge: {
+    mode: "tauri",
+    node: {
+      activationStatus: (m: string, tx?: string | null) => activationStatusMock(m, tx),
+      registerValidator: () => registerValidatorMock(),
+      armMining: () => armMiningMock(),
+      status: async () => ({ state: "running", height: 1, peers: 1, syncPct: 100 }),
+      logs: async () => [],
+    },
+    signing: { broadcast: () => broadcastMock(), approve: () => approveMock(), reject: async () => {} },
+    membership: { grantStatus: async () => ({}) },
+    auth: { status: async () => ({ signedIn: false }) },
+    custody: { status: async () => ({ unlocked: false, autolockMins: 30 }) },
+  },
+}));
+vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
+
+import { Store } from "./store";
+import { PERSIST_KEYS } from "./state";
+
+function memberStore(): Store {
+  const store = new Store();
+  store.setState({ stage: "s7", hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true });
+  return store;
+}
+
+beforeEach(() => {
+  chain.current = readyStatus();
+  activationStatusMock.mockClear();
+  registerValidatorMock.mockClear();
+  armMiningMock.mockClear();
+  broadcastMock.mockClear();
+  approveMock.mockClear();
+  try {
+    localStorage.clear();
+  } catch {
+    /* jsdom */
+  }
+});
+
+describe("S6 → S7 hand-off", () => {
+  it("a member continues from node ignition into Activate validator", () => {
+    const store = memberStore();
+    store.setState({ stage: "s6" });
+    store.onS6Continue();
+    expect(store.state.stage).toBe("s7");
+  });
+  it("a non-member (no grant) enters the app; there is no bond to activate", () => {
+    const store = memberStore();
+    store.setState({ stage: "s6", hasGrant: false });
+    store.onS6Continue();
+    expect(store.state.stage).toBe("done");
+  });
+});
+
+describe("resume after quit", () => {
+  it("persists the step and the sent activation's tx hash", () => {
+    expect(PERSIST_KEYS).toContain("stage");
+    expect(PERSIST_KEYS).toContain("s7TxHash");
+    expect(PERSIST_KEYS).toContain("validatorSkipped");
+    expect(PERSIST_KEYS).not.toContain("activation"); // chain is the truth, re-read on launch
+  });
+  it("re-reads the chain with the persisted tx hash, so a sent activation shows as Pending", async () => {
+    const store = memberStore();
+    store.setState({ s7TxHash: "0xabc" });
+    chain.current = readyStatus({ tx: { hash: "0xabc", included: false, blockNumber: null, success: null } });
+    await store.refreshActivation();
+    expect(activationStatusMock).toHaveBeenCalledWith(WALLET, "0xabc");
+    expect(store.state.activation?.tx?.included).toBe(false);
+  });
+  it("a failed read keeps the last honest status and records the reason (unknown is not zero)", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    activationStatusMock.mockRejectedValueOnce(new Error("rpc down"));
+    await store.refreshActivation();
+    expect(store.state.activation?.bondDeployed).toBe(true);
+    expect(store.state.activationError).toContain("rpc down");
+  });
+  it("forgets the tx hash once the chain shows the bond activated", async () => {
+    const store = memberStore();
+    store.setState({ s7TxHash: "0xabc" });
+    chain.current = readyStatus({ bondActivated: true, registryStatus: 1 });
+    await store.refreshActivation();
+    expect(store.state.s7TxHash).toBeNull();
+  });
+});
+
+describe("skip path: Explore free", () => {
+  it("enters the app without activating and without changing the member's tier", () => {
+    const store = memberStore();
+    const tier = store.state.tier;
+    store.onS7Skip();
+    expect(store.state.stage).toBe("done");
+    expect(store.state.validatorSkipped).toBe(true);
+    expect(store.state.tier).toBe(tier);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+  });
+});
+
+describe("no silent signing", () => {
+  it("Activate only OPENS the Signature Ceremony; nothing is approved or broadcast", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    // The producer is already armed in this session, so activation goes straight to the ceremony.
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    const opened = await store.onS7Activate();
+    expect(opened).toBe(true);
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
+    expect(store.state.walletReview?.kind).toBe("stake");
+    expect(store.state.walletReview?.view.id).toBe("cer_1");
+    expect(broadcastMock).not.toHaveBeenCalled();
+    expect(approveMock).not.toHaveBeenCalled();
+  });
+
+  it("the approval card's resolve records the tx hash for resume", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    await store.state.walletReview?.onResolved?.(true, "0xfeed");
+    expect(store.state.s7TxHash).toBe("0xfeed");
+  });
+
+  it("fails closed when the gate is not met: no ceremony is built", async () => {
+    chain.current = readyStatus({ membershipActive: false });
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    const opened = await store.onS7Activate();
+    expect(opened).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  it("node ignition no longer opens the activation review on its own", () => {
+    const store = memberStore();
+    store.setState({ stage: "s6", node: "synced" });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    (store as unknown as { maybeAutoBond: () => void }).maybeAutoBond();
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+  });
+});
