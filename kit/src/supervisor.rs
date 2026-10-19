@@ -742,6 +742,22 @@ impl Cell {
         token
     }
 
+    /// The answer to a Stop when a Stop is already the latest intent. It joins a pending Stop;
+    /// it is `AlreadySatisfied` only when the service is Stopped and owns nothing; while owned
+    /// work from that Stop is still running it is `Quarantined`, never "already satisfied".
+    fn repeated_stop(&self, epoch: u64) -> ControlResult {
+        if let Some((token, IntentKind::Stop)) = self.active {
+            return ControlResult::Accepted(token);
+        }
+        if let Some(reason) = &self.quarantine {
+            return ControlResult::Quarantined(reason.clone());
+        }
+        if self.phase == Phase::Stopped {
+            return ControlResult::AlreadySatisfied(self.snapshot(epoch));
+        }
+        ControlResult::Busy
+    }
+
     /// Settle the pending receipt if it belongs to intent `seq` and is of `kind`.
     fn settle(&mut self, seq: u64, kind: IntentKind, receipt: Receipt) {
         if let Some((token, k)) = self.active {
@@ -1043,10 +1059,7 @@ impl Supervisor {
             return ControlResult::RejectedClosing;
         }
         if c.desired == Desired::Stopped {
-            return match c.active {
-                Some((token, IntentKind::Stop)) => ControlResult::Accepted(token),
-                _ => ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch)),
-            };
+            return c.repeated_stop(self.shared.epoch);
         }
         let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
         if c.phase != Phase::Quarantined {
@@ -1544,6 +1557,20 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         }
 
         // desired == Running
+        //
+        // A Start that superseded a Stop mid-teardown: the old incarnation's child is gone, but
+        // its readers (and any process holding its output pipe) may not be. Reconcile them before
+        // admitting the next spawn; until then the service is Quarantined and the Start pending.
+        if tore_down_child {
+            let remaining = drain_readers(&mut readers, READER_DRAIN);
+            if !remaining.is_empty() {
+                hold_start_for_cleanup(&shared, seq, &remaining);
+                shared.wait_wake(Some(QUARANTINE_POLL));
+                continue;
+            }
+            release_start_hold(&shared, seq);
+            tore_down_child = false;
+        }
         if failed_seq == Some(seq) {
             shared.wait_wake(None);
             continue;
@@ -1697,6 +1724,35 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 );
             }
         }
+    }
+}
+
+/// The previous incarnation still holds `remaining`: quarantine the service while the accepted
+/// Start for intent `seq` waits. Nothing is spawned meanwhile.
+fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
+    let mut c = shared.lock();
+    if c.closing || c.intent_sequence != seq || c.quarantine.is_some() {
+        return;
+    }
+    c.status.state = SupervisorState::Off;
+    c.status.pid = None;
+    c.phase = Phase::Quarantined;
+    c.quarantine = Some(format!(
+        "the previous incarnation is not cleaned up yet ({}): its output is still open, so \
+         another process (for example one it started) may hold the pipe; the accepted Start \
+         waits until it ends",
+        remaining.join(", ")
+    ));
+    c.touch();
+}
+
+/// The previous incarnation is reconciled: lift the hold placed for intent `seq`.
+fn release_start_hold(shared: &Shared, seq: u64) {
+    let mut c = shared.lock();
+    if c.intent_sequence == seq && c.desired == Desired::Running && c.quarantine.is_some() {
+        c.quarantine = None;
+        c.phase = Phase::Starting;
+        c.touch();
     }
 }
 
