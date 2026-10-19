@@ -47,7 +47,7 @@ import { runContractView } from "../agent/contractView";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
-import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
+import { ESCALATE_TOOL_NAME, escalationApproval, escalationOffered, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
@@ -1061,10 +1061,11 @@ export class Store {
           : false;
       if (sidecarUp) {
         const h = bridge.agentHarness;
-        // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint.
+        // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint,
+        // and (K2) never under Local model only.
         const escalationReady = await bridge.escalation
           .endpoints()
-          .then((e) => e.length > 0)
+          .then((e) => escalationOffered(e.length, route))
           .catch(() => false);
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider

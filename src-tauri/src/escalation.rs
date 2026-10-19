@@ -456,6 +456,8 @@ pub struct QuoteView {
     pub cost_micros: u64,
     pub cost_label: String,
     pub within_budget: bool,
+    /// K2: core asks before this escalation runs, whatever the budget (route ask first).
+    pub asks_first: bool,
     pub remaining_micros: u64,
     pub cap_micros: u64,
     pub max_tokens: u32,
@@ -526,6 +528,9 @@ pub struct Book {
     pub confirmations: BTreeMap<String, PendingConfirmation>,
     /// The spend ledger's integrity key, read from the OS keyring at load. `None`: saving fails.
     pub ledger_key: Option<Zeroizing<Vec<u8>>>,
+    /// K2: the member's chat route is ask first, so every escalation needs the member's explicit
+    /// approval whatever the budget. Set from the stored route at each command (never persisted).
+    pub ask_each_time: bool,
 }
 
 /// A one-shot confirmation id core minted for one shown quote at one price.
@@ -553,6 +558,7 @@ impl Book {
             quotes: BTreeMap::new(),
             confirmations: BTreeMap::new(),
             ledger_key: None,
+            ask_each_time: false,
         }
     }
 
@@ -658,6 +664,7 @@ impl Book {
             cost_micros: cost,
             cost_label: fmt_usd(cost),
             within_budget: within,
+            asks_first: self.ask_each_time,
             remaining_micros: self.ledger.remaining(),
             cap_micros: self.ledger.cap_micros,
             max_tokens,
@@ -755,13 +762,15 @@ impl Book {
         }
         self.ledger.roll(now_ms);
         let fits = self.ledger.used().saturating_add(q.cost_micros) <= self.ledger.cap_micros;
-        let mode = if !tainted && !self.ledger.unreadable && fits {
+        let mode = if !tainted && !self.ledger.unreadable && fits && !self.ask_each_time {
             Mode::Budget
         } else if confirmed {
             Mode::Confirmed
         } else {
             let reason = if tainted {
                 "the agent has read untrusted content in this task, so it asks before spending"
+            } else if self.ask_each_time {
+                "Hermes asks before anything leaves this device (Local model only is off, so it asks first)"
             } else if self.ledger.unreadable {
                 "the spend ledger could not be read, so every escalation asks"
             } else {
@@ -1264,6 +1273,25 @@ fn with_book<R: tauri::Runtime, T>(
     f(dir, book).map_err(|e| e.to_string())
 }
 
+/// K2: escalation sends to the member's own endpoint, a remote route, so the chat route applies.
+/// `local_only` refuses before anything else happens; `ask_first` returns `true` (ask each time).
+pub fn escalation_route_gate(route: crate::chat_route::ChatRoute) -> Result<bool, String> {
+    match route {
+        crate::chat_route::ChatRoute::LocalOnly => Err(
+            "Local only is on, so this escalation was refused and nothing was sent. Turn off Local model only in Hermes › Controls to escalate to your endpoint."
+                .into(),
+        ),
+        crate::chat_route::ChatRoute::AskFirst => Ok(true),
+    }
+}
+
+/// The gate for a command: the stored route (an unreadable setting counts as local only).
+fn escalation_route_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<bool, String> {
+    escalation_route_gate(crate::chat_route::effective(&crate::chat_route::route_dir(
+        app,
+    )?))
+}
+
 /// The budget as Settings shows it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1386,7 +1414,9 @@ pub async fn escalation_quote(
     max_tokens: Option<u32>,
 ) -> Result<QuoteView, String> {
     crate::blocking::off_main(move || {
+        let ask_each_time = escalation_route_for_app(&app)?;
         with_book(&app, |_, b| {
+            b.ask_each_time = ask_each_time;
             b.quote(
                 &endpoint_id,
                 &prompt,
@@ -1424,6 +1454,7 @@ pub async fn escalation_confirm_prepare(
     shown_cost_micros: u64,
 ) -> Result<ConfirmationView, String> {
     crate::blocking::off_main(move || {
+        escalation_route_for_app(&app)?;
         with_book(&app, |_, b| {
             b.prepare_confirmation(&quote_id, shown_cost_micros, now_ms(), new_id("c"))
         })
@@ -1461,11 +1492,15 @@ fn escalation_run_sync<R: tauri::Runtime>(
     confirm_id: Option<&str>,
     tainted: bool,
 ) -> Result<RunView, String> {
+    // K2: the member's chat route, checked first. Local only refuses before anything is read,
+    // reserved or sent; ask first means only a confirmed (member-approved) run may go.
+    let ask_each_time = escalation_route_for_app(app)?;
     // HUP-S2.6: the spend is recorded in core's HIC outbox once it settles; nothing starts when
     // the outbox could not take that record (fail closed, pending owner sign-off).
     crate::hic_records::outbox_for_app(app)?.check_writable()?;
     // 1. Authorize and reserve, write-ahead. Nothing leaves until the reservation is on disk.
     let auth = with_book(app, |dir, b| {
+        b.ask_each_time = ask_each_time;
         let a = b.authorize(
             quote_id,
             shown_cost_micros,
