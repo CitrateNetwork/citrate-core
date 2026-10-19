@@ -1245,3 +1245,25 @@ fn a_sidecar_must_scope_every_runtime_set_including_the_grant_document_ones() {
         assert!(!sidecar_scopes_host_sets(Some(&less)), "a sidecar that cannot scope {missing} is an older one");
     }
 }
+
+#[test]
+fn tripwire_a_not_started_run_is_never_charged() {
+    // Whatever the runner reports, core charges nothing for a run that never started.
+    let fx = Fx::standard("notcharged");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    let at = NOW_MS + 18 * 3_600_000;
+    let run = crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(&id, false, NOW_MS)?;
+        Ok(b.claim_due_with(at, 0, Some(&[]))?.remove(0).run_id)
+    })
+    .expect("claimed");
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.finish_run(&id, &run, 3_000, crate::daemons::RunOutcome::NotStarted, "Not started: Hermes restarted", at + 1)
+    })
+    .expect("finish");
+    let today = crate::daemons::with_book_file(&fx.daemons, false, |b| Ok(b.list(at + 2, 0))).expect("list");
+    assert_eq!(today[0].tokens_today, 0, "a run that never started charges nothing");
+    assert_eq!(today[0].last_outcome.as_deref(), Some("not_started"));
+}

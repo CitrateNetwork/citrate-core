@@ -384,3 +384,50 @@ describe("a run core refused to open", () => {
     expect(api.finished[0].tokens).toBe(0);
   });
 });
+
+describe("an open-time refusal through the real turn charges nothing", () => {
+  it("records not_started with 0 tokens when the session open is refused (real runDaemonTurn)", async () => {
+    const { runDaemonTurn } = await import("./turn");
+    const api = fakeApi([[claim({ allowedTools: [] })]]);
+    const sidecar = {
+      openUnattended: vi.fn(async () => {
+        throw new Error("Not started: the tools Hermes offers changed since this run was claimed");
+      }),
+      send: vi.fn(async () => undefined),
+      events: vi.fn(async () => ({ events: [], lastSeq: 0, busy: false })),
+      toolResult: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const turnDeps = {
+      providerKind: "sidecar",
+      systemPrompt: () => "You are Hermes. ".repeat(200),
+      context: () => ({ height: 1, peers: 0, finalityAge: 0, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" }),
+      sidecar,
+      handleTool: async () => "ok",
+    };
+    const r = createDaemonRunner(deps(api, (c, signal, meter) => runDaemonTurn(c, signal, meter, turnDeps)));
+    await r.tick();
+    expect(sidecar.openUnattended).toHaveBeenCalledTimes(1);
+    expect(api.finished).toHaveLength(1);
+    expect(api.finished[0].outcome).toBe("not_started");
+    expect(api.finished[0].tokens).toBe(0);
+  });
+
+  it("tripwire: every not_started end the runner reports carries 0 tokens", async () => {
+    const { DaemonNotStarted } = await import("./turn");
+    // A turn that used its meter before the refusal surfaced (the worst case).
+    const api = fakeApi([[claim(), claim({ daemonId: "d2", runId: "r2" })]]);
+    const r = createDaemonRunner(deps(api, async (_c, _s, meter) => {
+      meter.begin(400, 40); // under the 1,000-token allowance, so no budget stop
+      meter.round();
+      throw new DaemonNotStarted("Not started: Hermes is restarting");
+    }));
+    await r.tick();
+    expect(api.finished.length).toBe(2);
+    for (const f of api.finished) {
+      expect(f.outcome).toBe("not_started");
+      expect(f.tokens).toBe(0);
+    }
+  });
+});
