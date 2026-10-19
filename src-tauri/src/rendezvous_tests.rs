@@ -453,3 +453,28 @@ fn the_join_path_sends_the_hex_token_and_falls_back_only_through_decide_join() {
     assert!(decide < legacy);
     assert_eq!(body.matches("redeem_link(").count(), 1);
 }
+
+// ---- Review of 56edc33: citrate://invite links (paste box, pending banner) join through the
+// rendezvous too. Once a rendezvous exists, the relay refuses the legacy RedeemInvite for that
+// token in every state (§4 rev 6), so the legacy path must not go first.
+
+#[test]
+fn citrate_invite_links_try_the_rendezvous_first() {
+    let src = include_str!("invites.rs");
+    let body = &src[src.find("pub async fn group_invite_redeem").expect("fn")..];
+    let body = &body[..body.find("\n}\n").expect("end")];
+    assert!(body.contains("crate::rendezvous::join_opened("), "{body}");
+    assert!(!body.contains("redeem_link(&app"), "the legacy redeem runs only inside join_opened");
+    assert!(body.contains("crate::rendezvous::tick_soon(&app)"));
+}
+
+#[test]
+fn the_legacy_fallback_sends_the_daemon_encoding() {
+    let src = include_str!("invites.rs");
+    let body = &src[src.find("pub(crate) fn redeem_link").expect("fn")..];
+    let body = &body[..body.find("\n}\n").expect("end")];
+    assert!(body.contains("redeem_token_wire(&token)?"));
+    // Same bytes as the rendezvous ops (§9): hex of the token's UTF-8 bytes.
+    let t = token();
+    assert_eq!(crate::invites::redeem_token_wire(&t).as_deref(), Ok(token_ipc_hex(&t).as_str()));
+}

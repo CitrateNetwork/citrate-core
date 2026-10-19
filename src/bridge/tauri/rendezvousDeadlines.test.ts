@@ -10,5 +10,8 @@ describe("rendezvous invoke deadlines", () => {
     expect(deadlineFor("rendezvous_forget")).toBeGreaterThan(36_000);
     expect(deadlineFor("group_invite_create")).toBeGreaterThan(34_000);
     expect(deadlineFor("group_invite_revoke")).toBeGreaterThan(26_000);
+    // rendezvousJoin, then (on the §12 fallback only) the legacy redeem.
+    expect(deadlineFor("join_redeem")).toBeGreaterThan(26_000);
+    expect(deadlineFor("group_invite_redeem")).toBeGreaterThan(26_000);
   });
 });

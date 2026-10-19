@@ -1795,10 +1795,10 @@ export interface InvitesDomain {
    *  resolution. INVITE-S2: publishes BLAKE3(token) + expiry to the relay so the invitee can
    *  self-admit; fails closed if the relay is unreachable. */
   create(group: string, forHandle: string): Promise<InviteMinted>;
-  /** INVITE-S2 — INVITEE: SELF-ADMIT into the group from an invite link, in one click. Joins by MLS
-   *  external commit with no owner action (even if the owner is offline). Honest error on a spent/
-   *  expired/revoked token or an unreachable relay. */
-  redeem(link: string): Promise<void>;
+  /** INVITEE: join from an invite link, in one click. GROW-S2: through the relay rendezvous
+   *  (`path: "rendezvous"` with the daemon's join view), falling back to the INVITE-S2 self-admit
+   *  (`path: "legacy"`, the group is joined) only when the relay has no rendezvous for it. */
+  redeem(link: string): Promise<JoinRedeemResult>;
   /** The owner's outstanding invites for a group. */
   list(group: string): Promise<PendingInvite[]>;
   /** Verify + CONSUME a claim's one-time token against an outstanding invite. The caller then adds

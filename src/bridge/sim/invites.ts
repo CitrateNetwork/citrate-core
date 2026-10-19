@@ -1,5 +1,5 @@
 // CX bridge impl — group invites (INVITE-S2 self-admit + CONNECT-S1 claim-back), SIM. Honest (Rule 1).
-import type { InviteMinted, InvitesDomain, PendingInvite, ReferralEvent } from "../domains";
+import type { InviteMinted, InvitesDomain, JoinRedeemResult, PendingInvite, ReferralEvent } from "../domains";
 import type { SimHost } from "./index";
 
 export function simInvites(_host: SimHost): InvitesDomain {
@@ -8,7 +8,7 @@ export function simInvites(_host: SimHost): InvitesDomain {
       // No relay in the web preview — minting a self-admit invite needs the desktop daemon.
       throw new Error("creating a group invite needs the desktop app");
     },
-    async redeem(): Promise<void> {
+    async redeem(): Promise<JoinRedeemResult> {
       // No relay/MLS in the web preview — self-admit needs the desktop daemon.
       throw new Error("joining via an invite needs the desktop app");
     },

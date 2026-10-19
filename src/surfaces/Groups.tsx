@@ -19,6 +19,7 @@ import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLi
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
 import { RelayStatusChip } from "./RelayStatusChip";
+import { redeemToast } from "./joinRedeemToast";
 import {
   groupsSlice,
   refreshGroups,
@@ -419,11 +420,11 @@ export function Groups({ store, s }: SurfaceProps) {
     }
     // Primary: one-click self-admit.
     try {
-      await bridge.invites.redeem(link);
+      const result = await bridge.invites.redeem(link);
       if (redeemRef.current) redeemRef.current.value = "";
       setRedeemOpen(false);
       await refreshGroups();
-      store.toast("You're in — welcome to the group.");
+      store.toast(redeemToast(result, groupsSlice.get().groups.some((x) => x.id === g)));
       return;
     } catch (e) {
       // Self-admit didn't take (spent/expired/revoked, or an older unpublished invite). If the link
@@ -565,9 +566,10 @@ export function Groups({ store, s }: SurfaceProps) {
                     // INVITE-S2 — one-click self-admit. Falls back to a claim-back request only for an
                     // older link (with a `k=` key) whose self-admit didn't take.
                     try {
-                      await bridge.invites.redeem(pi.url);
+                      const result = await bridge.invites.redeem(pi.url);
                       await refreshGroups();
-                      store.toast("You're in — welcome to the group.");
+                      const gid = result.path === "rendezvous" ? result.join.group : "";
+                      store.toast(redeemToast(result, !!gid && groupsSlice.get().groups.some((x) => x.id === gid)));
                       store.clearPendingInvite();
                       return;
                     } catch (e) {
