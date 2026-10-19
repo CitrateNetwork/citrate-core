@@ -19,4 +19,9 @@ pc_fixture_processes_carry_the_suite_prefix | harness | SCL-S1.3 | every fixture
 stop_in_off_never_respawns | regression | SCL-S2.2 | bug (a): a second Stop on a stopped service creates no child over 2 s
 stop_in_backoff_never_respawns | regression | SCL-S2.2 | a Stop in Backoff cancels the retry; a second Stop changes nothing over 2 s
 concurrent_stops_during_teardown_never_respawn | regression | SCL-S2.2 | 8 Stops racing one teardown leave one stopped service, no respawn over 2 s
+repeated_stop_joins_receipt | regression | SCL-S2.2 | a repeated Stop joins the first receipt; Accepted is Pending until Complete; Stop when stopped is AlreadySatisfied
+explicit_start_after_stop_creates_exactly_one_incarnation | positive-control | SCL-S2.2 | one explicit Start after Stop creates exactly one new incarnation
+stop_with_a_held_reader_is_incomplete_and_quarantined | regression | SCL-S2.2 | a reader held open makes Stop Incomplete and the service Quarantined until it really ends
+stop_without_a_monitor_is_observation_unknown | regression | SCL-S2.2 | with the monitor gone, Stop is committed and reported ObservationUnknown, never success
+start_after_shutdown_is_rejected_closing | regression | SCL-S2.2 | a Start after shutdown begins is RejectedClosing and spawns nothing
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures

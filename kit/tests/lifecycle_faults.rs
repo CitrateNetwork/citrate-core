@@ -17,7 +17,10 @@ mod lifecycle;
 
 use std::time::Duration;
 
-use citrate_core_kit::supervisor::{BackoffPolicy, Supervisor, SupervisorConfig, SupervisorState};
+use citrate_core_kit::supervisor::{
+    BackoffPolicy, ChildWatch, ControlResult, Desired, Phase, Receipt, Supervisor,
+    SupervisorConfig, SupervisorState,
+};
 use lifecycle::fixture::{pgrep, pid_alive, sleep_bin, OwnedFixture, SUITE_PREFIX};
 use lifecycle::timing::{hold_for, sample_over, wait_for, Deadline};
 
@@ -429,6 +432,246 @@ fn concurrent_stops_during_teardown_never_respawn() {
         respawned.is_empty(),
         "a queued Stop respawned the child: {respawned:?}; cleanup {report:?}"
     );
+}
+
+/// Repeated Stop joins the first Stop's receipt; `Accepted` is not `Complete`; a Stop on a
+/// stopped service is `AlreadySatisfied` (US-1.1 AC2, US-1.2 AC1 and AC2).
+#[test]
+fn repeated_stop_joins_receipt() {
+    let fx = OwnedFixture::new("stop-join");
+    let mut cfg = SupervisorConfig::new(
+        fx.stubborn_leaf_spec("lcf-stop-join"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.stop_grace = Duration::from_millis(600);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let pid = running_pid(&sup, &fx);
+    let first = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("first Stop: {other:?}"),
+    };
+    // The child ignores SIGTERM, so the teardown lasts the whole grace: accepted, not done.
+    assert_eq!(
+        sup.receipt(first),
+        Receipt::Pending,
+        "Accepted never means Complete"
+    );
+    let during = sup.lifecycle().map(|l| l.phase);
+    assert_eq!(during, Some(Phase::Stopping));
+    match sup.request_stop() {
+        ControlResult::Accepted(t) => assert_eq!(t, first, "a repeated Stop joins the first"),
+        other => panic!("repeated Stop: {other:?}"),
+    }
+    let done = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        match sup.receipt(first) {
+            Receipt::Pending => None,
+            r => Some(r),
+        }
+    });
+    let receipt = match done {
+        Ok((r, _)) => r,
+        Err(e) => panic!("INCONCLUSIVE: the Stop never settled within {:?}", e.waited),
+    };
+    assert!(
+        matches!(&receipt, Receipt::Complete { scope } if scope.iter().any(|s| s == "child")),
+        "{receipt:?}"
+    );
+    assert!(!pid_alive(pid));
+    let snap = sup
+        .lifecycle()
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_eq!(snap.phase, Phase::Stopped);
+    assert_eq!(
+        snap.intent_sequence, first.intent_sequence,
+        "joined Stops add no intent"
+    );
+    assert!(matches!(
+        sup.request_stop(),
+        ControlResult::AlreadySatisfied(_)
+    ));
+    let samples = sample_over(Duration::from_secs(2), Duration::from_millis(50), || {
+        fx.pidfile_pids().len()
+    });
+    drop(sup);
+    fx.assert_clean();
+    assert!(
+        samples.iter().all(|(_, n)| *n == 1),
+        "no respawn: {samples:?}"
+    );
+}
+
+/// After a completed Stop, one explicit Start creates exactly one new incarnation (the positive
+/// control of bug (a), SPEC-001 "Stop idempotence / no respawn").
+#[test]
+fn explicit_start_after_stop_creates_exactly_one_incarnation() {
+    let fx = OwnedFixture::new("restart");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-restart"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let first_pid = running_pid(&sup, &fx);
+    let first_incarnation = sup.lifecycle().map(|l| l.incarnation);
+    sup.stop();
+    let token = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start after Stop: {other:?}"),
+    };
+    let pids = fx.expect_pids(2, ACQUIRE);
+    let second_pid = running_pid(&sup, &fx);
+    assert_eq!(pids[1], second_pid);
+    assert_ne!(first_pid, second_pid);
+    let started = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        matches!(sup.receipt(token), Receipt::Started { .. }).then_some(())
+    });
+    assert!(
+        started.is_ok(),
+        "the Start receipt reports the spawn: {:?}",
+        sup.receipt(token)
+    );
+    let snap = sup
+        .lifecycle()
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_eq!(Some(snap.incarnation), first_incarnation.map(|i| i + 1));
+    assert_eq!(snap.phase, Phase::Alive);
+    assert!(matches!(
+        sup.request_start(),
+        ControlResult::AlreadySatisfied(_)
+    ));
+    let samples = sample_over(Duration::from_secs(2), Duration::from_millis(50), || {
+        fx.pidfile_pids().len()
+    });
+    drop(sup);
+    fx.assert_clean();
+    assert!(
+        samples.iter().all(|(_, n)| *n == 2),
+        "exactly one new incarnation: {samples:?}"
+    );
+}
+
+/// A Stop whose log reader cannot finish (a descendant holds the child's output pipe open) is
+/// `Incomplete` and names the reader; the service is Quarantined, not Stopped, and a Start is
+/// refused until the reader really ends (BDD E1 "Stop reports incomplete cleanup honestly").
+#[test]
+fn stop_with_a_held_reader_is_incomplete_and_quarantined() {
+    let fx = OwnedFixture::new("held-reader");
+    let mut cfg = SupervisorConfig::new(
+        fx.descendants_spec("lcf-held-reader", 1),
+        fx.path("crash.jsonl"),
+    );
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let parent = running_pid(&sup, &fx);
+    let pids = fx.expect_pids(2, ACQUIRE);
+    let descendant = pids[1];
+    let token = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    let settled = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        match sup.receipt(token) {
+            Receipt::Pending => None,
+            r => Some(r),
+        }
+    });
+    let receipt = match settled {
+        Ok((r, _)) => r,
+        Err(e) => panic!("INCONCLUSIVE: the Stop never settled within {:?}", e.waited),
+    };
+    assert!(!pid_alive(parent), "the direct child is gone");
+    assert!(
+        pid_alive(descendant),
+        "INCONCLUSIVE: the descendant should still hold the pipe"
+    );
+    match &receipt {
+        Receipt::Incomplete { remaining, reason } => {
+            assert!(
+                remaining.iter().any(|r| r.starts_with("reader")),
+                "{remaining:?}"
+            );
+            assert!(!reason.is_empty());
+        }
+        other => panic!("a held reader cannot be Complete: {other:?}"),
+    }
+    let snap = sup
+        .lifecycle()
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_eq!(snap.phase, Phase::Quarantined);
+    assert!(matches!(sup.request_start(), ControlResult::Quarantined(_)));
+    assert_eq!(fx.pidfile_pids().len(), 2, "no new child while quarantined");
+    // The descendant ends, the pipe closes, the reader finishes: ownership is reconciled.
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    let released = wait_for(ACQUIRE, Duration::from_millis(20), || {
+        (sup.lifecycle().map(|l| l.phase) == Some(Phase::Stopped)).then_some(())
+    });
+    assert!(released.is_ok(), "late reader completion leaves quarantine");
+    assert!(
+        matches!(sup.receipt(token), Receipt::Incomplete { .. }),
+        "the receipt keeps what was observed at the time"
+    );
+    assert!(matches!(sup.request_start(), ControlResult::Accepted(_)));
+    fx.expect_pids(3, ACQUIRE);
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// When the service monitor is gone, a Stop is still committed (the snapshot shows it), and the
+/// caller is told the outcome cannot be observed, never that it succeeded.
+#[test]
+fn stop_without_a_monitor_is_observation_unknown() {
+    let fx = OwnedFixture::new("no-monitor");
+    let mut spec = fx.leaf_spec("lcf-no-monitor");
+    // A child-watch hook that panics on the monitor thread ends the monitor.
+    spec.child_watch = Some(ChildWatch {
+        interval: Duration::from_millis(20),
+        observe: std::sync::Arc::new(|_| panic!("deliberate: end the monitor thread")),
+        ended: std::sync::Arc::new(|| {}),
+    });
+    let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    fx.expect_pids(1, ACQUIRE);
+    let gone = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        (!sup.monitor_running()).then_some(())
+    });
+    assert!(gone.is_ok(), "INCONCLUSIVE: the monitor did not end");
+    let before = sup.lifecycle().map(|l| l.intent_sequence);
+    match sup.request_stop() {
+        ControlResult::ObservationUnknown(token, reason) => {
+            assert!(!reason.is_empty());
+            let snap = sup
+                .lifecycle()
+                .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+            assert_eq!(Some(token.intent_sequence), before.map(|s| s + 1));
+            assert_eq!(
+                snap.desired,
+                Desired::Stopped,
+                "the intent is committed and visible"
+            );
+        }
+        other => panic!("expected ObservationUnknown, got {other:?}"),
+    }
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// After shutdown begins, a Start is refused as `RejectedClosing`.
+#[test]
+fn start_after_shutdown_is_rejected_closing() {
+    let fx = OwnedFixture::new("closing");
+    let mut sup = Supervisor::start(SupervisorConfig::new(
+        fx.leaf_spec("lcf-closing"),
+        fx.path("crash.jsonl"),
+    ))
+    .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let pid = running_pid(&sup, &fx);
+    sup.shutdown();
+    assert!(!pid_alive(pid));
+    assert_eq!(sup.request_start(), ControlResult::RejectedClosing);
+    hold_for(Duration::from_millis(300));
+    assert_eq!(fx.pidfile_pids().len(), 1, "no child after Closing");
+    drop(sup);
+    fx.assert_clean();
 }
 
 // ---------------------------------------------------------------------------
