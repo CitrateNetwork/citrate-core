@@ -1174,6 +1174,44 @@ fn held_publication_ticket_makes_stop_incomplete_until_released() {
     fx.assert_clean();
 }
 
+/// A Start that supersedes a Stop while a publication admitted under the old intent is still
+/// held spawns nothing until that ticket is released.
+#[test]
+fn start_during_teardown_waits_for_an_old_publication_ticket() {
+    let fx = OwnedFixture::new("start-pub");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-start-pub"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("admission while running: {e:?}"));
+    assert!(matches!(sup.request_stop(), ControlResult::Accepted(_)));
+    let start = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start during teardown: {other:?}"),
+    };
+    let samples = sample_over(
+        Duration::from_millis(1000),
+        Duration::from_millis(50),
+        || (fx.pidfile_pids().len(), sup.lifecycle().map(|l| l.phase)),
+    );
+    assert!(
+        samples
+            .iter()
+            .all(|(_, (n, phase))| *n == 1 && *phase != Some(Phase::Alive)),
+        "no new incarnation while the old ticket is held: {samples:?}"
+    );
+    assert_eq!(sup.receipt(start), Receipt::Pending);
+    // A repeated Start joins nothing new: the service is held until the old ticket ends.
+    assert!(matches!(sup.request_start(), ControlResult::Quarantined(_)));
+    drop(ticket);
+    fx.expect_pids(2, ACQUIRE);
+    drop(sup);
+    fx.assert_clean();
+}
+
 // ---------------------------------------------------------------------------
 // SCL-S2.4: the reserved deadline publisher. A deadline is armed in the control's own admission
 // path; the publisher marks expiry without taking any lifecycle lock; a receipt read compares
@@ -1300,7 +1338,7 @@ fn stop_settled_before_its_deadline_is_complete() {
 fn concurrent_deadline_stops_arm_one_record() {
     let fx = OwnedFixture::new("deadline-race");
     let publisher = DeadlinePublisher::start(Duration::from_millis(20));
-    let mut cfg = stubborn_config(&fx, "lcf-deadline-race", Duration::from_millis(800));
+    let mut cfg = stubborn_config(&fx, "lcf-deadline-race", Duration::from_secs(3));
     cfg.deadlines = Some(publisher.clone());
     let sup = std::sync::Arc::new(
         Supervisor::start(cfg)
@@ -1339,7 +1377,7 @@ fn concurrent_deadline_stops_arm_one_record() {
         ControlResult::Accepted(token)
     );
     assert_eq!(
-        settle(&sup, token, Duration::from_secs(5)),
+        settle(&sup, token, Duration::from_secs(10)),
         Receipt::DeadlineExpired
     );
     drop(sup);

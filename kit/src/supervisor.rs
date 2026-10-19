@@ -723,8 +723,9 @@ struct Cell {
     deadlines: Arc<DeadlinePublisher>,
     /// A spawn admitted and not yet published or torn down (SCL-S2.3).
     spawn_ticket: bool,
-    /// Admitted credential publications not yet committed or released: (ticket id, name).
-    publications: Vec<(u64, String)>,
+    /// Admitted credential publications not yet committed or released:
+    /// (ticket id, intent sequence it was admitted under, name).
+    publications: Vec<(u64, u64, String)>,
     /// Publications released while a Stop was pending, for that Stop's `Complete` scope
     /// (bounded at [`MAX_SCOPE_PUBLICATIONS`]).
     resolved_publications: Vec<String>,
@@ -787,7 +788,7 @@ impl Cell {
         if let Some(reason) = &self.quarantine {
             return ControlResult::Quarantined(reason.clone());
         }
-        if self.phase == Phase::Stopped {
+        if self.phase == Phase::Stopped && !self.spawn_ticket && self.publications.is_empty() {
             return ControlResult::AlreadySatisfied(self.snapshot(epoch));
         }
         ControlResult::Busy
@@ -1111,10 +1112,7 @@ impl Supervisor {
             return ControlResult::RejectedClosing;
         }
         if c.desired == Desired::Stopped {
-            return match c.active {
-                Some((token, IntentKind::Stop)) => ControlResult::Accepted(token),
-                _ => ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch)),
-            };
+            return c.repeated_stop(self.shared.epoch);
         }
         let seq = c.intent_sequence.saturating_add(1);
         if !self
@@ -1157,7 +1155,8 @@ impl Supervisor {
         let id = c.next_ticket;
         c.next_ticket = c.next_ticket.saturating_add(1);
         let name: String = what.chars().take(64).collect();
-        c.publications.push((id, name.clone()));
+        let seq = c.intent_sequence;
+        c.publications.push((id, seq, name.clone()));
         c.touch();
         Ok(PublicationTicket {
             shared: self.shared.clone(),
@@ -1510,8 +1509,8 @@ fn release_publication(shared: &Shared, id: u64) {
     {
         let mut c = shared.lock();
         let stop_pending = matches!(c.active, Some((_, IntentKind::Stop)));
-        if let Some(pos) = c.publications.iter().position(|(t, _)| *t == id) {
-            let (_, name) = c.publications.remove(pos);
+        if let Some(pos) = c.publications.iter().position(|(t, _, _)| *t == id) {
+            let (_, _, name) = c.publications.remove(pos);
             if stop_pending && c.resolved_publications.len() < MAX_SCOPE_PUBLICATIONS {
                 c.resolved_publications.push(format!("publication:{name}"));
             }
@@ -1893,7 +1892,16 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         // pipe) may not be. Reconcile them before admitting the spawn; until then the service is
         // Quarantined and the Start pending.
         if spawned_for != seq {
-            let remaining = drain_readers(&mut readers, READER_DRAIN);
+            let mut remaining = drain_readers(&mut readers, READER_DRAIN);
+            // Publications admitted under an earlier intent are the old incarnation's too.
+            remaining.extend(
+                shared
+                    .lock()
+                    .publications
+                    .iter()
+                    .filter(|(_, admitted, _)| *admitted < seq)
+                    .map(|(_, _, n)| format!("publication:{n}")),
+            );
             if !remaining.is_empty() {
                 hold_start_for_cleanup(&shared, seq, &remaining);
                 shared.wait_wake(Some(QUARANTINE_POLL));
@@ -1901,6 +1909,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
             }
             release_start_hold(&shared, seq);
             tore_down_child = false;
+            late_spawn = false;
         }
         if budget_seq != seq {
             budget_seq = seq;
@@ -2173,7 +2182,7 @@ fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornD
             .lock()
             .publications
             .iter()
-            .map(|(_, n)| format!("publication:{n}"))
+            .map(|(_, _, n)| format!("publication:{n}"))
             .collect();
         if (remaining.is_empty() && publications.is_empty())
             || std::time::Instant::now() >= deadline
