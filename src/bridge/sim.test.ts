@@ -92,7 +92,7 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);
     // C1-W: nothing was read, so it is not "none".
-    expect(await bridge.wallet.pendingWithdrawals()).toEqual({ withdrawals: [], confirmed: false });
+    expect(await bridge.wallet.pendingWithdrawals()).toEqual({ withdrawals: [], confirmed: false, complete: true, note: "the web preview reaches no chain" });
   });
 
   // No custody vault/key exists in web-dev, so ensureReady provisions nothing: it

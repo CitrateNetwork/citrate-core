@@ -337,35 +337,26 @@ impl<T: RpcTransport> RpcClient<T> {
         Ok(Some((number, hash.to_string())))
     }
 
-    /// The number of the block with hash `hash` (`eth_getBlockByHash(hash, false).number`),
-    /// `None` when the node serves no such block (C1-W reorg check: by hash, never by number).
-    pub fn block_number_by_hash(&self, hash: &str) -> Result<Option<u64>, RpcError> {
-        let result = self.request("eth_getBlockByHash", json!([hash, false]))?;
-        if result.is_null() {
+    /// `citrate_isExecuted(hash)` → `(executed, number)` (citrate-chain#337): whether the block with
+    /// that hash is on the executed chain (an abandoned block is still stored, but `false`), and its
+    /// height when it is. `None` when the node does not have the method (-32601: an older node).
+    /// -32603 (no applied tip), -32602 (malformed hash) and a malformed result are errors (C1-W).
+    pub fn is_executed(&self, hash: &str) -> Result<Option<(bool, Option<u64>)>, RpcError> {
+        let body = self.build_request("citrate_isExecuted", json!([hash]));
+        let resp = self.transport.call(body)?;
+        if resp.pointer("/error/code").and_then(Value::as_i64) == Some(RPC_METHOD_NOT_FOUND) {
             return Ok(None);
         }
-        let n = result
-            .get("number")
-            .ok_or_else(|| RpcError::MissingField("block.number".into()))?;
-        parse_hex_quantity(n, "block.number").map(Some)
-    }
-
-    /// STD red stub (C1-W): old behaviour, never asked.
-    pub fn is_executed(&self, _hash: &str) -> Result<Option<(bool, Option<u64>)>, RpcError> {
-        Ok(None)
-    }
-
-    /// `eth_syncing` → the node's APPLIED (executed) tip when it reports that it is behind
-    /// (`{currentBlock, …}`), or `None` when it answers `false` (not behind) (C1-W).
-    pub fn syncing(&self) -> Result<Option<u64>, RpcError> {
-        let result = self.request("eth_syncing", json!([]))?;
-        if result == Value::Bool(false) {
-            return Ok(None);
-        }
-        let current = result
-            .get("currentBlock")
-            .ok_or_else(|| RpcError::MissingField("eth_syncing.currentBlock".into()))?;
-        parse_hex_quantity(current, "eth_syncing.currentBlock").map(Some)
+        let result = Self::result_of(resp)?;
+        let executed = result
+            .get("executed")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| RpcError::MissingField("citrate_isExecuted.executed".into()))?;
+        let number = match result.get("number") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(parse_hex_quantity(v, "citrate_isExecuted.number")?),
+        };
+        Ok(Some((executed, number)))
     }
 
     /// Several `eth_call`s (`[call, "latest"]`) in ONE JSON-RPC batch (C1-W). Answers are matched

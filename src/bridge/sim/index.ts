@@ -399,7 +399,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // The web shim reaches no chain — there is no real pending queue to read.
         // No rows, and not confirmed (Rule 1): nothing was read, so it is not "none".
         assertSimAllowed("wallet.pendingWithdrawals");
-        return { withdrawals: [], confirmed: false };
+        return { withdrawals: [], confirmed: false, complete: true, note: "the web preview reaches no chain" };
       },
     },
 

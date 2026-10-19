@@ -180,16 +180,8 @@ pub enum StakingError {
     /// SALT amounts fit in u128, so a larger value means the return is not a
     /// balance and we refuse to truncate).
     Decode(String),
-    /// C1-W: the paged withdrawal scan ran out of its time budget before reaching the head. The
-    /// blocks read so far are kept, so the next read continues; until then there is no list.
-    Incomplete { scanned_to: u64, head: u64 },
-    /// C1-W: the withdrawal reads ran out of the time budget (`read` of `total` ids read).
-    IncompleteDetails { read: usize, total: usize },
     /// C1-W: the time budget ran out before a node read outside the paging loop.
     OutOfBudget,
-    /// C1-W: the scan ran out of budget and the node gives no evidence of how far it executed, so
-    /// no progress can be kept (citrate_executedHead, chain#334/#336/#337, is not served).
-    Unconfirmed,
     /// C1-W: the node kept answering -32002 ("retry") for one window after the bounded back-off.
     Indexing(String),
 }
@@ -204,19 +196,6 @@ impl std::fmt::Display for StakingError {
             StakingError::OutOfBudget => write!(
                 f,
                 "still reading chain history: the time budget ran out before the node was read"
-            ),
-            StakingError::Unconfirmed => write!(
-                f,
-                "can't confirm scan progress: the RPC does not report the block it has executed \
-                 (citrate_executedHead), so withdrawals can't be read past the first pass yet"
-            ),
-            StakingError::IncompleteDetails { read, total } => write!(
-                f,
-                "still reading chain history: withdrawal details {read} of {total} read"
-            ),
-            StakingError::Incomplete { scanned_to, head } => write!(
-                f,
-                "still reading chain history: blocks {LIQUID_STAKING_POOL_DEPLOY_BLOCK}-{scanned_to} of {head} scanned"
             ),
         }
     }
@@ -574,27 +553,21 @@ pub const LIQUID_STAKING_POOL_DEPLOY_BLOCK: u64 = 427;
 /// 1000 blocks; citrate-chain#334 answers -32005 instead.
 pub const LOG_WINDOW_BLOCKS: u64 = 1000;
 
-/// C1-W (#371 review) — how far behind the head the committed scan position stays. Under
-/// citrate-chain#334 `eth_blockNumber` is the stored height while `eth_getLogs` omits blocks above
-/// the applied tip without an error, so a position at the head could mark unserved blocks done
-/// (and, saved to disk, skip them for good). Every refresh re-reads these trailing blocks, and
-/// duplicates are dropped by id. At least the chain's settled depth (1000). There is no usable
-/// finalized head: `finalized` returns genesis while finality is not running.
-pub const SAFE_DEPTH_BLOCKS: u64 = 1000;
-
 /// C1-W (citrate-chain#337) — how far below min(h1, h2) of `citrate_executedHead` progress is
-/// committed. It has to cover three things:
+/// committed: a PERSISTENCE margin, not a reorg bound. It covers the two small gaps the protocol
+/// knows of:
 /// - the head is not atomic with `eth_getLogs` (h1 = 5 was seen while getLogs served only up to 4);
 /// - the producer writes receipts AFTER it commits the tip, so the newest blocks can be executed
-///   but not yet served;
-/// - a reorg can move the head down.
+///   but not yet served.
 ///
-/// The first two are one or a few blocks. A reorg is bounded by the chain's MAX_REORG_DEPTH (100),
-/// so 100 covers all three with room to spare, at the cost of re-reading one window per refresh.
+/// Both are one or a few blocks. 100 is also the chain's MAX_REORG_DEPTH (the in-memory rollback)
+/// and ghostdag finality depth, but it does NOT bound a reorg: a deeper fork goes through the spine
+/// rebuild, bounded only by the finalized floor, which is 0 while checkpoint finality is off.
+/// Reorgs are handled by the anchor check (`citrate_isExecuted`), not by this margin.
 pub const EXECUTED_HEAD_MARGIN_BLOCKS: u64 = 100;
 
 /// C1-W — how long before the deadline the log paging stops, so the second executed-head read
-/// (h2) still fits: one RPC timeout (6 s) plus a second.
+/// (h2) still fits: one RPC timeout (6 s) plus a second. Only when the node serves the head.
 pub const H2_RESERVE: std::time::Duration = std::time::Duration::from_secs(7);
 
 /// C1-W — how many `withdrawals(id)` reads go in one JSON-RPC batch.
@@ -619,13 +592,14 @@ pub fn load_scan(file: &std::path::Path, key: &str) -> WithdrawalScan {
         .unwrap_or_default()
 }
 
-/// C1-W (#371 review) — two scans of the same key, merged so progress never goes back: the larger
-/// position, the union of ids, and the union of claimed tombstones (never listed again).
+/// C1-W (#371 review) — two scans of the same key, merged so progress never goes back. A newer
+/// generation (a rewind after a reorg) wins the position, the anchor and the claims; within one
+/// generation the larger position wins and claims are unioned (keeping the LATER seen-at height,
+/// which settles later). Ids are kept from both: each is confirmed on chain before it is listed. A
+/// claim is never final by itself: it settles only once the committed position passes the head it
+/// was seen at, so a merge can't hide a withdrawal whose claim was reorged out. The session-only
+/// state comes from `b`, the newer of the two.
 pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
-    // A claimed id is final: it is a tombstone in either scan, so a merge never brings it back.
-    let claimed: std::collections::BTreeSet<u128> = a.claimed.union(&b.claimed).copied().collect();
-    // A newer generation (a rewind after a reorg) wins the position; within one generation, the
-    // larger position wins. Ids are kept from both: each is re-read on chain before it is listed.
     let lead = if a.generation != b.generation {
         if a.generation > b.generation {
             a
@@ -637,26 +611,33 @@ pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
     } else {
         b
     };
+    let claimed = if a.generation != b.generation {
+        lead.claimed.clone()
+    } else {
+        let mut c = a.claimed.clone();
+        for (id, seen) in &b.claimed {
+            let e = c.entry(*id).or_insert(*seen);
+            *e = (*e).max(*seen);
+        }
+        c
+    };
     WithdrawalScan {
         next_block: lead.next_block,
         anchor: lead.anchor.clone(),
         generation: lead.generation,
-        ids: a
-            .ids
-            .union(&b.ids)
-            .filter(|id| !claimed.contains(id))
-            .copied()
-            .collect(),
+        ids: a.ids.union(&b.ids).copied().collect(),
         claimed,
+        session: b.session.clone(),
         last_read_confirmed: false,
         last_read_complete: false,
         last_read_note: None,
     }
 }
 
-/// C1-W — save the scan for `key` into `file` (public chain facts only: a block and request ids),
-/// merged with what is saved ([`merge_scans`]), one save at a time, written to a temp file and
-/// renamed over the old one so a reader never sees a partial file.
+/// C1-W — save the scan for `key` into `file` (public chain facts only: a block, request ids and
+/// the heads claims were seen at), merged with what is saved ([`merge_scans`]), one save at a time,
+/// written to a temp file and renamed over the old one so a reader never sees a partial file. The
+/// session-only state is never saved.
 pub fn save_scan(file: &std::path::Path, key: &str, scan: &WithdrawalScan) -> std::io::Result<()> {
     static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one_at_a_time = SAVE.lock().unwrap_or_else(|e| e.into_inner());
@@ -680,43 +661,104 @@ pub fn save_scan(file: &std::path::Path, key: &str, scan: &WithdrawalScan) -> st
     })
 }
 
-/// C1-W — what the paged scan has read for one staker: the first block not yet scanned and every
-/// withdrawal id seen. Kept between refreshes so each one reads only the new blocks.
+/// C1-W — one `withdrawals(id)` read: the request facts and the claim flag at `latest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithdrawalDetail {
+    pub staker: String,
+    pub salt_wei: u128,
+    pub request_block: u64,
+    pub claimed: bool,
+}
+
+/// C1-W — the session-only part of a scan: kept in memory for this app session, NEVER saved, and
+/// reset on app restart (owner decision, DGX B1). It lets reads continue across calls when the node
+/// gives no evidence of how far it executed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanSession {
+    /// The first block not yet read in this session (0 = none).
+    pub next_block: u64,
+    /// The detail pass in progress: ids still to read, and the results read so far.
+    pub pass_remaining: Vec<u128>,
+    pub pass_results: std::collections::BTreeMap<u128, WithdrawalDetail>,
+    /// The last COMPLETE detail pass, shown for ids not yet re-read in the current pass.
+    pub last_details: std::collections::BTreeMap<u128, WithdrawalDetail>,
+}
+
+/// C1-W — what the paged scan has read for one staker. The saved part (position, ids, claims,
+/// anchor, generation) only advances on evidence of what the node executed; the session part
+/// carries reads forward within this app session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalScan {
-    /// The first block not yet scanned (0 = nothing scanned yet).
+    /// The first block not yet committed (0 = nothing committed yet). Never past
+    /// min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS of `citrate_executedHead`.
     pub next_block: u64,
-    /// Every `WithdrawalRequested` id seen for this staker and not yet known to be claimed.
+    /// Every `WithdrawalRequested` id seen for this staker.
     pub ids: std::collections::BTreeSet<u128>,
-    /// Ids read as claimed (final on chain): never listed or read again, whatever a merge brings.
+    /// Ids read as claimed, with the executed head they were seen at. A claim read at `latest` can
+    /// be reorged out (Codex P1), so it is read again until it SETTLES: once the committed position
+    /// has passed the head it was seen at. A rewind clears every claim.
     #[serde(default)]
-    pub claimed: std::collections::BTreeSet<u128>,
-    /// The block just below `next_block` and its hash when committed, checked on resume: a changed
-    /// hash (a reorg) rewinds one window.
+    pub claimed: std::collections::BTreeMap<u128, u64>,
+    /// The executed head `(number, hash)` the position was committed against, checked on the next
+    /// read with `citrate_isExecuted` (or, on a node without it, against the executed head).
     #[serde(default)]
     pub anchor: Option<(u64, String)>,
     /// Bumped by every rewind, so a merge never undoes a rewind with older, further progress.
     #[serde(default)]
     pub generation: u64,
-    /// Whether the LAST read proved how far the node executed (citrate_executedHead read twice, or
-    /// an older node's eth_syncing applied tip). Not saved: a status of one read. When false, the
-    /// list may lack withdrawals in blocks the node has not served yet, so the Wallet says it
-    /// can't confirm rather than showing an empty queue.
+    /// Session-only (never saved).
+    #[serde(skip)]
+    pub session: ScanSession,
+    /// The LAST read reached the head the node reported (`eth_blockNumber`) with every withdrawal
+    /// read, on evidence of what the node executed (citrate_executedHead read twice, the anchor
+    /// checked). Status of one read, never saved.
     #[serde(skip)]
     pub last_read_confirmed: bool,
-    /// STD red stubs: never set by the current behaviour.
+    /// The LAST read reached the end of what the node serves and finished every withdrawal read.
     #[serde(skip)]
     pub last_read_complete: bool,
+    /// Why the last read is not confirmed, in words for the Wallet.
     #[serde(skip)]
     pub last_read_note: Option<String>,
 }
 
-/// [`read_pending_withdrawals`], continuing `scan`. `WithdrawalRequested` logs are read in windows
-/// of at most [`LOG_WINDOW_BLOCKS`] from [`LIQUID_STAKING_POOL_DEPLOY_BLOCK`] (or from the last
-/// committed position, which stays [`SAFE_DEPTH_BLOCKS`] behind the head) to the head; a -32005 answer halves the window. A
-/// failed window is an error naming it (never an empty or partial list); the windows read before it
-/// stay in `scan`. With `deadline`, a scan still short of the head when it passes is
-/// [`StakingError::Incomplete`].
+impl WithdrawalScan {
+    /// Rewind after a reorg: start again at the deployment block, forget the anchor, the claims
+    /// (they are read again) and the session cursor, and bump the generation.
+    fn rewind(&mut self) {
+        self.next_block = LIQUID_STAKING_POOL_DEPLOY_BLOCK;
+        self.anchor = None;
+        self.claimed.clear();
+        self.session = ScanSession::default();
+        self.generation += 1;
+    }
+
+    /// A claim settles once the committed position has passed the head it was seen at.
+    fn claim_settled(&self, id: u128) -> bool {
+        self.claimed
+            .get(&id)
+            .is_some_and(|seen| *seen < self.next_block)
+    }
+}
+
+/// [`read_pending_withdrawals`], continuing `scan`, following the citrate-chain#337 scanner
+/// protocol:
+/// 1. h1 = `citrate_executedHead`; the anchor is checked with `citrate_isExecuted` (on a node
+///    without it, -32601: a rewind when h1 is below the anchor, or at its height with another
+///    hash). Any other answer that isn't evidence means no advance this read.
+/// 2. `eth_getLogs` in windows of at most [`LOG_WINDOW_BLOCKS`] up to min(eth_blockNumber, h1),
+///    from the committed position (or the session cursor less the margin); -32005 halves the
+///    window, a retryable -32002 retries it.
+/// 3. h2 = `citrate_executedHead` again; commit at most min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS
+///    (nothing when h1 and h2 disagree at one height, or h2 can't be read).
+/// 4. Each listed withdrawal is confirmed from contract state with `withdrawals(id)`, in batches,
+///    resuming across calls.
+///
+/// Without `citrate_executedHead` (-32601, today's public RPC), or with an error, there is no
+/// evidence: nothing is committed (eth_syncing is NOT evidence, owner decision), the session cursor
+/// still carries the read forward, and the rows found are returned with `last_read_confirmed`
+/// false. A spent `deadline` ends the read early with the rows found so far
+/// (`last_read_complete` false); a failed window is an error naming it.
 pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
     rpc: &crate::rpc::RpcClient<T>,
     wallet_address: &str,
@@ -726,10 +768,10 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
     let addr = validate_address(wallet_address)?;
     let staker_topic = address_topic(&addr);
     scan.last_read_confirmed = false;
+    scan.last_read_complete = false;
+    scan.last_read_note = None;
     // Every node read outside the paging loop honours the deadline too.
     let spent = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
-    // The paging loop stops this much before the deadline, so h2 can still be read in time.
-    let page_deadline = deadline.map(|d| d.checked_sub(H2_RESERVE).unwrap_or(d));
 
     // Current head, read once: the scan's end and the claimable gate.
     if spent() {
@@ -739,83 +781,79 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         .block_number()
         .map_err(|e| StakingError::Rpc(e.to_string()))?;
 
-    // Reorg check on resume, by HASH: the executed head the position was committed against must
-    // still be served at its height (`eth_getBlockByHash`). `eth_getBlockByNumber` is not used:
-    // the height index can name a sibling. A missing block or another height rewinds one window.
-    if let Some((h, hash)) = scan.anchor.clone() {
-        if spent() {
-            return Err(StakingError::OutOfBudget);
-        }
-        let now = rpc
-            .block_number_by_hash(&hash)
-            .map_err(|e| StakingError::Rpc(e.to_string()))?;
-        if now != Some(h) {
-            scan.next_block = scan
-                .next_block
-                .saturating_sub(LOG_WINDOW_BLOCKS)
-                .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
-            scan.anchor = None;
-            scan.generation += 1;
-        }
-    }
-
-    // Evidence of what the node has EXECUTED: citrate-chain#334 serves eth_getLogs only up to the
-    // applied tip, while eth_blockNumber is the stored height.
-    // The citrate-chain#337 scanner protocol: h1 = the executed head, ask for logs only up to it,
-    // h2 = the executed head again, commit at most min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS, and
-    // never advance on an error (a window error, or an h2 that can't be read). h1 alone is never
-    // trusted: a rewind probe saw h1 = 5 while getLogs served only up to 4.
-    // 1. `citrate_executedHead` {number, hash}: as above.
-    // 2. ONLY when the method is absent (-32601: an older node): `eth_syncing` `{currentBlock}`,
-    //    the applied tip of a node that reports it is behind. Progress stays the margin below it
-    //    and SAFE_DEPTH_BLOCKS behind the head. `false` is NOT evidence: it only means no peer has
-    //    shown a higher height (DGX probe A).
-    // 3. A timeout, -32603, any other error or a malformed result (DGX probe B), or eth_syncing
-    //    `false` or failing: no evidence, so the committed position does not move.
+    // 1. h1, then the anchor check.
     if spent() {
         return Err(StakingError::OutOfBudget);
     }
     let executed = rpc.executed_head();
-    let scan_end = match &executed {
-        Ok(Some((n, _))) => (*n).min(current_block),
-        _ => current_block,
+    let h1 = match &executed {
+        Ok(Some(h)) => Some(h.clone()),
+        _ => None,
     };
-    if matches!(executed, Ok(None)) && spent() {
-        return Err(StakingError::OutOfBudget);
+    let mut evidence = h1.is_some();
+    let mut note: Option<String> = None;
+    if let Some((ah, ahash)) = scan.anchor.clone() {
+        if spent() {
+            return Err(StakingError::OutOfBudget);
+        }
+        match rpc.is_executed(&ahash) {
+            Ok(Some((true, Some(n)))) if n == ah => {}
+            // Abandoned (still stored, not executed), or executed at another height: a reorg.
+            Ok(Some(_)) => scan.rewind(),
+            // An older node without citrate_isExecuted: the executed head below the anchor, or at
+            // its height with another hash, is a reorg (DGX probe 6).
+            Ok(None) => {
+                if let Some((n, hash)) = &h1 {
+                    if *n < ah || (*n == ah && !hash.eq_ignore_ascii_case(&ahash)) {
+                        scan.rewind();
+                    }
+                }
+            }
+            // -32603, -32602, a timeout or a malformed answer: no evidence this read.
+            Err(_) => {
+                evidence = false;
+                note = Some("the node could not confirm the block the scan was saved at".into());
+            }
+        }
     }
-    let commit_cap: Option<u64> = match &executed {
-        Ok(Some((n, _))) => Some(
-            (n.min(&current_block) + 1)
+    let scan_end = h1
+        .as_ref()
+        .map_or(current_block, |(n, _)| (*n).min(current_block));
+    // The committed position never passes the executed head less the margin; without evidence it
+    // does not move.
+    let commit_cap: Option<u64> = match &h1 {
+        Some((n, _)) if evidence => Some(
+            ((*n).min(current_block) + 1)
                 .saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS)
                 .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK),
         ),
-        Ok(None) => match rpc.syncing() {
-            Ok(Some(tip)) => Some(
-                (tip.min(current_block) + 1)
-                    .saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS)
-                    .min((current_block + 1).saturating_sub(SAFE_DEPTH_BLOCKS))
-                    .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK),
-            ),
-            Ok(None) | Err(_) => None,
-        },
-        Err(_) => None,
+        _ => None,
     };
-    let mut from = scan.next_block.max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
+
+    // 2. The log paging, from the committed position or the session cursor (less the margin, so
+    // the newest blocks are read again), up to the executed head.
+    let page_deadline = if h1.is_some() {
+        deadline.map(|d| d.checked_sub(H2_RESERVE).unwrap_or(d))
+    } else {
+        deadline
+    };
+    let start = scan
+        .next_block
+        .max(
+            scan.session
+                .next_block
+                .saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS),
+        )
+        .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
+    let mut from = start;
     // The last block of the contiguous range read in this call; committed only at the end.
     let mut read_to: Option<u64> = None;
     let mut window = LOG_WINDOW_BLOCKS;
     let mut retries = 0u32;
     while from <= scan_end {
-        if page_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-            // Out of budget is not an error: commit what was read (bounded by h1 and h2). With no
-            // evidence nothing can be kept, so say that instead of "still reading" for ever.
-            if !commit_read(rpc, scan, &executed, commit_cap, read_to, deadline) {
-                return Err(StakingError::Unconfirmed);
-            }
-            return Err(StakingError::Incomplete {
-                scanned_to: from.saturating_sub(1),
-                head: scan_end,
-            });
+        // At least one window per call, so every call makes progress.
+        if read_to.is_some() && page_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            break;
         }
         let to = from.saturating_add(window - 1).min(scan_end);
         // topic2 = staker (the SECOND indexed arg -> topics[2]); topic1 (id) left null.
@@ -839,6 +877,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
                     }
                 }
                 read_to = Some(to);
+                scan.session.next_block = scan.session.next_block.max(to + 1);
                 from = to + 1;
                 retries = 0;
             }
@@ -866,105 +905,161 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
             }
         }
     }
+    let reached_end = from > scan_end;
 
-    scan.last_read_confirmed = commit_read(rpc, scan, &executed, commit_cap, read_to, deadline);
+    // 3. h2, and the commit.
+    let served = commit_read(rpc, scan, h1.as_ref(), commit_cap, read_to, deadline);
+    if served.is_none() && evidence {
+        note.get_or_insert_with(|| {
+            "the node's executed head could not be confirmed this pass".into()
+        });
+    }
 
-    let mut out = Vec::new();
-    let mut claimed_ids = Vec::new();
-    let ids: Vec<u128> = scan
+    // 4. The withdrawal reads, resuming across calls.
+    let low_head = served.unwrap_or(current_block);
+    let wanted: Vec<u128> = scan
         .ids
         .iter()
-        .filter(|id| !scan.claimed.contains(id))
         .copied()
+        .filter(|id| !scan.claim_settled(*id))
         .collect();
-    // Read the authoritative on-chain tuples (the log only carries the request-time facts;
-    // `claimed` can flip after the event, so we re-read state), in JSON-RPC batches, inside the
-    // same time budget as the log paging.
-    let mut rets = Vec::with_capacity(ids.len());
-    for chunk in ids.chunks(WITHDRAWAL_READ_BATCH) {
-        if spent() {
-            return Err(StakingError::IncompleteDetails {
-                read: rets.len(),
-                total: ids.len(),
-            });
+    for id in &wanted {
+        if !scan.session.pass_results.contains_key(id) && !scan.session.pass_remaining.contains(id)
+        {
+            scan.session.pass_remaining.push(*id);
         }
-        let calls: Vec<serde_json::Value> = chunk.iter().map(|id| withdrawals_call(*id)).collect();
-        rets.extend(
-            rpc.eth_call_batch(&calls)
-                .map_err(|e| StakingError::Rpc(e.to_string()))?,
-        );
     }
-    for (&id, ret) in ids.iter().zip(rets.iter()) {
-        let (staker, salt_wei, request_block, claimed) = decode_withdrawal_tuple(ret)?;
-
-        if claimed {
-            claimed_ids.push(id); // EXCLUDE claimed (final: a tombstone, never read again)
-            continue;
+    let mut batches = 0usize;
+    while !scan.session.pass_remaining.is_empty() {
+        // At least one batch per call, so a long list finishes in a bounded number of calls.
+        if batches > 0 && spent() {
+            break;
         }
-        if !staker.eq_ignore_ascii_case(&addr) {
-            continue; // defensive: not this staker (topic filter miss)
+        let n = scan.session.pass_remaining.len().min(WITHDRAWAL_READ_BATCH);
+        let chunk: Vec<u128> = scan.session.pass_remaining[..n].to_vec();
+        let calls: Vec<serde_json::Value> = chunk.iter().map(|id| withdrawals_call(*id)).collect();
+        let rets = rpc
+            .eth_call_batch(&calls)
+            .map_err(|e| StakingError::Rpc(e.to_string()))?;
+        for (&id, ret) in chunk.iter().zip(rets.iter()) {
+            let (staker, salt_wei, request_block, claimed) = decode_withdrawal_tuple(ret)?;
+            if claimed {
+                let e = scan.claimed.entry(id).or_insert(low_head);
+                *e = (*e).max(low_head);
+            } else {
+                // The claim was reorged out (or never was): the withdrawal is pending again.
+                scan.claimed.remove(&id);
+            }
+            scan.session.pass_results.insert(
+                id,
+                WithdrawalDetail {
+                    staker,
+                    salt_wei,
+                    request_block,
+                    claimed,
+                },
+            );
         }
+        scan.session.pass_remaining.drain(..n);
+        batches += 1;
+    }
+    let details_done = scan.session.pass_remaining.is_empty();
+    if details_done {
+        scan.session.last_details = std::mem::take(&mut scan.session.pass_results);
+    }
 
-        let claimable_at_block = request_block.saturating_add(WITHDRAWAL_DELAY);
+    let mut out = Vec::new();
+    for id in &wanted {
+        let Some(d) = scan
+            .session
+            .pass_results
+            .get(id)
+            .or_else(|| scan.session.last_details.get(id))
+        else {
+            continue; // not read yet: the read is incomplete
+        };
+        if d.claimed || !d.staker.eq_ignore_ascii_case(&addr) {
+            continue; // EXCLUDE claimed; defensive: not this staker (topic filter miss)
+        }
+        let claimable_at_block = d.request_block.saturating_add(WITHDRAWAL_DELAY);
         out.push(PendingWithdrawal {
             id: id.to_string(),
-            salt_wei: salt_wei.to_string(),
-            request_block,
+            salt_wei: d.salt_wei.to_string(),
+            request_block: d.request_block,
             claimable_at_block,
             claimable: current_block >= claimable_at_block,
         });
     }
-    for id in claimed_ids {
-        scan.ids.remove(&id);
-        scan.claimed.insert(id);
-    }
+
+    scan.last_read_complete = reached_end && details_done;
+    let covered = served.is_some_and(|h| h >= current_block);
+    scan.last_read_confirmed = scan.last_read_complete && evidence && covered;
+    scan.last_read_note = if scan.last_read_confirmed {
+        None
+    } else if !reached_end {
+        Some(format!(
+            "reading chain history: blocks {start}-{} of {scan_end} read",
+            from.saturating_sub(1)
+        ))
+    } else if !details_done {
+        Some(format!(
+            "reading withdrawal details: {} of {} read",
+            wanted.len() - scan.session.pass_remaining.len(),
+            wanted.len()
+        ))
+    } else if h1.is_none() {
+        Some(
+            "the RPC does not report the block it has executed (citrate_executedHead), so the scan \
+             can't confirm it reached the chain head"
+                .into(),
+        )
+    } else if let Some(n) = note {
+        Some(n)
+    } else {
+        Some(format!(
+            "the node has served blocks up to {low_head} of {current_block}; reading again shortly"
+        ))
+    };
     Ok(out)
 }
 
-/// C1-W — commit the range read up to `read_to` into `scan`, bounded by `commit_cap` and, when the
-/// node serves `citrate_executedHead`, by a SECOND read of it (h2): the position never passes
-/// min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS. An h2 that can't be read commits nothing. The lower
-/// of the two heads becomes the anchor the next read checks by hash.
-/// Returns whether the read is confirmed (there was evidence); with none, nothing is committed.
+/// C1-W — commit the range read up to `read_to` into `scan`, bounded by `commit_cap` and by a
+/// SECOND read of `citrate_executedHead` (h2): the position never passes
+/// min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS. Commits nothing without evidence (`commit_cap` None),
+/// when h2 can't be read in time, or when h1 and h2 name one height with two hashes (a replacement
+/// in flight). The lower head becomes the anchor the next read checks. Returns the lower head (the
+/// height the node has served to) when there was evidence.
 fn commit_read<T: crate::rpc::RpcTransport>(
     rpc: &crate::rpc::RpcClient<T>,
     scan: &mut WithdrawalScan,
-    executed: &Result<Option<(u64, String)>, crate::rpc::RpcError>,
+    h1: Option<&(u64, String)>,
     commit_cap: Option<u64>,
     read_to: Option<u64>,
     deadline: Option<std::time::Instant>,
-) -> bool {
-    let Some(commit_cap) = commit_cap else {
-        return false;
+) -> Option<u64> {
+    let commit_cap = commit_cap?;
+    let (h1, hash1) = h1?;
+    if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+        return None;
+    }
+    let (h2, hash2) = rpc.executed_head().ok().flatten()?;
+    if h2 == *h1 && !hash2.eq_ignore_ascii_case(hash1) {
+        return None;
+    }
+    let low = if h2 < *h1 {
+        (h2, hash2)
+    } else {
+        (*h1, hash1.clone())
     };
-    let (commit_cap, anchor) = match executed {
-        Ok(Some((h1, hash1))) => {
-            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-                return false;
-            }
-            match rpc.executed_head() {
-                Ok(Some((h2, hash2))) => {
-                    let low = if h2 < *h1 {
-                        (h2, hash2)
-                    } else {
-                        (*h1, hash1.clone())
-                    };
-                    let cap = (low.0 + 1).saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS);
-                    (commit_cap.min(cap), Some(low))
-                }
-                _ => return false,
-            }
-        }
-        _ => (commit_cap, None),
-    };
+    let commit_cap = commit_cap.min((low.0 + 1).saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS));
     if let Some(read_to) = read_to {
         let before = scan.next_block;
         scan.next_block = scan.next_block.max((read_to + 1).min(commit_cap));
         if scan.next_block != before {
-            scan.anchor = anchor;
+            scan.anchor = Some(low.clone());
         }
     }
-    true
+    Some(low.0)
 }
 
 /// The `eth_call` object for `withdrawals(id)` on the pool: `{to, data}`.
@@ -1145,7 +1240,8 @@ pub async fn wallet_pending_withdrawals(
 ) -> std::result::Result<PendingWithdrawalsRead, String> {
     use tauri::Manager as _;
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    // Kept on disk too, so a relaunch resumes instead of rescanning from the deployment block.
+    // Kept on disk too (only what was committed on evidence), so a relaunch resumes instead of
+    // rescanning from the deployment block. The session cursor stays in memory.
     let file = app
         .path()
         .app_local_data_dir()
@@ -1172,6 +1268,8 @@ pub async fn wallet_pending_withdrawals(
             .map(|withdrawals| PendingWithdrawalsRead {
                 withdrawals,
                 confirmed: scan.last_read_confirmed,
+                complete: scan.last_read_complete,
+                note: scan.last_read_note.clone(),
             });
         // Keep the progress even when this read failed or ran out of budget, merged with any read
         // that overlapped this one so progress never goes back.
@@ -1192,19 +1290,23 @@ pub async fn wallet_pending_withdrawals(
     .await
 }
 
-/// C1-W — what `wallet_pending_withdrawals` returns: the pending withdrawals (each confirmed from
-/// contract state) and whether the read proved how far the node executed. Unconfirmed = withdrawals
-/// in blocks the node has not served yet may be missing, so an empty list is not "none".
+/// C1-W — what `wallet_pending_withdrawals` returns: the pending withdrawals found (each confirmed
+/// from contract state); `complete` = the read reached the end of what the node serves and read
+/// every withdrawal; `confirmed` = also, on evidence, up to the head the node reports. When not
+/// confirmed, `note` says why, and an empty list is not "none".
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingWithdrawalsRead {
     pub withdrawals: Vec<PendingWithdrawal>,
     pub confirmed: bool,
+    pub complete: bool,
+    pub note: Option<String>,
 }
 
-/// C1-W — how long one `wallet_pending_withdrawals` call may scan before it answers "still
-/// reading" (below the webview's 30 s deadline for this command, with room for one 6 s RPC call).
-pub const SCAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+/// C1-W — how long one `wallet_pending_withdrawals` call may scan. Worst case it overruns by one
+/// window, the h2 read and one withdrawal batch (6 s each at the RPC timeout): 15 + 12 s with the
+/// H2_RESERVE taken out of the paging, under the webview's 30 s deadline for this command.
+pub const SCAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The per-staker scans of this app session (pool address + staker -> progress).
 fn scans() -> &'static std::sync::Mutex<std::collections::HashMap<String, WithdrawalScan>> {

@@ -332,18 +332,10 @@ fn get_logs_range_reports_a_retry_answer() {
     assert!(matches!(rpc.get_logs_range(f), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "busy"));
 }
 
-// C1-W — eth_syncing gives the applied tip only when the node is behind; eth_call_batch answers in
-// call order whatever order the batch reply comes back in.
+// C1-W — eth_call_batch answers in call order whatever order the batch reply comes back in.
 #[test]
-fn syncing_and_eth_call_batch() {
-    let behind = json!({ "jsonrpc": "2.0", "id": 1, "result": {
-        "startingBlock": "0x1", "currentBlock": "0xbb8", "highestBlock": "0x1388" } });
-    let caught_up = json!({ "jsonrpc": "2.0", "id": 2, "result": false });
-    let rpc = RpcClient::with_transport(MockTransport::new(vec![behind, caught_up]));
-    assert_eq!(rpc.syncing(), Ok(Some(3000)));
-    assert_eq!(rpc.syncing(), Ok(None));
-
-    // build_request ids continue from 3 on this client: answer them out of order.
+fn eth_call_batch_answers_in_call_order() {
+    // build_request ids 1 and 2 are taken below, so the batch uses 3 and 4: answer them out of order.
     let reply = json!([
         { "jsonrpc": "2.0", "id": 4, "result": "0x02" },
         { "jsonrpc": "2.0", "id": 3, "result": "0x01" },
@@ -377,19 +369,6 @@ fn executed_head_answers() {
     assert!(rpc.executed_head().is_err(), "-32603 is an error, not an older node");
 }
 
-// C1-W: eth_getBlockByHash gives the number of the block with that hash, None when it is not served.
-#[test]
-fn block_number_by_hash() {
-    let h = format!("0x{}", "cd".repeat(32));
-    let block = json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": "0x1770", "hash": h } });
-    let none = json!({ "jsonrpc": "2.0", "id": 2, "result": null });
-    let rpc = RpcClient::with_transport(MockTransport::new(vec![block, none]));
-    assert_eq!(rpc.block_number_by_hash(&h), Ok(Some(6000)));
-    assert_eq!(rpc.block_number_by_hash(&h), Ok(None));
-    let sent = rpc.transport().requests();
-    assert_eq!(sent[0]["method"], "eth_getBlockByHash");
-    assert_eq!(sent[0]["params"][0], json!(h));
-}
 
 // chain#337 citrate_isExecuted(hash) -> {executed, number|null}. -32601 = an older node (None);
 // -32603 (no tip), -32602 (malformed hash) and a malformed result are errors.

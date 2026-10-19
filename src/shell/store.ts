@@ -134,7 +134,8 @@ type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 export const PENDING_SCAN_RETRY_MS = 2_000;
 /** C1-W — how soon a read the node answered "still indexing" (-32002) is tried again. */
 export const PENDING_INDEXING_RETRY_MS = 10_000;
-/** STD red stub (C1-W): not used by the current behaviour. */
+/** C1-W — how soon a complete but unconfirmed read (the node is behind, or gives no evidence) is
+ *  read again. */
 export const PENDING_CATCHUP_RETRY_MS = 30_000;
 
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
@@ -4541,7 +4542,17 @@ export class Store {
   private async readPendingWithdrawals(): Promise<void> {
     try {
       const read = await bridge.wallet.pendingWithdrawals();
-      this.setState({ pendingWithdrawals: read.withdrawals, pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: !read.confirmed });
+      this.setState({
+        pendingWithdrawals: read.withdrawals,
+        pendingWithdrawalsError: null,
+        pendingWithdrawalsUnconfirmed: !read.confirmed,
+        pendingWithdrawalsNote: read.confirmed ? null : read.note,
+      });
+      // C1-W: an incomplete read (the scan or the withdrawal reads ran out of budget) continues
+      // soon; a complete but unconfirmed one (the node is behind, or reports no executed head) is
+      // read again later, so the list catches up without a refresh.
+      if (!read.complete) setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_SCAN_RETRY_MS);
+      else if (!read.confirmed) setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_CATCHUP_RETRY_MS);
     } catch (err) {
       // C1-W: a failed eth_getLogs window (or an unfinished first scan) is shown as "—" plus the
       // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read

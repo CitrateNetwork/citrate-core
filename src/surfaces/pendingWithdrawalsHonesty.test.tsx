@@ -46,7 +46,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
   });
 
   it("a successful read clears the reason, and an empty queue then says so", async () => {
-    vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue({ withdrawals: [], confirmed: true });
+    vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue({ withdrawals: [], confirmed: true, complete: true, note: null });
     store.setState({ pendingWithdrawalsError: "earlier failure" });
     await store.refreshPendingWithdrawals();
     expect(store.state.pendingWithdrawalsError).toBeNull();
@@ -59,7 +59,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     const read = vi
       .spyOn(bridge.wallet, "pendingWithdrawals")
       .mockRejectedValueOnce("still reading chain history: blocks 427-200000 of 524862 scanned")
-      .mockResolvedValueOnce({ withdrawals: [{ id: "7", saltWei: "1000000000000000000", requestBlock: 5000, claimableAtBlock: 55400, claimable: true }], confirmed: true });
+      .mockResolvedValueOnce({ withdrawals: [{ id: "7", saltWei: "1000000000000000000", requestBlock: 5000, claimableAtBlock: 55400, claimable: true }], confirmed: true, complete: true, note: null });
     await store.refreshPendingWithdrawals();
     expect(store.state.pendingWithdrawalsError).toContain("still reading chain history");
     await vi.advanceTimersByTimeAsync(5_000);
@@ -73,7 +73,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     const read = vi
       .spyOn(bridge.wallet, "pendingWithdrawals")
       .mockRejectedValueOnce("still indexing chain history (blocks 427-1426): log index warming, retry")
-      .mockResolvedValueOnce({ withdrawals: [], confirmed: true });
+      .mockResolvedValueOnce({ withdrawals: [], confirmed: true, complete: true, note: null });
     await store.refreshPendingWithdrawals();
     const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: store.state.pendingWithdrawalsError })} />);
     expect(html).toContain("— · pending withdrawals: still indexing chain history");
@@ -89,11 +89,11 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     const a = store.refreshPendingWithdrawals();
     const b = store.refreshPendingWithdrawals();
     expect(read).toHaveBeenCalledTimes(1);
-    release({ withdrawals: [], confirmed: true } as never);
+    release({ withdrawals: [], confirmed: true, complete: true, note: null } as never);
     await Promise.all([a, b]);
     expect(store.state.pendingWithdrawalsError).toBeNull();
     // Once settled, a new refresh reads again.
-    read.mockResolvedValue({ withdrawals: [], confirmed: true });
+    read.mockResolvedValue({ withdrawals: [], confirmed: true, complete: true, note: null });
     await store.refreshPendingWithdrawals();
     expect(read).toHaveBeenCalledTimes(2);
   });
@@ -102,10 +102,10 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
   // cannot prove it read up to the chain head. An empty list is then "can't confirm", never "No
   // pending withdrawals"; rows that were found (each confirmed from contract state) still show.
   it("an unconfirmed read shows '—' and can't confirm, never 'No pending withdrawals'", async () => {
-    vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue({ withdrawals: [], confirmed: false });
+    vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue({ withdrawals: [], confirmed: false, complete: true, note: null });
     await store.refreshPendingWithdrawals();
     expect(store.state.pendingWithdrawalsUnconfirmed).toBe(true);
-    const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: true })} />);
+    const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: true, complete: true, note: null })} />);
     expect(html).toContain("can&#x27;t confirm");
     expect(html).not.toContain("No pending withdrawals");
   });

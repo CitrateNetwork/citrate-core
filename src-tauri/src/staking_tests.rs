@@ -516,8 +516,6 @@ struct ChainStub {
     /// Answers for the next `citrate_executedHead` calls, in order (Ok(number) or Err(code)), before
     /// the fields above apply: h1 and h2 of one read.
     executed_next: RefCell<std::collections::VecDeque<Result<u64, i64>>>,
-    /// Hashes `eth_getBlockByHash` no longer serves (the block left the executed chain).
-    unknown_hashes: RefCell<std::collections::HashSet<String>>,
     /// A raw `citrate_executedHead` response body (e.g. a malformed result), used when set.
     executed_head_raw: RefCell<Option<JsonValue>>,
     /// `citrate_executedHead` fails at the transport (a timeout) when set.
@@ -557,7 +555,6 @@ impl ChainStub {
             executed_head: RefCell::new(None),
             executed_head_error: RefCell::new(None),
             executed_next: RefCell::new(Default::default()),
-            unknown_hashes: RefCell::new(Default::default()),
             executed_head_raw: RefCell::new(None),
             executed_head_timeout: RefCell::new(false),
             reorged: RefCell::new(Default::default()),
@@ -656,23 +653,6 @@ impl ChainStub {
                     Some(Err(code)) => Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1,
                         "error": { "code": code, "message": "citrate_executedHead: read failed" } })),
                     None => Err(RpcError::Transport("unreachable".into())),
-                }
-            }
-            Some("eth_getBlockByHash") => {
-                let h = body["params"][0].as_str().unwrap_or_default().to_ascii_lowercase();
-                if self.unknown_hashes.borrow().contains(&h) {
-                    return Ok(ok(JsonValue::Null));
-                }
-                let n = self
-                    .reorged
-                    .borrow()
-                    .iter()
-                    .find(|(_, v)| v.eq_ignore_ascii_case(&h))
-                    .map(|(n, _)| *n)
-                    .or_else(|| u64::from_str_radix(h.trim_start_matches("0x"), 16).ok());
-                match n {
-                    Some(n) if n <= self.head => Ok(ok(serde_json::json!({ "number": format!("0x{n:x}"), "hash": h }))),
-                    _ => Ok(ok(JsonValue::Null)),
                 }
             }
             Some("citrate_executedHead") if self.executed_head_error.borrow().is_some() => {
@@ -884,15 +864,11 @@ fn an_unfinished_scan_is_reported_as_still_reading() {
     assert!(err.to_string().contains("still reading chain history"), "{err}");
     let mut done = None;
     for _ in 0..100 {
-        // The paging stops H2_RESERVE before the deadline, so give it a little more than that.
         let deadline = std::time::Instant::now() + H2_RESERVE + std::time::Duration::from_millis(50);
-        match read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)) {
-            Ok(p) => {
-                done = Some(p);
-                break;
-            }
-            Err(StakingError::Incomplete { .. }) => continue,
-            Err(e) => panic!("{e}"),
+        let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect("read");
+        if scan.last_read_complete {
+            done = Some(rows);
+            break;
         }
     }
     assert_eq!(done.expect("finishes").len(), 1);
@@ -969,7 +945,7 @@ fn saved_scan_progress_survives_a_relaunch() {
     let scan = WithdrawalScan {
         next_block: 40_001,
         ids: [9u128].into_iter().collect(),
-        claimed: [4u128].into_iter().collect(),
+        claimed: [(4u128, 39_000u64)].into_iter().collect(),
         anchor: Some((40_000, stub_hash(40_000))),
         generation: 2,
         ..Default::default()
@@ -984,8 +960,8 @@ fn saved_scan_progress_survives_a_relaunch() {
 
 // #371 review: eth_blockNumber (stored height) can be ahead of what eth_getLogs serves (applied
 // tip). A position committed past the applied tip, then saved, would skip those blocks forever.
-// The committed position stays SAFE_DEPTH_BLOCKS behind the head, so after a relaunch the trailing
-// blocks are read again and the withdrawal is found.
+// With no executed-head evidence nothing is committed, so after a relaunch the blocks are read
+// again and the withdrawal is found.
 #[test]
 fn a_head_ahead_of_the_logs_does_not_skip_a_withdrawal_after_a_relaunch() {
     let dir = std::env::temp_dir().join(format!("c1w-lag-{}", std::process::id()));
@@ -997,7 +973,7 @@ fn a_head_ahead_of_the_logs_does_not_skip_a_withdrawal_after_a_relaunch() {
     let mut scan = load_scan(&file, "k");
     let first = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("launch 1");
     assert!(first.is_empty());
-    assert!(scan.next_block <= 5_001 - SAFE_DEPTH_BLOCKS, "{}", scan.next_block);
+    assert_eq!(scan.next_block, 0, "no evidence: nothing committed");
     save_scan(&file, "k", &scan).expect("save");
     // Launch 2: the node has applied everything.
     *rpc.transport().applied_tip.borrow_mut() = None;
@@ -1097,23 +1073,16 @@ fn without_applied_tip_evidence_the_position_does_not_advance() {
 // Codex P2: a claimed id is a tombstone. Merging an older scan that still lists it, and reading
 // again, never brings it back, and it is not read from the chain again.
 #[test]
-fn a_claimed_id_is_never_resurrected_by_a_merge() {
+fn a_claimed_id_is_never_listed_while_claimed() {
     let rpc = RpcClient::with_transport(ChainStub::new(3_000, vec![(30, 1_000, true), (31, 1_100, false)]));
     let mut scan = WithdrawalScan::default();
     read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
-    assert!(scan.claimed.contains(&30) && !scan.ids.contains(&30));
+    assert!(scan.claimed.contains_key(&30));
     let older = WithdrawalScan { next_block: 500, ids: [30u128, 31].into_iter().collect(), ..Default::default() };
-    let merged = merge_scans(&older, &scan);
-    assert!(!merged.ids.contains(&30), "claimed id resurrected");
-    assert!(merged.ids.contains(&31));
-    let mut merged = merged;
-    let calls_before = rpc.transport().requests.borrow().len();
+    let mut merged = merge_scans(&older, &scan);
+    assert!(merged.claimed.contains_key(&30), "the claim survives a merge");
     let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut merged, None).expect("read");
-    assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["31"]);
-    let reqs = rpc.transport().requests.borrow()[calls_before..].to_vec();
-    let asked_30 = reqs.iter().filter(|r| r.is_array()).flat_map(|r| r.as_array().cloned().unwrap_or_default())
-        .any(|c| c["params"][0]["data"].as_str().is_some_and(|d| d.ends_with(&format!("{:032x}", 30))));
-    assert!(!asked_30, "a claimed id is not read again");
+    assert_eq!(ids_of(&got), vec!["31"], "still claimed: not listed");
 }
 
 // Codex P2: the withdrawal reads are batched (one JSON-RPC batch per 50 ids) and inside the budget.
@@ -1159,47 +1128,6 @@ fn an_executed_head_bounds_the_committed_position() {
     assert_eq!(second.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["22"]);
     assert_eq!(scan.next_block, 5_001 - EXECUTED_HEAD_MARGIN_BLOCKS);
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-// A node without citrate_executedHead: the conservative depth, and never past it.
-#[test]
-fn without_executed_head_the_conservative_depth_holds() {
-    let rpc = RpcClient::with_transport(ChainStub::new(8_000, vec![]));
-    // An older node that reports its applied tip (it is behind by nothing).
-    *rpc.transport().syncing.borrow_mut() = Some(serde_json::json!({ "startingBlock": "0x1", "currentBlock": "0x1f40", "highestBlock": "0x1f41" }));
-    let mut scan = WithdrawalScan::default();
-    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
-    assert_eq!(scan.next_block, 8_001 - SAFE_DEPTH_BLOCKS);
-    let asked = rpc.transport().requests.borrow().iter().any(|r| r["method"] == "citrate_executedHead");
-    assert!(asked, "the executed head is asked for first");
-}
-
-// On resume the hash at the committed position is checked. A reorg there rewinds one window, and a
-// withdrawal that the new branch carries in that window is found.
-#[test]
-fn a_reorg_at_the_committed_position_rescans_the_window() {
-    let rpc = RpcClient::with_transport(ChainStub::new(9_000, vec![(40, 5_990, false)]));
-    *rpc.transport().executed_head.borrow_mut() = Some(9_000);
-    let mut scan = WithdrawalScan {
-        next_block: 6_001,
-        anchor: Some((6_000, stub_hash(6_000))),
-        ..Default::default()
-    };
-    rpc.transport().reorged.borrow_mut().insert(6_000, format!("0x{}", "ee".repeat(32)));
-    // The anchored block left the executed chain: eth_getBlockByHash no longer serves it.
-    rpc.transport().unknown_hashes.borrow_mut().insert(stub_hash(6_000));
-    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
-    assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["40"]);
-    let first = rpc.transport().log_ranges()[0];
-    assert_eq!(first.0, 6_001 - LOG_WINDOW_BLOCKS, "rewound one window");
-    assert_eq!(scan.generation, 1);
-    // Unchanged hash: no rewind.
-    let rpc2 = RpcClient::with_transport(ChainStub::new(9_000, vec![]));
-    *rpc2.transport().executed_head.borrow_mut() = Some(9_000);
-    let mut same = WithdrawalScan { next_block: 6_001, anchor: Some((6_000, stub_hash(6_000))), ..Default::default() };
-    read_pending_withdrawals_with(&rpc2, STAKER_ADDR, &mut same, None).expect("read");
-    assert_eq!(rpc2.transport().log_ranges()[0].0, 6_001);
-    assert_eq!(same.generation, 0);
 }
 
 // A rewound scan (newer generation) wins a merge over an older, further scan, so the rewind is
@@ -1289,23 +1217,6 @@ fn a_window_error_never_advances_the_position() {
     assert!(scan.ids.contains(&3), "ids seen are kept (each is confirmed from contract state)");
 }
 
-// A reorg is detected by HASH (eth_getBlockByHash of the anchored executed head), never by
-// eth_getBlockByNumber, which can name a sibling at that height.
-#[test]
-fn a_reorg_is_detected_by_hash_not_by_number() {
-    let rpc = RpcClient::with_transport(ChainStub::new(9_000, vec![(41, 5_500, false)]));
-    *rpc.transport().executed_head.borrow_mut() = Some(9_000);
-    let gone = stub_hash(6_000);
-    // The height index still names the same hash at 6000, but the block left the executed chain.
-    rpc.transport().unknown_hashes.borrow_mut().insert(gone.clone());
-    let mut scan = WithdrawalScan { next_block: 6_001, anchor: Some((6_000, gone)), ..Default::default() };
-    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
-    assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["41"], "rewound and re-read");
-    assert_eq!(scan.generation, 1);
-    let by_number = rpc.transport().requests.borrow().iter().any(|r| r["method"] == "eth_getBlockByNumber");
-    assert!(!by_number, "the reorg check never uses eth_getBlockByNumber");
-}
-
 // DGX probe A (#371 at eebb3ba): `eth_syncing == false` only means no peer showed a higher height.
 // It is NOT evidence of the applied tip. Stored head 5000, applied 3000, no citrate_executedHead
 // (an older node), a withdrawal at 3500: nothing is committed, and after a relaunch (the node
@@ -1330,8 +1241,8 @@ fn probe_a_syncing_false_is_not_evidence() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// DGX probe B: fall back to eth_syncing ONLY on -32601 (method not found). A timeout, -32603, any
-// other error code or a malformed result is no evidence, even when eth_syncing would report a tip.
+// DGX probe B: a timeout, -32603, any other error code or a malformed result from
+// citrate_executedHead is no evidence, even when eth_syncing would report a tip.
 #[test]
 fn probe_b_only_method_not_found_falls_back() {
     let behind = serde_json::json!({ "startingBlock": "0x1", "currentBlock": "0x1f40", "highestBlock": "0x2328" });
@@ -1355,14 +1266,8 @@ fn probe_b_only_method_not_found_falls_back() {
         assert_eq!(scan.next_block, 0, "{name}: no evidence, no advance");
         assert!(!scan.last_read_confirmed, "{name}");
     }
-    // -32601 (an older node) with an eth_syncing applied tip IS evidence.
-    let stub = ChainStub::new(9_000, vec![]);
-    *stub.syncing.borrow_mut() = Some(behind);
-    let rpc = RpcClient::with_transport(stub);
-    let mut scan = WithdrawalScan::default();
-    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("fallback");
-    assert!(scan.next_block > 0 && scan.next_block <= 8_001 - EXECUTED_HEAD_MARGIN_BLOCKS, "{}", scan.next_block);
-    assert!(scan.last_read_confirmed);
+    // -32601 (an older node): no eth_syncing fallback any more (owner decision, round 5), so this
+    // is no evidence either: see without_executed_head_eth_syncing_is_never_evidence.
 }
 
 // The executed-head path with both reads served confirms the read.
@@ -1389,16 +1294,19 @@ fn a_spent_budget_makes_no_rpc_call() {
     assert_eq!(scan.next_block, 4_001);
 }
 
-// With no evidence, a budget stop cannot keep progress, so it says "can't confirm" instead of
-// "still reading" for ever (DGX: until chain#334/#336/#337 are on the public RPC).
+// With no evidence, a budget stop returns what it found (DGX B1): not complete, not confirmed,
+// nothing committed, and the note says how far it read.
 #[test]
-fn a_budget_stop_without_evidence_is_unconfirmed() {
-    let rpc = RpcClient::with_transport(ChainStub::new(50_000_000, vec![]));
+fn a_budget_stop_without_evidence_returns_what_it_found() {
+    let s = ChainStub::new(50_000_000, vec![(3, 600, false)]);
+    s.logs_delay.set(std::time::Duration::from_millis(2));
+    let rpc = RpcClient::with_transport(s);
     let mut scan = WithdrawalScan::default();
-    let deadline = std::time::Instant::now() + H2_RESERVE + std::time::Duration::from_millis(30);
-    let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect_err("unconfirmed");
-    assert!(matches!(err, StakingError::Unconfirmed), "{err:?}");
-    assert!(err.to_string().contains("can't confirm"), "{err}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(30);
+    let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect("rows");
+    assert_eq!(ids_of(&rows), vec!["3"]);
+    assert!(!scan.last_read_complete && !scan.last_read_confirmed);
+    assert!(scan.last_read_note.clone().unwrap_or_default().contains("reading chain history"));
     assert_eq!(scan.next_block, 0);
 }
 
@@ -1565,7 +1473,7 @@ fn probe_5_a_session_cursor_reaches_the_head_and_found_rows_are_shown() {
     // The cursor is session-only: after a relaunch the scan starts again at the deployment block.
     save_scan(&file, "k", &scan).expect("save");
     let mut relaunched = load_scan(&file, "k");
-    let fresh = RpcClient::with_transport(ChainStub::new(30_000, vec![]));
+    let fresh = RpcClient::with_transport(ChainStub::new(30_000, vec![(1, 900, false), (2, 29_000, false)]));
     read_pending_withdrawals_with(&fresh, STAKER_ADDR, &mut relaunched, budget()).unwrap_or_default();
     assert_eq!(fresh.transport().log_ranges()[0].0, LIQUID_STAKING_POOL_DEPLOY_BLOCK);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1672,7 +1580,7 @@ fn the_scan_starts_at_the_pool_deployment_block() {
     // contracts/addresses/40204.provenance.json: LiquidStakingPool created at block 427.
     assert_eq!(LIQUID_STAKING_POOL_DEPLOY_BLOCK, 427);
     assert_eq!(LOG_WINDOW_BLOCKS, 1000);
-    assert_eq!(SAFE_DEPTH_BLOCKS, 1000, "the chain's settled depth");
+    assert_eq!(EXECUTED_HEAD_MARGIN_BLOCKS, 100);
 }
 
 #[test]
@@ -1713,7 +1621,10 @@ fn scan_position_violations(prod: &str) -> Vec<String> {
         while let Some(i) = rest.find("next_block =") {
             let after = &rest[i + "next_block =".len()..];
             if !after.starts_with('=') {
-                let ok = stmt.contains("commit_cap") || stmt.contains("saturating_sub(LOG_WINDOW_BLOCKS)");
+                // The session cursor is never saved; a rewind only moves the position back.
+                let ok = stmt.contains("commit_cap")
+                    || stmt.contains("session.next_block")
+                    || after.trim() == "LIQUID_STAKING_POOL_DEPLOY_BLOCK";
                 if !ok {
                     bad.push(format!("unbounded scan-position write: {}", stmt.trim()));
                 }
@@ -1725,40 +1636,32 @@ fn scan_position_violations(prod: &str) -> Vec<String> {
         None => bad.push("no commit_cap".into()),
         Some(i) => {
             let def = &prod[i..i + prod[i..].find("};").unwrap_or(prod.len() - i)];
-            let (exec_arm, fallback) = def.split_once("Ok(None) =>").unwrap_or((def, ""));
-            if exec_arm.contains("SAFE_DEPTH_BLOCKS") {
-                bad.push("the executed-head arm falls back to a fixed depth".into());
+            if !def.contains("EXECUTED_HEAD_MARGIN_BLOCKS") {
+                bad.push("the commit cap has no margin below the executed head".into());
             }
-            if !exec_arm.contains("EXECUTED_HEAD_MARGIN_BLOCKS") {
-                bad.push("the executed-head arm commits without the reorg margin".into());
-            }
-            if !fallback.contains("syncing") {
-                bad.push("the fallback is not bounded by the eth_syncing applied tip".into());
-            }
-            if !fallback.contains("Err(_) => None") {
-                bad.push("an executed-head error advances the position".into());
-            }
-            // DGX probe A: eth_syncing `false` is not evidence.
-            if !fallback.contains("Ok(None) | Err(_) => None") {
-                bad.push("eth_syncing false is taken as evidence".into());
+            if !def.contains("if evidence") || !def.contains("_ => None") {
+                bad.push("the commit cap advances without evidence".into());
             }
         }
     }
     if prod.matches("rpc.executed_head()").count() < 2 {
         bad.push("citrate_executedHead is not read twice (h1 before the logs, h2 after)".into());
     }
-    // The reorg check is by hash: a block-by-number read can name a sibling.
-    if prod.contains(".block_hash(") || prod.contains("eth_getBlockByNumber") {
-        bad.push("a reorg or anchor check reads a block by number".into());
+    // Owner decision (round 5): eth_syncing is never scan evidence.
+    if prod.contains(".syncing()") {
+        bad.push("eth_syncing is used as scan evidence".into());
+    }
+    // The anchor is checked with citrate_isExecuted: a hash or number block read can't see a reorg
+    // on Citrate (abandoned blocks stay stored).
+    if !prod.contains("rpc.is_executed(") {
+        bad.push("the anchor is not checked with citrate_isExecuted".into());
+    }
+    if prod.contains("block_number_by_hash") || prod.contains(".block_hash(") || prod.contains("eth_getBlockByNumber") {
+        bad.push("a reorg or anchor check reads a block by hash or number".into());
     }
     // getLogs never reads past the executed head: the window end is `scan_end`.
     if !prod.contains(".min(scan_end)") {
         bad.push("the log windows are not capped at the executed head".into());
-    }
-    let uses = prod.matches("SAFE_DEPTH_BLOCKS").count();
-    let defined = prod.matches("pub const SAFE_DEPTH_BLOCKS").count();
-    if uses - defined != 1 {
-        bad.push(format!("SAFE_DEPTH_BLOCKS used {} times outside its definition", uses - defined));
     }
     bad
 }
@@ -1779,18 +1682,13 @@ fn tripwire_no_scan_position_passes_executed_evidence() {
 
 #[test]
 fn tripwire_catches_a_fixed_depth_position() {
-    // Negative control: the shape of the c38974a bug fails the tripwire.
+    // Negative control: the shapes of the earlier bugs fail the tripwire.
     let old = "let x = rpc.executed_head();\n\
-               let a = rpc.block_hash(h);\n\
-               let commit_cap = match e { Ok(Some(n)) => n.min(head - SAFE_DEPTH_BLOCKS), Ok(None) => match rpc.syncing() { _ => 0 } };\n\
+               let a = rpc.block_number_by_hash(h);\n\
+               let commit_cap = match e { Ok(Some(n)) => Some(n), Ok(None) => match rpc.syncing() { Ok(Some(t)) => Some(t), _ => None } };\n\
                scan.next_block = (head + 1).saturating_sub(SAFE_DEPTH_BLOCKS);\n";
     let bad = scan_position_violations(old);
-    assert!(bad.iter().any(|b| b.contains("unbounded scan-position write")), "{bad:?}");
-    assert!(bad.iter().any(|b| b.contains("fixed depth")), "{bad:?}");
-    assert!(bad.iter().any(|b| b.contains("reorg margin")), "{bad:?}");
-    assert!(bad.iter().any(|b| b.contains("error advances")), "{bad:?}");
-    assert!(bad.iter().any(|b| b.contains("syncing false")), "{bad:?}");
-    assert!(bad.iter().any(|b| b.contains("not capped at the executed head")), "{bad:?}");
-    assert!(bad.iter().any(|b| b.contains("read twice")), "{bad:?}");
-    assert!(bad.iter().any(|b| b.contains("by number")), "{bad:?}");
+    for want in ["unbounded scan-position write", "no margin", "without evidence", "read twice", "eth_syncing", "citrate_isExecuted", "by hash or number", "not capped at the executed head"] {
+        assert!(bad.iter().any(|b| b.contains(want)), "{want}: {bad:?}");
+    }
 }

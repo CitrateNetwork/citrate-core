@@ -431,7 +431,8 @@ export function Wallet({ store, s }: SurfaceProps) {
                 found rows are real, but an empty list is not "none". */}
             {s.pendingWithdrawalsError === null && s.pendingWithdrawalsUnconfirmed && (
               <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="citrate_executedHead (citrate-chain#334, #336, #337) is not on the public RPC yet">
-                {pending.length === 0 ? "— · pending withdrawals: " : ""}can&apos;t confirm the scan reached the chain head: the RPC does not report the block it has executed yet
+                {pending.length === 0 ? "— · pending withdrawals: " : ""}can&apos;t confirm the scan reached the chain head
+                {s.pendingWithdrawalsNote ? ": " + s.pendingWithdrawalsNote : ""}
               </p>
             )}
             {s.pendingWithdrawalsError === null && !s.pendingWithdrawalsUnconfirmed && pending.length === 0 && (

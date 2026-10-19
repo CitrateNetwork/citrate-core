@@ -215,10 +215,14 @@ export interface WalletDomain {
 /** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
  * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
  * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
-/** C1-W — one pending-withdrawals read: the rows, and whether the read proved its coverage. */
+/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
+ * `complete` = it reached the end of what the node serves and read every withdrawal;
+ * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
 export interface PendingWithdrawalsRead {
   withdrawals: PendingWithdrawal[];
   confirmed: boolean;
+  complete: boolean;
+  note: string | null;
 }
 
 export interface PendingWithdrawal {
