@@ -38,7 +38,7 @@ export const AGENT_TOOLS = [
       description: 'Read local node RPC / contract state (balances, staking position, claimable rewards, network vitals).',
       parameters: {
         type: 'object',
-        properties: { query: { type: 'string', enum: ['staking.position', 'wallet.balances', 'earnings.claimable', 'network.vitals'] } },
+        properties: { query: { type: 'string', enum: ['membership.bond', 'wallet.balance', 'validator.rewards', 'network.fixture'] } },
         required: ['query'],
       },
     },
@@ -202,17 +202,21 @@ function routeIntent(t, getContext) {
     };
   }
   if (has('stake', 'staked', 'bond', 'grant', 'position', 'validator status')) {
+    // The one grant explanation (core src/data/grantCopy.ts, PR #349; contract §5.4, §5.6, §5.7).
+    const DISCLAIMER = 'The grant is not purchased, and it is not an investment.';
+    const BETANET = 'Betanet. What carries over to mainnet is set in the genesis spec.';
     return {
       toolCalls: [tc('chain_read', { query: 'membership.bond' })],
       compose: (c) => c.hasGrant
-        ? 'Your membership comes with a 32,000 SALT grant, locked in your bond. Its state is “Bond locked · not staked” until MemberBond.activated() is true. The lock end (date and block) comes from MemberBond.unlockTimestamp() and unlockBlock(); this prototype has no per-member bond read, so I show it as unknown rather than guess. The grant was not purchased and is not an investment. Betanet: what carries over to mainnet is set in the genesis spec.'
-        : 'You are not a member yet, so there is no bond. Membership comes with a 32,000 SALT grant, locked in a bond; it is not purchased and not an investment.',
+        ? 'Your membership comes with a 32,000 SALT grant, locked in your bond for about a year. It is not staked until you activate the bond. Its state reads “Bond locked · not staked” (MemberBond.activated()). The lock end comes from MemberBond.unlockTimestamp() and unlockBlock(); this prototype has no read of them, so I can’t tell you the date. ' + DISCLAIMER + ' ' + BETANET
+        : 'You are not a member yet, so there is no bond. A membership comes with a 32,000 SALT grant, locked in a bond. ' + DISCLAIMER,
     };
   }
   if (has('earn', 'reward', 'claim', 'income', 'made today')) {
+    // Contract §1 Rewards: no "today", no estimates, no projections. Fixture numbers are labelled inline (ruling 3).
     return {
       toolCalls: [tc('chain_read', { query: 'validator.rewards' })],
-      compose: () => 'Validator rewards come only from ValidatorRegistry.rewardsOf for your validator key, and only a validator that produces blocks receives them. On 40204 today 1 of ' + fx().activeValidators + ' active validators produces blocks (contract v1). This prototype has no read of your rewardsOf, so your rewards are unknown here, not zero. I don’t project or estimate rewards.',
+      compose: (c) => 'Fixture (40204 block ' + fmt(c.fx.block) + ', not live): ' + c.fx.activeValidators + ' validators are active. Chain team, sampled 2026-10-19: 1 of them produces blocks, and only a validator that produces blocks receives validator rewards. Your rewards come only from ValidatorRegistry.rewardsOf for your validator key. This prototype has no read of it, so your rewards are unknown, not zero. No projections.',
     };
   }
   if (has('balance', 'wallet', 'how much salt')) {
@@ -226,7 +230,7 @@ function routeIntent(t, getContext) {
       toolCalls: [tc('chain_read', { query: 'network.fixture' })],
       compose: (c) => {
         const f = c.fx;
-        return 'From the C1 fixture (read at block ' + fmt(f.block) + ', ' + f.capturedAt + ', not live): Citrate betanet, chain 40204. Blocks every ~' + f.blockTime + ' s. ' + f.activeValidators + ' validators are active and 1 produces blocks. Checkpoint finality is not running yet, so I count confirmations, not finality. Your node: ' + c.nodeState + '.';
+        return 'Fixture (40204 block ' + fmt(f.block) + ', ' + f.capturedAt + ', not live): Citrate betanet, chain 40204, blocks every ~' + f.blockTime + ' s, ' + f.activeValidators + ' active validators. Chain team, sampled 2026-10-19: 1 validator produces blocks. Checkpoint finality is not running yet, so I count confirmations, not finality. Your node: ' + c.nodeState + '.';
       },
     };
   }

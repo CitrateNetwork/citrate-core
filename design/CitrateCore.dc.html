@@ -21,6 +21,9 @@
 <!-- ============================ ONBOARDING ============================ -->
 <sc-if value="{{ ob }}" hint-placeholder-val="{{ true }}">
 <div data-register="charter" data-screen-label="Onboarding" style="height:100vh;display:flex;flex-direction:column;background:var(--srf-0);overflow:auto;">
+  <div style="display:flex;align-items:center;gap:12px;padding:9px 26px;background:var(--danger-bg);border-bottom:1px solid var(--danger);flex-shrink:0;">
+    <span style="font-size:12.5px;color:var(--danger);flex:1;">0.5.1 onboarding, not a port target: it predates UI truth contract v1. The join path is redrawn in slice 2.</span>
+  </div>
 
   <sc-if value="{{ st0 }}" hint-placeholder-val="{{ true }}">
   <div class="lattice-dots" data-screen-label="S0 Welcome" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;padding:48px 24px;text-align:center;">
@@ -185,7 +188,7 @@
             </div>
             <div style="border:2px solid var(--tx-1);background:var(--srf-2);border-radius:var(--r-2);padding:16px;display:flex;flex-direction:column;gap:6px;position:relative;">
               <div class="eyebrow" style="color:var(--accent-text);">Pilot · selected</div>
-              <div style="font-family:var(--font-display);font-size:24px;font-weight:420;">$48<span style="font-size:13px;color:var(--tx-3);"> / year</span></div>
+              <div style="font-family:var(--font-display);font-size:24px;font-weight:420;">{{ priceStr }}<span style="font-size:13px;color:var(--tx-3);"> / year</span></div>
               <p style="font-size:12px;line-height:1.5;color:var(--tx-2);margin:0;">Full membership. Everything listed below.</p>
             </div>
             <div style="border:1px solid var(--line-1);background:var(--srf-1);border-radius:var(--r-2);padding:16px;display:flex;flex-direction:column;gap:6px;">
@@ -205,7 +208,7 @@
             <p style="font-size:11.5px;line-height:1.5;color:var(--tx-3);margin:6px 0 0;">The grant is a membership benefit that arrives staked — it covers your stake for work as a validator. It is not purchased, and it is not an investment.</p>
           </div>
           <sc-if value="{{ s3Idle }}" hint-placeholder-val="{{ true }}">
-            <div><button class="btn btn-primary btn-lg" onClick="{{ onS3Pay }}">Check out in your browser · $48</button></div>
+            <div><button class="btn btn-primary btn-lg" onClick="{{ onS3Pay }}">Check out in your browser · {{ priceStr }}</button></div>
           </sc-if>
           <sc-if value="{{ s3Paying }}" hint-placeholder-val="{{ false }}">
             <div class="surface" style="display:flex;align-items:center;gap:18px;padding:18px 20px;">
@@ -519,6 +522,13 @@
                       </sc-for>
                     </span>
                   </sc-if>
+                  <!-- UI truth contract §7 + chain-team ruling 2: a reply that cites fixture numbers carries the pill AND a footnote with the export label, file and block -->
+                  <sc-if value="{{ m.fx }}" hint-placeholder-val="{{ false }}">
+                    <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px;">
+                      <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
+                      <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ fxNote }}</span>
+                    </span>
+                  </sc-if>
                 </div>
               </sc-for>
               <sc-if value="{{ chatThinking }}" hint-placeholder-val="{{ false }}">
@@ -585,19 +595,6 @@
                 </div>
               </sc-for>
             </div>
-            <div class="surface" data-screen-label="Rail network fixture" style="display:flex;flex-direction:column;">
-              <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line-1);gap:8px;">
-                <span style="font-size:13.5px;font-weight:500;">Network</span>
-                <span class="mono" style="margin-left:auto;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
-              </div>
-              <sc-for list="{{ fxRows }}" as="fx" hint-placeholder-count="4">
-                <div style="display:flex;gap:10px;padding:8px 16px;border-bottom:1px solid var(--line-1);" title="{{ fx.src }}">
-                  <span style="flex:1;font-size:12px;color:var(--tx-2);">{{ fx.k }}</span>
-                  <span class="mono tabular" style="font-size:12px;color:var(--tx-1);white-space:nowrap;">{{ fx.v }}</span>
-                </div>
-              </sc-for>
-              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;padding:10px 16px;">{{ fxFoot }}</p>
-            </div>
           </div>
         </div>
         </sc-if>
@@ -642,7 +639,7 @@
             <div class="surface" data-screen-label="Work daemons" style="display:flex;flex-direction:column;">
               <div style="display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line-1);flex-wrap:wrap;">
                 <span style="font-size:14px;font-weight:500;">Daemons</span>
-                <span class="mono" style="font-size:10.5px;color:var(--tx-3);">scheduled Hermes tasks · each with its own budget</span>
+                <span class="mono" style="font-size:10.5px;color:var(--tx-3);">scheduled Hermes tasks · each with its own budget · daemons can’t spend SALT</span>
                 <span style="flex:1;"></span>
                 <button class="btn btn-ghost btn-sm" onClick="{{ onPauseAll }}">{{ pauseAllLabel }}</button>
                 <button class="btn btn-ghost btn-sm" onClick="{{ goStore }}">Find daemons in Store</button>
@@ -676,7 +673,6 @@
                     <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);">{{ d.schedule }}</span>
                     <span class="mono tabular" style="font-size:10.5px;color:{{ d.runsColor }};">{{ d.runs }}</span>
                     <span class="mono tabular" style="font-size:10.5px;color:{{ d.tokColor }};">{{ d.tokens }}</span>
-                    <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);">{{ d.spend }}</span>
                     <span class="mono tabular" style="font-size:10.5px;color:var(--tx-3);">{{ d.next }}</span>
                   </div>
                   <sc-if value="{{ d.note }}" hint-placeholder-val="{{ false }}">
@@ -734,11 +730,6 @@
                   <span style="font-size:11.5px;color:var(--tx-3);">{{ sk.desc }}</span>
                 </div>
               </sc-for>
-              <div style="display:flex;gap:10px;padding:10px 16px;" title="SkillRegistry.totalSkills() · fixture block 499,058">
-                <span style="flex:1;font-size:11.5px;color:var(--tx-2);">On-chain SkillRegistry</span>
-                <span class="mono tabular" style="font-size:11.5px;color:var(--tx-1);">0 listed</span>
-                <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:1px 6px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
-              </div>
             </div>
           </div>
         </div>
@@ -1065,8 +1056,8 @@
               </sc-for>
             </div>
             <sc-if value="{{ d3Summary }}" hint-placeholder-val="{{ false }}">
-            <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line-1);border:1px solid var(--line-1);border-radius:var(--r-2);overflow:hidden;">
-              <sc-for list="{{ d3Tiles }}" as="tl" hint-placeholder-count="4">
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line-1);border:1px solid var(--line-1);border-radius:var(--r-2);overflow:hidden;">
+              <sc-for list="{{ d3Tiles }}" as="tl" hint-placeholder-count="3">
                 <div style="background:var(--srf-1);padding:12px 14px;display:flex;flex-direction:column;gap:4px;">
                   <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--tx-3);">{{ tl.k }}</span>
                   <span class="tabular" style="font-family:var(--font-display);font-size:20px;font-weight:420;">{{ tl.v }}</span>
@@ -1165,7 +1156,8 @@
               </div>
             </sc-for>
             <span class="eyebrow" style="margin-top:4px;">Declared budget</span>
-            <span class="mono tabular" style="font-size:11.5px;color:var(--tx-1);">4 runs a day · 20,000 tokens a day · 6,000 tokens a run · 0 SALT spend</span>
+            <span class="mono tabular" style="font-size:11.5px;color:var(--tx-1);">4 runs a day · 20,000 tokens a day · 6,000 tokens a run</span>
+            <span style="font-size:12px;color:var(--tx-3);">Daemons can’t spend SALT.</span>
             <sc-if value="{{ stNeedsWeb }}" hint-placeholder-val="{{ false }}">
               <div style="display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:var(--r-1);background:var(--warn-bg);border:1px solid var(--warn);">
                 <span style="font-size:12px;color:var(--tx-1);flex:1;">This daemon needs web search, which is off. You can install it now; it will not run until web search is on.</span>
@@ -1534,7 +1526,7 @@
         </sc-if>
 
         <sc-if value="{{ ntEarn }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Node earning">
+        <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Node rewards">
           <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
             <div class="surface" style="padding:16px 18px;display:flex;flex-direction:column;gap:4px;">
               <span class="eyebrow">Validation</span>
@@ -1616,7 +1608,7 @@
               <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--tx-3);">Last proof</span>
             </div>
             <sc-if value="{{ pinsEmpty }}" hint-placeholder-val="{{ false }}">
-              <p style="font-size:12.5px;color:var(--tx-3);margin:0;padding:16px;">No pins yet. Plan your first pin above — the PIN daemon takes it from bond to challenge, and income lands in Earning.</p>
+              <p style="font-size:12.5px;color:var(--tx-3);margin:0;padding:16px;">No pins yet. Plan your first pin above — the PIN daemon takes it from bond to challenge, and its rewards show in Rewards.</p>
             </sc-if>
             <sc-for list="{{ pinRows }}" as="pn" hint-placeholder-count="3">
               <div class="{{ pn.rowClass }}" style="display:grid;grid-template-columns:1.6fr .7fr .9fr 1fr 1fr;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line-1);align-items:center;">
@@ -2079,20 +2071,25 @@
                 <button class="btn btn-secondary btn-sm" onClick="{{ onRenew }}">Renew ↗</button>
                 <button class="btn btn-ghost btn-sm" onClick="{{ onCancelMem }}">Cancel membership</button>
               </div>
-              <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;">On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. Stake attribution ends until renewal; vaulted principal stays vaulted.</p>
+              <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;">On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock. Your keys and chain access are yours. The membership grant stays locked in your bond until its unlock block.</p>
+              <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ memPriceSource }}</span>
             </div>
             <sc-if value="{{ hasSbtV }}" hint-placeholder-val="{{ true }}">
             <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
-              <span class="eyebrow">SALT grant record</span>
-              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:var(--tx-2);">Grant · staked at issuance</span><span class="mono tabular" style="font-size:12.5px;">32,000 SALT</span></div>
+              <span class="eyebrow">Membership grant</span>
+              <!-- UI truth contract §5.4 / §5.6 / §5.7: the one grant explanation (core src/data/grantCopy.ts, PR #349) -->
+              <p style="font-size:13px;line-height:1.6;color:var(--tx-1);margin:0;">{{ grantCustody }}</p>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:var(--tx-2);">Grant · locked in your bond</span><span class="mono tabular" style="font-size:12.5px;">32,000 SALT</span></div>
+              <div style="display:flex;justify-content:space-between;" title="MemberBond.activated()"><span style="font-size:12.5px;color:var(--tx-2);">Bond</span><span class="mono" style="font-size:11.5px;">Bond locked · not staked</span></div>
+              <div style="display:flex;justify-content:space-between;" title="MemberBond.unlockTimestamp(), unlockBlock()"><span style="font-size:12.5px;color:var(--tx-2);">Lock end</span><span class="mono" style="font-size:11.5px;color:var(--tx-3);">— · not read in the prototype</span></div>
               <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:var(--tx-2);">Transaction</span><span class="mono" style="font-size:11.5px;color:var(--accent-text);cursor:pointer;">{{ s5Hash }} ↗</span></div>
-              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:var(--tx-2);">Vault release</span><span class="mono" style="font-size:11.5px;">mainnet release policy</span></div>
+              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;">{{ grantDisclaimer }} {{ grantBetanet }}</p>
             </div>
             </sc-if>
             <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
               <span class="eyebrow">Receipts</span>
               <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span class="mono" style="font-size:11.5px;">2026-07-11 · Pilot membership · $48.00</span>
+                <span class="mono" style="font-size:11.5px;">{{ memReceipt }}</span>
                 <button class="btn btn-ghost btn-sm" onClick="{{ onReceipt }}">PDF ↗</button>
               </div>
             </div>
@@ -2774,6 +2771,11 @@ class Component extends DCLogic {
       result = 'ok';
     } else if (call.name === 'chain_read') {
       result = JSON.stringify(this.snapshot());
+      // Replies that quote the C1 fixture get the fixture pill and footnote (ruling 2).
+      if (args.query === 'network.fixture' || args.query === 'validator.rewards') {
+        ensure();
+        this.setState((st) => ({ chatMsgs: st.chatMsgs.map((m) => (m.id === asstId ? Object.assign({}, m, { fx: true }) : m)) }));
+      }
     } else if (call.name === 'memory_recall' || call.name === 'docs_link' || call.name === 'web_search') {
       result = 'ok';
     }
@@ -2996,7 +2998,7 @@ class Component extends DCLogic {
     V.setChatScroll = (el) => { this.chatScrollEl = el; };
     V.setChatInput = (el) => { this.chatInputEl = el; };
     V.msgs = s.chatMsgs.map((m) => ({
-      who: m.who, text: m.text, streaming: !!m.streaming,
+      who: m.who, text: m.text, streaming: !!m.streaming, fx: !!m.fx,
       whoColor: m.who === 'You' ? 'var(--tx-3)' : 'var(--accent-text)',
       hasChips: m.chips && m.chips.length > 0,
       chips: (m.chips || []).map((c) => ({
@@ -3010,7 +3012,7 @@ class Component extends DCLogic {
     V.chatThinkingLabel = s.chatStatus === 'tool' ? 'running tools' : 'reasoning';
     V.chatBusy = s.chatStatus !== 'ready';
     V.showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === 'ready';
-    V.suggestions = ['What is my staking position?', 'Break down my earnings', 'Journal: node held through the night', 'Network status'].map((t) => ({ label: t, use: () => this.sendChat(t) }));
+    V.suggestions = ['What is my staking position?', 'Break down my rewards', 'Journal: node held through the night', 'Network status'].map((t) => ({ label: t, use: () => this.sendChat(t) }));
     V.onSend = () => this.sendChat(this.chatInputEl ? this.chatInputEl.value : '');
     V.onChatKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendChat(e.target.value); } };
     const actRows = s.activity.map((a, i) => ({
@@ -3104,7 +3106,7 @@ class Component extends DCLogic {
     V.agentsEmpty = V.agents.length === 0;
 
     // ----- node -----
-    const ntabs = [['ops', 'Operations'], ['earn', 'Earning'], ['pin', 'Pinning']];
+    const ntabs = [['ops', 'Operations'], ['earn', 'Rewards'], ['pin', 'Pinning']];
     V.nTabs = ntabs.map(([id, label]) => ({
       label, go: () => { this.setState({ nTab: id }); this.save(); },
       weight: s.nTab === id ? 500 : 400,
@@ -3140,7 +3142,7 @@ class Component extends DCLogic {
     V.onClaim = () => {
       const amt = s.claimable;
       this.requestSig({
-        origin: 'node-agent', requester: 'node-agent · earnings sweep 127.0.0.1:19600',
+        origin: 'node-agent', requester: 'node-agent · rewards sweep 127.0.0.1:19600',
         title: 'Claim ' + fmt2(amt) + ' SALT rewards',
         rows: [{ k: 'Action', v: 'claimRewards() — unsigned request from the sweep' }, { k: 'Contract', v: 'ContributionAccounting · 40204' }, { k: 'Breakdown', v: 'validation ' + fmt2(s.earnVal) + ' · pinning ' + fmt2(s.earnPin) + ' · compute ' + fmt2(s.earnComp) }],
         cost: 'est. gas 0.0014 SALT', sponsor: 'gas sponsored — standard daily budget', sponsorColor: 'var(--ok)',
@@ -3243,7 +3245,7 @@ class Component extends DCLogic {
         badgeBg: bBg, badgeBd: bBd, badgeFg: bFg,
         locked, unlocked: !locked,
         lockText: 'Requires ' + (a.minTier === 'pilot' ? 'Pilot membership' : 'an Enterprise seat'),
-        unlockLabel: a.minTier === 'pilot' ? 'Join · $48/yr' : 'Contact us',
+        unlockLabel: a.minTier === 'pilot' ? 'Join · ' + Component.priceYear() : 'Contact us',
         onUnlock: () => this.toast(a.minTier === 'pilot' ? 'Checkout opens in your browser — flip tiers in the Prototype panel to preview.' : 'Enterprise is consultative — the contact form opens in your browser.'),
         dlIdle: dl.st === 'idle', dlBusy: dl.st === 'mint' || dl.st === 'dl' || dl.st === 'verify', dlDone: dl.st === 'done',
         dlLabel: dl.st === 'mint' ? 'minting signed URL · live entitlement check' : dl.st === 'dl' ? 'downloading · ' + (dl.pct | 0) + '%' : 'verifying sha256…',
@@ -3264,7 +3266,7 @@ class Component extends DCLogic {
       return {
         name: d.name, desc: d.desc, tier: d.tier, tierBg: tBg, tierBd: tBd, tierFg: tFg,
         locked, unlocked: !locked, opacity: locked ? 0.6 : 1,
-        cta: d.minTier === 'pilot' ? 'Join · $48/yr' : 'Contact us',
+        cta: d.minTier === 'pilot' ? 'Join · ' + Component.priceYear() : 'Contact us',
         onUnlock: () => this.toast('This doc unlocks with ' + (d.minTier === 'pilot' ? 'Pilot membership' : 'an Enterprise seat') + '.'),
       };
     });
@@ -3338,7 +3340,14 @@ class Component extends DCLogic {
     V.onPolHitl = () => { this.setState({ sigPolicy: 'hitl' }); this.save(); };
     V.onPolAllow = () => { this.setState({ sigPolicy: 'allow' }); this.toast('Allowlist rules are user-authored per origin + contract — editor ships in the wired build'); this.save(); };
     V.polNote = s.sigPolicy === 'hitl' ? 'every signature stops at the ceremony — the default' : 'allowlisted intents skip the ceremony; everything else still stops';
-    V.memPlanLabel = effTier === 'free' ? 'Public tier — no membership' : effTier === 'enterprise' ? 'Enterprise seat · ' + (s.org || '') : 'Pilot membership · $48/year';
+    V.memPlanLabel = effTier === 'free' ? 'Public tier — no membership' : effTier === 'enterprise' ? 'Enterprise seat · ' + (s.org || '') : 'Pilot membership · ' + Component.priceYear();
+    // V12: the price has one source (core src/data/membership.ts, PR #349); it buys membership, not SALT.
+    V.priceStr = Component.price();
+    V.memPriceSource = 'Price from the membership service (core-membership checkout). It buys membership. It does not buy SALT.';
+    V.memReceipt = '2026-07-11 · Pilot membership · ' + Component.price() + '.00';
+    V.grantCustody = 'Your membership comes with a 32,000 SALT grant, locked in your bond for about a year. It is not staked until you activate the bond.';
+    V.grantDisclaimer = 'The grant is not purchased, and it is not an investment.';
+    V.grantBetanet = 'Betanet. What carries over to mainnet is set in the genesis spec.';
     V.memRenewLine = s.entitlement === 'lapsed' ? 'lapsed 2026-06-28' : 'renews 2027-07-11 · Stripe customer portal';
     V.memBadge = s.entitlement === 'active' ? 'active' : s.entitlement;
     const mb = s.entitlement === 'active' ? ['var(--ok-bg)', 'var(--ok)', 'var(--ok)'] : s.entitlement === 'lapsed' ? ['var(--danger-bg)', 'var(--danger)', 'var(--danger)'] : ['var(--warn-bg)', 'var(--warn)', 'var(--warn)'];
@@ -3670,9 +3679,15 @@ class Component extends DCLogic {
   // Chain numbers come only from the C1 fixture (FX) and are labelled
   // "fixture" on screen. Nothing here ticks, projects or estimates.
   // =====================================================================
+  // The membership price, from one place (mirrors core src/data/membership.ts, PR #349). core-membership has
+  // no price endpoint yet; its Stripe checkout price is the source. Replace with the service read when it exists.
+  static price() { return '$48'; }
+  static priceYear() { return Component.price() + '/year'; }
+
   static FX() {
     return {
       label: 'FIXTURE — captured from 40204, not live',
+      file: 'fixtures/40204-2026-10-19.json',
       capturedAt: '2026-10-19 00:26 UTC',
       block: 499058, blockTime: 2, activeValidators: 5, skills: 0, models: 1,
     };
@@ -3892,6 +3907,7 @@ class Component extends DCLogic {
     // ----- chat -----
     if (isEmpty && tab === 'chat') { V.msgs = []; V.showSuggestions = true; }
     V.chatEmpty = !V.msgs.length;
+    V.fxNote = FX.label + ' · ' + FX.file + ' · read at block ' + fmtI(FX.block) + ', ' + FX.capturedAt + '. “Produces blocks” is chain team, sampled 2026-10-19 (not in the export yet).';
     V.chatBackendLabel = s.routing === 'local' ? 'local model · llama-server on this machine' : 'local first · asks before infer.citrate.ai';
     V.askShow = !!s.askPending;
     V.askText = s.askPending || '';
@@ -3912,13 +3928,6 @@ class Component extends DCLogic {
       }[d.state] || [d.state, 'var(--line-2)', 'var(--tx-2)', 'transparent'];
     };
     V.dmRail = dmList.map((d) => { const p = pill(d); return { name: d.name, statusLabel: p[0], pillBd: p[1], pillFg: p[2], pillBg: p[3] }; });
-    V.fxRows = [
-      { k: 'Head height at read', v: fmtI(FX.block), src: 'eth_blockNumber · fixture' },
-      { k: 'Block time', v: '~' + FX.blockTime + ' s', src: 'timestamp delta over the last 100 blocks · fixture' },
-      { k: 'Active validators', v: String(FX.activeValidators), src: 'ValidatorRegistry.activeCount() · fixture' },
-      { k: 'Producing validators', v: '1', src: 'distinct proposerPubkey over 1,000 blocks · C1 contract v1 §2 (not in the fixture export)' },
-    ];
-    V.fxFoot = 'Read at block ' + fmtI(FX.block) + ', ' + FX.capturedAt + '. Checkpoint finality is not running on 40204 yet, so Hermes counts confirmations, never finality.';
     V.suggestions = ['Network status', 'What is my bond?', 'Search the web for GhostDAG', 'Plan my week from my journal', 'Journal: shipped the slice 1 prototype'].map((t) => ({ label: t, use: () => this.sendChat(t) }));
 
     // ----- work -----
@@ -3940,7 +3949,7 @@ class Component extends DCLogic {
         statusLabel: p[0], pillBd: p[1], pillFg: p[2], pillBg: p[3],
         runs: 'runs ' + d.runsToday + ' of ' + d.maxRuns + ' today', runsColor: over ? 'var(--warn)' : 'var(--tx-3)',
         tokens: 'tokens ' + fmtI(d.tokensToday) + ' of ' + fmtI(d.maxTok) + (d.tokenSrc ? ' · ' + d.tokenSrc : ''), tokColor: d.tokensToday / d.maxTok > 0.9 ? 'var(--warn)' : 'var(--tx-3)',
-        spend: 'spend 0 SALT', next: d.next,
+        next: d.next,
         note: d.note || (d.needsWeb && !s.webSearch && d.state === 'paused' ? 'Needs web search, which is off in Controls.' : ''), noteColor: d.noteColor || 'var(--tx-3)',
         canStart: d.state === 'paused' && !s.allPaused, canPause: (d.state === 'scheduled' || d.state === 'over' || d.state === 'running') && !s.allPaused,
         canReview: d.state === 'awaiting',
@@ -4054,18 +4063,18 @@ class Component extends DCLogic {
         row({ name: 'Citrate gateway', sub: 'infer.citrate.ai · ' + (s.routing === 'local' ? 'never used (Local model only)' : 'asked for each time (Ask before gateway)'), value: s.routing === 'local' ? 'off' : 'asks', valueColor: s.routing === 'local' ? 'var(--tx-3)' : 'var(--warn)' }),
       ].concat(keys.map((k) => row({ name: k[0].toUpperCase() + k.slice(1) + ' key', sub: 'your own key · sealed in the keyring', btn: 'Remove', act: () => this.toast('ai_clear_provider would remove it.') }))),
       empty: 'No local model and no keys yet. Download a model from Store (slice 2), or add your own provider key.', add: 'Add a provider key',
-      foot: 'ModelRegistry lists 1 model on chain (fixture, block 499,058). Downloads move to the Store in slice 2.',
+      foot: 'Model downloads move to the Store in slice 2.',
     };
     if (s.cSec === 'escalation') {
       const m0 = new Date(); m0.setHours(0, 0, 0, 0);
       const used = s.escHistory.filter((h) => h.mode === 'budget' && h.atMs >= m0.getTime()).reduce((a, h) => a + h.charged, 0);
       d2 = {
-        title: 'Escalation and spend caps', lead: 'Hermes can hand a hard question to one of your own endpoints. It always shows the price and the destination before anything is sent.',
+        title: 'Escalation and spend caps', lead: 'Hermes can hand a hard question to one of your own endpoints. It always shows the cost and the destination before anything is sent.',
         rows: (e2 ? [] : s.escEndpoints.map((ep) => row({ name: ep.label, sub: ep.host + ' · ' + ep.model + ' · key in keyring', btn: 'Remove', act: () => this.toast('escalation_endpoint_remove would remove it.') }))).concat([
           row({ name: 'Daily cap', sub: s.escCap === 0 ? 'At $0.00 every escalation asks you first (HIC-1)' : 'Under the cap, an escalation is a notice (HIC-2)', value: usd(s.escCap) + ' a day' }),
-          row({ name: 'Used today under the cap', sub: 'resets at local midnight', value: usd(used) }),
+          row({ name: 'Used today under the cap', sub: 'at your provider’s list price · resets at local midnight', value: usd(used) }),
         ]),
-        empty: '', add: 'Add an endpoint', foot: 'Amounts are what your own endpoints charge, in US dollars. Hermes never spends SALT.',
+        empty: '', add: 'Add an endpoint', foot: 'Dollar amounts are your provider’s list price for each reply on your own key (for example, at Anthropic’s list price).',
       };
     }
     if (s.cSec === 'mcp') d2 = {
@@ -4093,10 +4102,10 @@ class Component extends DCLogic {
     };
     if (s.cSec === 'budgets') d2 = {
       title: 'Budgets', lead: 'Each daemon has its own daily budget. A daemon that reaches it skips runs until midnight; it never borrows from tomorrow.',
-      rows: (e2 ? [] : s.daemons).map((d) => row({ name: d.name, sub: d.maxRuns + ' runs a day · ' + fmtI(d.maxTok) + ' tokens a day · 6,000 a run · 0 SALT spend', value: d.runsToday >= d.maxRuns ? 'used up today' : '', valueColor: 'var(--warn)', btn: 'Edit', act: () => this.toast('daemon_save writes the new budget.') })).concat([
+      rows: (e2 ? [] : s.daemons).map((d) => row({ name: d.name, sub: d.maxRuns + ' runs a day · ' + fmtI(d.maxTok) + ' tokens a day · 6,000 a run', value: d.runsToday >= d.maxRuns ? 'used up today' : '', valueColor: 'var(--warn)', btn: 'Edit', act: () => this.toast('daemon_save writes the new budget.') })).concat([
         row({ name: 'Web sign-in budgets', sub: 'let Hermes sign in with Ethereum on one site you choose, a set number of times', value: 'none granted', valueColor: 'var(--tx-3)' }),
       ]),
-      empty: '', add: '', foot: 'Default budget values are pending owner sign-off (4 runs, 20,000 tokens a day, 6,000 a run). Daemon spend is always 0 SALT in this release.',
+      empty: '', add: '', foot: 'Default budget values are pending owner sign-off (4 runs, 20,000 tokens a day, 6,000 a run). Daemons can’t spend SALT.',
     };
     if (s.cSec === 'personas') d2 = {
       title: 'Personas and voice', lead: 'A persona changes how Hermes writes. It never grants a tool or changes an approval.',
@@ -4132,15 +4141,14 @@ class Component extends DCLogic {
       V.d3Summary = true;
       V.d3Tiles = [
         { k: 'Daily cap', v: usd(s.escCap), sub: s.escCap === 0 ? 'every escalation asks' : 'notice under the cap' },
-        { k: 'Used under cap', v: usd(used), sub: 'today · your endpoints' },
+        { k: 'Used under cap', v: usd(used), sub: 'today · provider list price' },
         { k: 'You confirmed', v: usd(conf), sub: 'today · outside the cap' },
-        { k: 'Daemon spend', v: '0 SALT', sub: 'always 0 in this release' },
       ];
       V.d3Head = ['When', 'Destination', 'Mode', 'Quoted', 'Charged', 'Outcome'];
       V.d3Cols = '110px minmax(0,1fr) 90px 80px 80px 90px';
       V.d3Rows = hist.map((h) => ({ cells: [{ t: when(h.atMs), c: 'var(--tx-3)' }, { t: h.destination, c: 'var(--tx-1)' }, { t: h.mode, c: 'var(--tx-2)' }, { t: usd(h.quoted), c: 'var(--tx-2)' }, { t: usd(h.charged), c: 'var(--tx-1)' }, { t: h.outcome, c: 'var(--ok)' }] }));
-      V.d3EmptyText = 'No spend. The daily cap is $0.00, so every escalation asks you first, and daemons cannot spend SALT in this release.';
-      V.d3Foot = 'US dollar amounts are what your own endpoints charge for a reply. There is no SALT price anywhere in the app.';
+      V.d3EmptyText = 'No spend. The daily cap is $0.00, so every escalation asks you first.';
+      V.d3Foot = 'Dollar amounts are your provider’s list price for each reply on your own key. Daemons can’t spend SALT.';
     } else {
       V.d3Picker = !e3 && s.daemons.length > 0;
       V.d3DaemonPick = [{ id: 'all', name: 'All daemons' }].concat(s.daemons.map((d) => ({ id: d.id, name: d.name }))).map((d) => ({ label: d.name, cls: s.cRunPick === d.id ? 'btn-secondary' : 'btn-ghost', go: () => this.setState({ cRunPick: d.id }) }));
@@ -4157,7 +4165,7 @@ class Component extends DCLogic {
     const STUBS = {
       groups: { t: 'Groups', slice: 'slice 2 or later', lead: 'Chat with round cards, Rounds, Members and Cluster. Training becomes round cards in the chat plus a Rounds tab (group rounds ADR).', tabs: [['Chat', 'Group chat with round cards (unverified, fixture round, accepted, rejected)'], ['Rounds', 'Group rounds not live yet: FederatedRoundLedger and PatronageLedger are not deployed on 40204'], ['Members', 'Roster, roles, invites'], ['Cluster', 'Co-pinning and linked devices']], legacy: 'comms' },
       wallet: { t: 'Wallet', slice: 'slice 2', lead: 'Overview, Staking, Activity and Identity, redrawn against UI truth contract v1: one definition of “staked” (stakeOf), the bond state words, and the grant explained one way everywhere.', tabs: [['Overview', 'Balance (eth_getBalance, “latest”; unknown on error, never 0)'], ['Staking', 'Bond locked · not staked until MemberBond.activated()'], ['Activity', 'Pending, Included in block N, N confirmations'], ['Identity', 'Membership SBT, linked identities']], legacy: 'wallet' },
-      node: { t: 'Node', slice: 'slice 2 · 2026-10-28', lead: 'Status, Services, Storage, Earnings and Advanced (core plan K3). Services follow the K1 services contract.', tabs: [['Status', 'One sentence in the contract’s words, start and stop, direct peers'], ['Services', 'Alive, Ready, Stopping, Quarantined; restart; bounded log'], ['Storage', 'Files, Memory and Pins (pin bonds not live yet)'], ['Earnings', 'Validator rewards from rewardsOf only; no projections'], ['Advanced', 'Configuration, full log, crash records, withdrawn-branch notice']], legacy: 'node' },
+      node: { t: 'Node', slice: 'slice 2 · 2026-10-28', lead: 'Status, Services, Storage, Rewards and Advanced (core plan K3). Services follow the K1 services contract.', tabs: [['Status', 'One sentence in the contract’s words, start and stop, direct peers'], ['Services', 'Alive, Ready, Stopping, Quarantined; restart; bounded log'], ['Storage', 'Files, Memory and Pins (pin bonds not live yet)'], ['Rewards', 'Validator rewards from rewardsOf only; no projections'], ['Advanced', 'Configuration, full log, crash records, withdrawn-branch notice']], legacy: 'node' },
       store: { t: 'Store', slice: 'slice 2 · 2026-10-28', lead: 'Catalog, listing, install sheet and installed, as a signed app and daemon store (core plan K5).', tabs: [['Catalog', 'Apps, Daemons, Widgets, Skills, Models, MCP servers'], ['Listing', 'Signature verified or failed, tier-locked'], ['Install sheet', 'Declared permissions and budget; installs paused'], ['Installed', 'Remove in one tap']], legacy: 'commissary' },
     };
     const stub = STUBS[s.route];
@@ -4187,13 +4195,13 @@ class Component extends DCLogic {
 
     // ----- annotations -----
     const A = {
-      chat: ['Hermes › Chat', 'hermes/chat   (Sidebar.tsx today: dashboard)', 'agentHarness.sessionOpen / sessionSend / sessionEvents (hermes_session_open, hermes_session_send, hermes_session_events) · chat.backend · ask before gateway: none yet (core plan K1, S7.5a ask-first routing) · rail: daemonsApi.list (daemons_list), agentHarness.pendingApprovals (hermes_pending_approvals) · Network widget: C1 fixture only; live reads none yet (core plan K3)', 'none'],
+      chat: ['Hermes › Chat', 'hermes/chat   (Sidebar.tsx today: dashboard)', 'agentHarness.sessionOpen / sessionSend / sessionEvents (hermes_session_open, hermes_session_send, hermes_session_events) · chat.backend · ask before gateway: none yet (core plan K1, S7.5a ask-first routing) · rail: daemonsApi.list (daemons_list), agentHarness.pendingApprovals (hermes_pending_approvals) · network status only as a chat reply (chain-team ruling 6): C1 fixture in the prototype, live §2 reads none yet (core plan K3)', 'none'],
       journal: ['Hermes › Journal', 'hermes/journal   (today: journal)', 'none: local app state (store jPages, ensureDailyEntry); daemon bullets from the daemon run log; the journal chat uses the same Hermes session (hermes_session_send)', 'none'],
       work: ['Hermes › Work', 'hermes/work   (today: agent)', 'agentHarness.status (hermes_status) · pendingApprovals / resolve (hermes_pending_approvals, hermes_resolve) · shellPending / shellDecide (hermes_shell_pending, hermes_shell_decide) · mcpPending / mcpDecide · daemonsApi.list / setPaused / setAllPaused (daemons_list, daemon_set_paused, daemons_set_all_paused) · run log: daemonsApi.runsBetween (daemon_runs_between) · skills: agentSkills.list, agentHarness.registrySkills · daemon state “awaiting your review”: none yet (core plan K2)', 'none'],
       learn: ['Hermes › Learn', 'hermes/learn   (today: Agent and Settings)', 'agentHarness.learnStatus / learnProposals / learnAccept / learnReject / learnMemories (hermes_learn_status, hermes_learn_proposals, hermes_learn_accept, hermes_learn_reject, hermes_learn_memories) · Teach Hermes: agentHarness.workflowRun (hermes_workflow_run, learnLauncher.ts) · knowledge import: memory.importKnowledge (memory_import_knowledge) · training opt-in: flRounds.trajectoryStatus / setTrajectoryConsent (trajectories_settings_get, trajectories_settings_set)', 'none · rounds copy: “Group rounds not live yet” (contract §4)'],
       ctl1: ['Hermes › Controls · depth 1', 'hermes/controls   (today: Settings › AI providers, Escalation, MCP, Web search, Budgets)', 'routing: none yet (core plan K1, S7.5a) · web search: hermes_web_settings_get / hermes_web_settings_set · terminal: hermes_terminal_get / hermes_terminal_set · daemons: daemons_set_all_paused · learn: trajectories_settings_set · voice: store hermesReadAloud (local, no bridge)', 'none'],
       ctl2: ['Hermes › Controls · depth 2 · ' + (SECS.find((x) => x[0] === s.cSec) || [0, ''])[1], 'hermes/controls/' + s.cSec, {
-        providers: 'chat.providerStatus / setProvider / clearProvider (ai_provider_status, ai_set_provider, ai_clear_provider) · gateway mode: none yet (S7.5a) · ModelRegistry count: C1 fixture',
+        providers: 'chat.providerStatus / setProvider / clearProvider (ai_provider_status, ai_set_provider, ai_clear_provider) · gateway mode: none yet (S7.5a)',
         escalation: 'escalation.endpoints / addEndpoint / removeEndpoint / budget / setBudget (escalation_endpoints, escalation_endpoint_add, escalation_endpoint_remove, escalation_budget, escalation_budget_set)',
         mcp: 'agentHarness.mcpSettings / mcpSet / mcpRuntime (hermes_mcp_settings, hermes_mcp_set, mcp_servers_runtime)',
         web: 'hermes_web_settings_get / hermes_web_settings_set (agent/webSearch.ts) · managed Chromium: components.status',
@@ -4203,7 +4211,7 @@ class Component extends DCLogic {
       }[s.cSec], s.cSec === 'web' ? 'none · the browser needs the signed component key from the ceremony (components.status.keyConfigured)' : 'none'],
       ctl3: ['Hermes › Controls · depth 3 · ' + (AUD.find((x) => x[0] === s.cAud) || [0, ''])[1], 'hermes/controls/' + s.cAud, {
         records: 'writes: agentHarness.recordDecision (hic_record_decision) · read: none yet (core plan K2; HicLog::records exists in hic_records.rs but no command serves it) · web sign-in records: web_budget_status.snapshot.records',
-        spend: 'escalation.budget (escalation_budget → history, capMicros, usedMicros, confirmedMicros) · daemons_list (spendTodaySalt, always "0")',
+        spend: 'escalation.budget (escalation_budget → history, capMicros, usedMicros, confirmedMicros) · daemons_list (spendTodaySalt is always "0"; drawn as “Daemons can’t spend SALT”, ruling 5)',
         runs: 'daemonsApi.runsBetween (daemon_runs_between → DaemonRunLog)',
       }[s.cAud], 'none'],
       groups: ['Groups (stub)', 'groups   (today: groups, people, cluster, train, comms)', 'groups.*, cluster.*, flRounds.* (drawn in slice 2 or later)', 'rounds: “Group rounds not live yet” (contract §4)'],
