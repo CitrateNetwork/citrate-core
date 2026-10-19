@@ -267,6 +267,14 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
     expect(await bridge.chat.inferenceState(false)).toBe("demo");
   });
 
+  it("chat route: the preview reports the default (ask first) and cannot change it", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const { isUnavailable } = await import("./types");
+    expect(await bridge.chat.route()).toEqual({ route: "ask_first", loadError: null });
+    await expect(bridge.chat.setRoute("local_only")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+
   it("backend is the honest built-in demo agent (Rule 1 — no gateway label)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);

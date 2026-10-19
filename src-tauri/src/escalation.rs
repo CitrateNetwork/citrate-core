@@ -88,7 +88,7 @@ pub const X402_ASSET_ALLOWLIST: &[&str] = &[];
 
 pub const LEDGER_FILE: &str = "ledger.json";
 pub const ENDPOINTS_FILE: &str = "endpoints.json";
-const DIR_NAME: &str = "escalation";
+pub(crate) const DIR_NAME: &str = "escalation";
 const KEY_ACCOUNT_PREFIX: &str = "escalation-endpoint:";
 
 // ---------------------------------------------------------------------------

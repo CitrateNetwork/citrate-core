@@ -62,6 +62,7 @@ mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod chat_route;
 mod device_link;
 mod device_link_share;
 mod docs_ingest;
@@ -722,6 +723,8 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            chat_route::chat_route_get,
+            chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
             model_delete::model_delete_states,

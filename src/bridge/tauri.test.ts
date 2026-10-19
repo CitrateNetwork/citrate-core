@@ -50,6 +50,7 @@ const connMock: Record<string, { connected: boolean; scope: string | null; conne
   notion: { connected: false, scope: null, connectedAt: null },
 };
 
+const routeMock = { route: "ask_first" };
 const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   switch (cmd) {
     case "config_read":
@@ -342,6 +343,12 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       // BC-3.2 — REAL LOCAL inference: the webview supplies ONLY messages + context.
       // Rust derives the loopback endpoint from the serve manager (no url arg here).
       return "local-completion from the bundled llama-server";
+    }
+    case "chat_route_get":
+      return { route: routeMock.route, loadError: null };
+    case "chat_route_set": {
+      routeMock.route = String((args ?? {}).route);
+      return { route: routeMock.route, loadError: null };
     }
     case "model_inference_state": {
       // BC-3.2 — the honest routing state, computed in Rust. The mock echoes the
@@ -928,6 +935,17 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
   // Q-A.4a item 6 — the honest routing state passes the gateway-key presence to
   // Rust (model_inference_state), which decides local/gateway/demo. The webview
   // never fabricates "ready"; only Rust returns it (from real serve health).
+  // K2 (0.5.2): the member's chat route is stored in Rust (chat_route.rs) and read back.
+  it("chat.route / chat.setRoute invoke chat_route_get / chat_route_set {route}", async () => {
+    const bridge = createTauriBridge();
+    expect(await bridge.chat.route()).toEqual({ route: "ask_first", loadError: null });
+    expect(invokeMock.mock.calls.some((c) => c[0] === "chat_route_get")).toBe(true);
+    expect(await bridge.chat.setRoute("local_only")).toEqual({ route: "local_only", loadError: null });
+    expect(invokeMock).toHaveBeenCalledWith("chat_route_set", { route: "local_only" });
+    expect(await bridge.chat.route()).toEqual({ route: "local_only", loadError: null });
+    routeMock.route = "ask_first";
+  });
+
   it("chat.inferenceState invokes model_inference_state with {gatewayConfigured}", async () => {
     const bridge = createTauriBridge();
     expect(await bridge.chat.inferenceState(true)).toBe("gateway-only");

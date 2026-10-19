@@ -29,7 +29,7 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
+import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
@@ -37,7 +37,7 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
-import type { FlRoundPlan } from "../bridge/domains";
+import type { ChatRoute, FlRoundPlan, RouteAskOptions } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
@@ -421,6 +421,9 @@ export const LOCAL_ROUTE_POLL_MS = 1_000;
 
 /** SCL-S7.5a — the error shown on a held message the member cancelled (Retry asks again). */
 export const LOCAL_ASK_NOT_SENT = "not sent; you cancelled before choosing where it goes";
+/** K2: local only is on and there is no local model to start, so the message is not sent. */
+export const LOCAL_ONLY_NOT_SENT =
+  "Local only is on and there is no local model running, so this message was not sent. To chat, start the local model (Models), or turn off Local model only in Hermes › Controls.";
 
 /** SCL-S7.5a — wait `ms`, or less if `signal` aborts first. */
 function sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
@@ -469,17 +472,35 @@ export function pickChatProviderKind(
   aiDefault: string,
   mode: "sim" | "tauri",
   inferenceState?: string,
-): "local" | "ask" | "real" | "demo" {
+  route: ChatRoute = "ask_first",
+): "local" | "ask" | "demo" {
   if (mode !== "tauri") return "demo";
   // 1) LOCAL: only when the real Rust state says the model is ready AND the
   //    llama-server is healthy — any other state falls through (honest).
   if (inferenceState === "ready") return "local";
-  // 1b) SCL-S7.5a: the local model is configured but not running → ask first, never the gateway.
-  if (inferenceState === "local-stopped" || inferenceState === "local-fallback") return "ask";
-  // 2) GATEWAY (real): the default provider id has a sealed key.
-  if (statuses.some((p) => p.id === aiDefault && p.configured)) return "real";
-  // 3) DEMO: the honest built-in agent.
+  const remote = statuses.some((p) => p.id === aiDefault && p.configured);
+  // 2) A local model that is set up but stopped: hold the message and ask (SCL-S7.5a).
+  if (inferenceState !== undefined && LOCAL_STOPPED_STATES.has(inferenceState)) return "ask";
+  // 3) K2: nothing goes to the gateway without the member's choice for that message. Under
+  //    ask_first a configured remote route asks every time (the old silent "gateway-only" and
+  //    "downloading" routes are closed); under local_only the held message offers nothing remote.
+  if (inferenceState === "ask-gateway" || inferenceState === "local-only" || remote) return "ask";
+  void route; // the route shapes what the held message offers (routeAskOptions), not whether it is held
+  // 4) DEMO: the honest built-in agent.
   return "demo";
+}
+
+/** The states in which a local model is set up but its server is not running. */
+const LOCAL_STOPPED_STATES = new Set(["local-stopped", "local-fallback", "local-only-stopped"]);
+
+/**
+ * K2: what the held-message card offers. Restart only when a local model is set up; the gateway
+ * only under ask_first, never under local_only (and only when a remote route is configured).
+ */
+export function routeAskOptions(inferenceState: string | undefined, route: ChatRoute, remoteConfigured = true): RouteAskOptions {
+  const restart = inferenceState !== undefined && LOCAL_STOPPED_STATES.has(inferenceState);
+  const gateway = route === "ask_first" && remoteConfigured && inferenceState !== "local-only" && inferenceState !== "local-only-stopped";
+  return { restart, gateway };
 }
 
 /**
@@ -1015,8 +1036,18 @@ export class Store {
       } catch {
         inferenceState = "demo";
       }
-      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
+      // K2: the member's chat route, stored in core. An unreadable setting comes back as
+      // local_only from core; a core without the command keeps the current value (default ask_first).
+      let route: ChatRoute = this.state.chatRoute;
+      try {
+        route = (await bridge.chat.route()).route;
+      } catch {
+        /* an older core: keep what the app has */
+      }
+      if (route !== this.state.chatRoute) this.setState({ chatRoute: route });
+      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState, route);
       this.routeKind = kind;
+      this.routeAsk = routeAskOptions(inferenceState, route, gatewayConfigured);
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
@@ -1076,9 +1107,12 @@ export class Store {
         return;
       }
       if (kind === "ask") {
-        // SCL-S7.5a (D-16 extended): the local model is configured but its server is not running.
-        // No provider is chosen for the gateway: sendChat holds each message and asks the member.
-        this.provider = createLocalStoppedProvider();
+        // SCL-S7.5a (D-16 extended) + K2: the local model is not serving and nothing goes to the
+        // gateway by itself. No provider is chosen for the gateway: sendChat holds each message
+        // and asks the member (or, under local only with no local model, says why it is not sent).
+        this.provider = createLocalStoppedProvider(
+          route === "local_only" ? LOCAL_ONLY_LABEL : this.routeAsk.restart ? undefined : ASK_FIRST_NO_LOCAL_LABEL,
+        );
         this.reflectProvider();
         return;
       }
@@ -1087,15 +1121,6 @@ export class Store {
         // the sidecar down (or its loop switched off) chat is a plain local reply with NO tools,
         // and it says so: the webview runs no tool loop for the local model.
         this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx));
-        this.reflectProvider();
-        return;
-      }
-      if (kind === "real") {
-        // W3.3 — the gateway runs the AGENTIC tool loop (memory recall/search +
-        // navigate + approval-gated writes). Tool calls execute through handleTool.
-        this.provider = createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) =>
-          bridge.chat.inferTools(pid, msgs, tools, ctx),
-        );
         this.reflectProvider();
         return;
       }
@@ -1168,6 +1193,18 @@ export class Store {
       this.save();
     } catch (err) {
       this.toast("Could not remove the provider — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /** K2: store the member's chat route in core (chat_route_set) and route by it at once. */
+  async setChatRoute(route: ChatRoute): Promise<void> {
+    try {
+      const st = await bridge.chat.setRoute(route);
+      this.setState({ chatRoute: st.route });
+      await this.rebuildProvider();
+      this.toast(st.route === "local_only" ? "Local model only is on: chat never uses the gateway" : "Hermes asks before any message goes to the gateway");
+    } catch (e) {
+      this.toast(`Could not change Local model only: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2756,7 +2793,9 @@ export class Store {
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
   private turnAbort: AbortController | null = null;
   /** SCL-S7.5a — the route the last `rebuildProvider` chose ("ask" = local model not running). */
-  private routeKind: "local" | "ask" | "real" | "demo" = "demo";
+  private routeKind: "local" | "ask" | "demo" = "demo";
+  /** K2: what a held message may offer (restart the local model / send to the gateway once). */
+  private routeAsk: RouteAskOptions = { restart: false, gateway: false };
   /** SCL-S7.5a — true from launch until the app's own startup start of the local server settles. */
   private launchLocalStartPending = false;
   /** SCL-S7.5a — resolves the question for the held message (null when nothing is asked). */
@@ -2797,7 +2836,7 @@ export class Store {
     msgId: string,
     signal: AbortSignal,
   ): Promise<{ ok: true; provider: ChatProvider } | { ok: false; error: string }> {
-    const hold = (phase: "waiting" | "ask" | "restarting") => this.setState({ chatRouteHold: { msgId, phase } });
+    const hold = (phase: "waiting" | "ask" | "restarting") => this.setState({ chatRouteHold: { msgId, phase, options: this.routeAsk } });
     const cancelled = { ok: false as const, error: LOCAL_ASK_NOT_SENT };
     const gone = { ok: false as const, error: "the local model is no longer set up, so this message was not sent" };
     const localNow = async (): Promise<ChatProvider | null> => {
@@ -2808,7 +2847,9 @@ export class Store {
       let local = await localNow();
       if (local) return { ok: true, provider: local };
       if (this.routeKind !== "ask") return gone;
-      if (this.launchLocalStartPending) {
+      // K2: local only with no local model to start: nothing to offer, so say why and send nothing.
+      if (!this.routeAsk.restart && !this.routeAsk.gateway) return { ok: false, error: LOCAL_ONLY_NOT_SENT };
+      if (this.launchLocalStartPending && this.routeAsk.restart) {
         hold("waiting");
         const deadline = Date.now() + LOCAL_START_WAIT_MS;
         while (this.launchLocalStartPending && Date.now() < deadline && !signal.aborted) {
@@ -2831,14 +2872,16 @@ export class Store {
       });
       this.localModelChoice = null;
       if (choice === "cancel" || signal.aborted) return cancelled;
-      if (choice === "gateway") {
-        // The member's explicit choice, for this one message only.
+      if (choice === "gateway" && this.routeAsk.gateway) {
+        // The member's explicit choice, for this one message only (never offered under local only).
         const def = this.state.aiDefault;
         return {
           ok: true,
           provider: createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) => bridge.chat.inferTools(pid, msgs, tools, ctx)),
         };
       }
+      // Defensive: a choice that was not offered sends nothing.
+      if (choice === "gateway" || !this.routeAsk.restart) return cancelled;
       hold("restarting");
       const started = await this.restartLocalModel(signal);
       if (signal.aborted) return cancelled;
@@ -2855,7 +2898,12 @@ export class Store {
    *  chat is asking right now. */
   answerLocalModelAsk(choice: LocalModelChoice): void {
     const resolve = this.localModelChoice;
-    if (!resolve || this.state.chatRouteHold?.phase !== "ask") return;
+    const hold = this.state.chatRouteHold;
+    if (!resolve || hold?.phase !== "ask") return;
+    // K2: a choice the card does not offer (the gateway under local only, a restart with no local
+    // model) does nothing.
+    const opts = hold.options;
+    if (opts && ((choice === "gateway" && !opts.gateway) || (choice === "restart" && !opts.restart))) return;
     this.localModelChoice = null;
     resolve(choice);
   }
