@@ -51,6 +51,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
         restarts: 3,
         pid: Some(42),
         quarantine: None,
+        open_tickets: 2,
     };
     let v = serde_json::to_value(&snap).unwrap_or_default();
     assert_eq!(v["appEpoch"], "18446744073709551615");
@@ -60,6 +61,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
     assert_eq!(v["revision"], "10");
     assert_eq!(v["restarts"], "3");
     assert_eq!(v["pid"], 42);
+    assert_eq!(v["openTickets"], 2);
     assert_eq!(v["phase"], "stopping");
     assert_eq!(v["readiness"], "notAssessed");
     assert_eq!(v["desired"], "stopped");
@@ -236,4 +238,81 @@ fn a_superseded_start_receipt_says_so() {
         Receipt::Superseded | Receipt::Failed { .. } | Receipt::Expired
     ));
     assert!(matches!(wait_receipt(&sup, stop), Receipt::Complete { .. }));
+}
+
+/// A publisher whose thread is alive but never runs its body (it never observes).
+fn idle_publisher() -> Arc<DeadlinePublisher> {
+    DeadlinePublisher::start_with_spawner(Duration::from_millis(20), |body| {
+        std::thread::Builder::new().spawn(move || {
+            let _never_run = body;
+            loop {
+                std::thread::park();
+            }
+        })
+    })
+}
+
+#[test]
+fn deadline_overlay_arms_up_to_its_fixed_size_and_frees_on_release() {
+    let p = idle_publisher();
+    for seq in 0..DEADLINE_RECORDS as u64 {
+        assert!(p.arm(7, 1, seq, Duration::from_secs(60)));
+    }
+    assert_eq!(p.armed_records(), DEADLINE_RECORDS);
+    assert!(!p.arm(7, 1, 99, Duration::from_secs(60)), "no record beyond the overlay");
+    p.release(7, 1, 3);
+    assert_eq!(p.armed_records(), DEADLINE_RECORDS - 1);
+    assert!(p.arm(7, 1, 99, Duration::from_secs(60)), "a freed record is reused");
+    assert_eq!(p.expired(7, 1, 3), Some(false), "a released control has no record");
+}
+
+#[test]
+fn a_deadline_read_compares_the_monotonic_clock_without_the_publisher() {
+    let p = idle_publisher();
+    assert!(p.is_running());
+    assert!(p.arm(1, 1, 1, Duration::from_millis(20)));
+    assert_eq!(p.expired(1, 1, 1), Some(false));
+    std::thread::sleep(Duration::from_millis(40));
+    let token = ControlToken {
+        app_epoch: 1,
+        intent_sequence: 1,
+    };
+    assert_eq!(p.record_state(1, token), Some(DeadlineState::Armed), "never marked");
+    assert_eq!(p.expired(1, 1, 1), Some(true), "but the read sees the deadline passed");
+}
+
+#[test]
+fn a_stale_expiry_mark_never_applies_to_a_rewritten_record() {
+    let p = idle_publisher();
+    assert!(p.arm(1, 1, 1, Duration::ZERO));
+    p.observe(); // marks the expired record
+    let a = ControlToken {
+        app_epoch: 1,
+        intent_sequence: 1,
+    };
+    assert_eq!(p.record_state(1, a), Some(DeadlineState::Expired));
+    p.release(1, 1, 1);
+    assert!(p.arm(2, 1, 5, Duration::from_secs(60)), "the same record, rewritten");
+    let b = ControlToken {
+        app_epoch: 1,
+        intent_sequence: 5,
+    };
+    assert_eq!(p.record_state(2, b), Some(DeadlineState::Armed));
+    assert_eq!(p.expired(2, 1, 5), Some(false), "A's mark does not carry over to B");
+}
+
+#[test]
+fn the_publisher_marks_expiry_within_its_cadence() {
+    let p = DeadlinePublisher::start(Duration::from_millis(10));
+    assert!(p.is_running() && p.init_error().is_none());
+    assert!(p.arm(3, 1, 1, Duration::from_millis(30)));
+    let token = ControlToken {
+        app_epoch: 1,
+        intent_sequence: 1,
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while p.record_state(3, token) != Some(DeadlineState::Expired) {
+        assert!(std::time::Instant::now() < deadline, "the publisher never marked it");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

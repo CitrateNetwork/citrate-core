@@ -1241,8 +1241,16 @@ fn stop_deadline_expires_while_teardown_is_held() {
 #[test]
 fn receipt_reports_expiry_even_if_the_publisher_never_ran() {
     let fx = OwnedFixture::new("deadline-idle");
-    // An hour between observations: the publisher never looks during this test.
-    let publisher = DeadlinePublisher::start(Duration::from_secs(3600));
+    // A publisher thread that is alive but never runs its body: it never observes anything.
+    let publisher = DeadlinePublisher::start_with_spawner(Duration::from_millis(20), |body| {
+        std::thread::Builder::new().spawn(move || {
+            let _never_run = body;
+            loop {
+                std::thread::park();
+            }
+        })
+    });
+    assert!(publisher.is_running());
     let mut cfg = stubborn_config(&fx, "lcf-deadline-idle", Duration::from_millis(1200));
     cfg.deadlines = Some(publisher.clone());
     let sup = Supervisor::start(cfg)
