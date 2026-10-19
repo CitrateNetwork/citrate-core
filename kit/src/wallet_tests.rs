@@ -813,6 +813,11 @@ fn k6_signing_primitives() -> Vec<String> {
         "try_sign".to_string() + "(",
         "sign_digest".to_string(),
         ".sign".to_string() + "(",
+        // wallet-core: the raw key bytes and its chain signers.
+        ".secret_".to_string() + "bytes(",
+        "sign_".to_string() + "secp256k1(",
+        "sign_".to_string() + "v2(",
+        "sign_for".to_string() + "_tip(",
     ]
 }
 
@@ -890,18 +895,150 @@ fn every_signer_takes_the_key_through_the_network_gate() {
     }
 }
 
+/// Lex `src` once and return two views of it, both the same length in chars as `src`, with every
+/// newline kept in place:
+/// - `code`: comments (line, block, nested block, doc) blanked to spaces; string and char literals
+///   kept verbatim, so a needle written inside a literal is still seen;
+/// - `shape`: as `code`, and the contents of every string, raw string, byte string and char
+///   literal blanked too, so a `{`, `}`, `//` or `#[cfg(test)]` inside a literal is not structure.
+fn k6_lex(src: &str) -> (Vec<char>, Vec<char>) {
+    let s: Vec<char> = src.chars().collect();
+    let n = s.len();
+    let mut code = s.clone();
+    let mut shape = s.clone();
+    let blank = |v: &mut Vec<char>, i: usize| {
+        if v[i] != '\n' {
+            v[i] = ' ';
+        }
+    };
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < n {
+        let c = s[i];
+        let next = if i + 1 < n { s[i + 1] } else { '\0' };
+        if c == '/' && next == '/' {
+            while i < n && s[i] != '\n' {
+                blank(&mut code, i);
+                blank(&mut shape, i);
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && next == '*' {
+            let mut depth = 0usize;
+            while i < n {
+                if s[i] == '/' && i + 1 < n && s[i + 1] == '*' {
+                    depth += 1;
+                    for k in i..i + 2 {
+                        blank(&mut code, k);
+                        blank(&mut shape, k);
+                    }
+                    i += 2;
+                } else if s[i] == '*' && i + 1 < n && s[i + 1] == '/' {
+                    depth -= 1;
+                    for k in i..i + 2 {
+                        blank(&mut code, k);
+                        blank(&mut shape, k);
+                    }
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    blank(&mut code, i);
+                    blank(&mut shape, i);
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // Raw string: `r"…"`, `r#"…"#`, with an optional `b` / `c` prefix, not inside an identifier.
+        if c == 'r' {
+            let prefix_ok = match i.checked_sub(1).map(|j| s[j]) {
+                None => true,
+                Some(p) if !ident(p) => true,
+                Some('b') | Some('c') => i < 2 || !ident(s[i - 2]),
+                _ => false,
+            };
+            let mut j = i + 1;
+            while j < n && s[j] == '#' {
+                j += 1;
+            }
+            if prefix_ok && j < n && s[j] == '"' {
+                let hashes = j - i - 1;
+                let mut k = j + 1;
+                loop {
+                    if k >= n {
+                        break;
+                    }
+                    if s[k] == '"' && k + hashes < n && s[k + 1..=k + hashes].iter().all(|&h| h == '#')
+                    {
+                        break;
+                    }
+                    blank(&mut shape, k);
+                    k += 1;
+                }
+                i = (k + 1 + hashes).min(n);
+                continue;
+            }
+        }
+        if c == '"' {
+            let mut k = i + 1;
+            while k < n && s[k] != '"' {
+                if s[k] == '\\' && k + 1 < n {
+                    blank(&mut shape, k);
+                    k += 1;
+                }
+                blank(&mut shape, k);
+                k += 1;
+            }
+            i = k + 1;
+            continue;
+        }
+        // Char literal (`'x'`, `'\n'`, `'\u{7b}'`, `'{'`); a lifetime or label (`'a`) is left alone.
+        if c == '\'' {
+            if next == '\\' {
+                let mut k = i + 2;
+                while k < n && s[k] != '\'' && s[k] != '\n' {
+                    k += 1;
+                }
+                if k < n && s[k] == '\'' {
+                    for m in i + 1..k {
+                        blank(&mut shape, m);
+                    }
+                    i = k + 1;
+                    continue;
+                }
+            } else if i + 2 < n && s[i + 2] == '\'' && next != '\n' {
+                blank(&mut shape, i + 1);
+                i += 3;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    (code, shape)
+}
+
 /// Drop every `#[cfg(test)]` item (a `mod x;` line, or a braced item to its closing brace) and
-/// every comment line, keeping all other code. Only whole items are removed, never a file tail,
-/// so production code after a test helper stays in scope.
+/// every comment, keeping all other code. Only whole items are removed, never a file tail, so
+/// production code after a test helper stays in scope. String-aware: braces, `//` and attributes
+/// inside string, raw-string and char literals are not structure (see [`k6_lex`]), while the
+/// literals themselves stay in the output so needles inside them are still counted.
 fn k6_strip_test_items(src: &str) -> String {
-    let lines: Vec<&str> = src.lines().collect();
+    let (code, shape) = k6_lex(src);
+    let code: String = code.into_iter().collect();
+    let shape: String = shape.into_iter().collect();
+    let code_lines: Vec<&str> = code.split('\n').collect();
+    let lines: Vec<&str> = shape.split('\n').collect();
     let mut out = String::new();
     let mut i = 0;
     while i < lines.len() {
         let t = lines[i].trim();
         if t == "#[cfg(test)]" {
             i += 1;
-            while i < lines.len() && lines[i].trim().starts_with("#[") {
+            while i < lines.len() && (lines[i].trim().starts_with("#[") || lines[i].trim().is_empty())
+            {
                 i += 1;
             }
             if i < lines.len() && lines[i].trim_end().ends_with(';') {
@@ -926,13 +1063,70 @@ fn k6_strip_test_items(src: &str) -> String {
             }
             continue;
         }
-        if !t.starts_with("//") {
-            out.push_str(lines[i]);
+        if !t.is_empty() {
+            out.push_str(code_lines[i].trim_end());
             out.push('\n');
         }
         i += 1;
     }
     out
+}
+
+/// One scanned source, lexed once: `(path, code with comments blanked, non-test code)`.
+type K6Source = (std::path::PathBuf, String, String);
+
+fn k6_prep(path: std::path::PathBuf, src: &str) -> K6Source {
+    let code: String = k6_lex(src).0.into_iter().collect();
+    (path, code, k6_strip_test_items(src))
+}
+
+/// Whether a `*_tests.rs` file is compiled only under `cfg(test)`: it starts with `#![cfg(test)]`,
+/// or some file in the same crate brings it in (`include!("x_tests.rs")`, `#[path = "x_tests.rs"]`
+/// or `mod x_tests`) and every such reference sits inside a `#[cfg(test)]` item. A reference the
+/// scan cannot see (an `include!(concat!(..))`, say) leaves the file unreferenced, so it is scanned. A file brought in
+/// by non-test code (say `pub mod x_tests;`) is NOT exempt, and neither is an orphan.
+fn k6_is_cfg_test_file(path: &std::path::Path, crate_files: &[K6Source]) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let Some(stem) = name.strip_suffix(".rs") else {
+        return false;
+    };
+    let Some((_, own_code, _)) = crate_files.iter().find(|(p, _, _)| p == path) else {
+        return false;
+    };
+    if own_code.trim_start().starts_with("#![cfg(test)]") {
+        return true;
+    }
+    let quoted = format!("{name}\"");
+    let m = format!("mod {stem}");
+    let refs = |code: &str| -> usize {
+        // `include!("…x_tests.rs")` or `#[path = "…x_tests.rs"]` (an `include_str!` of the file
+        // reads it as text and does not compile it, so it is not a reference).
+        let mut n = code
+            .lines()
+            .filter(|l| l.contains(quoted.as_str()))
+            .filter(|l| l.contains("include!(") || l.contains("path"))
+            .count();
+        for (at, _) in code.match_indices(m.as_str()) {
+            let after = code[at + m.len()..].chars().next().unwrap_or(' ');
+            let before = code[..at].chars().next_back().unwrap_or(' ');
+            let joined = |c: char| c.is_alphanumeric() || c == '_';
+            if !joined(after) && !joined(before) {
+                n += 1;
+            }
+        }
+        n
+    };
+    let mut referenced = false;
+    for (other, code, non_test) in crate_files {
+        if other == path || refs(code) == 0 {
+            continue;
+        }
+        referenced = true;
+        if refs(non_test) > 0 {
+            return false;
+        }
+    }
+    referenced
 }
 
 fn k6_collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -971,9 +1165,18 @@ fn wallet_key_material_is_reachable_only_through_the_key_module() {
     let kit_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let app_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/src");
     assert!(app_src.is_dir(), "the app sources must be scanned too: {}", app_src.display());
-    let mut files = Vec::new();
-    k6_collect_rs(&kit_src, &mut files);
-    k6_collect_rs(&app_src, &mut files);
+    let mut kit_files = Vec::new();
+    k6_collect_rs(&kit_src, &mut kit_files);
+    let mut app_files = Vec::new();
+    k6_collect_rs(&app_src, &mut app_files);
+    let read_all = |v: &[std::path::PathBuf]| -> Vec<K6Source> {
+        v.iter()
+            .map(|p| k6_prep(p.clone(), &std::fs::read_to_string(p).expect("read source")))
+            .collect()
+    };
+    let kit_sources = read_all(&kit_files);
+    let app_sources = read_all(&app_files);
+    let files: Vec<std::path::PathBuf> = kit_files.iter().chain(app_files.iter()).cloned().collect();
 
     let mut needles: Vec<String> = vec![
         "read_".to_string() + "entropy",
@@ -984,6 +1187,11 @@ fn wallet_key_material_is_reachable_only_through_the_key_module() {
         "WALLET_ENTROPY".to_string() + "_SLOT",
         "wallet_slot".to_string() + "_get",
         "WalletKey".to_string() + "Access",
+        // Forging a value (K6): the compiler refuses these in kit (`deny(unsafe_code)`), and the
+        // reviewed `allow`s are pinned here so a new one is seen.
+        "allow(".to_string() + "unsafe_code)",
+        "trans".to_string() + "mute",
+        "mem::".to_string() + "zeroed",
     ];
     needles.extend(k6_signing_primitives());
 
@@ -1018,6 +1226,13 @@ fn wallet_key_material_is_reachable_only_through_the_key_module() {
         ("src-tauri/src/fleet_pairing.rs", ".sign(", 2),
         // recovery_kit.rs: renders the node storage keys as words; not the wallet entropy.
         ("src-tauri/src/recovery_kit.rs", "from_entropy(", 1),
+        // supervisor.rs: the two reviewed libc `kill` calls (SAFETY notes inline).
+        ("kit/src/supervisor.rs", "allow(unsafe_code)", 2),
+        // App crate libc out-params (`flock`, `proc_bsdinfo`, `timeval`), zero-initialised for
+        // FFI. The app crate cannot name `WalletKeyAccess` or `wallet_slot_get` (both
+        // `pub(crate)` in kit), so these cannot reach the wallet key.
+        ("src-tauri/src/node_holder.rs", "mem::zeroed", 1),
+        ("src-tauri/src/owned_browser.rs", "mem::zeroed", 2),
     ];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -1032,11 +1247,21 @@ fn wallet_key_material_is_reachable_only_through_the_key_module() {
             .to_string_lossy()
             .replace('\\', "/");
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if rel == "kit/src/wallet_key.rs" || name.ends_with("_tests.rs") {
+        if rel == "kit/src/wallet_key.rs" {
             continue;
         }
-        let src = std::fs::read_to_string(path).expect("read source");
-        let code = k6_strip_test_items(&src);
+        if name.ends_with("_tests.rs") {
+            let crate_sources = if rel.starts_with("kit/") { &kit_sources } else { &app_sources };
+            if k6_is_cfg_test_file(path, crate_sources) {
+                continue;
+            }
+        }
+        let code = kit_sources
+            .iter()
+            .chain(app_sources.iter())
+            .find(|(p, _, _)| p == path)
+            .map(|(_, _, non_test)| non_test.clone())
+            .expect("prepared source");
         for needle in &needles {
             let n = code.matches(needle.as_str()).count();
             if n > 0 {
@@ -1065,6 +1290,19 @@ fn wallet_key_material_is_reachable_only_through_the_key_module() {
             "allowlist entry no longer matches the source: {file} `{needle}` x{c}"
         );
     }
+    // The kit crate refuses `unsafe` by default; only the allows pinned above (and the one in the
+    // supervisor test helper) re-open it.
+    let lib = k6_strip_test_items(include_str!("lib.rs"));
+    assert!(lib.contains("#![deny(unsafe_code)]"), "kit/src/lib.rs must deny(unsafe_code)");
+    for (f, src) in [("wallet.rs", include_str!("wallet.rs")), ("wallet_key.rs", include_str!("wallet_key.rs")), ("custody.rs", include_str!("custody.rs"))] {
+        assert!(k6_strip_test_items(src).contains("#![forbid(unsafe_code)]"), "{f} must forbid(unsafe_code)");
+    }
+    let allow = "allow(".to_string() + "unsafe_code)";
+    assert_eq!(
+        k6_strip_test_items(include_str!("supervisor_tests.rs")).matches(allow.as_str()).count(),
+        1,
+        "supervisor_tests.rs: one reviewed allow (the waitid probe)"
+    );
     // The scan saw the key module's neighbours (positive control).
     assert!(files.iter().any(|p| p.ends_with("wallet.rs")) && files.len() > 50);
 }
@@ -1076,6 +1314,71 @@ fn k6_strip_test_items_keeps_code_after_a_test_item() {
     let out = k6_strip_test_items(src);
     assert!(out.contains("fn a()") && out.contains("fn b()") && out.contains("fn d()"));
     assert!(!out.contains("x_tests") && !out.contains("t()") && !out.contains("c()"));
+}
+
+/// K6 strip helper is string-aware: a brace, `//` or `#[cfg(test)]` inside a string, raw string or
+/// char literal is not structure, so code after such a test helper is still scanned, and a needle
+/// inside a literal in production code is still seen.
+#[test]
+fn k6_strip_test_items_is_string_aware() {
+    let src = concat!(
+        "#[cfg(test)]\n",
+        "fn helper() {\n",
+        "    let a = \"{\";\n",
+        "    let b = r#\"{{ \"} \"#;\n",
+        "    let c = '{';\n",
+        "    let d = b\"{\\\"{\";\n",
+        "    let e = '\\u{7b}';\n",
+        "    let f: &'static str = \"/* {\";\n",
+        "}\n",
+        "fn after() { let s = \"// #[cfg(test)] {\"; keep(s); }\n",
+        "/* block { /* nested { */ } */\n",
+        "fn tail() {}\n",
+        "#[cfg(test)]\n",
+        "mod tests {\n",
+        "    fn t() { let x = '}'; }\n",
+        "}\n",
+        "fn last() {}\n",
+    );
+    let out = k6_strip_test_items(src);
+    assert!(!out.contains("helper") && !out.contains("fn t()"), "test items dropped: {out}");
+    assert!(out.contains("fn after()") && out.contains("keep(s)"), "code after kept: {out}");
+    assert!(out.contains("\"// #[cfg(test)] {\""), "a literal is kept verbatim: {out}");
+    assert!(out.contains("fn tail()") && out.contains("fn last()"), "{out}");
+    assert!(!out.contains("block") && !out.contains("nested"), "comments dropped: {out}");
+}
+
+/// K6 scan exemption: a `*_tests.rs` file is skipped only when it is compiled under `cfg(test)`.
+#[test]
+fn k6_tests_file_is_exempt_only_under_cfg_test() {
+    // In-memory sources under a path that is never read or written.
+    let d = std::path::Path::new("/k6-scan-fixture");
+    let lib = concat!(
+        "#[cfg(test)]\nmod a_tests;\n",
+        "pub mod b_tests;\n",
+        "#[cfg(test)]\nmod tests {\n    include!(\"e_tests.rs\");\n}\n",
+        "#[cfg(test)]\nfn h() { let s = \"{\"; }\n",
+        "mod tests2 {\n    include!(\"f_tests.rs\");\n}\n",
+    );
+    let srcs: Vec<K6Source> = [
+        ("lib.rs", lib),
+        ("a_tests.rs", "fn x() {}\n"),
+        ("b_tests.rs", "fn x() {}\n"),
+        ("c_tests.rs", "#![cfg(test)]\nfn x() {}\n"),
+        ("d_tests.rs", "fn x() {}\n"),
+        ("e_tests.rs", "fn x() {}\n"),
+        ("f_tests.rs", "fn x() {}\n"),
+    ]
+    .iter()
+    .map(|(n, s)| k6_prep(d.join(n), s))
+    .collect();
+    let exempt = |n: &str| k6_is_cfg_test_file(&d.join(n), &srcs);
+    assert!(exempt("a_tests.rs"), "#[cfg(test)] mod");
+    assert!(!exempt("b_tests.rs"), "a non-test `pub mod x_tests;` is scanned");
+    assert!(exempt("c_tests.rs"), "#![cfg(test)] at the top");
+    assert!(!exempt("d_tests.rs"), "an orphan is scanned");
+    assert!(exempt("e_tests.rs"), "include! inside a #[cfg(test)] mod");
+    assert!(!exempt("f_tests.rs"), "include! after a test helper holding a brace literal");
 }
 
 /// K6: plain `custody_get` refuses the wallet slot even on an unlocked vault holding a wallet, so

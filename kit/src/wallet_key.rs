@@ -15,6 +15,16 @@
 //!
 //! `wallet_tests::wallet_key_material_is_reachable_only_through_the_key_module` scans kit/ and
 //! src-tauri/ as a lexical backstop for the same rule.
+//!
+//! `unsafe` is the one way around a private field, so it is shut out at two levels: the kit crate
+//! root is `#![deny(unsafe_code)]` (each reviewed libc block carries its own `allow` and a SAFETY
+//! note, and the scan pins that set), and this module is `#![forbid(unsafe_code)]`. The capability
+//! is also not zero-sized and holds a `NonZeroU64`, so `transmute(())` does not compile and
+//! `mem::zeroed()` would be immediate undefined behaviour. What remains is the general limit of
+//! Rust privacy: reviewed `unsafe` can forge any value. The guarantee is "no safe code and no
+//! unreviewed `unsafe` can build a `WalletKeyAccess`".
+
+#![forbid(unsafe_code)]
 
 use citrate_wallet_core::{secp256k1_from_mnemonic, UnifiedKey};
 use zeroize::Zeroizing;
@@ -24,8 +34,29 @@ use crate::custody::{CustodyError, CustodyVault};
 use crate::rpc::SignatureScope;
 
 /// The capability `CustodyVault::wallet_slot_get` requires. The private field means only this
-/// module can construct one; it is neither `Clone` nor `Copy`, and it is consumed by each read.
-pub(crate) struct WalletKeyAccess(());
+/// module can construct one; it is neither `Clone`, `Copy` nor `Default`, and it is consumed by
+/// each read. It is 8 bytes with a non-zero niche (see [`AccessSeal`]), so it cannot be
+/// transmuted from `()` and an all-zero value is invalid.
+pub(crate) struct WalletKeyAccess(AccessSeal);
+
+/// The private field of [`WalletKeyAccess`]. The type is private to this module, so no other code
+/// can name it, construct it, or match on it.
+struct AccessSeal(core::num::NonZeroU64);
+
+/// Arbitrary non-zero tag held by every [`AccessSeal`]. Its value carries no meaning; it exists so
+/// the capability has a size and a validity invariant.
+const ACCESS_SEAL_TAG: core::num::NonZeroU64 =
+    match core::num::NonZeroU64::new(0x4b36_5741_4c4c_4554) {
+        Some(n) => n,
+        None => panic!("the seal tag is non-zero"),
+    };
+
+impl WalletKeyAccess {
+    /// Mint a capability. Private to this module.
+    fn grant() -> Self {
+        WalletKeyAccess(AccessSeal(ACCESS_SEAL_TAG))
+    }
+}
 
 /// HKDF salt (domain) for [`scoped_secret`]. Fixed forever: changing it re-derives every scoped
 /// secret (a different comms identity), so it is a hard versioning boundary.
@@ -86,7 +117,7 @@ pub(super) fn scoped_secret(vault: &CustodyVault, info: &[u8]) -> Result<Zeroizi
 /// lock gate), and any other custody error as `Custody`. The bytes read are dropped (zeroized)
 /// here.
 pub(super) fn refuse_if_present(vault: &CustodyVault) -> Result<()> {
-    match vault.wallet_slot_get(WalletKeyAccess(()), WALLET_ENTROPY_SLOT) {
+    match vault.wallet_slot_get(WalletKeyAccess::grant(), WALLET_ENTROPY_SLOT) {
         Ok(_existing) => Err(WalletError::AlreadyExists),
         Err(CustodyError::Denied) => Ok(()),
         Err(e) => Err(e.into()),
@@ -125,7 +156,7 @@ fn derive_key_from_entropy(entropy: &[u8]) -> Result<UnifiedKey> {
 /// `Denied` read, a LOCKED vault → `Custody` ("unlock" hint) and an UNLOCKED vault → `NotFound`
 /// ("create a wallet" hint). Fail-closed either way: no key is read, no signature produced.
 fn read_entropy(vault: &CustodyVault) -> Result<Zeroizing<Vec<u8>>> {
-    match vault.wallet_slot_get(WalletKeyAccess(()), WALLET_ENTROPY_SLOT) {
+    match vault.wallet_slot_get(WalletKeyAccess::grant(), WALLET_ENTROPY_SLOT) {
         Ok(e) => Ok(e),
         Err(CustodyError::Denied) => {
             if vault.is_unlocked() {

@@ -28,6 +28,9 @@
 //! - **Boundary:** `custody_get` is a plain in-process `pub fn` for A3/B1, NOT a
 //!   `#[tauri::command]`. No invoke command ever returns secret bytes (ADV-8).
 
+// K6: the vault (home of `wallet_slot_get`) never needs `unsafe`; forbid it outright.
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;

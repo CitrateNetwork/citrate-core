@@ -60,6 +60,8 @@
 // carried `#[allow(dead_code)]` for their unwired A3/B1 consumers. Scoped to this
 // module so the non-test lib build does not flag the deliberately-in-process API.
 #![allow(dead_code)]
+// K6: the wallet and its key module never need `unsafe`; forbid it so no `allow` can re-open it.
+#![forbid(unsafe_code)]
 
 use citrate_wallet_core::{
     secp256k1_from_mnemonic, sign_eip155_legacy_tx, sign_recoverable, LegacyTxFields, SignedTx,

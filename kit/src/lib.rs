@@ -22,6 +22,12 @@
 //! or citrate-quorum except through `ceremony::approve`. A source-scan test in
 //! each consuming crate asserts no sibling signing site exists.
 
+// K6: no `unsafe` in this crate except the reviewed blocks that carry their own
+// `#[allow(unsafe_code)]` and a SAFETY note (today: the two libc calls in `supervisor`, plus one
+// in its tests). Privacy-based capabilities such as `wallet::WalletKeyAccess` rely on it: only
+// `unsafe` can forge a value with a private field. `wallet_tests` pins the set of allows.
+#![deny(unsafe_code)]
+
 pub mod abi_book;
 pub mod blocking;
 pub mod ceremony;
