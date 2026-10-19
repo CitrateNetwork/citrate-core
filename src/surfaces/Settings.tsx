@@ -169,7 +169,13 @@ const SECS: [string, string][] = [
 
 const btnCls = (active: boolean) => "btn btn-sm " + (active ? "btn-secondary" : "btn-ghost");
 
-export function Settings({ store, s }: { store: Store; s: AppState }) {
+/**
+ * Five-place navigation (0.5.2): Settings is composed into three homes. Settings itself shows the
+ * account-level sections; Hermes › Controls and Node › Advanced show the sections that moved there.
+ * `sections` limits the sub-nav to those ids (all sections when omitted); `heading` titles it.
+ */
+export function Settings({ store, s, sections, heading = "Settings" }: { store: Store; s: AppState; sections?: readonly string[]; heading?: string }) {
+  const secs = sections ? SECS.filter(([sid]) => sections.includes(sid)) : SECS;
   // Account & RBAC render the REAL signed-in identity (live /userinfo claims)
   // when signed in, falling back to the sim persona only in web-dev.
   const id = store.identity();
@@ -492,8 +498,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     <div style={{ padding: "20px 26px 24px", display: "grid", gridTemplateColumns: "196px minmax(0,1fr)", gap: 22, maxWidth: 1000 }}>
       {/* left sub-nav */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, marginBottom: 12 }}>Settings</span>
-        {SECS.map(([id, label]) => {
+        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, marginBottom: 12 }}>{heading}</span>
+        {secs.map(([id, label]) => {
           const active = s.sSec === id;
           return (
             <button
