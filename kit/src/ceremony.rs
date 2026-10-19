@@ -687,6 +687,27 @@ impl SignatureCeremony {
         raw_ack: bool,
         chain_id: u64,
     ) -> Result<String> {
+        let (key, prepared, tx_hash) = self.sign_consumed(vault, rpc, id, raw_ack, chain_id)?;
+        #[cfg(test)]
+        self.prepared_parks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.lock_prepared().insert(key, prepared);
+        Ok(tx_hash)
+    }
+
+    /// Consume the approval for `id` and sign its transaction, returning the signed tx to the
+    /// CALLER only (never parked in the shared map), with its key and hash. Shared by
+    /// [`Self::approve_and_sign`] (which parks it for a later send) and
+    /// [`Self::approve_and_broadcast`] (which sends it directly, so no concurrent reject or
+    /// send on the same id can take it in between).
+    fn sign_consumed<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        chain_id: u64,
+    ) -> Result<(u64, Prepared, String)> {
         let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
 
         // Consume-first (B1.2-ADV-10): remove under the lock before any signing.
@@ -755,10 +776,7 @@ impl SignatureCeremony {
         // gated signer reads the sealed entropy via the A2 session gate).
         let signed = wallet::sign_transaction(vault, &fields, chain_id)?;
         let tx_hash = format!("0x{}", hex::encode(signed.hash));
-        #[cfg(test)]
-        self.prepared_parks
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.lock_prepared().insert(
+        Ok((
             key,
             Prepared {
                 raw: signed.raw,
@@ -766,8 +784,8 @@ impl SignatureCeremony {
                 to: parsed.to,
                 origin: pending.intent.origin.clone(),
             },
-        );
-        Ok(tx_hash)
+            tx_hash,
+        ))
     }
 
     /// **Join-8 — send a prepared transaction.** Takes the signed tx that
@@ -784,7 +802,15 @@ impl SignatureCeremony {
             .lock_prepared()
             .remove(&key)
             .ok_or(CeremonyError::UnknownCeremony)?;
+        Self::send_signed(rpc, prepared, cfg)
+    }
 
+    /// Send a signed tx the caller owns and poll its receipt. Signs nothing.
+    fn send_signed<T: crate::rpc::RpcTransport>(
+        rpc: &crate::rpc::RpcClient<T>,
+        prepared: Prepared,
+        cfg: BroadcastConfig,
+    ) -> Result<BroadcastResult> {
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
         let tx_hash = rpc
@@ -816,11 +842,9 @@ impl SignatureCeremony {
         })
     }
 
-    /// **Step 2 (tx) — approve, sign and broadcast in one call.** [`approve_and_sign`]
-    /// then [`send_prepared`]: identical checks, one approval, one signature.
-    ///
-    /// [`approve_and_sign`]: Self::approve_and_sign
-    /// [`send_prepared`]: Self::send_prepared
+    /// **Step 2 (tx) — approve, sign and broadcast in one call.** The same checks as
+    /// [`Self::approve_and_sign`] then the same send as [`Self::send_prepared`], with the
+    /// signed tx kept private between them. One approval, one signature, one send.
     pub fn approve_and_broadcast<T: crate::rpc::RpcTransport>(
         &self,
         vault: &CustodyVault,
@@ -829,8 +853,10 @@ impl SignatureCeremony {
         raw_ack: bool,
         cfg: BroadcastConfig,
     ) -> Result<BroadcastResult> {
-        self.approve_and_sign(vault, rpc, id, raw_ack, cfg.chain_id)?;
-        self.send_prepared(rpc, id, cfg)
+        // Sign and send with the tx held locally the whole time: it never enters the shared
+        // `prepared` map, so a concurrent reject / send_prepared on this id cannot take it.
+        let (_key, prepared, _hash) = self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id)?;
+        Self::send_signed(rpc, prepared, cfg)
     }
 
     /// **Step 2' — reject.** Consume the ceremony with no signature. Unknown id

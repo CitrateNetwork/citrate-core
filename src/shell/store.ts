@@ -1555,9 +1555,9 @@ export class Store {
   }
 
   /**
-   * A recorded activation tx may be forgotten (offering activation again) only when the chain
-   * still has no receipt for it after FORGET_AFTER_MS, e.g. the app quit after signing and before
-   * the send. If it was in fact sent, a second activation reverts on chain (the bond is already
+   * A recorded activation tx may be forgotten (offering activation again) only when it is still
+   * not seen on chain (no receipt) after FORGET_AFTER_MS, e.g. the app quit after signing and
+   * before the send. Not seen is not proof it was never sent: it may still be included. If it was in fact sent, a second activation reverts on chain (the bond is already
    * activated), so the worst case is gas, never a second stake.
    */
   canForgetActivationTx(now: number): boolean {
@@ -5108,6 +5108,13 @@ export class Store {
         const prepared = await bridge.signing.prepare(r.view.id, ack);
         r.onSigned(prepared.txHash);
         result = await bridge.signing.sendPrepared(r.view.id);
+        // The node must report the very tx that was signed and saved. A different hash is a
+        // fault: report it (the catch below) rather than resolve on a hash nobody recorded.
+        if (result.txHash.toLowerCase() !== prepared.txHash.toLowerCase()) {
+          throw new Error(
+            `the node returned a different transaction hash (${result.txHash.slice(0, 10)}…) than the one signed (${prepared.txHash.slice(0, 10)}…)`,
+          );
+        }
       } else {
         result = await bridge.signing.broadcast(r.view.id, ack);
       }

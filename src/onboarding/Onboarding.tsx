@@ -1246,7 +1246,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
                   Forget this transaction
                 </button>
                 <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
-                  The network has no record of it after 10 minutes. If it was sent after all, a second activation reverts and costs only gas.
+                  It is not seen on the network yet after 10 minutes; it may still be included. If it was sent, a second activation reverts and costs only gas.
                 </span>
               </div>
             )}
