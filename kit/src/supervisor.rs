@@ -730,9 +730,11 @@ struct Cell {
     /// (bounded at [`MAX_SCOPE_PUBLICATIONS`]).
     resolved_publications: Vec<String>,
     next_ticket: u64,
-    /// Set by shutdown: whether a log reader was still held when the monitor exited. `None`
-    /// until then.
-    closed_readers_held: Option<bool>,
+    /// Set once shutdown has finished: no monitor is left to reconcile a quarantine.
+    closed: bool,
+    /// Log readers still running when the monitor exited. Checked (and joined) by whoever next
+    /// touches the cell after shutdown: a ticket release or a snapshot read.
+    closed_readers: Vec<Reader>,
 }
 
 impl Cell {
@@ -753,6 +755,22 @@ impl Cell {
             open_tickets: u32::try_from(self.publications.len())
                 .unwrap_or(u32::MAX)
                 .saturating_add(u32::from(self.spawn_ticket)),
+        }
+    }
+
+    /// After shutdown, reconcile a quarantine without a monitor: join the readers that have
+    /// ended since, and once no reader and no ticket is left, the service is Stopped.
+    fn reconcile_after_close(&mut self) {
+        if !self.closed || self.quarantine.is_none() {
+            return;
+        }
+        if !self.closed_readers.is_empty() {
+            let _still = drain_readers(&mut self.closed_readers, Duration::ZERO);
+        }
+        if self.closed_readers.is_empty() && self.publications.is_empty() && !self.spawn_ticket {
+            self.quarantine = None;
+            self.phase = Phase::Stopped;
+            self.touch();
         }
     }
 
@@ -1069,7 +1087,8 @@ impl Supervisor {
                 publications: Vec::new(),
                 resolved_publications: Vec::new(),
                 next_ticket: 1,
-                closed_readers_held: None,
+                closed: false,
+                closed_readers: Vec::new(),
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1208,9 +1227,11 @@ impl Supervisor {
     /// The lifecycle cell (D-12): phase, readiness, intent and identity counters. A bounded
     /// read: `None` means the cell was contended and nothing is claimed.
     pub fn lifecycle(&self) -> Option<LifecycleSnapshot> {
-        self.shared
-            .lock_bounded()
-            .map(|c| c.snapshot(self.shared.epoch))
+        self.shared.lock_bounded().map(|mut c| {
+            // After shutdown, a read is the only thing left that can observe late completion.
+            c.reconcile_after_close();
+            c.snapshot(self.shared.epoch)
+        })
     }
 
     /// A snapshot of the recent captured stdout/stderr lines (oldest→newest, bounded at
@@ -1547,15 +1568,9 @@ fn release_publication(shared: &Shared, id: u64) {
                 c.resolved_publications.push(format!("publication:{name}"));
             }
         }
-        // After shutdown no monitor reconciles a quarantine: the last ticket's release does,
-        // when nothing else (a held reader) was left at shutdown.
-        if c.closed_readers_held == Some(false)
-            && c.publications.is_empty()
-            && c.quarantine.is_some()
-        {
-            c.quarantine = None;
-            c.phase = Phase::Stopped;
-        }
+        // After shutdown no monitor reconciles a quarantine: the release does, re-checking the
+        // readers itself.
+        c.reconcile_after_close();
         c.wake = true;
         c.touch();
     }
@@ -2278,10 +2293,13 @@ fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornD
     true
 }
 
-/// Shutdown: the child is already torn down. Settle what is pending without waiting (teardown
-/// is bounded by the join timeout), leave the legacy view Off, and let the monitor exit.
+/// Shutdown: the child is already torn down. Give its readers the same bounded window a Stop
+/// does, settle what is pending, leave the legacy view Off, and let the monitor exit. Readers
+/// still running are handed to the cell, so a later ticket release or snapshot read can
+/// reconcile the quarantine without a monitor.
 fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: bool) {
-    let held_readers = drain_readers(readers, Duration::ZERO);
+    // The same bounded window a Stop gives its readers to reach end of file.
+    let held_readers = drain_readers(readers, READER_DRAIN);
     let mut c = shared.lock();
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
@@ -2292,7 +2310,8 @@ fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: b
             .iter()
             .map(|(_, _, n)| format!("publication:{n}")),
     );
-    c.closed_readers_held = Some(!held_readers.is_empty());
+    c.closed = true;
+    c.closed_readers.append(readers);
     if let Some((token, kind)) = c.active {
         let receipt = match kind {
             IntentKind::Start => Receipt::Superseded,
