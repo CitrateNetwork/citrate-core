@@ -67,4 +67,19 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     expect(store.state.pendingWithdrawalsError).toBeNull();
     expect(store.state.pendingWithdrawals.map((w) => w.id)).toEqual(["7"]);
   });
+
+  it("a node still indexing shows '— · pending withdrawals: still indexing chain history' and reads again", async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .spyOn(bridge.wallet, "pendingWithdrawals")
+      .mockRejectedValueOnce("still indexing chain history (blocks 427-1426): log index warming, retry")
+      .mockResolvedValueOnce([]);
+    await store.refreshPendingWithdrawals();
+    const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: store.state.pendingWithdrawalsError })} />);
+    expect(html).toContain("— · pending withdrawals: still indexing chain history");
+    expect(html).not.toContain("No pending withdrawals");
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(store.state.pendingWithdrawalsError).toBeNull();
+  });
 });

@@ -500,6 +500,8 @@ struct ChainStub {
     clamp_to: Option<u64>,
     max_range: Option<u64>,
     fail_from: RefCell<Option<u64>>,
+    /// How many eth_getLogs calls answer -32002 ("retry": the node's cache is filling) first.
+    retry_first: RefCell<u32>,
     requests: RefCell<Vec<JsonValue>>,
 }
 impl ChainStub {
@@ -510,6 +512,7 @@ impl ChainStub {
             clamp_to: None,
             max_range: None,
             fail_from: RefCell::new(None),
+            retry_first: RefCell::new(0),
             requests: RefCell::new(Vec::new()),
         }
     }
@@ -540,6 +543,11 @@ impl RpcTransport for ChainStub {
                             "code": -32005, "message": "block range too large",
                             "data": { "maxBlockRange": max } } }));
                     }
+                }
+                if *self.retry_first.borrow() > 0 {
+                    *self.retry_first.borrow_mut() -= 1;
+                    return Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                        "code": -32002, "message": "log index warming, retry" } }));
                 }
                 if let Some(at) = *self.fail_from.borrow() {
                     if from <= at && at <= to {
@@ -721,6 +729,61 @@ fn an_unfinished_scan_is_reported_as_still_reading() {
         }
     }
     assert_eq!(done.expect("finishes").len(), 1);
+}
+
+// citrate-chain#334 review: a deep historical range can answer -32002 ("retry") while the node's
+// cache fills. The same window is retried after a bounded back-off, and the scan goes on.
+#[test]
+fn a_retry_answer_retries_the_same_window_and_then_reads_it() {
+    let rpc = RpcClient::with_transport(ChainStub::new(2_000, vec![(6, 800, false)]));
+    *rpc.transport().retry_first.borrow_mut() = 2;
+    let pending = read_pending_withdrawals(&rpc, STAKER_ADDR).expect("pending after retries");
+    assert_eq!(pending.len(), 1);
+    let ranges = rpc.transport().log_ranges();
+    // Three calls for the first window (two -32002, then data), all the SAME window (not halved).
+    assert_eq!(ranges[0], ranges[1]);
+    assert_eq!(ranges[1], ranges[2]);
+    assert_eq!(ranges[0], (LIQUID_STAKING_POOL_DEPLOY_BLOCK, LIQUID_STAKING_POOL_DEPLOY_BLOCK + 999));
+}
+
+#[test]
+fn the_retry_back_off_is_bounded() {
+    let waits: Vec<u64> = (0..LOGS_RETRY_ATTEMPTS).map(|a| logs_retry_backoff(a).as_millis() as u64).collect();
+    assert_eq!(waits.first(), Some(&250));
+    assert!(waits.windows(2).all(|w| w[1] >= w[0]));
+    assert!(waits.iter().all(|w| *w <= 2_000), "{waits:?}");
+}
+
+// After the bounded retries the read is "still indexing chain history", never an empty list, and
+// the blocks read before stay in the scan.
+#[test]
+fn a_window_that_keeps_asking_for_a_retry_is_still_indexing() {
+    let rpc = RpcClient::with_transport(ChainStub::new(1_200, vec![]));
+    *rpc.transport().retry_first.borrow_mut() = 1_000;
+    let mut scan = WithdrawalScan::default();
+    let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect_err("indexing");
+    assert!(matches!(err, StakingError::Indexing(_)), "{err:?}");
+    assert!(err.to_string().contains("still indexing chain history"), "{err}");
+    assert_eq!(rpc.transport().log_ranges().len() as u32, LOGS_RETRY_ATTEMPTS);
+}
+
+// The scan progress is small (next block + ids) and survives a relaunch: a saved scan resumes at
+// its next block instead of rescanning from block 427.
+#[test]
+fn saved_scan_progress_survives_a_relaunch() {
+    let dir = std::env::temp_dir().join(format!("c1w-scan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("withdrawal-scans.json");
+    let scan = WithdrawalScan {
+        next_block: 40_001,
+        ids: [9u128].into_iter().collect(),
+    };
+    save_scan(&file, "k", &scan).expect("save");
+    assert_eq!(load_scan(&file, "k"), scan);
+    assert_eq!(load_scan(&file, "other"), WithdrawalScan::default());
+    std::fs::write(&file, "not json").expect("write");
+    assert_eq!(load_scan(&file, "k"), WithdrawalScan::default(), "a corrupt file starts over");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

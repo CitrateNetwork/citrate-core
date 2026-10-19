@@ -292,13 +292,16 @@ impl<T: RpcTransport> RpcClient<T> {
         let body = self.build_request("eth_getLogs", json!([filter]));
         let resp = self.transport.call(body).map_err(GetLogsError::Rpc)?;
         if let Some(err) = resp.get("error") {
-            if err.get("code").and_then(Value::as_i64) == Some(RPC_LIMIT_EXCEEDED) {
-                let msg = err
-                    .get("message")
+            let msg = || {
+                err.get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("block range too large")
-                    .to_string();
-                return Err(GetLogsError::RangeTooLarge(msg));
+                    .unwrap_or("node error")
+                    .to_string()
+            };
+            match err.get("code").and_then(Value::as_i64) {
+                Some(RPC_LIMIT_EXCEEDED) => return Err(GetLogsError::RangeTooLarge(msg())),
+                Some(RPC_RETRY) => return Err(GetLogsError::Retry(msg())),
+                _ => {}
             }
         }
         let result = Self::result_of(resp).map_err(GetLogsError::Rpc)?;
@@ -459,11 +462,17 @@ fn parse_logs(result: &Value) -> Result<Vec<LogEntry>, RpcError> {
 /// `eth_getLogs` range wider than 1000 blocks.
 pub const RPC_LIMIT_EXCEEDED: i64 = -32005;
 
+/// The JSON-RPC code citrate-chain#334 returns while a deep historical `eth_getLogs` range is not
+/// served yet (the node's cache fills over several requests): retry the same range later.
+pub const RPC_RETRY: i64 = -32002;
+
 /// An `eth_getLogs` failure, telling a too-wide range apart from every other error (C1-W).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GetLogsError {
     /// The node refused the block range as too wide ([`RPC_LIMIT_EXCEEDED`]).
     RangeTooLarge(String),
+    /// The node asked for the same range again later ([`RPC_RETRY`]).
+    Retry(String),
     /// Any other failure.
     Rpc(RpcError),
 }
@@ -472,6 +481,7 @@ impl std::fmt::Display for GetLogsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GetLogsError::RangeTooLarge(m) => write!(f, "rpc block range too large: {m}"),
+            GetLogsError::Retry(m) => write!(f, "rpc asked to retry: {m}"),
             GetLogsError::Rpc(e) => write!(f, "{e}"),
         }
     }

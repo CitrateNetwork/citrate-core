@@ -183,6 +183,8 @@ pub enum StakingError {
     /// C1-W: the paged withdrawal scan ran out of its time budget before reaching the head. The
     /// blocks read so far are kept, so the next read continues; until then there is no list.
     Incomplete { scanned_to: u64, head: u64 },
+    /// C1-W: the node kept answering -32002 ("retry") for one window after the bounded back-off.
+    Indexing(String),
 }
 
 impl std::fmt::Display for StakingError {
@@ -191,6 +193,7 @@ impl std::fmt::Display for StakingError {
             StakingError::BadAddress(m) => write!(f, "staking: bad address: {m}"),
             StakingError::Rpc(m) => write!(f, "staking: rpc error: {m}"),
             StakingError::Decode(m) => write!(f, "staking: balance decode error: {m}"),
+            StakingError::Indexing(m) => write!(f, "still indexing chain history ({m})"),
             StakingError::Incomplete { scanned_to, head } => write!(
                 f,
                 "still reading chain history: blocks {LIQUID_STAKING_POOL_DEPLOY_BLOCK}-{scanned_to} of {head} scanned"
@@ -555,9 +558,42 @@ pub const LOG_WINDOW_BLOCKS: u64 = 1000;
 /// node had not yet indexed at the previous read is still found. Duplicates are dropped by id.
 pub const RESCAN_TAIL_BLOCKS: u64 = 64;
 
+/// C1-W — how many times one window is asked for when the node answers -32002 ("retry").
+pub const LOGS_RETRY_ATTEMPTS: u32 = 5;
+
+/// C1-W — the wait before retry `attempt` (0-based): 250 ms doubling, capped at 2 s.
+pub fn logs_retry_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis((250u64 << attempt.min(3)).min(2_000))
+}
+
+/// C1-W — load the saved scan for `key` from `file` (a missing or unreadable file starts over).
+pub fn load_scan(file: &std::path::Path, key: &str) -> WithdrawalScan {
+    std::fs::read(file)
+        .ok()
+        .and_then(|b| {
+            serde_json::from_slice::<std::collections::HashMap<String, WithdrawalScan>>(&b).ok()
+        })
+        .and_then(|mut m| m.remove(key))
+        .unwrap_or_default()
+}
+
+/// C1-W — save the scan for `key` into `file` (public chain facts only: a block and request ids).
+pub fn save_scan(file: &std::path::Path, key: &str, scan: &WithdrawalScan) -> std::io::Result<()> {
+    let mut all: std::collections::HashMap<String, WithdrawalScan> = std::fs::read(file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    all.insert(key.to_string(), scan.clone());
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let body = serde_json::to_vec(&all).map_err(std::io::Error::other)?;
+    std::fs::write(file, body)
+}
+
 /// C1-W — what the paged scan has read for one staker: the first block not yet scanned and every
 /// withdrawal id seen. Kept between refreshes so each one reads only the new blocks.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalScan {
     /// The first block not yet scanned (0 = nothing scanned yet).
     pub next_block: u64,
@@ -593,6 +629,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         LIQUID_STAKING_POOL_DEPLOY_BLOCK
     };
     let mut window = LOG_WINDOW_BLOCKS;
+    let mut retries = 0u32;
     while from <= current_block {
         if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             return Err(StakingError::Incomplete {
@@ -623,6 +660,16 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
                 }
                 scan.next_block = scan.next_block.max(to + 1);
                 from = to + 1;
+                retries = 0;
+            }
+            // citrate-chain#334: -32002 = the node is still filling its cache for a deep range.
+            // Retry the SAME window after a bounded back-off; past the last attempt, "still indexing".
+            Err(crate::rpc::GetLogsError::Retry(m)) => {
+                retries += 1;
+                if retries >= LOGS_RETRY_ATTEMPTS {
+                    return Err(StakingError::Indexing(format!("blocks {from}-{to}: {m}")));
+                }
+                std::thread::sleep(logs_retry_backoff(retries - 1));
             }
             Err(crate::rpc::GetLogsError::RangeTooLarge(m)) => {
                 if window == 1 {
@@ -846,20 +893,31 @@ pub fn wallet_claim_withdrawal_sync(
 /// only new blocks; the first scan is spread over refreshes by [`SCAN_BUDGET`].
 #[tauri::command]
 pub async fn wallet_pending_withdrawals(
+    app: tauri::AppHandle,
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<Vec<PendingWithdrawal>, String> {
+    use tauri::Manager as _;
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    // Kept on disk too, so a relaunch resumes instead of rescanning from the deployment block.
+    let file = app
+        .path()
+        .app_local_data_dir()
+        .ok()
+        .map(|d| d.join("withdrawal-scans.json"));
     crate::blocking::off_main(move || {
         let key = format!(
-            "{}:{}",
+            "{}:{}:{}",
+            crate::addresses::genesis_hash(),
             liquid_staking_pool(),
             wallet.address.to_ascii_lowercase()
         );
-        let mut scan = scans()
+        let cached = scans()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
-            .cloned()
+            .cloned();
+        let mut scan = cached
+            .or_else(|| file.as_deref().map(|f| load_scan(f, &key)))
             .unwrap_or_default();
         let rpc = crate::rpc::RpcClient::citrate();
         let deadline = std::time::Instant::now() + SCAN_BUDGET;
@@ -868,7 +926,11 @@ pub async fn wallet_pending_withdrawals(
         scans()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(key, scan);
+            .insert(key.clone(), scan.clone());
+        if let Some(f) = file.as_deref() {
+            // Best effort: a failed save only means the next launch rescans.
+            let _ = save_scan(f, &key, &scan);
+        }
         out.map_err(|e| e.to_string())
     })
     .await

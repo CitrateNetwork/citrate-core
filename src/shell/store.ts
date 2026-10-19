@@ -132,6 +132,8 @@ type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
  */
 /** C1-W — how soon an unfinished pending-withdrawal scan is read again. */
 export const PENDING_SCAN_RETRY_MS = 2_000;
+/** C1-W — how soon a read the node answered "still indexing" (-32002) is tried again. */
+export const PENDING_INDEXING_RETRY_MS = 10_000;
 
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
@@ -4534,6 +4536,9 @@ export class Store {
       this.setState({ pendingWithdrawalsError: msg });
       if (msg.includes("still reading chain history")) {
         setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_SCAN_RETRY_MS);
+      } else if (msg.includes("still indexing chain history")) {
+        // The node asked for a retry (-32002) past the bounded back-off: try again later.
+        setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_INDEXING_RETRY_MS);
       }
     }
   }

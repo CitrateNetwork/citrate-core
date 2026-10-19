@@ -315,3 +315,14 @@ fn get_logs_range_tells_a_too_wide_range_from_other_errors() {
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].block_number, 16);
 }
+
+// C1-W (#334 review) — -32002 means "retry this range later": a paging caller retries it.
+#[test]
+fn get_logs_range_reports_a_retry_answer() {
+    let retry = json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32002, "message": "retry" } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![retry]));
+    assert!(matches!(
+        rpc.get_logs_range(json!({ "fromBlock": "0x1ab", "toBlock": "0x592" })),
+        Err(GetLogsError::Retry(m)) if m == "retry"
+    ));
+}
