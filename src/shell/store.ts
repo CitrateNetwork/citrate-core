@@ -130,6 +130,9 @@ type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
  * and NEVER expired. Disambiguate by magnitude: a value already in ms range
  * (>= 1e12, i.e. any time after 2001) is used as-is; a smaller value is seconds.
  */
+/** C1-W — how soon an unfinished pending-withdrawal scan is read again. */
+export const PENDING_SCAN_RETRY_MS = 2_000;
+
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
   let ms: number;
@@ -4522,9 +4525,16 @@ export class Store {
   async refreshPendingWithdrawals(): Promise<void> {
     try {
       const list = await bridge.wallet.pendingWithdrawals();
-      this.setState({ pendingWithdrawals: list });
-    } catch {
-      /* honest no-op: keep the last real list, never a fabricated one */
+      this.setState({ pendingWithdrawals: list, pendingWithdrawalsError: null });
+    } catch (err) {
+      // C1-W: a failed eth_getLogs window (or an unfinished first scan) is shown as "—" plus the
+      // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read
+      // resumes; an unfinished scan is read again shortly until it reaches the head.
+      const msg = String((err as Error)?.message ?? err);
+      this.setState({ pendingWithdrawalsError: msg });
+      if (msg.includes("still reading chain history")) {
+        setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_SCAN_RETRY_MS);
+      }
     }
   }
 

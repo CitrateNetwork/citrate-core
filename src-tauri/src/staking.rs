@@ -180,6 +180,9 @@ pub enum StakingError {
     /// SALT amounts fit in u128, so a larger value means the return is not a
     /// balance and we refuse to truncate).
     Decode(String),
+    /// C1-W: the paged withdrawal scan ran out of its time budget before reaching the head. The
+    /// blocks read so far are kept, so the next read continues; until then there is no list.
+    Incomplete { scanned_to: u64, head: u64 },
 }
 
 impl std::fmt::Display for StakingError {
@@ -188,6 +191,10 @@ impl std::fmt::Display for StakingError {
             StakingError::BadAddress(m) => write!(f, "staking: bad address: {m}"),
             StakingError::Rpc(m) => write!(f, "staking: rpc error: {m}"),
             StakingError::Decode(m) => write!(f, "staking: balance decode error: {m}"),
+            StakingError::Incomplete { scanned_to, head } => write!(
+                f,
+                "still reading chain history: blocks {LIQUID_STAKING_POOL_DEPLOY_BLOCK}-{scanned_to} of {head} scanned"
+            ),
         }
     }
 }
@@ -530,37 +537,112 @@ pub fn read_pending_withdrawals<T: crate::rpc::RpcTransport>(
     rpc: &crate::rpc::RpcClient<T>,
     wallet_address: &str,
 ) -> Result<Vec<PendingWithdrawal>, StakingError> {
+    read_pending_withdrawals_with(rpc, wallet_address, &mut WithdrawalScan::default(), None)
+}
+
+/// C1-W — the block the `LiquidStakingPool` was created in on 40204: block 427 in
+/// citrate-chain `contracts/addresses/40204.provenance.json` (the on-chain deployer-tx ledger of
+/// the 2026-10-05 reroll). The generated address book carries no deployment block, so it is pinned
+/// here; a reroll that moves the pool moves this too (the book's address pin fails first).
+pub const LIQUID_STAKING_POOL_DEPLOY_BLOCK: u64 = 427;
+
+/// C1-W — the widest `eth_getLogs` window, in blocks (inclusive, `toBlock - fromBlock = 999`).
+/// Matches citrate-explorer `MAX_LOG_CHUNK`. Today's node silently clamps a wider range to its first
+/// 1000 blocks; citrate-chain#334 answers -32005 instead.
+pub const LOG_WINDOW_BLOCKS: u64 = 1000;
+
+/// C1-W — blocks below the last scanned head that a refresh reads again, so a log in a block the
+/// node had not yet indexed at the previous read is still found. Duplicates are dropped by id.
+pub const RESCAN_TAIL_BLOCKS: u64 = 64;
+
+/// C1-W — what the paged scan has read for one staker: the first block not yet scanned and every
+/// withdrawal id seen. Kept between refreshes so each one reads only the new blocks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WithdrawalScan {
+    /// The first block not yet scanned (0 = nothing scanned yet).
+    pub next_block: u64,
+    /// Every `WithdrawalRequested` id seen for this staker and not yet known to be claimed.
+    pub ids: std::collections::BTreeSet<u128>,
+}
+
+/// [`read_pending_withdrawals`], continuing `scan`. `WithdrawalRequested` logs are read in windows
+/// of at most [`LOG_WINDOW_BLOCKS`] from [`LIQUID_STAKING_POOL_DEPLOY_BLOCK`] (or from the last
+/// scanned block, less [`RESCAN_TAIL_BLOCKS`]) to the head; a -32005 answer halves the window. A
+/// failed window is an error naming it (never an empty or partial list); the windows read before it
+/// stay in `scan`. With `deadline`, a scan still short of the head when it passes is
+/// [`StakingError::Incomplete`].
+pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    wallet_address: &str,
+    scan: &mut WithdrawalScan,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<PendingWithdrawal>, StakingError> {
     let addr = validate_address(wallet_address)?;
     let staker_topic = address_topic(&addr);
-    // topic2 = staker (the SECOND indexed arg → topics[2]); topic1 (id) left null.
-    let filter = serde_json::json!({
-        "address": liquid_staking_pool(),
-        "topics": [
-            WITHDRAWAL_REQUESTED_TOPIC0,
-            serde_json::Value::Null,
-            staker_topic,
-        ],
-        "fromBlock": "earliest",
-        "toBlock": "latest",
-    });
-    let logs = rpc
-        .get_logs(filter)
-        .map_err(|e| StakingError::Rpc(e.to_string()))?;
 
-    // Current head, read once, for the claimable gate.
+    // Current head, read once: the scan's end and the claimable gate.
     let current_block = rpc
         .block_number()
         .map_err(|e| StakingError::Rpc(e.to_string()))?;
 
-    let mut out = Vec::new();
-    for log in &logs {
-        // topic1 = the indexed id (uint256).
-        let id_topic = match log.topics.get(1) {
-            Some(t) => t,
-            None => continue, // malformed log — skip rather than fabricate an id
-        };
-        let id = decode_uint256_topic(id_topic)?;
+    let mut from = if scan.next_block > LIQUID_STAKING_POOL_DEPLOY_BLOCK {
+        scan.next_block
+            .saturating_sub(RESCAN_TAIL_BLOCKS)
+            .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK)
+    } else {
+        LIQUID_STAKING_POOL_DEPLOY_BLOCK
+    };
+    let mut window = LOG_WINDOW_BLOCKS;
+    while from <= current_block {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err(StakingError::Incomplete {
+                scanned_to: from.saturating_sub(1),
+                head: current_block,
+            });
+        }
+        let to = from.saturating_add(window - 1).min(current_block);
+        // topic2 = staker (the SECOND indexed arg -> topics[2]); topic1 (id) left null.
+        let filter = serde_json::json!({
+            "address": liquid_staking_pool(),
+            "topics": [
+                WITHDRAWAL_REQUESTED_TOPIC0,
+                serde_json::Value::Null,
+                staker_topic,
+            ],
+            "fromBlock": format!("0x{from:x}"),
+            "toBlock": format!("0x{to:x}"),
+        });
+        match rpc.get_logs_range(filter) {
+            Ok(logs) => {
+                for log in &logs {
+                    // topic1 = the indexed id (uint256). A log without one is skipped, never
+                    // given a made-up id.
+                    if let Some(id_topic) = log.topics.get(1) {
+                        scan.ids.insert(decode_uint256_topic(id_topic)?);
+                    }
+                }
+                scan.next_block = scan.next_block.max(to + 1);
+                from = to + 1;
+            }
+            Err(crate::rpc::GetLogsError::RangeTooLarge(m)) => {
+                if window == 1 {
+                    return Err(StakingError::Rpc(format!(
+                        "eth_getLogs blocks {from}-{to}: {m}"
+                    )));
+                }
+                window = (window / 2).max(1);
+            }
+            Err(crate::rpc::GetLogsError::Rpc(e)) => {
+                return Err(StakingError::Rpc(format!(
+                    "eth_getLogs blocks {from}-{to}: {e}"
+                )));
+            }
+        }
+    }
 
+    let mut out = Vec::new();
+    let mut claimed_ids = Vec::new();
+    for &id in &scan.ids {
         // Read the authoritative on-chain tuple (the log only carries the request-
         // time facts; `claimed` can flip after the event, so we re-read state).
         let ret = rpc
@@ -569,7 +651,8 @@ pub fn read_pending_withdrawals<T: crate::rpc::RpcTransport>(
         let (staker, salt_wei, request_block, claimed) = decode_withdrawal_tuple(&ret)?;
 
         if claimed {
-            continue; // EXCLUDE claimed
+            claimed_ids.push(id); // EXCLUDE claimed (final: never read again)
+            continue;
         }
         if !staker.eq_ignore_ascii_case(&addr) {
             continue; // defensive: not this staker (topic filter miss)
@@ -583,6 +666,9 @@ pub fn read_pending_withdrawals<T: crate::rpc::RpcTransport>(
             claimable_at_block,
             claimable: current_block >= claimable_at_block,
         });
+    }
+    for id in claimed_ids {
+        scan.ids.remove(&id);
     }
     Ok(out)
 }
@@ -753,13 +839,51 @@ pub fn wallet_claim_withdrawal_sync(
 /// `block_number`). Requires the vault UNLOCKED (to read the public address; the
 /// key is never touched). A fresh wallet honestly returns an empty list. Mirrors
 /// `wallet_balances`.
+///
+/// C1-W: reads from the public RPC (`rpc.citrate.ai`): only producer nodes store receipts and
+/// logs today, so a member's own follower node can't answer `eth_getLogs`. The scan is paged (see
+/// [`read_pending_withdrawals_with`]) and kept per staker for this app session, so a refresh reads
+/// only new blocks; the first scan is spread over refreshes by [`SCAN_BUDGET`].
 #[tauri::command]
 pub async fn wallet_pending_withdrawals(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<Vec<PendingWithdrawal>, String> {
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let rpc = crate::rpc::RpcClient::citrate();
-    read_pending_withdrawals(&rpc, &wallet.address).map_err(|e| e.to_string())
+    crate::blocking::off_main(move || {
+        let key = format!(
+            "{}:{}",
+            liquid_staking_pool(),
+            wallet.address.to_ascii_lowercase()
+        );
+        let mut scan = scans()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let rpc = crate::rpc::RpcClient::citrate();
+        let deadline = std::time::Instant::now() + SCAN_BUDGET;
+        let out = read_pending_withdrawals_with(&rpc, &wallet.address, &mut scan, Some(deadline));
+        // Keep the progress even when this read failed or ran out of budget.
+        scans()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, scan);
+        out.map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// C1-W — how long one `wallet_pending_withdrawals` call may scan before it answers "still
+/// reading" (below the webview's 30 s deadline for this command, with room for one 6 s RPC call).
+pub const SCAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The per-staker scans of this app session (pool address + staker -> progress).
+fn scans() -> &'static std::sync::Mutex<std::collections::HashMap<String, WithdrawalScan>> {
+    static SCANS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, WithdrawalScan>>,
+    > = std::sync::OnceLock::new();
+    SCANS.get_or_init(Default::default)
 }
 
 #[cfg(test)]

@@ -297,3 +297,21 @@ fn redirect_case(status: &'static str) {
     assert_eq!(hits.load(Ordering::SeqCst), 0, "{status}: the redirect was followed");
     assert!(r.is_err(), "{status}: a redirect is an error, not an answer: {r:?}");
 }
+
+// C1-W — citrate-chain#334 answers an eth_getLogs range over 1000 blocks with -32005; a paging
+// caller must be able to tell that from any other failure, to halve its window.
+#[test]
+fn get_logs_range_tells_a_too_wide_range_from_other_errors() {
+    let too_wide = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32005, "message": "block range too large", "data": { "maxBlockRange": 1000 } } });
+    let other = json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": "boom" } });
+    let fine = json!({ "jsonrpc": "2.0", "id": 1, "result": [
+        { "topics": ["0x01"], "data": "0x", "blockNumber": "0x10" } ] });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![too_wide, other, fine]));
+    let f = json!({ "fromBlock": "0x0", "toBlock": "0x7d0" });
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::RangeTooLarge(m)) if m.contains("too large")));
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "boom"));
+    let logs = rpc.get_logs_range(f).expect("logs");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].block_number, 16);
+}

@@ -195,6 +195,11 @@ impl<T: RpcTransport> RpcClient<T> {
     fn request(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let body = self.build_request(method, params);
         let resp = self.transport.call(body)?;
+        Self::result_of(resp)
+    }
+
+    /// The `result` of a JSON-RPC response, or its `error` as [`RpcError::Node`].
+    fn result_of(resp: Value) -> Result<Value, RpcError> {
         if let Some(err) = resp.get("error") {
             let msg = err
                 .get("message")
@@ -276,38 +281,28 @@ impl<T: RpcTransport> RpcClient<T> {
     /// (Rule 1 — no fabricated or partial withdrawal list).
     pub fn get_logs(&self, filter: Value) -> Result<Vec<LogEntry>, RpcError> {
         let result = self.request("eth_getLogs", json!([filter]))?;
-        let arr = result
-            .as_array()
-            .ok_or_else(|| RpcError::MissingField("eth_getLogs: result not an array".into()))?;
-        let mut logs = Vec::with_capacity(arr.len());
-        for entry in arr {
-            let topics = entry
-                .get("topics")
-                .and_then(Value::as_array)
-                .ok_or_else(|| RpcError::MissingField("log.topics".into()))?
-                .iter()
-                .map(|t| {
-                    t.as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| RpcError::MissingField("log.topics[]: not a string".into()))
-                })
-                .collect::<Result<Vec<String>, RpcError>>()?;
-            let data = entry
-                .get("data")
-                .and_then(Value::as_str)
-                .ok_or_else(|| RpcError::MissingField("log.data".into()))?
-                .to_string();
-            let block_number = entry
-                .get("blockNumber")
-                .ok_or_else(|| RpcError::MissingField("log.blockNumber".into()))
-                .and_then(|v| parse_hex_quantity(v, "log.blockNumber"))?;
-            logs.push(LogEntry {
-                topics,
-                data,
-                block_number,
-            });
+        parse_logs(&result)
+    }
+
+    /// `eth_getLogs([filter])` for a caller that pages a block range (C1-W). Like
+    /// [`RpcClient::get_logs`], except a node that refuses the range as too wide (JSON-RPC
+    /// error [`RPC_LIMIT_EXCEEDED`], citrate-chain#334) is [`GetLogsError::RangeTooLarge`], so the
+    /// caller can halve its window instead of failing.
+    pub fn get_logs_range(&self, filter: Value) -> Result<Vec<LogEntry>, GetLogsError> {
+        let body = self.build_request("eth_getLogs", json!([filter]));
+        let resp = self.transport.call(body).map_err(GetLogsError::Rpc)?;
+        if let Some(err) = resp.get("error") {
+            if err.get("code").and_then(Value::as_i64) == Some(RPC_LIMIT_EXCEEDED) {
+                let msg = err
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("block range too large")
+                    .to_string();
+                return Err(GetLogsError::RangeTooLarge(msg));
+            }
         }
-        Ok(logs)
+        let result = Self::result_of(resp).map_err(GetLogsError::Rpc)?;
+        parse_logs(&result).map_err(GetLogsError::Rpc)
     }
 
     /// `eth_blockNumber` → the node's current head height (real value from the
@@ -422,6 +417,64 @@ fn parse_hex_quantity_u128(v: &Value, field: &str) -> Result<u128, RpcError> {
         .ok_or_else(|| RpcError::MissingField(format!("{field}: missing 0x prefix")))?;
     u128::from_str_radix(stripped, 16)
         .map_err(|_| RpcError::MissingField(format!("{field}: not hex ({s})")))
+}
+
+/// Decode an `eth_getLogs` result array. A malformed entry errors rather than being dropped.
+fn parse_logs(result: &Value) -> Result<Vec<LogEntry>, RpcError> {
+    let arr = result
+        .as_array()
+        .ok_or_else(|| RpcError::MissingField("eth_getLogs: result not an array".into()))?;
+    let mut logs = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let topics = entry
+            .get("topics")
+            .and_then(Value::as_array)
+            .ok_or_else(|| RpcError::MissingField("log.topics".into()))?
+            .iter()
+            .map(|t| {
+                t.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| RpcError::MissingField("log.topics[]: not a string".into()))
+            })
+            .collect::<Result<Vec<String>, RpcError>>()?;
+        let data = entry
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::MissingField("log.data".into()))?
+            .to_string();
+        let block_number = entry
+            .get("blockNumber")
+            .ok_or_else(|| RpcError::MissingField("log.blockNumber".into()))
+            .and_then(|v| parse_hex_quantity(v, "log.blockNumber"))?;
+        logs.push(LogEntry {
+            topics,
+            data,
+            block_number,
+        });
+    }
+    Ok(logs)
+}
+
+/// The JSON-RPC error code for a request over a node limit; citrate-chain#334 returns it for an
+/// `eth_getLogs` range wider than 1000 blocks.
+pub const RPC_LIMIT_EXCEEDED: i64 = -32005;
+
+/// An `eth_getLogs` failure, telling a too-wide range apart from every other error (C1-W).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetLogsError {
+    /// The node refused the block range as too wide ([`RPC_LIMIT_EXCEEDED`]).
+    RangeTooLarge(String),
+    /// Any other failure.
+    Rpc(RpcError),
+}
+
+impl std::fmt::Display for GetLogsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GetLogsError::RangeTooLarge(m) => write!(f, "rpc block range too large: {m}"),
+            GetLogsError::Rpc(e) => write!(f, "{e}"),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -487,51 +487,116 @@ fn withdrawal_log(id: u128, block: u64) -> JsonValue {
     })
 }
 
+// ---------------------------------------------------------------------------
+// C1-W — a chain stub for the paged scan. It serves eth_blockNumber, eth_getLogs over the
+// requested range, and withdrawals(id). `clamp_to` mimics today's node, which silently cuts a range
+// to its first 1000 blocks; `max_range` mimics citrate-chain#334, which answers -32005 when
+// toBlock - fromBlock > max_range. `fail_from` makes any window touching that block fail.
+// ---------------------------------------------------------------------------
+struct ChainStub {
+    head: u64,
+    /// (id, request block, claimed)
+    withdrawals: Vec<(u128, u64, bool)>,
+    clamp_to: Option<u64>,
+    max_range: Option<u64>,
+    fail_from: RefCell<Option<u64>>,
+    requests: RefCell<Vec<JsonValue>>,
+}
+impl ChainStub {
+    fn new(head: u64, withdrawals: Vec<(u128, u64, bool)>) -> Self {
+        ChainStub {
+            head,
+            withdrawals,
+            clamp_to: None,
+            max_range: None,
+            fail_from: RefCell::new(None),
+            requests: RefCell::new(Vec::new()),
+        }
+    }
+    fn log_ranges(&self) -> Vec<(u64, u64)> {
+        self.requests
+            .borrow()
+            .iter()
+            .filter(|r| r["method"] == "eth_getLogs")
+            .map(|r| (hex_q(&r["params"][0]["fromBlock"]), hex_q(&r["params"][0]["toBlock"])))
+            .collect()
+    }
+}
+fn hex_q(v: &JsonValue) -> u64 {
+    u64::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+}
+impl RpcTransport for ChainStub {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        self.requests.borrow_mut().push(body.clone());
+        match body["method"].as_str() {
+            Some("eth_blockNumber") => Ok(ok(JsonValue::String(format!("0x{:x}", self.head)))),
+            Some("eth_getLogs") => {
+                let f = &body["params"][0];
+                let from = hex_q(&f["fromBlock"]);
+                let mut to = hex_q(&f["toBlock"]);
+                if let Some(max) = self.max_range {
+                    if to - from > max {
+                        return Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": {
+                            "code": -32005, "message": "block range too large",
+                            "data": { "maxBlockRange": max } } }));
+                    }
+                }
+                if let Some(at) = *self.fail_from.borrow() {
+                    if from <= at && at <= to {
+                        return Err(RpcError::Transport("rpc.citrate.ai timed out".into()));
+                    }
+                }
+                if let Some(c) = self.clamp_to {
+                    to = to.min(from + c);
+                }
+                let logs: Vec<JsonValue> = self
+                    .withdrawals
+                    .iter()
+                    .filter(|(_, b, _)| from <= *b && *b <= to)
+                    .map(|(id, b, _)| withdrawal_log(*id, *b))
+                    .collect();
+                Ok(ok(JsonValue::Array(logs)))
+            }
+            Some("eth_call") => {
+                let data = body["params"][0]["data"].as_str().unwrap();
+                let id = u128::from_str_radix(&data[data.len() - 32..], 16).unwrap();
+                let (_, b, claimed) = self
+                    .withdrawals
+                    .iter()
+                    .find(|(i, _, _)| *i == id)
+                    .copied()
+                    .unwrap();
+                Ok(ok(JsonValue::String(format!(
+                    "0x{}",
+                    hex::encode(withdrawal_tuple_hex(STAKER_ADDR, 1, 2_000_000_000_000_000_000, b, claimed))
+                ))))
+            }
+            _ => Err(RpcError::Transport("unexpected method".into())),
+        }
+    }
+}
+
 #[test]
 fn read_pending_withdrawals_lists_unclaimed_and_gates_claimable() {
-    // Two logs: id 1 (matured), id 2 (not yet), plus id 3 which is CLAIMED (excluded).
-    let logs = JsonValue::Array(vec![
-        withdrawal_log(1, 100),
-        withdrawal_log(2, 100_000),
-        withdrawal_log(3, 100),
-    ]);
-    // Responses in call order: getLogs, block_number, then withdrawals(1),(2),(3).
-    let current_block: u64 = 100 + WITHDRAWAL_DELAY + 10; // past id-1's gate, before id-2's
-    let responses = vec![
-        ok(logs),
-        ok(JsonValue::String(format!("0x{current_block:x}"))),
-        // withdrawals(1): matured, unclaimed, 10 SALT.
-        ok(JsonValue::String(format!(
-            "0x{}",
-            hex::encode(withdrawal_tuple_hex(STAKER_ADDR, 5, 10_000_000_000_000_000_000, 100, false))
-        ))),
-        // withdrawals(2): far-future request block, unclaimed, 3 SALT.
-        ok(JsonValue::String(format!(
-            "0x{}",
-            hex::encode(withdrawal_tuple_hex(STAKER_ADDR, 2, 3_000_000_000_000_000_000, 100_000, false))
-        ))),
-        // withdrawals(3): CLAIMED → excluded.
-        ok(JsonValue::String(format!(
-            "0x{}",
-            hex::encode(withdrawal_tuple_hex(STAKER_ADDR, 1, 1_000_000_000_000_000_000, 100, true))
-        ))),
-    ];
-    let rpc = RpcClient::with_transport(MockRpc::new(responses));
+    // id 1 matured, id 2 not yet, id 3 CLAIMED (excluded). Head past id-1's gate only.
+    let head: u64 = 500 + WITHDRAWAL_DELAY + 10;
+    let rpc = RpcClient::with_transport(ChainStub::new(
+        head,
+        vec![(1, 500, false), (2, head - 5, false), (3, 600, true)],
+    ));
     let pending = read_pending_withdrawals(&rpc, STAKER_ADDR).expect("pending");
-
     assert_eq!(pending.len(), 2, "the two UNCLAIMED withdrawals (claimed one excluded)");
     let p1 = pending.iter().find(|p| p.id == "1").expect("id 1 present");
-    assert_eq!(p1.salt_wei, "10000000000000000000", "id-1 saltAmount (wei)");
-    assert_eq!(p1.request_block, 100);
-    assert_eq!(p1.claimable_at_block, 100 + WITHDRAWAL_DELAY);
-    assert!(p1.claimable, "id-1 matured → claimable now");
-
+    assert_eq!(p1.salt_wei, "2000000000000000000");
+    assert_eq!(p1.request_block, 500);
+    assert_eq!(p1.claimable_at_block, 500 + WITHDRAWAL_DELAY);
+    assert!(p1.claimable, "id-1 matured -> claimable now");
     let p2 = pending.iter().find(|p| p.id == "2").expect("id 2 present");
-    assert!(!p2.claimable, "id-2 not yet matured → not claimable");
+    assert!(!p2.claimable, "id-2 not yet matured -> not claimable");
 
-    // The getLogs filter targeted the pool + WithdrawalRequested topic0 + staker.
-    let body = &rpc.transport().requests()[0];
-    assert_eq!(body["method"], "eth_getLogs");
+    // Every getLogs filter targets the pool + WithdrawalRequested topic0 + the staker.
+    let reqs = rpc.transport().requests.borrow().clone();
+    let body = reqs.iter().find(|r| r["method"] == "eth_getLogs").expect("a getLogs call");
     let filter = &body["params"][0];
     assert_eq!(filter["address"], liquid_staking_pool());
     assert_eq!(filter["topics"][0], WITHDRAWAL_REQUESTED_TOPIC0);
@@ -543,14 +608,126 @@ fn read_pending_withdrawals_lists_unclaimed_and_gates_claimable() {
 
 #[test]
 fn read_pending_withdrawals_empty_for_a_fresh_wallet() {
-    // No logs → an honest empty list (getLogs then block_number are still called).
-    let responses = vec![
-        ok(JsonValue::Array(vec![])),
-        ok(JsonValue::String("0x64".into())),
-    ];
-    let rpc = RpcClient::with_transport(MockRpc::new(responses));
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![]));
     let pending = read_pending_withdrawals(&rpc, STAKER_ADDR).expect("empty pending");
-    assert!(pending.is_empty(), "fresh wallet → empty, never a fabricated entry");
+    assert!(pending.is_empty(), "fresh wallet -> empty, never a fabricated entry");
+}
+
+// C1-W: today's node clamps any range to its first 1000 blocks without saying so. A scan of
+// earliest..latest only ever saw blocks 0-1000. Paged in <=1000-block windows from the pool's
+// deployment block, a withdrawal far past block 1000 is found.
+#[test]
+fn a_withdrawal_after_block_1000_is_found_on_a_node_that_clamps_ranges() {
+    let mut stub = ChainStub::new(120_000, vec![(7, 5_000, false), (8, 119_999, false), (9, 900, false)]);
+    stub.clamp_to = Some(1000);
+    let rpc = RpcClient::with_transport(stub);
+    let pending = read_pending_withdrawals(&rpc, STAKER_ADDR).expect("pending");
+    let mut ids: Vec<&str> = pending.iter().map(|p| p.id.as_str()).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["7", "8", "9"]);
+    let ranges = rpc.transport().log_ranges();
+    assert_eq!(ranges.first().map(|r| r.0), Some(LIQUID_STAKING_POOL_DEPLOY_BLOCK));
+    assert_eq!(ranges.last().map(|r| r.1), Some(120_000));
+    for (a, b) in &ranges {
+        assert!(b >= a && b - a < LOG_WINDOW_BLOCKS, "window {a}..={b} spans <= {LOG_WINDOW_BLOCKS} blocks");
+    }
+    // Contiguous: no block is skipped between windows.
+    for w in ranges.windows(2) {
+        assert_eq!(w[1].0, w[0].1 + 1, "windows are contiguous");
+    }
+}
+
+// citrate-chain#334: a range over the limit answers -32005. The scan halves its window and goes on.
+#[test]
+fn a_limit_exceeded_answer_halves_the_window() {
+    let mut stub = ChainStub::new(10_000, vec![(4, 3_333, false), (5, 9_999, false)]);
+    stub.max_range = Some(300);
+    let rpc = RpcClient::with_transport(stub);
+    let pending = read_pending_withdrawals(&rpc, STAKER_ADDR).expect("pending");
+    assert_eq!(pending.len(), 2);
+    let ranges = rpc.transport().log_ranges();
+    let served: Vec<_> = ranges.iter().filter(|(a, b)| b - a <= 300).collect();
+    assert!(!served.is_empty());
+    assert_eq!(served.last().map(|r| r.1), Some(10_000));
+    for w in served.windows(2) {
+        assert_eq!(w[1].0, w[0].1 + 1, "served windows are contiguous");
+    }
+}
+
+// The same withdrawal is never listed twice (a re-scanned tail, or overlapping windows).
+#[test]
+fn results_are_deduplicated_across_windows_and_refreshes() {
+    let rpc = RpcClient::with_transport(ChainStub::new(3_000, vec![(11, 2_990, false)]));
+    let mut scan = WithdrawalScan::default();
+    let first = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("first");
+    let second = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("second");
+    assert_eq!(first.len(), 1);
+    assert_eq!(second.len(), 1, "no duplicate after the tail re-scan");
+}
+
+// The last scanned block is kept, so a refresh only reads the new blocks (plus a short re-scanned
+// tail for blocks near the head).
+#[test]
+fn a_refresh_is_incremental() {
+    let rpc = RpcClient::with_transport(ChainStub::new(50_000, vec![(1, 10_000, false)]));
+    let mut scan = WithdrawalScan::default();
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("first");
+    assert_eq!(scan.next_block, 50_001);
+    let before = rpc.transport().log_ranges().len();
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("refresh");
+    let after = rpc.transport().log_ranges();
+    assert_eq!(after.len() - before, 1, "one window: the re-scanned tail");
+    let (a, b) = after[after.len() - 1];
+    assert_eq!(b, 50_000);
+    assert_eq!(a, 50_001 - RESCAN_TAIL_BLOCKS, "only the tail is re-read");
+}
+
+// A failed window is an error, never an empty (or partial) list; the blocks read before it are
+// kept, so the next refresh resumes there.
+#[test]
+fn a_failed_window_is_an_error_not_an_empty_list() {
+    let rpc = RpcClient::with_transport(ChainStub::new(20_000, vec![(3, 2_000, false)]));
+    *rpc.transport().fail_from.borrow_mut() = Some(8_500);
+    let mut scan = WithdrawalScan::default();
+    let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect_err("must fail");
+    let msg = err.to_string();
+    assert!(msg.contains("8") && msg.contains("timed out"), "{msg}");
+    assert!(scan.next_block > LIQUID_STAKING_POOL_DEPLOY_BLOCK && scan.next_block <= 8_500);
+    assert!(scan.ids.contains(&3), "the withdrawal found before the failure is kept");
+    *rpc.transport().fail_from.borrow_mut() = None;
+    let pending = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("resumed");
+    assert_eq!(pending.len(), 1);
+}
+
+// The first scan of a long chain is spread over refreshes by a time budget: an unfinished scan is
+// "still reading", never a list.
+#[test]
+fn an_unfinished_scan_is_reported_as_still_reading() {
+    let rpc = RpcClient::with_transport(ChainStub::new(30_000, vec![(2, 25_000, false)]));
+    let mut scan = WithdrawalScan::default();
+    let past = std::time::Instant::now();
+    let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(past)).expect_err("budget spent");
+    assert!(matches!(err, StakingError::Incomplete { .. }), "{err:?}");
+    assert!(err.to_string().contains("30000"), "{err}");
+    let mut done = None;
+    for _ in 0..100 {
+        match read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(std::time::Instant::now() + std::time::Duration::from_secs(5))) {
+            Ok(p) => {
+                done = Some(p);
+                break;
+            }
+            Err(StakingError::Incomplete { .. }) => continue,
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(done.expect("finishes").len(), 1);
+}
+
+#[test]
+fn the_scan_starts_at_the_pool_deployment_block() {
+    // contracts/addresses/40204.provenance.json: LiquidStakingPool created at block 427.
+    assert_eq!(LIQUID_STAKING_POOL_DEPLOY_BLOCK, 427);
+    assert_eq!(LOG_WINDOW_BLOCKS, 1000);
 }
 
 #[test]
