@@ -2093,3 +2093,107 @@ fn the_tripwire_scan_covers_the_whole_production_ceremony_module() {
         "the terminal test module is still cut off"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Join-8 — prepare (approve + sign, no send) then send. The tx hash is known and
+// returned BEFORE anything reaches the network, so a caller can persist it first
+// (a quit during the receipt poll must not lose it). One approval, one signature.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join8_prepare_signs_and_returns_the_tx_hash_without_sending() {
+    use sha3::{Digest, Keccak256};
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),        // eth_getTransactionCount
+        ok(JsonValue::String("0x77359400".into())), // eth_gasPrice
+    ]));
+    let hash = c
+        .approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("approve + sign");
+    let methods: Vec<String> = prep_rpc
+        .transport()
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "prepare sends nothing: {methods:?}"
+    );
+    assert_eq!(c.pending_count(), 0, "the approval is consumed at prepare");
+    assert!(hash.starts_with("0x") && hash.len() == 66);
+
+    // The send broadcasts exactly the prepared raw, whose keccak is the returned hash.
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String(hash.clone())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    let result = c
+        .send_prepared(&send_rpc, &view.id, bcfg(2))
+        .expect("send the prepared tx");
+    assert_eq!(result.tx_hash, hash);
+    assert_eq!(result.block_number, Some(100));
+    let sent = send_rpc.transport().requests.borrow()[0].clone();
+    assert_eq!(sent["method"], "eth_sendRawTransaction");
+    let raw_hex = sent["params"][0].as_str().unwrap_or("").trim_start_matches("0x").to_string();
+    let raw = hex::decode(raw_hex).expect("raw hex");
+    assert_eq!(format!("0x{}", hex::encode(Keccak256::digest(&raw))), hash);
+}
+
+#[test]
+fn join8_a_prepared_tx_is_sent_at_most_once() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    let hash = c
+        .approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String(hash)),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    c.send_prepared(&send_rpc, &view.id, bcfg(2)).expect("first send");
+    let again = c.send_prepared(&send_rpc, &view.id, bcfg(2));
+    assert_eq!(again.err(), Some(CeremonyError::UnknownCeremony));
+    // And the approval cannot be reused to sign again.
+    let resign = c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204);
+    assert_eq!(resign.err(), Some(CeremonyError::UnknownCeremony));
+}
+
+#[test]
+fn join8_reject_discards_a_prepared_tx() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    c.reject(&view.id).expect("reject drops the prepared tx");
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![]));
+    assert_eq!(
+        c.send_prepared(&send_rpc, &view.id, bcfg(2)).err(),
+        Some(CeremonyError::UnknownCeremony)
+    );
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
+}

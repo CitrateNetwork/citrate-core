@@ -44,6 +44,9 @@ const registerValidatorMock = vi.fn(async () => ({
 }));
 const armMiningMock = vi.fn(async () => false);
 const broadcastMock = vi.fn(async () => ({ txHash: "0xfeed" }));
+// Join-8: S7 signs first (prepare returns the hash, nothing sent), records the hash, then sends.
+const prepareMock = vi.fn(async () => ({ txHash: "0xfeed" }));
+const sendPreparedMock = vi.fn(async (): Promise<{ txHash: string; blockNumber: number | null }> => ({ txHash: "0xfeed", blockNumber: 501 }));
 const approveMock = vi.fn(async () => ({}));
 
 vi.mock("../bridge", () => ({
@@ -57,7 +60,13 @@ vi.mock("../bridge", () => ({
       status: async () => ({ state: "running", height: 1, peers: 1, syncPct: 100 }),
       logs: async () => [],
     },
-    signing: { broadcast: () => broadcastMock(), approve: () => approveMock(), reject: async () => {} },
+    signing: {
+      broadcast: () => broadcastMock(),
+      approve: () => approveMock(),
+      prepare: () => prepareMock(),
+      sendPrepared: () => sendPreparedMock(),
+      reject: async () => {},
+    },
     membership: { grantStatus: async () => ({}) },
     auth: { status: async () => ({ signedIn: false }) },
     custody: { status: async () => ({ unlocked: false, autolockMins: 30 }) },
@@ -99,6 +108,8 @@ beforeEach(() => {
   registerValidatorMock.mockClear();
   armMiningMock.mockClear();
   broadcastMock.mockClear();
+  prepareMock.mockClear();
+  sendPreparedMock.mockClear();
   approveMock.mockClear();
   try {
     localStorage.clear();
@@ -190,6 +201,8 @@ describe("no silent signing", () => {
     expect(store.state.walletReview?.view.id).toBe("cer_1");
     expect(broadcastMock).not.toHaveBeenCalled();
     expect(approveMock).not.toHaveBeenCalled();
+    expect(prepareMock).not.toHaveBeenCalled();
+    expect(sendPreparedMock).not.toHaveBeenCalled();
   });
 
   it("labels the review with the bond's principal as read, not a hard-coded 32,000", async () => {
@@ -202,23 +215,36 @@ describe("no silent signing", () => {
     expect(store.state.walletReview?.label).not.toContain("32,000");
   });
 
-  it("QUIT AFTER BROADCAST: the tx hash is persisted on broadcast acceptance, before any refresh finishes", async () => {
+  it("records the tx hash on disk BEFORE the send starts", async () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     await store.onS7Activate();
-    // The post-broadcast refreshes never finish (the member quits while they are in flight).
-    vi.spyOn(store, "refreshWallet").mockImplementation(never);
-    vi.spyOn(store, "refreshNode").mockImplementation(never);
-    vi.spyOn(store, "refreshActivity").mockImplementation(never);
+    let onDiskAtSend: unknown = "unset";
+    sendPreparedMock.mockImplementationOnce(async () => {
+      onDiskAtSend = persisted().s7TxHash;
+      return { txHash: "0xfeed", blockNumber: 501 };
+    });
+    await store.approveWalletReview(false);
+    expect(prepareMock).toHaveBeenCalledTimes(1);
+    expect(sendPreparedMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMock).not.toHaveBeenCalled(); // the one-call path would poll before returning the hash
+    expect(onDiskAtSend).toBe("0xfeed");
+  });
+
+  it("QUIT DURING RECEIPT POLLING: the send never returns, the relaunch resumes to Pending", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    // sign_send_prepared polls for the receipt before returning; the member quits meanwhile.
+    sendPreparedMock.mockImplementationOnce(() => new Promise(() => {}));
     void store.approveWalletReview(false);
     await flush();
-    expect(broadcastMock).toHaveBeenCalledTimes(1);
-    // Written to disk synchronously, not on the debounced save timer.
+    expect(sendPreparedMock).toHaveBeenCalledTimes(1);
     expect(persisted().s7TxHash).toBe("0xfeed");
     expect(persisted().stage).toBe("s7");
 
-    // Relaunch: the step resumes to Pending and offers no fresh activation.
     const reopened = new Store();
     reopened.setState({ hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true });
     expect(reopened.state.stage).toBe("s7");
@@ -231,6 +257,28 @@ describe("no silent signing", () => {
     const calls = registerValidatorMock.mock.calls.length;
     expect(await reopened.onS7Activate()).toBe(false);
     expect(registerValidatorMock.mock.calls.length).toBe(calls);
+  });
+
+  it("a failed send keeps the recorded hash (the chain decides) and reports the failure", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    sendPreparedMock.mockRejectedValueOnce(new Error("rpc timeout"));
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  it("an unconfirmed tx can be forgotten only after it has gone unseen for a while", () => {
+    const store = memberStore();
+    store.recordActivationTx("0xfeed");
+    expect(typeof store.state.s7TxAt).toBe("number");
+    expect(store.canForgetActivationTx(Date.now())).toBe(false);
+    store.setState({ activation: readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } }) });
+    expect(store.canForgetActivationTx(Date.now() + 11 * 60_000)).toBe(true);
+    store.setState({ activation: readyStatus({ tx: { hash: "0xfeed", included: true, blockNumber: 501, success: true } }) });
+    expect(store.canForgetActivationTx(Date.now() + 11 * 60_000)).toBe(false);
   });
 
   it("a pending tx blocks a fresh activation even if a read lacking it says the gate is met", async () => {
@@ -303,5 +351,37 @@ describe("out-of-order activation reads", () => {
     await r1;
     expect(store.state.s7TxHash).toBe("0xfeed");
     expect(store.state.activation).toBeNull(); // the stale read was ignored
+  });
+});
+
+describe("single-flight periodic reads (a slow read is still applied)", () => {
+  it("a periodic read does not start while one is in flight, and the slow one lands", async () => {
+    const store = memberStore();
+    const slow = deferred<ActivationStatusView>();
+    activationStatusMock.mockImplementationOnce(() => slow.promise);
+    const first = store.refreshActivation("poll");
+    // Three more 15 s ticks while the backend is still reading (~16 RPCs, 6 s timeouts each).
+    await store.refreshActivation("poll");
+    await store.refreshActivation("poll");
+    await store.refreshActivation("poll");
+    expect(activationStatusMock).toHaveBeenCalledTimes(1);
+    slow.resolve(readyStatus({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 502 }));
+    await first;
+    expect(store.state.activation?.bondActivated).toBe(true);
+    // Once it lands, the next tick reads again.
+    await store.refreshActivation("poll");
+    expect(activationStatusMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("an explicit event still supersedes an in-flight read", async () => {
+    const store = memberStore();
+    const slow = deferred<ActivationStatusView>();
+    activationStatusMock.mockImplementationOnce(() => slow.promise);
+    const first = store.refreshActivation("poll");
+    await store.refreshActivation(); // mount / hand-off / broadcast
+    expect(activationStatusMock).toHaveBeenCalledTimes(2);
+    slow.resolve(readyStatus({ bondActivated: false, membershipActive: false }));
+    await first;
+    expect(store.state.activation?.membershipActive).toBe(true);
   });
 });

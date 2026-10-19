@@ -642,6 +642,8 @@ export class Store {
   private validatorArmed = false;
   // Join-8 — the generation of the newest activation read; older responses are ignored.
   private activationGen = 0;
+  // Join-8 — a read is in flight (the 15 s poll does not start another meanwhile).
+  private activationInFlight = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
@@ -1513,13 +1515,16 @@ export class Store {
    * receipt). A failed read keeps the last honest status and records why (unknown is not zero).
    * Once the chain shows the bond activated, the persisted tx hash is no longer needed.
    */
-  async refreshActivation(): Promise<void> {
+  async refreshActivation(reason: "event" | "poll" = "event"): Promise<void> {
     const member = this.identity().wallet;
     if (!member) return;
-    // Reads overlap (S6 hand-off, S7 mount, the 15 s poll, the post-broadcast read). Only the
-    // newest request may apply; recording a tx also bumps the generation, so a read sent
-    // without that tx can never overwrite or clear it.
+    // Single-flight for the 15 s poll: one backend read is ~16 sequential RPCs with 6 s
+    // timeouts, so it can outlast the interval. A tick never starts a read while one is in
+    // flight (otherwise each tick would supersede the last and none would ever apply). Only an
+    // explicit event (S6 hand-off, S7 mount, a recorded tx, the post-send read) supersedes.
+    if (reason === "poll" && this.activationInFlight) return;
     const gen = ++this.activationGen;
+    this.activationInFlight = true;
     const askedTx = this.state.s7TxHash;
     try {
       const st = await bridge.node.activationStatus(member, askedTx);
@@ -1533,6 +1538,8 @@ export class Store {
     } catch (err) {
       if (gen !== this.activationGen) return;
       this.setState({ activationError: String((err as Error)?.message ?? err) });
+    } finally {
+      if (gen === this.activationGen) this.activationInFlight = false;
     }
   }
 
@@ -1542,8 +1549,33 @@ export class Store {
    */
   recordActivationTx(txHash: string): void {
     this.activationGen++;
-    this.setState({ s7TxHash: txHash });
+    this.activationInFlight = false; // the superseded read can no longer apply
+    this.setState({ s7TxHash: txHash, s7TxAt: Date.now() });
     this.saveNow();
+  }
+
+  /**
+   * A recorded activation tx may be forgotten (offering activation again) only when the chain
+   * still has no receipt for it after FORGET_AFTER_MS, e.g. the app quit after signing and before
+   * the send. If it was in fact sent, a second activation reverts on chain (the bond is already
+   * activated), so the worst case is gas, never a second stake.
+   */
+  canForgetActivationTx(now: number): boolean {
+    const FORGET_AFTER_MS = 10 * 60_000;
+    const { s7TxHash, s7TxAt, activation } = this.state;
+    if (!s7TxHash || s7TxAt == null) return false;
+    if (activation?.tx?.hash !== s7TxHash || activation.tx.included !== false) return false;
+    if (activation.bondActivated !== false) return false;
+    return now - s7TxAt >= FORGET_AFTER_MS;
+  }
+
+  /** S7 — forget an activation tx the chain never saw (see `canForgetActivationTx`). */
+  onS7ForgetTx(): void {
+    if (!this.canForgetActivationTx(Date.now())) return;
+    this.activationGen++;
+    this.setState({ s7TxHash: null, s7TxAt: null });
+    this.saveNow();
+    void this.refreshActivation();
   }
 
   /** S6 → S7 for a member with a granted bond; anyone else enters the app (there is no bond). */
@@ -1577,8 +1609,8 @@ export class Store {
       return false;
     }
     return this.activateValidator({
-      // Persist on broadcast acceptance, before the post-broadcast refreshes.
-      onBroadcast: (txHash) => this.recordActivationTx(txHash),
+      // Persist the signed tx's hash before it is sent (and before any receipt poll).
+      onSigned: (txHash) => this.recordActivationTx(txHash),
       // The re-read is a separate, later step.
       onResolved: async (approved) => {
         if (approved) await this.refreshActivation();
@@ -4495,7 +4527,7 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
-  async activateValidator(hooks?: { onBroadcast?: WalletReview["onBroadcast"]; onResolved?: WalletReview["onResolved"] }): Promise<boolean> {
+  async activateValidator(hooks?: { onSigned?: WalletReview["onSigned"]; onResolved?: WalletReview["onResolved"] }): Promise<boolean> {
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
@@ -4535,8 +4567,8 @@ export class Store {
     const principal = principalSalt(this.state.activation);
     const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
     this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, hooks?.onResolved);
-    if (hooks?.onBroadcast && this.state.walletReview) {
-      this.setState({ walletReview: { ...this.state.walletReview, onBroadcast: hooks.onBroadcast } });
+    if (hooks?.onSigned && this.state.walletReview) {
+      this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned } });
     }
     return true;
   }
@@ -5068,13 +5100,16 @@ export class Store {
     }
     // Tauri: sign + broadcast the real 40204 tx, then re-read balances from chain.
     try {
-      const result = await bridge.signing.broadcast(r.view.id, ack);
-      // Join-8: record the accepted tx FIRST (persisted synchronously), before the refreshes
-      // below, so a quit while they are in flight still resumes to "Pending".
-      try {
-        r.onBroadcast?.(result.txHash);
-      } catch {
-        /* a recording failure must not turn a sent tx into a reported failure */
+      let result: Awaited<ReturnType<typeof bridge.signing.broadcast>>;
+      if (r.onSigned) {
+        // Join-8: sign WITHOUT sending, record the hash (persisted synchronously), THEN send.
+        // The one-call broadcast polls for the receipt before it returns the hash, so a quit
+        // during that poll would lose it; here the hash is on disk before anything is sent.
+        const prepared = await bridge.signing.prepare(r.view.id, ack);
+        r.onSigned(prepared.txHash);
+        result = await bridge.signing.sendPrepared(r.view.id);
+      } else {
+        result = await bridge.signing.broadcast(r.view.id, ack);
       }
       this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
       this.toast(r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");

@@ -135,6 +135,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         // 40204, returning the real tx hash + block. Never returns key material.
         return invoke<BroadcastResult>("sign_and_broadcast", { id, rawAck });
       },
+      // Join-8 — sign without sending (returns the tx hash), then send the signed tx.
+      async prepare(id: string, rawAck: boolean): Promise<{ txHash: string }> {
+        return invoke<{ txHash: string }>("sign_prepare", { id, rawAck });
+      },
+      async sendPrepared(id: string): Promise<BroadcastResult> {
+        return invoke<BroadcastResult>("sign_send_prepared", { id });
+      },
       async reject(id: string): Promise<void> {
         await invoke("sign_reject", { id });
       },

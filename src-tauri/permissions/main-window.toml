@@ -67,6 +67,8 @@ commands.allow = [
   "sign_request",
   "sign_approve",
   "sign_and_broadcast",
+  "sign_prepare",
+  "sign_send_prepared",
   "sign_reject",
   "wallet_link_request",
   "wallet_link_approve",

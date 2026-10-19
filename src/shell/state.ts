@@ -239,11 +239,12 @@ export interface WalletReview {
    */
   onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
   /**
-   * Join-8 — called SYNCHRONOUSLY the moment the signer accepts the broadcast and returns its tx
-   * hash, before any post-broadcast refresh. A caller that must survive a quit (S7 records the
-   * activation tx) persists here, not in `onResolved`, which runs only after the refreshes.
+   * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
+   * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
+   * which polls for the receipt before returning). A caller that must survive a quit at any
+   * point after signing (S7 records the activation tx) persists here.
    */
-  onBroadcast?: (txHash: string) => void;
+  onSigned?: (txHash: string) => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
@@ -578,6 +579,8 @@ export interface AppState {
    * cleared once the chain shows the bond activated.
    */
   s7TxHash: string | null;
+  /** Join-8 — when `s7TxHash` was recorded (ms since epoch). Persisted. */
+  s7TxAt: number | null;
   /** Join-8 — the member chose "Explore free" at S7 (activate later from Node). Persisted. */
   validatorSkipped: boolean;
   /** Join-8 — the step's last chain read (NOT persisted: chain is the truth, re-read on launch). */
@@ -807,6 +810,7 @@ export function freshState(pid: string): AppState {
     cerHash: "",
     walletReview: null,
     s7TxHash: null,
+    s7TxAt: null,
     validatorSkipped: false,
     activation: null,
     activationError: null,
@@ -1016,7 +1020,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "s7TxHash", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "s7TxHash", "s7TxAt", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.

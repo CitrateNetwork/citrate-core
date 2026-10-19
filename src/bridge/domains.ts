@@ -127,6 +127,14 @@ export interface SigningDomain {
    * real tx hash + block (never key material). Same explicit-id / raw-ack /
    * single-use / fail-closed invariants as `approve`. */
   broadcast(id: string, rawAck: boolean): Promise<BroadcastResult>;
+  /**
+   * Join-8 — the same approval as `broadcast`, split in two so the caller learns the tx hash
+   * BEFORE anything is sent: `prepare` approves + signs (sends nothing) and returns the hash
+   * (keccak256 of the signed raw); `sendPrepared` sends that signed tx once and polls its receipt.
+   * One approval, one signature, at most one send. Tauri → `sign_prepare` / `sign_send_prepared`.
+   */
+  prepare(id: string, rawAck: boolean): Promise<{ txHash: string }>;
+  sendPrepared(id: string): Promise<BroadcastResult>;
   /** Reject a pending ceremony — consumes it, produces no signature. */
   reject(id: string): Promise<void>;
 }

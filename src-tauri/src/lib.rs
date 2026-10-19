@@ -532,6 +532,9 @@ pub fn run() {
             ceremony::sign_request,
             ceremony::sign_approve,
             ceremony::sign_and_broadcast,
+            // Join-8 — sign without sending (returns the tx hash), then send.
+            ceremony::sign_prepare,
+            ceremony::sign_send_prepared,
             ceremony::sign_reject,
             wallet_link::wallet_link_request,
             wallet_link::wallet_link_approve,
@@ -1253,6 +1256,8 @@ mod tests {
             "sign_request",
             "sign_approve",
             "sign_and_broadcast",
+            "sign_prepare",
+            "sign_send_prepared",
             "sign_reject",
         ] {
             assert!(

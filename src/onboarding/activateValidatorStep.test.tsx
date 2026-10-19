@@ -6,7 +6,7 @@ import { freshState, type AppState } from "../shell/state";
 import type { Store } from "../shell/store";
 import type { ActivationStatusView } from "../bridge/domains";
 
-const noopStore = { walletIsLinked: () => true, refreshActivation: async () => {} } as unknown as Store;
+const noopStore = { walletIsLinked: () => true, refreshActivation: async () => {}, canForgetActivationTx: () => false } as unknown as Store;
 const WEI_32K = (32000n * 10n ** 18n).toString();
 
 function st(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
@@ -95,6 +95,18 @@ describe("S7 · Activate validator", () => {
     const failed = view(st({ tx: { hash: "0xabc", included: true, blockNumber: 501, success: false } }), { s7TxHash: "0xabc" });
     expect(failed).toContain("reverted");
     expect(failed).toContain("501");
+  });
+
+  it("a recorded tx unseen for a while can be forgotten; a recent one cannot", () => {
+    const pendingTx = { hash: "0xabc", included: false, blockNumber: null, success: null };
+    const store = { walletIsLinked: () => true, refreshActivation: async () => {}, canForgetActivationTx: () => true } as unknown as Store;
+    const s = freshState("p1");
+    s.stage = "s7";
+    s.activation = st({ tx: pendingTx });
+    s.s7TxHash = "0xabc";
+    expect(renderToStaticMarkup(<S7 store={store} s={s} />)).toContain('data-testid="s7-forget"');
+    const recent = { ...store, canForgetActivationTx: () => false } as unknown as Store;
+    expect(renderToStaticMarkup(<S7 store={recent} s={s} />)).not.toContain('data-testid="s7-forget"');
   });
 
   it("offers Explore free in every state before activation", () => {

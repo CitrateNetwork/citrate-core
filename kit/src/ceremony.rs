@@ -438,12 +438,25 @@ struct Pending {
     requires_raw_ack: bool,
 }
 
+/// A signed transaction awaiting its send (public facts + the signed raw RLP; no key material).
+struct Prepared {
+    raw: Vec<u8>,
+    value: u128,
+    to: Option<[u8; 20]>,
+    origin: String,
+}
+
 /// The process-wide SignatureCeremony: the single approval surface. Holds the
 /// pending ceremonies behind a mutex and mints monotonic ids. All signing goes
 /// through [`approve`](Self::approve); no other path in the crate reaches the
 /// gated `wallet::sign_message`.
 pub struct SignatureCeremony {
     pending: Mutex<BTreeMap<u64, Pending>>,
+    /// Join-8: approved + signed transactions not yet sent, keyed by ceremony id. Filled only by
+    /// [`approve_and_sign`](Self::approve_and_sign) (the approval is already consumed), drained by
+    /// [`send_prepared`](Self::send_prepared) or [`reject`](Self::reject). Single-use: one
+    /// approval, one signature, at most one send.
+    prepared: Mutex<BTreeMap<u64, Prepared>>,
     next_id: AtomicU64,
     /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
     abis: crate::abi_book::AbiBook,
@@ -459,6 +472,7 @@ impl SignatureCeremony {
     pub fn new() -> Self {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
+            prepared: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
             abis: crate::abi_book::AbiBook::default(),
         }
@@ -510,6 +524,11 @@ impl SignatureCeremony {
     /// pending map; a poisoned guard yields it intact.
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Pending>> {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lock the prepared (signed, unsent) map, recovering from poison like [`Self::lock`].
+    fn lock_prepared(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Prepared>> {
+        self.prepared.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Parse a `CeremonyId` string back to its numeric key. A malformed id is
@@ -649,21 +668,20 @@ impl SignatureCeremony {
     /// calls the lean `sign_eip155_legacy_tx`, zeroizing) → broadcast the raw tx
     /// (`eth_sendRawTransaction`) → poll the receipt for block inclusion.
     ///
+    /// Join-8: this half stops after signing. It stores the signed tx under `id` and
+    /// returns its hash (keccak256 of the signed raw), so the caller can record the
+    /// hash BEFORE anything is sent; [`Self::send_prepared`] sends it.
+    ///
     /// `rpc` is injected so tests mock the transport (Rule 1: the mock is a TEST
     /// transport; production wires [`crate::rpc::RpcClient::citrate`]).
-    pub fn approve_and_broadcast<T: crate::rpc::RpcTransport>(
+    pub fn approve_and_sign<T: crate::rpc::RpcTransport>(
         &self,
         vault: &CustodyVault,
         rpc: &crate::rpc::RpcClient<T>,
         id: &str,
         raw_ack: bool,
-        cfg: BroadcastConfig,
-    ) -> Result<BroadcastResult> {
-        let BroadcastConfig {
-            chain_id,
-            poll_attempts,
-            poll_interval,
-        } = cfg;
+        chain_id: u64,
+    ) -> Result<String> {
         let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
 
         // Consume-first (B1.2-ADV-10): remove under the lock before any signing.
@@ -731,13 +749,40 @@ impl SignatureCeremony {
         // Sign the REAL tx with the vault key (fails closed if locked — the
         // gated signer reads the sealed entropy via the A2 session gate).
         let signed = wallet::sign_transaction(vault, &fields, chain_id)?;
+        let tx_hash = format!("0x{}", hex::encode(signed.hash));
+        self.lock_prepared().insert(
+            key,
+            Prepared {
+                raw: signed.raw,
+                value: parsed.value,
+                to: parsed.to,
+                origin: pending.intent.origin.clone(),
+            },
+        );
+        Ok(tx_hash)
+    }
+
+    /// **Join-8 — send a prepared transaction.** Takes the signed tx that
+    /// [`approve_and_sign`](Self::approve_and_sign) stored under `id` (single-use: removed
+    /// first), sends it with `eth_sendRawTransaction`, and polls the receipt. Signs nothing.
+    pub fn send_prepared<T: crate::rpc::RpcTransport>(
+        &self,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        cfg: BroadcastConfig,
+    ) -> Result<BroadcastResult> {
+        let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
+        let prepared = self
+            .lock_prepared()
+            .remove(&key)
+            .ok_or(CeremonyError::UnknownCeremony)?;
 
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
         let tx_hash = rpc
-            .send_raw_transaction(&signed.raw)
+            .send_raw_transaction(&prepared.raw)
             .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
-        let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
+        let receipt = rpc.poll_receipt(&tx_hash, cfg.poll_attempts, cfg.poll_interval);
         let mined = match receipt {
             Ok(r) => Some(r),
             // The tx WAS accepted (we have a hash); the receipt just did not land
@@ -757,16 +802,37 @@ impl SignatureCeremony {
                 .as_ref()
                 .and_then(|r| r.effective_gas_price)
                 .map(|p| p.to_string()),
-            value_wei: Some(parsed.value.to_string()),
-            to: parsed.to.map(|a| format!("0x{}", hex::encode(a))),
-            origin: pending.intent.origin.clone(),
+            value_wei: Some(prepared.value.to_string()),
+            to: prepared.to.map(|a| format!("0x{}", hex::encode(a))),
+            origin: prepared.origin,
         })
+    }
+
+    /// **Step 2 (tx) — approve, sign and broadcast in one call.** [`approve_and_sign`]
+    /// then [`send_prepared`]: identical checks, one approval, one signature.
+    ///
+    /// [`approve_and_sign`]: Self::approve_and_sign
+    /// [`send_prepared`]: Self::send_prepared
+    pub fn approve_and_broadcast<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        cfg: BroadcastConfig,
+    ) -> Result<BroadcastResult> {
+        self.approve_and_sign(vault, rpc, id, raw_ack, cfg.chain_id)?;
+        self.send_prepared(rpc, id, cfg)
     }
 
     /// **Step 2' — reject.** Consume the ceremony with no signature. Unknown id
     /// (never created / already consumed) → `UnknownCeremony`.
     pub fn reject(&self, id: &str) -> Result<()> {
         let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
+        // Join-8: a signed-but-unsent transaction is discarded too (never sent).
+        if self.lock_prepared().remove(&key).is_some() {
+            return Ok(());
+        }
         let mut map = self.lock();
         map.remove(&key)
             .map(|_| ())
@@ -1203,6 +1269,86 @@ pub fn sign_and_broadcast_sync(
         },
     )
     .map_err(err_str)
+}
+
+/// Join-8 — the public result of [`sign_prepare`]: the hash of the signed, not-yet-sent tx.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedTx {
+    #[serde(rename = "txHash")]
+    pub tx_hash: String,
+}
+
+/// **Command — sign_prepare (Join-8).** Approve + sign a pending transaction ceremony bound to
+/// `id`, WITHOUT sending it, and return the tx hash (keccak256 of the signed raw). The caller
+/// records the hash, then calls [`sign_send_prepared`]. Same guards and single-use rules as
+/// [`sign_and_broadcast`]; returns public facts only (I-2).
+#[tauri::command]
+pub async fn sign_prepare(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<PreparedTx, String> {
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        sign_prepare_sync(st0, st1, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`sign_prepare`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_prepare_sync(
+    ceremony: State<'_, CeremonyState>,
+    custody: State<'_, crate::custody::CustodyState>,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<PreparedTx, String> {
+    let rpc = crate::rpc::RpcClient::citrate();
+    ceremony
+        .0
+        .approve_and_sign(&custody.0, &rpc, &id, raw_ack, crate::rpc::CITRATE_CHAIN_ID)
+        .map(|tx_hash| PreparedTx { tx_hash })
+        .map_err(err_str)
+}
+
+/// **Command — sign_send_prepared (Join-8).** Send the transaction [`sign_prepare`] signed for
+/// `id` (single-use), poll its receipt, tell the broadcast observer, and return the public
+/// [`BroadcastResult`]. Signs nothing.
+#[tauri::command]
+pub async fn sign_send_prepared(
+    app_h: tauri::AppHandle,
+    id: String,
+) -> std::result::Result<BroadcastResult, String> {
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        sign_send_prepared_sync(st0, id)
+    })
+    .await
+}
+
+/// Blocking body of [`sign_send_prepared`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_send_prepared_sync(
+    ceremony: State<'_, CeremonyState>,
+    id: String,
+) -> std::result::Result<BroadcastResult, String> {
+    let rpc = crate::rpc::RpcClient::citrate();
+    let result = ceremony
+        .0
+        .send_prepared(
+            &rpc,
+            &id,
+            BroadcastConfig {
+                chain_id: crate::rpc::CITRATE_CHAIN_ID,
+                poll_attempts: 30,
+                poll_interval: std::time::Duration::from_secs(2),
+            },
+        )
+        .map_err(err_str)?;
+    notify_broadcast(&result);
+    Ok(result)
 }
 
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.

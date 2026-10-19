@@ -322,6 +322,21 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           "signing.broadcast: the web shim cannot sign or broadcast a real 40204 transaction (no key, no chain). Use the packaged Tauri app.",
         );
       },
+      // No key and no chain in the web preview: it cannot sign or send (Rule 1).
+      async prepare(id: string, rawAck: boolean): Promise<{ txHash: string }> {
+        assertSimAllowed("signing.prepare");
+        const view = simCeremonies.get(id);
+        if (!view) throw new Error("ceremony: unknown or already-consumed id");
+        if (view.requiresRawAck && !rawAck) {
+          throw new Error("ceremony: undecodable calldata requires an explicit raw-mode ack");
+        }
+        simCeremonies.delete(id);
+        throw new Error("signing.prepare: the web shim cannot sign a real 40204 transaction (no key). Use the packaged Tauri app.");
+      },
+      async sendPrepared(): Promise<BroadcastResult> {
+        assertSimAllowed("signing.sendPrepared");
+        throw new Error("signing.sendPrepared: the web shim cannot send a real 40204 transaction (no chain). Use the packaged Tauri app.");
+      },
       async reject(id: string): Promise<void> {
         assertSimAllowed("signing.reject");
         if (!simCeremonies.delete(id)) throw new Error("ceremony: unknown or already-consumed id");

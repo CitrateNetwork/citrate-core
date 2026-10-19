@@ -1167,7 +1167,7 @@ function GateRow({ ok, label, detail }: { ok: boolean | null; label: string; det
 export function S7({ store, s }: { store: Store; s: AppState }) {
   useEffect(() => {
     void store.refreshActivation();
-    const t = setInterval(() => void store.refreshActivation(), ACTIVATION_POLL_MS);
+    const t = setInterval(() => void store.refreshActivation("poll"), ACTIVATION_POLL_MS);
     return () => clearInterval(t);
   }, [store]);
   const a = s.activation;
@@ -1240,6 +1240,16 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
                 ? `Included in block ${fmtI(pendingTx.blockNumber)} · waiting for the bond to read activated`
                 : `tx ${short(pendingTx?.hash ?? s.s7TxHash ?? "")} · not in a block yet`}
             </div>
+            {store.canForgetActivationTx(Date.now()) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => store.onS7ForgetTx()} data-testid="s7-forget">
+                  Forget this transaction
+                </button>
+                <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
+                  The network has no record of it after 10 minutes. If it was sent after all, a second activation reverts and costs only gas.
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1255,7 +1265,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
             <button
               className="btn btn-ghost btn-sm"
               onClick={() => {
-                store.setState({ s7TxHash: null, activation: { ...a, tx: null } });
+                store.setState({ s7TxHash: null, s7TxAt: null, activation: { ...a, tx: null } });
                 store.save();
               }}
             >
