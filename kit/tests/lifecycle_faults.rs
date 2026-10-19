@@ -1643,6 +1643,12 @@ fn a_deadline_stop_without_a_monitor_holds_no_record() {
         0,
         "no record is left for a dead monitor"
     );
+    // Joining that Stop with a deadline is ObservationUnknown too, and arms nothing.
+    assert!(matches!(
+        sup.request_stop_within(Duration::from_millis(100)),
+        ControlResult::ObservationUnknown(..)
+    ));
+    assert_eq!(publisher.armed_records(), 0);
     drop(sup);
     fx.assert_clean();
 }
