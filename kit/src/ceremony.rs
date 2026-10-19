@@ -452,11 +452,11 @@ struct Pending {
 /// gated `wallet::sign_message`.
 pub struct SignatureCeremony {
     pending: Mutex<BTreeMap<u64, Pending>>,
-    /// keccak256 hashes of every signed transaction this process has handed to
-    /// `eth_sendRawTransaction`. A node error on a RE-submission of the same bytes never proves the
-    /// tx was refused (the first may have been accepted and mined), so only a first submission can
-    /// be "not sent" (UI truth contract v1.1 §1).
-    submitted: Mutex<std::collections::BTreeSet<String>>,
+    /// keccak256 hashes of the signed transactions this app has handed to
+    /// `eth_sendRawTransaction`, persisted across restarts ([`crate::submitted_log`]). A node error
+    /// on a RE-submission of the same bytes never proves the tx was refused (the first may have
+    /// been accepted and mined), so only a first submission can be "not sent" (contract v1.1 §1).
+    submitted: std::sync::Arc<crate::submitted_log::SubmittedTxLog>,
     next_id: AtomicU64,
     /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
     abis: crate::abi_book::AbiBook,
@@ -472,10 +472,23 @@ impl SignatureCeremony {
     pub fn new() -> Self {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
-            submitted: Mutex::new(std::collections::BTreeSet::new()),
+            submitted: std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::in_memory()),
             next_id: AtomicU64::new(1),
             abis: crate::abi_book::AbiBook::default(),
         }
+    }
+
+    /// A ceremony whose first-submission record is `log` (production passes one persisted under
+    /// the app data dir, so the record survives a restart).
+    pub fn with_submitted_log(log: crate::submitted_log::SubmittedTxLog) -> Self {
+        let mut c = Self::new();
+        c.submitted = std::sync::Arc::new(log);
+        c
+    }
+
+    /// The shared first-submission record, for other signers of this app (e.g. the anchor).
+    pub fn submitted_log(&self) -> std::sync::Arc<crate::submitted_log::SubmittedTxLog> {
+        self.submitted.clone()
     }
 
     /// HUP-S6: let calls to `address` be decoded from `abi`. Only for a contract whose on-chain
@@ -757,11 +770,7 @@ impl SignatureCeremony {
             use sha3::{Digest, Keccak256};
             format!("0x{}", hex::encode(Keccak256::digest(&signed.raw)))
         };
-        let first_submission = self
-            .submitted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(local_hash.clone());
+        let first_submission = self.submitted.record(&local_hash);
         let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
             Ok(h) => h,
             Err(e) if first_submission && is_definitive_send_error(&e) => {
@@ -1104,6 +1113,13 @@ impl SignatureCeremony {
 
 /// Managed Tauri state: the process-wide SignatureCeremony.
 pub struct CeremonyState(pub SignatureCeremony);
+
+/// Build the managed ceremony state with its first-submission record persisted at `path`.
+pub fn build_ceremony_state_at(path: std::path::PathBuf) -> CeremonyState {
+    CeremonyState(SignatureCeremony::with_submitted_log(
+        crate::submitted_log::SubmittedTxLog::open(path),
+    ))
+}
 
 /// Build the managed ceremony state (empty, ready to accept intents).
 pub fn build_ceremony_state() -> CeremonyState {

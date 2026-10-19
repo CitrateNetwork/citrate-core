@@ -2322,3 +2322,22 @@ fn http_429_is_definitive_on_first_send_only() {
     assert!(matches!(run(&c), Err(CeremonyError::Broadcast(_))));
     assert!(submitted_outcome_unknown(&run(&c)).is_some());
 }
+
+// Contract v1.1 §1 (#347 review): the first-submission record survives a restart. A ceremony built
+// over a persisted log treats bytes submitted in an earlier run as a re-submission.
+#[test]
+fn a_resend_after_a_restart_is_not_a_first_submission() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    let file = dir.join("submitted-tx.json");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
+    assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
+    drop(c);
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let (again, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&again), Some(hash));
+    let _ = std::fs::remove_dir_all(&dir);
+}
