@@ -46,7 +46,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
   });
 
   it("a successful read clears the reason, and an empty queue then says so", async () => {
-    vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue([]);
+    vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue({ withdrawals: [], confirmed: true });
     store.setState({ pendingWithdrawalsError: "earlier failure" });
     await store.refreshPendingWithdrawals();
     expect(store.state.pendingWithdrawalsError).toBeNull();
@@ -59,7 +59,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     const read = vi
       .spyOn(bridge.wallet, "pendingWithdrawals")
       .mockRejectedValueOnce("still reading chain history: blocks 427-200000 of 524862 scanned")
-      .mockResolvedValueOnce([{ id: "7", saltWei: "1000000000000000000", requestBlock: 5000, claimableAtBlock: 55400, claimable: true }]);
+      .mockResolvedValueOnce({ withdrawals: [{ id: "7", saltWei: "1000000000000000000", requestBlock: 5000, claimableAtBlock: 55400, claimable: true }], confirmed: true });
     await store.refreshPendingWithdrawals();
     expect(store.state.pendingWithdrawalsError).toContain("still reading chain history");
     await vi.advanceTimersByTimeAsync(5_000);
@@ -73,7 +73,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     const read = vi
       .spyOn(bridge.wallet, "pendingWithdrawals")
       .mockRejectedValueOnce("still indexing chain history (blocks 427-1426): log index warming, retry")
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce({ withdrawals: [], confirmed: true });
     await store.refreshPendingWithdrawals();
     const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: store.state.pendingWithdrawalsError })} />);
     expect(html).toContain("— · pending withdrawals: still indexing chain history");
@@ -84,17 +84,36 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
   });
 
   it("overlapping refreshes share one read, so retry chains do not multiply", async () => {
-    let release!: (v: never[]) => void;
+    let release!: (v: never) => void;
     const read = vi.spyOn(bridge.wallet, "pendingWithdrawals").mockReturnValue(new Promise((r) => (release = r as never)));
     const a = store.refreshPendingWithdrawals();
     const b = store.refreshPendingWithdrawals();
     expect(read).toHaveBeenCalledTimes(1);
-    release([] as never[]);
+    release({ withdrawals: [], confirmed: true } as never);
     await Promise.all([a, b]);
     expect(store.state.pendingWithdrawalsError).toBeNull();
     // Once settled, a new refresh reads again.
-    read.mockResolvedValue([]);
+    read.mockResolvedValue({ withdrawals: [], confirmed: true });
     await store.refreshPendingWithdrawals();
     expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  // DGX (#371): until citrate_executedHead (chain#334, #336, #337) is on the public RPC, the scan
+  // cannot prove it read up to the chain head. An empty list is then "can't confirm", never "No
+  // pending withdrawals"; rows that were found (each confirmed from contract state) still show.
+  it("an unconfirmed read shows '—' and can't confirm, never 'No pending withdrawals'", async () => {
+    vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue({ withdrawals: [], confirmed: false });
+    await store.refreshPendingWithdrawals();
+    expect(store.state.pendingWithdrawalsUnconfirmed).toBe(true);
+    const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: true })} />);
+    expect(html).toContain("can&#x27;t confirm");
+    expect(html).not.toContain("No pending withdrawals");
+  });
+
+  it("an unconfirmed read keeps the rows it found and says it can't confirm the rest", () => {
+    const w = { id: "9", saltWei: "2000000000000000000", requestBlock: 5000, claimableAtBlock: 55400, claimable: false };
+    const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [w], pendingWithdrawalsError: null, pendingWithdrawalsUnconfirmed: true, height: 6000 })} />);
+    expect(html).toContain("2.00 SALT");
+    expect(html).toContain("can&#x27;t confirm");
   });
 });
