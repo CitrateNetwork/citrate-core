@@ -129,7 +129,7 @@ fn harness_sweep_finds_marked_processes_missing_from_the_record() {
     let fx = OwnedFixture::new("sweep");
     // A marked process that never records itself and is not the guard's own child: its parent
     // starts it in the background and exits, so it is reparented away from this test.
-    fx.spawn_direct(vec![
+    let launcher = fx.spawn_direct(vec![
         "-c".into(),
         format!(
             "{} -f \"$1\" >/dev/null 2>&1 & exit 0",
@@ -138,8 +138,9 @@ fn harness_sweep_finds_marked_processes_missing_from_the_record() {
         fx.marker().to_string(),
         fx.path("anchor").display().to_string(),
     ]);
+    // The launcher shell carries the marker too; wait for the background process it left.
     let seen = wait_for(ACQUIRE, Duration::from_millis(10), || {
-        fx.live_marked().first().copied()
+        fx.live_marked().into_iter().find(|p| *p != launcher)
     });
     let unrecorded = match seen {
         Ok((pid, _)) => pid,
