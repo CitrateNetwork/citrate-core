@@ -1589,6 +1589,9 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         // Stream stdout + stderr into the shared log ring (Q-A.2). Done BEFORE publishing so no
         // early line is missed. The crash tail is later derived from the ring's `err` lines.
+        // Join readers of earlier incarnations that have ended, so a long crash-and-retry
+        // history does not keep their handles around.
+        let _still_reading = drain_readers(&mut readers, Duration::ZERO);
         readers.extend(spawn_log_readers(&mut child, &spec.name, &shared));
 
         // --- publication admission: a newer intent that arrived during the OS call wins ---
