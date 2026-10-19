@@ -2341,3 +2341,36 @@ fn a_resend_after_a_restart_is_not_a_first_submission() {
     assert_eq!(submitted_outcome_unknown(&again), Some(hash));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- STD audit parity: adversarial node messages and interleaving ----
+
+#[test]
+fn a_definitive_phrase_that_is_not_the_whole_or_leading_message_is_not_definitive() {
+    for msg in [
+        "proxy: Failed to submit transaction: Full",
+        "failed to submit transaction: full",
+        "Failed to submit transaction: Full ",
+        "Failed to submit transaction: Fullish",
+        "Invalid hex.",
+        " Invalid tx hex",
+        "Failed to submit transaction: DuplicateTransaction(Failed to submit transaction: Full)",
+        "",
+    ] {
+        let (v, _p) = vault_with_wallet();
+        let c = SignatureCeremony::new();
+        let (r, hash) = send_once(&c, &v, node_error(msg));
+        assert_eq!(submitted_outcome_unknown(&r), Some(hash), "{msg:?}: {r:?}");
+    }
+}
+
+#[test]
+fn two_ceremonies_sharing_one_record_see_each_others_submissions() {
+    let (v, _p) = vault_with_wallet();
+    let a = SignatureCeremony::new();
+    let mut b = SignatureCeremony::new();
+    b.submitted = a.submitted_log();
+    let (first, _) = send_once(&a, &v, node_error("Failed to submit transaction: Full"));
+    assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
+    let (other, hash) = send_once(&b, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&other), Some(hash));
+}
