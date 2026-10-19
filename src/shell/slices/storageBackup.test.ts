@@ -107,6 +107,7 @@ describe("K4 storage slice", () => {
     vi.spyOn(bridge.storage, "backupRestore").mockResolvedValue({
       folder: "/b/x",
       parts: ["files"],
+      skipped: [],
       filesRestored: 1,
       cidsChanged: [],
       memoryFilesRestored: 0,

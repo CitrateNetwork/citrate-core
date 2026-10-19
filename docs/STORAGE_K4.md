@@ -55,8 +55,11 @@ files/<cid>           each object pinned on this node, bytes read from kubo
 memory/<path>         the memory dir, copied with the mem-mcp daemon stopped
 ```
 
-Each manifest entry has `path`, `size`, `sha256` and, for files, `cid`. `entriesSha256` covers the
-entry list, so an edited manifest is caught.
+Each manifest entry has `path`, `size`, `sha256`, the file's Unix `mode` and, for files, `cid`.
+`dirs` records each memory store directory with its mode. `parts` lists only the parts the backup
+holds; a requested part with nothing to back up (no memory store, an empty one, no pinned files)
+is listed in `skippedParts` with the reason instead. `entriesSha256` covers all of it, so an
+edited manifest is caught.
 
 **Verification** (`verify_folder`, run at the end of every export and at the start of every
 restore): the format matches; the entry digest matches; every path is a plain relative path under
@@ -66,10 +69,16 @@ and SHA-256; and nothing in the folder is unlisted.
 
 **Restore refuses any mismatch before it touches anything.** Then:
 
-- Memory: the importer slot is held, a running daemon is stopped, the files are copied into a
-  staging dir beside the store and hashed again there, the current memory dir is moved to
-  `memory.before-restore-<time>` (kept, not deleted), the staging dir takes its place, and the
-  daemon is started again if it was running.
+- Only the requested parts the backup actually holds are restored. The report lists those in
+  `parts` and names every other requested part in `skipped` with the reason; a skipped Memory
+  part never stops the daemon or touches the live store. Nothing to restore is an error.
+- Memory: the importer slot and the memory store lock are held (while the lock is held,
+  `MemoryManager::start` refuses, so nothing can start the daemon mid-restore), a running daemon
+  is stopped, the files are copied into a staging dir beside the store and hashed again there,
+  each file and directory gets its recorded mode back (0600 / 0700 when none was recorded) and
+  the restore checks it took, the current memory dir is moved to `memory.before-restore-<time>`
+  (kept, not deleted), the staging dir takes its place, the lock is released, and the daemon is
+  started again if it was running.
 - Files: each file's bytes are hashed again as read, re-added to kubo and pinned locally. If kubo
   returns a different CID (a CID-version change), the report lists it.
 

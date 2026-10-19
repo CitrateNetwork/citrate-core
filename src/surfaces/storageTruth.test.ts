@@ -33,5 +33,8 @@ describe("K4 storageTruth", () => {
     expect(describeMismatch({ kind: "sizeDiffers", path: "memory/x", expected: 16, actual: 1 })).toBe("memory/x: 1 bytes, the manifest says 16");
     expect(describeMismatch({ kind: "notAFile", path: "memory/l" })).toContain("not a regular file");
     expect(describeMismatch({ kind: "unsafePath", path: "../x" })).toContain("not an allowed backup path");
+    expect(describeMismatch({ kind: "modeDiffers", path: "memory/a", expected: 0o600, actual: 0o644 })).toBe(
+      "memory/a: mode 644 after restore, the manifest says 600",
+    );
   });
 });

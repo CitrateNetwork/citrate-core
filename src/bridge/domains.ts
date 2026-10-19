@@ -882,11 +882,14 @@ export type BackupMismatch =
   | { kind: "hashDiffers"; path: string }
   | { kind: "unlisted"; path: string }
   | { kind: "unsafePath"; path: string }
-  | { kind: "notAFile"; path: string };
+  | { kind: "notAFile"; path: string }
+  | { kind: "badMode"; path: string }
+  | { kind: "modeDiffers"; path: string; expected: number; actual: number };
 
 export interface BackupExportReport {
   folder: string;
   createdAt: number;
+  /** The parts actually written (a skipped part is in `skipped` with item "files" / "memory"). */
   parts: BackupPart[];
   files: number;
   memoryFiles: number;
@@ -911,7 +914,10 @@ export interface BackupVerifyReport {
 
 export interface BackupRestoreReport {
   folder: string;
+  /** The parts actually restored. */
   parts: BackupPart[];
+  /** Requested parts that were not restored, and why. */
+  skipped: { item: string; reason: string }[];
   filesRestored: number;
   cidsChanged: { expected: string; actual: string }[];
   memoryFilesRestored: number;

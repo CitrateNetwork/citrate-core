@@ -108,6 +108,12 @@ impl DaemonControl for FakeDaemon {
         *self.running.lock().unwrap() = false;
     }
     fn start(&self) -> std::result::Result<(), String> {
+        // Mirrors MemoryManager::start: no start while a backup/restore holds the store lock.
+        for key in [self.store_dir.clone(), self.store_dir.join("store.bge.memdag")] {
+            if crate::memory::memory_store_locked(&key) {
+                return Err("a memory backup or restore is in progress".into());
+            }
+        }
         self.starts.fetch_add(1, Ordering::SeqCst);
         *self.running.lock().unwrap() = true;
         Ok(())
@@ -215,7 +221,7 @@ fn export_writes_a_manifest_with_sha256_and_size_for_every_file() {
     let mut sorted = m.entries.clone();
     sorted.sort_by(|a, b| a.path.cmp(&b.path));
     assert_eq!(sorted, m.entries);
-    assert_eq!(m.entries_sha256, entries_digest(&m.entries));
+    assert_eq!(m.entries_sha256, manifest_digest(&m));
     assert_eq!(report.total_bytes, m.entries.iter().map(|e| e.size).sum::<u64>());
 }
 
@@ -457,6 +463,7 @@ fn verify_refuses_unsafe_manifest_paths() {
             size: 0,
             sha256: sha256_hex(b""),
             cid: None,
+            mode: None,
         }];
         let m = Manifest {
             format: FORMAT.into(),
@@ -465,6 +472,8 @@ fn verify_refuses_unsafe_manifest_paths() {
             parts: vec![Part::Memory],
             entries_sha256: entries_digest(&entries),
             entries,
+            dirs: vec![],
+            skipped_parts: vec![],
         };
         std::fs::write(root.join(MANIFEST_NAME), serde_json::to_vec(&m).unwrap()).unwrap();
         let Err(BackupError::Mismatch(list)) = verify_folder(&root) else {
@@ -777,4 +786,265 @@ fn the_bonded_storage_pin_command_is_not_invocable() {
     // The local pin is still there and still allowed.
     assert!(handler.contains("storage::storage_pin_local,"));
     assert!(acl.contains("\"storage_pin_local\""));
+}
+
+// ---------------------------------------------------------------- review follow-ups (Codex, 7b874a1)
+
+/// Finding 1: nothing may start the memory daemon while a restore swaps the store. The restore
+/// holds the memory store lock from before it stops the daemon until the swap is done; the lock is
+/// released before the restore starts the daemon again.
+#[test]
+fn restore_holds_the_memory_store_lock_while_it_swaps() {
+    let (report, _kubo, mem, _root) = export_both("restore-lock");
+    let store = mem.join("store.bge.memdag");
+    let daemon = FakeDaemon::new(true, &store);
+    let target = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+    };
+    let mut locked_during_copy = Vec::new();
+    let mut start_refused_mid_restore = false;
+    let mut on = |p: &Progress| {
+        if p.phase == "memory" {
+            locked_during_copy.push(crate::memory::memory_store_locked(&store));
+            // Any other start path (the Start button, a seed, an import restart) is refused.
+            if daemon.start().is_err() {
+                start_refused_mid_restore = true;
+            }
+        }
+    };
+    let r = restore(
+        Path::new(&report.folder),
+        &[Part::Memory],
+        None,
+        Some(&target),
+        42,
+        &mut on,
+    )
+    .expect("restore");
+    assert!(!locked_during_copy.is_empty());
+    assert!(locked_during_copy.iter().all(|l| *l), "locked for every file");
+    assert!(start_refused_mid_restore, "a start mid-restore is refused");
+    assert!(!crate::memory::memory_store_locked(&store), "released after");
+    assert!(r.daemon_restarted && daemon.is_running(), "the restore's own restart runs");
+    assert_eq!(daemon.starts.load(Ordering::SeqCst), 1, "only the restore's restart started it");
+}
+
+/// The lock is released when the restore fails mid-way, too.
+#[test]
+fn the_memory_store_lock_is_released_after_a_refused_restore() {
+    let (report, _kubo, mem, _root) = export_both("restore-lock-fail");
+    let folder = PathBuf::from(&report.folder);
+    std::fs::write(folder.join("memory/docs-corpus.seeded"), b"abc\nXYZ\n").unwrap();
+    let store = mem.join("store.bge.memdag");
+    let daemon = FakeDaemon::new(false, &store);
+    let target = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+    };
+    assert!(restore(&folder, &[Part::Memory], None, Some(&target), 42, &mut no_progress()).is_err());
+    assert!(!crate::memory::memory_store_locked(&store));
+}
+
+#[cfg(unix)]
+fn mode_of(p: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+fn set_mode(p: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Finding 2: restored memory files keep exactly the modes the originals had (owner-only 0600
+/// files and 0700 dirs here, plus one 0640 file to show it is the original mode, not a default).
+/// The manifest records each mode; the backup copies carry them too.
+#[cfg(unix)]
+#[test]
+fn restore_reapplies_the_original_modes_recorded_in_the_manifest() {
+    let root = tmp_dir("modes");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let mem = seed_memory_dir(&root);
+    let store = mem.join("store.bge.memdag");
+    set_mode(&mem, 0o700);
+    set_mode(&store, 0o700);
+    set_mode(&store.join("sub"), 0o700);
+    for f in ["000123.sst", "CURRENT", "LOCK", "sub/OPTIONS-000007"] {
+        set_mode(&store.join(f), 0o600);
+    }
+    set_mode(&mem.join("docs-corpus.seeded"), 0o640);
+    let daemon = FakeDaemon::new(false, &store);
+    let src = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+    };
+    let report = export(&dest, &[Part::Memory], None, Some(&src), 1, &mut no_progress()).unwrap();
+    let folder = PathBuf::from(&report.folder);
+    let m = read_manifest(&folder).unwrap();
+    let mode = |path: &str| m.entries.iter().find(|e| e.path == path).and_then(|e| e.mode);
+    assert_eq!(mode("memory/store.bge.memdag/000123.sst"), Some(0o600));
+    assert_eq!(mode("memory/docs-corpus.seeded"), Some(0o640));
+    let dir_mode = |path: &str| m.dirs.iter().find(|d| d.path == path).map(|d| d.mode);
+    assert_eq!(dir_mode("memory"), Some(0o700));
+    assert_eq!(dir_mode("memory/store.bge.memdag"), Some(0o700));
+    assert_eq!(dir_mode("memory/store.bge.memdag/sub"), Some(0o700));
+    // The backup copies are not left at the default (umask) mode.
+    assert_eq!(mode_of(&folder.join("memory/store.bge.memdag/000123.sst")), 0o600);
+
+    // Restore over a store that has drifted to looser modes.
+    set_mode(&store.join("000123.sst"), 0o644);
+    restore(&folder, &[Part::Memory], None, Some(&src), 42, &mut no_progress()).unwrap();
+    assert_eq!(mode_of(&mem), 0o700);
+    assert_eq!(mode_of(&store), 0o700);
+    assert_eq!(mode_of(&store.join("sub")), 0o700);
+    for f in ["000123.sst", "CURRENT", "LOCK", "sub/OPTIONS-000007"] {
+        assert_eq!(mode_of(&store.join(f)), 0o600, "{f}");
+    }
+    assert_eq!(mode_of(&mem.join("docs-corpus.seeded")), 0o640);
+}
+
+/// A manifest mode outside the permission bits (setuid, sticky, garbage) is refused.
+#[test]
+fn verify_refuses_a_manifest_mode_outside_the_permission_bits() {
+    let (report, _kubo, _mem, _root) = export_both("bad-mode");
+    let folder = PathBuf::from(&report.folder);
+    let mut m = read_manifest(&folder).unwrap();
+    let i = m.entries.iter().position(|e| e.path.starts_with("memory/")).unwrap();
+    m.entries[i].mode = Some(0o4755);
+    m.entries_sha256 = manifest_digest(&m);
+    std::fs::write(folder.join(MANIFEST_NAME), serde_json::to_vec(&m).unwrap()).unwrap();
+    let Err(BackupError::Mismatch(list)) = verify_folder(&folder) else {
+        panic!("a setuid mode must be refused");
+    };
+    assert!(list.iter().any(|x| matches!(x, Mismatch::BadMode { .. })), "{list:?}");
+}
+
+/// Finding 3 (export side): a part with nothing to back up is not listed as exported; the report
+/// and the manifest name it as skipped, with the reason.
+#[test]
+fn export_lists_a_missing_memory_store_as_skipped_not_exported() {
+    let root = tmp_dir("skip-part");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let kubo = FakeKubo::new();
+    kubo.put_pinned(b"a file");
+    let mgr = files_manager(&root, kubo);
+    let mem = root.join("memory"); // never created
+    let daemon = FakeDaemon::new(false, &mem);
+    let src = MemorySource {
+        dir: mem.clone(),
+        store_path: mem.join("store.bge.memdag"),
+        daemon: &daemon,
+    };
+    let r = export(&dest, &[Part::Files, Part::Memory], Some(&mgr), Some(&src), 1, &mut no_progress())
+        .unwrap();
+    assert_eq!(r.parts, vec![Part::Files], "only what was exported");
+    assert!(r.skipped.iter().any(|s| s.item == "memory" && s.reason.contains("no memory store")));
+    let m = read_manifest(Path::new(&r.folder)).unwrap();
+    assert_eq!(m.parts, vec![Part::Files]);
+    assert_eq!(m.skipped_parts.len(), 1);
+    assert_eq!(m.skipped_parts[0].part, Part::Memory);
+}
+
+/// An empty memory dir is skipped too, so a restore can never swap in an empty store.
+#[test]
+fn export_skips_an_empty_memory_store() {
+    let root = tmp_dir("skip-empty");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let kubo = FakeKubo::new();
+    kubo.put_pinned(b"a file");
+    let mgr = files_manager(&root, kubo);
+    let mem = root.join("memory");
+    std::fs::create_dir_all(&mem).unwrap();
+    std::fs::write(mem.join("memdag.sock"), b"").unwrap(); // excluded, so effectively empty
+    let daemon = FakeDaemon::new(false, &mem);
+    let src = MemorySource {
+        dir: mem.clone(),
+        store_path: mem.join("store.bge.memdag"),
+        daemon: &daemon,
+    };
+    let r = export(&dest, &[Part::Files, Part::Memory], Some(&mgr), Some(&src), 1, &mut no_progress())
+        .unwrap();
+    assert_eq!(r.parts, vec![Part::Files]);
+    assert!(r.skipped.iter().any(|s| s.item == "memory" && s.reason.contains("empty")));
+}
+
+/// Nothing at all to back up is an error, and no folder is left behind.
+#[test]
+fn export_with_nothing_to_back_up_is_refused_and_leaves_no_folder() {
+    let root = tmp_dir("skip-all");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let mem = root.join("memory");
+    let daemon = FakeDaemon::new(false, &mem);
+    let src = MemorySource {
+        dir: mem.clone(),
+        store_path: mem.join("store.bge.memdag"),
+        daemon: &daemon,
+    };
+    let r = export(&dest, &[Part::Memory], None, Some(&src), 1, &mut no_progress());
+    assert!(matches!(r, Err(BackupError::InvalidFolder(_))), "{r:?}");
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+}
+
+/// Finding 3 (restore side): the report lists only the parts actually restored and names each
+/// skipped part with its reason; a skipped Memory part never touches the live store or daemon.
+#[test]
+fn restore_reports_only_what_it_restored_and_names_the_skipped_part() {
+    let root = tmp_dir("restore-skip");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let kubo = FakeKubo::new();
+    kubo.put_pinned(b"only files here");
+    let mgr = files_manager(&root, kubo);
+    let absent = root.join("no-memory");
+    let d0 = FakeDaemon::new(false, &absent);
+    let src = MemorySource {
+        dir: absent.clone(),
+        store_path: absent.join("store.bge.memdag"),
+        daemon: &d0,
+    };
+    let report = export(&dest, &[Part::Files, Part::Memory], Some(&mgr), Some(&src), 1, &mut no_progress())
+        .unwrap();
+
+    // Restore both parts into a node that has a live memory store.
+    let mem = seed_memory_dir(&root);
+    let before = std::fs::read(mem.join("store.bge.memdag/000123.sst")).unwrap();
+    let store = mem.join("store.bge.memdag");
+    let daemon = FakeDaemon::new(true, &store);
+    let target = MemorySource {
+        dir: mem.clone(),
+        store_path: store.clone(),
+        daemon: &daemon,
+    };
+    let fresh_root = tmp_dir("restore-skip-fresh");
+    let fresh = files_manager(&fresh_root, FakeKubo::new());
+    let r = restore(
+        Path::new(&report.folder),
+        &[Part::Files, Part::Memory],
+        Some(&fresh),
+        Some(&target),
+        42,
+        &mut no_progress(),
+    )
+    .expect("restore what is there");
+    assert_eq!(r.parts, vec![Part::Files], "only what was restored");
+    assert_eq!(r.files_restored, 1);
+    assert_eq!(r.memory_files_restored, 0);
+    assert_eq!(r.skipped.len(), 1);
+    assert_eq!(r.skipped[0].item, "memory");
+    assert!(r.skipped[0].reason.contains("not in this backup"), "{:?}", r.skipped);
+    assert!(r.skipped[0].reason.contains("no memory store"), "carries the export's reason");
+    // The live memory store and its daemon were left alone.
+    assert_eq!(std::fs::read(mem.join("store.bge.memdag/000123.sst")).unwrap(), before);
+    assert_eq!(daemon.stops.load(Ordering::SeqCst), 0);
+    assert!(r.previous_memory_kept_at.is_none());
+    assert!(!r.daemon_restarted);
 }

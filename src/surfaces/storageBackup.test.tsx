@@ -114,6 +114,7 @@ describe("K4 Backup — restore", () => {
       lastRestore: {
         folder: OK_CHECK.folder,
         parts: ["files", "memory"],
+        skipped: [],
         filesRestored: 2,
         cidsChanged: [{ expected: "QmOld", actual: "bafyNew" }],
         memoryFilesRestored: 5,
@@ -123,10 +124,59 @@ describe("K4 Backup — restore", () => {
       },
     });
     const html = render();
-    expect(html).toContain("Restored and checked.");
+    expect(html).toContain("Restored Files and Memory and checked.");
     expect(html).toContain("2 files · 5 memory store files");
     expect(html).toContain("memory.before-restore-20261019-120500");
     expect(html).toContain("QmOld came back as bafyNew");
+  });
+
+  it("the restore report lists only what was restored and names each skipped part with its reason", () => {
+    storageSlice.set({
+      lastRestore: {
+        folder: OK_CHECK.folder,
+        parts: ["files"],
+        skipped: [{ item: "memory", reason: "not in this backup (the export skipped it: there is no memory store on this machine yet)" }],
+        filesRestored: 1,
+        cidsChanged: [],
+        memoryFilesRestored: 0,
+        previousMemoryKeptAt: null,
+        daemonRestarted: false,
+        notes: [],
+      },
+    });
+    const html = render();
+    expect(html).toContain("Restored Files and checked.");
+    expect(html).not.toContain("Restored Files and Memory");
+    expect(html).toContain("Memory not restored: not in this backup (the export skipped it: there is no memory store on this machine yet)");
+    expect(html).not.toContain("memory store file");
+  });
+
+  it("the export report names a skipped part instead of counting it as exported", () => {
+    storageSlice.set({
+      lastExport: {
+        folder: "/b/citrate-backup-1",
+        createdAt: 1,
+        parts: ["files"],
+        files: 1,
+        memoryFiles: 0,
+        totalBytes: 10,
+        entriesSha256: "cd".repeat(32),
+        skipped: [{ item: "memory", reason: "there is no memory store on this machine yet" }],
+        daemonRestarted: false,
+        notes: [],
+      },
+    });
+    const html = render();
+    expect(html).toContain("Backed up Files.");
+    expect(html).toContain("Memory not backed up: there is no memory store on this machine yet");
+    expect(html).not.toContain("memory store file");
+  });
+
+  it("a mode problem is named in the refusal", () => {
+    storageSlice.set({
+      restoreCheck: { ...OK_CHECK, ok: false, mismatches: [{ kind: "badMode", path: "memory/x" }] },
+    });
+    expect(render()).toContain("memory/x: not an allowed file mode");
   });
 
   it("in the web preview it says backup needs the desktop app", () => {

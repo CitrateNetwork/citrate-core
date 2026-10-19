@@ -479,6 +479,47 @@ pub fn parse_neighbors(text: &str) -> Vec<MemoryNeighbor> {
 // The memory manager: keyring + supervisor + socket transport.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// K4: the memory store lock (backup / restore)
+// ---------------------------------------------------------------------------
+
+/// Stores a backup or restore is working on (keyed by the store path).
+static STORE_LOCKS: Mutex<std::collections::BTreeSet<PathBuf>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+/// Held by a storage backup or restore (`storage_backup.rs`) from before it stops the daemon until
+/// its copy or swap is done. While held, [`MemoryManager::start`] refuses, so no start path (the
+/// Start control, a seed, a knowledge-import restart) can open the store mid-restore. The
+/// supervisor itself never restarts a daemon it no longer owns: the backup stops (and drops) the
+/// supervisor before it takes the store.
+pub(crate) struct MemoryStoreLock(PathBuf);
+
+impl MemoryStoreLock {
+    /// Take the lock for `store_path`; `None` if another backup/restore holds it.
+    pub(crate) fn acquire(store_path: &std::path::Path) -> Option<Self> {
+        let mut set = STORE_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(store_path.to_path_buf())
+            .then(|| MemoryStoreLock(store_path.to_path_buf()))
+    }
+}
+
+impl Drop for MemoryStoreLock {
+    fn drop(&mut self) {
+        STORE_LOCKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Whether a backup or restore holds `store_path`.
+pub(crate) fn memory_store_locked(store_path: &std::path::Path) -> bool {
+    STORE_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(store_path)
+}
+
 /// The memory manager. Owns the keyring seam, the resolved daemon binary + store
 /// dir + socket path, the injectable socket transport, and (while running) a
 /// live [`Supervisor`]. Managed as Tauri state; `start`/`status`/`stop` drive
@@ -693,6 +734,12 @@ impl MemoryManager {
         if crate::knowledge_import::ImportRegistry::global().holds_store(&self.store_path) {
             return Err(MemoryError::Spawn(
                 "the knowledge import is still writing the memory store; the memory daemon starts when it finishes".into(),
+            ));
+        }
+        // K4: a storage backup or restore is copying or swapping the store.
+        if memory_store_locked(&self.store_path) {
+            return Err(MemoryError::Spawn(
+                "a memory backup or restore is in progress; the memory daemon starts when it finishes".into(),
             ));
         }
         if !self.bin.exists() {

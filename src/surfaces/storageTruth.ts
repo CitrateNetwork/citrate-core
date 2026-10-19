@@ -59,6 +59,10 @@ export function describeMismatch(m: BackupMismatch): string {
       return `${m.path}: not an allowed backup path`;
     case "notAFile":
       return `${m.path}: not a regular file`;
+    case "badMode":
+      return `${m.path}: not an allowed file mode`;
+    case "modeDiffers":
+      return `${m.path}: mode ${m.actual.toString(8)} after restore, the manifest says ${m.expected.toString(8)}`;
   }
 }
 

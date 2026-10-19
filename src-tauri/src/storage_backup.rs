@@ -13,8 +13,12 @@
 //!   memory/<relative path>         the memory store dir, copied with the daemon stopped
 //! ```
 //!
-//! The manifest lists every file with its size and SHA-256 (and, for Files, the CID), sorted by
-//! path, plus `entriesSha256`, a digest over the entry list so an edited manifest is caught.
+//! The manifest lists every file with its size, SHA-256 and Unix mode (and, for Files, the CID),
+//! sorted by path; the memory store's directories with their modes (`dirs`); the parts it holds
+//! (`parts`, never a part that was skipped) and the parts the export skipped with the reason
+//! (`skippedParts`); and `entriesSha256`, a digest over all of that so an edited manifest is
+//! caught. A requested part with nothing to back up (no memory store, an empty one, no pinned
+//! files) is skipped, never written as an empty part.
 //!
 //! ## Verification and refusal
 //! [`verify_folder`] checks the manifest format and digest, that every listed path is a safe
@@ -27,7 +31,11 @@
 //! ## Memory
 //! The mem-mcp daemon holds the store's RocksDB lock, so a consistent copy needs it stopped.
 //! Export and restore stop a running daemon, do the copy, and start it again; a stopped daemon
-//! stays stopped. They hold the knowledge importer's store slot ([`ImportGuard`]) for the whole
+//! stays stopped. From before the stop until the copy or swap is done they hold the memory store
+//! lock ([`crate::memory::MemoryStoreLock`]): `MemoryManager::start` refuses while it is held, so
+//! no start path (the Start control, a seed, a knowledge-import restart) opens the store
+//! mid-restore. Restore re-applies each file's and directory's recorded mode and checks it took.
+//! The restore report lists only the parts it restored and names each skipped part and why. They hold the knowledge importer's store slot ([`ImportGuard`]) for the whole
 //! operation, so no import writes the store meanwhile. Restore copies into a staging dir beside
 //! the store, re-checks every hash there, then swaps it in. The replaced store is KEPT beside it
 //! as `memory.before-restore-<time>`, never deleted. The live socket (`memdag.sock`) and the
@@ -114,6 +122,26 @@ pub struct ManifestEntry {
     /// The CID, for `files/` entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cid: Option<String>,
+    /// Unix permission bits (`& 0o777`) of the original file, re-applied on restore. `None` on
+    /// platforms without Unix modes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
+}
+
+/// A directory of the memory store and its Unix permission bits (`memory` is the store root).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestDir {
+    pub path: String,
+    pub mode: u32,
+}
+
+/// A part the export was asked for but did not write, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedPart {
+    pub part: Part,
+    pub reason: String,
 }
 
 /// The backup manifest.
@@ -124,11 +152,18 @@ pub struct Manifest {
     /// Unix seconds when the export ran.
     pub created_at: u64,
     pub app_version: String,
+    /// The parts this backup actually holds (never a part that was skipped).
     pub parts: Vec<Part>,
     /// Sorted by `path`.
     pub entries: Vec<ManifestEntry>,
-    /// [`entries_digest`] of `entries`.
+    /// [`manifest_digest`] over `entries`, `dirs` and `skipped_parts`.
     pub entries_sha256: String,
+    /// The memory store's directories with their modes, sorted by `path` (parents first).
+    #[serde(default)]
+    pub dirs: Vec<ManifestDir>,
+    /// Parts the export was asked for but did not write.
+    #[serde(default)]
+    pub skipped_parts: Vec<SkippedPart>,
 }
 
 /// One way a backup folder disagrees with its manifest.
@@ -152,6 +187,15 @@ pub enum Mismatch {
     UnsafePath { path: String },
     /// A symlink or other non-regular file where a file is listed.
     NotAFile { path: String },
+    /// A manifest mode outside the permission bits (0o777): setuid, setgid, sticky or garbage.
+    BadMode { path: String },
+    /// A restored file or dir did not end up with the manifest's mode.
+    #[serde(rename_all = "camelCase")]
+    ModeDiffers {
+        path: String,
+        expected: u32,
+        actual: u32,
+    },
 }
 
 impl Mismatch {
@@ -167,6 +211,12 @@ impl Mismatch {
             Mismatch::Unlisted { path } => format!("{path}: not in the manifest"),
             Mismatch::UnsafePath { path } => format!("{path:?}: not an allowed backup path"),
             Mismatch::NotAFile { path } => format!("{path}: not a regular file"),
+            Mismatch::BadMode { path } => format!("{path}: not an allowed file mode"),
+            Mismatch::ModeDiffers {
+                path,
+                expected,
+                actual,
+            } => format!("{path}: mode {actual:o}, manifest says {expected:o}"),
         }
     }
 }
@@ -254,6 +304,7 @@ pub struct ExportReport {
     /// The new backup folder.
     pub folder: String,
     pub created_at: u64,
+    /// The parts actually written (a requested part that was not written is in `skipped`).
     pub parts: Vec<Part>,
     /// Files (IPFS objects) written.
     pub files: u64,
@@ -281,7 +332,10 @@ pub struct CidChange {
 #[serde(rename_all = "camelCase")]
 pub struct RestoreReport {
     pub folder: String,
+    /// The parts actually restored (a requested part that was not restored is in `skipped`).
     pub parts: Vec<Part>,
+    /// Requested parts that were not restored, and why.
+    pub skipped: Vec<Skipped>,
     pub files_restored: u64,
     pub cids_changed: Vec<CidChange>,
     pub memory_files_restored: u64,
@@ -344,8 +398,25 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// The digest over a manifest's entries: one `path\nsize\nsha256\ncid\n` record per entry.
+/// The digest over a manifest's entries only (a manifest with no dirs and no skipped parts).
+/// Tests build hand-made manifests with it.
+#[cfg(test)]
 pub fn entries_digest(entries: &[ManifestEntry]) -> String {
+    digest_records(entries, &[], &[])
+}
+
+/// The digest stored as `entriesSha256`: every entry, dir and skipped part.
+pub fn manifest_digest(m: &Manifest) -> String {
+    digest_records(&m.entries, &m.dirs, &m.skipped_parts)
+}
+
+/// One `path\nsize\nsha256\ncid\nmode\n` record per entry, then `dir\npath\nmode\n` per dir and
+/// `skip\npart\nreason\n` per skipped part.
+fn digest_records(
+    entries: &[ManifestEntry],
+    dirs: &[ManifestDir],
+    skipped: &[SkippedPart],
+) -> String {
     let mut h = Sha256::new();
     for e in entries {
         h.update(e.path.as_bytes());
@@ -356,8 +427,80 @@ pub fn entries_digest(entries: &[ManifestEntry]) -> String {
         h.update(b"\n");
         h.update(e.cid.as_deref().unwrap_or("").as_bytes());
         h.update(b"\n");
+        h.update(e.mode.map(|m| m.to_string()).unwrap_or_default().as_bytes());
+        h.update(b"\n");
+    }
+    for d in dirs {
+        h.update(b"dir\n");
+        h.update(d.path.as_bytes());
+        h.update(b"\n");
+        h.update(d.mode.to_string().as_bytes());
+        h.update(b"\n");
+    }
+    for sp in skipped {
+        h.update(b"skip\n");
+        h.update(part_name(sp.part).as_bytes());
+        h.update(b"\n");
+        h.update(sp.reason.as_bytes());
+        h.update(b"\n");
     }
     hex::encode(h.finalize())
+}
+
+fn part_name(p: Part) -> &'static str {
+    match p {
+        Part::Files => "files",
+        Part::Memory => "memory",
+    }
+}
+
+fn part_label(p: Part) -> &'static str {
+    match p {
+        Part::Files => "Files",
+        Part::Memory => "Memory",
+    }
+}
+
+/// The Unix permission bits (`& 0o777`) of `path` (not following symlinks).
+#[cfg(unix)]
+fn mode_of(path: &Path) -> Result<Option<u32>, BackupError> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| io_err("read file mode", e))?;
+    Ok(Some(meta.permissions().mode() & 0o777))
+}
+
+#[cfg(not(unix))]
+fn mode_of(_path: &Path) -> Result<Option<u32>, BackupError> {
+    Ok(None)
+}
+
+/// Set the Unix permission bits of `path` (a no-op without Unix modes).
+#[cfg(unix)]
+fn apply_mode(path: &Path, mode: u32) -> Result<(), BackupError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o777))
+        .map_err(|e| io_err("set file mode", e))
+}
+
+#[cfg(not(unix))]
+fn apply_mode(_path: &Path, _mode: u32) -> Result<(), BackupError> {
+    Ok(())
+}
+
+/// Apply `mode` and check it took (a filesystem that drops modes is a mismatch, not a silent
+/// widening).
+fn apply_and_check_mode(path: &Path, rel: &str, mode: u32) -> Result<(), BackupError> {
+    apply_mode(path, mode)?;
+    if let Some(actual) = mode_of(path)? {
+        if actual != mode {
+            return Err(BackupError::Mismatch(vec![Mismatch::ModeDiffers {
+                path: rel.to_string(),
+                expected: mode,
+                actual,
+            }]));
+        }
+    }
+    Ok(())
 }
 
 /// Copy `from` to `to` (created new; never overwrites), hashing the bytes on the way.
@@ -441,11 +584,21 @@ fn slash_path(rel: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// Every regular file under `root` (recursively), as paths relative to `root`. Symlinks and other
-/// non-regular entries are returned in the second list (never followed).
-fn walk(root: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), BackupError> {
+/// What [`walk`] found under a root, as paths relative to it.
+struct Walked {
+    /// Regular files.
+    files: Vec<PathBuf>,
+    /// Symlinks and other non-regular entries (never followed).
+    odd: Vec<PathBuf>,
+    /// Subdirectories (not the root itself), sorted so parents come first.
+    dirs: Vec<PathBuf>,
+}
+
+/// Every entry under `root` (recursively), never following symlinks.
+fn walk(root: &Path) -> Result<Walked, BackupError> {
     let mut files = Vec::new();
     let mut odd = Vec::new();
+    let mut dirs = Vec::new();
     let mut stack = vec![PathBuf::new()];
     while let Some(rel) = stack.pop() {
         let dir = root.join(&rel);
@@ -457,6 +610,7 @@ fn walk(root: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), BackupError> {
             if ft.is_symlink() {
                 odd.push(child);
             } else if ft.is_dir() {
+                dirs.push(child.clone());
                 stack.push(child);
             } else if ft.is_file() {
                 files.push(child);
@@ -467,7 +621,8 @@ fn walk(root: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), BackupError> {
     }
     files.sort();
     odd.sort();
-    Ok((files, odd))
+    dirs.sort();
+    Ok(Walked { files, odd, dirs })
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +749,13 @@ fn with_memory_paused<T>(
     if crate::knowledge_import::ImportRegistry::global().is_closed() {
         return Err(BackupError::Busy("the app is quitting".to_string()));
     }
+    // Held from before the daemon stops until the copy/swap is done: every memory start path
+    // (`MemoryManager::start`) refuses while it is held, so nothing opens the store mid-restore.
+    let Some(store_lock) = crate::memory::MemoryStoreLock::acquire(&m.store_path) else {
+        return Err(BackupError::Busy(
+            "another memory backup or restore is running; try again when it finishes".to_string(),
+        ));
+    };
     let was_running = m.daemon.is_running();
     if was_running {
         on_progress(&Progress {
@@ -606,6 +768,8 @@ fn with_memory_paused<T>(
         m.daemon.stop();
     }
     let out = f(on_progress);
+    // Release the store before our own restart (which would otherwise be refused).
+    drop(store_lock);
     let mut restarted = false;
     if was_running {
         match m.daemon.start() {
@@ -672,6 +836,9 @@ fn export_into(
     let mut file_count = 0u64;
     let mut memory_count = 0u64;
     let mut daemon_restarted = false;
+    let mut dirs: Vec<ManifestDir> = Vec::new();
+    let mut written: Vec<Part> = Vec::new();
+    let mut skipped_parts: Vec<SkippedPart> = Vec::new();
 
     if let (true, Some(mgr)) = (parts.contains(&Part::Files), files) {
         let rows = mgr.list().map_err(|e| BackupError::Kubo(e.to_string()))?;
@@ -715,11 +882,16 @@ fn export_into(
             out.write_all(&bytes)
                 .map_err(|e| io_err("write a file", e))?;
             out.sync_all().map_err(|e| io_err("write a file", e))?;
+            drop(out);
+            // Owner-only, recorded so a restore can check it.
+            let file_path = files_dir.join(&r.cid);
+            apply_mode(&file_path, 0o600)?;
             entries.push(ManifestEntry {
                 path: rel.clone(),
                 size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
                 cid: Some(r.cid),
+                mode: mode_of(&file_path)?,
             });
             file_count += 1;
             on_progress(&Progress {
@@ -730,35 +902,74 @@ fn export_into(
                 item: rel,
             });
         }
+        if file_count > 0 {
+            written.push(Part::Files);
+        } else {
+            let _ = std::fs::remove_dir(&files_dir);
+            skipped_parts.push(SkippedPart {
+                part: Part::Files,
+                reason: "no files are pinned on this node".to_string(),
+            });
+        }
     }
 
     if let (true, Some(m)) = (parts.contains(&Part::Memory), memory) {
         if !m.dir.is_dir() {
-            skipped.push(Skipped {
-                item: MEMORY_DIR.to_string(),
+            skipped_parts.push(SkippedPart {
+                part: Part::Memory,
                 reason: "there is no memory store on this machine yet".to_string(),
             });
         } else {
             let mem_out = folder.join(MEMORY_DIR);
-            let ((mem_entries, n), restarted) =
+            let (copied, restarted) =
                 with_memory_paused(m, &mut notes, on_progress, "export", |on| {
                     copy_memory_out(&m.dir, &mem_out, on)
                 })?;
             daemon_restarted = restarted;
-            memory_count = n;
-            entries.extend(mem_entries);
+            if copied.entries.is_empty() {
+                let _ = std::fs::remove_dir_all(&mem_out);
+                skipped_parts.push(SkippedPart {
+                    part: Part::Memory,
+                    reason: "the memory store is empty".to_string(),
+                });
+            } else {
+                memory_count = copied.entries.len() as u64;
+                entries.extend(copied.entries);
+                dirs = copied.dirs;
+                written.push(Part::Memory);
+            }
         }
     }
 
+    for sp in &skipped_parts {
+        skipped.push(Skipped {
+            item: part_name(sp.part).to_string(),
+            reason: sp.reason.clone(),
+        });
+    }
+    if written.is_empty() {
+        let why: Vec<String> = skipped_parts
+            .iter()
+            .map(|sp| format!("{}: {}", part_label(sp.part), sp.reason))
+            .collect();
+        return Err(BackupError::InvalidFolder(format!(
+            "nothing to back up ({})",
+            why.join("; ")
+        )));
+    }
+
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         format: FORMAT.to_string(),
         created_at: now,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        parts: parts.to_vec(),
-        entries_sha256: entries_digest(&entries),
+        parts: written.clone(),
+        entries_sha256: String::new(),
         entries,
+        dirs,
+        skipped_parts,
     };
+    manifest.entries_sha256 = manifest_digest(&manifest);
     let json = serde_json::to_vec_pretty(&manifest).map_err(|e| io_err("write the manifest", e))?;
     let mut mf = std::fs::OpenOptions::new()
         .write(true)
@@ -789,7 +1000,7 @@ fn export_into(
     Ok(ExportReport {
         folder: folder.to_string_lossy().to_string(),
         created_at: now,
-        parts: parts.to_vec(),
+        parts: written,
         files: file_count,
         memory_files: memory_count,
         total_bytes: manifest.entries.iter().map(|e| e.size).sum(),
@@ -800,15 +1011,22 @@ fn export_into(
     })
 }
 
+/// What [`copy_memory_out`] wrote: the file entries and the directories (with modes).
+struct CopiedMemory {
+    entries: Vec<ManifestEntry>,
+    dirs: Vec<ManifestDir>,
+}
+
 /// Copy the memory dir into `out` (skipping the socket, the crash log, symlinks and non-regular
-/// entries), returning the manifest entries.
+/// entries). Each copy keeps the original's mode, and every mode is recorded for the manifest.
 fn copy_memory_out(
     mem_dir: &Path,
     out: &Path,
     on_progress: &mut dyn FnMut(&Progress),
-) -> Result<(Vec<ManifestEntry>, u64), BackupError> {
-    let (files, _odd) = walk(mem_dir)?;
-    let files: Vec<PathBuf> = files
+) -> Result<CopiedMemory, BackupError> {
+    let walked = walk(mem_dir)?;
+    let files: Vec<PathBuf> = walked
+        .files
         .into_iter()
         .filter(|rel| {
             !(rel.components().count() == 1
@@ -818,26 +1036,54 @@ fn copy_memory_out(
                     .unwrap_or(false))
         })
         .collect();
-    let total = files.len() as u64;
-    let mut entries = Vec::with_capacity(files.len());
-    for (i, rel) in files.iter().enumerate() {
-        let slash = slash_path(rel).ok_or_else(|| {
+    let utf8 = |rel: &Path| {
+        slash_path(rel).ok_or_else(|| {
             BackupError::Io(format!(
                 "a memory store file name is not valid UTF-8: {}",
                 rel.display()
             ))
-        })?;
+        })
+    };
+    // Directories: the root plus every subdirectory, created owner-writable while copying.
+    let mut dirs = Vec::new();
+    if let Some(mode) = mode_of(mem_dir)? {
+        dirs.push(ManifestDir {
+            path: MEMORY_DIR.to_string(),
+            mode,
+        });
+    }
+    std::fs::create_dir_all(out).map_err(|e| io_err("create a folder", e))?;
+    for rel in &walked.dirs {
+        let slash = utf8(rel)?;
+        std::fs::create_dir_all(out.join(rel)).map_err(|e| io_err("create a folder", e))?;
+        if let Some(mode) = mode_of(&mem_dir.join(rel))? {
+            dirs.push(ManifestDir {
+                path: format!("{MEMORY_DIR}/{slash}"),
+                mode,
+            });
+        }
+    }
+    let total = files.len() as u64;
+    let mut entries = Vec::with_capacity(files.len());
+    for (i, rel) in files.iter().enumerate() {
+        let slash = utf8(rel)?;
         let to = out.join(rel);
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent).map_err(|e| io_err("create a folder", e))?;
         }
-        let (size, sha) = copy_hashing(&mem_dir.join(rel), &to)?;
+        let from = mem_dir.join(rel);
+        let mode = mode_of(&from)?;
+        let (size, sha) = copy_hashing(&from, &to)?;
+        if let Some(m) = mode {
+            apply_mode(&to, m)?;
+        }
         let path = format!("{MEMORY_DIR}/{slash}");
         entries.push(ManifestEntry {
             path: path.clone(),
             size,
             sha256: sha,
             cid: None,
+            mode,
         });
         on_progress(&Progress {
             op: "export",
@@ -847,7 +1093,15 @@ fn copy_memory_out(
             item: path,
         });
     }
-    Ok((entries, total))
+    // Directory modes last, deepest first, so a read-only original dir did not block the copy.
+    if !entries.is_empty() {
+        for d in dirs.iter().rev() {
+            let rel: PathBuf = d.path.split('/').skip(1).collect();
+            apply_mode(&out.join(rel), d.mode)?;
+        }
+    }
+    dirs.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(CopiedMemory { entries, dirs })
 }
 
 // ---------------------------------------------------------------------------
@@ -883,7 +1137,7 @@ pub fn verify_folder(folder: &Path) -> Result<Manifest, BackupError> {
             m.format
         )));
     }
-    if entries_digest(&m.entries) != m.entries_sha256 {
+    if manifest_digest(&m) != m.entries_sha256 {
         return Err(BackupError::Manifest(
             "the entry list was changed after the backup was written".to_string(),
         ));
@@ -905,6 +1159,12 @@ pub fn verify_folder(folder: &Path) -> Result<Manifest, BackupError> {
         }
         if !listed.insert(e.path.clone()) {
             problems.push(Mismatch::UnsafePath {
+                path: e.path.clone(),
+            });
+            continue;
+        }
+        if e.mode.is_some_and(|mode| mode > 0o777) {
+            problems.push(Mismatch::BadMode {
                 path: e.path.clone(),
             });
             continue;
@@ -940,8 +1200,24 @@ pub fn verify_folder(folder: &Path) -> Result<Manifest, BackupError> {
             });
         }
     }
+    // Directory records: the memory root or a safe path under it, permission bits only.
+    let mut seen_dirs = std::collections::BTreeSet::new();
+    for d in &m.dirs {
+        let safe = d.path == MEMORY_DIR
+            || (d.path.starts_with("memory/") && safe_rel_path(&d.path).is_some());
+        if !safe || !seen_dirs.insert(d.path.clone()) {
+            problems.push(Mismatch::UnsafePath {
+                path: d.path.clone(),
+            });
+        } else if d.mode > 0o777 {
+            problems.push(Mismatch::BadMode {
+                path: d.path.clone(),
+            });
+        }
+    }
     // Anything in the folder the manifest does not list.
-    let (found, odd) = walk(folder)?;
+    let walked = walk(folder)?;
+    let (found, odd) = (walked.files, walked.odd);
     for rel in found {
         let Some(slash) = slash_path(&rel) else {
             problems.push(Mismatch::Unlisted {
@@ -1030,17 +1306,40 @@ pub fn restore(
         item: MANIFEST_NAME.to_string(),
     });
     let m = verify_folder(folder)?;
+    // Decide what is actually restored. A requested part the backup does not hold, or holds with
+    // no files, is skipped with its reason (and never touches the live store or daemon).
+    let mut to_restore: Vec<Part> = Vec::new();
+    let mut skipped: Vec<Skipped> = Vec::new();
     for p in parts {
-        if !m.parts.contains(p) {
-            return Err(BackupError::InvalidFolder(format!(
-                "this backup has no {} part",
-                match p {
-                    Part::Files => "Files",
-                    Part::Memory => "Memory",
-                }
-            )));
+        let prefix = format!("{}/", part_name(*p));
+        let has_files = m.entries.iter().any(|e| e.path.starts_with(&prefix));
+        if m.parts.contains(p) && has_files {
+            to_restore.push(*p);
+            continue;
         }
+        let reason = if let Some(sp) = m.skipped_parts.iter().find(|sp| sp.part == *p) {
+            format!("not in this backup (the export skipped it: {})", sp.reason)
+        } else if !m.parts.contains(p) {
+            "not in this backup".to_string()
+        } else {
+            format!("this backup has no {} files", part_label(*p))
+        };
+        skipped.push(Skipped {
+            item: part_name(*p).to_string(),
+            reason,
+        });
     }
+    if to_restore.is_empty() {
+        let why: Vec<String> = skipped
+            .iter()
+            .map(|s| format!("{}: {}", s.item, s.reason))
+            .collect();
+        return Err(BackupError::InvalidFolder(format!(
+            "nothing to restore ({})",
+            why.join("; ")
+        )));
+    }
+    let parts = &to_restore[..];
     if parts.contains(&Part::Files) && files.is_none() {
         return Err(BackupError::InvalidFolder(
             "the file store is not available".to_string(),
@@ -1055,6 +1354,7 @@ pub fn restore(
     let mut report = RestoreReport {
         folder: folder.to_string_lossy().to_string(),
         parts: parts.to_vec(),
+        skipped,
         files_restored: 0,
         cids_changed: Vec::new(),
         memory_files_restored: 0,
@@ -1072,7 +1372,7 @@ pub fn restore(
         let mut notes = Vec::new();
         let ((n, kept), restarted) =
             with_memory_paused(m_target, &mut notes, on_progress, "restore", |on| {
-                swap_in_memory(folder, &mem_entries, &m_target.dir, now, on)
+                swap_in_memory(folder, &mem_entries, &m.dirs, &m_target.dir, now, on)
             })?;
         report.notes.extend(notes);
         report.memory_files_restored = n;
@@ -1140,6 +1440,7 @@ pub fn restore(
 fn swap_in_memory(
     folder: &Path,
     entries: &[&ManifestEntry],
+    dirs: &[ManifestDir],
     mem_dir: &Path,
     now: u64,
     on_progress: &mut dyn FnMut(&Progress),
@@ -1156,6 +1457,14 @@ fn swap_in_memory(
     std::fs::create_dir(&staging).map_err(|e| io_err("create the staging folder", e))?;
 
     let staged = (|| -> Result<u64, BackupError> {
+        // Recorded directories first (empty ones included), owner-writable while staging.
+        for d in dirs {
+            if d.path != MEMORY_DIR {
+                let inner: PathBuf = d.path.split('/').skip(1).collect();
+                std::fs::create_dir_all(staging.join(inner))
+                    .map_err(|err| io_err("create a folder", err))?;
+            }
+        }
         let total = entries.len() as u64;
         for (i, e) in entries.iter().enumerate() {
             let rel = safe_rel_path(&e.path).ok_or_else(|| {
@@ -1175,6 +1484,8 @@ fn swap_in_memory(
                     path: e.path.clone(),
                 }]));
             }
+            // The original's mode, exactly; owner-only when the backup recorded none.
+            apply_and_check_mode(&to, &e.path, e.mode.unwrap_or(0o600))?;
             on_progress(&Progress {
                 op: "restore",
                 phase: "memory",
@@ -1183,6 +1494,24 @@ fn swap_in_memory(
                 item: e.path.clone(),
             });
         }
+        // Directory modes last, deepest first; the root and any unrecorded dir are owner-only.
+        let walked = walk(&staging)?;
+        for rel in walked.dirs.iter().rev() {
+            let slash = slash_path(rel).unwrap_or_default();
+            let path = format!("{MEMORY_DIR}/{slash}");
+            let mode = dirs
+                .iter()
+                .find(|d| d.path == path)
+                .map(|d| d.mode)
+                .unwrap_or(0o700);
+            apply_and_check_mode(&staging.join(rel), &path, mode)?;
+        }
+        let root_mode = dirs
+            .iter()
+            .find(|d| d.path == MEMORY_DIR)
+            .map(|d| d.mode)
+            .unwrap_or(0o700);
+        apply_and_check_mode(&staging, MEMORY_DIR, root_mode)?;
         Ok(total)
     })();
     let n = match staged {

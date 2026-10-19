@@ -20,6 +20,9 @@ import { describeMismatch, humanBytes, progressPct, progressText } from "./stora
 
 const PART_LABEL: Record<BackupPart, string> = { files: "Files", memory: "Memory" };
 
+const isPart = (item: string): item is BackupPart => item === "files" || item === "memory";
+const partList = (parts: BackupPart[]) => parts.map((p) => PART_LABEL[p]).join(" and ");
+
 /** Ask the OS for a folder (Tauri dialog). Null when cancelled. */
 async function pickFolder(title: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
@@ -125,15 +128,23 @@ export function StorageBackup({ store }: SurfaceProps) {
         {st.lastExport && (
           <div data-testid="export-report" style={{ display: "flex", flexDirection: "column", gap: 4, borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
             <span style={{ fontSize: 13, color: "var(--ok)" }}>Backup written and checked against its manifest.</span>
+            <span style={{ fontSize: 12.5 }}>Backed up {partList(st.lastExport.parts)}.</span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-2)", wordBreak: "break-all" }}>{st.lastExport.folder}</span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-              {st.lastExport.files} file{st.lastExport.files === 1 ? "" : "s"} · {st.lastExport.memoryFiles} memory store file
-              {st.lastExport.memoryFiles === 1 ? "" : "s"} · {humanBytes(st.lastExport.totalBytes)}
+              {[
+                st.lastExport.parts.includes("files") ? `${st.lastExport.files} file${st.lastExport.files === 1 ? "" : "s"}` : null,
+                st.lastExport.parts.includes("memory")
+                  ? `${st.lastExport.memoryFiles} memory store file${st.lastExport.memoryFiles === 1 ? "" : "s"}`
+                  : null,
+                humanBytes(st.lastExport.totalBytes),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </span>
             <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", wordBreak: "break-all" }}>manifest digest · {st.lastExport.entriesSha256}</span>
             {st.lastExport.skipped.map((s) => (
               <span key={s.item} className="mono" style={{ fontSize: 10, color: "var(--warn, var(--tx-3))" }}>
-                skipped {s.item}: {s.reason}
+                {isPart(s.item) ? `${PART_LABEL[s.item]} not backed up: ${s.reason}` : `skipped ${s.item}: ${s.reason}`}
               </span>
             ))}
             {st.lastExport.notes.map((n) => (
@@ -200,11 +211,24 @@ export function StorageBackup({ store }: SurfaceProps) {
 
         {st.lastRestore && (
           <div data-testid="restore-report" style={{ display: "flex", flexDirection: "column", gap: 4, borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
-            <span style={{ fontSize: 13, color: "var(--ok)" }}>Restored and checked.</span>
+            <span style={{ fontSize: 13, color: "var(--ok)" }}>Restored {partList(st.lastRestore.parts)} and checked.</span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-              {st.lastRestore.filesRestored} file{st.lastRestore.filesRestored === 1 ? "" : "s"} · {st.lastRestore.memoryFilesRestored} memory store file
-              {st.lastRestore.memoryFilesRestored === 1 ? "" : "s"}
+              {[
+                st.lastRestore.parts.includes("files")
+                  ? `${st.lastRestore.filesRestored} file${st.lastRestore.filesRestored === 1 ? "" : "s"}`
+                  : null,
+                st.lastRestore.parts.includes("memory")
+                  ? `${st.lastRestore.memoryFilesRestored} memory store file${st.lastRestore.memoryFilesRestored === 1 ? "" : "s"}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </span>
+            {st.lastRestore.skipped.map((s) => (
+              <span key={s.item} className="mono" style={{ fontSize: 10, color: "var(--warn, var(--tx-3))" }}>
+                {isPart(s.item) ? PART_LABEL[s.item] : s.item} not restored: {s.reason}
+              </span>
+            ))}
             {st.lastRestore.previousMemoryKeptAt && (
               <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", wordBreak: "break-all" }}>
                 your previous memory store is kept at {st.lastRestore.previousMemoryKeptAt}

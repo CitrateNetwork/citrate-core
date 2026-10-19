@@ -883,3 +883,21 @@ fn recall_and_search_leave_out_an_unresolved_learned_memory_until_it_is_resolved
     assert_eq!(r.hits.len(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// K4 review follow-up — no memory start while a backup/restore holds the store
+// ---------------------------------------------------------------------------
+
+#[test]
+fn memory_start_is_refused_while_a_restore_holds_the_store() {
+    let (mgr, _fake, _dir) = stub_manager("restore-lock");
+    let lock = MemoryStoreLock::acquire(mgr.store_path()).expect("lock is free");
+    assert!(MemoryStoreLock::acquire(mgr.store_path()).is_none(), "one holder at a time");
+    let err = mgr.start().expect_err("start must be refused mid-restore");
+    assert!(err.to_string().contains("restore"), "{err}");
+    assert_eq!(mgr.status().state, "stopped", "nothing was spawned");
+    drop(lock);
+    assert!(!memory_store_locked(mgr.store_path()));
+    mgr.start().expect("starts once the restore is done");
+    mgr.stop();
+}
