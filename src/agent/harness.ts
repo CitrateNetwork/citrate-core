@@ -15,6 +15,7 @@
 // a later wave. This module is the seam, not a mock of chain data.
 // =====================================================================
 
+import { grantExplanation } from "../data/grantCopy.ts";
 import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -991,7 +992,8 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("chain_read", { query: "staking.position" })],
       compose: (c) =>
-        `You have **${fmt(c.staked)} SALT** staked in the LiquidStakingPool — your full membership grant, vaulted and attributed to your validator. That meets the 32,000 SALT minimum, so your node ${c.nodeState === "validating" ? "is validating and earning" : "is eligible to validate once running"}. The granted principal stays vaulted until mainnet release; rewards your node earns are yours. Withdrawals of self-added stake carry a 7-day lockup.`,
+        // C1-V V5: the one grant-custody explanation (UI truth contract §5.4); staked = stakeOf.
+        `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. ${grantExplanation({ amountSalt: null, unlockBlock: null, staked: c.staked > 0 })} Your node is **${c.nodeState}**; the Wallet and Node pages show the bond's unlock block.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {

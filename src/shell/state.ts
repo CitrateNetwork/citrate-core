@@ -339,12 +339,14 @@ export interface AppState {
   s5StakeWei: string | null;
   /**
    * M-2.2/M-2.3 — a plain-language description of the member's bond escrow
-   * (`describeBond`), e.g. "Staked · unlocks at block 300,000". Derived ONLY
+   * (`describeBond`), e.g. "Bond locked · not staked · until block 300,000". Derived ONLY
    * from the real grant-status read; `null` until the grant lands. Replaces the
    * hardcoded "mainnet release policy" line, which described a release flag that
    * no longer exists — the member's own lock + KYC gates govern release now.
    */
   s5BondStatus: string | null;
+  /** C1-V V5 — `MemberBond.unlockBlock()` from the grant read; null until the grant lands. */
+  s5UnlockBlock: number | null;
   kycOutcome: "verified" | "failed" | "review";
   route: string;
   wTab: string;
@@ -772,6 +774,7 @@ export function freshState(pid: string): AppState {
     s5n: 0,
     s5StakeWei: null,
     s5BondStatus: null,
+    s5UnlockBlock: null,
     kycOutcome: "verified",
     route: "dashboard",
     wTab: "overview",

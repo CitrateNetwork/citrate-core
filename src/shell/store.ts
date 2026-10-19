@@ -60,6 +60,7 @@ import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { grantExplanation } from "../data/grantCopy";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -232,16 +233,19 @@ export function describeBond(g: {
   isKycVerified: boolean;
   hasValidator: boolean;
 }): string {
-  if (!g.bondDeployed) return "Not yet staked";
+  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
+  // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from
+  // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
+  // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
+  if (!g.bondDeployed) return "No bond yet";
   if (!g.isUnlocked) {
-    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString();
-    return `Staked · unlocks at block ${at}`;
+    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
+    return g.hasValidator ? `Staked · locked until block ${at}` : `Bond locked · not staked · until block ${at}`;
   }
-  // Unlocked. Owner decision A.5: eligible, never automatic — so "can", not "has".
-  // A.6: KYC supersedes the lock, so an unverified member is NOT told their funds
-  // are available.
-  if (!g.isKycVerified) return "Unlocked · KYC required to withdraw";
-  return g.hasValidator ? "Unlocked · validating · can withdraw" : "Unlocked · can withdraw";
+  // Unlocked. Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
+  // unverified member is NOT told their funds are available.
+  if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
+  return "Unlocked";
 }
 
 /**
@@ -265,6 +269,7 @@ export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
     s5n: 32000,
     s5StakeWei: g.attributedStakeWei,
     s5BondStatus: describeBond(g),
+    s5UnlockBlock: g.unlockBlock,
     hasGrant: true,
     hasSbt: g.hasSbt,
   };
@@ -2082,11 +2087,10 @@ export class Store {
 
   snapshot() {
     const s = this.state;
-    // The membership grant stakes SALT into a time-locked (≈1yr), recoverable validator bond. That
-    // stake is REAL and locked but is NOT the same as the validator bond (which is 0 until the member
-    // approves the activation ceremony). The model must be able to reconcile "0 spendable but staked",
-    // so expose both figures + the human-readable bond status (which carries the unlock block), rather
-    // than the old single `staked` that only reflected the validator bond and read 0 for a fresh member.
+    // The membership grant is locked in the member's MemberBond (about a year) and is NOT staked until
+    // the member activates the bond (C1-V V5). The model gets both figures (the locked grant and the
+    // registry stake) plus the bond status (which carries the unlock block), so it can explain a
+    // member with 0 spendable, 0 staked and a locked grant.
     const grantStakedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
     return {
       height: s.height,
@@ -2103,10 +2107,13 @@ export class Store {
       tier: s.tier,
       membership: {
         grantStakedSalt, // the recoverable grant, locked (e.g. 32000)
-        bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Staked · unlocks at block N"
+        bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
         validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
         locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
-        note: "The membership grant stakes SALT into a time-locked (about a year), recoverable validator bond. Locked stake is not spendable and is separate from the liquid balance; the bond only starts validating after the member approves the activation ceremony.",
+        // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
+        note:
+          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 }) +
+          " Locked SALT is not spendable and is separate from the liquid balance.",
       },
     };
   }

@@ -28,7 +28,8 @@ describe("grant stake surfacing — locked 32k is not '0 staked' (Rule 1)", () =
     expect(p!.hasGrant).toBe(true);
     expect(p!.s5StakeWei).toBe(WEI_32K);
     expect(p!.s5n).toBe(32000);
-    expect(String(p!.s5BondStatus)).toMatch(/Staked · unlocks at block/);
+    // C1-V V5: an unactivated bond is "Bond locked · not staked" (UI truth contract §1, §5.4).
+    expect(String(p!.s5BondStatus)).toMatch(/Bond locked · not staked · until block/);
   });
 
   it("returns null (no fabricated stake) when the grant is not genuinely on chain", () => {
@@ -41,7 +42,7 @@ describe("grant stake surfacing — locked 32k is not '0 staked' (Rule 1)", () =
     store.setState({
       hasGrant: true,
       s5StakeWei: WEI_32K,
-      s5BondStatus: "Staked · unlocks at block 500,000",
+      s5BondStatus: "Bond locked · not staked · until block 500,000",
       bondedStake: 0,
       selfStake: 0,
     } as never);
@@ -55,7 +56,8 @@ describe("grant stake surfacing — locked 32k is not '0 staked' (Rule 1)", () =
     expect(snap.membership.grantStakedSalt).toBe(32000);
     expect(snap.membership.validatorBondedSalt).toBe(0); // honest: not validating yet
     expect(snap.membership.locked).toBe(true);
-    expect(snap.membership.bondStatus).toMatch(/unlocks at block/);
-    expect(snap.membership.note.toLowerCase()).toContain("locked stake is not spendable");
+    expect(snap.membership.bondStatus).toMatch(/until block/);
+    // C1-V V5: the note is the one grant explanation; the locked grant is not called "stake".
+    expect(snap.membership.note.toLowerCase()).toContain("locked salt is not spendable");
   });
 });

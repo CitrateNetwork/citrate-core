@@ -898,6 +898,8 @@ describe("isGrantOnChain — vault attribution settles the grant leg", () => {
 // ---------------------------------------------------------------------------
 // describeBond — what the dashboard says about the lock (M-2.2 / M-2.3).
 // ---------------------------------------------------------------------------
+// C1-V V5: the strings are now the UI truth contract §1 membership words. "Staked" appears only once
+// the bond is activated (hasValidator); before that the grant is "Bond locked · not staked".
 describe("describeBond — honest about the lock and the KYC gate", () => {
   const base = {
     bondDeployed: true,
@@ -908,27 +910,25 @@ describe("describeBond — honest about the lock and the KYC gate", () => {
   };
 
   it("never claims 'staked' for a member whose escrow does not exist", () => {
-    expect(describeBond({ ...base, bondDeployed: false })).toBe("Not yet staked");
+    expect(describeBond({ ...base, bondDeployed: false })).toBe("No bond yet");
   });
 
   it("names the unlock height while locked", () => {
-    expect(describeBond(base)).toBe("Staked · unlocks at block 300,000");
+    expect(describeBond(base)).toBe("Bond locked · not staked · until block 300,000");
+    expect(describeBond({ ...base, hasValidator: true })).toBe("Staked · locked until block 300,000");
   });
 
   // Owner decision A.6: KYC supersedes the lock. An unverified member must NOT be
   // told their funds are available just because the year elapsed.
   it("an unlocked but unverified member is told KYC is required, not that they can withdraw", () => {
-    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · KYC required to withdraw");
+    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · verify identity to withdraw");
   });
 
   // Owner decision A.5: unlock makes exit ELIGIBLE. "can withdraw", never "has".
   it("an unlocked, verified member CAN withdraw — eligibility, not a payout", () => {
-    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true })).toBe(
-      "Unlocked · can withdraw",
-    );
-    expect(
-      describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true }),
-    ).toBe("Unlocked · validating · can withdraw");
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true })).toBe("Unlocked");
+    // "validating" is a banned word (§1 Validators); the bond word does not carry validator state.
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true })).toBe("Unlocked");
   });
 });
 

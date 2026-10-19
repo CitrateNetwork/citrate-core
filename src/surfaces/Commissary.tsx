@@ -19,6 +19,10 @@ import { SurfaceProps } from "./shared";
 import { CATALOG } from "../data/seed";
 import { RANK } from "../shell/state";
 import { federationUrl } from "../data/links";
+import { membershipPrice } from "../data/membership";
+
+// C1-V V12: the membership price comes from its one source (UI truth contract §5.3).
+const JOIN_LABEL = "Join · " + membershipPrice() + "/yr";
 
 type BadgeTriple = [string, string, string];
 const badge = (st: string): BadgeTriple =>
@@ -137,7 +141,7 @@ export function Commissary({ store, s }: SurfaceProps) {
         locked,
         unlocked: !locked,
         lockText: "Requires " + (a.minTier === "pilot" ? "Pilot membership" : "an Enterprise seat"),
-        unlockLabel: a.minTier === "pilot" ? "Join · $48/yr" : "Contact us",
+        unlockLabel: a.minTier === "pilot" ? JOIN_LABEL : "Contact us",
         onUnlock: () =>
           store.toast(
             a.minTier === "pilot"
@@ -184,7 +188,7 @@ export function Commissary({ store, s }: SurfaceProps) {
         locked,
         unlocked: !locked,
         opacity: locked ? 0.6 : 1,
-        cta: d.minTier === "pilot" ? "Join · $48/yr" : "Contact us",
+        cta: d.minTier === "pilot" ? JOIN_LABEL : "Contact us",
         onUnlock: () =>
           store.toast("This doc unlocks with " + (d.minTier === "pilot" ? "Pilot membership" : "an Enterprise seat") + "."),
       };

@@ -19,6 +19,7 @@ import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
 import { blocksWithTime, readsValidatorRewards, saltFromWei } from "../shell/chainTruth";
+import { grantExplanation } from "../data/grantCopy";
 
 /** `LiquidStakingPool.WITHDRAWAL_DELAY` (LiquidStakingPool.sol:26; src-tauri staking.rs). */
 const WITHDRAWAL_DELAY_BLOCKS = 50_400;
@@ -183,7 +184,7 @@ export function Wallet({ store, s }: SurfaceProps) {
     if (!/^(\d+\.?\d*|\.\d+)$/.test(amtRaw)) return store.toast("Enter a valid amount (e.g. 1.5)");
     const amt = parseFloat(amtRaw);
     if (!(amt > 0)) return store.toast("Enter an amount greater than zero");
-    if (amt > s.selfStake) return store.toast("Only self-added stake can be withdrawn — granted principal is vaulted");
+    if (amt > s.selfStake) return store.toast("Only your LiquidStakingPool deposit can be withdrawn here; the membership grant stays locked in your bond");
     let wei: string;
     try {
       const [whole, frac = ""] = amtRaw.split(".");
@@ -367,7 +368,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Membership grant · vaulted</span>
+                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Membership grant · locked in your bond</span>
                 <span className="mono tabular" style={{ fontSize: 13 }}>
                   {grantStr}
                 </span>
@@ -392,7 +393,10 @@ export function Wallet({ store, s }: SurfaceProps) {
               </div>
             </div>
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              The membership grant funds this wallet directly; a staked + time-locked model is in progress. This card shows the REAL on-chain attributed stake, never a fabricated figure. Validator reward eligibility ends below 32,000 SALT staked.
+              {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
+              {s.hasGrant
+                ? grantExplanation({ amountSalt: grantSaltStr, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 })
+                : "No membership grant on this wallet."}
             </p>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
