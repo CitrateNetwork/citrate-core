@@ -22,9 +22,12 @@ function st(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
     validatorPubkey: "0x" + "07".repeat(32),
     pubkeySource: "node",
     nodeKeyReady: true,
+    nodePubkey: "0x" + "07".repeat(32),
+    bondPubkey: null,
     registryStatus: 0,
     activationEpoch: 0,
     registryActive: false,
+    currentEpoch: 500,
     epochBlocks: 1000,
     headBlock: 500_000,
     blockTimeMs: 2000,
@@ -60,17 +63,31 @@ describe("S7 · Activate validator", () => {
     expect(html).toContain("not Synced");
   });
 
-  it("Staked · active from next epoch, with the epoch wait in measured time", () => {
-    const html = view(st({ bondActivated: true, pubkeySource: "bond", registryStatus: 1, activationEpoch: 501, registryActive: false }));
-    expect(html).toContain("Staked · active from next epoch");
+  it("Registered · active from epoch N (isActive already true), with the wait in measured time", () => {
+    // Head 500,000 = epoch 500; actEpoch 501 starts at block 501,000: 1,000 blocks at 2 s.
+    const html = view(st({ bondActivated: true, pubkeySource: "bond", bondPubkey: "0x" + "07".repeat(32), registryStatus: 1, activationEpoch: 501, registryActive: true }));
+    expect(html).toContain("Registered · active from epoch 501");
     expect(html).not.toContain("Validator active");
+    expect(html).not.toMatch(/next epoch/i);
     expect(html).toContain("~33 min");
   });
 
-  it("Validator active only from isActive = true", () => {
-    const html = view(st({ bondActivated: true, pubkeySource: "bond", registryStatus: 1, registryActive: true }));
+  it("Validator active only from isActive AND actEpoch <= currentEpoch", () => {
+    const html = view(st({ bondActivated: true, pubkeySource: "bond", bondPubkey: "0x" + "07".repeat(32), registryStatus: 1, registryActive: true, activationEpoch: 500 }));
     expect(html).toContain("Validator active");
-    expect(html).not.toContain("Staked · active from next epoch");
+    expect(html).toContain("Producing blocks");
+  });
+
+  it("hides Activate when this node has no validator key, and says why", () => {
+    const html = view(st({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null, pubkeySource: null, registryStatus: null }), { miningHold: "Block production is off: 0 other producer(s) are live, at least 2 are needed first." });
+    expect(html).not.toContain('data-testid="s7-activate"');
+    expect(html).toContain('data-testid="s7-key"');
+    expect(html).toContain("at least 2 are needed first");
+  });
+
+  it("warns when the bond's registered key is not this node's key", () => {
+    const html = view(st({ bondActivated: true, pubkeySource: "bond", bondPubkey: "0x" + "09".repeat(32), registryStatus: 1, registryActive: true, activationEpoch: 500 }));
+    expect(html).toContain('data-testid="s7-key-mismatch"');
   });
 
   it("a sent activation is Pending; a reverted one is an error with its block", () => {
@@ -93,8 +110,8 @@ describe("S7 · Activate validator", () => {
   });
 
   it("never says earning, projections, or Validating", () => {
-    for (const a of [st(), st({ bondActivated: true, registryStatus: 1 }), st({ bondActivated: true, registryStatus: 1, registryActive: true }), null]) {
-      expect(view(a)).not.toMatch(/\bearn|projected|estimate|per month|Validating/i);
+    for (const a of [st(), st({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 502 }), st({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 500 }), null]) {
+      expect(view(a)).not.toMatch(/\bearn|projected|estimate|per month|Validating|next epoch/i);
     }
   });
 });

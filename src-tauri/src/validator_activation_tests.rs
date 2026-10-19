@@ -145,6 +145,8 @@ fn pinned_selectors_are_keccak_of_their_signatures() {
     assert_eq!(VALIDATOR_INFO, keccak4("validatorInfo(bytes32)"));
     assert_eq!(REGISTRY_IS_ACTIVE, keccak4("isActive(bytes32)"));
     assert_eq!(EPOCH, keccak4("EPOCH()"));
+    assert_eq!(CURRENT_EPOCH, keccak4("currentEpoch()"));
+    assert_eq!(CURRENT_EPOCH, [0x76, 0x67, 0x18, 0x08]);
 }
 
 #[test]
@@ -285,4 +287,41 @@ fn a_registry_status_outside_the_enum_is_not_reported() {
 fn the_command_is_in_the_main_window_acl() {
     let acl = include_str!("../permissions/main-window.toml");
     assert!(acl.contains("\"validator_activation_status\""));
+}
+
+#[test]
+fn current_epoch_is_read_so_the_step_can_compare_it_with_act_epoch() {
+    // chain#319: isActive is true AT REGISTRATION; activation is actEpoch <= currentEpoch().
+    let chain = granted(true, Some(BOND_KEY))
+        .call(REGISTRY, VALIDATOR_INFO, info(502, 1))
+        .call(REGISTRY, REGISTRY_IS_ACTIVE, ret(&[w(1)]))
+        .call(REGISTRY, CURRENT_EPOCH, ret(&[w(500)]));
+    let st = read(&chain, None, Some(NODE_KEY), None);
+    assert_eq!(st.current_epoch, Some(500));
+    assert_eq!(st.activation_epoch, Some(502));
+    let st = read(&granted(true, Some(BOND_KEY)), None, None, None);
+    assert_eq!(st.current_epoch, None, "an unread epoch is unknown, not 0");
+}
+
+#[test]
+fn both_keys_are_reported_so_a_mismatch_can_be_shown() {
+    let chain = granted(true, Some(BOND_KEY));
+    let st = read(&chain, None, Some(NODE_KEY), None);
+    assert_eq!(st.bond_pubkey, Some(format!("0x{}", hex::encode(BOND_KEY))));
+    assert_eq!(st.node_pubkey, Some(format!("0x{}", hex::encode(NODE_KEY))));
+    let st = read(&granted(false, None), None, None, None);
+    assert_eq!(st.bond_pubkey, None, "a zero bond key is no key");
+    assert_eq!(st.node_pubkey, None);
+}
+
+#[test]
+fn an_eth_block_number_of_0x0_is_unknown_not_zero() {
+    // eth_blockNumber returns 0x0 on error (contract §2/§3): never data.
+    let public = Chain::default().method("eth_blockNumber", JsonValue::String("0x0".into()));
+    let local = Chain::default()
+        .method("eth_blockNumber", JsonValue::String("0x0".into()))
+        .method("eth_syncing", JsonValue::Bool(false));
+    let st = read(&public, Some(&local), None, None);
+    assert_eq!(st.head_block, None);
+    assert_eq!(st.local_block, None);
 }

@@ -56,7 +56,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { activationGate } from "../onboarding/activateValidator";
+import { activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -4493,7 +4493,11 @@ export class Store {
       this.toast("Validator activation unavailable — " + String((err as Error).message ?? err));
       return false;
     }
-    this.openWalletReview("stake", "Activate validator · bond 32,000 SALT", view, "32,000 SALT validator bond", onResolved);
+    // The bond's principal as READ (MemberBond.principal), never a hard-coded 32,000. The tx moves
+    // no SALT from the wallet; the bond forwards its own principal, and the wallet pays gas.
+    const principal = principalSalt(this.state.activation);
+    const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
+    this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, onResolved);
     return true;
   }
 

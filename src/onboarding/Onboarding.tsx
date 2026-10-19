@@ -7,7 +7,7 @@ import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
-import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, validatorState } from "./activateValidator";
+import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -1175,7 +1175,8 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
   const gate = activationGate(a, linked);
   const phase = activationPhase(a, linked);
   const vs = validatorState(a);
-  const settled = phase === "staked" || phase === "active" || phase === "exiting" || phase === "slashed";
+  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "slashed";
+  const mismatch = keyMismatch(a);
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }} data-testid="s7">
       <div style={eyebrow}>S7 · Activate validator</div>
@@ -1188,6 +1189,11 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
           <span style={{ fontSize: 15, fontWeight: 500 }} data-testid="s7-state">{vs.word ?? "—"}</span>
         </div>
         <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>{vs.detail}</p>
+        {mismatch && (
+          <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--warn, var(--danger))", margin: 0 }} data-testid="s7-key-mismatch">
+            {mismatch}
+          </p>
+        )}
         <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0, borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
           {activationGrantCopy(a)}
         </p>
@@ -1201,8 +1207,8 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
           ))}
           {a && !a.nodeKeyReady && a.bondActivated === false && (
             <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: "6px 0 0" }} data-testid="s7-key">
-              This node has no validator key yet. It mints one when block production is allowed for it
-              {s.miningHold ? ": " + s.miningHold : "."} Activating tries to arm it first, and says so if it cannot.
+              Activation stays hidden until this node has its validator key, because the registration is signed with it. The node mints the key
+              when block production is allowed for it{s.miningHold ? ". Right now: " + s.miningHold : "."} This step checks again every 15 s.
             </p>
           )}
         </div>
@@ -1285,7 +1291,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
 
       <div className="mono" style={dataSrc}>
         Data sources — MembershipStakeVault.bondOf · MemberBond.activated / principal / unlockBlock / unlockTimestamp · CitrateMemberSBT.isActive ·
-        ValidatorRegistry.validatorInfo / isActive / EPOCH · local eth_syncing · block time{" "}
+        ValidatorRegistry.validatorInfo / isActive / currentEpoch / EPOCH · local eth_syncing · block time{" "}
         {a?.blockTimeMs != null ? fmtDuration(a.blockTimeMs) : "—"} (measured over the last 100 blocks)
       </div>
     </div>

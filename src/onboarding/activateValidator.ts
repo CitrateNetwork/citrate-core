@@ -31,12 +31,12 @@ export const ACTIVATE_EXPLANATION =
 export type ValidatorWord =
   | "Not a validator"
   | "Bond locked · not staked"
-  | "Staked · active from next epoch"
+  | `Registered · active from epoch ${number}`
   | "Validator active"
   | "Exiting"
   | "Slashed";
 
-export type GateKey = "wallet" | "membership" | "bond" | "synced" | "notValidator";
+export type GateKey = "wallet" | "membership" | "bond" | "synced" | "notValidator" | "key";
 
 export interface GateCheck {
   key: GateKey;
@@ -46,7 +46,7 @@ export interface GateCheck {
   detail: string;
 }
 
-export type ActivationPhase = "reading" | "blocked" | "ready" | "pending" | "failed" | "staked" | "active" | "exiting" | "slashed";
+export type ActivationPhase = "reading" | "blocked" | "ready" | "pending" | "failed" | "registered" | "active" | "exiting" | "slashed";
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h.length > 12 ? h.slice(0, 6) + "…" + h.slice(-4) : h);
@@ -142,6 +142,7 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
     nvDetail = "Already activated: this bond's principal is in the ValidatorRegistry.";
   } else if (st && st.bondActivated === false) {
     if (st.registryStatus === 0 || (st.registryStatus == null && !st.nodeKeyReady)) {
+      // No key yet means nothing is registered under it; the "key" check below blocks activation.
       nv = true;
       nvDetail = "Not a validator";
     } else if (st.registryStatus != null) {
@@ -151,10 +152,31 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
   }
   checks.push({ key: "notValidator", label: "Validator", ok: nv, detail: nvDetail });
 
+  // Activation signs the registration with this node's proposer key, so it needs one on disk.
+  if (st?.bondActivated !== true) {
+    const k = st ? st.nodeKeyReady : null;
+    checks.push({
+      key: "key",
+      label: "Validator key",
+      ok: k,
+      detail:
+        k === true
+          ? "This node has its validator key."
+          : k === false
+            ? "This node has no validator key yet. It mints one when block production is allowed for it."
+            : "— not read yet (this node's proposer key)",
+    });
+  }
+
   return { ready: checks.every((c) => c.ok === true), checks };
 }
 
-/** Contract §1 Validators: the state word, or `null` (shown as "—") when a needed read is missing. */
+/**
+ * Contract §1 Validators (chain#319 rule): the state word, or `null` (shown as "—") when a needed
+ * read is missing. `ValidatorRegistry.isActive` is already true AT REGISTRATION, before consensus
+ * uses the validator, so the waiting state is keyed on `actEpoch > currentEpoch()`, and "Validator
+ * active" needs `isActive` AND `actEpoch <= currentEpoch()`.
+ */
 export function validatorState(st: ActivationStatusView | null): { word: ValidatorWord | null; detail: string } {
   const unknown = { word: null, detail: "— not read yet" };
   if (!st) return unknown;
@@ -166,29 +188,54 @@ export function validatorState(st: ActivationStatusView | null): { word: Validat
   if (st.bondActivated === false) {
     return { word: "Bond locked · not staked", detail: "Your grant sits in your bond, not in the ValidatorRegistry (MemberBond.activated = false)." };
   }
-  if (st.registryStatus !== 1 || st.registryActive == null) return unknown;
-  if (st.registryActive) {
+  if (st.registryStatus !== 1 || st.activationEpoch == null || st.currentEpoch == null) return unknown;
+  if (st.activationEpoch > st.currentEpoch) {
+    return { word: `Registered · active from epoch ${st.activationEpoch}`, detail: epochWait(st, st.activationEpoch) };
+  }
+  if (st.registryActive === true) {
     return {
       word: "Validator active",
       detail:
-        "In the active set (ValidatorRegistry.isActive). Active is not the same as producing blocks: today only one validator produces.",
+        `In the active set since epoch ${fmtInt(st.activationEpoch)} (ValidatorRegistry.isActive, activation epoch reached). ` +
+        "Consensus can take up to an epoch longer to use the new set. Producing blocks, a block from this node's key, is the evidence that it takes part; " +
+        "active does not imply it, and today only one validator produces.",
     };
   }
-  return { word: "Staked · active from next epoch", detail: epochWait(st) };
+  if (st.registryActive === false) {
+    return { word: null, detail: "Registered, but ValidatorRegistry.isActive is false: not in the active set." };
+  }
+  return unknown;
 }
 
-/** When the registered stake joins the active set, in blocks and measured time. */
-function epochWait(st: ActivationStatusView): string {
+/** When the registered stake joins the active set: the real activation epoch, in blocks and measured time. */
+function epochWait(st: ActivationStatusView, actEpoch: number): string {
   const len = st.epochBlocks;
-  const parts = ["Your stake is registered. The active set changes at epoch snapshots"];
-  if (len != null) parts[0] += `; an epoch is ${fmtBlocksDuration(len, st.blockTimeMs)}`;
-  parts[0] += ".";
-  if (len != null && st.activationEpoch != null && st.activationEpoch > 0 && st.headBlock != null) {
-    const start = st.activationEpoch * len;
-    const left = Math.max(0, start - st.headBlock);
-    parts.push(`Your activation epoch is ${fmtInt(st.activationEpoch)}, which starts at block ${fmtInt(start)}, ${fmtBlocksDuration(left, st.blockTimeMs)} from now.`);
+  const parts = [`Your stake is registered. It becomes active at epoch ${fmtInt(actEpoch)} (the current epoch is ${fmtInt(st.currentEpoch ?? 0)}).`];
+  if (len != null) {
+    const start = actEpoch * len;
+    if (st.headBlock != null) {
+      const left = Math.max(0, start - st.headBlock);
+      parts.push(`Epoch ${fmtInt(actEpoch)} starts at block ${fmtInt(start)}, ${fmtBlocksDuration(left, st.blockTimeMs)} from now.`);
+    } else {
+      parts.push(`Epoch ${fmtInt(actEpoch)} starts at block ${fmtInt(start)}.`);
+    }
   }
   return parts.join(" ");
+}
+
+/** A warning when the bond was activated with a key that is not this node's key, else null. */
+export function keyMismatch(st: ActivationStatusView | null): string | null {
+  if (!st || st.bondActivated !== true || !st.bondPubkey || !st.nodePubkey) return null;
+  if (st.bondPubkey.toLowerCase() === st.nodePubkey.toLowerCase()) return null;
+  return (
+    `Your bond is registered with a different validator key (${short(st.bondPubkey)}) than this node's (${short(st.nodePubkey)}). ` +
+    "This node does not sign as your validator; the node holding that key does."
+  );
+}
+
+/** The bond's principal as read, e.g. "32,000"; "—" when not read. */
+export function principalSalt(st: ActivationStatusView | null): string {
+  return fmtSaltWei(st?.principalWei ?? null);
 }
 
 /** Contract §5.4 + §5.6 + §5.7: the one grant explanation, from the bond's own reads. */
@@ -210,7 +257,9 @@ export function activationPhase(st: ActivationStatusView | null, walletLinked: b
   if (st.registryStatus === 2) return "exiting";
   if (st.registryStatus === 3) return "slashed";
   if (st.bondActivated === true) {
-    if (st.registryStatus === 1 && st.registryActive != null) return st.registryActive ? "active" : "staked";
+    const v = validatorState(st);
+    if (v.word === "Validator active") return "active";
+    if (v.word?.startsWith("Registered")) return "registered";
     return "reading";
   }
   if (st.tx) {

@@ -18,6 +18,8 @@
 //! | `activationEpoch`         | `ValidatorRegistry.validatorInfo(pubkey).actEpoch`            |
 //! | `registryActive`          | `ValidatorRegistry.isActive(pubkey)`                          |
 //! | `epochBlocks`             | `ValidatorRegistry.EPOCH()`                                   |
+//! | `currentEpoch`            | `ValidatorRegistry.currentEpoch()`                            |
+//! | `nodePubkey`/`bondPubkey` | this node's `proposer.key` / `MemberBond.pubkey()`            |
 //! | `headBlock`               | public `eth_blockNumber`                                      |
 //! | `blockTimeMs`             | timestamp delta over the last 100 public blocks               |
 //! | `localBlock`/`localSyncing` | this node's `eth_blockNumber` / `eth_syncing`               |
@@ -57,6 +59,8 @@ pub const VALIDATOR_INFO: [u8; 4] = [0x00, 0x40, 0x88, 0x38];
 pub const REGISTRY_IS_ACTIVE: [u8; 4] = [0x5c, 0x36, 0x90, 0x1c];
 /// `ValidatorRegistry.EPOCH()`.
 pub const EPOCH: [u8; 4] = [0xa0, 0xdc, 0x27, 0x58];
+/// `ValidatorRegistry.currentEpoch()` (chain#319: activation is `actEpoch <= currentEpoch()`).
+pub const CURRENT_EPOCH: [u8; 4] = [0x76, 0x67, 0x18, 0x08];
 
 /// A sent activation transaction, as its receipt reports it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -88,10 +92,17 @@ pub struct ActivationStatus {
     pub pubkey_source: Option<String>,
     /// Whether this node has a proposer key on disk (the key activation signs with).
     pub node_key_ready: bool,
+    /// This node's proposer key (`0x` + 64 hex), when it has one.
+    pub node_pubkey: Option<String>,
+    /// `MemberBond.pubkey()`: the key the bond registered with, once activated (zero = none).
+    pub bond_pubkey: Option<String>,
     pub registry_status: Option<u8>,
     pub activation_epoch: Option<u64>,
     pub registry_active: Option<bool>,
     pub epoch_blocks: Option<u64>,
+    /// `ValidatorRegistry.currentEpoch()`. `isActive` is already true at registration
+    /// (chain#319), so "Validator active" needs `activation_epoch <= current_epoch` too.
+    pub current_epoch: Option<u64>,
     pub head_block: Option<u64>,
     pub block_time_ms: Option<u64>,
     pub local_block: Option<u64>,
@@ -108,6 +119,14 @@ fn rpc_result<T: RpcTransport>(t: &T, method: &str, params: Value) -> Option<Val
         return None;
     }
     resp.get("result").cloned()
+}
+
+/// `eth_blockNumber`, with `0x0` read as unknown: the node returns `0x0` on error (contract §3),
+/// and a live 40204 node is never at block 0.
+fn block_number<T: RpcTransport>(t: &T) -> Option<u64> {
+    rpc_result(t, "eth_blockNumber", json!([]))
+        .and_then(|v| hex_u64(&v))
+        .filter(|n| *n > 0)
 }
 
 fn hex_u64(v: &Value) -> Option<u64> {
@@ -202,6 +221,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         .ok_or_else(|| "validator-activation: bad member address".to_string())?;
     let mut st = ActivationStatus {
         node_key_ready: node_pubkey.is_some(),
+        node_pubkey: node_pubkey.map(|k| format!("0x{}", hex::encode(k))),
         ..ActivationStatus::default()
     };
 
@@ -242,6 +262,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
     }
 
     // Registry reads are keyed on the bond's registered key once it has one, else this node's.
+    st.bond_pubkey = bond_pubkey.map(|k| format!("0x{}", hex::encode(k)));
     let (pubkey, source) = match (bond_pubkey, node_pubkey) {
         (Some(k), _) => (Some(k), Some("bond")),
         (None, Some(k)) => (Some(k), Some("node")),
@@ -269,6 +290,10 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         .as_ref()
         .and_then(word_bool);
     }
+    st.current_epoch = eth_call(public, targets.registry, &CURRENT_EPOCH)
+        .and_then(|r| word(&r, 0))
+        .as_ref()
+        .and_then(word_u64);
     st.epoch_blocks = eth_call(public, targets.registry, &EPOCH)
         .and_then(|r| word(&r, 0))
         .as_ref()
@@ -276,7 +301,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         .filter(|e| *e > 0);
 
     // Network head and the measured block time.
-    st.head_block = rpc_result(public, "eth_blockNumber", json!([])).and_then(|v| hex_u64(&v));
+    st.head_block = block_number(public);
     if let Some(head) = st.head_block.filter(|h| *h >= BLOCK_TIME_SAMPLE) {
         let ts = |n: u64| {
             rpc_result(
@@ -293,7 +318,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
 
     // This node: `eth_syncing` is `false` when caught up, an object while syncing.
     if let Some(local) = local {
-        st.local_block = rpc_result(local, "eth_blockNumber", json!([])).and_then(|v| hex_u64(&v));
+        st.local_block = block_number(local);
         st.local_syncing = rpc_result(local, "eth_syncing", json!([])).and_then(|v| match v {
             Value::Bool(b) => Some(b),
             Value::Object(_) => Some(true),

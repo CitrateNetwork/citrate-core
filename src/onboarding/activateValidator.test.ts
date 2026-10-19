@@ -10,6 +10,7 @@ import {
   activationPhase,
   fmtBlocksDuration,
   isNetworkSynced,
+  keyMismatch,
   validatorState,
   ACTIVATE_EXPLANATION,
 } from "./activateValidator";
@@ -30,9 +31,12 @@ function ready(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
     validatorPubkey: "0x" + "07".repeat(32),
     pubkeySource: "node",
     nodeKeyReady: true,
+    nodePubkey: "0x" + "07".repeat(32),
+    bondPubkey: null,
     registryStatus: 0,
     activationEpoch: 0,
     registryActive: false,
+    currentEpoch: 500,
     epochBlocks: 1000,
     headBlock: 500_000,
     blockTimeMs: 2000,
@@ -99,9 +103,12 @@ describe("gating matrix: membership active, bond deployed, node Synced, not alre
     expect(g.checks.filter((c) => c.key !== "wallet").every((c) => c.ok === null)).toBe(true);
   });
 
-  it("does not require the node key to exist yet when the bond is not activated (activation arms first)", () => {
-    const g = activationGate(ready({ nodeKeyReady: false, validatorPubkey: null, pubkeySource: null, registryStatus: null }), true);
-    expect(g.checks.find((c) => c.key === "notValidator")?.ok).toBe(true);
+  it("requires this node's validator key, and says why it is missing", () => {
+    const g = activationGate(ready({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null, pubkeySource: null, registryStatus: null }), true);
+    expect(g.ready).toBe(false);
+    const key = g.checks.find((c) => c.key === "key");
+    expect(key?.ok).toBe(false);
+    expect(key?.detail).toMatch(/no validator key/i);
   });
 });
 
@@ -112,16 +119,28 @@ describe("state mapping (contract §1 Validators)", () => {
   it("Bond locked · not staked: MemberBond.activated() = false", () => {
     expect(validatorState(ready()).word).toBe("Bond locked · not staked");
   });
-  it("Staked · active from next epoch: registered, isActive = false", () => {
-    expect(validatorState(ready({ bondActivated: true, pubkeySource: "bond", registryStatus: 1, registryActive: false, activationEpoch: 502 })).word).toBe(
-      "Staked · active from next epoch",
-    );
+  // chain#319: isActive is already true AT REGISTRATION, before consensus activation, so the
+  // waiting state is keyed on actEpoch vs currentEpoch(), never on isActive = false.
+  const registered = { bondActivated: true, pubkeySource: "bond" as const, registryStatus: 1 as const, registryActive: true };
+  it("Registered · active from epoch N while actEpoch > currentEpoch, even though isActive is already true", () => {
+    const v = validatorState(ready({ ...registered, activationEpoch: 502, currentEpoch: 500 }));
+    expect(v.word).toBe("Registered · active from epoch 502");
+    expect(v.detail).toContain("502");
   });
-  it("Validator active ONLY when ValidatorRegistry.isActive = true", () => {
-    const st = ready({ bondActivated: true, pubkeySource: "bond", registryStatus: 1, registryActive: true });
-    expect(validatorState(st).word).toBe("Validator active");
-    expect(validatorState({ ...st, registryActive: null }).word).toBeNull();
-    expect(validatorState({ ...st, registryActive: false }).word).not.toBe("Validator active");
+  it("Validator active only when isActive AND actEpoch <= currentEpoch", () => {
+    expect(validatorState(ready({ ...registered, activationEpoch: 500, currentEpoch: 500 })).word).toBe("Validator active");
+    expect(validatorState(ready({ ...registered, activationEpoch: 498, currentEpoch: 500 })).word).toBe("Validator active");
+    expect(validatorState(ready({ ...registered, activationEpoch: 501, currentEpoch: 500 })).word).not.toBe("Validator active");
+    expect(validatorState(ready({ ...registered, activationEpoch: 500, currentEpoch: 500, registryActive: false })).word).not.toBe("Validator active");
+  });
+  it("Validator active notes the consensus lag and that Producing blocks is the evidence", () => {
+    const d = validatorState(ready({ ...registered, activationEpoch: 500, currentEpoch: 500 })).detail;
+    expect(d).toMatch(/up to an epoch/);
+    expect(d).toContain("Producing blocks");
+  });
+  it("an unread epoch leg is unknown (—), never a guessed state", () => {
+    expect(validatorState(ready({ ...registered, activationEpoch: 502, currentEpoch: null })).word).toBeNull();
+    expect(validatorState(ready({ ...registered, activationEpoch: null, currentEpoch: 500 })).word).toBeNull();
   });
   it("Exiting / Slashed from registry status 2 / 3", () => {
     expect(validatorState(ready({ bondActivated: true, registryStatus: 2 })).word).toBe("Exiting");
@@ -173,11 +192,12 @@ describe("no earning, projections or banned validator words in the step's copy",
     activationGrantCopy(ready({ bondActivated: true })),
     ...activationGate(null, false).checks.map((c) => c.detail),
     ...activationGate(ready({ membershipActive: false, bondDeployed: false, localSyncing: true, registryStatus: 1 }), false).checks.map((c) => c.detail),
-    validatorState(ready({ bondActivated: true, registryStatus: 1, registryActive: false, activationEpoch: 502 })).detail,
-    validatorState(ready({ bondActivated: true, registryStatus: 1, registryActive: true })).detail,
+    validatorState(ready({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 502 })).detail,
+    validatorState(ready({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 499 })).detail,
+    validatorState(ready({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 502 })).word ?? "",
   ];
   it.each(texts.map((t, i) => [i, t]))("text %i stays inside the contract", (_i, t) => {
-    expect(t).not.toMatch(/\bearn|income|projected|estimate|\bper month\b|\bAPY\b|\byield\b|Validating|Finali[sz]ed|\bprice\b/i);
+    expect(t).not.toMatch(/\bearn|income|projected|estimate|\bper month\b|\bAPY\b|\byield\b|Validating|Finali[sz]ed|\bprice\b|next epoch/i);
   });
 });
 
@@ -188,13 +208,25 @@ describe("step phase: a sent activation is Pending until the chain shows it", ()
   it("failed with the block when the receipt reverted", () => {
     expect(activationPhase(ready({ tx: { hash: "0xabc", included: true, blockNumber: 501, success: false } }), true)).toBe("failed");
   });
-  it("staked once registered, active once isActive", () => {
-    expect(activationPhase(ready({ bondActivated: true, registryStatus: 1, registryActive: false }), true)).toBe("staked");
-    expect(activationPhase(ready({ bondActivated: true, registryStatus: 1, registryActive: true }), true)).toBe("active");
+  it("registered until actEpoch is reached, active once isActive and actEpoch <= currentEpoch", () => {
+    expect(activationPhase(ready({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 502 }), true)).toBe("registered");
+    expect(activationPhase(ready({ bondActivated: true, registryStatus: 1, registryActive: true, activationEpoch: 500 }), true)).toBe("active");
   });
   it("ready / blocked from the gate, reading with no data", () => {
     expect(activationPhase(ready(), true)).toBe("ready");
     expect(activationPhase(ready({ membershipActive: false }), true)).toBe("blocked");
     expect(activationPhase(null, true)).toBe("reading");
+  });
+});
+
+describe("the bond's registered key vs this node's key", () => {
+  it("warns when the bond was activated with a different key than this node's", () => {
+    const w = keyMismatch(ready({ bondActivated: true, bondPubkey: "0x" + "09".repeat(32), nodePubkey: "0x" + "07".repeat(32) }));
+    expect(w).toMatch(/different/i);
+  });
+  it("says nothing when they match, or when either key is unknown", () => {
+    expect(keyMismatch(ready({ bondActivated: true, bondPubkey: "0x" + "07".repeat(32) }))).toBeNull();
+    expect(keyMismatch(ready({ bondActivated: true, bondPubkey: "0x" + "09".repeat(32), nodePubkey: null }))).toBeNull();
+    expect(keyMismatch(ready())).toBeNull();
   });
 });

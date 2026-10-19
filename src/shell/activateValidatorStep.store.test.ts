@@ -20,9 +20,12 @@ function readyStatus(over: Partial<ActivationStatusView> = {}): ActivationStatus
     validatorPubkey: "0x" + "07".repeat(32),
     pubkeySource: "node",
     nodeKeyReady: true,
+    nodePubkey: "0x" + "07".repeat(32),
+    bondPubkey: null,
     registryStatus: 0,
     activationEpoch: 0,
     registryActive: false,
+    currentEpoch: 500,
     epochBlocks: 1000,
     headBlock: 500_000,
     blockTimeMs: 2000,
@@ -158,6 +161,16 @@ describe("no silent signing", () => {
     expect(store.state.walletReview?.view.id).toBe("cer_1");
     expect(broadcastMock).not.toHaveBeenCalled();
     expect(approveMock).not.toHaveBeenCalled();
+  });
+
+  it("labels the review with the bond's principal as read, not a hard-coded 32,000", async () => {
+    chain.current = readyStatus({ principalWei: (10000n * 10n ** 18n).toString() });
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    expect(store.state.walletReview?.label).toContain("10,000 SALT");
+    expect(store.state.walletReview?.label).not.toContain("32,000");
   });
 
   it("the approval card's resolve records the tx hash for resume", async () => {

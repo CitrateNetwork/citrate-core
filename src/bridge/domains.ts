@@ -288,6 +288,10 @@ export interface ActivationStatusView {
   pubkeySource: "bond" | "node" | null;
   /** This node has a proposer key on disk. */
   nodeKeyReady: boolean;
+  /** This node's proposer key, when it has one. */
+  nodePubkey: string | null;
+  /** `MemberBond.pubkey()`: the key the bond registered with (null before activation). */
+  bondPubkey: string | null;
   /** `ValidatorRegistry.validatorInfo(pubkey).status`: 0 None, 1 Active, 2 Exiting, 3 Slashed. */
   registryStatus: 0 | 1 | 2 | 3 | null;
   /** `validatorInfo(pubkey).actEpoch`. */
@@ -296,7 +300,12 @@ export interface ActivationStatusView {
   registryActive: boolean | null;
   /** `ValidatorRegistry.EPOCH()`. */
   epochBlocks: number | null;
-  /** Public `eth_blockNumber`. */
+  /**
+   * `ValidatorRegistry.currentEpoch()`. `isActive` is already true at registration (chain#319), so
+   * "Validator active" also needs `activationEpoch <= currentEpoch`.
+   */
+  currentEpoch: number | null;
+  /** Public `eth_blockNumber` (`0x0` is read as unknown). */
   headBlock: number | null;
   /** Measured: timestamp delta over the last 100 public blocks, in ms per block. */
   blockTimeMs: number | null;
