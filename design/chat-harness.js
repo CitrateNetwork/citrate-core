@@ -208,7 +208,7 @@ function routeIntent(t, getContext) {
     return {
       toolCalls: [tc('chain_read', { query: 'membership.bond' })],
       compose: (c) => c.hasGrant
-        ? 'Your membership comes with a 32,000 SALT grant, locked in your bond for about a year. It is not staked until you activate the bond. Its state reads “Bond locked · not staked” (MemberBond.activated()). The lock end comes from MemberBond.unlockTimestamp() and unlockBlock(); this prototype has no read of them, so I can’t tell you the date. ' + DISCLAIMER + ' ' + BETANET
+        ? 'Your membership comes with a 32,000 SALT grant, locked in your bond until block — (not read yet). It is not staked until you activate the bond. Its state reads “Bond locked · not staked” (MemberBond.activated()). The lock end comes from MemberBond.unlockTimestamp() and unlockBlock(); this prototype has no read of them, so I can’t tell you the date. ' + DISCLAIMER + ' ' + BETANET
         : 'You are not a member yet, so there is no bond. A membership comes with a 32,000 SALT grant, locked in a bond. ' + DISCLAIMER,
     };
   }
@@ -216,7 +216,7 @@ function routeIntent(t, getContext) {
     // Contract §1 Rewards: no "today", no estimates, no projections. Fixture numbers are labelled inline (ruling 3).
     return {
       toolCalls: [tc('chain_read', { query: 'validator.rewards' })],
-      compose: (c) => 'Fixture (40204 block ' + fmt(c.fx.block) + ', not live): ' + c.fx.activeValidators + ' validators are active. Chain team, sampled 2026-10-19: 1 of them produces blocks, and only a validator that produces blocks receives validator rewards. Your rewards come only from ValidatorRegistry.rewardsOf for your validator key. This prototype has no read of it, so your rewards are unknown, not zero. No projections.',
+      compose: (c) => 'Fixture (40204, heads ' + fmt(c.fx.block) + '–' + fmt(c.fx.blockEnd) + ', not live): registered validators ' + c.fx.registeredValidators + '; eligible validators (live registry) ' + c.fx.eligibleValidators + '; producing validators ' + c.fx.producing.count + ' over blocks ' + fmt(c.fx.producing.from) + '–' + fmt(c.fx.producing.to) + '. Only a validator that produces blocks receives validator rewards. Your rewards come only from ValidatorRegistry.rewardsOf for your validator key. This prototype has no read of it, so your rewards are unknown, not zero. No projections.',
     };
   }
   if (has('balance', 'wallet', 'how much salt')) {
@@ -230,7 +230,7 @@ function routeIntent(t, getContext) {
       toolCalls: [tc('chain_read', { query: 'network.fixture' })],
       compose: (c) => {
         const f = c.fx;
-        return 'Fixture (40204 block ' + fmt(f.block) + ', ' + f.capturedAt + ', not live): Citrate betanet, chain 40204, blocks every ~' + f.blockTime + ' s, ' + f.activeValidators + ' active validators. Chain team, sampled 2026-10-19: 1 validator produces blocks. Checkpoint finality is not running yet, so I count confirmations, not finality. Your node: ' + c.nodeState + '.';
+        return 'Fixture (40204, heads ' + fmt(f.block) + '–' + fmt(f.blockEnd) + ', ' + f.capturedAt + ', not live): Citrate betanet, chain 40204, blocks every ~' + f.blockTime + ' s. Registered validators: ' + f.registeredValidators + '. Eligible validators (live registry): ' + f.eligibleValidators + '. Producing validators: ' + f.producing.count + ' over blocks ' + fmt(f.producing.from) + '–' + fmt(f.producing.to) + '. Checkpoint finality is not running yet, so I count confirmations, not finality. Your node: ' + c.nodeState + '.';
       },
     };
   }

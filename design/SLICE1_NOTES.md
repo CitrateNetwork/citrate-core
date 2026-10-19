@@ -83,10 +83,11 @@ The Prototype panel tracks the five steps and can reset the path.
 
 Revised after the chain-team review of 04e7b43 (B1 to B4):
 
-- **B1, fixture label.** The Hermes rail's Network widget and the SkillRegistry and ModelRegistry counts were removed (ruling 6). The only fixture numbers left in Hermes are in chat replies. Each such reply carries the "fixture" pill and a footnote with the verbatim export label ("FIXTURE — captured from 40204, not live"), the file (`fixtures/40204-2026-10-19.json`) and the read block (499,058). "1 produces blocks" is labelled "chain team, sampled 2026-10-19" until the v1.1 export adds `producing_validators_1000`.
+- **B1, fixture label.** The Hermes rail's Network widget and the SkillRegistry and ModelRegistry counts were removed (ruling 6). The only fixture numbers left in Hermes are in chat replies, in Chat and in Journal's Capture & chat panel (R1). Each such reply carries the "fixture" pill and a footnote with the verbatim export label ("FIXTURE — captured from 40204, not live"), the file (`fixtures/40204-2026-10-19.json`, chain PR #319 @ f366a7be), the read heads (510,030–510,047) and the producing window (509,033–510,032).
 - **B2.** The Node stub and the 0.5.1 Node tab say "Rewards", never "Earnings".
 - **B3.** The rewards reply follows §1 Rewards: no "today", no estimates, no projections, fixture numbers labelled inline. The network reply labels fixture reads separately from the sampled number. The bond reply uses core's `grantCopy.ts` wording (#349).
-- **B4.** Settings › Memberships & billing uses the one grant explanation from `grantCopy.ts`, plus the bond state word "Bond locked · not staked", the lock end shown as unknown, the §5.7 disclaimer and the §5.6 betanet line. The price comes from one place, which mirrors core's `src/data/membership.ts` (the membership service's checkout price; there is no price endpoint yet), with "It buys membership. It does not buy SALT." The onboarding and Commissary prices read the same source.
+- **B4 / R2.** Settings › Memberships & billing uses the one grant explanation from `grantCopy.ts` (#349). For a granted member whose unlock block isn't read, it says "until block — (not read yet)", never "for about a year". It also shows the bond state word "Bond locked · not staked", the §5.7 disclaimer and the §5.6 betanet line. No price number appears anywhere: Settings, onboarding and Commissary link "See membership pricing" (membership.citrate.ai) and say "Membership does not buy SALT" (#349 `membership.ts`).
+- **R3.** Fixture provenance was re-cited to chain PR #319 @ f366a7be. Its file shows heads 510,030–510,047 and a producing window of 509,033–510,032. The earlier head 499,058 and the "not in the export yet" wording are gone.
 - No finality as running. The sidebar uses the §1 node words, and there is no locally ticking height.
 - No SALT price, and no USD value of SALT.
 - Reviewer notes also addressed: N1 (onboarding now sits under a red "0.5.1, not a port target" bar), N3 ("price" became "cost" in the escalation copy), N12 (moot, because the counts were removed).
@@ -101,7 +102,7 @@ These are left for the slices that own them and are not port targets:
 
 ## Chain-team rulings (answered 2026-10-19, binding for 0.5.2)
 
-1. **Producing validators in the export: yes.** v1.1 adds `producing_validators_1000`. Until then the prototype labels it "chain team, sampled 2026-10-19".
+1. **Producing validators in the export: yes, done.** The fixture at chain PR #319 @ f366a7be exports `producing_validators` with its window (1 over blocks 509,033–510,032), plus `registered_validators` (5) and `eligible_validators` (5, live registry). The prototype labels them "Registered validators", "Eligible validators (live registry)" and "Producing validators … over blocks N–M". It shows no consensus-set number (`consensus_validator_set` is unavailable, contract §9).
 2. **Pill plus footnote: yes.** Every group of fixture numbers carries the pill, and the footnote names the fixture file and block. A number without a visible pill is a violation.
 3. **Hermes quoting fixture numbers:** only in the prototype, labelled inline. In the shipped app, Hermes states a chain number only from a live §2 read, names its source, and says it can't read it when the read fails.
 4. **USD for the member's own API keys: allowed.** It is shown at the provider's list price, labelled as that, and never next to a SALT amount.

@@ -188,7 +188,7 @@
             </div>
             <div style="border:2px solid var(--tx-1);background:var(--srf-2);border-radius:var(--r-2);padding:16px;display:flex;flex-direction:column;gap:6px;position:relative;">
               <div class="eyebrow" style="color:var(--accent-text);">Pilot · selected</div>
-              <div style="font-family:var(--font-display);font-size:24px;font-weight:420;">{{ priceStr }}<span style="font-size:13px;color:var(--tx-3);"> / year</span></div>
+              <div style="font-family:var(--font-display);font-size:24px;font-weight:420;"><a href="https://membership.citrate.ai" target="_blank" rel="noopener" style="font-size:16px;">See membership pricing ↗</a></div>
               <p style="font-size:12px;line-height:1.5;color:var(--tx-2);margin:0;">Full membership. Everything listed below.</p>
             </div>
             <div style="border:1px solid var(--line-1);background:var(--srf-1);border-radius:var(--r-2);padding:16px;display:flex;flex-direction:column;gap:6px;">
@@ -208,7 +208,7 @@
             <p style="font-size:11.5px;line-height:1.5;color:var(--tx-3);margin:6px 0 0;">The grant is a membership benefit that arrives staked — it covers your stake for work as a validator. It is not purchased, and it is not an investment.</p>
           </div>
           <sc-if value="{{ s3Idle }}" hint-placeholder-val="{{ true }}">
-            <div><button class="btn btn-primary btn-lg" onClick="{{ onS3Pay }}">Check out in your browser · {{ priceStr }}</button></div>
+            <div><button class="btn btn-primary btn-lg" onClick="{{ onS3Pay }}">Check out in your browser</button></div>
           </sc-if>
           <sc-if value="{{ s3Paying }}" hint-placeholder-val="{{ false }}">
             <div class="surface" style="display:flex;align-items:center;gap:18px;padding:18px 20px;">
@@ -839,6 +839,12 @@
               <div style="display:flex;flex-direction:column;gap:4px;">
                 <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:{{ m.whoColor }};">{{ m.who }}</span>
                 <span style="font-size:12.5px;line-height:1.55;color:var(--tx-1);white-space:pre-wrap;">{{ m.text }}<sc-if value="{{ m.streaming }}" hint-placeholder-val="{{ false }}"><span style="display:inline-block;width:6px;height:12px;background:var(--accent);margin-left:2px;vertical-align:-2px;animation:ccCaret 1s step-end infinite;"></span></sc-if></span>
+                <sc-if value="{{ m.fx }}" hint-placeholder-val="{{ false }}">
+                  <span style="display:flex;flex-direction:column;gap:4px;margin-top:2px;">
+                    <span><span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span></span>
+                    <span class="mono" style="font-size:9.5px;line-height:1.5;color:var(--tx-3);">{{ fxNote }}</span>
+                  </span>
+                </sc-if>
               </div>
             </sc-for>
             <sc-if value="{{ chatThinking }}" hint-placeholder-val="{{ false }}">
@@ -2085,7 +2091,7 @@
                 <button class="btn btn-ghost btn-sm" onClick="{{ onCancelMem }}">Cancel membership</button>
               </div>
               <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;">On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock. Your keys and chain access are yours. The membership grant stays locked in your bond until its unlock block.</p>
-              <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ memPriceSource }}</span>
+              <span style="font-size:11px;color:var(--tx-3);"><a href="https://membership.citrate.ai" target="_blank" rel="noopener">See membership pricing ↗</a> · Membership does not buy SALT.</span>
             </div>
             <sc-if value="{{ hasSbtV }}" hint-placeholder-val="{{ true }}">
             <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
@@ -3258,7 +3264,7 @@ class Component extends DCLogic {
         badgeBg: bBg, badgeBd: bBd, badgeFg: bFg,
         locked, unlocked: !locked,
         lockText: 'Requires ' + (a.minTier === 'pilot' ? 'Pilot membership' : 'an Enterprise seat'),
-        unlockLabel: a.minTier === 'pilot' ? 'Join · ' + Component.priceYear() : 'Contact us',
+        unlockLabel: a.minTier === 'pilot' ? 'Join · See membership pricing' : 'Contact us',
         onUnlock: () => this.toast(a.minTier === 'pilot' ? 'Checkout opens in your browser — flip tiers in the Prototype panel to preview.' : 'Enterprise is consultative — the contact form opens in your browser.'),
         dlIdle: dl.st === 'idle', dlBusy: dl.st === 'mint' || dl.st === 'dl' || dl.st === 'verify', dlDone: dl.st === 'done',
         dlLabel: dl.st === 'mint' ? 'minting signed URL · live entitlement check' : dl.st === 'dl' ? 'downloading · ' + (dl.pct | 0) + '%' : 'verifying sha256…',
@@ -3279,7 +3285,7 @@ class Component extends DCLogic {
       return {
         name: d.name, desc: d.desc, tier: d.tier, tierBg: tBg, tierBd: tBd, tierFg: tFg,
         locked, unlocked: !locked, opacity: locked ? 0.6 : 1,
-        cta: d.minTier === 'pilot' ? 'Join · ' + Component.priceYear() : 'Contact us',
+        cta: d.minTier === 'pilot' ? 'Join · See membership pricing' : 'Contact us',
         onUnlock: () => this.toast('This doc unlocks with ' + (d.minTier === 'pilot' ? 'Pilot membership' : 'an Enterprise seat') + '.'),
       };
     });
@@ -3353,12 +3359,10 @@ class Component extends DCLogic {
     V.onPolHitl = () => { this.setState({ sigPolicy: 'hitl' }); this.save(); };
     V.onPolAllow = () => { this.setState({ sigPolicy: 'allow' }); this.toast('Allowlist rules are user-authored per origin + contract — editor ships in the wired build'); this.save(); };
     V.polNote = s.sigPolicy === 'hitl' ? 'every signature stops at the ceremony — the default' : 'allowlisted intents skip the ceremony; everything else still stops';
-    V.memPlanLabel = effTier === 'free' ? 'Public tier — no membership' : effTier === 'enterprise' ? 'Enterprise seat · ' + (s.org || '') : 'Pilot membership · ' + Component.priceYear();
+    V.memPlanLabel = effTier === 'free' ? 'Public tier — no membership' : effTier === 'enterprise' ? 'Enterprise seat · ' + (s.org || '') : 'Pilot membership';
     // V12: the price has one source (core src/data/membership.ts, PR #349); it buys membership, not SALT.
-    V.priceStr = Component.price();
-    V.memPriceSource = 'Price from the membership service (core-membership checkout). It buys membership. It does not buy SALT.';
-    V.memReceipt = '2026-07-11 · Pilot membership · ' + Component.price() + '.00';
-    V.grantCustody = 'Your membership comes with a 32,000 SALT grant, locked in your bond for about a year. It is not staked until you activate the bond.';
+    V.memReceipt = '2026-07-11 · Pilot membership · amount on the receipt';
+    V.grantCustody = 'Your membership comes with a 32,000 SALT grant, locked in your bond until block — (not read yet). It is not staked until you activate the bond.';
     V.grantDisclaimer = 'The grant is not purchased, and it is not an investment.';
     V.grantBetanet = 'Betanet. What carries over to mainnet is set in the genesis spec.';
     V.memRenewLine = s.entitlement === 'lapsed' ? 'lapsed 2026-06-28' : 'renews 2027-07-11 · Stripe customer portal';
@@ -3692,17 +3696,17 @@ class Component extends DCLogic {
   // Chain numbers come only from the C1 fixture (FX) and are labelled
   // "fixture" on screen. Nothing here ticks, projects or estimates.
   // =====================================================================
-  // The membership price, from one place (mirrors core src/data/membership.ts, PR #349). core-membership has
-  // no price endpoint yet; its Stripe checkout price is the source. Replace with the service read when it exists.
-  static price() { return '$48'; }
-  static priceYear() { return Component.price() + '/year'; }
+  // Membership price (core src/data/membership.ts, #349): no number anywhere; surfaces link "See membership pricing".
 
   static FX() {
     return {
       label: 'FIXTURE — captured from 40204, not live',
       file: 'fixtures/40204-2026-10-19.json',
-      capturedAt: '2026-10-19 00:26 UTC',
-      block: 499058, blockTime: 2, activeValidators: 5, skills: 0, models: 1,
+      // Chain PR #319 head f366a7be: reads at heads 510,030–510,047 (latest state, single epoch 510).
+      capturedAt: '2026-10-19 06:32 UTC', source: 'chain PR #319 @ f366a7be',
+      block: 510030, blockEnd: 510047, blockTime: 2, skills: 0, models: 1,
+      registeredValidators: 5, eligibleValidators: 5,
+      producing: { count: 1, from: 509033, to: 510032 },
     };
   }
 
@@ -3933,7 +3937,7 @@ class Component extends DCLogic {
     // ----- chat -----
     if (isEmpty && tab === 'chat') { V.msgs = []; V.showSuggestions = true; }
     V.chatEmpty = !V.msgs.length;
-    V.fxNote = FX.label + ' · ' + FX.file + ' · read at block ' + fmtI(FX.block) + ', ' + FX.capturedAt + '. “Produces blocks” is chain team, sampled 2026-10-19 (not in the export yet).';
+    V.fxNote = FX.label + ' · ' + FX.file + ' (' + FX.source + ') · read at heads ' + fmtI(FX.block) + '–' + fmtI(FX.blockEnd) + ', ' + FX.capturedAt + ' · producing validators over blocks ' + fmtI(FX.producing.from) + '–' + fmtI(FX.producing.to) + '.';
     V.chatBackendLabel = s.routing === 'local' ? 'local model · llama-server on this machine' : 'local first · asks before infer.citrate.ai';
     V.askShow = !!s.askPending;
     V.askText = s.askPending || '';
