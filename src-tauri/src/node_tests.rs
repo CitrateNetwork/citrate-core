@@ -1636,3 +1636,121 @@ fn start_writes_the_key_into_the_runtime_dir_and_stop_removes_it() {
     mgr.stop();
     assert!(!path.exists(), "key file removed at stop");
 }
+
+// ---------------------------------------------------------------------------
+// Round 3 (Codex P2 on core#363): invariants P2/P5 and M3/M4 through `NodeManager::start`.
+// ---------------------------------------------------------------------------
+
+/// Every file in `dir` with its bytes, for "nothing was touched" checks.
+fn dir_snapshot(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().to_string(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+const ROUND3_THIRD_GENESIS: &str =
+    "0x3333330000000000000000000000000000000000000000000000000000000003";
+
+/// P2 + P5 + M3: a migration interrupted mid-delete, then a launch whose profile is not ready
+/// (nothing at all is touched: no wipe, no intent change, no marker, no config, no key), then a
+/// launch for a third genesis, which rolls the migration forward to it.
+#[test]
+fn k6_an_interrupted_migration_is_untouched_while_not_ready_and_completes_for_the_next_profile() {
+    let (mgr, fake, data) = stub_manager("k6-r3-profile-change");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    for f in ["CURRENT", "MANIFEST-000001", "000013.sst", "000014.log"] {
+        std::fs::write(data.join(f), b"old chain").unwrap();
+    }
+    std::fs::write(data.join("noise.key"), [9u8; 64]).unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    std::fs::write(data.join("node.toml"), "# old network, hand-edited\n").unwrap();
+
+    crate::node_genesis::test_hooks::STOP_WIPE_AFTER.with(|n| n.set(Some(1)));
+    let first = mgr.start();
+    crate::node_genesis::test_hooks::STOP_WIPE_AFTER.with(|n| n.set(None));
+    assert!(first.is_err(), "interrupted: {first:?}");
+    assert!(data.join(crate::node_genesis::MIGRATION_INTENT_FILE).exists());
+    assert!(!data.join("CURRENT").exists(), "the delete began");
+
+    // A launch whose profile is not ready: refused, and the data dir is byte-for-byte unchanged.
+    let before = dir_snapshot(&data);
+    let not_set = crate::network_profile::profile("genesis-2026-12")
+        .expect("profile")
+        .ready();
+    let mgr = mgr.with_network(not_set);
+    let err = mgr.start().expect_err("no network, no node");
+    assert!(matches!(err, NodeError::Network(_)), "{err:?}");
+    assert_eq!(dir_snapshot(&data), before, "P2/P5: no migration step ran");
+    assert!(fake.get(KEYRING_NODE_STORAGE_ACCOUNT).unwrap().is_none(), "no key");
+    assert_eq!(mgr.status().state, "stopped");
+
+    // The next launch targets a third genesis: the migration rolls forward to it.
+    let mgr = mgr
+        .with_network(crate::network_profile::active_ready())
+        .with_book_genesis(ROUND3_THIRD_GENESIS);
+    mgr.start().expect("the migration completes and the node starts");
+    mgr.stop();
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(ROUND3_THIRD_GENESIS)
+    );
+    assert!(!data.join(crate::node_genesis::MIGRATION_INTENT_FILE).exists());
+    assert!(crate::node_genesis::chain_db_entries(&data).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.0x0f2b567f")).unwrap(),
+        "# old network, hand-edited\n",
+        "the old config is kept under the network it came from"
+    );
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(!fresh.contains("hand-edited"), "{fresh}");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(std::fs::read(data.join("noise.key")).unwrap(), vec![9u8; 64]);
+}
+
+/// M4 (the reported case, end to end): a database with no marker is wiped, the run stops before
+/// node.toml is set aside; the next start writes a fresh node.toml from the profile instead of
+/// keeping the previous network's bootnodes.
+#[test]
+fn k6_an_unrecorded_database_interrupted_after_the_wipe_never_keeps_the_old_config() {
+    let (mgr, _fake, data) = stub_manager("k6-r3-unrecorded");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("CURRENT"), b"old chain").unwrap();
+    std::fs::write(data.join("000013.sst"), b"old chain").unwrap();
+    std::fs::write(data.join("node.toml"), "# old network, hand-edited\n").unwrap();
+
+    crate::node_genesis::test_hooks::STOP_AFTER
+        .with(|s| s.set(Some(crate::node_genesis::Step::DbWiped)));
+    let first = mgr.start();
+    crate::node_genesis::test_hooks::STOP_AFTER.with(|s| s.set(None));
+    assert!(first.is_err(), "interrupted: {first:?}");
+    assert!(crate::node_genesis::chain_db_entries(&data).unwrap().is_empty());
+    assert!(crate::node_genesis::read_marker(&data).unwrap().is_none());
+
+    mgr.start().expect("starts");
+    mgr.stop();
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(!fresh.contains("hand-edited"), "{fresh}");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.unrecorded")).unwrap(),
+        "# old network, hand-edited\n"
+    );
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_NEW_GENESIS)
+    );
+}

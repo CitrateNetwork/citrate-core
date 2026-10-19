@@ -152,6 +152,34 @@ pub fn check_wallet_signing(scope: SignatureScope) -> Result<(), RpcError> {
     })
 }
 
+/// **No RPC without a network (K6, invariant P3).** Every JSON-RPC request made through
+/// [`HttpTransport`] calls this first. It refuses, before any connection is made, while the
+/// installed gate or a gate added for this thread ([`with_added_network_gate`]) is not set: a
+/// build whose network profile is not ready reads nothing from any chain. A process with no gate
+/// installed and none added (other apps on this kit) is not gated.
+pub fn check_rpc_allowed() -> Result<(), RpcError> {
+    let one = |g: &ExpectedNetwork| {
+        if g.is_set() {
+            Ok(())
+        } else {
+            Err(RpcError::WrongNetwork(format!(
+                "this build has no network set (profile {:?}), so no RPC request is made; \
+                 update Citrate Core",
+                g.name
+            )))
+        }
+    };
+    if let Some(g) = network_gate() {
+        one(g)?;
+    }
+    ADDED_GATES.with(|gates| {
+        for g in gates.borrow().iter() {
+            one(g)?;
+        }
+        Ok(())
+    })
+}
+
 fn is_block_hash(s: &str) -> bool {
     s.len() == 66
         && s.starts_with("0x")
@@ -242,6 +270,8 @@ const RPC_TIMEOUT_SECS: u64 = 6;
 
 impl RpcTransport for HttpTransport {
     fn call(&self, body: Value) -> Result<Value, RpcError> {
+        // K6 (P3): no request at all while this build has no network set.
+        check_rpc_allowed()?;
         // Never follow a redirect: a loopback fork target checked by URL must not be able to send
         // the request (or the next one) to another host. A 3xx is an error, not an answer.
         let resp = ureq::post(&self.url)

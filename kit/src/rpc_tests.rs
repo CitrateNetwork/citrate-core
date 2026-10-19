@@ -467,3 +467,98 @@ fn ungated_send_is_unchanged_without_an_installed_gate() {
     );
     assert_eq!(client.transport.requests().len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// K6 invariant P3: no RPC request at all while the network is not set.
+// ---------------------------------------------------------------------------
+
+/// One loopback HTTP listener that answers a single JSON-RPC request; returns its URL and
+/// a probe that reports whether a connection ever arrived.
+fn one_shot_rpc() -> (String, impl FnOnce() -> bool) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", l.local_addr().unwrap());
+    l.set_nonblocking(true).unwrap();
+    let probe = move || {
+        // A connection made by the client is in the accept queue by the time call() returned.
+        for _ in 0..20 {
+            match l.accept() {
+                Ok((mut s, _)) => {
+                    s.set_nonblocking(false).unwrap();
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf);
+                    let body = r#"{"jsonrpc":"2.0","id":1,"result":"0x9d0c"}"#;
+                    let _ = s.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                    return true;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+        false
+    };
+    (url, probe)
+}
+
+#[test]
+fn p3_no_rpc_request_is_made_while_the_network_is_not_set() {
+    let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]});
+    for not_set in [
+        expected(None, None),
+        expected(Some(40204), None),
+        expected(None, Some(GATE_GENESIS)),
+        expected(Some(0), Some(GATE_GENESIS)),
+        expected(Some(40204), Some("0x00")),
+    ] {
+        let (url, connected) = one_shot_rpc();
+        let r = with_added_network_gate(not_set.clone(), || HttpTransport::new(url).call(req.clone()));
+        assert!(
+            matches!(&r, Err(RpcError::WrongNetwork(m)) if m.contains("no RPC request")),
+            "{not_set:?}: {r:?}"
+        );
+        assert!(!connected(), "{not_set:?}: no connection may be made");
+        // The client-level reads refuse the same way.
+        let (url, connected) = one_shot_rpc();
+        let client = RpcClient::with_transport(HttpTransport::new(url));
+        let r = with_added_network_gate(not_set.clone(), || client.block_number());
+        assert!(matches!(r, Err(RpcError::WrongNetwork(_))), "{r:?}");
+        assert!(!connected());
+    }
+}
+
+#[test]
+fn p3_rpc_is_made_when_the_network_is_set_and_without_any_gate() {
+    let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]});
+    for gate in [Some(expected(Some(40204), Some(GATE_GENESIS))), None] {
+        let (url, connected) = one_shot_rpc();
+        let server = std::thread::spawn(connected);
+        let t = HttpTransport::new(url);
+        let r = match &gate {
+            Some(g) => with_added_network_gate(g.clone(), || t.call(req.clone())),
+            None => t.call(req.clone()),
+        };
+        assert!(server.join().unwrap(), "{gate:?}: the request reached the endpoint");
+        assert_eq!(r.expect("answered")["result"], "0x9d0c", "{gate:?}");
+    }
+}
+
+#[test]
+fn p3_check_rpc_allowed_follows_the_gate() {
+    assert!(check_rpc_allowed().is_ok(), "no gate installed in tests");
+    assert!(with_added_network_gate(expected(None, None), check_rpc_allowed).is_err());
+    assert!(
+        with_added_network_gate(expected(Some(40204), Some(GATE_GENESIS)), check_rpc_allowed)
+            .is_ok()
+    );
+    // An added gate can only tighten: a set gate inside a not-set one still refuses.
+    let r = with_added_network_gate(expected(None, None), || {
+        with_added_network_gate(expected(Some(40204), Some(GATE_GENESIS)), check_rpc_allowed)
+    });
+    assert!(r.is_err());
+}
