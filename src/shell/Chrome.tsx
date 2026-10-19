@@ -183,7 +183,7 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
 // ack that must be ticked before Approve enables. On Approve → store broadcasts;
 // on Reject → nothing is signed. Once Approve is pressed the review shows a signing
 // state (Reject / Escape disabled) until the signer returns the real outcome. In web-dev the modal still shows (truthful flow)
-// but approving honestly reports "settles only in the desktop app".
+// but approving honestly reports "can only be signed and sent in the desktop app".
 export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
   const r = s.walletReview;
   if (!r) return null;
@@ -266,7 +266,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
           {BRIDGE_MODE !== "tauri" && (
             <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-1)", padding: "10px 14px" }}>
               <span style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)" }}>
-                Web preview: this settles only in the desktop app (no key or chain here). Approving will not move funds.
+                Web preview: this can only be signed and sent in the desktop app (no key or chain here). Approving will not move funds.
               </span>
             </div>
           )}

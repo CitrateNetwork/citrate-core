@@ -84,7 +84,7 @@ import {
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
-/** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
+/** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
  * HUP-S2.4 — tools whose handler always stops at a member approval of its own (a ceremony, or the
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
@@ -4960,7 +4960,7 @@ export class Store {
       try {
         await bridge.signing.broadcast(r.view.id, ack);
       } catch (err) {
-        this.toast(WALLET_ACTION_LABELS[r.kind] + " settles only in the desktop app — " + String((err as Error).message ?? err));
+        this.toast(WALLET_ACTION_LABELS[r.kind] + " can only be signed and sent in the desktop app — " + String((err as Error).message ?? err));
       }
       // Release the pending sim ceremony and clear the review (nothing settled).
       try {
@@ -4977,7 +4977,11 @@ export class Store {
     try {
       const result = await bridge.signing.broadcast(r.view.id, ack);
       this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
-      this.toast(r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
+      // C1-V §1 transaction words: Pending until a receipt names the block, then Included in block N.
+      this.toast(
+        r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "… · " +
+          (result.blockNumber != null ? "Included in block " + result.blockNumber.toLocaleString("en-US") : "Pending; the balance re-reads once it is included in a block") + ".",
+      );
       this.setState({ walletReview: null });
       if (r.kind === "claim") await this.refreshEarnings();
       else await this.refreshWallet();
@@ -4998,7 +5002,7 @@ export class Store {
         /* best-effort cleanup */
       }
       this.setState({ walletReview: null });
-      this.toast(r.label + " not settled — " + String((err as Error).message ?? err));
+      this.toast(r.label + " not sent — " + String((err as Error).message ?? err));
       // The tx didn't settle → tell the sidecar to abort, not proceed.
       await r.onResolved?.(false);
     }
@@ -5043,13 +5047,13 @@ export class Store {
    * Today this is bonded pinning. (The WITHDRAW leg — LiquidStakingPool
    * `requestWithdrawal` → `claimWithdrawal` — is now wired via
    * walletRequestWithdrawal / walletClaimWithdrawal, WP2.) NEVER fabricates a hash
-   * or mutates a balance (Rule 1/3). Web-dev: settles only in the desktop app.
+   * or mutates a balance (Rule 1/3). Web-dev: can only be signed and sent in the desktop app.
    */
   settleUnwired(action: string): void {
     if (BRIDGE_MODE === "tauri") {
       this.toast(action + " isn't wired to a real 40204 transaction yet — no funds moved. (Grounded contract pending.)");
     } else {
-      this.toast(action + " settles only in the desktop app — no key or chain in web preview.");
+      this.toast(action + " can only be signed and sent in the desktop app — no key or chain in web preview.");
     }
   }
 

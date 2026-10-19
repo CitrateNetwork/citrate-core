@@ -96,7 +96,7 @@ describe("Feature: a decline cannot claim nothing was signed once signing has st
     await store.rejectWalletReview();
     d.reject(new Error("rpc unreachable"));
     await approving;
-    expect(lastToast()).toMatch(/not settled/i);
+    expect(lastToast()).toMatch(/not sent/i);
     expect(onResolved).toHaveBeenCalledTimes(1);
     expect(onResolved).toHaveBeenCalledWith(false);
   });
@@ -139,5 +139,42 @@ describe("Feature: the review modal shows the signing state", () => {
     const html = renderToStaticMarkup(<WalletReviewModal store={store} s={s} />);
     expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Reject<\/button>/);
     expect(html).toContain("nothing has been signed yet");
+  });
+});
+
+// C1-V review round 2 (#347): wallet transaction toasts use the UI truth contract §1 words
+// (Pending / Included in block N), never "settled".
+describe("C1-V §1 — wallet transaction toasts use the transaction words", () => {
+  beforeEach(() => {
+    vi.spyOn(bridge.signing, "reject").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshActivity").mockResolvedValue(undefined);
+    vi.spyOn(store, "save").mockImplementation(() => {});
+    store.setState({ walletReview: { kind: "send", label: "Send", view, rawAck: false } });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ walletReview: null });
+  });
+
+  it("a broadcast with no receipt yet says Pending", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xfeedbeef00", blockNumber: null });
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("Pending");
+    expect(lastToast()).not.toMatch(/settle/i);
+  });
+
+  it("a broadcast with a receipt says Included in block N", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xfeedbeef00", blockNumber: 501_234 });
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("Included in block 501,234");
+    expect(lastToast()).not.toMatch(/settle/i);
+  });
+
+  it("a failed broadcast says not sent, never 'not settled'", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(new Error("rpc unreachable"));
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("not sent");
+    expect(lastToast()).not.toMatch(/settle/i);
   });
 });
