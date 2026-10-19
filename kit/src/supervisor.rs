@@ -902,6 +902,10 @@ pub struct SupervisorConfig {
     /// fault-injection seam: the lifecycle fixtures hold a spawn "in flight" with it while they
     /// commit a Stop or shutdown. `None` in production.
     pub spawn_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor while it marks the service Failed, right after the Failed phase is
+    /// visible to controls. A fault-injection seam: the lifecycle fixtures hold the monitor
+    /// there while a Start races the transition. `None` in production.
+    pub failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SupervisorConfig {
@@ -917,6 +921,7 @@ impl SupervisorConfig {
             clock: Arc::new(SystemClock),
             deadlines: None,
             spawn_barrier: None,
+            failed_barrier: None,
         }
     }
 }
@@ -938,6 +943,8 @@ struct Shared {
     /// the `logs()` accessor snapshots it. Survives restarts.
     logs: LogRing,
     epoch: u64,
+    /// See [`SupervisorConfig::failed_barrier`].
+    failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Shared {
@@ -1110,6 +1117,7 @@ impl Supervisor {
             clock: config.clock.clone(),
             logs: LogRing::new(),
             epoch,
+            failed_barrier: config.failed_barrier.clone(),
         });
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
@@ -1907,6 +1915,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         clock,
         deadlines: _deadlines,
         spawn_barrier,
+        failed_barrier: _failed_barrier,
     } = config;
 
     // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap. Reset to 0 once a
@@ -2247,6 +2256,9 @@ fn after_teardown(shared: &Shared) {
 /// The retry budget for intent `seq` is spent: Failed, and a pending Start receipt says why.
 fn enter_failed(shared: &Shared, seq: u64, reason: &str) {
     shared.set_state(SupervisorState::Failed);
+    if let Some(barrier) = &shared.failed_barrier {
+        barrier();
+    }
     shared.lock().settle(
         seq,
         IntentKind::Start,

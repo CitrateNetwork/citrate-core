@@ -29,6 +29,7 @@ start_after_a_crash_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2
 start_after_health_failures_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after health failures exhaust the budget with output held, a Start spawns nothing until cleanup
 start_after_shutdown_is_rejected_closing | regression | SCL-S2.2 | a Start after shutdown begins is RejectedClosing and spawns nothing
 late_spawn_after_stop_goes_straight_to_teardown | regression | SCL-S2.3 | a spawn admitted before Stop is torn down unpublished; the Stop stays Pending until the ticket resolves (INV-12)
+a_start_racing_the_failed_transition_is_a_fresh_intent | regression | SCL-S2.3 | a Start landing during the Failed transition is a fresh intent, never a join of the failing one
 a_start_overtaken_during_its_spawn_reads_superseded | regression | SCL-S2.3 | a Start overtaken by Stop during its spawn reads Superseded, never Started
 late_spawn_after_shutdown_is_torn_down | regression | SCL-S2.3 | a spawn admitted before shutdown is torn down; no Start after Closing
 publication_ticket_released_before_stop_settles_is_in_the_complete_scope | regression | SCL-S2.3 | a publication admitted before Stop cannot become active after it; its cleanup is in the Complete scope

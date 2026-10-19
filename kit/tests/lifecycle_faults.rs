@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use citrate_core_kit::supervisor::{
     BackoffPolicy, ChildWatch, ControlResult, ControlToken, DeadlinePublisher, DeadlineState,
-    Desired, HealthCheck, Phase, PublicationRefused, Receipt, Supervisor, SupervisorConfig,
-    SupervisorState, DEADLINE_RECORDS,
+    Desired, HealthCheck, Phase, PublicationRefused, Receipt, SidecarSpec, Supervisor,
+    SupervisorConfig, SupervisorState, DEADLINE_RECORDS,
 };
 use lifecycle::fixture::{pgrep, pid_alive, sleep_bin, OwnedFixture, SUITE_PREFIX};
 use lifecycle::timing::{hold_for, sample_over, wait_for, Deadline};
@@ -1090,6 +1090,61 @@ fn late_spawn_after_stop_goes_straight_to_teardown() {
         fx.pidfile_pids().len() <= 1,
         "nothing was spawned after the Stop"
     );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A Start that lands while the monitor marks the service Failed never joins the dying intent:
+/// it is a fresh intent (new token), and the dying intent's receipt is Failed. The service's
+/// binary cannot be started, so the first Start's receipt is still pending when it fails.
+#[test]
+fn a_start_racing_the_failed_transition_is_a_fresh_intent() {
+    let fx = OwnedFixture::new("failed-race");
+    let gate = std::sync::Arc::new(SpawnGate::default());
+    let spec = SidecarSpec::new("lcf-failed-race", fx.path("no-such-binary"), vec![]);
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(0);
+    cfg.failed_barrier = Some(SpawnGate::hook(&gate));
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    // The monitor is inside the Failed transition, held at the barrier.
+    gate.wait_entered(1);
+    let (epoch, instance) = sup
+        .lifecycle()
+        .map(|l| (l.app_epoch, l.instance))
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    let dying = ControlToken {
+        app_epoch: epoch,
+        instance,
+        intent_sequence: 1,
+    };
+    let fresh = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start during the Failed transition: {other:?}"),
+    };
+    gate.release();
+    assert_ne!(
+        fresh, dying,
+        "the Start must not join the intent that is failing"
+    );
+    let settled = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        match receipt_of(&sup, dying) {
+            Receipt::Pending => None,
+            r => Some(r),
+        }
+    });
+    assert!(
+        matches!(settled, Ok((Receipt::Failed { .. }, _))),
+        "the failing intent reads Failed: {settled:?}"
+    );
+    // The fresh Start is its own attempt: it runs and settles on its own receipt.
+    let own = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        match receipt_of(&sup, fresh) {
+            Receipt::Pending => None,
+            r => Some(r),
+        }
+    });
+    assert!(matches!(own, Ok((Receipt::Failed { .. }, _))), "{own:?}");
     drop(sup);
     fx.assert_clean();
 }
