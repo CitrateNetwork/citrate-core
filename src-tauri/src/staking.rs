@@ -568,6 +568,10 @@ pub const LOG_WINDOW_BLOCKS: u64 = 1000;
 /// finalized head: `finalized` returns genesis while finality is not running.
 pub const SAFE_DEPTH_BLOCKS: u64 = 1000;
 
+/// STD red stub (C1-W, citrate-chain#337): the margin below the executed head; the old behaviour
+/// uses none.
+pub const EXECUTED_HEAD_MARGIN_BLOCKS: u64 = 0;
+
 /// C1-W — how many `withdrawals(id)` reads go in one JSON-RPC batch.
 pub const WITHDRAWAL_READ_BATCH: usize = 50;
 

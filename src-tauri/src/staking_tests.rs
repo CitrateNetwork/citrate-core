@@ -510,6 +510,9 @@ struct ChainStub {
     /// `citrate_executedHead` (DGX, stacked on citrate-chain#334): Some(number) = served as
     /// {number, hash}; None = an older node without the method (-32601).
     executed_head: RefCell<Option<u64>>,
+    /// citrate-chain#337: `citrate_executedHead` answers this JSON-RPC error code instead (e.g.
+    /// -32603 when the node has no persisted applied tip).
+    executed_head_error: RefCell<Option<i64>>,
     /// Block hashes that differ from the default `stub_hash(n)` (a reorg).
     reorged: RefCell<std::collections::HashMap<u64, String>>,
     requests: RefCell<Vec<JsonValue>>,
@@ -529,6 +532,7 @@ impl ChainStub {
             applied_tip: RefCell::new(None),
             syncing: RefCell::new(Some(JsonValue::Bool(false))),
             executed_head: RefCell::new(None),
+            executed_head_error: RefCell::new(None),
             reorged: RefCell::new(Default::default()),
             requests: RefCell::new(Vec::new()),
         }
@@ -570,6 +574,11 @@ impl ChainStub {
     }
     fn one(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
         match body["method"].as_str() {
+            Some("citrate_executedHead") if self.executed_head_error.borrow().is_some() => {
+                let code = self.executed_head_error.borrow().unwrap_or(-32603);
+                Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1,
+                    "error": { "code": code, "message": "citrate_executedHead: no applied tip" } }))
+            }
             Some("citrate_executedHead") => match *self.executed_head.borrow() {
                 Some(n) => Ok(ok(serde_json::json!({ "number": format!("0x{n:x}"), "hash": self.hash_at(n) }))),
                 None => Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1,
@@ -1100,6 +1109,45 @@ fn a_rewind_wins_a_merge_over_older_progress() {
     assert_eq!(m.generation, 1);
     assert_eq!(m.ids, [1u128, 2].into_iter().collect(), "ids are re-validated on chain, so both are kept");
     assert_eq!(merge_scans(&rewound, &stale), m, "order does not matter");
+}
+
+// citrate-chain#337 scanner protocol: read the executed head, getLogs with toBlock <= head.number,
+// persist at most head.number - margin, never advance on an error.
+//
+// -32603 ("no applied tip / the read failed") is NO evidence: the position does not move, and it is
+// not mistaken for an older node without the method (which falls back to eth_syncing).
+#[test]
+fn an_executed_head_error_is_no_evidence_and_does_not_advance() {
+    let rpc = RpcClient::with_transport(ChainStub::new(9_000, vec![(8, 4_000, false)]));
+    *rpc.transport().executed_head_error.borrow_mut() = Some(-32603);
+    let mut scan = WithdrawalScan::default();
+    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    assert_eq!(got.len(), 1, "the list is still read");
+    assert_eq!(scan.next_block, 0, "no evidence: the position does not move");
+    let mut later = WithdrawalScan { next_block: 5_001, ..Default::default() };
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut later, None).expect("read");
+    assert_eq!(later.next_block, 5_001, "an error never advances a resumed position");
+}
+
+#[test]
+fn the_scan_never_asks_for_logs_past_the_executed_head() {
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![]));
+    *rpc.transport().executed_head.borrow_mut() = Some(3_000);
+    let mut scan = WithdrawalScan::default();
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    let ranges = rpc.transport().log_ranges();
+    assert!(ranges.iter().all(|(_, b)| *b <= 3_000), "toBlock past the executed head: {ranges:?}");
+    assert_eq!(ranges.last().map(|r| r.1), Some(3_000));
+}
+
+#[test]
+fn progress_is_persisted_a_margin_below_the_executed_head() {
+    let rpc = RpcClient::with_transport(ChainStub::new(5_000, vec![]));
+    *rpc.transport().executed_head.borrow_mut() = Some(3_000);
+    let mut scan = WithdrawalScan::default();
+    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    assert_eq!(scan.next_block, 3_001 - 100, "head.number - the reorg margin");
+    assert_eq!(EXECUTED_HEAD_MARGIN_BLOCKS, 100, "citrate-chain MAX_REORG_DEPTH");
 }
 
 #[test]
