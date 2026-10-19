@@ -146,12 +146,13 @@ impl OwnedFixture {
         ))
     }
 
-    /// argv for a long-lived leaf that ignores SIGTERM (the ignore survives `exec`), so a stop
+    /// argv for a long-lived leaf that ignores SIGTERM (the ignore survives `exec`, and it is set
+    /// before the pid is recorded, so a recorded child always ignores it), so a stop
     /// has to wait out its grace and escalate to SIGKILL. Keeps a teardown in progress long
     /// enough to race controls against it.
     pub fn stubborn_leaf_args(&self) -> Vec<String> {
         self.sh_args(&format!(
-            "echo $$ >>\"$1\"; trap '' TERM; exec {} -f \"$2\"",
+            "trap '' TERM; echo $$ >>\"$1\"; exec {} -f \"$2\"",
             tail_bin().display()
         ))
     }
@@ -323,13 +324,25 @@ impl OwnedFixture {
         }
         // Final sweep: anything still carrying the marker (a recorded pid that raced the pid
         // file, or a process that never got to write it). Repeat until none or the deadline.
+        // A forked shell can be mid-exec (briefly invisible to pgrep) when the sweep looks, so
+        // the sweep ends only after the marker has been absent for several looks in a row.
         let deadline = Deadline::after(Duration::from_secs(5));
+        let mut quiet = 0;
         loop {
             let live: Vec<u32> = pgrep(&self.marker)
                 .into_iter()
                 .filter(|p| pid_alive(*p))
                 .collect();
-            if live.is_empty() || deadline.expired() {
+            if live.is_empty() {
+                quiet += 1;
+                if quiet >= 10 || deadline.expired() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            quiet = 0;
+            if deadline.expired() {
                 break;
             }
             for pid in live {
@@ -351,7 +364,20 @@ impl OwnedFixture {
         let _ = wait_for(Duration::from_secs(5), Duration::from_millis(20), || {
             targets.iter().all(|p| !pid_alive(*p)).then_some(())
         });
-        report.leftover = targets.into_iter().filter(|p| pid_alive(*p)).collect();
+        // A last sweep for anything that became visible only now (a shell that was mid-exec
+        // during the sweep above); it is killed and counted as swept, not left over.
+        let late: Vec<u32> = self.live_marked();
+        for &pid in &late {
+            if !report.recorded.contains(&pid) && !report.swept.contains(&pid) {
+                report.swept.push(pid);
+            }
+            kill(pid, libc::SIGKILL);
+        }
+        let all: Vec<u32> = targets.into_iter().chain(late).collect();
+        let _ = wait_for(Duration::from_secs(5), Duration::from_millis(20), || {
+            all.iter().all(|p| !pid_alive(*p)).then_some(())
+        });
+        report.leftover = all.into_iter().filter(|p| pid_alive(*p)).collect();
         for p in self.live_marked() {
             if !report.leftover.contains(&p) {
                 report.leftover.push(p);
