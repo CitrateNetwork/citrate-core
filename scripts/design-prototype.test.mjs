@@ -12,7 +12,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const DESIGN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../design") + path.sep;
-const SAVE_KEY = "citrate-core-proto-v3";
 
 class FakeLogic {
   constructor(props) {
@@ -36,6 +35,8 @@ function loadComponent() {
 }
 
 const Component = loadComponent();
+// The prototype's own save key (it is bumped when the saved shape changes).
+const SAVE_KEY = /localStorage\.getItem\('([^']+)'/.exec(readFileSync(DESIGN + "CitrateCore.dc.html", "utf8"))[1];
 let harness;
 let coreData;
 

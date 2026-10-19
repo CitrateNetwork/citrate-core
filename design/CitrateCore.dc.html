@@ -589,7 +589,7 @@
       </div>
       <div class="surface" style="padding:14px 18px;display:flex;flex-direction:column;gap:6px;">
         <span class="eyebrow">What the checksums prove</span>
-        <span style="font-size:12.5px;line-height:1.6;color:var(--tx-2);">Checksums served next to the download only prove the file wasn’t corrupted on the way. Apple notarization and the signed SHA256SUMS file prove it came from Citrate. {{ wbMinisign }}</span>
+        <span style="font-size:12.5px;line-height:1.6;color:var(--tx-2);">Checksums served next to the download only prove the file wasn’t corrupted on the way. Apple notarization proves the macOS build came from Citrate. {{ wbMinisign }}</span>
       </div>
     </div>
     </sc-if>
@@ -1658,7 +1658,7 @@
             </div>
             <div class="surface" style="padding:14px 16px;display:flex;flex-direction:column;gap:8px;">
               <span class="eyebrow">Words on this page</span>
-              <span style="font-size:12px;line-height:1.6;color:var(--tx-2);">Synced means eth_syncing is false and this node is within 5 blocks of the public head. Validator active does not mean producing blocks: today one validator produces. Checkpoint finality is not running yet, so this page counts confirmations, never finality.</span>
+              <span style="font-size:12px;line-height:1.6;color:var(--tx-2);">Synced means eth_syncing is false and this node is within 5 blocks of the public head. Validator active does not mean producing blocks: in the fixture sample one validator produced blocks. Checkpoint finality is not running yet, so this page counts confirmations, never finality.</span>
             </div>
           </div>
         </div>
@@ -2042,6 +2042,18 @@
         </div>
         </sc-if>
 
+
+        <!-- 0.5.2 default: the catalog fails closed until the ceremony catalog key exists (core PR #356, KeyNotIssued) -->
+        <sc-if value="{{ sxNoKey }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:20px 26px 24px;">
+          <div class="surface" data-screen-label="Store fail closed" style="max-width:680px;padding:22px 24px;display:flex;flex-direction:column;gap:12px;border-color:var(--warn);">
+            <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--warn);">Fails closed · 0.5.2 default</span>
+            <span style="font-family:var(--font-display);font-weight:420;font-size:20px;line-height:1.25;">Store catalog not available yet: signing key not issued</span>
+            <p style="font-size:13.5px;line-height:1.6;color:var(--tx-2);margin:0;">The Store opens after the catalog signing key is created at the key ceremony. Until then nothing is listed and nothing can be installed. What you already have keeps working.</p>
+            <span class="mono" style="font-size:10.5px;color:var(--tx-3);background:var(--srf-inset);border-radius:var(--r-1);padding:8px 10px;">catalog verifier → KeyNotIssued, before any network or disk access (core PR #356)</span>
+          </div>
+        </div>
+        </sc-if>
 
         <!-- ============ CATALOG ============ -->
         <sc-if value="{{ sxCatalog }}" hint-placeholder-val="{{ true }}">
@@ -3466,7 +3478,8 @@ class Component extends DCLogic {
     try { saved = JSON.parse(localStorage.getItem('citrate-core-proto-v4') || 'null'); } catch (e) { saved = null; }
     const base = this.freshState((saved && saved.persona) || 'p1');
     if (saved) {
-      Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: 'ready', isOpen: null });
+      // stCat resets to the fail-closed default on load: a reviewer always starts on today's Store.
+      Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: 'ready', isOpen: null, stCat: 'nokey' });
       this.recoverInterruptedRuns(base);
     }
     // A reload is an app launch: Hermes starts and reads the saved settings.
@@ -3661,7 +3674,7 @@ class Component extends DCLogic {
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => {
       const s = this.state; const keep = {};
-      for (const k of ['persona', 'tier', 'org', 'entitlement', 'stage', 's2', 's3', 's5', 's5n', 'hasGrant', 'hasSbt', 'liquid', 'selfStake', 'earnVal', 'earnPin', 'earnComp', 'earnToday', 'claimable', 'activity', 'node', 'syncPct', 'peers', 'gwKey', 'rpc', 'net', 'cpuCap', 'autolock', 'sigPolicy', 'channel', 'telemetry', 'storageMode', 'coachDone', 'dataDir', 's5hash', 'walletAddr', 'socketPath', 'kycOutcome', 'chatBackend', 'crashes', 'wTab', 'nTab', 'cTab', 'sSec', 'route', 'deviceId', 'pins', 'jPages', 'jSel', 'connections', 'aiKeys', 'aiDefault', 'sponsorUnits', 'blocksProposed', 'hTab', 'cDepth', 'cSec', 'cAud', 'routing', 'webSearch', 'browser', 'reader', 'terminal', 'allPaused', 'learnSessions', 'voice', 'mcp', 'folders', 'annot', 'theme', 'escCap', 'escEndpoints', 'escHistory', 'daemons', 'approvals', 'runLog', 'records', 'proposals', 'learned', 'recordedFiles', 'cp2', 'nPage', 'nStore', 'svcSel', 'svc', 'files', 'localPins', 'valWord', 'stPage', 'stKind', 'stSel', 'stSig', 'installed', 'web', 'joinState', 'inviterVerified', 'os', 'winBuilt', 'invite', 'jStage', 'jSub', 'groupJoined', 'cp1', 'cp3', 'variants']) keep[k] = s[k];
+      for (const k of ['persona', 'tier', 'org', 'entitlement', 'stage', 's2', 's3', 's5', 's5n', 'hasGrant', 'hasSbt', 'liquid', 'selfStake', 'earnVal', 'earnPin', 'earnComp', 'earnToday', 'claimable', 'activity', 'node', 'syncPct', 'peers', 'gwKey', 'rpc', 'net', 'cpuCap', 'autolock', 'sigPolicy', 'channel', 'telemetry', 'storageMode', 'coachDone', 'dataDir', 's5hash', 'walletAddr', 'socketPath', 'kycOutcome', 'chatBackend', 'crashes', 'wTab', 'nTab', 'cTab', 'sSec', 'route', 'deviceId', 'pins', 'jPages', 'jSel', 'connections', 'aiKeys', 'aiDefault', 'sponsorUnits', 'blocksProposed', 'hTab', 'cDepth', 'cSec', 'cAud', 'routing', 'webSearch', 'browser', 'reader', 'terminal', 'allPaused', 'learnSessions', 'voice', 'mcp', 'folders', 'annot', 'theme', 'escCap', 'escEndpoints', 'escHistory', 'daemons', 'approvals', 'runLog', 'records', 'proposals', 'learned', 'recordedFiles', 'cp2', 'nPage', 'nStore', 'svcSel', 'svc', 'files', 'localPins', 'valWord', 'stPage', 'stKind', 'stSel', 'stSig', 'stCat', 'installed', 'web', 'joinState', 'inviterVerified', 'os', 'winBuilt', 'invite', 'jStage', 'jSub', 'groupJoined', 'cp1', 'cp3', 'variants']) keep[k] = s[k];
       try { localStorage.setItem('citrate-core-proto-v4', JSON.stringify(keep)); } catch (e) {}
     }, 400);
   }
@@ -4912,12 +4925,11 @@ class Component extends DCLogic {
   static FX() {
     return {
       label: 'FIXTURE — captured from 40204, not live',
-      file: 'fixtures/40204-2026-10-19.json',
-      // Chain PR #319 head f366a7be: reads at heads 510,030–510,047 (latest state, single epoch 510).
-      capturedAt: '2026-10-19 06:32 UTC', source: 'chain PR #319 @ f366a7be',
-      block: 510030, blockEnd: 510047, blockTime: 2, skills: 0, models: 1,
-      registeredValidators: 5, eligibleValidators: 5,
-      producing: { count: 1, from: 509033, to: 510032 },
+      file: 'fixtures/40204-2026-10-19.json', rev: 'chain #319 @ f366a7be',
+      capturedAt: '2026-10-19 06:32 UTC', headEnd: 510047,
+      // Re-exported fixture: every read is latest state at its own observed_head (consistency: none).
+      block: 510030, epoch: 510, blockTime: 2, registered: 5, eligible: 5, pending: 0,
+      producing: 1, prodFrom: 509033, prodTo: 510032, skills: 0, models: 1,
     };
   }
 
@@ -5163,7 +5175,7 @@ class Component extends DCLogic {
     // ----- chat -----
     if (isEmpty && tab === 'chat') { V.msgs = []; V.showSuggestions = true; }
     V.chatEmpty = !V.msgs.length;
-    V.fxNote = FX.label + ' · ' + FX.file + ' (' + FX.source + ') · read at heads ' + fmtI(FX.block) + '–' + fmtI(FX.blockEnd) + ', ' + FX.capturedAt + ' · producing validators over blocks ' + fmtI(FX.producing.from) + '–' + fmtI(FX.producing.to) + '.';
+    V.fxNote = FX.label + ' · ' + FX.file + ' (' + FX.rev + ') · captured ' + FX.capturedAt + ', head ' + fmtI(FX.block) + ' to ' + fmtI(FX.headEnd) + ' · each read is latest state at its own observed_head. Producing validators: the export’s producing_validators read, blocks ' + fmtI(FX.prodFrom) + '–' + fmtI(FX.prodTo) + '.';
     V.chatBackendLabel = s.routing === 'local' ? 'local model · llama-server on this machine' : 'local first · asks before infer.citrate.ai';
     V.askShow = !!s.askPending;
     V.askText = s.askPending ? s.askPending.text : '';
@@ -5493,16 +5505,16 @@ class Component extends DCLogic {
     const inst2 = s.daemons.find((d) => d.id === 'd-brief');
     V.cpSteps = [
       ['Turn on web search in Controls, then restart Hermes', (cp.web || s.webSearch) && s.hermesRun.web],
-      ['Open its Store listing', cp.store],
+      ['Open its Store listing (post-ceremony Store)', cp.store],
       ['Install it from the install sheet; it arrives paused', !!inst2],
       ['Start it from Work', cp.started],
       ['Approve its first change', cp.approved],
     ].map(([t, done], i) => ({ t: (i + 1) + '. ' + t, c: done ? 'var(--ok)' : 'var(--tx-2)', mark: done ? '✓' : '·' }));
     V.onCpReset = () => {
-      this.setState((st) => ({ webSearch: false, hermesRun: Object.assign({}, st.hermesRun, { web: false }), cp2: { web: false, store: false, installed: false, started: false, approved: false }, daemons: st.daemons.filter((d) => d.id !== 'd-brief'), installed: st.installed.filter((x) => x.id !== 'd-brief'), approvals: st.approvals.filter((x) => x.daemonId !== 'd-brief'), hl: null }));
+      this.setState((st) => ({ webSearch: false, hermesRun: Object.assign({}, st.hermesRun, { web: false }), stCat: 'post', cp2: { web: false, store: false, installed: false, started: false, approved: false }, daemons: st.daemons.filter((d) => d.id !== 'd-brief'), installed: st.installed.filter((x) => x.id !== 'd-brief'), approvals: st.approvals.filter((x) => x.daemonId !== 'd-brief'), hl: null }));
       this.hgo('controls', { cDepth: 1 });
     };
-    V.onCpStart = () => { this.setState({ demoOpen: false }); this.hgo('controls', { cDepth: 1 }); };
+    V.onCpStart = () => { this.setState({ demoOpen: false, stCat: 'post' }); this.hgo('controls', { cDepth: 1 }); };
     V.demoAnnCls = s.annot ? 'btn-secondary' : 'btn-ghost';
     V.onDemoAnn = () => { this.setState({ annot: !s.annot }); this.save(); };
     V.demoLightCls = s.theme !== 'dark' ? 'btn-secondary' : 'btn-ghost';
@@ -5625,7 +5637,7 @@ class Component extends DCLogic {
     Object.assign(s, {
       nPage: 'status', nStore: 'files', nWord: null, svcSel: 'node', svcScenario: 'running',
       svc: this.svcSeed(pid), files: [], localPins: [], pinPick: null, addN: 0,
-      valWord: 'none', stPage: 'catalog', stKind: 'all', stSel: 'd-brief', stSig: 'verified',
+      valWord: 'none', stPage: 'catalog', stKind: 'all', stSel: 'd-brief', stSig: 'verified', stCat: 'nokey',
       installed: [], isOpen: null, isPhase: 'checking', isStep: 0,
       web: null, joinState: 'direct', inviterVerified: true, os: 'mac', winBuilt: false, wbDl: false, wbHow: {}, wbCmd: false,
       invite: null, jStage: 'welcome', jSub: 'idle', groupJoined: null,
@@ -5751,6 +5763,7 @@ class Component extends DCLogic {
     this.save();
   }
   openInstallSheet(id) {
+    if (this.state.stCat !== 'post') { this.toast('Store catalog not available yet: signing key not issued'); return; }
     this.setState({ isOpen: id, isPhase: 'checking', isStep: 0 });
     clearTimeout(this._isT1); clearTimeout(this._isT2); clearTimeout(this._isT3);
     const sig = this.state.stSig;
@@ -5783,7 +5796,7 @@ class Component extends DCLogic {
     const first = P.name.split(' ')[0];
     const g = s.groupJoined;
     const greet = g
-      ? 'Welcome, ' + first + '. You joined ' + g.cluster + ' with ' + g.inviter + '’s invite, and it’s open in Groups. Your node is ' + this.nodeLabel(s.node).toLowerCase() + '. Your validator is ' + ({ staked: 'staked, active from next epoch', active: 'active', locked: 'not staked yet: the bond is locked · not staked', none: 'not set up' }[s.valWord] || 'not set up') + '. Ask me anything, or try “Network status”.'
+      ? 'Welcome, ' + first + '. You joined ' + g.cluster + ' with ' + g.inviter + '’s invite, and it’s open in Groups. Your node is ' + this.nodeLabel(s.node).toLowerCase() + '. Your validator is ' + ({ staked: 'registered; Node › Status shows the epoch it becomes active from', active: 'active', locked: 'not staked yet: the bond is locked · not staked', none: 'not set up' }[s.valWord] || 'not set up') + '. Ask me anything, or try “Network status”.'
       : 'Welcome, ' + first + '. Hermes runs on this machine. Ask me anything, or try “Network status”.';
     this.setState((st) => ({
       stage: 'done', coach: -1, coachDone: true, route: 'hermes', hTab: 'chat', legacy: null,
@@ -5806,7 +5819,7 @@ class Component extends DCLogic {
       muted: ['var(--line-2)', 'var(--tx-2)', 'transparent'], accent: ['var(--accent)', 'var(--accent-text)', 'var(--accent-wash)'],
     }[tone] || ['var(--line-2)', 'var(--tx-2)', 'transparent']);
     const chip = (label, on, go) => ({ label, go, bd: on ? 'var(--tx-1)' : 'var(--line-2)', bg: on ? 'var(--tx-1)' : 'transparent', fg: on ? 'var(--srf-0)' : 'var(--tx-2)' });
-    V.fxFoot = FX.label + ' · ' + FX.file + ' · read at block ' + fmtI(FX.block) + ', ' + FX.capturedAt + '.';
+    V.fxFoot = FX.label + ' · ' + FX.file + ' (' + FX.rev + ') · captured ' + FX.capturedAt + ', head ' + fmtI(FX.block) + ' to ' + fmtI(FX.headEnd) + ' · each read is latest state at its own observed_head (consistency: none).';
     V.wbLogoLight = !dark; V.wbLogoDark = dark;
 
     // ----- which surface -----
@@ -5844,14 +5857,15 @@ class Component extends DCLogic {
       stalled: ['Sync stalled', 'Peers are connected, but this node’s height hasn’t moved for 60 s or more.', '#ffbd10'],
       nopeers: ['No peers', 'This node has had no direct peers for 60 s or more, so it can’t reach the network.', '#ffbd10'],
       update: ['Update required', 'This build is for a different genesis than the network it is talking to.', '#dd7259'],
-      resync: ['Resync required', 'This node’s chain data is on a withdrawn branch.', '#dd7259'],
+      resync: ['Resync required', 'This node has applied block 365,785, its own RPC returned that block, and the hash differs from the canonical checkpoint (§6), so its chain data is on a withdrawn branch.', '#dd7259'],
+      notchecked: ['Syncing · not checked yet', 'This node is below the checkpoint height (365,785), or its RPC returned null or an error for that block, so the withdrawn-branch check hasn’t run. That is never Resync required.', '#ffbd10'],
       error: ['Error', 'The node failed to start or crashed.', '#dd7259'],
     };
     const W = WORDS[word];
-    const VAL = { none: 'Not a validator', locked: 'Bond locked · not staked', staked: 'Staked · active from next epoch', active: 'Validator active' };
-    const running = ['synced', 'syncing', 'stalled', 'nopeers'].indexOf(word) >= 0;
+    const VAL = { none: 'Not a validator', locked: 'Bond locked · not staked', staked: 'Registered · active from epoch —', active: 'Validator active' };
+    const running = ['synced', 'syncing', 'notchecked', 'stalled', 'nopeers'].indexOf(word) >= 0;
     const peersKnown = word === 'synced' || word === 'syncing' || word === 'stalled';
-    const peersTxt = word === 'nopeers' ? '0 direct peers' : peersKnown ? '3 direct peers' : null;
+    const peersTxt = word === 'nopeers' ? '0 direct peers' : null;
     V.sideNodeText = 'Node · ' + W[0];
     if (s.nWord) { V.sideDotColor = W[2]; V.sideDotAnim = 'none'; }
 
@@ -5873,7 +5887,7 @@ class Component extends DCLogic {
       label, weight: sub === id ? 500 : 400, bd: sub === id ? 'var(--tx-1)' : 'var(--line-2)', bg: sub === id ? 'var(--srf-2)' : 'transparent', color: sub === id ? 'var(--tx-1)' : 'var(--tx-2)',
       go: () => this.ngo('storage', id),
     }));
-    V.n2WordChip = [W[0], peersTxt].filter(Boolean).join(' · ');
+    V.n2WordChip = [W[0], peersTxt].filter(Boolean).join(' · ');  // no fixture number in the chip (B6)
     V.n2WordDot = W[2];
     V.n2WordAnim = word === 'syncing' || word === 'starting' ? 'ccPulse 2.4s var(--ease-standard) infinite' : 'none';
     V.onN2Legacy = () => this.setState({ legacy: 'node' });
@@ -5909,7 +5923,7 @@ class Component extends DCLogic {
       stalled: ['Sync stalled', 'Citrate keeps the node running and keeps asking peers. If it stays stalled, read the full log, or restart the node from Services.', 'local eth_blockNumber unchanged ≥ 60 s with net_peerCount > 0', 'Open the full log', () => this.ngo('advanced')],
       nopeers: ['No direct peers', 'Check this computer’s connection and firewall. A node on an old genesis also shows no peers, because peers refuse its handshake; Citrate checks that next.', 'net_peerCount = 0 for ≥ 60 s; genesis check passed', 'Open Services', () => this.ngo('services')],
       update: ['Update required', 'At betanet genesis the network moves to a new chain, and this build only knows the old one. Updating keeps your keys, wallet and settings; the old chain data is archived.', 'genesis check: eth_getBlockByNumber(0x0).hash ≠ the release genesis this build ships with (§6)', 'Update Citrate', () => this.toast('The updater opens here. Prototype: nothing is downloaded.')],
-      resync: ['Resync required', 'On its next start, Citrate stops the node, moves the old chain data aside to a node.withdrawn-<date> folder and syncs again. Your keys, settings and wallet stay where they are.', 'checkpoint check: block 365,785 hash ≠ the canonical checkpoint (§6, fixture) · node_withdrawn.rs', 'Restart and resync', () => { this.setState({ nWord: null }); this.startNode(); this.toast('Old chain data moved aside. Syncing again.'); }],
+      resync: ['Resync required', 'On its next start, Citrate stops the node, moves the old chain data aside to a node.withdrawn-<date> folder and syncs again. Your keys, settings and wallet stay where they are.', 'applied height ≥ 365,785, eth_getBlockByNumber(365,785) returned a block, and its hash ≠ the canonical checkpoint (§6, fixture) · node_withdrawn.rs', 'Restart and resync', () => { this.setState({ nWord: null }); this.startNode(); this.toast('Old chain data moved aside. Syncing again.'); }],
       error: ['The node didn’t start', 'Another process holds the chain database, so Citrate refused to start a second node on it. Quit that process, then start again.', 'node_start → blocked: chainDatabase · pid 4312 · <app data>/node (NodeBlocker.message)', 'Open crash records', () => this.ngo('advanced')],
     };
     const nt = !freshNode && NOTICE[word];
@@ -5927,23 +5941,27 @@ class Component extends DCLogic {
     const proposer = this.addr(P.name + '::proposer');
     V.n2Mine = [
       { k: 'State', v: freshNode ? 'Off' : W[0], vColor: 'var(--tx-1)', src: 'eth_syncing, local and public eth_blockNumber, net_peerCount (contract §1)' },
-      { k: 'Direct peers', v: freshNode || !peersTxt ? '—' : peersTxt, vColor: peersTxt && !freshNode ? 'var(--tx-1)' : 'var(--tx-3)', fx: peersKnown && !freshNode, src: peersKnown && !freshNode ? 'local net_peerCount. Fixture: the export’s RPC node’s direct peers, standing in for this node’s' : running ? 'local net_peerCount' : 'local net_peerCount · node not answering, so unknown, not 0' },
-      { k: 'Height', v: freshNode ? '—' : word === 'synced' ? 'within 5 blocks of the head' : word === 'syncing' ? 'N blocks behind' : word === 'stalled' ? 'not moving for ≥ 60 s' : '—', vColor: 'var(--tx-1)', src: 'local eth_blockNumber against the public head; no live read in the prototype, so no number' },
-      { k: 'Validator', v: VAL[valW], vColor: valW === 'active' ? 'var(--ok)' : 'var(--tx-1)', src: 'ValidatorRegistry.validatorInfo(pubkey).status, isActive(pubkey); MemberBond.activated()' },
-      { k: 'Producing blocks', v: valW === 'active' || valW === 'staked' ? '— · not read' : 'No', vColor: 'var(--tx-3)', src: 'a block in the last 1,000 with proposerPubkey = this node’s key. Validator active does not imply this' },
+      { k: 'Direct peers', v: freshNode || !peersTxt ? '— · not read' : peersTxt, vColor: peersTxt && !freshNode ? 'var(--tx-1)' : 'var(--tx-3)', src: running ? 'local net_peerCount; no live read in the prototype, so unknown, not 0' : 'local net_peerCount · node not answering, so unknown, not 0' },
+      { k: 'Public RPC node’s peers', v: '3 direct peers', vColor: 'var(--tx-2)', fx: true, src: 'net_peerCount on rpc.citrate.ai, observed_head 510,031. The public RPC node’s peers, not this node’s' },
+      { k: 'Height', v: freshNode ? '—' : word === 'synced' ? 'within 5 blocks of the head' : word === 'syncing' ? 'N blocks behind' : word === 'notchecked' ? 'below 365,785, or that block not returned' : word === 'stalled' ? 'not moving for ≥ 60 s' : '—', vColor: 'var(--tx-1)', src: 'local eth_blockNumber against the public head; no live read in the prototype, so no number' },
+      { k: 'Validator', v: VAL[valW], vColor: valW === 'active' ? 'var(--ok)' : 'var(--tx-1)', src: valW === 'staked' ? 'Registered · active from epoch N, with N = validatorInfo(pubkey).actEpoch > currentEpoch(); N is not read in the prototype, so “—”. isActive(pubkey) is already true at registration and can’t tell the states apart' : 'Validator active = isActive(pubkey) and validatorInfo(pubkey).actEpoch ≤ currentEpoch(). Consensus follows the epoch snapshot, so it can lag by up to an epoch after a change · MemberBond.activated()' },
+      { k: 'Producing blocks', v: valW === 'active' || valW === 'staked' ? '— · not read' : 'No · not a registered validator', vColor: 'var(--tx-3)', src: 'a block in the last 1,000 with proposerPubkey = this node’s key. Validator active does not imply this' },
       { k: 'Proposer key', v: valW === 'none' ? '— · not created yet' : this.short(proposer), vColor: 'var(--tx-2)', src: 'node_proposer_identity (proposer.key in the node data dir)' },
     ];
-    V.n2MineFx = !freshNode && peersKnown;
-    V.n2MineFxNote = V.fxFoot + ' peer_count is the RPC node’s, not yours.';
+    V.n2MineFx = true;
+    V.n2MineFxNote = V.fxFoot + ' peer_count is the public RPC node’s, not this node’s.';
     V.n2Net = [
       { k: 'Network', v: 'Citrate betanet', vColor: 'var(--tx-1)', src: 'eth_chainId 0x9d0c and genesis 0x1dcf…75f1 (§6); chain id alone is not enough' },
-      { k: 'Network head', v: fmtI(FX.block), vColor: 'var(--tx-1)', src: 'public eth_blockNumber' },
-      { k: 'Block time', v: '~' + FX.blockTime + ' s', vColor: 'var(--tx-1)', src: 'timestamp delta over the last 100 blocks' },
-      { k: 'Validators', v: FX.activeValidators + ' active · 1 produces blocks', vColor: 'var(--tx-1)', src: 'ValidatorRegistry.activeCount(); producing: distinct proposerPubkey over 1,000 blocks' },
-      { k: 'Base fee', v: '1 gwei (fixed)', vColor: 'var(--tx-1)', src: 'baseFeePerGas of the latest block; a consensus constant' },
-      { k: 'Epoch', v: '499 · every 1,000 blocks (~33 min)', vColor: 'var(--tx-1)', src: 'ValidatorRegistry.currentEpoch(), EPOCH(); minutes from the measured block time' },
+      { k: 'Network head', v: fmtI(FX.block), vColor: 'var(--tx-1)', src: 'public eth_blockNumber · observed_head 510,030' },
+      { k: 'Block time', v: '~' + FX.blockTime + ' s', vColor: 'var(--tx-1)', src: 'timestamp delta over the last 100 blocks · observed_head 510,031' },
+      { k: 'Registered validators', v: String(FX.registered), vColor: 'var(--tx-1)', src: 'ValidatorRegistry.activeCount() · observed_head 510,035. Includes registrations still pending activation, so it is not “active”' },
+      { k: 'Eligible validators (live registry)', v: FX.eligible + ' · ' + FX.pending + ' pending activation', vColor: 'var(--tx-1)', src: 'activeSet() members with actEpoch ≤ currentEpoch() · observed_head 510,038. The live registry, not consensus membership' },
+      { k: 'Consensus validator set', v: 'unavailable until a snapshot RPC exists', vColor: 'var(--tx-3)', src: 'the governing epoch snapshot; no RPC exposes it yet (contract §9), so no number is shown' },
+      { k: 'Producing validators', v: FX.producing + ' over the last 1,000 blocks (' + fmtI(FX.prodFrom) + '–' + fmtI(FX.prodTo) + ')', vColor: 'var(--tx-1)', src: 'distinct proposerPubkey in the window (producing_validators) · observed_head 510,032' },
+      { k: 'Base fee', v: '1 gwei (fixed)', vColor: 'var(--tx-1)', src: 'baseFeePerGas of the latest block; a consensus constant · observed_head 510,031' },
+      { k: 'Epoch', v: FX.epoch + ' · every 1,000 blocks (~33 min)', vColor: 'var(--tx-1)', src: 'ValidatorRegistry.currentEpoch() · observed_head 510,037. EPOCH() = 1,000 is from contract §2 (not in the export yet)' },
     ];
-    V.n2NetFxNote = V.fxFoot + ' “1 produces blocks” is chain team, sampled 2026-10-19 (not in the export yet).';
+    V.n2NetFxNote = V.fxFoot;
     const svcList = Component.SERVICES();
     const phaseOf = (id) => {
       if (id === 'node' || id === 'agent') {
@@ -6081,9 +6099,9 @@ class Component extends DCLogic {
         { k: 'Maturing', v: '—', vColor: 'var(--tx-3)', src: 'total − claimableNow; slashable for 4 epochs' },
       ];
     V.rwNote = notVal
-      ? 'Rewards are for validators that produce blocks. ' + (nEmpty || s.valWord === 'none' ? 'This node is not a validator.' : 'Your bond is locked but not staked; activate it to register as a validator.') + ' Today 1 of ' + FX.activeValidators + ' active validators produces blocks.'
-      : 'This node’s validator state: ' + VAL[s.valWord] + '. Only a validator that produces blocks receives rewards, and today 1 of ' + FX.activeValidators + ' active validators produces blocks. Block reward: 10 SALT per block, to the producer.';
-    V.rwFx = V.fxFoot + ' Block reward from ValidatorRegistry.blockSubsidy(); “1 produces blocks” is chain team, sampled 2026-10-19.';
+      ? 'Rewards are for validators that produce blocks. ' + (nEmpty || s.valWord === 'none' ? 'This node is not a validator.' : 'Your bond is locked but not staked; activate it to register as a validator.') + ' In the fixture sample, ' + FX.producing + ' validator produced blocks over blocks ' + fmtI(FX.prodFrom) + '–' + fmtI(FX.prodTo) + '.'
+      : 'This node’s validator state: ' + VAL[s.valWord] + '. Only a validator that produces blocks receives rewards; in the fixture sample, ' + FX.producing + ' validator produced blocks over blocks ' + fmtI(FX.prodFrom) + '–' + fmtI(FX.prodTo) + '. Block reward: 10 SALT per block, to the producer.';
+    V.rwFx = V.fxFoot + ' Block reward: ValidatorRegistry.blockSubsidy(), observed_head 510,036. Producing: producing_validators, observed_head 510,032.';
 
     // ----- Advanced -----
     V.n2Advanced = nShow('advanced');
@@ -6095,19 +6113,21 @@ class Component extends DCLogic {
       : 'Before trusting any read, the app checks the chain id, the genesis hash it ships with, and the canonical checkpoints. A new genesis ships with 0.5.2: at betanet genesis, older builds show Update required here and on Status.';
     V.adGenRows = [
       { k: 'Chain id', v: '0x9d0c', vColor: 'var(--tx-1)', src: 'eth_chainId' },
-      { k: 'Genesis', v: upd ? 'differs from 0x1dcf…75f1' : '0x1dcf…75f1', vColor: upd ? 'var(--danger)' : 'var(--tx-1)', src: 'eth_getBlockByNumber(0x0).hash against the bundled release genesis' },
-      { k: 'Checkpoint 365,784', v: '0x63dc…2c56', vColor: 'var(--tx-1)', src: 'canonical checkpoint, read from the bundled release' },
-      { k: 'Checkpoint 365,785', v: word === 'resync' ? 'differs from 0x5148…f3d2' : '0x5148…f3d2', vColor: word === 'resync' ? 'var(--danger)' : 'var(--tx-1)', src: 'canonical checkpoint, read from the bundled release' },
+      { k: 'Genesis · expected (bundled release)', v: upd ? 'differs from 0x1dcf…75f1' : '0x1dcf…75f1', vColor: upd ? 'var(--danger)' : 'var(--tx-1)', src: 'eth_getBlockByNumber(0x0).hash is compared with this expected value' },
+      { k: 'Checkpoint 365,784 · expected (bundled release)', v: '0x63dc…2c56', vColor: 'var(--tx-1)', src: 'compared once this node has applied the height and returns the block' },
+      { k: 'Checkpoint 365,785 · expected (bundled release)', v: word === 'resync' ? 'returned hash differs from 0x5148…f3d2' : word === 'notchecked' ? '0x5148…f3d2 · not checked yet' : '0x5148…f3d2', vColor: word === 'resync' ? 'var(--danger)' : 'var(--tx-1)', src: 'compared only once this node has applied 365,785 and returns that block; null, an error or a lower height is never Resync required' },
     ];
     V.adGenUpdate = upd;
     V.onAdUpdate = () => this.toast('The updater opens here. Prototype: nothing is downloaded.');
     const wd = word === 'resync';
-    V.adWdWord = wd ? 'Resync required' : nEmpty ? 'none' : 'none on this node';
+    const nc = word === 'notchecked';
+    V.adWdWord = wd ? 'Resync required' : nc ? 'not checked yet · —' : nEmpty ? 'none' : 'checked · none on this node';
     V.adWdBd = wd ? 'var(--danger)' : 'var(--line-2)'; V.adWdFg = wd ? 'var(--danger)' : 'var(--tx-2)';
     V.adWdBody = wd
       ? 'This node followed a branch the network withdrew. On its next start, Citrate stops the node, moves the chain database aside to a node.withdrawn-<date> folder next to it, and syncs again. proposer.key, noise.key, node.toml and your wallet stay.'
+      : nc ? 'This node is below the checkpoint height (365,785), or its RPC returned null or an error for that block, so the check hasn’t run yet. It runs once the block is there. This is never Resync required.'
       : 'If the network ever withdraws a branch this node followed, Citrate moves that chain data aside on the next start and syncs again. It has not happened on this node.';
-    V.adWdWhy = 'source: this node’s own RPC at each compiled-in check height (node_withdrawn.rs)';
+    V.adWdWhy = 'source: this node’s own RPC at each compiled-in check height (node_withdrawn.rs). Resync required only when the applied height ≥ the check height, the block is returned, and its hash differs';
     const crashes = nEmpty ? [] : (s.persona === 'p2' ? [{ when: '2026-10-16 03:12', svc: 'node', note: 'exit 137 (killed: out of memory during compaction). Restarted after 4 s backoff.' }] : []).concat(ipfsC.phase === 'quarantined' || ipfsC.restarts ? [{ when: 'today', svc: 'ipfs', note: 'exit 1: repo.lock held by another process; then quarantined when stop didn’t finish.' }] : []);
     V.adCrashEmpty = crashes.length === 0;
     V.adCrashRows = crashes;
@@ -6142,7 +6162,8 @@ class Component extends DCLogic {
       V.annFlag = { 'n-status': 'K6: “Update required” at genesis (network-compatibility gate)', 'n-pins': 'pin bonds: IPFSIncentivesV3 funded at genesis (S2.2)', 'n-advanced': 'K6: “Update required at genesis”; withdrawn-branch mover', 'n-rewards': 'none · pin and round rewards not live (contract §4)' }[nKey] || 'none';
       if (page === 'status' || page === 'advanced') {
         V.annHasExtra = true;
-        V.annExtra = [{ label: 'node word', chips: [['live', null], ['Off', 'off'], ['Starting', 'starting'], ['Syncing', 'syncing'], ['Synced', 'synced'], ['Sync stalled', 'stalled'], ['No peers', 'nopeers'], ['Update required', 'update'], ['Resync required', 'resync'], ['Error', 'error']].map(([l, w]) => chip(l, s.nWord === w, () => this.setState({ nWord: w }))) }];
+        V.annExtra = [{ label: 'node word', chips: [['live', null], ['Off', 'off'], ['Starting', 'starting'], ['Syncing', 'syncing'], ['Syncing · not checked yet', 'notchecked'], ['Synced', 'synced'], ['Sync stalled', 'stalled'], ['No peers', 'nopeers'], ['Update required', 'update'], ['Resync required', 'resync'], ['Error', 'error']].map(([l, w]) => chip(l, s.nWord === w, () => this.setState({ nWord: w }))) }];
+        if (page === 'status') V.annExtra.push({ label: 'validator', chips: [['Not a validator', 'none'], ['Bond locked', 'locked'], ['Registered', 'staked'], ['Validator active', 'active']].map(([l, v]) => chip(l, s.valWord === v, () => this.setState({ valWord: v }))) });
       }
       if (page === 'services') {
         V.annHasExtra = true;
@@ -6174,19 +6195,21 @@ class Component extends DCLogic {
       return { label, sel: on ? 'true' : 'false', weight: on ? 500 : 400, bg: on ? 'var(--srf-2)' : 'transparent', color: on ? 'var(--tx-1)' : 'var(--tx-3)', badge: id === 'installed' && s.installed.length ? String(s.installed.length) : '', go: () => this.sgo(id) };
     });
     const catBad = sKey === 'st-catalog' && sVar === 'error';
-    V.sxCatChip = catBad ? 'catalog signature failed' : sVar === 'unavailable' ? 'catalog offline' : 'catalog signed · verified';
-    V.sxCatBd = catBad ? 'var(--danger)' : sVar === 'unavailable' ? 'var(--warn)' : 'var(--ok)';
+    const noKey = s.stCat !== 'post';
+    V.sxNoKey = isS && !sCard && noKey && sPage !== 'installed';
+    V.sxCatChip = noKey ? 'catalog key not issued' : catBad ? 'catalog signature failed' : sVar === 'unavailable' ? 'catalog offline' : 'post-ceremony · catalog verified';
+    V.sxCatBd = noKey ? 'var(--warn)' : catBad ? 'var(--danger)' : sVar === 'unavailable' ? 'var(--warn)' : 'var(--ok)';
     V.sxCatFg = catBad ? 'var(--danger)' : 'var(--tx-2)';
     V.onSxLegacy = () => this.setState({ legacy: 'commissary' });
     V.goSxCatalog = (e) => { if (e && e.preventDefault) e.preventDefault(); this.sgo('catalog'); };
     const KINDS = [['all', 'All'], ['apps', 'Apps'], ['daemons', 'Daemons'], ['widgets', 'Widgets'], ['skills', 'Skills'], ['models', 'Models'], ['mcp', 'MCP servers']];
     const kind = s.stKind || 'all';
     const kLabel = { apps: 'App', daemons: 'Daemon', widgets: 'Widget', skills: 'Skill', models: 'Model', mcp: 'MCP server' };
-    V.sxCatalog = isS && !sCard && sPage === 'catalog';
+    V.sxCatalog = isS && !sCard && !noKey && sPage === 'catalog';
     V.sxKinds = KINDS.map(([id, label]) => ({ label, weight: kind === id ? 500 : 400, bd: kind === id ? 'var(--tx-1)' : 'var(--line-2)', bg: kind === id ? 'var(--srf-2)' : 'transparent', color: kind === id ? 'var(--tx-1)' : 'var(--tx-2)', go: () => this.sgo('catalog', id) }));
     const cards = sVar === 'empty' ? [] : LS.filter((l) => kind === 'all' || l.kind === kind);
-    V.sxKindNote = kind === 'skills' ? 'Skills come from the on-chain SkillRegistry. It lists ' + FX.skills + ' skills today, so there is nothing to install yet. Skills you teach Hermes stay in Hermes › Learn.'
-      : kind === 'models' ? 'These are the models this app runs. The on-chain ModelRegistry lists ' + FX.models + ' model today; registry entries join the Store when it is populated for Store v1.'
+    V.sxKindNote = kind === 'skills' ? 'Skills come from the on-chain SkillRegistry. It lists ' + FX.skills + ' skills in the fixture, so there is nothing to install yet. Skills you teach Hermes stay in Hermes › Learn.'
+      : kind === 'models' ? 'These are the models this app runs. The on-chain ModelRegistry lists ' + FX.models + ' model in the fixture; registry entries join the Store when it is populated for Store v1.'
       : kind === 'daemons' ? 'Daemons are Hermes task templates. Each declares its permissions and budget, and installs paused.'
       : kind === 'widgets' ? 'Widgets are sandboxed tiles for the Hermes rail. Each declares the data it reads and nothing else.' : '';
     V.sxKindFx = kind === 'skills' || kind === 'models';
@@ -6204,7 +6227,7 @@ class Component extends DCLogic {
 
     // listing
     const L = LS.find((l) => l.id === s.stSel) || LS[0];
-    V.sxListing = isS && !sCard && sPage === 'listing';
+    V.sxListing = isS && !sCard && !noKey && sPage === 'listing';
     const li = inst(L.id);
     const tierLocked = s.stSig === 'tier' || rankOf(L.tier) > rankOf(effTier);
     V.slName = L.name; V.slIcon = L.icon; V.slKindLabel = kLabel[L.kind]; V.slVersion = L.version; V.slDesc = L.desc;
@@ -6229,7 +6252,7 @@ class Component extends DCLogic {
     const sg = pillT(sigFail ? 'danger' : tierLocked ? 'warn' : 'ok');
     V.slSigBd = sg[0]; V.slSigFg = sg[1]; V.slSigBg = sg[2];
     V.slFacts = [
-      { k: 'signed by', v: 'Citrate catalog key (from the key ceremony)', c: 'var(--tx-1)' },
+      { k: 'signed by', v: 'Citrate catalog key (post-ceremony state: the key does not exist yet)', c: 'var(--tx-1)' },
       { k: 'artifact sha-256', v: sigFail ? 'does not match the signed catalog' : 'matches the signed catalog', c: sigFail ? 'var(--danger)' : 'var(--tx-1)' },
       { k: 'publisher', v: 'Citrate · first-party', c: 'var(--tx-1)' },
       { k: 'version', v: L.version, c: 'var(--tx-1)' },
@@ -6251,7 +6274,7 @@ class Component extends DCLogic {
     });
 
     // install sheet
-    const IS = s.isOpen ? LS.find((l) => l.id === s.isOpen) : null;
+    const IS = s.isOpen && !noKey ? LS.find((l) => l.id === s.isOpen) : null;
     V.isShow = !!IS && V.shell;
     if (IS) {
       V.isTitle = (IS.kind === 'models' ? 'Download ' : 'Install ') + IS.name;
@@ -6283,7 +6306,7 @@ class Component extends DCLogic {
       V.slHasBudget = !!IS.budget; V.slBudget = IS.budget || '';
     }
     if (isS) {
-      V.annScreen = 'Store › ' + { catalog: 'Catalog' + (kind !== 'all' ? ' › ' + KINDS.find((k) => k[0] === kind)[1] : ''), listing: 'Listing · ' + L.name, installed: 'Installed' }[sPage] + (IS ? ' + install sheet' : '');
+      V.annScreen = (noKey ? '[0.5.2 default: fails closed] ' : '[post-ceremony variant] ') + 'Store › ' + { catalog: 'Catalog' + (kind !== 'all' ? ' › ' + KINDS.find((k) => k[0] === kind)[1] : ''), listing: 'Listing · ' + L.name, installed: 'Installed' }[sPage] + (IS ? ' + install sheet' : '');
       V.annRoute = { catalog: 'store/catalog' + (kind !== 'all' ? '/' + kind : ''), listing: 'store/listing/' + L.id, installed: 'store/installed' }[sPage] + '   (today: commissary, models)';
       V.annBridge = {
         catalog: 'signed catalog fetch and verify: none yet (core plan K5); today commissary.catalog (commissary_catalog → name, capabilities) · models: modelsCatalog.local / search / download / select (model_catalog_local, model_catalog_search, model_catalog_download, model_catalog_select) · skills: SkillRegistry.totalSkills() (C1 fixture), agentHarness.registrySkills · MCP: hermes_mcp_settings, hermes_mcp_set',
@@ -6291,9 +6314,10 @@ class Component extends DCLogic {
         installed: 'installed manifest: none yet (K5) · daemons: daemons_list · models: model_catalog_local, model_delete · MCP: hermes_mcp_settings',
       }[sPage] + (IS ? ' · install decision: hic_record_decision (store.install)' : '');
       V.annFlag = 'catalog key from the key ceremony (K5) · first-party only in 0.5.2';
-      if (sPage === 'listing' || IS) {
-        V.annHasExtra = true;
-        V.annExtra = [{ label: 'signature', chips: [chip('verified', s.stSig === 'verified', () => this.setState({ stSig: 'verified' })), chip('failed', s.stSig === 'failed', () => this.setState({ stSig: 'failed' })), chip('tier-locked', s.stSig === 'tier', () => this.setState({ stSig: 'tier' }))] }];
+      V.annHasExtra = true;
+      V.annExtra = [{ label: 'catalog', chips: [chip('no key yet (0.5.2 default)', noKey, () => this.setState({ stCat: 'nokey', isOpen: null })), chip('post-ceremony (verified)', !noKey, () => this.setState({ stCat: 'post' }))] }];
+      if (!noKey && (sPage === 'listing' || IS)) {
+        V.annExtra.push({ label: 'signature', chips: [chip('verified', s.stSig === 'verified', () => this.setState({ stSig: 'verified' })), chip('failed', s.stSig === 'failed', () => this.setState({ stSig: 'failed' })), chip('tier-locked', s.stSig === 'tier', () => this.setState({ stSig: 'tier' }))] });
       }
     }
 
@@ -6383,7 +6407,7 @@ class Component extends DCLogic {
     V.wbManifestNote = wVar === 'error' ? 'The release manifest couldn’t be read, so this page shows the last known build from its fallback constants, without checksums. Check the release page before running anything.' : wVar === 'unavailable' ? 'Downloads are temporarily unavailable. Nothing is offered until the manifest can be read.' : 'Sizes and SHA-256 are the published v0.5.1 GitHub release assets, standing in for downloads/manifest.json (written by the release mirror; not published yet). 0.5.2 reads the real manifest.';
     V.wbManPill = wVar === 'error' ? 'manifest unreadable' : wVar === 'unavailable' ? 'downloads unavailable' : 'sample manifest';
     V.wbManBd = wVar === 'data' || wVar === 'empty' ? 'var(--warn)' : 'var(--danger)'; V.wbManBg = wVar === 'data' || wVar === 'empty' ? 'var(--warn-bg)' : 'var(--danger-bg)';
-    V.wbMinisign = 'The SHA256SUMS file is signed with the release minisign key, published with the 0.5.2 release.';
+    V.wbMinisign = 'Checksums published; signature coming. The checksums aren’t signed yet, so they prove the file wasn’t corrupted, not who made it. A signed checksum file (minisign) comes with a later release.';
     const detected = (a) => (a.platform === os) && (os !== 'linux' || a.id.indexOf('lx') === 0);
     const mb = (b) => b ? (b / 1e6).toFixed(0) + ' MB' : 'size from the manifest';
     const assets = wVar === 'unavailable' ? [] : R.assets.filter((a) => !(wVar === 'empty' && a.platform !== 'windows'));
@@ -6399,7 +6423,7 @@ class Component extends DCLogic {
         detected: detected(a), sigWord, sigBd: t[0], sigFg: t[1], sigBg: t[2], bd: detected(a) ? 'var(--accent)' : 'var(--line-1)',
         sigCopy: a.signing === 'apple' ? 'Signed and notarized by Apple (Developer ID: Citrate, Team DDHUG44QC7).'
           : win ? (built ? 'This build isn’t Authenticode-signed yet, so Windows SmartScreen will warn you. Check the SHA-256 before running it.' : 'No Windows build yet. Keep your invite; it works until it expires.')
-          : wVar === 'error' ? 'Not code-signed (Linux has no OS-level signing). Checksums can’t be shown right now, so check the release page first, or use the one-line installer, which checks them itself.' : 'Not code-signed (Linux has no OS-level signing). Check the SHA-256, or use the one-line installer, which checks it for you.',
+          : wVar === 'error' ? 'Not code-signed (Linux has no OS-level signing). Checksums can’t be shown right now, so check the release page first, or use the one-line installer, which checks them itself.' : 'Not code-signed (Linux has no OS-level signing). Check the SHA-256, or use the one-line installer, which checks it for you. Checksums published; signature coming.',
         canDl: built, btn: detected(a) ? 'Download' : 'Download', btnCls: detected(a) ? 'btn-primary' : 'btn-ghost',
         dl: () => { this.setState((st) => ({ wbDl: true, cp1: Object.assign({}, st.cp1, { dl: true }) })); this.toast('Download started. Prototype: nothing is downloaded.'); },
         sha: showSha || (win && built), shaShort: showSha ? a.sha.slice(0, 12) + '…' + a.sha.slice(-8) : 'from the manifest',
@@ -6450,10 +6474,10 @@ class Component extends DCLogic {
         welcome: { eb: 'Welcome', t: 'Citrate on this computer', lead: 'Citrate runs a node, a wallet and Hermes on this machine. Your keys stay here.', p: 'Join', pa: next, sec: 'Explore free', sa: () => { this.setState({ tier: 'free' }); this.ob2Finish(); }, fine: 'Joining means a yearly membership and a bond. Explore free skips both; you can upgrade later in Settings › Billing.', src: 'Data source — none: this screen reads nothing', br: 'none · invite: the deep link citrate://join/<code>#K is kept in the Rust store until used: none yet (GROW-S1, Join 2)' },
         signin: { eb: 'Step 2 · Sign in', t: 'Sign in with your Citrate identity', lead: 'Your browser opens auth.citrate.ai. This app never shows a password field.', p: sub2 === 'done' ? 'Continue' : 'Continue in your browser', pa: sub2 === 'done' ? next : () => this.ob2Wait(1800, () => this.setState({ jSub: 'done' })), wait: 'Waiting for your browser…', waitSub: 'auth.citrate.ai · loopback sign-in · nothing is typed here', done: 'Signed in · this machine attested', doneSub: s.deviceId + ' · device key in the OS keyring', src: 'Data source — citrate-identity sign-in · refresh tokens in the OS keyring', br: 'auth.login (auth_login), auth.cancelLogin (auth_login_cancel), auth.status', err: ['Sign-in didn’t finish', 'The browser came back without a sign-in. Nothing was saved. Try again; the browser opens fresh.', 'auth_login → error: callback returned no code', 'Try again'] },
         verify: { eb: 'Step 3 · Verify identity', t: 'Verify your identity', lead: 'Membership needs a verified identity. Verification runs in your browser, and your documents never touch this machine.', p: sub2 === 'done' ? 'Continue' : 'Start verification', pa: sub2 === 'done' ? next : () => this.ob2Wait(2000, () => this.setState({ jSub: 'done' })), wait: 'Verification in progress', waitSub: 'this step resumes on its own when the claim changes', done: 'Identity verified', doneSub: 'kyc_status: verified', src: 'Data source — citrate-identity /kyc/start, /kyc/status, /userinfo', br: 'auth.kycStart, auth.userinfo', err: ['Verification failed', 'The document check didn’t pass. You can retry with different documents; nothing was stored on this machine.', 'userinfo.kyc_status = "failed"', 'Retry verification'] },
-        membership: { eb: 'Step 4 · Membership', t: 'Membership, ' + Component.priceYear(), lead: 'It buys membership. It does not buy SALT. Checkout runs in your browser.', p: sub2 === 'done' ? 'Continue' : 'Check out in your browser · ' + Component.price(), pa: sub2 === 'done' ? next : () => this.ob2Wait(2200, () => this.setState({ jSub: 'done', tier: 'pilot', hasGrant: true, hasSbt: true, valWord: 'locked' })), sec: sub2 === 'done' ? '' : 'Explore free instead', sa: () => { this.setState({ tier: 'free' }); this.ob2Finish(); }, wait: 'Waiting for checkout…', waitSub: 'the membership service confirms payment, not this app', done: 'Membership active', doneSub: 'entitlement: pilot member', fine: grant + ' ' + disc, src: 'Data source — membership service checkout price (src/data/membership.ts); entitlement from the membership service', br: 'membership.checkout, membership.entitlement · price: the membership service’s checkout price (no price endpoint yet)', err: ['Checkout didn’t settle', 'The membership service hasn’t confirmed the payment. If you paid, this step finishes on its own when it does; you are not charged twice.', 'membership.entitlement → { status: "lapsed" } after checkout', 'Check again'] },
+        membership: { eb: 'Step 4 · Membership', t: 'Membership', lead: 'Pricing and checkout open in your browser. It buys membership. It does not buy SALT.', p: sub2 === 'done' ? 'Continue' : 'See membership pricing', pa: sub2 === 'done' ? next : () => this.ob2Wait(2200, () => this.setState({ jSub: 'done', tier: 'pilot', hasGrant: true, hasSbt: true, valWord: 'locked' })), sec: sub2 === 'done' ? '' : 'Explore free instead', sa: () => { this.setState({ tier: 'free' }); this.ob2Finish(); }, wait: 'Waiting for checkout…', waitSub: 'the membership service confirms payment, not this app', done: 'Membership active', doneSub: 'entitlement: pilot member', fine: grant + ' ' + disc, src: 'Data source — the membership service (pricing and checkout in your browser); entitlement from the membership service', br: 'membership.checkout (opens pricing and checkout in the browser), membership.entitlement · no price is shown in the app', err: ['Checkout didn’t settle', 'The membership service hasn’t confirmed the payment. If you paid, this step finishes on its own when it does; you are not charged twice.', 'membership.entitlement → { status: "lapsed" } after checkout', 'Check again'] },
         bond: { eb: 'Step 5 · Wallet and bond', t: 'Your wallet and bond', lead: grant, rows: [
           { k: 'Wallet', v: this.short(s.walletAddr), vColor: 'var(--tx-1)', src: 'wallet.ensureReady (wallet_ensure_ready)' },
-          { k: 'Grant', v: '32,000 SALT · locked in your bond', vColor: 'var(--tx-1)', src: 'membership_grant_status (the grant record) · wording from grantCopy.ts' },
+          { k: 'Grant', v: '32,000 SALT · locked in your bond', vColor: 'var(--tx-1)', src: 'membership_grant_status (the grant record) · wording from grantCopy.ts (planned, PR #349)' },
           { k: 'Bond', v: 'Bond locked · not staked', vColor: 'var(--tx-1)', src: 'MemberBond.activated() = false' },
           { k: 'Lock end', v: '— · not read in the prototype', vColor: 'var(--tx-3)', src: 'MemberBond.unlockTimestamp(), unlockBlock(); the rehearsal-1 export adds a sample bond' },
           { k: 'Membership', v: 'Member', vColor: 'var(--tx-1)', src: 'CitrateMemberSBT.isActive(tokenId)' },
@@ -6467,17 +6491,17 @@ class Component extends DCLogic {
           done: word === 'synced' ? 'Synced' : '', doneSub: 'eth_syncing is false and this node is within 5 blocks of the public head',
           src: 'Data sources — node_status, local and public RPC', br: 'node.start (node_start), node.status (node_status) · node words need eth_syncing and the public head: none yet (core plan K3)', err: ['The node didn’t start', 'Another process holds the chain database, so Citrate refused to start a second node on it. Quit that process, then try again.', 'node_start → blocked: chainDatabase (NodeBlocker.message)', 'Try again'] },
         activate: { eb: 'Step 7 · Activate validator', t: 'Activate your validator', lead: 'Activating stakes your bond: its 32,000 SALT moves into the validator registry as this node’s stake, and stays locked until the bond’s lock end. You sign it once, in the signature ceremony.', rows: [
-          { k: 'Validator now', v: VAL[s.valWord === 'none' ? 'locked' : s.valWord], vColor: s.valWord === 'staked' ? 'var(--ok)' : 'var(--tx-1)', src: 'MemberBond.activated(); ValidatorRegistry.validatorInfo, isActive' },
+          { k: 'Validator now', v: VAL[s.valWord === 'none' ? 'locked' : s.valWord], vColor: 'var(--tx-1)', src: 'MemberBond.activated(); ValidatorRegistry.validatorInfo(pubkey).actEpoch against currentEpoch()' },
           { k: 'Minimum stake', v: '32,000 SALT', vColor: 'var(--tx-1)', src: 'ValidatorRegistry.minStake()', fx: true },
-          { k: 'Joins the set', v: 'at the next epoch: every 1,000 blocks (~33 min)', vColor: 'var(--tx-1)', src: 'EPOCH(); minutes from the measured ~2 s block time', fx: true },
+          { k: 'Becomes active', v: 'from epoch N, read after you register', vColor: 'var(--tx-1)', src: 'N = validatorInfo(pubkey).actEpoch. Never “next epoch”: a registration near a snapshot can activate two epochs later. Epochs are 1,000 blocks (~33 min at the measured ~2 s)', fx: true },
           { k: 'Node', v: nodeW, vColor: word === 'synced' ? 'var(--ok)' : 'var(--warn)', src: 'activation needs Synced first' },
         ], fx: true,
           p: sub2 === 'done' ? 'Continue' : sub2 === 'declined' ? 'Try again' : 'Activate validator', pa: sub2 === 'done' ? next : () => this.ob2Activate(), off: word !== 'synced' && sub2 !== 'done',
           sec: sub2 === 'declined' ? 'Skip for now' : '', sa: next,
           wait: sub2 === 'arming' ? 'Preparing this node’s validator key' : sub2 === 'ceremony' ? 'Waiting for your signature' : '', waitSub: sub2 === 'arming' ? 'node_arm_mining restarts the node with the block producer armed, which creates proposer.key' : 'the signature ceremony is open',
-          done: sub2 === 'done' ? 'Staked · active from next epoch' : '', doneSub: 'registered stake; isActive turns true at the next epoch snapshot, with a lag',
+          done: sub2 === 'done' ? 'Registered · active from epoch —' : '', doneSub: 'N = validatorInfo(pubkey).actEpoch, which the prototype doesn’t read. It becomes Validator active once actEpoch ≤ currentEpoch()',
           fail: sub2 === 'declined' ? 'Nothing was signed' : '', failBody: 'Your bond stays as it was: Bond locked · not staked. You can activate later from Node › Status.',
-          fine: 'Validator active doesn’t mean producing blocks: today one validator produces blocks, so a new validator may receive no validator rewards. ' + disc,
+          fine: 'Validator active doesn’t mean producing blocks: in the fixture sample, ' + FX.producing + ' validator produced blocks over blocks ' + fmtI(FX.prodFrom) + '–' + fmtI(FX.prodTo) + ', so a new validator may receive no validator rewards. ' + disc,
           hint: word !== 'synced' && sub2 !== 'done' ? 'Needs Synced first.' : '',
           src: 'Data sources — node_proposer_identity · ValidatorRegistry · MemberBond', br: 'node.armMining (node_arm_mining), node_proposer_identity, node.registerValidator (node_register_validator → MemberBond.activate on the bond clone, which calls registerValidator) through the signature ceremony (sign_request, sign_approve) · validator word after: isActive / validatorInfo reads: none yet (core plan K3)',
           err: ['Activation was refused', 'The registry refused the activation, so nothing changed: Bond locked · not staked. The usual reason is a node that fell behind; wait for Synced and try again.', 'node_register_validator → error: node not synced (mining gate)', 'Try again'] },
@@ -6578,7 +6602,7 @@ class Component extends DCLogic {
           { k: 'Moves', v: 'the 32,000 SALT bond principal into the validator registry, as this node’s stake' },
           { k: 'Validator key', v: proposer + ' (proposer.key on this node)' },
           { k: 'Lock', v: 'unchanged: locked until the bond’s lock end (not read in the prototype)' },
-          { k: 'After', v: 'Staked · active from next epoch' },
+          { k: 'After', v: 'Registered · active from epoch N (N = actEpoch, read after inclusion)' },
         ],
         cost: 'base fee 1 gwei (fixed) · fixture', sponsor: 'The grant is not purchased, and it is not an investment.', sponsorColor: 'var(--tx-3)',
         steps: ['signing in the ceremony', 'sending to 40204', 'waiting for inclusion'],
