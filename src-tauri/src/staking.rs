@@ -183,6 +183,8 @@ pub enum StakingError {
     /// C1-W: the paged withdrawal scan ran out of its time budget before reaching the head. The
     /// blocks read so far are kept, so the next read continues; until then there is no list.
     Incomplete { scanned_to: u64, head: u64 },
+    /// STD red stub (never produced by the old behaviour).
+    IncompleteDetails { read: usize, total: usize },
     /// C1-W: the node kept answering -32002 ("retry") for one window after the bounded back-off.
     Indexing(String),
 }
@@ -194,6 +196,7 @@ impl std::fmt::Display for StakingError {
             StakingError::Rpc(m) => write!(f, "staking: rpc error: {m}"),
             StakingError::Decode(m) => write!(f, "staking: balance decode error: {m}"),
             StakingError::Indexing(m) => write!(f, "still indexing chain history ({m})"),
+            StakingError::IncompleteDetails { read, total } => write!(f, "details {read} of {total}"),
             StakingError::Incomplete { scanned_to, head } => write!(
                 f,
                 "still reading chain history: blocks {LIQUID_STAKING_POOL_DEPLOY_BLOCK}-{scanned_to} of {head} scanned"
@@ -565,6 +568,9 @@ pub const SAFE_DEPTH_BLOCKS: u64 = 1000;
 /// C1-W — how many times one window is asked for when the node answers -32002 ("retry").
 pub const LOGS_RETRY_ATTEMPTS: u32 = 5;
 
+/// STD red stub (unused by the old behaviour).
+pub const WITHDRAWAL_READ_BATCH: usize = 50;
+
 /// C1-W — the wait before retry `attempt` (0-based): 250 ms doubling, capped at 2 s.
 pub fn logs_retry_backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis((250u64 << attempt.min(3)).min(2_000))
@@ -587,6 +593,7 @@ pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
     WithdrawalScan {
         next_block: a.next_block.max(b.next_block),
         ids: a.ids.union(&b.ids).copied().collect(),
+        ..Default::default()
     }
 }
 
@@ -624,6 +631,13 @@ pub struct WithdrawalScan {
     pub next_block: u64,
     /// Every `WithdrawalRequested` id seen for this staker and not yet known to be claimed.
     pub ids: std::collections::BTreeSet<u128>,
+    /// STD red stubs: carried, never used by the old behaviour.
+    #[serde(default)]
+    pub claimed: std::collections::BTreeSet<u128>,
+    #[serde(default)]
+    pub anchor: Option<(u64, String)>,
+    #[serde(default)]
+    pub generation: u64,
 }
 
 /// [`read_pending_withdrawals`], continuing `scan`. `WithdrawalRequested` logs are read in windows

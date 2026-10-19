@@ -316,6 +316,23 @@ impl<T: RpcTransport> RpcClient<T> {
     /// `eth_blockNumber` → the node's current head height (real value from the
     /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
     /// a `0x`-prefixed hex quantity.
+    /// STD red stub: old behaviour (the method is never asked).
+    pub fn executed_head(&self) -> Result<Option<(u64, String)>, RpcError> {
+        Ok(None)
+    }
+    /// STD red stub: old behaviour (no reorg check).
+    pub fn block_hash(&self, _number: u64) -> Result<Option<String>, RpcError> {
+        Ok(None)
+    }
+    /// STD red stub: old behaviour (no applied-tip evidence).
+    pub fn syncing(&self) -> Result<Option<u64>, RpcError> {
+        Ok(None)
+    }
+    /// STD red stub: old behaviour (one eth_call per id, no batch).
+    pub fn eth_call_batch(&self, calls: &[Value]) -> Result<Vec<Vec<u8>>, RpcError> {
+        calls.iter().map(|c| self.eth_call(c.clone())).collect()
+    }
+
     pub fn block_number(&self) -> Result<u64, RpcError> {
         let result = self.request("eth_blockNumber", json!([]))?;
         parse_hex_quantity(&result, "eth_blockNumber")
@@ -471,6 +488,9 @@ pub const RPC_LIMIT_EXCEEDED: i64 = -32005;
 /// served yet (the node's cache fills over several requests), with `data.retryable = true`: retry
 /// the same range later. Without that flag it is an ordinary error.
 pub const RPC_RETRY: i64 = -32002;
+
+/// STD red stub.
+pub const RPC_METHOD_NOT_FOUND: i64 = -32601;
 
 /// An `eth_getLogs` failure, telling a too-wide range apart from every other error (C1-W).
 #[derive(Debug, Clone, PartialEq, Eq)]
