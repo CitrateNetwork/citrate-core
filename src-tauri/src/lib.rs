@@ -91,6 +91,8 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+// K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
+mod network_profile;
 mod node;
 mod node_genesis;
 mod node_holder;
@@ -272,6 +274,10 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
+            // K6 — install the network gate before anything can sign: every ceremony signature
+            // and every transaction send checks the RPC's chain id and block-0 hash against the
+            // active network profile, and refuses when they differ or the profile is not set.
+            network_profile::install_network_gate();
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
             // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,

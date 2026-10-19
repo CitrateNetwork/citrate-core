@@ -217,6 +217,9 @@ pub enum NodeError {
     StartupCleanupPending,
     /// The holder check itself failed (for example the lock file could not be opened).
     HolderCheck(String),
+    /// K6: the network this build targets is not set (or its profile is invalid), so there is
+    /// nothing to sync. Fail closed: nothing in the data dir is touched and no node starts.
+    Network(crate::network_profile::ProfileError),
 }
 
 impl std::fmt::Display for NodeError {
@@ -238,6 +241,7 @@ impl std::fmt::Display for NodeError {
                 "the node was not started: could not check whether another process holds the \
                  chain database: {m}"
             ),
+            NodeError::Network(e) => write!(f, "the node was not started: {e}"),
         }
     }
 }
@@ -336,9 +340,16 @@ pub struct NodeManager {
     gate_cache: Mutex<Option<(std::result::Result<(), MiningHold>, std::time::Instant)>>,
     /// Why production is held, for [`NodeStatus::mining_hold`].
     mining_hold: Mutex<Option<String>>,
-    /// The genesis the node data must belong to: the address book's
-    /// `genesisHash` (tests inject their own).
+    /// The genesis the node data must belong to: the active network profile's
+    /// `genesisHash` (K6; the address book is checked equal to it). Empty when the
+    /// profile is not set, which the genesis gate refuses. Tests inject their own.
     book_genesis: String,
+    /// K6: the network this node joins (bootnodes, chain id, `--network`), from the
+    /// active profile in `network/profiles.json`. An error refuses every start.
+    network: std::result::Result<
+        crate::network_profile::ReadyNetwork,
+        crate::network_profile::ProfileError,
+    >,
     /// Set when a start in this session reset the chain data for a new
     /// genesis; surfaced once to the member through [`NodeStatus::notice`].
     chain_reset_notice: Mutex<Option<String>>,
@@ -383,7 +394,10 @@ impl NodeManager {
             tip_cache: Mutex::new(None),
             gate_cache: Mutex::new(None),
             mining_hold: Mutex::new(None),
-            book_genesis: crate::addresses::genesis_hash().to_string(),
+            book_genesis: String::new(),
+            network: Err(crate::network_profile::ProfileError::UnknownProfile(
+                String::new(),
+            )),
             chain_reset_notice: Mutex::new(None),
             blocked: Mutex::new(None),
             admission: StartupBarrier::global(),
@@ -391,6 +405,25 @@ impl NodeManager {
             node_ports: None,
             key_runtime_dir: key_runtime_dir(),
         }
+        .with_network(crate::network_profile::active_ready())
+    }
+
+    /// Target this network (K6): its genesis becomes the one the data dir must belong to, and
+    /// its bootnodes, chain id and `--network` go to the node. Production passes the active
+    /// profile; tests pass their own, including a not-set one.
+    pub fn with_network(
+        mut self,
+        network: std::result::Result<
+            crate::network_profile::ReadyNetwork,
+            crate::network_profile::ProfileError,
+        >,
+    ) -> Self {
+        self.book_genesis = network
+            .as_ref()
+            .map(|n| n.genesis_hash.clone())
+            .unwrap_or_default();
+        self.network = network;
+        self
     }
 
     /// Tests: use this runtime directory for the storage key file (`None` = the fallback).
@@ -461,6 +494,25 @@ impl NodeManager {
                 .chain_reset_notice
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(CHAIN_RESET_NOTICE.to_string());
+            // K6: the old node.toml names the old network's bootnodes and chain id. Keep it
+            // beside the data dir under a name that says which network it was for, and let the
+            // spawn write a fresh one from the active profile.
+            match retire_node_config(&self.data_dir, previous.as_deref()) {
+                Ok(Some(kept)) => eprintln!(
+                    "[node] the previous network's node.toml was kept as {}; a new one is written \
+                     from the network profile",
+                    kept.display()
+                ),
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("[node] could not set the previous network's node.toml aside: {e}");
+                    return Err(NodeError::Genesis(
+                        crate::node_genesis::GenesisGateError::Io(format!(
+                            "set the previous node.toml aside: {e}"
+                        )),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -478,6 +530,7 @@ impl NodeManager {
         }
         let cfg = std::fs::read_to_string(crate::node_holder::node_config_path(&self.data_dir))
             .unwrap_or_else(|_| MEMBER_NODE_CONFIG.to_string());
+        // The template is valid TOML, so its ports read the same before and after rendering.
         crate::node_holder::node_ports_from_config(&cfg)
     }
 
@@ -719,12 +772,15 @@ impl NodeManager {
     /// and the PATH of the storage key file in the env (never the key itself, and
     /// nothing secret in argv). `--network testnet` joins the public testnet.
     fn build_spec(&self) -> SidecarSpec {
-        let mut args = vec![
-            "--network".to_string(),
-            "testnet".to_string(),
-            "--data-dir".to_string(),
-            self.data_dir.to_string_lossy().to_string(),
-        ];
+        let mut args = Vec::new();
+        // K6: `--network` comes from the active profile. A not-set profile is refused by
+        // `start` before a spec is built; here it only omits the flag (no guessed value).
+        if let Ok(net) = &self.network {
+            args.push("--network".to_string());
+            args.push(net.node_network.clone());
+        }
+        args.push("--data-dir".to_string());
+        args.push(self.data_dir.to_string_lossy().to_string());
         // Pass our config EXPLICITLY. Without `--config` the node walks its
         // fallback chain ($CITRATE_CONFIG → ~/.citrate/node.toml →
         // /etc/citrate/node.toml → empty default), and `bootstrap_nodes`
@@ -737,7 +793,11 @@ impl NodeManager {
         // Best-effort: if the config cannot be written we still launch, because
         // a node that starts and reports "0 peers" is far easier to diagnose
         // than one that refuses to start at all. `ensure_node_config` logs.
-        if let Ok(cfg) = ensure_node_config(&self.data_dir) {
+        let cfg = match &self.network {
+            Ok(net) => ensure_node_config(&self.data_dir, net),
+            Err(e) => Err(std::io::Error::other(e.to_string())),
+        };
+        if let Ok(cfg) = cfg {
             args.push("--config".to_string());
             args.push(cfg.to_string_lossy().to_string());
         }
@@ -814,6 +874,10 @@ impl NodeManager {
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(NodeError::AlreadyRunning);
+        }
+        // K6: no network set, nothing to sync. Checked before the data dir is touched.
+        if let Err(e) = &self.network {
+            return Err(NodeError::Network(e.clone()));
         }
         if !self.bin.exists() {
             return Err(NodeError::BinaryNotFound(self.bin.display().to_string()));
@@ -1287,7 +1351,10 @@ const DATA_DIR_PLACEHOLDER: &str = "{{DATA_DIR}}";
 /// cost is that a shipped bootnode change does not reach existing installs —
 /// deliberate, since silently rewriting a user's config is worse. Delete the
 /// file to regenerate.
-fn ensure_node_config(data_dir: &std::path::Path) -> std::io::Result<PathBuf> {
+fn ensure_node_config(
+    data_dir: &std::path::Path,
+    network: &crate::network_profile::ReadyNetwork,
+) -> std::io::Result<PathBuf> {
     let path = data_dir.join("node.toml");
     if path.exists() {
         return Ok(path);
@@ -1300,9 +1367,37 @@ fn ensure_node_config(data_dir: &std::path::Path) -> std::io::Result<PathBuf> {
         .to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
-    let rendered = MEMBER_NODE_CONFIG.replace(DATA_DIR_PLACEHOLDER, &escaped);
+    let rendered = crate::network_profile::render_node_network(MEMBER_NODE_CONFIG, network)
+        .replace(DATA_DIR_PLACEHOLDER, &escaped);
     std::fs::write(&path, rendered)?;
     Ok(path)
+}
+
+/// K6: on a genesis change, set the previous network's `node.toml` aside as
+/// `node.toml.<first 10 characters of its genesis>` (or `node.toml.unrecorded`), so the next
+/// spawn writes a fresh one from the active profile. A member's hand edits are in that file.
+/// Returns where it went; `None` when there was no `node.toml`. An existing file of that name is
+/// never overwritten (a numeric suffix is added).
+pub(crate) fn retire_node_config(
+    data_dir: &std::path::Path,
+    previous_genesis: Option<&str>,
+) -> std::io::Result<Option<PathBuf>> {
+    let path = data_dir.join("node.toml");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let tag: String = previous_genesis
+        .map(|g| g.chars().take(10).collect())
+        .unwrap_or_else(|| "unrecorded".to_string());
+    let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let mut dest = data_dir.join(format!("node.toml.{tag}"));
+    let mut n = 1;
+    while dest.exists() {
+        dest = data_dir.join(format!("node.toml.{tag}.{n}"));
+        n += 1;
+    }
+    std::fs::rename(&path, &dest)?;
+    Ok(Some(dest))
 }
 
 /// Build the managed node state from a live app handle: the real OS keyring, the

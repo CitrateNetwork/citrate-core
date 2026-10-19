@@ -659,6 +659,21 @@ impl SignatureCeremony {
         raw_ack: bool,
         cfg: BroadcastConfig,
     ) -> Result<BroadcastResult> {
+        self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, crate::rpc::network_gate())
+    }
+
+    /// [`Self::approve_and_broadcast`] against an explicit network gate (K6). With `Some`, the
+    /// RPC's chain id and block-0 hash are checked after the ceremony is consumed and BEFORE any
+    /// nonce read or signature: on a mismatch, or a gate with no values set, nothing is signed.
+    pub fn approve_and_broadcast_gated<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        cfg: BroadcastConfig,
+        gate: Option<&crate::rpc::ExpectedNetwork>,
+    ) -> Result<BroadcastResult> {
         let BroadcastConfig {
             chain_id,
             poll_attempts,
@@ -707,6 +722,14 @@ impl SignatureCeremony {
             }
         }
 
+        // K6: the endpoint must be the network this build targets before anything is read for
+        // or signed into the transaction. A same-chain-id network with another genesis would
+        // accept the signature, so the block-0 hash is what is checked.
+        if let Some(expected) = gate {
+            rpc.verify_network(expected)
+                .map_err(|e| CeremonyError::Broadcast(format!("{e}; nothing was signed")))?;
+        }
+
         // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
         // `from` the dApp names sources the pending nonce; absent a `from` we
         // cannot fetch a nonce, so the dApp must have supplied one.
@@ -735,7 +758,7 @@ impl SignatureCeremony {
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
         let tx_hash = rpc
-            .send_raw_transaction(&signed.raw)
+            .send_raw_transaction_gated(&signed.raw, gate)
             .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
         let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
         let mined = match receipt {

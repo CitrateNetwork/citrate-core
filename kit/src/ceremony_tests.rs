@@ -2093,3 +2093,103 @@ fn the_tripwire_scan_covers_the_whole_production_ceremony_module() {
         "the terminal test module is still cut off"
     );
 }
+
+// ---------------------------------------------------------------------------
+// K6 network gate on the signing path.
+// ---------------------------------------------------------------------------
+
+const K6_GENESIS: &str = "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1";
+
+fn k6_gate(genesis: Option<&str>) -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "test-net".into(),
+        chain_id: Some(40204),
+        genesis_hash: genesis.map(str::to_string),
+    }
+}
+
+/// Same chain id, another block 0: nothing is read for the transaction and nothing is signed or
+/// sent. The ceremony is consumed (single use), as with every other refusal after the approve.
+#[test]
+fn k6_gated_approve_signs_nothing_against_another_genesis() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(
+            serde_json::json!({ "hash": "0x2222222222222222222222222222222222222222222222222222222222222222" }),
+        ),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0xhash".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("nothing was signed"), "{m}")
+        }
+        other => panic!("expected a pre-sign refusal, got {other:?}"),
+    }
+    let methods: Vec<String> = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(methods, vec!["eth_chainId", "eth_getBlockByNumber"]);
+}
+
+/// A gate with no genesis set refuses with no RPC call at all.
+#[test]
+fn k6_gated_approve_fails_closed_when_the_network_is_not_set() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let client = RpcClient::with_transport(MockRpc::new(vec![]));
+    let gate = k6_gate(None);
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "{r:?}");
+    assert!(client.transport.requests.borrow().is_empty());
+}
+
+/// The matching network signs and sends as before; the send is checked again (the endpoint can
+/// change between the two, as a DNS switch at genesis would).
+#[test]
+fn k6_gated_approve_signs_and_sends_on_the_matching_network() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0xhashk6".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let result = c
+        .approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate))
+        .expect("matching network");
+    assert_eq!(result.tx_hash, "0xhashk6");
+    assert_eq!(result.block_number, Some(100));
+}
