@@ -12,7 +12,7 @@ import {
   reachedStep,
   pendingJoinSteps,
   markJoinStepsSent,
-  clearJoinSteps,
+  setTelemetryConsent,
   setJoinFunnelConsent,
   stepForStage,
   JOIN_FUNNEL_STORAGE_KEY,
@@ -46,14 +46,14 @@ describe("join funnel — gating on the telemetry toggle", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("hides recorded steps once telemetry is turned off, and clearing wipes them", () => {
+  it("hides recorded steps once telemetry is turned off, and opting out forgets the unsent ones", () => {
     consent = true;
     reachedStep("wallet");
     expect(pendingJoinSteps()).toEqual(["wallet"]);
     consent = false;
     expect(pendingJoinSteps()).toEqual([]);
-    clearJoinSteps();
-    expect(localStorage.getItem(JOIN_FUNNEL_STORAGE_KEY)).toBeNull();
+    setTelemetryConsent(false);
+    expect(JSON.parse(localStorage.getItem(JOIN_FUNNEL_STORAGE_KEY) ?? "null")).toEqual({ v: 1, pending: [], sent: [] });
     consent = true;
     expect(pendingJoinSteps()).toEqual([]);
   });

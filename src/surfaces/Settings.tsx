@@ -50,7 +50,7 @@ import { WebSearchSettings } from "./WebSearchSettings";
 import { TERMINAL_ACCESS_HINT, TERMINAL_ACCESS_LABEL } from "../agent/terminalAccess";
 import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
-import { clearJoinSteps, telemetryConsentPatch, rememberTelemetryConsent } from "../privacy/joinFunnel";
+import { setTelemetryConsent } from "../privacy/joinFunnel";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
@@ -1236,12 +1236,12 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <TelemetryConsent
                 enabled={s.telemetry}
                 onChange={(on) => {
-                  writeConfig(store, { telemetry: on });
-                  // The consent screen lists joinSteps, so an opt-in here records the current
-                  // disclosure version (no one-time note); off clears the marker and the steps.
-                  store.setState({ telemetryConsentVersion: telemetryConsentPatch(on).telemetryConsentVersion });
-                  rememberTelemetryConsent(telemetryConsentPatch(on));
-                  if (!on) clearJoinSteps(); // off forgets any join steps not yet sent
+                  // The consent screen lists joinSteps, so an opt-in records the current disclosure
+                  // version (no one-time note). An opt-out forgets unsent join steps and drops any
+                  // prepared or in-flight report (setTelemetryConsent is the only toggle writer).
+                  const c = setTelemetryConsent(on);
+                  writeConfig(store, { telemetry: c.telemetry });
+                  store.setState({ telemetryConsentVersion: c.telemetryConsentVersion });
                   store.save();
                 }}
               />

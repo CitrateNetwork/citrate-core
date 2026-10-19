@@ -47,11 +47,15 @@ describe("join funnel when storage writes fail", () => {
     expect(f.pendingJoinSteps()).toEqual([]);
   });
 
-  it("clearing still forgets the steps when the removal cannot be written", () => {
+  it("opting out still forgets unsent steps, and keeps sent ones, when the write fails", () => {
     f.setJoinFunnelConsent(() => true);
+    f.reachedStep("open_app");
+    f.markJoinStepsSent(["open_app"]);
     f.reachedStep("wallet");
     failWrites();
-    f.clearJoinSteps();
+    f.setTelemetryConsent(false);
+    expect(f.pendingJoinSteps()).toEqual([]);
+    f.reachedStep("open_app");
     expect(f.pendingJoinSteps()).toEqual([]);
   });
 
@@ -62,10 +66,10 @@ describe("join funnel when storage writes fail", () => {
     failWrites();
     f.reachedStep("kyc");
     expect(f.pendingJoinSteps()).toEqual([]); // before the note: nothing
-    f.rememberTelemetryConsent(f.telemetryConsentPatch(true)); // the member keeps it on
+    f.setTelemetryConsent(true); // the member keeps it on
     f.reachedStep("kyc");
     expect(f.pendingJoinSteps()).toEqual(["kyc"]);
-    f.rememberTelemetryConsent(f.telemetryConsentPatch(false)); // and later turns it off
+    f.setTelemetryConsent(false); // and later turns it off
     f.reachedStep("bond");
     expect(f.pendingJoinSteps()).toEqual([]);
   });

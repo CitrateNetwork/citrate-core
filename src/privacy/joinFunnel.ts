@@ -85,15 +85,12 @@ let consentSource: (() => boolean) | null = null;
 // app state, which can be stale when that state's own write failed.
 let rememberedConsent: { telemetry: boolean; telemetryConsentVersion: number | null } | null = null;
 
-/** Record a consent change made this session (pass `telemetryConsentPatch(on)`). */
-export function rememberTelemetryConsent(c: { telemetry: boolean; telemetryConsentVersion: number | null }): void {
-  rememberedConsent = { telemetry: c.telemetry, telemetryConsentVersion: c.telemetryConsentVersion };
-}
-
 /** Bind the live consent (the app binds `funnelConsented(telemetry, telemetryConsentVersion)`).
- *  `null` falls back to the persisted toggle. */
+ *  Rebinding starts from the new source: `null` falls back to the persisted toggle, overridden
+ *  only by consent changes made after this call. */
 export function setJoinFunnelConsent(source: (() => boolean) | null): void {
   consentSource = source;
+  rememberedConsent = null;
 }
 
 function consented(): boolean {
@@ -187,27 +184,35 @@ export function markJoinStepsSent(steps: readonly string[]): void {
   });
 }
 
-/** Forget every recorded step (called when the member turns telemetry off). */
-export function clearJoinSteps(): void {
-  memory = EMPTY();
-  try {
-    localStorage.removeItem(JOIN_FUNNEL_STORAGE_KEY);
-  } catch {
-    writeFailed = true; // the stale record stays on disk; the empty memory copy wins
-  }
+// Changes on every opt-out. A report prepared (or still being prepared) under an older value
+// was assembled before the member opted out, so DiagnosticReport discards it.
+let generation = 0;
+
+/** The opt-out counter; compare it before showing or sending a prepared report. */
+export function joinFunnelGeneration(): number {
+  return generation;
 }
 
-/** Turn telemetry on or off (Settings, the one-time note). Returns the state patch to apply. */
+/** Opt-out: forget the steps not yet sent, but KEEP the sent set, so a step already reported is
+ *  never queued again (the disclosed once-per-install behaviour). */
+function forgetPendingJoinSteps(): void {
+  const r = load();
+  store({ v: 1, pending: [], sent: r.sent });
+}
+
+/**
+ * The ONE way to turn telemetry on or off (Settings, the one-time note; a tripwire test fails on
+ * any other writer). Remembers the choice for this session, and on opt-out forgets unsent join
+ * steps and invalidates every prepared or in-flight report. Returns the state patch to apply.
+ */
 export function setTelemetryConsent(on: boolean): { telemetry: boolean; telemetryConsentVersion: number | null } {
   const patch = telemetryConsentPatch(on);
-  rememberTelemetryConsent(patch);
-  if (!on) clearJoinSteps();
+  rememberedConsent = { ...patch };
+  if (!on) {
+    generation += 1;
+    forgetPendingJoinSteps();
+  }
   return patch;
-}
-
-/** Counter that changes on every opt-out; a report prepared under an older value is stale. */
-export function joinFunnelGeneration(): number {
-  return 0;
 }
 
 /** The join step an onboarding stage reaches, or null (S0 is `open_app`, recorded at launch;
