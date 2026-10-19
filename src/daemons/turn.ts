@@ -69,6 +69,14 @@ export interface DaemonTurnDeps {
   handleTool(call: ToolCall, meta?: ToolCallMeta, signal?: AbortSignal): Promise<string>;
 }
 
+/** A daemon run core refused to open (an open-time check): recorded as `not_started`. */
+export class DaemonNotStarted extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DaemonNotStarted";
+  }
+}
+
 /** HUP-S1.1: why a daemon waits while the local model serves but the Hermes sidecar is down. */
 export const DAEMON_NEEDS_HERMES = "daemons run in Hermes on the local model, and Hermes is not running right now";
 

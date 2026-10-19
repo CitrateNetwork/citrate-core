@@ -1136,3 +1136,101 @@ fn the_catalog_urls_are_https_and_apart_from_the_component_feed() {
     assert_ne!(STORE_CATALOG_URL, crate::components::COMPONENT_MANIFEST_URL);
     assert!(!STORE_CATALOG_URL.contains("/updater/"));
 }
+
+// ---- DGX R1/R2/R3/R5 on #356 (fixed on #376) -----------------------------------------------
+
+#[test]
+fn r1_file_tools_turned_on_by_the_launch_environment_block_a_store_daemon() {
+    use crate::daemons::host_block_reason;
+    // CITRATE_HERMES_FILES=1 plus a grants file offers the fs_* tools to sessions without a
+    // grant document; core never sets it, but the launch environment can.
+    let on = env(&[("CITRATE_HERMES_FILES", "1")]);
+    assert!(host_block_reason(&[], &on).is_some(), "the file tools block");
+    // No permission covers them: approving "files" grants nothing and is never sent.
+    let allowed = tools_for_permissions(&["files".to_string(), "shell_run".to_string()]);
+    assert!(allowed.iter().all(|t| !t.starts_with("host:")), "{allowed:?}");
+    assert!(host_block_reason(&allowed, &on).is_some());
+    let forced = vec!["host:files".to_string(), "host:shell_run".to_string()];
+    assert!(crate::daemons::store_tool_sets(&forced).is_empty(), "never in toolSets");
+}
+
+#[test]
+fn tripwire_every_runtime_host_set_has_an_env_hold_row() {
+    use crate::daemons::{GRANT_DOC_ONLY_SETS, HOST_TOOL_SETS, RUNTIME_HOST_SET_NAMES};
+    for name in RUNTIME_HOST_SET_NAMES {
+        let row = HOST_TOOL_SETS.iter().any(|s| s.permission == *name);
+        let by_construction = GRANT_DOC_ONLY_SETS.contains(name);
+        assert!(row || by_construction, "{name}: add an env-hold row to HOST_TOOL_SETS (or list it in GRANT_DOC_ONLY_SETS with the reason)");
+        assert!(!(row && by_construction), "{name}: listed twice");
+    }
+    // And no row names a set the runtime does not know.
+    for set in HOST_TOOL_SETS {
+        assert!(RUNTIME_HOST_SET_NAMES.contains(&set.permission), "{}", set.id);
+    }
+}
+
+#[test]
+fn r2_env_names_match_case_insensitively_where_the_platform_does() {
+    use crate::daemons::enabled_host_sets_for;
+    let lower = env(&[("citrate_hermes_search", "1")]);
+    assert!(!enabled_host_sets_for(&lower, true).is_empty(), "Windows: a lower-case name still turns search on");
+    assert!(enabled_host_sets_for(&lower, false).is_empty(), "Unix: names are case-sensitive");
+    // The effective child environment follows the same rule.
+    let kept = crate::hermes::effective_child_env_for(env(&[("Citrate_Hermes_Search", "1")]).into_iter(), &[], true);
+    assert!(kept.iter().any(|(k, _)| k.eq_ignore_ascii_case("CITRATE_HERMES_SEARCH")), "{kept:?}");
+    // Core's own value overrides an inherited one that differs only in case.
+    let over = crate::hermes::effective_child_env_for(
+        env(&[("citrate_hermes_search", "1")]).into_iter(),
+        &env(&[("CITRATE_HERMES_SEARCH", "0")]),
+        true,
+    );
+    assert!(enabled_host_sets_for(&over, true).is_empty(), "{over:?}");
+}
+
+#[test]
+fn tripwire_no_case_sensitive_env_name_comparison_in_the_host_set_check() {
+    let daemons = include_str!("daemons.rs");
+    let hermes = include_str!("hermes.rs");
+    assert!(!daemons.contains("k == set.env_key"), "compare env names with env_name_eq");
+    assert!(!hermes.contains("k.starts_with(\"CITRATE_\")"), "compare env names with env_name_eq");
+}
+
+#[test]
+fn r3_a_missing_or_unknown_daemon_id_is_refused_at_open() {
+    use crate::daemons::open_target;
+    let fx = Fx::standard("opentarget");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let store_id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        let mine = b.save(
+            crate::daemons::DaemonInput { id: None, name: "Mine".into(), prompt: "Do it.".into(), schedule: "0 8 * * *".into(), budget: None },
+            NOW_MS,
+            0,
+        )?;
+        assert!(open_target(b, None).is_err(), "no daemon id: refused");
+        assert!(open_target(b, Some("d00000000000000ff")).is_err(), "unknown id: refused");
+        assert_eq!(open_target(b, Some(&mine.id)).expect("member"), None);
+        assert!(open_target(b, Some(&store_id)).expect("store").is_some());
+        Ok(())
+    })
+    .expect("book");
+}
+
+#[test]
+fn r5_a_not_started_outcome_is_recorded_as_not_started() {
+    let o: Result<crate::daemons::RunOutcome, _> = serde_json::from_str("\"not_started\"");
+    let o = o.expect("the runner can report not_started");
+    let fx = Fx::standard("notstarted");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    let at = NOW_MS + 18 * 3_600_000;
+    let run = crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(&id, false, NOW_MS)?;
+        Ok(b.claim_due_with(at, 0, Some(&[]))?.remove(0).run_id)
+    })
+    .expect("claimed");
+    crate::daemons::with_book_file(&fx.daemons, true, |b| b.finish_run(&id, &run, 0, o, "Not started: Hermes restarted", at + 1)).expect("finish");
+    assert_eq!(fx.fx_daemon_book().daemons[0].last_outcome.as_deref(), Some("not_started"));
+}

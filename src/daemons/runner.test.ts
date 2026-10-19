@@ -370,3 +370,17 @@ describe("cancelling a daemon before it is removed", () => {
     expect(r.state().error).toMatch(/no such daemon/);
   });
 });
+
+describe("a run core refused to open", () => {
+  it("is recorded as not_started, not failed", async () => {
+    const { DaemonNotStarted } = await import("./turn");
+    const api = fakeApi([[claim()]]);
+    const r = createDaemonRunner(deps(api, async () => {
+      throw new DaemonNotStarted("Not started: Hermes is restarting");
+    }));
+    await r.tick();
+    expect(api.finished[0].outcome).toBe("not_started");
+    expect(api.finished[0].note).toContain("Not started");
+    expect(api.finished[0].tokens).toBe(0);
+  });
+});

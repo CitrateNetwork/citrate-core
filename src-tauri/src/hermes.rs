@@ -2244,6 +2244,15 @@ pub(crate) fn effective_child_env(
     inherited: impl Iterator<Item = (String, String)>,
     set: &[(String, String)],
 ) -> Vec<(String, String)> {
+    effective_child_env_for(inherited, set, cfg!(windows))
+}
+
+/// [`effective_child_env`] with the platform's env-name rule made explicit (tests drive both).
+pub(crate) fn effective_child_env_for(
+    inherited: impl Iterator<Item = (String, String)>,
+    set: &[(String, String)],
+    _case_insensitive: bool,
+) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = inherited
         .filter(|(k, _)| k.starts_with("CITRATE_") && !set.iter().any(|(s, _)| s == k))
         .collect();

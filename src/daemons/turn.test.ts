@@ -204,3 +204,14 @@ describe("a daemon session is opened for its daemon", () => {
     expect((sidecar.openUnattended.mock.calls[0] as unknown as [string, string, string])[2]).toBe("d1");
   });
 });
+
+describe("an open-time refusal", () => {
+  it("rejects the turn as DaemonNotStarted, so the run is recorded not_started", async () => {
+    const { DaemonNotStarted } = await import("./turn");
+    const sidecar = sidecarFake([]);
+    sidecar.openUnattended.mockRejectedValueOnce(new Error("Not started: the tools Hermes offers changed"));
+    const run = runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar }));
+    await expect(run).rejects.toBeInstanceOf(DaemonNotStarted);
+    await expect(run).rejects.toThrow(/Not started/);
+  });
+});

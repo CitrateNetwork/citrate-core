@@ -128,6 +128,25 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
     },
 ];
 
+/// Every host tool-set name the sidecar can scope per session (citrate-agent-runtime#87
+/// `capabilities.sessionToolSets`). Each must have a [`HOST_TOOL_SETS`] row or be listed in
+/// [`GRANT_DOC_ONLY_SETS`] (the tripwire test checks it).
+pub(crate) const RUNTIME_HOST_SET_NAMES: &[&str] = &[
+    "web_search",
+    "web_browse",
+    "mcp",
+    "toolchain",
+    "skills_read",
+    "learn_propose",
+    "capsules_run",
+    "files",
+    "shell_run",
+];
+
+/// Host tool sets the sidecar offers only to a session opened with a grant document, which a
+/// daemon session never is: excluded by construction, so they need no env-hold row.
+pub(crate) const GRANT_DOC_ONLY_SETS: &[&str] = &["shell_run"];
+
 /// The marker a Store daemon's tool list carries for a host tool set its permissions cover.
 pub(crate) fn host_set_marker(id: &str) -> String {
     format!("host:{id}")
@@ -135,6 +154,14 @@ pub(crate) fn host_set_marker(id: &str) -> String {
 
 /// The host tool sets on in the sidecar's environment `env`.
 pub(crate) fn enabled_host_sets(env: &[(String, String)]) -> Vec<&'static HostToolSet> {
+    enabled_host_sets_for(env, cfg!(windows))
+}
+
+/// [`enabled_host_sets`] with the platform's env-name rule made explicit (tests drive both).
+pub(crate) fn enabled_host_sets_for(
+    env: &[(String, String)],
+    _case_insensitive: bool,
+) -> Vec<&'static HostToolSet> {
     HOST_TOOL_SETS
         .iter()
         .filter(|set| {
@@ -1471,6 +1498,15 @@ fn sidecar_facts(app: &tauri::AppHandle) -> SidecarFactsOwned {
         Ok(m) => (m.started_env(), m.session_tool_sets()),
         Err(_) => (None, None),
     }
+}
+
+/// What the daemon session open is for: `Ok(None)` a member daemon, `Ok(Some(allowed))` a Store
+/// daemon bound to `allowed`.
+pub(crate) fn open_target(
+    book: &DaemonBook,
+    daemon_id: Option<&str>,
+) -> Result<Option<Vec<String>>, String> {
+    Ok(daemon_id.and_then(|id| book.allowed_tools_of(id)))
 }
 
 /// How a Store daemon's session may be opened, after [`check_store_daemon_open`].
