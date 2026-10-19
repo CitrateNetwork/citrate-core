@@ -29,7 +29,12 @@ The script:
    namespace cannot be created it exits 2. It never falls back to running the suite outside one;
 3. inside the namespace, runs `cargo test --offline -p citrate-core-kit --lib supervisor` and
    `--test lifecycle_faults`, each under `timeout` (`LCF_TIMEOUT_SECS`, default 600);
-4. checks `pgrep -f citrate-lcf-` for leftover fixture processes **before** PID 1 exits. When the
+4. checks for leftover processes **before** PID 1 exits. The namespace belongs to this run, so
+   after the suites return any live process other than PID 1 is a leak, marked (`citrate-lcf-*`)
+   or not (the supervisor lib tests spawn plain `/bin/sh` and `/bin/sleep`, the fault suite also
+   `tail`). The scan reads `/proc` with shell builtins only, so it never sees itself; zombies are
+   not counted. Before the suites run, a negative control leaks an unmarked `sleep`, requires the
+   scan to report it, then kills it, so a scan that can't see leaks fails the lane. When the
    namespace's init exits the kernel kills everything left in it, so a check run after the
    namespace closes would hide a leak;
 5. writes `summary.txt`, the two test logs, `build.log` and `ps-at-exit.txt` into the log

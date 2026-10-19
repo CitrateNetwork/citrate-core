@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # lifecycle-faults-linux.sh — K1-F: run the services-supervisor tests and the lifecycle
-# fault-injection suite on Linux, inside a fresh PID namespace, and fail if any fixture process
-# is left behind. Used by .github/workflows/lifecycle-faults-linux.yml and by hand on a Linux
-# desktop (see docs/LIFECYCLE_FAULTS_LINUX.md).
+# fault-injection suite on Linux, inside a fresh PID namespace, and fail if any process other
+# than the namespace's PID 1 is left behind (marked or not). Used by
+# .github/workflows/lifecycle-faults-linux.yml and by hand on a Linux desktop
+# (see docs/LIFECYCLE_FAULTS_LINUX.md).
 #
 # Why a PID namespace: the suite sends SIGTERM/SIGKILL to the processes it spawns. A wrong pid
 # outside a namespace can reach a process in the desktop session (on the DGX this kills GNOME).
@@ -31,8 +32,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 FAULTS_SRC="$ROOT/kit/tests/lifecycle_faults.rs"
-# Bracketed so that this script's own argv (and `bash -c` callers) never match the pattern.
-MARKER_RE='citrate-lc[f]-'
 TIMEOUT_SECS="${LCF_TIMEOUT_SECS:-600}"
 MIN_SUPERVISOR="${LCF_MIN_SUPERVISOR:-24}"
 
@@ -78,6 +77,32 @@ if [ "$INNER" -eq 0 ]; then
 fi
 
 # ---- inside the namespace ----------------------------------------------------------------
+# Stray-process detection. The namespace is dedicated to this run, so once the suites have
+# returned the only process that may exist is PID 1 (this shell). Every other live process is a
+# leftover, whatever its name: a marked `citrate-lcf-*` leaf from the fault suite, or an unmarked
+# `/bin/sh`, `/bin/sleep` or `tail` from a supervisor lib-test fixture or one of their
+# descendants. The scan reads /proc with shell builtins only (no subshell, pipe or command), so
+# the inspection itself never shows up as a process. Zombies are not counted: they have already
+# exited and only wait to be reaped by PID 1.
+# Sets STRAYS to one "pid state argv" line per live process other than PID 1.
+scan_strays() {
+  STRAYS=()
+  local d pid stat state argv
+  for d in /proc/[0-9]*; do
+    pid="${d#/proc/}"
+    [ "$pid" = 1 ] && continue
+    stat=""
+    { IFS= read -r stat <"$d/stat"; } 2>/dev/null || continue # gone since the glob
+    [ -n "$stat" ] || continue
+    stat="${stat##*) }" # comm may hold spaces or ')'; the state follows the last ") "
+    state="${stat%% *}"
+    [ "$state" = Z ] && continue
+    argv=()
+    { mapfile -d '' -t argv <"$d/cmdline"; } 2>/dev/null
+    STRAYS+=("$pid $state ${argv[*]:-[${stat}]}")
+  done
+}
+
 cd "$ROOT" || exit 2
 if [ "$$" -ne 1 ] || [ "$(ps -o pgid= -p $$ | tr -d ' ')" != 1 ]; then
   echo "::error::--inner must run as PID 1 and group leader of a fresh PID namespace (got pid $$)"
@@ -93,12 +118,32 @@ FAILED=0
   echo "namespace: user+pid+mount, own session (pid $$, $(ps -e --no-headers | wc -l) processes visible)"
 } >"$SUMMARY"
 
-before="$(pgrep -fl "$MARKER_RE" || true)"
-if [ -n "$before" ]; then
-  echo "$before"
-  echo "::error::citrate-lcf- processes exist before the run" | tee -a "$SUMMARY"
+scan_strays
+if [ "${#STRAYS[@]}" -ne 0 ]; then
+  printf '%s\n' "${STRAYS[@]}"
+  echo "::error::the namespace is not empty before the run" | tee -a "$SUMMARY"
   exit 1
 fi
+
+# Negative control: an unmarked, orphaned `sleep` (reparented to PID 1, like a leaked fixture
+# descendant) must be reported by the scan. If it is not, the leftover check below cannot be
+# trusted and the lane fails. The control process is killed again before the suites run.
+( exec sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >"$LOG_DIR/negative-control.pid" )
+nc_pid="$(<"$LOG_DIR/negative-control.pid")"
+scan_strays
+nc_seen=0
+for l in "${STRAYS[@]}"; do [ "${l%% *}" = "$nc_pid" ] && nc_seen=1; done
+kill -KILL "$nc_pid" 2>/dev/null
+for _ in $(seq 1 100); do
+  scan_strays
+  [ "${#STRAYS[@]}" -eq 0 ] && break
+  sleep 0.05
+done
+if [ "$nc_seen" -ne 1 ] || [ "${#STRAYS[@]}" -ne 0 ]; then
+  echo "leftover check negative control: FAIL (leaked sleep pid $nc_pid seen=$nc_seen, still present: ${#STRAYS[@]})" | tee -a "$SUMMARY"
+  exit 1
+fi
+echo "leftover check negative control: ok (an unmarked leaked sleep was detected)" | tee -a "$SUMMARY"
 
 run_suite() { # name, log, cargo args...
   local name="$1" log="$2"; shift 2
@@ -141,16 +186,21 @@ fi
 
 # Leftover check: must run here, before PID 1 exits, because the kernel kills every process in
 # the namespace when its init exits and that would hide a leak.
-sleep 1
-left="$(pgrep -fl "$MARKER_RE" || true)"
-if [ -n "$left" ]; then
-  echo "$left" | tee -a "$SUMMARY"
-  echo "::error::the suite left fixture processes behind" | tee -a "$SUMMARY"
+# Every process other than PID 1 counts, marked or not (see scan_strays). A short grace lets a
+# process that is already exiting finish; anything still there after it is a leak.
+for _ in $(seq 1 20); do
+  scan_strays
+  [ "${#STRAYS[@]}" -eq 0 ] && break
+  sleep 0.1
+done
+ps -e -o pid,ppid,stat,args >"$LOG_DIR/ps-at-exit.txt" 2>&1
+if [ "${#STRAYS[@]}" -ne 0 ]; then
+  printf '%s\n' "${STRAYS[@]}" | tee -a "$SUMMARY"
+  echo "::error::the suites left ${#STRAYS[@]} process(es) behind in the namespace" | tee -a "$SUMMARY"
   FAILED=1
 else
-  echo "leftover fixture processes: none" | tee -a "$SUMMARY"
+  echo "leftover processes in the namespace: none" | tee -a "$SUMMARY"
 fi
-ps -e -o pid,ppid,stat,args >"$LOG_DIR/ps-at-exit.txt" 2>&1
 
 [ "$FAILED" -eq 0 ] && echo "RESULT: PASS" >>"$SUMMARY" || echo "RESULT: FAIL" >>"$SUMMARY"
 exit "$FAILED"
