@@ -155,6 +155,8 @@ mod model_catalog;
 mod model_delete;
 mod social;
 mod storage;
+// K4: verified export, backup and restore of Files and Memory.
+mod storage_backup;
 mod training;
 
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
@@ -634,6 +636,12 @@ pub fn run() {
             storage::storage_list,
             storage::storage_retrieve,
             storage::storage_unpin,
+            // K4: local pins (no bond), the IPFSIncentivesV3 parameters, and verified backup.
+            storage::storage_pin_local,
+            storage::storage_pin_params,
+            storage_backup::storage_backup_export,
+            storage_backup::storage_backup_verify,
+            storage_backup::storage_backup_restore,
             comms::groups_create,
             comms::comms_relay_status,
             comms::groups_list,

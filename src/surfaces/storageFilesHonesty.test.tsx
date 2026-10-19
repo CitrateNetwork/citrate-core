@@ -1,8 +1,8 @@
 // CX-S2.4 — StorageFiles copy honesty (D-22 subsidy framing / Rule 1 / compliance).
 //
-// The storage surface must frame network storage as a SUBSIDY that rewards pinners (RT-4), never
-// as the USER earning by storing (D-22), never guaranteed, never framed as immediate cash — and it
-// must be honest that the on-chain bond is NOT yet live (S2.2 blocked on the chain CommD fix). These are
+// The storage surface must never frame storage as the USER earning by storing (D-22), never
+// guaranteed, never framed as immediate cash, and it must be honest that the on-chain bond is NOT
+// live (S2.2 blocked on the chain CommD fix; IPFSIncentivesV3 dormant, UI truth contract §1). These are
 // the red-then-green tripwires: they fail if any forbidden earnings claim renders, and prove the
 // honest "forthcoming / pin locally" framing holds. Mirrors the copy-lint patterns in
 // scripts/cx-copy-lint.sh so the surface and the CI gate agree.
@@ -25,13 +25,17 @@ describe("StorageFiles honesty — subsidy-framed, no user-earnings/guaranteed/d
     expect(html).not.toMatch(/day.?one\s+(cash|earnings?)/i);
   });
 
-  it("uses the sanctioned subsidy framing (network rewards pinners), not user-side earnings", () => {
-    expect(html.toLowerCase()).toContain("rewards pinners");
+  // K4 (UI truth contract §1): IPFSIncentivesV3 is deployed but dormant and unfunded, so the earlier
+  // "staked SALT bond you approve" framing described something that is not live. Pins are local.
+  it("says pin bonds are not live yet, in the contract's required words", () => {
+    expect(html).toContain("Pin bonds not live yet");
   });
 
-  it("frames pinning as a staked SALT bond the user approves (D-22 subsidy, ceremony-gated)", () => {
+  it("frames pinning as a local pin with no bond and no transaction, never a bond to approve", () => {
     const lower = html.toLowerCase();
-    expect(lower).toContain("staked salt bond");
-    expect(lower).toContain("approve"); // the human approves the tx; nothing is signed for them
+    expect(lower).toContain("a local pin, with no bond and no transaction");
+    expect(lower).not.toContain("staked salt bond");
+    expect(html).not.toContain("Pin · bond");
+    expect(lower).not.toMatch(/approve the bond/);
   });
 });
