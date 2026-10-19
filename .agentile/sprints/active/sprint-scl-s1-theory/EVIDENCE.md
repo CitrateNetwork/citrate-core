@@ -71,13 +71,13 @@ What this does not show: the CI job has not run on hosted runners yet at the tim
 ### SC1 (SCL-S2) status and deferrals
 
 Work landed in the stacked PRs #351 (S2.1, S2.2) and #352 (S2.3, S2.4), built on the S1.3
-harness. Counts on this host at #352's head:
+harness. Counts on this host after the review rounds (#351 at `cca5a85`, #352 at `c39db6b`):
 
 | Measure | Value |
 |---|---|
-| `cargo test --workspace --locked` | 2477 passed, 0 failed, 20 ignored (baseline 2434) |
-| kit `supervisor::tests` | 36 Unix, 15 Windows (baseline 24 / 3) |
-| `lifecycle_faults` suite | 31 passed |
+| `cargo test --workspace --locked` | #351: 2463 passed; #352: 2488 passed; 0 failed, 20 ignored (baseline 2434) |
+| kit `supervisor::tests` | #351: 32 Unix / 11 Windows; #352: 38 / 17 (baseline 24 / 3) |
+| `lifecycle_faults` suite | #351: 21; #352: 40 |
 
 **Deferred: using credential-publication tickets in the managers.** Reason: the kit
 provides the ticket (`Supervisor::admit_publication`, `PublicationTicket::commit`,
@@ -93,3 +93,30 @@ Also not done in SC1:
 - the legacy `stop()`, which keeps its 10 s wait (consumers migrate in S6.4 / S7.4);
 - replacement descriptors and generation bumps (no replacement API until SC5 / SC6);
 - the INV-5, INV-6, INV-12 and INV-14 TLC re-runs, which belong to the formal lane.
+
+**Follow-up for the formal model (#345, `SidecarSupervisor.tla`).** Review of #351 and #352 found
+orderings the model could not express, because it folds log readers and credential files into
+the `child` and `tickets` resources:
+
+- a Start that supersedes a Stop mid-teardown, while a reader of the old incarnation is held;
+- an explicit Start after `Failed`, where the earlier incarnation ended by crash or by health
+  failures and its reader is still held;
+- shutdown with an open publication ticket.
+
+The model's `MemberStart` already waits for `StopComplete` with `Cleanup = {}`, and
+`INV_StoppedOwnsNothing` holds. Proposed follow-up, not done in SC1:
+
+- model `readers` as a resource of its own in `Cleanup`, released independently of `child`, on
+  every way an incarnation ends (Stop teardown, Crash, health failure);
+- require `Cleanup = {}` before the first spawn of a new Start intent, including from `Failed`;
+- add a mutant that admits the spawn while `readers` is still held.
+
+The fault suite covers these orderings today (`start_during_held_reader_teardown_waits_for_cleanup`,
+`start_after_a_crash_with_a_held_reader_waits_for_cleanup`,
+`start_after_health_failures_with_a_held_reader_waits_for_cleanup`,
+`shutdown_with_an_open_publication_ticket_is_incomplete`). Control-result values
+(`AlreadySatisfied`, `Quarantined`, `ObservationUnknown`) are outside the model by design.
+
+**Also still open:** retries within one Start intent (crash, then backoff, then respawn) do not
+wait for the previous incarnation's readers. That is reader handover, part of the bounded-capture
+work (SC4, SCL-S5).
