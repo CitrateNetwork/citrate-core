@@ -243,7 +243,9 @@ function Root() {
         .catch(() => {
           /* honest: a failed read leaves defaults; no fabricated values */
         });
-      // GROW-S1 — catch a `citrate://join/...` deep-link (cold-start or while running) → Groups.
+      // GROW-S1 — an invite Rust is still holding from before a restart (status only), then catch
+      // deep links (cold-start or while running).
+      void store.refreshPendingJoin();
       void wireDeepLinks(store);
     }
     const onHash = () => {

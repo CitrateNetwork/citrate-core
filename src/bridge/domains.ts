@@ -1828,7 +1828,8 @@ export interface InviteClaim {
 // the share link opens. Mirrors the Rust `citrate_core_kit::join` views. The webview never sees the
 // link key, the envelope, the relay token or the session bearer: the only value carrying the key is
 // `JoinMinted.shareUrl` (`https://citrate.ai/join/<code>#<key>`), meant to be copied and shared.
-// Not yet registered on CxBridge: the inviter UI (task 11) and invitee path (task 12) wire it.
+// Registered on CxBridge as `join` (tasks 11/12). The pending invite an invitee has not acted on yet
+// is held only in Rust (keyring), and its view carries neither the code nor the key.
 export type JoinKind = "direct" | "referral";
 export type JoinGoal = "storage" | "training" | "inference" | "dapps" | "general";
 export interface JoinMintRequest {
@@ -1886,6 +1887,29 @@ export interface JoinDomain {
   revoke(code: string): Promise<void>;
   /** The member's codes, newest first. */
   list(): Promise<JoinCodeEntry[]>;
+  /** Task 12: hand an arrived/pasted invite link to Rust to hold (keyring). Not resolved. */
+  pendingSet(link: string): Promise<PendingJoinView>;
+  /** Whether an invite is waiting (no code, no key). */
+  pendingGet(): Promise<PendingJoinView | null>;
+  /** Wipe the waiting invite (cancel). */
+  pendingClear(): Promise<void>;
+  /** The member chose to look at it: resolve + verify the waiting invite in Rust. */
+  pendingResolve(): Promise<JoinResolved>;
+  /** QR modules for a share link (rendered as SVG by the webview). */
+  shareQr(link: string): Promise<JoinQr>;
+}
+/** The waiting invite as the webview sees it (mirrors Rust `PendingJoinView`). */
+export interface PendingJoinView {
+  hasKey: boolean;
+  storedAt: number;
+  expiresAt: number;
+  /** false = the keyring was unreachable; held in memory only until the app quits. */
+  persisted: boolean;
+}
+/** A QR code as rows of '1' (dark) / '0' (light) modules, without the quiet zone. */
+export interface JoinQr {
+  size: number;
+  rows: string[];
 }
 
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
@@ -2307,5 +2331,7 @@ export interface CxBridge {
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
+  /** GROW-S1 v2 invite links (short code + sealed envelope), all through Rust. */
+  join: JoinDomain;
   components: ComponentsDomain;
 }

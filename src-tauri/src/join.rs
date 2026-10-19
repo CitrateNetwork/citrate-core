@@ -17,7 +17,7 @@
 //! only); the relay invite link comes from `group_invite_create`; redeem goes to the comms relay
 //! through the existing `group_invite_redeem` body.
 //!
-//! UI wiring is tasks 11 (inviter) and 12 (invitee); this module only adds the commands.
+//! UI wiring is tasks 11 (inviter) and 12 (invitee); the pending invite store is `pending_join`.
 
 use citrate_core_kit::join::{
     InvitePayload, JoinClient, JoinCodeEntry, JoinConfig, JoinError, JoinHttp, MintRequest,
@@ -108,7 +108,10 @@ pub async fn join_redeem(app: tauri::AppHandle, code: String) -> Result<(), Stri
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         join.0.redeem_opened(&code, |payload| {
             crate::invites::redeem_link(&app, &payload.to_invite_link())
-        })
+        })?;
+        // Joined: the pending invite (task 12) for this code is spent, so wipe it.
+        crate::pending_join::forget_code(&app, &code);
+        Ok(())
     })
     .await
 }
@@ -125,6 +128,18 @@ pub async fn join_revoke(app: tauri::AppHandle, code: String) -> Result<(), Stri
 #[tauri::command]
 pub async fn join_list(app: tauri::AppHandle) -> Result<Vec<JoinCodeEntry>, String> {
     crate::blocking::off_main(move || with_states(&app, |join, auth| join.list(&auth.0))).await
+}
+
+/// `join_share_qr` — the QR modules for a share link the member is looking at (the webview draws
+/// them as SVG). Only a well-formed join link is encoded; nothing is stored or logged.
+#[tauri::command]
+pub async fn join_share_qr(link: String) -> Result<crate::fleet_pairing::QrMatrix, String> {
+    crate::blocking::off_main(move || {
+        let link = zeroize::Zeroizing::new(link);
+        citrate_core_kit::join::parse_link(&link).map_err(err)?;
+        crate::fleet_pairing::qr_matrix(link.trim())
+    })
+    .await
 }
 
 #[cfg(test)]

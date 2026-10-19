@@ -42,6 +42,22 @@ describe("GROW-S1 join bridge", () => {
     ]);
   });
 
+  it("task 12: the pending-invite commands and the share QR map to their Rust commands", async () => {
+    await tauriJoin.pendingSet("citrate://join/Ab3dE7gh#AAECAwQFBgcICQoLDA0ODw");
+    await tauriJoin.pendingGet();
+    await tauriJoin.pendingResolve();
+    await tauriJoin.pendingClear();
+    await tauriJoin.shareQr("https://citrate.ai/join/Ab3dE7gh");
+    expect(calls).toEqual([
+      { cmd: "pending_join_set", args: { link: "citrate://join/Ab3dE7gh#AAECAwQFBgcICQoLDA0ODw" } },
+      { cmd: "pending_join_get", args: undefined },
+      { cmd: "pending_join_resolve", args: undefined },
+      { cmd: "pending_join_clear", args: undefined },
+      { cmd: "join_share_qr", args: { link: "https://citrate.ai/join/Ab3dE7gh" } },
+    ]);
+    expect(deadlineFor("pending_join_resolve")).toBeGreaterThan(30_000);
+  });
+
   it("mint and resolve outlive two 15 s Rust-side HTTP calls", () => {
     expect(deadlineFor("join_mint")).toBeGreaterThan(30_000);
     expect(deadlineFor("join_resolve")).toBeGreaterThan(30_000);
