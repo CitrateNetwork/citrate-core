@@ -155,7 +155,6 @@ commands.allow = [
   "telemetry_send",
   "skills_registry_list",
   "storage_add",
-  "storage_pin",
   "storage_list",
   "storage_retrieve",
   "storage_unpin",

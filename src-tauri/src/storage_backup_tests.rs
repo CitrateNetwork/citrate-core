@@ -745,3 +745,36 @@ fn storage_daemons_run_under_the_supervisor_and_stop_on_quit() {
         .expect("OWNED_SIDECARS exists");
     assert!(owned.contains("\"ipfs\"") && owned.contains("\"mem-mcp\""));
 }
+
+/// K4 follow-up (DGX review of #368): until S2.2 ships, no path can open a pin-bond signing
+/// request. The bonded `storage_pin` command is neither registered nor allowed for any window,
+/// and no command in storage.rs builds a bond transaction.
+#[test]
+fn the_bonded_storage_pin_command_is_not_invocable() {
+    let lib = include_str!("lib.rs");
+    let handler = lib
+        .split("generate_handler![")
+        .nth(1)
+        .and_then(|s| s.split("])").next())
+        .expect("generate_handler! exists");
+    assert!(
+        !handler.contains("storage::storage_pin,"),
+        "storage_pin must not be registered"
+    );
+    let acl = include_str!("../permissions/main-window.toml");
+    assert!(!acl.contains("\"storage_pin\""), "storage_pin must not be allowed");
+    for cap in [
+        include_str!("../capabilities/default.json"),
+        include_str!("../capabilities/popout.json"),
+        include_str!("../capabilities/popout-contract.json"),
+    ] {
+        assert!(!cap.contains("\"storage_pin\""), "no capability allows storage_pin");
+    }
+    let storage = include_str!("storage.rs");
+    assert!(!storage.contains("pub async fn storage_pin("), "no bonded pin command");
+    assert!(!storage.contains("ceremony.0.request("), "storage.rs opens no signing request");
+    assert!(!storage.contains("IntentKind::Transaction"), "storage.rs builds no transaction");
+    // The local pin is still there and still allowed.
+    assert!(handler.contains("storage::storage_pin_local,"));
+    assert!(acl.contains("\"storage_pin_local\""));
+}

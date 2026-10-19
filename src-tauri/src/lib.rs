@@ -632,7 +632,6 @@ pub fn run() {
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
             storage::storage_add,
-            storage::storage_pin,
             storage::storage_list,
             storage::storage_retrieve,
             storage::storage_unpin,

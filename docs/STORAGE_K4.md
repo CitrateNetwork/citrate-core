@@ -31,15 +31,18 @@ blocked on the CommD question (`docs/FINDING_PIN_COMMD_BOND_2026-08-26.md`). So 
 
 - Every pin is a **local pin**: `storage_pin_local` pins the CID in this node's kubo store and
   records `local` in the pin index. No bond, no transaction. The Files and Pins surfaces only call
-  this. (The older `storage_pin` command that opened a `registerModel` bond ceremony is no longer
-  called by any surface.)
+  this. The older bonded `storage_pin` command (local pin plus a pending `registerModel`
+  signing request carrying the 55 SALT model bond) is removed from the invoke handler and the
+  main-window allowlist until S2.2 ships, so no path can open a bond signing request
+  (`the_bonded_storage_pin_command_is_not_invocable`). The commitment and calldata builders stay,
+  tested against the chain's frozen vectors.
 - A kept pin is labelled **"Local pin · no bond"**; an index row kubo no longer holds is
   **"Not pinned on this node"**. Pinned / Challenged / Released / Slashed are never shown.
 - **"Pin bonds not live yet"** is shown with the V3 `BOND`, `REWARD` and `ROUNDS` values, labelled
   as parameters. A failed read shows "—" and its reason, never 0.
 
-"Local pin · no bond" is the design's wording and needs chain-team sign-off for the truth contract
-vocabulary (section 1 lists only chain pin states).
+"Local pin · no bond" is the design's wording; the chain team is adding it to UI truth contract
+v1.2.
 
 ## 3. Export, backup and restore
 
