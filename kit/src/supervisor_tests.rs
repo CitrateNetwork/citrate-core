@@ -1033,7 +1033,9 @@ fn captures_child_stdout_and_stderr_into_ring() {
     let crash_file = tmp.path("crashes.jsonl");
     // A child that prints one known line to stdout and one to stderr, then stays
     // alive (so the supervisor observes a clean Running child, not a crash-loop).
-    let script = "echo OUT_HELLO; echo ERR_OOPS 1>&2; sleep 60".to_string();
+    // `exec` so the supervised pid IS the sleep: `sh -c "...; sleep 60"` forks the sleep, and
+    // stopping the shell would leave it running (the Linux lane's leftover check catches that).
+    let script = "echo OUT_HELLO; echo ERR_OOPS 1>&2; exec sleep 60".to_string();
     let spec = SidecarSpec::new("printer", sh_bin(), vec!["-c".into(), script]);
     let cfg = SupervisorConfig::new(spec, &crash_file);
     let sup = Supervisor::start(cfg).expect("supervisor starts");
@@ -1093,7 +1095,7 @@ fn ring_is_bounded_and_drops_oldest() {
     let crash_file = tmp.path("crashes.jsonl");
     let over = LOG_RING_CAPACITY + 50;
     // Print `over` numbered lines to stdout, then stay alive.
-    let script = format!("for i in $(seq 1 {over}); do echo LINE_$i; done; sleep 60");
+    let script = format!("for i in $(seq 1 {over}); do echo LINE_$i; done; exec sleep 60");
     let spec = SidecarSpec::new("chatty", sh_bin(), vec!["-c".into(), script]);
     let cfg = SupervisorConfig::new(spec, &crash_file);
     let sup = Supervisor::start(cfg).expect("supervisor starts");
@@ -1134,7 +1136,7 @@ fn ring_survives_restart() {
     let crash_file = tmp.path("crashes.jsonl");
     // Each run prints a UNIQUE marker so we can tell the runs apart. The marker
     // includes the pid so run-1 and run-2 differ.
-    let script = "echo RUN_MARKER_$$; sleep 60".to_string();
+    let script = "echo RUN_MARKER_$$; exec sleep 60".to_string();
     let spec = SidecarSpec::new("restarter", sh_bin(), vec!["-c".into(), script]);
     let mut cfg = SupervisorConfig::new(spec, &crash_file);
     cfg.backoff = BackoffPolicy {
