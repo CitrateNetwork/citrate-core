@@ -31,7 +31,7 @@ import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
-import { publishWebSettings, subscribeWebSettings } from "../../agent/webSettingsSync";
+import { publishWebSettings, subscribeWebSettings, withWebSettingsLock } from "../../agent/webSettingsSync";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -278,10 +278,14 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
       try {
         // Field-specific: re-read what is saved now (another form may have changed it since this
         // panel loaded), change only searchEnabled, and show what core answers.
-        const fresh = await loadWebSettings(io.web);
-        noteRunning("webSearch", fresh.settings.searchEnabled);
-        const st = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
-        publishWebSettings(st, me);
+        // One write at a time with the Web search form (webSettingsSync.ts).
+        const st = await withWebSettingsLock(async () => {
+          const fresh = await loadWebSettings(io.web);
+          noteRunning("webSearch", fresh.settings.searchEnabled);
+          const saved = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
+          publishWebSettings(saved, me);
+          return saved;
+        });
         setWeb(st);
         setWebErr(st.loadError ?? null);
       } catch (e) {

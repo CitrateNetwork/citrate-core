@@ -6,7 +6,11 @@
 // publishes what core answered; every other mounted view adopts it, so none keeps showing (or
 // diffing against) a snapshot that is no longer what core has saved.
 //
-// In-memory and synchronous: nothing persists here, core is still the only store.
+// Writes are serialized: each writer runs its re-read, field change, write and announcement inside
+// `withWebSettingsLock`, so two writers can never both read before either writes (which would let
+// the second write put back a field the first had just changed).
+//
+// In-memory: nothing persists here, core is still the only store.
 import type { HermesWebStatus } from "./webSearch";
 
 export type WebSettingsListener = (status: HermesWebStatus, source: symbol) => void;
@@ -24,4 +28,17 @@ export function subscribeWebSettings(listener: WebSettingsListener): () => void 
   return () => {
     listeners.delete(listener);
   };
+}
+
+// The tail of the write queue. Each write waits for the previous one to settle (fulfilled or not).
+let tail: Promise<unknown> = Promise.resolve();
+
+/**
+ * Run one read-modify-write of the saved web settings with no other write in between. Writes run
+ * in the order they were asked for. A failed write releases the lock and rejects to its caller.
+ */
+export function withWebSettingsLock<T>(write: () => Promise<T>): Promise<T> {
+  const run = tail.then(write, write);
+  tail = run.catch(() => undefined);
+  return run;
 }

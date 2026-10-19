@@ -27,8 +27,15 @@ vi.mock("../bridge/tauri/invoke", async (importOriginal) => {
   return {
     ...real,
     invoke: async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "hermes_web_settings_get") return status(saved.settings);
+      // Like core over IPC, each call answers on a later turn: a read returns what was saved when
+      // it was made, a write lands when it is answered. Two writers can therefore interleave.
+      if (cmd === "hermes_web_settings_get") {
+        const snapshot = saved.settings;
+        await new Promise((r) => setTimeout(r, 0));
+        return status(snapshot);
+      }
       if (cmd === "hermes_web_settings_set") {
+        await new Promise((r) => setTimeout(r, 0));
         saved.settings = (args as { settings: HermesWebSettings }).settings;
         return status(saved.settings);
       }
@@ -179,5 +186,37 @@ describe("Hermes › Controls with the Controls panel and the Web search form mo
     expect(hint).toContain("no SearXNG program is set yet");
     expect(hint).toContain("Hermes › Controls › Web search");
     expect(hint).not.toContain("Settings ›");
+  });
+
+  // Review finding on #343 (P2): each writer re-read before writing, but the two could run at the
+  // same time, so both read before either wrote and the second write put back a stale field.
+  it("the form saves the browser off while the top switch turns search on, at the same time: both changes survive", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, browserEnabled: true, searchEnabled: false };
+    await mountControls();
+    await click("browser-toggle"); // form draft: browser off (not saved yet)
+    // Save the form and toggle the top switch in the same turn, before either has answered.
+    await act(async () => {
+      $("web-save")?.click();
+      $("toggle-web-search")?.click();
+    });
+    await flush();
+    expect(saved.settings.browserEnabled).toBe(false);
+    expect(saved.settings.searchEnabled).toBe(true);
+    // And both views show what core saved.
+    expect($("browser-toggle")?.checked).toBe(false);
+    expect($("web-search-toggle")?.checked).toBe(true);
+    expect($("toggle-web-search")?.checked).toBe(true);
+  });
+
+  it("the same race in the other order (top switch first, then the form): both changes survive", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, browserEnabled: true, searchEnabled: false };
+    await mountControls();
+    await click("browser-toggle");
+    await act(async () => {
+      $("toggle-web-search")?.click();
+      $("web-save")?.click();
+    });
+    await flush();
+    expect(saved.settings).toEqual({ ...DEFAULT_WEB_SETTINGS, browserEnabled: false, searchEnabled: true });
   });
 });
