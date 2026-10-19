@@ -1378,3 +1378,23 @@ fn rollback_fails_closed_when_the_rename_fails() {
     assert!(!mem.exists(), "no empty store was created");
     assert!(root.join("memory.before-restore-20261019-120000/store.bge.memdag/CURRENT").exists());
 }
+
+/// N2 tripwire: the swap and the rollback name the kept store the same way (one constant), so a
+/// renamed folder can never be missed by the startup rollback.
+#[test]
+fn swap_and_rollback_share_the_before_restore_name() {
+    let src = include_str!("storage_backup.rs");
+    let body = |name: &str| -> String {
+        let start = src.find(&format!("fn {name}(")).expect("fn exists");
+        let rest = &src[start..];
+        rest[..rest.find("\n}\n").expect("fn ends")].to_string()
+    };
+    for f in ["swap_in_memory", "recover_interrupted_restore"] {
+        let b = body(f);
+        assert!(b.contains("BEFORE_RESTORE_INFIX"), "{f} uses the shared name");
+        assert!(!b.contains("\".before-restore-"), "{f} has no literal kept-store name");
+    }
+    // The memory manager runs the rollback at init and before every start.
+    let memory = include_str!("memory.rs");
+    assert!(memory.matches("recover_interrupted_restore()").count() >= 2);
+}

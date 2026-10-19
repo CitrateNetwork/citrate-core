@@ -110,10 +110,16 @@ Not backed up: the daemon socket (`memdag.sock`) and the crash log.
 
 - The memory swap is two renames: the live `memory/` dir moves to `memory.before-restore-<time>`,
   then the staging dir becomes `memory/`. If the app is killed (or the machine loses power)
-  between them, there is no live `memory/` dir; the previous store is intact in
-  `memory.before-restore-<time>` and the restored copy in `memory.restore-staging-<time>`. There
-  is no automatic recovery yet: rename `memory.before-restore-<time>` back to `memory/` by hand
-  (with the app quit) to get the previous store back. This existed before K4's follow-ups.
+  between them, there is no live `memory/` dir for a moment. **This is rolled back
+  automatically**: when the memory manager is created (app start) and again before every daemon
+  start, if `memory/` is missing and a `memory.before-restore-<time>` folder exists, the newest one
+  (by its time stamp, then its `-n` suffix as a number) is renamed back to `memory/`. Other
+  `before-restore` folders and any `memory.restore-staging-<time>` folder (the half-staged copy)
+  are left untouched for inspection. A present `memory/` is never touched. If the rename fails,
+  the daemon refuses to start with an error naming the folder, so no empty store is created in
+  its place; move the folder back by hand (with the app quit) and start again. Symlinks or files
+  with a `before-restore` name are never used. The restored copy that was being swapped in is not
+  promoted; run the restore again.
 - Backups are not signed (see above).
 
 ## 4. Storage processes and the supervisor

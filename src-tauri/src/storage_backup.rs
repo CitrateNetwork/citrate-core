@@ -1571,7 +1571,7 @@ fn swap_in_memory(
     };
 
     let kept = if mem_dir.exists() {
-        let kept = unique_sibling(parent, &format!("{base}.before-restore-{stamp}"));
+        let kept = unique_sibling(parent, &format!("{base}{BEFORE_RESTORE_INFIX}{stamp}"));
         if let Err(e) = std::fs::rename(mem_dir, &kept) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(io_err("move the current memory store aside", e));
@@ -1590,10 +1590,67 @@ fn swap_in_memory(
     Ok((n, kept))
 }
 
-/// N2: roll back a memory swap interrupted between its two renames (`mem_dir` missing, a
-/// `<base>.before-restore-*` sibling present). STD red-step stub: keeps the old behaviour.
-pub(crate) fn recover_interrupted_restore(_mem_dir: &Path) -> Result<Option<PathBuf>, String> {
-    Ok(None)
+/// The infix of the kept previous store (`<base>.before-restore-<stamp>[-n]`).
+const BEFORE_RESTORE_INFIX: &str = ".before-restore-";
+
+/// Sort key of a kept-store name's suffix `<YYYYMMDD-HHMMSS>[-n]`: the stamp, then `n` as a
+/// number (so `-10` is newer than `-2`). `None` for anything else.
+fn before_restore_key(suffix: &str) -> Option<(String, u32)> {
+    let (stamp, n) = match suffix.get(15..) {
+        Some("") => (suffix, 1),
+        Some(rest) => (
+            suffix.get(..15)?,
+            rest.strip_prefix('-')?.parse::<u32>().ok()?,
+        ),
+        None => return None,
+    };
+    let ok = stamp.len() == 15
+        && stamp.as_bytes()[8] == b'-'
+        && stamp
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| i == 8 || b.is_ascii_digit());
+    ok.then(|| (stamp.to_string(), n))
+}
+
+/// N2: roll back a memory swap interrupted between its two renames. When `mem_dir` is missing and
+/// a `<base>.before-restore-<stamp>` sibling exists (a real directory, never a symlink or file),
+/// the newest one is renamed back to `mem_dir` and returned. A present `mem_dir` is never touched,
+/// other kept folders and any `<base>.restore-staging-*` folder are left as they are, and a failed
+/// rename is an error (the caller refuses to start, so no empty store is created in its place).
+pub(crate) fn recover_interrupted_restore(mem_dir: &Path) -> Result<Option<PathBuf>, String> {
+    if std::fs::symlink_metadata(mem_dir).is_ok() {
+        return Ok(None);
+    }
+    let (Some(parent), Some(base)) = (mem_dir.parent(), mem_dir.file_name()) else {
+        return Ok(None);
+    };
+    let prefix = format!("{}{BEFORE_RESTORE_INFIX}", base.to_string_lossy());
+    let Ok(rd) = std::fs::read_dir(parent) else {
+        return Ok(None); // no data root yet (fresh install)
+    };
+    let newest = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            let key = before_restore_key(name.strip_prefix(&prefix)?)?;
+            Some((key, e.path()))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, p)| p);
+    let Some(kept) = newest else {
+        return Ok(None);
+    };
+    std::fs::rename(&kept, mem_dir).map_err(|e| {
+        format!(
+            "a memory restore was interrupted, and moving the previous store {} back to {} failed: \
+             {e}. Nothing was changed and the memory daemon will not start until it is moved back",
+            kept.display(),
+            mem_dir.display()
+        )
+    })?;
+    Ok(Some(kept))
 }
 
 /// `parent/name`, or `parent/name-2`, `-3`, … when it exists.
