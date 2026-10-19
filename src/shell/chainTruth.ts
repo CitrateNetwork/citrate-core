@@ -37,6 +37,46 @@ export interface ChainReads {
   minStakeWei(): Promise<bigint>;
   /** Seconds per block, measured over the last BLOCK_TIME_WINDOW blocks; null when it can't be. */
   blockSeconds(): Promise<number | null>;
+  /** The distinct `proposerPubkey`s of the last PRODUCER_SAMPLE_BLOCKS blocks (one JSON-RPC batch). */
+  producerSample(): Promise<ProducerSample>;
+}
+
+/**
+ * How many recent blocks the producer sample spans. Contract §2 names "distinct proposerPubkey over
+ * the last 1,000 blocks"; the chain team ruled a 100-block sample (one JSON-RPC batch) is the
+ * source for now, labelled with its window. At ~2 s blocks that is about 3 minutes, so a key that
+ * is not seen is "not seen producing in the last 100 blocks", never "not producing".
+ */
+export const PRODUCER_SAMPLE_BLOCKS = 100;
+
+/** A producer sample: the head it was read at, how many blocks came back, the distinct keys. */
+export interface ProducerSample {
+  head: number;
+  window: number;
+  proposers: string[];
+}
+
+/** The window label every producing figure carries. */
+export const PRODUCER_WINDOW_LABEL = `sampled over the last ${PRODUCER_SAMPLE_BLOCKS} blocks`;
+
+/** Distinct, lower-cased `proposerPubkey`s of a list of blocks, in first-seen order. */
+export function distinctProposers(blocks: unknown[]): string[] {
+  const seen: string[] = [];
+  for (const b of blocks) {
+    const k = b && typeof b === "object" ? (b as { proposerPubkey?: unknown }).proposerPubkey : undefined;
+    if (typeof k !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(k)) continue;
+    const key = k.toLowerCase();
+    if (!seen.includes(key)) seen.push(key);
+  }
+  return seen;
+}
+
+export type ProducingWord = "Producing blocks" | `Not seen producing in the last ${typeof PRODUCER_SAMPLE_BLOCKS} blocks`;
+
+/** "Producing blocks" only when this node's key is in the sample (contract §1). null = unknown. */
+export function producingWord(sample: ProducerSample | null, pubkey: string | null): ProducingWord | null {
+  if (!sample || !pubkey) return null;
+  return sample.proposers.includes(pubkey.toLowerCase()) ? "Producing blocks" : `Not seen producing in the last ${PRODUCER_SAMPLE_BLOCKS} blocks`;
 }
 
 interface BlockStamp {
@@ -68,6 +108,26 @@ export function createChainReads(): ChainReads {
       const older = await client.getBlock({ blockNumber: latest.number - BLOCK_TIME_WINDOW });
       if (older.number == null) return null;
       return measuredBlockSeconds({ number: latest.number, timestamp: latest.timestamp }, { number: older.number, timestamp: older.timestamp });
+    },
+    async producerSample() {
+      const head = await client.getBlockNumber();
+      const n = BigInt(PRODUCER_SAMPLE_BLOCKS);
+      const from = head >= n - 1n ? head - (n - 1n) : 0n;
+      const batch = [];
+      for (let b = from, id = 0; b <= head; b++, id++) {
+        batch.push({ jsonrpc: "2.0", id, method: "eth_getBlockByNumber", params: ["0x" + b.toString(16), false] });
+      }
+      const res = await fetch(citrate.rpcUrls.default.http[0], {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(batch),
+      });
+      if (!res.ok) throw new Error("rpc.citrate.ai answered " + res.status);
+      const body: unknown = await res.json();
+      if (!Array.isArray(body)) throw new Error("rpc.citrate.ai did not answer the batch");
+      const blocks = body.map((r) => (r && typeof r === "object" ? (r as { result?: unknown }).result : null)).filter(Boolean);
+      if (blocks.length === 0) throw new Error("no blocks came back");
+      return { head: Number(head), window: blocks.length, proposers: distinctProposers(blocks) };
     },
   };
 }

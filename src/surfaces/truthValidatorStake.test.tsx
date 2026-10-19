@@ -305,3 +305,129 @@ describe("V9 — captions name the real source and the address book", () => {
     expect(html).toContain(book.addresses.CitrateMemberSBT.slice(0, 6));
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Review follow-up on #348 (chain team).
+// ---------------------------------------------------------------------------------------------
+import { readFileSync } from "node:fs";
+import { Dashboard as Dash } from "./Dashboard";
+import { distinctProposers, producingWord, PRODUCER_SAMPLE_BLOCKS } from "../shell/chainTruth";
+import { AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "../agent/harness";
+import { WIDGET_TEMPLATES } from "../widgets/gallery";
+import { greeting, PERSONAS } from "../shell/state";
+
+/** Quoted string/template literals in a source file, comments stripped. */
+function stringLiterals(path: string): string {
+  const src = readFileSync(path, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !/^\s*\/\//.test(l))
+    .map((l) => l.replace(/\s\/\/ .*$/, ""))
+    .join("\n");
+  return (src.match(/"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`|'(?:[^'\\\n]|\\.)*'/g) || []).join("\n");
+}
+
+describe("#348 review — §1 Rewards words", () => {
+  it("the Node tab is 'Rewards', not 'Earning'", () => {
+    const html = renderToStaticMarkup(<Node store={stub} s={member()} />);
+    expect(html).toContain(">Rewards<");
+    expect(html).not.toContain(">Earning<");
+  });
+
+  it("no 'earnings' / 'keep accruing' in agent prompts, tools, suggestions, greeting or toasts", () => {
+    expect(AGENT_SYSTEM_PROMPT.toLowerCase()).not.toMatch(/\bearning/);
+    expect(JSON.stringify(AGENT_TOOLS).toLowerCase()).not.toContain("earnings");
+    expect(greeting(PERSONAS.p2).text.toLowerCase()).not.toContain("earnings");
+    for (const f of ["src/components/AgentChat.tsx", "src/shell/store.ts", "src/agent/harness.ts", "src/shell/state.ts"]) {
+      const lits = stringLiterals(f).toLowerCase();
+      expect(lits, f).not.toMatch(/\bearnings\b/);
+      expect(lits, f).not.toContain("keep accruing");
+    }
+  });
+});
+
+describe("#348 review — widget unknowns", () => {
+  async function runWidget(key: string, data: unknown): Promise<string> {
+    const t = WIDGET_TEMPLATES.find((w) => w.key === key)!;
+    const host = document.createElement("div");
+    host.innerHTML = t.html.replace(/<script>[\s\S]*<\/script>/, "");
+    const script = /<script>([\s\S]*)<\/script>/.exec(t.html)![1];
+    const doc = { getElementById: (id: string) => host.querySelector("#" + id), createElement: (n: string) => document.createElement(n) };
+    vi.useFakeTimers();
+    new Function("citrate", "document", script)({ query: () => Promise.resolve(data) }, doc);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.clearAllTimers();
+    return host.textContent || "";
+  }
+  it("the SALT widget shows 'claimable —' for an unread claimable, never 'claimable 0'", async () => {
+    const t = await runWidget("salt-balance", { liquidSalt: 1.5, stakedSalt: 0, claimableSalt: null });
+    expect(t).toContain("claimable —");
+    expect(t).not.toContain("claimable 0");
+  });
+});
+
+describe("#348 review — the activation ceremony states the bond principal, not 32,000", () => {
+  it("labels the review from the grant read", async () => {
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    store.setState({ walletReview: null, s5StakeWei: wei(33_500) });
+    vi.spyOn(bridge.node, "registerValidator").mockResolvedValue({ id: "c1", decoded: { action: "MemberBond.activate", cost: "0", destination: "0x" } } as never);
+    await store.activateValidator();
+    const r = store.state.walletReview!;
+    expect(r.label).not.toContain("32,000");
+    expect(String(r.spendSummary)).toContain("33,500");
+    store.setState({ walletReview: null });
+  });
+});
+
+describe("#348 review — 'Producing blocks' from a sampled proposer set", () => {
+  const ME = "0x" + "11".repeat(32);
+  const OTHER = "0x" + "22".repeat(32);
+
+  it("collects the distinct proposer keys of the sampled blocks", () => {
+    expect(distinctProposers([{ proposerPubkey: OTHER }, { proposerPubkey: OTHER.toUpperCase().replace("0X", "0x") }, { proposerPubkey: ME }, {}, null])).toEqual([OTHER, ME]);
+    expect(PRODUCER_SAMPLE_BLOCKS).toBe(100);
+  });
+
+  it("says 'Producing blocks' only when this node's key is in the sample", () => {
+    const sample = { head: 500_000, window: 100, proposers: [OTHER] };
+    expect(producingWord(sample, OTHER)).toBe("Producing blocks");
+    expect(producingWord(sample, ME)).toBe("Not seen producing in the last 100 blocks");
+    expect(producingWord(null, ME)).toBeNull();
+    expect(producingWord(sample, null)).toBeNull();
+  });
+
+  it("samples at most once per 5 minutes", async () => {
+    const producerSample = vi.fn(async () => ({ head: 500_000, window: 100, proposers: [OTHER] }));
+    (store as unknown as { chainReads: Partial<ChainReads> }).chainReads = { producerSample } as never;
+    (store as unknown as { lastProducersAt: number }).lastProducersAt = 0;
+    await store.refreshProducers();
+    await store.refreshProducers();
+    expect(producerSample).toHaveBeenCalledTimes(1);
+    expect(store.state.producers?.proposers).toEqual([OTHER]);
+  });
+
+  it("a failed sample is unavailable with a reason, never 'not producing'", async () => {
+    (store as unknown as { chainReads: Partial<ChainReads> }).chainReads = { producerSample: async () => { throw new Error("rpc 503"); } } as never;
+    (store as unknown as { lastProducersAt: number }).lastProducersAt = 0;
+    await store.refreshProducers();
+    expect(store.state.producers).toBeNull();
+    expect(store.state.producersError).toContain("rpc 503");
+    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: ME, producers: null, producersError: "rpc 503" })} />);
+    expect(html).toContain("— · producer sample unavailable: rpc 503");
+    expect(html.toLowerCase()).not.toContain("not producing");
+  });
+
+  it("the Node card shows the word and names the window", () => {
+    const seen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: OTHER, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
+    expect(seen).toContain("Producing blocks");
+    expect(seen).toContain("sampled over the last 100 blocks");
+    const unseen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: ME, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
+    expect(unseen).toContain("Not seen producing in the last 100 blocks");
+    expect(unseen).not.toContain(">Producing blocks<");
+  });
+
+  it("the Dashboard shows the producing count next to the active count", () => {
+    const html = renderToStaticMarkup(<Dash store={stub} s={member({ producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
+    expect(html).toContain("1 producing · sampled over the last 100 blocks");
+  });
+});

@@ -372,7 +372,7 @@ export interface AgentDomain {
    * a settled-claim hash (Rule 1). The Tauri impl invokes the `user_claim` command;
    * the sim impl is guarded out of packaged builds and never claims for real.
    */
-  claim(): Promise<ClaimResult>;
+  claim(opts?: { validator: boolean }): Promise<ClaimResult>;
 }
 
 // The citrate-memories mcp_serve daemon under the SidecarSupervisor (CORE-C3).

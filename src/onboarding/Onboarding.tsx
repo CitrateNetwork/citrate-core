@@ -961,7 +961,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced — not yet a validator</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {s.hasGrant ? "Bond locked · not staked" : "Not a validator"}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 stake your membership bond to join the active set at the next epoch snapshot
               </div>

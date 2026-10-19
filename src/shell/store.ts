@@ -21,6 +21,7 @@ import {
   PERSIST_KEYS,
   RANK,
   STORAGE_KEY,
+  fmtSaltFromWei,
   freshState,
   greeting,
   loadState,
@@ -605,6 +606,8 @@ export class Store {
   private lastActiveReadAt = 0;
   /** C1-V V4 — this node's validator key (`proposer.key`), cached once read. */
   private validatorPubkey: `0x${string}` | null = null;
+  /** C1-V — when the producer set was last sampled (refreshed at most every 5 minutes). */
+  private lastProducersAt = 0;
   /** C1-V — the catalogued public-RPC reads (UI truth contract §2). Replaced in tests. */
   chainReads: ChainReads = createChainReads();
   private nodeWatchdog: ReturnType<typeof setInterval> | null = null;
@@ -1320,6 +1323,7 @@ export class Store {
         const v = await bridge.node.validatorEarnings();
         if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
         this.validatorPubkey = v.proposerPubkey as `0x${string}`;
+        this.setState({ validatorPubkey: this.validatorPubkey.toLowerCase() });
       }
       return await this.chainReads.isActive(this.validatorPubkey);
     } catch {
@@ -1333,6 +1337,23 @@ export class Store {
    * `ValidatorRegistry.minStake()`. Each is read independently; a failed read leaves null
    * (shown as "—"), never a constant.
    */
+  /**
+   * C1-V — the producer set: distinct `proposerPubkey` over the last 100 blocks, read in one
+   * JSON-RPC batch from rpc.citrate.ai (chain-team ruling on contract §2), at most every 5 minutes.
+   * A failed sample clears the set and records why; the surfaces show "—" plus that reason.
+   */
+  async refreshProducers(): Promise<void> {
+    const PRODUCERS_READ_MS = 5 * 60_000;
+    if (this.lastProducersAt && Date.now() - this.lastProducersAt < PRODUCERS_READ_MS) return;
+    this.lastProducersAt = Date.now();
+    try {
+      const producers = await this.chainReads.producerSample();
+      this.setState({ producers, producersError: null });
+    } catch (err) {
+      this.setState({ producers: null, producersError: String((err as Error).message ?? err) });
+    }
+  }
+
   async refreshChainParams(): Promise<void> {
     const [secs, min] = await Promise.allSettled([this.chainReads.blockSeconds(), this.chainReads.minStakeWei()]);
     const patch: Partial<AppState> = {};
@@ -1409,6 +1430,7 @@ export class Store {
       // registered stake there is nothing to ask: not a validator. Otherwise read it at most every
       // ACTIVE_READ_MS (the active set only changes at epoch snapshots, every 1,000 blocks).
       const validatorActive = await this.readValidatorActive(bonded, st.state === "running");
+      void this.refreshProducers();
       // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
       // respawns the node with `--mine --coinbase`. So an ALREADY-BONDED validator
       // came back from every app restart as a plain follower: synced, healthy, and
@@ -4261,22 +4283,24 @@ export class Store {
         : this.state.s2 === "failed"
           ? "Your last verification did not pass."
           : "Verify your identity to withdraw.";
-    this.toast(action + " requires identity verification. " + detail + " Your earnings keep accruing in the meantime.");
+    this.toast(action + " requires identity verification. " + detail);
     return false;
   }
 
   async claimRewards(): Promise<void> {
     // Payout gate: KYC is required to take SALT out (participation is not gated).
-    if (!(await this.assertPayoutKyc("Claiming earnings"))) return;
+    if (!(await this.assertPayoutKyc("Claiming rewards"))) return;
     let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
     try {
-      res = await bridge.agent.claim();
+      // C1-V review: a validator's claim pre-checks the same rewardsOf.claimableNow the
+      // "Claimable now" figure shows (the Rust user_claim takes the validator branch then).
+      res = await bridge.agent.claim({ validator: this.state.bondedStake > 0 });
     } catch (err) {
       this.toast("Claim unavailable — " + String((err as Error).message ?? err));
       return;
     }
     if (res.kind === "nothing") {
-      this.toast("No claimable earnings — nothing to claim.");
+      this.toast("No validator rewards claimable now — nothing to claim.");
       return;
     }
     // Q-E.1 (@rule8, P0) — a REAL pending ceremony exists (res.view). STOP: surface
@@ -4421,8 +4445,8 @@ export class Store {
    * bond CLONE), then STOPS and surfaces the decoded tx for human approval. The tx is
    * sent from the member EOA to the clone and carries NO value — the 32k already lives
    * in the clone. On approval it broadcasts (B1.4): the clone forwards its principal
-   * into ValidatorRegistry, the node enters the active set, and it begins producing +
-   * earning the subsidy. Only meaningful once the node is synced + its proposer.key is
+   * into ValidatorRegistry, and the validator joins the active set at the next epoch
+   * snapshot. Only meaningful once the node is synced + its proposer.key is
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
@@ -4461,7 +4485,10 @@ export class Store {
       this.toast("Validator activation unavailable — " + String((err as Error).message ?? err));
       return false;
     }
-    this.openWalletReview("stake", "Activate validator · bond 32,000 SALT", view, "32,000 SALT validator bond");
+    // C1-V review: no hard-coded 32,000. The activation stakes the bond's principal (contract §2
+    // Bond principal), which the grant read folds as s5StakeWei.
+    const principal = this.state.s5StakeWei ? fmtSaltFromWei(this.state.s5StakeWei) + " SALT bond principal" : "your bond principal (not read yet)";
+    this.openWalletReview("stake", "Activate validator · stake your bond", view, principal + " · no value sent");
     return true;
   }
 

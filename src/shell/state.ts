@@ -427,6 +427,12 @@ export interface AppState {
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
   minStakeWei: string | null;
+  /** C1-V — this node's validator key (`proposer.key`), once read. Observed, never persisted. */
+  validatorPubkey: string | null;
+  /** C1-V — distinct proposer keys sampled over the last 100 blocks (chainTruth); null = not sampled. */
+  producers: { head: number; window: number; proposers: string[] } | null;
+  /** Why the last producer sample failed, shown with "—". */
+  producersError: string | null;
   claimable: number;
   /**
    * CORE-C2 — where `claimable` currently comes from. "chain" once the real
@@ -712,7 +718,7 @@ function greeting(P: Persona): ChatMsg {
     who: "Agent",
     text:
       hello +
-      "I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, earnings, or the network.",
+      "I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, validator rewards, or the network.",
     chips: [],
     streaming: false,
   };
@@ -792,6 +798,9 @@ export function freshState(pid: string): AppState {
     validatorActive: null,
     blockSecs: null,
     minStakeWei: null,
+    validatorPubkey: null,
+    producers: null,
+    producersError: null,
     claimable: 0,
     earnSource: "sim",
     activity: [],

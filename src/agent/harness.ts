@@ -206,7 +206,7 @@ export const AGENT_SYSTEM_PROMPT = [
   "Never fabricate numbers, balances, heights, model names, or results — read them through tools. If a tool returns nothing or errors, say so plainly; never invent a value or claim a write landed before it was approved.",
   "",
   "# What you can help with (your capabilities on this node)",
-  "- Node & staking: read the node's sync/validator status, height, peers; the staking position and earnings/claimable; the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
+  "- Node & staking: read the node's sync/validator status, height, peers; the staking position and validator rewards (total and claimable now, from ValidatorRegistry.rewardsOf); the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
   "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-click self-admit link (the invitee joins in a click, no approval needed, even if the owner is offline), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
   "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
   "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one.",
@@ -443,7 +443,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "staking_status",
-      description: "Read the member's real position: staked SALT, liquid balance, claimable rewards, and wallet address. Read-only, from the local node + chain. Never fabricate — call this for any balance/earnings question.",
+      description: "Read the member's real position: staked SALT, liquid balance, claimable rewards, and wallet address. Read-only, from the local node + chain. Never fabricate — call this for any balance or rewards question.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -996,13 +996,13 @@ function routeIntent(t: string): Plan {
   }
   if (has("earn", "reward", "claim", "income", "made today")) {
     return {
-      toolCalls: [tc("chain_read", { query: "earnings.claimable" })],
+      toolCalls: [tc("chain_read", { query: "rewards.claimable" })],
       // C1-V V8: only the on-chain rewardsOf read, named as rewards for producing blocks. No
       // per-day figure (no source exists) and no pinning/compute split (no contract exposes one).
       compose: (c) =>
         c.rewardsTotal == null || c.claimable == null
           ? "I have no validator rewards reading for you: your node is not a registered validator, or the read failed. Validator rewards are paid only for producing blocks, and come from ValidatorRegistry.rewardsOf."
-          : `Validator rewards (ValidatorRegistry.rewardsOf): **${c.rewardsTotal.toFixed(2)} SALT** in total, **${c.claimable.toFixed(2)} SALT** claimable now, and the rest is maturing. Rewards are paid for producing blocks. Claiming signs a claimRewards() transaction through the ceremony. Want me to take you to the earnings view?`,
+          : `Validator rewards (ValidatorRegistry.rewardsOf): **${c.rewardsTotal.toFixed(2)} SALT** in total, **${c.claimable.toFixed(2)} SALT** claimable now, and the rest is maturing. Rewards are paid for producing blocks. Claiming signs a claimRewards() transaction through the ceremony. Want me to take you to Node > Rewards?`,
     };
   }
   if (has("balance", "wallet", "how much salt")) {
@@ -1075,7 +1075,7 @@ function routeIntent(t: string): Plan {
   return {
     toolCalls: [],
     compose: (c) =>
-      `I'm your member agent — grounded in your node, wallet, and memory graph. I can read your staking position, break down earnings, recall or (with your approval) write memory, link docs at your tier, and move you around the app. Your node is ${c.nodeState}${c.height > 0 ? ` at height ${fmt(c.height)}` : ""}. What do you need?`,
+      `I'm your member agent — grounded in your node, wallet, and memory graph. I can read your staking position and validator rewards, recall or (with your approval) write memory, link docs at your tier, and move you around the app. Your node is ${c.nodeState}${c.height > 0 ? ` at height ${fmt(c.height)}` : ""}. What do you need?`,
   };
 }
 

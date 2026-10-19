@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { saltFromWei, validatorWord } from "../shell/chainTruth";
+import { PRODUCER_WINDOW_LABEL, producingWord, saltFromWei, validatorWord } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
@@ -52,6 +52,10 @@ const nodeColors: Record<string, string> = {
 export function Node({ store, s }: SurfaceProps) {
   // When the Earning tab is open, read the validator rewards from
   // ValidatorRegistry.rewardsOf(pubkey) (C1-V V8; UI truth contract §2).
+  // The producer sample (cached 5 min in the store) behind the "Producing" row.
+  useEffect(() => {
+    void store.refreshProducers();
+  }, [store]);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -60,7 +64,7 @@ export function Node({ store, s }: SurfaceProps) {
   // ----- header / tabs -----
   const ntabs: [string, string][] = [
     ["ops", "Operations"],
-    ["earn", "Earning"],
+    ["earn", "Rewards"],
     ["pin", "Pinning"],
   ];
   const nodeStateColor = nodeColors[s.node];
@@ -107,20 +111,24 @@ export function Node({ store, s }: SurfaceProps) {
   // SALT was told they were not a validator (observed 2026-08-06, right after a
   // successful MemberBond.activate).
   //
-  // BLOCKS PROPOSED still has NO source — no RPC exposes a per-proposer count — so
-  // a registered validator honestly reads "—" rather than a fabricated tally. What
-  // changes is that we no longer DENY the registration we can actually see.
+  // PRODUCING (C1-V review): "Producing blocks" only when this node's proposer key is among the
+  // distinct proposerPubkeys sampled over the last 100 blocks (contract §1, §2; chain-team ruling
+  // on the window). Not seen → "Not seen producing in the last 100 blocks", never "not producing".
+  // No sample → "—" plus the reason. There is still no per-proposer COUNT, so none is shown.
   const isRegisteredValidator = s.bondedStake > 0;
   // C1-V V4: the validator word comes from the registry only (stakeOf + isActive), per the UI
   // truth contract §1. null = registered stake but isActive not read yet → "—".
   const vWord = validatorWord(s.bondedStake, s.validatorActive, s.hasGrant);
-  const blocksProposedStr = TAURI
-    ? isRegisteredValidator
-      ? "—"
-      : "not a registered validator"
-    : s.node === "off"
-      ? "—"
-      : fmtI(s.blocksProposed);
+  const pWord = producingWord(s.producers, s.validatorPubkey);
+  const producingStr = !isRegisteredValidator
+    ? "— · not a registered validator"
+    : pWord
+      ? pWord
+      : s.producersError
+        ? "— · producer sample unavailable: " + s.producersError
+        : !s.validatorPubkey
+          ? "— · validator key not read yet"
+          : "— · not sampled yet";
   const restartsStr = String(s.crashes.length);
 
   // ----- earning -----
@@ -365,8 +373,11 @@ export function Node({ store, s }: SurfaceProps) {
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Blocks proposed</span>
-                  <span className="mono tabular" style={{ fontSize: 12 }}>{blocksProposedStr}</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Producing</span>
+                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title="distinct proposerPubkey in the last 100 blocks · rpc.citrate.ai">
+                    {producingStr}
+                    {pWord && <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{PRODUCER_WINDOW_LABEL}</span>}
+                  </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Supervised restarts</span>
