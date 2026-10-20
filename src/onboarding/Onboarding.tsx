@@ -538,9 +538,7 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
 export function S3({ store, s }: { store: Store; s: AppState }) {
   const [entOpen, setEntOpen] = useState(false);
   // C1-P: the price shown on this step is read from core-membership (cached in the store).
-  useEffect(() => {
-    void store.refreshMembershipPrice();
-  }, [store]);
+  useEffect(() => store.watchMembershipPrice(), [store]);
   // #31 (Luke 2026-09-11) — auto-open checkout once the wallet is LINKED, so the member
   // doesn't hunt for a second button. The "Link your wallet" click is the explicit intent
   // signal (or the wallet was linked in a prior session); once linked + idle on S3 we open

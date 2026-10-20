@@ -175,9 +175,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   const id = store.identity();
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   // C1-P: the plan line's price is read from core-membership (cached in the store).
-  useEffect(() => {
-    if (s.sSec === "billing") void store.refreshMembershipPrice();
-  }, [s.sSec, store]);
+  useEffect(() => (s.sSec === "billing" ? store.watchMembershipPrice() : undefined), [s.sSec, store]);
 
   // ---------- CORE-AI1 (@rule8) — live provider status (keyring-sealed) ----------
   // The provider KEY is never in AppState — it lives sealed in the OS keyring. This

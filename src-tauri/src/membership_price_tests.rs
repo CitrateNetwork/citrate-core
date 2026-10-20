@@ -64,3 +64,46 @@ fn the_route_is_under_the_configured_membership_base() {
     assert_eq!(price_url("https://membership.citrate.ai"), "https://membership.citrate.ai/api/membership/price");
     assert_eq!(price_url("https://membership.citrate.ai/"), "https://membership.citrate.ai/api/membership/price");
 }
+
+// #379 review P2: the whole display string must match the declared currency's symbol and
+// minor-unit scale, and state unitAmount exactly.
+fn body(currency: &str, unit: u64, display: &str) -> String {
+    format!(r#"{{"currency":"{currency}","unitAmount":{unit},"interval":"year","displayAmount":"{display}"}}"#)
+}
+
+#[test]
+fn a_display_in_another_currency_is_refused() {
+    for (cur, unit, display) in [
+        ("usd", 4800, "€48"),
+        ("usd", 4800, "£48"),
+        ("eur", 4800, "$48"),
+        ("usd", 4800, "USD 48"),
+        ("usd", 4800, "48"),
+        ("usd", 4800, "$48 USD"),
+        ("usd", 4800, "$ 48"),
+        ("usd", 4800, "$48.0"),
+        ("usd", 4800, "$048"),
+        ("usd", 480000, "$4,8000"),
+        ("usd", 480000, "$48,00"),
+        ("jpy", 4800, "¥48.00"),
+        ("chf", 4800, "CHF48"),
+    ] {
+        assert!(parse_price(200, body(cur, unit, display).as_bytes()).is_err(), "{cur} {unit} {display}");
+    }
+}
+
+#[test]
+fn each_supported_currency_accepts_its_own_format() {
+    for (cur, unit, display) in [
+        ("usd", 4800, "$48"),
+        ("usd", 4800, "$48.00"),
+        ("usd", 124800, "$1,248.00"),
+        ("eur", 4800, "€48"),
+        ("gbp", 4850, "£48.50"),
+        ("jpy", 4800, "¥4,800"),
+        ("jpy", 4800, "¥4800"),
+    ] {
+        let p = parse_price(200, body(cur, unit, display).as_bytes()).unwrap_or_else(|e| panic!("{cur} {display}: {e}"));
+        assert_eq!(p.unit_amount, unit);
+    }
+}

@@ -82,9 +82,7 @@ const isRealDigest = (c: string | undefined): boolean =>
 export function Commissary({ store, s }: SurfaceProps) {
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   // C1-P: the join label's price is read from core-membership (cached in the store).
-  useEffect(() => {
-    void store.refreshMembershipPrice();
-  }, [store]);
+  useEffect(() => store.watchMembershipPrice(), [store]);
 
   // NO DOWNLOAD RUNS HERE YET (Rule 1, QA 2026-08-01).
   //

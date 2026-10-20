@@ -29,6 +29,7 @@ const PRICE: MembershipPrice = { currency: "usd", unitAmount: 4800, interval: "y
 const stub = {
   walletIsLinked: () => true,
   refreshMembershipPrice: () => {},
+  watchMembershipPrice: () => () => {},
   openExternal: async () => {},
   toast: () => {},
   identity: () => ({ sub: "sub-1", wallet: "0x" + "0".repeat(40) }),
@@ -39,6 +40,7 @@ function member(over: Partial<AppState> = {}): AppState {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   store.setState({ membershipPrice: null });
   (store as unknown as { lastPriceReadAt: number }).lastPriceReadAt = 0;
@@ -94,5 +96,48 @@ describe("C1-P — the membership price is read, never assumed", () => {
   it("the web build has no price source and never shows a number", async () => {
     const { createSimBridge } = await import("../bridge/sim");
     await expect(createSimBridge({} as never).membership.price()).rejects.toBeTruthy();
+  });
+});
+
+// #379 review P2: the price has a lifetime. It is re-read (or cleared) when the lifetime runs
+// out, even while a price surface stays open with no navigation.
+describe("C1-P — the read price expires", () => {
+  const LIFETIME_MS = 10 * 60_000;
+
+  it("a mounted price surface re-reads the price when its lifetime runs out", async () => {
+    vi.useFakeTimers();
+    const price = vi
+      .spyOn(bridge.membership, "price")
+      .mockResolvedValueOnce(PRICE)
+      .mockResolvedValueOnce({ ...PRICE, unitAmount: 6000, displayAmount: "$60" });
+    const stop = store.watchMembershipPrice();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.state.membershipPrice?.displayAmount).toBe("$48");
+    await vi.advanceTimersByTimeAsync(LIFETIME_MS + 1);
+    expect(price).toHaveBeenCalledTimes(2);
+    expect(store.state.membershipPrice?.displayAmount).toBe("$60");
+    stop();
+  });
+
+  it("a re-read that fails at expiry clears the price instead of keeping the old one", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(bridge.membership, "price").mockResolvedValueOnce(PRICE).mockRejectedValueOnce("membership price unavailable (HTTP 503)");
+    const stop = store.watchMembershipPrice();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.state.membershipPrice).toEqual(PRICE);
+    await vi.advanceTimersByTimeAsync(LIFETIME_MS + 1);
+    expect(store.state.membershipPrice).toBeNull();
+    stop();
+  });
+
+  it("with no price surface open, an expired price is cleared and not re-read", async () => {
+    vi.useFakeTimers();
+    const price = vi.spyOn(bridge.membership, "price").mockResolvedValue(PRICE);
+    const stop = store.watchMembershipPrice();
+    await vi.advanceTimersByTimeAsync(0);
+    stop();
+    await vi.advanceTimersByTimeAsync(LIFETIME_MS + 1);
+    expect(store.state.membershipPrice).toBeNull();
+    expect(price).toHaveBeenCalledTimes(1);
   });
 });

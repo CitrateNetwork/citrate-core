@@ -1424,6 +1424,15 @@ export class Store {
     }
   }
 
+  /**
+   * C1-P — a price surface (S3, Settings billing, the Commissary) is on screen: read the price
+   * now. Returns the unsubscribe the surface calls when it unmounts.
+   */
+  watchMembershipPrice(): () => void {
+    void this.refreshMembershipPrice();
+    return () => {};
+  }
+
   async refreshChainParams(): Promise<void> {
     const [secs, min] = await Promise.allSettled([this.chainReads.blockSeconds(), this.chainReads.minStakeWei()]);
     const patch: Partial<AppState> = {};
