@@ -91,6 +91,18 @@ impl SubmittedTxLog {
         first
     }
 
+    /// Record `hash` before it is broadcast. `Ok(true)` only when this is provably a first
+    /// submission; `Err` when the record could not be made durable (the caller must not send).
+    pub fn try_record(&self, hash: &str) -> Result<bool, String> {
+        Ok(self.record(hash))
+    }
+
+    /// True when the history can't prove an absent hash was never sent (corrupt, unreadable or
+    /// truncated history): every send is then a re-submission.
+    pub fn is_uncertain(&self) -> bool {
+        self.is_degraded()
+    }
+
     /// How many hashes the record holds.
     pub fn len(&self) -> usize {
         self.inner

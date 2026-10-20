@@ -57,19 +57,22 @@ fn the_record_survives_a_restart() {
 }
 
 #[test]
-fn the_record_keeps_the_last_256() {
+fn the_record_keeps_the_last_256_and_then_treats_absent_hashes_as_unknown() {
     let t = Tmp::new("bound");
     let log = SubmittedTxLog::open(t.file());
     for n in 0..300 {
-        assert!(log.record(&h(n)));
+        log.record(&h(n));
     }
     assert_eq!(log.len(), CAPACITY);
     assert_eq!(CAPACITY, 256);
+    assert!(log.is_uncertain(), "history was truncated");
     drop(log);
     let again = SubmittedTxLog::open(t.file());
     assert_eq!(again.len(), 256);
+    assert!(again.is_uncertain(), "the truncation survives a restart");
     assert!(!again.record(&h(299)), "the newest are kept");
-    assert!(again.record(&h(0)), "the oldest were dropped");
+    assert!(!again.record(&h(0)), "an evicted hash is not a first send");
+    assert!(!again.record(&h(1000)), "after truncation no absent hash is a first send");
 }
 
 #[test]
@@ -83,8 +86,9 @@ fn the_write_is_atomic_and_leaves_no_temp_file() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     assert_eq!(names, vec!["submitted-tx.json".to_string()]);
-    let body: Vec<String> = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
-    assert_eq!(body, vec![h(1)]);
+    let body: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
+    assert_eq!(body["hashes"], serde_json::json!([h(1)]));
+    assert_eq!(body["uncertain"], false);
 }
 
 #[test]
@@ -165,14 +169,46 @@ fn a_truncated_record_is_degraded_and_never_proves_a_first_send() {
 }
 
 #[test]
-fn an_oversized_list_on_disk_is_trimmed_to_the_newest_256() {
+fn an_oversized_list_on_disk_is_trimmed_and_marked_uncertain() {
     let t = Tmp::new("oversized");
     let list: Vec<String> = (0..400).map(h).collect();
     std::fs::write(t.file(), serde_json::to_vec(&list).expect("json")).expect("write");
     let log = SubmittedTxLog::open(t.file());
     assert_eq!(log.len(), 256);
+    assert!(log.is_uncertain());
     assert!(!log.record(&h(399)));
-    assert!(log.record(&h(0)));
+    assert!(!log.record(&h(0)), "trimmed history can't prove a first send");
+}
+
+#[test]
+fn a_legacy_full_list_is_treated_as_possibly_truncated() {
+    // Before the uncertain flag, a list at capacity may already have evicted hashes.
+    let t = Tmp::new("legacy-full");
+    let list: Vec<String> = (0..256).map(h).collect();
+    std::fs::write(t.file(), serde_json::to_vec(&list).expect("json")).expect("write");
+    assert!(SubmittedTxLog::open(t.file()).is_uncertain());
+}
+
+#[test]
+fn a_legacy_short_list_loads_as_complete_history() {
+    let t = Tmp::new("legacy-short");
+    std::fs::write(t.file(), serde_json::to_vec(&vec![h(1)]).expect("json")).expect("write");
+    let log = SubmittedTxLog::open(t.file());
+    assert!(!log.is_uncertain());
+    assert!(!log.record(&h(1)));
+    assert!(log.record(&h(2)));
+}
+
+#[test]
+fn a_corrupt_record_stays_uncertain_after_it_is_rewritten_and_reopened() {
+    let t = Tmp::new("corrupt-reopen");
+    std::fs::write(t.file(), b"{not json").expect("write");
+    let log = SubmittedTxLog::open(t.file());
+    assert!(!log.record(&h(1)));
+    drop(log);
+    let again = SubmittedTxLog::open(t.file());
+    assert!(again.is_uncertain(), "history lost to corruption is never treated as complete");
+    assert!(!again.record(&h(2)));
 }
 
 #[test]
@@ -187,17 +223,19 @@ fn a_record_at_an_unreadable_location_fails_closed() {
 }
 
 #[test]
-fn a_record_whose_file_cannot_be_rewritten_still_holds_in_memory() {
+fn a_record_that_cannot_be_made_durable_is_refused_and_not_kept() {
     let t = Tmp::new("rewrite-fails");
     let log = SubmittedTxLog::open(t.file());
-    assert!(log.record(&h(1)));
+    assert_eq!(log.try_record(&h(1)), Ok(true));
     drop(log);
     // The rewrite's temp path is taken by a directory, so the next write fails.
-    std::fs::create_dir(t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let block = t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()));
+    std::fs::create_dir(&block).expect("block tmp");
     let log = SubmittedTxLog::open(t.file());
-    assert!(!log.is_degraded());
-    assert!(log.record(&h(2)), "a first send is still a first send");
-    assert!(!log.record(&h(2)), "and the in-memory record holds it");
-    let on_disk: Vec<String> = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
-    assert_eq!(on_disk, vec![h(1)], "the failed rewrite left the previous file whole");
+    assert!(log.try_record(&h(2)).is_err(), "no durable record, so the caller must not send");
+    std::fs::remove_dir(&block).expect("unblock");
+    // Nothing was sent, so the refused hash is not history.
+    assert_eq!(log.try_record(&h(2)), Ok(true));
+    let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
+    assert_eq!(on_disk["hashes"], serde_json::json!([h(1), h(2)]));
 }

@@ -2374,3 +2374,74 @@ fn two_ceremonies_sharing_one_record_see_each_others_submissions() {
     let (other, hash) = send_once(&b, &v, node_error("Failed to submit transaction: Full"));
     assert_eq!(submitted_outcome_unknown(&other), Some(hash));
 }
+
+// ---- #347 Codex P1s: when history is uncertain, "outcome unknown", never "not sent" ----
+
+#[test]
+fn a_resend_after_the_history_was_truncated_is_unknown() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-evict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    let file = dir.join("submitted-tx.json");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
+    assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
+    // 256 other submissions push the original out of the window.
+    for n in 0..256u32 {
+        c.submitted_log().record(&format!("0x{n:064x}"));
+    }
+    drop(c);
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let (again, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
+    assert_eq!(submitted_outcome_unknown(&again), Some(hash), "the original may have been mined");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_resend_after_a_corrupt_record_was_rewritten_and_reopened_is_unknown() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-corrupt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    let file = dir.join("submitted-tx.json");
+    std::fs::write(&file, b"{not json").expect("corrupt");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    c.submitted_log().record(&format!("0x{:064x}", 7));
+    drop(c);
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let (r, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&r), Some(hash));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn nothing_is_broadcast_when_the_submission_cannot_be_recorded_durably() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-nodurable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    let file = dir.join("submitted-tx.json");
+    std::fs::create_dir(dir.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x0".into())),
+        ok(JsonValue::String("0x1".into())),
+        ok(JsonValue::String(format!("0x{}", "ab".repeat(32)))),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
+    let reqs = client.transport.requests.borrow();
+    assert!(reqs.iter().all(|q| q["method"] != "eth_sendRawTransaction"), "no broadcast without a durable record");
+    match r {
+        Err(e @ CeremonyError::Broadcast(_)) => {
+            let s = broadcast_err_str(e);
+            assert!(s.starts_with("not submitted: "), "{s}");
+            assert!(s.contains("nothing was sent"), "{s}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
