@@ -206,7 +206,7 @@ MemberStart ==
     /\ phase' = IF phase = "Stopping" THEN "Stopping" ELSE "Starting"
     /\ failures' = 0
     /\ sinceMember' = 0
-    /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes, sinceMember >>
+    /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes >>
 
 \* Kept for readers of the first version: the explicit Start is the member's.
 RequestStart == MemberStart

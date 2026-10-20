@@ -3,7 +3,7 @@ created: 2026-10-19T01:10:00Z
 branch: beta/k1a-gate0-tla
 author: "Larry Klosowski + Claude Opus 5.5 (MAC lane)"
 status: active
-updated: 2026-10-19 (review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
+updated: 2026-10-19 (review round 2: pysol-dev changes requested at 8ea9d53, vacuous MemberStart fixed; review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
 sprint: SCL-S1
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -260,7 +260,7 @@ on every `start()`, which is exactly the mutant.
 
 Same machine and toolchain as above, 2026-10-19. `tlc_expect.py` exit 0. It picks up every
 `<Spec>_*.cfg`, so the new configs run without a change to the script. All 38 configs match: 7
-green, 16 mutants, 15 witnesses.
+green, 15 mutants, 16 witnesses (corrected in round 2; this line first said 16 mutants and 15 witnesses).
 
 On `SidecarSupervisor.cfg` the distinct states go from 437 to 858, and on `_Probed` from 9415 to
 10164. The cause is the new `sinceMember` history and the automated start actions. AppExitCoordinator
@@ -309,6 +309,117 @@ only had comments changed, and its green count is unchanged at 64904.
 
 Rule-2 record for round 1: TLC configs for these modules go from 29 to 38, and `SidecarSupervisor`
 properties from 18 to 20 (INV-16, INV-17). There is still no Rust or TypeScript change.
+
+## Review round 2: pysol-dev changes requested at `8ea9d53` (S1.1)
+
+pysol-dev re-ran the suite on Linux with OpenJDK 21 and the TLC nightly 2026.10.15. Every green
+count matched. The review found one modelling bug, one script gap and some stale counts.
+
+### Blocking: `MemberStart` was vacuous after any failure
+
+`MemberStart` set `sinceMember' = 0` and also listed `sinceMember` in its `UNCHANGED`. The
+conjunction holds only when `sinceMember = 0`, so a member Start never fired from Failed, or after
+any crash or spawn failure under the current intent. That left part of INV-15
+(`INV_QuarantineNotRecycled`) and the B2 reading of INV-17 vacuous. Fix: `sinceMember` is
+dropped from that `UNCHANGED`.
+
+Red first. Commit `085f1af` adds the tests below; they fail against the old model:
+
+| Test | At `085f1af` (old model) | After the fix |
+|---|---|---|
+| `SidecarSupervisor_ReachMemberStartFromFailed` (`W_MemberStartFromFailed`, never-healthy constants, full `Spec`) | **no error** (487 states): mismatch | violated (556) |
+| `SidecarSupervisor_ReachMemberStartAfterFailures` (`W_MemberStartAfterFailures`) | **no error** (487): mismatch | violated (255) |
+| `tla_frame_lint.py SidecarSupervisor` | `MemberStart: sinceMember is assigned and kept UNCHANGED by a sibling conjunct` | clean |
+
+Revert check: with the fixed model restored the three tests pass. With the old `UNCHANGED` line put
+back, all three fail again.
+
+The fix opens the part of the state space the old model never explored. `SidecarSupervisor.cfg`
+goes from 858 to 1002 distinct states and `_Probed` from 10164 to 16569, which is what pysol-dev
+measured.
+
+### Tripwires for the bug class
+
+- **Frame lint** (`src-tauri/formal/tla_frame_lint.py`, run by `tlc_expect.py` before TLC). It flags
+  any variable that one conjunct of an action assigns, directly or through a helper such as
+  `FailStep`, while a sibling conjunct keeps it `UNCHANGED`. It respects IF arms and disjuncts and
+  expands tuple aliases. It has eight self-tests (`--self-test`). On this tree it reports exactly
+  the one finding above, and none in the other thirteen modules in `src-tauri/formal`.
+- **Action coverage.** Green configs run with `-coverage`. Every named action TLC reports must be
+  taken in at least one green config, unless the module marks it `\* COVERAGE-EXEMPT:`. The only
+  exemption is `UpdaterDirectExit`, which exists only under its mutant. This catches an action
+  that is wholly vacuous. The frame lint catches the partly vacuous case, which coverage alone
+  missed here: `MemberStart` still fired from Stopped.
+- **Action reachability witnesses.** `W_MemberStartFromFailed` and `W_MemberStartAfterFailures` are
+  permanent configs.
+
+### Should fix: temporal verdict wording (`tlc_expect.py`)
+
+TLC 2.19 prints "Temporal properties were violated". Current nightlies print "Temporal property X
+was violated". The classifier now matches the named form and checks the name against `EXPECT`. The
+unnamed form is still accepted only when the config has a single `PROPERTY`. Seven classifier
+self-tests run with `--self-test`, and the nightly form was red before the fix.
+
+The script prints the TLC version and the jar's sha256. When `TLA_JAR_SHA256` is set, it refuses
+any other jar. The jar used here is `TLC2 2.19 (rev 5a47802)`, sha256 `936a2620…050e88`. There is
+no TLC CI job yet: S13.4 creates it and pins the jar with that variable.
+
+### Counts
+
+The round-1 line in this file had mutants and witnesses swapped; it is corrected above. The PR body
+now says 40. The README no longer says "one witness per mutant", since `StopIgnoresWorkers` has two
+and the two member-Start witnesses belong to no mutant.
+
+### TLC results after round 2
+
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802); jar sha256 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88. `tlc_expect.py` exit 0, frame lint clean, coverage check clean. All 40 configs match: 7
+green, 15 mutants, 18 witnesses.
+
+| Config | Expected | TLC result | Distinct states | Depth | Match |
+|---|---|---|---|---|---|
+| `SidecarSupervisor` | no error | no error | 1002 | 34 | yes |
+| `SidecarSupervisor_ForkBomb` | no error | no error | 24 | 15 | yes |
+| `SidecarSupervisor_ForkBombAutoRestart` | no error | no error | 188 | 22 | yes |
+| `SidecarSupervisor_MutAutoStartResets` | violated INV_CrashBoundBetweenMemberStarts | violated INV_CrashBoundBetweenMemberStarts | 407 | 20 | yes |
+| `SidecarSupervisor_MutElapsedCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 64 | 14 | yes |
+| `SidecarSupervisor_MutStaleSuccess` | violated INV_ReadyIsCurrent | violated INV_ReadyIsCurrent | 1988 | 22 | yes |
+| `SidecarSupervisor_MutStopIgnoresWorkers` | violated INV_StoppedOwnsNothing | violated INV_StoppedOwnsNothing | 405 | 12 | yes |
+| `SidecarSupervisor_MutStopOff` | violated INV_StopNeverSpawns | violated INV_StopNeverSpawns | 121 | 12 | yes |
+| `SidecarSupervisor_MutTimeoutFrees` | violated INV_ProbePermitBounded | violated INV_ProbePermitBounded | 230 | 12 | yes |
+| `SidecarSupervisor_Probed` | no error | no error | 16569 | 54 | yes |
+| `SidecarSupervisor_ProbedForkBomb` | no error | no error | 108 | 17 | yes |
+| `SidecarSupervisor_ProbedForkBombAutoRestart` | no error | no error | 783 | 24 | yes |
+| `SidecarSupervisor_ReachAutoRestartAfterFailures` | violated W_AutoRestartAfterFailures | violated W_AutoRestartAfterFailures | 96 | 24 | yes |
+| `SidecarSupervisor_ReachMemberStartAfterFailures` | violated W_MemberStartAfterFailures | violated W_MemberStartAfterFailures | 255 | 14 | yes |
+| `SidecarSupervisor_ReachMemberStartFromFailed` | violated W_MemberStartFromFailed | violated W_MemberStartFromFailed | 556 | 20 | yes |
+| `SidecarSupervisor_ReachStaleWorker` | violated W_StaleWorkerWhileAlive | violated W_StaleWorkerWhileAlive | 164 | 10 | yes |
+| `SidecarSupervisor_ReachStopInStopped` | violated W_StopInStopped | violated W_StopInStopped | 107 | 10 | yes |
+| `SidecarSupervisor_ReachStopWaitsOnWorker` | violated W_StopWaitsOnWorker | violated W_StopWaitsOnWorker | 262 | 13 | yes |
+| `SidecarSupervisor_ReachStoppedWithWorker` | violated W_StoppedWithWorker | violated W_StoppedWithWorker | 545 | 15 | yes |
+| `SidecarSupervisor_ReachTimedOutWorker` | violated W_TimedOutWorkerHeldWhileAlive | violated W_TimedOutWorkerHeldWhileAlive | 176 | 11 | yes |
+| `SidecarSupervisor_ReachUnattestedTick` | violated W_UnattestedTickPastHealthy | violated W_UnattestedTickPastHealthy | 15 | 11 | yes |
+| `AppExitCoordinator` | no error | no error | 64904 | 27 | yes |
+| `AppExitCoordinator_MutAdmitWhileClosing` | violated X3_ClosingRejectsAdmission | violated X3_ClosingRejectsAdmission | 54 | 4 | yes |
+| `AppExitCoordinator_MutFinalAfterExpiry` | violated X5_ExpiredNeverAuthorizes | violated X5_ExpiredNeverAuthorizes | 22838 | 16 | yes |
+| `AppExitCoordinator_MutHermesCompleteEarly` | violated X7_HermesChildrenScope | violated X7_HermesChildrenScope | 280 | 6 | yes |
+| `AppExitCoordinator_MutInstallWinNoClosing` | violated X1_EveryExitPathRoutes | violated X1_EveryExitPathRoutes | 199 | 6 | yes |
+| `AppExitCoordinator_MutOthersFirst` | violated X9_HermesDrainsFirst | violated X9_HermesDrainsFirst | 90 | 5 | yes |
+| `AppExitCoordinator_MutQuitNoActuation` | violated X12_QuitActuatesHeldScopes | violated X12_QuitActuatesHeldScopes | 2805 | 11 | yes |
+| `AppExitCoordinator_MutQuitWaitsForever` | violated X11_QuitAlwaysTerminates | violated X11_QuitAlwaysTerminates | 63408 | - | yes |
+| `AppExitCoordinator_MutReconnectAfterReport` | violated X7_HermesChildrenScope | violated X7_HermesChildrenScope | 856 | 9 | yes |
+| `AppExitCoordinator_MutTerminateNoDrain` | violated X10_UnpreventableExitDrains | violated X10_UnpreventableExitDrains | 90 | 6 | yes |
+| `AppExitCoordinator_ReachExpiredQuit` | violated W_ExpiredQuitExits | violated W_ExpiredQuitExits | 11407 | 14 | yes |
+| `AppExitCoordinator_ReachFinalActuation` | violated W_FinalActuationFires | violated W_FinalActuationFires | 3298 | 10 | yes |
+| `AppExitCoordinator_ReachHermesComplete` | violated W_HermesCompleteWhileClosing | violated W_HermesCompleteWhileClosing | 558 | 7 | yes |
+| `AppExitCoordinator_ReachHermesDraining` | violated W_HermesDrainingChildrenRun | violated W_HermesDrainingChildrenRun | 267 | 6 | yes |
+| `AppExitCoordinator_ReachInstallWin` | violated W_InstallWinCompletes | violated W_InstallWinCompletes | 9968 | 13 | yes |
+| `AppExitCoordinator_ReachLateCompletion` | violated W_LateCompletionAfterExpiry | violated W_LateCompletionAfterExpiry | 23975 | 16 | yes |
+| `AppExitCoordinator_ReachOthersDrain` | violated W_OthersDrainWhileHermesDrains | violated W_OthersDrainWhileHermesDrains | 396 | 6 | yes |
+| `AppExitCoordinator_ReachTerminate` | violated W_TerminateExits | violated W_TerminateExits | 5491 | 12 | yes |
+| `AppExitCoordinator_ReachTicketWhileDraining` | violated W_TicketOwnedWhileDraining | violated W_TicketOwnedWhileDraining | 355 | 6 | yes |
+
+Rule-2 record for round 2: TLC configs go from 38 to 40. There are 16 self-tests for the scripts
+(new). There is still no Rust or TypeScript change.
 
 ### Not done here
 

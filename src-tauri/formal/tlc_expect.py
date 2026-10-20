@@ -55,7 +55,9 @@ def classify(out, cfg_text):
         return ("violated", m.group(1))
     if m := re.search(r"Error: Action property (\w+) is violated", out):
         return ("violated", m.group(1))
-    if "Temporal properties were violated" in out:
+    if m := re.search(r"Temporal property (\w+) was violated", out):
+        return ("violated", m.group(1))
+    if re.search(r"Temporal properties were violated", out):
         props = properties(cfg_text)
         return ("violated", props[0] if len(props) == 1 else "<temporal: several PROPERTY lines>")
     tail = [l for l in out.splitlines() if l.startswith("Error")][:2]

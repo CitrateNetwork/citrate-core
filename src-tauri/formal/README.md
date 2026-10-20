@@ -26,7 +26,7 @@ model. Each config's first line states what TLC must report:
 |---|---|---|
 | Green | `SidecarSupervisor.cfg`, `_Probed`, `_ForkBomb`, `_ProbedForkBomb`, `_ForkBombAutoRestart`, `_ProbedForkBombAutoRestart`; `AppExitCoordinator.cfg` | `pass` |
 | Mutant | `*_Mut*.cfg`, one per reintroduced defect | `violated <the named invariant>` |
-| Reachability witness (RT-17) | `*_Reach*.cfg`, one per mutant, on that mutant's green constants | `violated <W_ invariant>` |
+| Reachability witness (RT-17) | `*_Reach*.cfg`: at least one per mutant (on that mutant's green constants, or on the mutant itself where stated), plus action-reachability witnesses that no mutant owns | `violated <W_ invariant>` |
 
 ## Running TLC
 
@@ -37,6 +37,12 @@ model. Each config's first line states what TLC must report:
 python3 src-tauri/formal/tlc_expect.py SidecarSupervisor AppExitCoordinator            # text
 python3 src-tauri/formal/tlc_expect.py SidecarSupervisor AppExitCoordinator --markdown # table
 ```
+
+Before TLC, `tlc_expect.py` runs the frame lint (`tla_frame_lint.py`: no action assigns a variable
+that a sibling conjunct keeps `UNCHANGED`). It runs the green configs with `-coverage` and fails if a
+named action is never taken, unless the module marks it `\* COVERAGE-EXEMPT:`.
+`python3 src-tauri/formal/tlc_expect.py --self-test` checks both scripts. Set `TLA_JAR_SHA256` to
+pin the jar.
 
 `scripts/run-tlc.sh <Spec> all` exits non-zero for these two specs by design (mutants and
 witnesses fail); use `tlc_expect.py` for them.
