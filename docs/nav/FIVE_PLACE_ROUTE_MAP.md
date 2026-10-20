@@ -131,5 +131,9 @@ today. They show no data:
   panel's Web search switch and the Web search form). After either saves, it
   announces what core saved (`src/agent/webSettingsSync.ts`) and the other
   shows it and re-baselines, so neither shows or diffs against a stale copy.
+  Each view's initial read goes through `readWebSettingsUnlessSuperseded`,
+  which drops an answer that arrives after another view's save. A tripwire
+  test (`src/agent/webSettingsReaders.tripwire.test.ts`) keeps every
+  subscribing view on that path.
 - The Hermes `app_navigate` tool still takes old route ids. They redirect, so
   it keeps working; a later change can teach it the canonical routes.

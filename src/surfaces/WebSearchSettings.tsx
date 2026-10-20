@@ -29,6 +29,7 @@ import {
   type HermesWebStatus,
   type WebSettingsIo,
 } from "../agent/webSearch";
+import { readWebSettingsUnlessSuperseded } from "../agent/webSettingsSync";
 
 /** The fields of `draft` that differ from `baseline` (what the form loaded or last saved). */
 export function changedFields(baseline: HermesWebSettings, draft: HermesWebSettings): Partial<HermesWebSettings> {
@@ -119,9 +120,11 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   useEffect(() => {
     if (!desktop) return;
     let live = true;
-    loadWebSettings(io)
+    // Dropped (null) if the other view saved while this read was in flight: the subscription above
+    // already applied that newer value, and this answer is older.
+    readWebSettingsUnlessSuperseded(() => loadWebSettings(io))
       .then((st) => {
-        if (!live) return;
+        if (!live || !st) return;
         setStatus(st);
         setDraft(st.settings);
         setBaseline(st.settings);

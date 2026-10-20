@@ -36,6 +36,7 @@ import { patchWebSettings } from "../../agent/webSettingsWrite";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
+import { readWebSettingsUnlessSuperseded } from "../../agent/webSettingsSync";
 
 export type ControlId = "local-model" | "web-search" | "terminal" | "daemons" | "learn" | "voice";
 
@@ -243,8 +244,9 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   useEffect(() => {
     let live = true;
     if (webDesktop) {
-      loadWebSettings(io.web).then(
-        (st) => live && (setWeb(st), setWebErr(st.loadError ?? null), noteRunning("webSearch", st.settings.searchEnabled)),
+      // Dropped (null) if the form saved while this read was in flight: the subscription applied it.
+      readWebSettingsUnlessSuperseded(() => loadWebSettings(io.web)).then(
+        (st) => live && st && (setWeb(st), setWebErr(st.loadError ?? null), noteRunning("webSearch", st.settings.searchEnabled)),
         (e) => live && setWebErr(msg(e)),
       );
     }
