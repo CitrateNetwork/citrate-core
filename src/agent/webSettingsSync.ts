@@ -10,6 +10,10 @@
 // `withWebSettingsLock`, so two writers can never both read before either writes (which would let
 // the second write put back a field the first had just changed).
 //
+// Initial reads are versioned: a view's own load (readWebSettingsUnlessSuperseded) is dropped if a
+// save was published while it was in flight, so a late answer never replaces the newer value the
+// view already adopted, nor becomes its dirty-tracking baseline.
+//
 // In-memory: nothing persists here, core is still the only store.
 import type { HermesWebStatus } from "./webSearch";
 
@@ -17,8 +21,13 @@ export type WebSettingsListener = (status: HermesWebStatus, source: symbol) => v
 
 const listeners = new Set<WebSettingsListener>();
 
+// Bumped on every published save. A read that started at an older generation answered with what
+// was saved before that save, so it is out of date by the time it lands.
+let generation = 0;
+
 /** Tell every other mounted view what core saved. `source` identifies the writer, which ignores its own event. */
 export function publishWebSettings(status: HermesWebStatus, source: symbol): void {
+  generation++;
   for (const l of [...listeners]) l(status, source);
 }
 
@@ -48,6 +57,8 @@ export function withWebSettingsLock<T>(write: () => Promise<T>): Promise<T> {
  * published a save while the read was in flight: that save is newer than this answer, and the
  * view has already adopted it through its subscription.
  */
-export function readWebSettingsUnlessSuperseded<T>(read: () => Promise<T>): Promise<T | null> {
-  return read();
+export async function readWebSettingsUnlessSuperseded<T>(read: () => Promise<T>): Promise<T | null> {
+  const startedAt = generation;
+  const answer = await read();
+  return generation === startedAt ? answer : null;
 }
