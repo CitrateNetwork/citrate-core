@@ -253,9 +253,10 @@ impl SubmittedTxLog {
         Ok(first)
     }
 
-    /// [`Self::try_record`] for callers that only need first-ness. A failed write is never a
-    /// first submission (the hash is not kept).
-    pub fn record(&self, hash: &str) -> bool {
+    /// [`Self::try_record`] for tests that only need first-ness. A failed write is never a first
+    /// submission (the hash is not kept).
+    #[cfg(test)]
+    pub(crate) fn record(&self, hash: &str) -> bool {
         self.try_record(hash).unwrap_or(false)
     }
 

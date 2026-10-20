@@ -566,12 +566,25 @@ impl AnchorCeremony {
         if let Err(e) = (guards.before_send)(&in_flight) {
             return Err(keep(p, AnchorError::NotRecorded(e)));
         }
-        let first_submission = self
+        // The bytes go into the shared record durably BEFORE they are broadcast (#347): a hash
+        // that can't be recorded is never sent, and the day is withdrawn with the card kept.
+        let log = self
             .submitted
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .record(&in_flight.tx_hash);
+            .clone();
+        let first_submission = match log.try_record(&in_flight.tx_hash) {
+            Ok(first) => first,
+            Err(e) => {
+                (guards.not_sent)(&in_flight);
+                return Err(keep(
+                    p,
+                    AnchorError::NotRecorded(format!(
+                        "the submission could not be recorded durably, so nothing was sent: {e}"
+                    )),
+                ));
+            }
+        };
         let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
             Ok(h) => h,
             Err(e) => {
