@@ -206,6 +206,31 @@ pub fn delete(
     })
 }
 
+/// Who holds a model selection that must not point at a deleted file (the chat llama-server).
+pub trait ModelSelection {
+    /// If `deleted` is the selected model, fall back to `fallback` and drop any adapter. Returns
+    /// whether it was selected.
+    fn forget_if(&self, deleted: &Path, fallback: PathBuf) -> bool;
+}
+
+impl ModelSelection for crate::serve::LlamaServerManager {
+    fn forget_if(&self, deleted: &Path, fallback: PathBuf) -> bool {
+        self.forget_model_if(deleted, fallback)
+    }
+}
+
+/// THE one model-delete operation every caller uses (the Models screen and the Store): [`delete`],
+/// then the selection falls back when it pointed at the deleted file.
+pub fn delete_and_forget(
+    models_dir: &Path,
+    bundled_dir: Option<&Path>,
+    file: &str,
+    usage: &dyn ModelUsage,
+    _selection: &dyn ModelSelection,
+) -> Result<Deleted, DeleteRefusal> {
+    delete(models_dir, bundled_dir, file, usage)
+}
+
 /// The delete state of every listed (verified) model.
 pub fn states(
     models_dir: &Path,

@@ -874,6 +874,8 @@ pub(crate) struct Targets<'a> {
     pub models_dir: PathBuf,
     pub bundled_models: Option<PathBuf>,
     pub usage: &'a dyn crate::model_delete::ModelUsage,
+    /// The chat server's model selection, reset when the Store removes the selected model.
+    pub selection: &'a dyn crate::model_delete::ModelSelection,
     /// Builds the model transport for an artifact URL.
     pub model_transport: &'a dyn Fn(&str) -> Box<dyn crate::model::ModelTransport>,
 }
@@ -1300,11 +1302,12 @@ pub(crate) fn remove_sync(
             })?
         }
         ListingKind::Model => {
-            match crate::model_delete::delete(
+            match crate::model_delete::delete_and_forget(
                 &t.models_dir,
                 t.bundled_models.as_deref(),
                 &rec.target,
                 t.usage,
+                t.selection,
             ) {
                 Ok(_) => {}
                 // Not a verified model on disk: for the Store's own unfinished install (a pending
@@ -1389,6 +1392,7 @@ fn with_targets<T>(
         models_dir,
         bundled_models,
         usage: &usage,
+        selection: &serve.0,
         model_transport: &transport,
     };
     f(&t)

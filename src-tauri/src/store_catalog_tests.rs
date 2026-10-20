@@ -168,6 +168,8 @@ struct Fx {
     root: PathBuf,
     models: PathBuf,
     daemons: PathBuf,
+    /// The chat server's selection (never started in tests).
+    serve: crate::serve::LlamaServerManager,
 }
 
 impl Fx {
@@ -179,6 +181,12 @@ impl Fx {
             root: base.join("store"),
             models: base.join("models"),
             daemons: base.join("daemons.json"),
+            serve: crate::serve::LlamaServerManager::new(
+                PathBuf::from("/nonexistent/llama-server"),
+                base.join("models").join(crate::model::MODEL_FILE),
+                base.join("crash.jsonl"),
+                0,
+            ),
         }
     }
 
@@ -213,7 +221,7 @@ impl Fx {
     }
 
     fn fx_targets<'a>(
-        &self,
+        &'a self,
         usage: &'a Usage,
         transport: &'a dyn Fn(&str) -> Box<dyn crate::model::ModelTransport>,
     ) -> Targets<'a> {
@@ -222,6 +230,7 @@ impl Fx {
             models_dir: self.models.clone(),
             bundled_models: None,
             usage,
+            selection: &self.serve,
             model_transport: transport,
         }
     }
@@ -629,11 +638,18 @@ fn remove_is_refused_while_that_install_is_in_flight() {
                     None => Box::new(MemTransport(Vec::new())),
                 }
             };
+            let serve = crate::serve::LlamaServerManager::new(
+                PathBuf::from("/nonexistent/llama-server"),
+                models_dir.join(crate::model::MODEL_FILE),
+                models_dir.join("crash.jsonl"),
+                0,
+            );
             let t = Targets {
                 daemons_path,
                 models_dir,
                 bundled_models: None,
                 usage: &usage,
+                selection: &serve,
                 model_transport: &make,
             };
             install_sync(&root, &key, &t, 1, &stage_id, NOW, NOW_MS, 0, &mut |_, _| {})
@@ -1071,4 +1087,83 @@ fn the_catalog_urls_are_https_and_apart_from_the_component_feed() {
     assert!(STORE_CATALOG_SIG_URL.starts_with(STORE_CATALOG_URL));
     assert_ne!(STORE_CATALOG_URL, crate::components::COMPONENT_MANIFEST_URL);
     assert!(!STORE_CATALOG_URL.contains("/updater/"));
+}
+
+// ---- Codex P2s on #356 at e1831b4 ----------------------------------------------------------
+
+#[test]
+fn a_model_download_that_fails_partway_leaves_no_untracked_bytes() {
+    let fx = Fx::standard("partial");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    // The stream ends after part of the file: a short stream, the `.part` was written to.
+    let partial = model_bytes()[..30].to_vec();
+    let err = fx.fx_install_with(&st.stage_id, 0, partial, &Usage(None), NOW).unwrap_err();
+    assert_eq!(err.code, "hash_failed", "{err:?}");
+    let part = fx.models.join("tiny-model.gguf.part");
+    let tracked = !fx.fx_installed().is_empty();
+    if tracked {
+        // Kept as a removable pending record: Remove deletes the bytes.
+        assert!(fx.fx_remove("tiny-model", &Usage(None)).is_ok());
+    }
+    assert!(!part.exists(), "no partial bytes are left on disk (tracked: {tracked})");
+    for suffix in ["", ".status.json", ".download.json"] {
+        assert!(!fx.models.join(format!("tiny-model.gguf{suffix}")).exists(), "{suffix}");
+    }
+    // And the listing can be installed again from scratch.
+    let st = fx.fx_stage("tiny-model", 0).expect("stage again");
+    assert!(fx.fx_install(&st.stage_id, 0).is_ok());
+}
+
+#[test]
+fn removing_the_selected_model_resets_the_selection_and_drops_its_adapter() {
+    let fx = Fx::standard("selected");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    fx.fx_install(&st.stage_id, 0).expect("install");
+    let chosen = fx.models.join("tiny-model.gguf");
+    // The member selected it in Models and loaded an adapter; the server is stopped.
+    let serve = crate::serve::LlamaServerManager::new(
+        PathBuf::from("/nonexistent/llama-server"),
+        chosen.clone(),
+        fx.models.join("crash.jsonl"),
+        0,
+    );
+    serve.set_lora(Some(fx.models.join("adapter.gguf")));
+    let usage = Usage(None);
+    let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> { Box::new(MemTransport(Vec::new())) };
+    let t = Targets {
+        daemons_path: fx.daemons.clone(),
+        models_dir: fx.models.clone(),
+        bundled_models: None,
+        usage: &usage,
+        selection: &serve,
+        model_transport: &transport,
+    };
+    assert!(remove_sync(&fx.root, &t, "tiny-model", NOW_MS).is_ok());
+    assert!(!chosen.exists());
+    assert_ne!(serve.current_model_path(), chosen, "the selection no longer points at the deleted file");
+    assert_eq!(serve.current_model_path(), fx.models.join(crate::model::MODEL_FILE));
+    assert!(serve.lora().is_none(), "the adapter is dropped with it");
+}
+
+#[test]
+fn tripwire_every_model_delete_goes_through_the_shared_operation() {
+    // `model_delete::delete` removes the files only; the shared `delete_and_forget` also resets
+    // the chat server's selection. No production caller may use the bare one.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(&dir).expect("src") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("model_delete::delete("), "{name}: use model_delete::delete_and_forget");
+        if name == "model_delete.rs" {
+            let bare = text.matches("delete(&").count() + text.matches("delete(models_dir").count();
+            assert_eq!(bare, 1, "model_delete.rs: only delete_and_forget calls the bare delete");
+            assert!(text.contains("delete_and_forget(&models"), "the Models screen command uses the shared operation");
+        }
+    }
 }
