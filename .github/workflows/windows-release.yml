@@ -1,0 +1,1553 @@
+name: Windows v0.5.1 release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified unsigned Windows prerelease
+        required: true
+        default: false
+        type: boolean
+      source_tag:
+        description: Protected annotated source tag
+        required: true
+        default: v0.5.1-windows
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-v0.5.1-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_MASTER: "1"
+  RELEASE_VERSION: 0.5.1
+  EXPECTED_SOURCE_TAG: v0.5.1-windows
+  EXPECTED_SOURCE_SHA: b521d98e80217346bcb68294301ded129d0f1846
+  EXPECTED_SOURCE_TAG_OBJECT: 73d652a966a5cf09f46bd069c2ada9a398a6f07f
+  CHAIN_SHA: c384fc982882f830306142c70dd643b59fcda1f6
+  NODE_AGENT_SHA: 1d8cb8e4e24a3d60fb6e8b63cedc2a3c58e2a524
+  MEMORIES_SHA: 0e9d48822054f6c9d644e691909569d0bc19be02
+  COMMS_SHA: bc0f92a5ed92b9f429a15c9a3b96e2ef23cf352d
+  CLUSTER_SHA: 755cf217226094147e4e67909ab96ccbb5aeeb2a
+  RUNTIME_SHA: 626486b8a7db0ab85cbe62f8a251abfd30677c3d
+  LLAMA_SHA: a2878d30df0130dde503a7d9ba30d3d21bd71b9f
+  RUST_TOOLCHAIN: 1.96.0
+  KUBO_VERSION: v0.42.0
+  KUBO_ARCHIVE_SHA512: 5501a7745898e71326e1b85d8d231d79a3409147484ce2ca28da94c9272319e6c691e19a1ed74c0f0a7beb601fb203e10a6c242aaab1a5961c260b1b0d14c452
+  NSIS_VERSION: "3.11"
+  NSIS_ARCHIVE_SHA256: c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1
+  TARGET_TRIPLE: x86_64-pc-windows-msvc
+  INSTALLER_FILE_NAME: Citrate-Core-windows-x86_64-setup.exe
+  PAYLOAD_MANIFEST_FILE_NAME: PAYLOAD-MANIFEST-windows.json
+  EVIDENCE_FILE_NAME: EVIDENCE-windows.zip
+  RELEASE_TITLE: Citrate Core v0.5.1 for Windows (not yet certified)
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  validate_inputs:
+    name: Validate protected control and source refs
+    runs-on: windows-latest
+    timeout-minutes: 5
+    outputs:
+      source_tag: ${{ steps.validate.outputs.source_tag }}
+    steps:
+      - name: Refuse unsafe workflow inputs and refs
+        id: validate
+        shell: pwsh
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+          CONTROL_REF: ${{ github.ref }}
+          CONTROL_REF_NAME: ${{ github.ref_name }}
+          CONTROL_REF_TYPE: ${{ github.ref_type }}
+          CONTROL_REF_PROTECTED: ${{ github.ref_protected }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_SOURCE_TAG: ${{ inputs.source_tag }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          if ($env:REPOSITORY -cne 'CitrateNetwork/citrate-core') {
+            throw "release workflow may run only in CitrateNetwork/citrate-core: $env:REPOSITORY"
+          }
+          if ($env:CONTROL_REF_TYPE -cne 'branch' -or $env:CONTROL_REF -notlike 'refs/heads/*') {
+            throw "control ref must be a branch: $env:CONTROL_REF"
+          }
+          if ($env:CONTROL_REF_NAME -cne $env:DEFAULT_BRANCH) {
+            throw "control ref must be the default branch $env:DEFAULT_BRANCH"
+          }
+          if ($env:CONTROL_REF_PROTECTED -cne 'true') {
+            throw 'control ref must be protected'
+          }
+          if ($env:CONTROL_SHA -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'control SHA must be a lowercase full SHA'
+          }
+          if ($env:INPUT_SOURCE_TAG -cne $env:EXPECTED_SOURCE_TAG) {
+            throw "source_tag must be exactly $env:EXPECTED_SOURCE_TAG"
+          }
+          if ($env:INPUT_SOURCE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-windows$') {
+            throw 'source_tag has an unsafe format'
+          }
+          if ($env:INPUT_PUBLISH -notin @('true', 'false')) {
+            throw 'publish must be a boolean'
+          }
+          "source_tag=$($env:INPUT_SOURCE_TAG)" >> $env:GITHUB_OUTPUT
+
+  build_windows:
+    name: Build pinned Windows installer and provenance
+    needs: validate_inputs
+    runs-on: windows-latest
+    timeout-minutes: 240
+    env:
+      RUSTUP_TOOLCHAIN: 1.96.0
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      artifact_digest: ${{ steps.artifact_digest.outputs.digest }}
+      installer_sha256: ${{ steps.package.outputs.installer_sha256 }}
+      installer_size: ${{ steps.package.outputs.installer_size }}
+      source_tag_object: ${{ steps.verify_refs.outputs.source_tag_object }}
+    steps:
+      - name: Check out reviewed release controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Check out protected release source tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ needs.validate_inputs.outputs.source_tag }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify control checkout and signed annotated source tag
+        id: verify_refs
+        shell: pwsh
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+          SOURCE_TAG: ${{ needs.validate_inputs.outputs.source_tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          $controlHead = (& git -C control rev-parse HEAD).Trim()
+          if ($controlHead -cne $env:CONTROL_SHA) {
+            throw "control checkout mismatch: $controlHead"
+          }
+          if (-not (Test-Path -LiteralPath 'control\.github\workflows\windows-release.yml' -PathType Leaf)) {
+            throw 'reviewed control checkout is missing windows-release.yml'
+          }
+          if (-not (Test-Path -LiteralPath 'control\.github\workflows\windows-release-installer-smoke.yml' -PathType Leaf)) {
+            throw 'reviewed control checkout is missing the installer smoke workflow'
+          }
+
+          $tagRef = "refs/tags/$env:SOURCE_TAG"
+           $tagObject = (& git -C source rev-parse $tagRef).Trim()
+          $tagType = (& git -C source cat-file -t $tagObject).Trim()
+          $peeled = (& git -C source rev-parse "$tagRef^{}").Trim()
+          $sourceHead = (& git -C source rev-parse HEAD).Trim()
+           if ($tagType -cne 'tag') { throw "$tagRef must be an annotated tag" }
+           if ($tagObject -cne $env:EXPECTED_SOURCE_TAG_OBJECT) {
+             throw "$tagRef resolved to unexpected tag object: $tagObject"
+           }
+           if ($peeled -cne $env:EXPECTED_SOURCE_SHA -or $sourceHead -cne $env:EXPECTED_SOURCE_SHA) {
+            throw "$tagRef must peel to $env:EXPECTED_SOURCE_SHA"
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $encodedTag = [uri]::EscapeDataString($env:SOURCE_TAG)
+          $refUri = "https://api.github.com/repos/$env:REPOSITORY/git/ref/tags/$encodedTag"
+          $remoteRef = Invoke-RestMethod -Method Get -Uri $refUri -Headers $headers
+           if ($remoteRef.object.type -cne 'tag' -or
+               $remoteRef.object.sha -cne $env:EXPECTED_SOURCE_TAG_OBJECT -or
+               $remoteRef.object.sha -cne $tagObject) {
+            throw 'remote source ref is not the expected annotated tag object'
+          }
+          $tagUri = "https://api.github.com/repos/$env:REPOSITORY/git/tags/$tagObject"
+          $remoteTag = Invoke-RestMethod -Method Get -Uri $tagUri -Headers $headers
+          if ($remoteTag.object.type -cne 'commit' -or $remoteTag.object.sha -cne $env:EXPECTED_SOURCE_SHA) {
+            throw 'remote annotated tag does not target the expected source commit'
+          }
+          if (-not $remoteTag.verification.verified -or $remoteTag.verification.reason -cne 'valid') {
+            throw "source tag signature is not verified: $($remoteTag.verification.reason)"
+          }
+          "source_tag_object=$tagObject" >> $env:GITHUB_OUTPUT
+
+      - name: Check out citrate-chain at its release pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-chain
+          ref: c384fc982882f830306142c70dd643b59fcda1f6
+          path: citrate-chain
+          persist-credentials: false
+          token: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+
+      - name: Check out node-agent at its release pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-node-agent
+          ref: 1d8cb8e4e24a3d60fb6e8b63cedc2a3c58e2a524
+          path: citrate-node-agent
+          persist-credentials: false
+
+      - name: Check out memories at its release pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-memories
+          ref: 0e9d48822054f6c9d644e691909569d0bc19be02
+          path: citrate-memories
+          persist-credentials: false
+
+      - name: Check out Comms at the owner-approved release pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-comms
+          ref: bc0f92a5ed92b9f429a15c9a3b96e2ef23cf352d
+          path: citrate-comms
+          persist-credentials: false
+
+      - name: Check out cluster at its release pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-cluster
+          ref: 755cf217226094147e4e67909ab96ccbb5aeeb2a
+          path: citrate-cluster
+          persist-credentials: false
+
+      - name: Check out agent runtime at its release pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-agent-runtime
+          ref: 626486b8a7db0ab85cbe62f8a251abfd30677c3d
+          path: citrate-agent-runtime
+          persist-credentials: false
+          token: ${{ secrets.CITRATE_RUNTIME_READ_TOKEN || github.token }}
+
+      - name: Check out llama.cpp at the approved source pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: a2878d30df0130dde503a7d9ba30d3d21bd71b9f
+          path: llama.cpp
+          persist-credentials: false
+
+      - name: Verify every execution checkout pin
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $PSNativeCommandUseErrorActionPreference = $true
+          $expected = [ordered]@{
+            'citrate-chain' = $env:CHAIN_SHA
+            'citrate-node-agent' = $env:NODE_AGENT_SHA
+            'citrate-memories' = $env:MEMORIES_SHA
+            'citrate-comms' = $env:COMMS_SHA
+            'citrate-cluster' = $env:CLUSTER_SHA
+            'citrate-agent-runtime' = $env:RUNTIME_SHA
+            'llama.cpp' = $env:LLAMA_SHA
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $actual = (& git -C $entry.Key rev-parse HEAD).Trim()
+            if ($actual -cne $entry.Value) {
+              throw "$($entry.Key) checkout mismatch: $actual"
+            }
+          }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.96.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Verify the enforced Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:RUSTUP_TOOLCHAIN -cne '1.96.0') {
+            throw "RUSTUP_TOOLCHAIN override is not 1.96.0: $env:RUSTUP_TOOLCHAIN"
+          }
+          $rustcVersion = (& rustc -V).Trim()
+          $cargoVersion = (& cargo -V).Trim()
+          if ($rustcVersion -cnotmatch '^rustc 1\.96\.0(?: |$)') {
+            throw "rustc did not resolve through 1.96.0: $rustcVersion"
+          }
+          if ($cargoVersion -cnotmatch '^cargo 1\.96\.0(?: |$)') {
+            throw "cargo did not resolve through 1.96.0: $cargoVersion"
+          }
+          Write-Host $rustcVersion
+          Write-Host $cargoVersion
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: source/src-tauri
+          shared-key: windows-v0.5.1-release
+
+      - name: Require private dependency credentials
+        shell: pwsh
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:CHAIN_TOKEN)) {
+            throw 'CITRATE_CHAIN_READ_TOKEN is required for the pinned private dependencies'
+          }
+          & git config --global `
+            "url.https://x-access-token:$env:CHAIN_TOKEN@github.com/.insteadOf" `
+            'https://github.com/'
+          if ($LASTEXITCODE -ne 0) { throw 'failed to configure private repository authentication' }
+
+      - name: Install JavaScript dependencies
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci
+
+      - name: Build and install citrate node through the lineage gate
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          ../control/scripts/build-sidecar.sh \
+            --chain "$GITHUB_WORKSPACE/citrate-chain" \
+            --target "$TARGET_TRIPLE" \
+            --output "$PWD/src-tauri/binaries/citrate-$TARGET_TRIPLE.exe"
+
+      - name: Build node-agent sidecar
+        shell: pwsh
+        working-directory: citrate-node-agent
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --release --locked --bin node-agent --target $env:TARGET_TRIPLE
+
+      - name: Build memory sidecar
+        shell: pwsh
+        working-directory: citrate-memories
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --release --locked -p mem-mcp --bin mem-mcp `
+            --features rocksdb,transformer --target $env:TARGET_TRIPLE
+
+      - name: Build Comms sidecar
+        shell: pwsh
+        working-directory: citrate-comms
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --release --locked -p comms-member-daemon --target $env:TARGET_TRIPLE
+
+      - name: Build cluster sidecar
+        shell: pwsh
+        working-directory: citrate-cluster
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --release --locked -p cluster-daemon --target $env:TARGET_TRIPLE
+
+      - name: Build Hermes sidecar
+        shell: pwsh
+        working-directory: citrate-agent-runtime
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --release --locked -p agent-sidecar --target $env:TARGET_TRIPLE
+
+      - name: Stage pinned Rust sidecars
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $destination = 'source\src-tauri\binaries'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $sidecars = [ordered]@{
+            "citrate-node-agent\target\$env:TARGET_TRIPLE\release\node-agent.exe" = "node-agent-$env:TARGET_TRIPLE.exe"
+            "citrate-memories\target\$env:TARGET_TRIPLE\release\mem-mcp.exe" = "mem-mcp-$env:TARGET_TRIPLE.exe"
+            "citrate-comms\target\$env:TARGET_TRIPLE\release\comms-member-daemon.exe" = "comms-member-daemon-$env:TARGET_TRIPLE.exe"
+            "citrate-cluster\target\$env:TARGET_TRIPLE\release\cluster-daemon.exe" = "cluster-daemon-$env:TARGET_TRIPLE.exe"
+            "citrate-agent-runtime\target\$env:TARGET_TRIPLE\release\citrate-agent-sidecar.exe" = "hermes-$env:TARGET_TRIPLE.exe"
+          }
+          foreach ($entry in $sidecars.GetEnumerator()) {
+            if (-not (Test-Path -LiteralPath $entry.Key -PathType Leaf)) {
+              throw "sidecar build output is missing: $($entry.Key)"
+            }
+            Copy-Item -LiteralPath $entry.Key -Destination (Join-Path $destination $entry.Value)
+          }
+
+      - name: Build llama-server without generated UI assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sourceDirectory = (Resolve-Path 'llama.cpp').Path
+          $buildDirectory = Join-Path $sourceDirectory 'build-windows-release'
+          $toolchain = Join-Path $sourceDirectory 'cmake\x64-windows-llvm.cmake'
+          if (-not (Test-Path -LiteralPath $toolchain -PathType Leaf)) {
+            throw "llama.cpp Windows LLVM toolchain is missing: $toolchain"
+          }
+          $configureOutput = @(
+            cmake -S $sourceDirectory -B $buildDirectory -G Ninja `
+              "-DCMAKE_BUILD_TYPE=Release" `
+              "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
+              "-DLLAMA_BUILD_SERVER=ON" `
+              "-DLLAMA_BUILD_TESTS=OFF" `
+              "-DLLAMA_BUILD_BORINGSSL=ON" `
+              "-DLLAMA_BUILD_UI=OFF" `
+              "-DLLAMA_BUILD_WEBUI=OFF" `
+              "-DLLAMA_USE_PREBUILT_UI=OFF" `
+              "-DGGML_NATIVE=OFF" `
+              "-DGGML_BACKEND_DL=ON" `
+              "-DGGML_CPU_ALL_VARIANTS=ON" `
+              "-DGGML_OPENMP=ON" 2>&1
+          )
+          $configureOutput | ForEach-Object { Write-Host $_ }
+          if (($configureOutput -join "`n") -notmatch 'UI:\s*embedded\s+0\s+assets') {
+            throw 'llama.cpp configure output did not prove UI: embedded 0 assets'
+          }
+          cmake --build $buildDirectory --config Release --target llama-server
+
+          $cache = Get-Content -LiteralPath (Join-Path $buildDirectory 'CMakeCache.txt') -Raw
+          foreach ($setting in @(
+            'LLAMA_BUILD_UI:UNINITIALIZED=OFF',
+            'LLAMA_BUILD_WEBUI:UNINITIALIZED=OFF',
+            'LLAMA_USE_PREBUILT_UI:UNINITIALIZED=OFF'
+          )) {
+            $name = $setting.Split(':')[0]
+            if ($cache -notmatch "(?m)^$([regex]::Escape($name)):[^=]+=OFF$") {
+              throw "llama.cpp cache does not prove $name=OFF"
+            }
+          }
+
+          $generatedAssets = @(
+            Get-ChildItem -LiteralPath $buildDirectory -Recurse -File |
+              Where-Object { $_.Extension -in @('.html', '.js', '.css', '.wasm') }
+          )
+          if ($generatedAssets.Count -ne 0) {
+            throw "llama.cpp generated forbidden UI assets: $($generatedAssets.FullName -join ', ')"
+          }
+          foreach ($generatedDirectory in @(
+            (Join-Path $sourceDirectory 'tools\server\public'),
+            (Join-Path $sourceDirectory 'tools\server\webui\dist'),
+            (Join-Path $sourceDirectory 'tools\ui\dist')
+          )) {
+            if (Test-Path -LiteralPath $generatedDirectory) {
+              $assets = @(
+                Get-ChildItem -LiteralPath $generatedDirectory -Recurse -File |
+                  Where-Object { $_.Extension -in @('.html', '.js', '.css', '.wasm') }
+              )
+              if ($assets.Count -ne 0) {
+                throw "llama.cpp generated forbidden UI assets: $($assets.FullName -join ', ')"
+              }
+            }
+          }
+
+          $servers = @(
+            Get-ChildItem -LiteralPath $buildDirectory -Recurse -File -Filter 'llama-server.exe'
+          )
+          if ($servers.Count -ne 1) {
+            throw "expected exactly one llama-server.exe, found $($servers.Count)"
+          }
+          Copy-Item -LiteralPath $servers[0].FullName `
+            -Destination "source\src-tauri\binaries\llama-server-$env:TARGET_TRIPLE.exe"
+
+          $runtimeDirectory = 'source\src-tauri\llama'
+          New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
+          $runtimeDlls = @(Get-ChildItem -LiteralPath $buildDirectory -Recurse -File -Filter '*.dll')
+          if ($runtimeDlls.Count -lt 1) { throw 'llama.cpp build produced no runtime DLLs' }
+          $duplicateDlls = @($runtimeDlls | Group-Object Name | Where-Object Count -gt 1)
+          if ($duplicateDlls.Count -ne 0) {
+            throw "llama.cpp produced duplicate runtime DLL names: $($duplicateDlls.Name -join ', ')"
+          }
+          foreach ($dll in $runtimeDlls) {
+            Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $runtimeDirectory $dll.Name)
+          }
+
+      - name: Download and verify Kubo for Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          function Expand-SafeZip([string]$ArchivePath, [string]$DestinationPath) {
+            if (Test-Path -LiteralPath $DestinationPath) { throw "ZIP extraction collision: $DestinationPath" }
+            New-Item -ItemType Directory -Path $DestinationPath | Out-Null
+            $root = [System.IO.Path]::GetFullPath($DestinationPath).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+            $seen = @{}
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+            try {
+              foreach ($entry in $archive.Entries) {
+                $name = $entry.FullName.Replace('\', '/')
+                if ([string]::IsNullOrWhiteSpace($name) -or $name.StartsWith('/') -or
+                    $name -match '^[A-Za-z]:' -or $name -match '(^|/)\.{1,2}(/|$)') {
+                  throw "ZIP contains an unsafe path: $name"
+                }
+                $unixType = (($entry.ExternalAttributes -shr 16) -band 0xF000)
+                if ($unixType -eq 0xA000) { throw "ZIP contains a symbolic link: $name" }
+                $target = [System.IO.Path]::GetFullPath((Join-Path $DestinationPath $name))
+                if (-not $target.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+                  throw "ZIP path escapes the extraction root: $name"
+                }
+                $key = $target.ToLowerInvariant()
+                if ($seen.ContainsKey($key)) { throw "ZIP contains a duplicate path: $name" }
+                $seen[$key] = $true
+                if ($name.EndsWith('/')) {
+                  New-Item -ItemType Directory -Path $target | Out-Null
+                  continue
+                }
+                $parent = Split-Path $target -Parent
+                if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
+                $input = $entry.Open()
+                $output = [System.IO.File]::Open($target, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
+              }
+            } finally {
+              $archive.Dispose()
+            }
+          }
+          $archiveName = "kubo_$($env:KUBO_VERSION)_windows-amd64.zip"
+          $baseUri = "https://dist.ipfs.tech/kubo/$($env:KUBO_VERSION)"
+          $downloadDirectory = Join-Path $env:RUNNER_TEMP 'kubo-windows-release'
+          if (Test-Path -LiteralPath $downloadDirectory) { throw "Kubo staging collision: $downloadDirectory" }
+          New-Item -ItemType Directory -Path $downloadDirectory | Out-Null
+          $archivePath = Join-Path $downloadDirectory $archiveName
+          Invoke-WebRequest -Uri "$baseUri/$archiveName" -OutFile $archivePath
+          $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA512).Hash.ToLowerInvariant()
+          if ($actualHash -cne $env:KUBO_ARCHIVE_SHA512) { throw "Kubo archive hash mismatch: $actualHash" }
+
+          $extractDirectory = Join-Path $downloadDirectory 'extracted'
+          Expand-SafeZip -ArchivePath $archivePath -DestinationPath $extractDirectory
+          $executables = @(Get-ChildItem -LiteralPath $extractDirectory -Recurse -File -Filter 'ipfs.exe')
+          if ($executables.Count -ne 1) { throw "expected exactly one Kubo ipfs.exe, found $($executables.Count)" }
+          Copy-Item -LiteralPath $executables[0].FullName `
+            -Destination "source\src-tauri\binaries\ipfs-$env:TARGET_TRIPLE.exe"
+
+      - name: Download, verify, and stage pinned runtime assets
+        shell: bash
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          validate_tar() {
+            local archive="$1"
+            local line name normalized key type
+            local -A seen=()
+            mapfile -t entries < <(tar --quoting-style=escape -tzf "$archive")
+            if (( ${#entries[@]} == 0 )); then
+              printf 'archive is empty: %s\n' "$archive" >&2
+              return 1
+            fi
+            for name in "${entries[@]}"; do
+              normalized="${name//\\//}"
+              while [[ "$normalized" == ./* ]]; do normalized="${normalized#./}"; done
+              if [[ -z "$normalized" || "$normalized" == /* || "$normalized" =~ ^[A-Za-z]: ||
+                    "$normalized" == ../* || "$normalized" == *'/../'* ||
+                    "$normalized" == */.. || "$normalized" == *'/./'* ]]; then
+                printf 'archive contains an unsafe path: %s (%s)\n' "$name" "$archive" >&2
+                return 1
+              fi
+              key="${normalized%/}"
+              key="${key,,}"
+              if [[ -n "${seen[$key]+present}" ]]; then
+                printf 'archive contains a duplicate path: %s (%s)\n' "$name" "$archive" >&2
+                return 1
+              fi
+              seen[$key]=1
+            done
+            while IFS= read -r line; do
+              type="${line:0:1}"
+              if [[ "$type" != '-' && "$type" != 'd' ]]; then
+                printf 'archive contains a link or special entry: %s (%s)\n' "$line" "$archive" >&2
+                return 1
+              fi
+            done < <(tar --quoting-style=escape -tvzf "$archive")
+          }
+          dl="$RUNNER_TEMP/citrate-runtime-deps-windows"
+          if [[ -e "$dl" ]]; then
+            printf 'runtime asset staging collision: %s\n' "$dl" >&2
+            exit 1
+          fi
+          mkdir -p "$dl"
+          assets=(
+            skills-bundle.tar.gz
+            bge-base-en-v1.5-f16.gguf
+            bge-base-en-v1.5.tar.gz
+            knowledge-corpus.tar.gz
+          )
+          for asset in "${assets[@]}"; do
+            gh release download runtime-deps \
+              --repo CitrateNetwork/citrate-core \
+              --pattern "$asset" \
+              --dir "$dl"
+          done
+          scripts/ci/verify-runtime-deps.sh \
+            src-tauri/runtime-deps.sha256 "$dl" "${assets[@]}"
+          for asset in skills-bundle.tar.gz bge-base-en-v1.5.tar.gz knowledge-corpus.tar.gz; do
+            validate_tar "$dl/$asset"
+          done
+
+          node scripts/stage-skills-bundle.mjs from-tarball \
+            "$dl/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+          mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+          cp "$dl/bge-base-en-v1.5-f16.gguf" \
+            src-tauri/models/bge-base-en-v1.5-gguf/
+
+          bge_extract="$dl/bge-extracted"
+          mkdir -p "$bge_extract"
+          tar --no-same-owner --no-same-permissions -xzf \
+            "$dl/bge-base-en-v1.5.tar.gz" -C "$bge_extract"
+          mapfile -d '' -t bge_configs < <(
+            find "$bge_extract" -type f -name config.json -print0
+          )
+          if (( ${#bge_configs[@]} != 1 )); then
+            printf 'BGE archive must contain exactly one config.json, found %s\n' \
+              "${#bge_configs[@]}" >&2
+            exit 1
+          fi
+          bge_source="$(dirname "${bge_configs[0]}")"
+          for file in config.json tokenizer.json model.safetensors; do
+            if [[ ! -s "$bge_source/$file" ]]; then
+              printf 'BGE archive model directory is missing %s: %s\n' \
+                "$file" "$bge_source" >&2
+              exit 1
+            fi
+          done
+          bge_destination=src-tauri/models/bge-base-en-v1.5
+          rm -rf "$bge_destination"
+          mkdir -p "$bge_destination"
+          cp -R "$bge_source/". "$bge_destination/"
+          for file in config.json tokenizer.json model.safetensors; do
+            if [[ ! -s "$bge_destination/$file" ]]; then
+              printf 'staged BGE embedder is missing %s\n' "$file" >&2
+              exit 1
+            fi
+          done
+          node scripts/stage-knowledge-corpus.mjs \
+            "$dl/knowledge-corpus.tar.gz" \
+            --bge-dir src-tauri/models/bge-base-en-v1.5 \
+            --mem-mcp "src-tauri/binaries/mem-mcp-$TARGET_TRIPLE.exe"
+          node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+
+      - name: Verify bundled third-party notices and licence inventory
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/third-party-notices.mjs check
+          node scripts/licence-inventory.mjs --require-notices
+
+      - name: Install and verify NSIS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          function Expand-SafeZip([string]$ArchivePath, [string]$DestinationPath) {
+            if (Test-Path -LiteralPath $DestinationPath) { throw "ZIP extraction collision: $DestinationPath" }
+            New-Item -ItemType Directory -Path $DestinationPath | Out-Null
+            $root = [System.IO.Path]::GetFullPath($DestinationPath).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+            $seen = @{}
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+            try {
+              foreach ($entry in $archive.Entries) {
+                $name = $entry.FullName.Replace('\', '/')
+                if ([string]::IsNullOrWhiteSpace($name) -or $name.StartsWith('/') -or
+                    $name -match '^[A-Za-z]:' -or $name -match '(^|/)\.{1,2}(/|$)') {
+                  throw "ZIP contains an unsafe path: $name"
+                }
+                $unixType = (($entry.ExternalAttributes -shr 16) -band 0xF000)
+                if ($unixType -eq 0xA000) { throw "ZIP contains a symbolic link: $name" }
+                $target = [System.IO.Path]::GetFullPath((Join-Path $DestinationPath $name))
+                if (-not $target.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+                  throw "ZIP path escapes the extraction root: $name"
+                }
+                $key = $target.ToLowerInvariant()
+                if ($seen.ContainsKey($key)) { throw "ZIP contains a duplicate path: $name" }
+                $seen[$key] = $true
+                if ($name.EndsWith('/')) {
+                  New-Item -ItemType Directory -Path $target | Out-Null
+                  continue
+                }
+                $parent = Split-Path $target -Parent
+                if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
+                $input = $entry.Open()
+                $output = [System.IO.File]::Open($target, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
+              }
+            } finally {
+              $archive.Dispose()
+            }
+          }
+          $nsisDirectory = Join-Path $env:RUNNER_TEMP 'nsis-windows-release'
+          if (Test-Path -LiteralPath $nsisDirectory) { throw "NSIS staging collision: $nsisDirectory" }
+          New-Item -ItemType Directory -Path $nsisDirectory | Out-Null
+          $archivePath = Join-Path $nsisDirectory "nsis-$env:NSIS_VERSION.zip"
+          Invoke-WebRequest `
+            -Uri "https://downloads.sourceforge.net/project/nsis/NSIS%203/$env:NSIS_VERSION/nsis-$env:NSIS_VERSION.zip" `
+            -OutFile $archivePath
+          $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -cne $env:NSIS_ARCHIVE_SHA256) { throw "NSIS archive hash mismatch: $actualHash" }
+          $extractDirectory = Join-Path $nsisDirectory 'extracted'
+          Expand-SafeZip -ArchivePath $archivePath -DestinationPath $extractDirectory
+          $candidates = @(Get-ChildItem -LiteralPath $extractDirectory -Recurse -File -Filter 'makensis.exe')
+          if ($candidates.Count -ne 1) { throw "expected exactly one makensis.exe, found $($candidates.Count)" }
+          $nsisBin = $candidates[0].DirectoryName
+          $nsisBin >> $env:GITHUB_PATH
+          $env:PATH = "$nsisBin;$env:PATH"
+          $version = (& $candidates[0].FullName '/VERSION').Trim()
+          if ($version -cne "v$env:NSIS_VERSION") { throw "NSIS version mismatch: $version" }
+
+      - name: Build the NSIS installer
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+          npx tauri build --config src-tauri\tauri.bundle-windows.conf.json
+
+      - name: Create release payload manifest and provenance
+        id: package
+        shell: pwsh
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+          SOURCE_TAG: ${{ needs.validate_inputs.outputs.source_tag }}
+          SOURCE_TAG_OBJECT: ${{ steps.verify_refs.outputs.source_tag_object }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $sourceRoot = (Resolve-Path 'source').Path
+          $artifactName = "windows-v0.5.1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $artifactDirectory = Join-Path $env:RUNNER_TEMP $artifactName
+          if (Test-Path -LiteralPath $artifactDirectory) { throw "artifact staging collision: $artifactDirectory" }
+          New-Item -ItemType Directory -Path $artifactDirectory | Out-Null
+
+          $installerCandidates = @(
+            Join-Path $sourceRoot "src-tauri\target\release\bundle\nsis\Citrate Core_$env:RELEASE_VERSION`_x64-setup.exe"
+            Join-Path $sourceRoot "target\release\bundle\nsis\Citrate Core_$env:RELEASE_VERSION`_x64-setup.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+          if ($installerCandidates.Count -ne 1) {
+            throw "expected exactly one NSIS installer, found $($installerCandidates.Count)"
+          }
+          $forbiddenUpdaterFiles = @(
+            Get-ChildItem -LiteralPath (Split-Path $installerCandidates[0] -Parent) -Recurse -File |
+              Where-Object { $_.Name -eq 'latest.json' -or $_.Extension -eq '.sig' -or $_.Name -like '*.msi.zip' }
+          )
+          if ($forbiddenUpdaterFiles.Count -ne 0) {
+            throw "Windows bundle contains forbidden updater artifacts: $($forbiddenUpdaterFiles.FullName -join ', ')"
+          }
+
+          $installerPath = Join-Path $artifactDirectory $env:INSTALLER_FILE_NAME
+          Copy-Item -LiteralPath $installerCandidates[0] -Destination $installerPath
+          $installer = Get-Item -LiteralPath $installerPath
+          $installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
+          if ([string]$signature.Status -cne 'NotSigned') {
+            throw "installer Authenticode status must be NotSigned: $($signature.Status)"
+          }
+          if ($installer.VersionInfo.ProductVersion -cne $env:RELEASE_VERSION) {
+            throw "installer product version mismatch: $($installer.VersionInfo.ProductVersion)"
+          }
+
+          $appCandidates = @(
+            Join-Path $sourceRoot 'src-tauri\target\release\citrate-core.exe'
+            Join-Path $sourceRoot 'target\release\citrate-core.exe'
+          ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+          if ($appCandidates.Count -ne 1) {
+            throw "expected exactly one built citrate-core.exe, found $($appCandidates.Count)"
+          }
+          $payloadSources = [ordered]@{
+            'citrate-core.exe' = $appCandidates[0]
+            'citrate.exe' = Join-Path $sourceRoot "src-tauri\binaries\citrate-$env:TARGET_TRIPLE.exe"
+            'node-agent.exe' = Join-Path $sourceRoot "src-tauri\binaries\node-agent-$env:TARGET_TRIPLE.exe"
+            'mem-mcp.exe' = Join-Path $sourceRoot "src-tauri\binaries\mem-mcp-$env:TARGET_TRIPLE.exe"
+            'llama-server.exe' = Join-Path $sourceRoot "src-tauri\binaries\llama-server-$env:TARGET_TRIPLE.exe"
+            'ipfs.exe' = Join-Path $sourceRoot "src-tauri\binaries\ipfs-$env:TARGET_TRIPLE.exe"
+            'comms-member-daemon.exe' = Join-Path $sourceRoot "src-tauri\binaries\comms-member-daemon-$env:TARGET_TRIPLE.exe"
+            'cluster-daemon.exe' = Join-Path $sourceRoot "src-tauri\binaries\cluster-daemon-$env:TARGET_TRIPLE.exe"
+            'hermes.exe' = Join-Path $sourceRoot "src-tauri\binaries\hermes-$env:TARGET_TRIPLE.exe"
+          }
+          $payloadRows = @(
+            foreach ($entry in $payloadSources.GetEnumerator()) {
+              if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+                throw "payload source is missing: $($entry.Value)"
+              }
+              $file = Get-Item -LiteralPath $entry.Value
+              [ordered]@{
+                path = $entry.Key
+                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                size = $file.Length
+              }
+            }
+          )
+          $manifest = [ordered]@{
+            schemaVersion = 1
+            version = $env:RELEASE_VERSION
+            sourceSha = $env:EXPECTED_SOURCE_SHA
+            files = $payloadRows
+          }
+          $manifestPath = Join-Path $artifactDirectory $env:PAYLOAD_MANIFEST_FILE_NAME
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+          $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $kuboArchive = Join-Path $env:RUNNER_TEMP "kubo-windows-release\kubo_$($env:KUBO_VERSION)_windows-amd64.zip"
+          if (-not (Test-Path -LiteralPath $kuboArchive -PathType Leaf)) { throw 'verified Kubo archive is missing' }
+          $kuboHash = (Get-FileHash -LiteralPath $kuboArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rustVersion = (& rustc -V).Trim()
+          $nodeVersion = (& node -v).Trim()
+          $payloadLines = @($payloadRows | ForEach-Object { "Payload-$($_.path)-SHA256: $($_.sha256)" })
+          $provenance = @(
+            'Citrate Core Windows release provenance'
+            "Version: $env:RELEASE_VERSION"
+            "Control-SHA: $env:CONTROL_SHA"
+            "Source-Tag: $env:SOURCE_TAG"
+            "Source-Tag-Object: $env:SOURCE_TAG_OBJECT"
+            "Source-SHA: $env:EXPECTED_SOURCE_SHA"
+            "Citrate-Chain-SHA: $env:CHAIN_SHA"
+            "Node-Agent-SHA: $env:NODE_AGENT_SHA"
+            "Memories-SHA: $env:MEMORIES_SHA"
+            "Comms-SHA: $env:COMMS_SHA"
+            "Cluster-SHA: $env:CLUSTER_SHA"
+            "Agent-Runtime-SHA: $env:RUNTIME_SHA"
+            "Llama.cpp-SHA: $env:LLAMA_SHA"
+            "Rust-Toolchain: $env:RUST_TOOLCHAIN"
+            "Kubo-Version: $env:KUBO_VERSION"
+            "Kubo-Archive-SHA512: $env:KUBO_ARCHIVE_SHA512"
+            "Kubo-Archive-SHA256: $kuboHash"
+            "NSIS-Version: $env:NSIS_VERSION"
+            "NSIS-Archive-SHA256: $env:NSIS_ARCHIVE_SHA256"
+            "Runner-OS: $env:RUNNER_OS"
+            "Runner-Image: $env:ImageOS $env:ImageVersion"
+            "Rust: $rustVersion"
+            "Node: $nodeVersion"
+            'Llama-Flags: LLAMA_BUILD_UI=OFF; LLAMA_BUILD_WEBUI=OFF; LLAMA_USE_PREBUILT_UI=OFF; LLAMA_BUILD_BORINGSSL=ON; GGML_NATIVE=OFF; GGML_BACKEND_DL=ON; GGML_CPU_ALL_VARIANTS=ON; GGML_OPENMP=ON'
+            "Run-URL: $env:RUN_URL"
+            "Installer-SHA256: $installerHash"
+            "Installer-Size: $($installer.Length)"
+            "Payload-Manifest-SHA256: $manifestHash"
+            'Authenticode: NotSigned'
+            'Passkey: WAIVED (owner 2026-10-17)'
+            'Membership-Activation: WAIVED (owner 2026-10-17)'
+            'Visual-Resize: WAIVED (owner 2026-10-17)'
+            'Toolchain-Panel: WAIVED (owner 2026-10-17)'
+            'Certification: not yet certified'
+            'Rendered-App-Acceptance: required downstream; loopback CDP screenshot plus visible-surface and pixel checks'
+            'Knowledge-Import-Acceptance: required downstream; real interrupted import, graceful orphan cleanup, and resumed completion'
+            'Node-Acceptance: required downstream; supervised local node through block 2001 with genesis, canonical block, and executor root-verification evidence'
+            'Comms-Acceptance: required downstream; real installed daemon bearer handshake and listGroups named-pipe round trip'
+            'Updater: disabled; no updater artifact and no latest.json'
+            "Installed-Product-Acceptance: required downstream job against artifact $artifactName"
+          ) + $payloadLines
+          $provenancePath = Join-Path $artifactDirectory 'PROVENANCE-windows.txt'
+          $provenance | Set-Content -LiteralPath $provenancePath -Encoding UTF8
+
+          $checksumFiles = @($installerPath, $manifestPath, $provenancePath)
+          $checksumLines = @(
+            foreach ($filePath in $checksumFiles) {
+              $hash = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $([System.IO.Path]::GetFileName($filePath))"
+            }
+          )
+          $checksumLines | Set-Content -LiteralPath (Join-Path $artifactDirectory 'SHA256SUMS-windows') -Encoding ascii
+
+          "artifact_name=$artifactName" >> $env:GITHUB_OUTPUT
+          "installer_sha256=$installerHash" >> $env:GITHUB_OUTPUT
+          "installer_size=$($installer.Length)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload immutable Windows build artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ runner.temp }}/${{ steps.package.outputs.artifact_name }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Canonicalize the uploaded artifact digest
+        id: artifact_digest
+        shell: pwsh
+        env:
+          UPLOADED_DIGEST: ${{ steps.upload.outputs['artifact-digest'] }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:UPLOADED_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw "upload-artifact returned a non-canonical digest: $env:UPLOADED_DIGEST"
+          }
+          "digest=$env:UPLOADED_DIGEST" >> $env:GITHUB_OUTPUT
+
+      - name: Remove private repository credential rewrite
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not [string]::IsNullOrWhiteSpace($env:CHAIN_TOKEN)) {
+            $key = "url.https://x-access-token:$env:CHAIN_TOKEN@github.com/.insteadOf"
+            $null = & git config --global --get-all $key
+            $lookupExitCode = $LASTEXITCODE
+            if ($lookupExitCode -eq 0) {
+              & git config --global --unset-all $key
+              if ($LASTEXITCODE -ne 0) { throw 'failed to remove private repository authentication' }
+            } elseif ($lookupExitCode -ne 1) {
+              throw "failed to inspect private repository authentication: git exit $lookupExitCode"
+            }
+          }
+
+  installer_smoke:
+    name: Exercise the uploaded installer artifact
+    needs: build_windows
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/windows-release-installer-smoke.yml
+    with:
+      artifact_name: ${{ needs.build_windows.outputs.artifact_name }}
+      installer_file_name: Citrate-Core-windows-x86_64-setup.exe
+      payload_manifest_file_name: PAYLOAD-MANIFEST-windows.json
+      expected_version: 0.5.1
+      expected_installer_sha256: ${{ needs.build_windows.outputs.installer_sha256 }}
+      expected_installer_size: ${{ needs.build_windows.outputs.installer_size }}
+      expected_artifact_digest: ${{ needs.build_windows.outputs.artifact_digest }}
+      source_sha: b521d98e80217346bcb68294301ded129d0f1846
+
+  publish:
+    name: Publish unsigned Windows prerelease
+    needs:
+      - validate_inputs
+      - build_windows
+      - installer_smoke
+    if: ${{ inputs.publish && needs.validate_inputs.result == 'success' && needs.build_windows.result == 'success' && needs.installer_smoke.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: windows-release-publish
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download the smoke-tested artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build_windows.outputs.artifact_name }}
+          path: ${{ runner.temp }}/windows-release-publish
+
+      - name: Download the installed-product evidence artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.installer_smoke.outputs.evidence_artifact_name }}
+          path: ${{ runner.temp }}/windows-release-evidence
+
+      - name: Revalidate artifact, source tag, and release collision state
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_TAG: ${{ needs.validate_inputs.outputs.source_tag }}
+          SOURCE_TAG_OBJECT: ${{ needs.build_windows.outputs.source_tag_object }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.build_windows.outputs.artifact_digest }}
+          ARTIFACT_NAME: ${{ needs.build_windows.outputs.artifact_name }}
+          PRODUCING_RUN_ID: ${{ github.run_id }}
+          PRODUCING_RUN_ATTEMPT: ${{ github.run_attempt }}
+          ARTIFACT_DIRECTORY: ${{ runner.temp }}/windows-release-publish
+          EVIDENCE_ARTIFACT_NAME: ${{ needs.installer_smoke.outputs.evidence_artifact_name }}
+          EVIDENCE_ARTIFACT_DIGEST: ${{ needs.installer_smoke.outputs.evidence_artifact_digest }}
+          EVIDENCE_DIRECTORY: ${{ runner.temp }}/windows-release-evidence
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $allowedFiles = @(
+            $env:INSTALLER_FILE_NAME,
+            $env:PAYLOAD_MANIFEST_FILE_NAME,
+            'PROVENANCE-windows.txt',
+            'SHA256SUMS-windows'
+          )
+          $actualFiles = @(Get-ChildItem -LiteralPath $env:ARTIFACT_DIRECTORY -File)
+          $unexpected = @($actualFiles | Where-Object { $_.Name -notin $allowedFiles })
+          $missing = @($allowedFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $env:ARTIFACT_DIRECTORY $_) -PathType Leaf) })
+          if ($unexpected.Count -ne 0 -or $missing.Count -ne 0 -or $actualFiles.Count -ne $allowedFiles.Count) {
+            throw "release artifact file set mismatch; unexpected=$($unexpected.Name -join ','); missing=$($missing -join ',')"
+          }
+          if ($actualFiles.Name -contains 'latest.json') { throw 'latest.json must not be published' }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $encodedArtifactName = [uri]::EscapeDataString($env:ARTIFACT_NAME)
+          $artifactResponse = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/actions/runs/$env:PRODUCING_RUN_ID/artifacts?name=$encodedArtifactName" `
+            -Headers $headers
+          $artifacts = @($artifactResponse.artifacts | Where-Object { $_.name -ceq $env:ARTIFACT_NAME })
+          $apiDigest = if ($artifacts.Count -eq 1) { [string]$artifacts[0].digest } else { '' }
+          if ($artifacts.Count -ne 1 -or $artifacts[0].expired -or
+              $apiDigest -cnotmatch '^sha256:([0-9a-f]{64})$' -or
+              $Matches[1] -cne $env:EXPECTED_ARTIFACT_DIGEST) {
+            throw 'publication artifact does not match the immutable build artifact digest'
+          }
+
+          $expectedEvidenceName = "windows-release-installer-smoke-$env:PRODUCING_RUN_ID-$env:PRODUCING_RUN_ATTEMPT"
+          if ($env:EVIDENCE_ARTIFACT_NAME -cne $expectedEvidenceName) {
+            throw "installed-product evidence artifact name mismatch: $env:EVIDENCE_ARTIFACT_NAME"
+          }
+          if ($env:EVIDENCE_ARTIFACT_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'installed-product evidence output is not a canonical bare SHA-256'
+          }
+          $encodedEvidenceName = [uri]::EscapeDataString($env:EVIDENCE_ARTIFACT_NAME)
+          $evidenceArtifactResponse = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/actions/runs/$env:PRODUCING_RUN_ID/artifacts?name=$encodedEvidenceName" `
+            -Headers $headers
+          $evidenceArtifacts = @(
+            $evidenceArtifactResponse.artifacts |
+              Where-Object { $_.name -ceq $env:EVIDENCE_ARTIFACT_NAME }
+          )
+          $evidenceApiDigest = if ($evidenceArtifacts.Count -eq 1) {
+            [string]$evidenceArtifacts[0].digest
+          } else {
+            ''
+          }
+          if ($evidenceArtifacts.Count -ne 1 -or $evidenceArtifacts[0].expired -or
+              $evidenceApiDigest -cnotmatch '^sha256:([0-9a-f]{64})$' -or
+              $Matches[1] -cne $env:EVIDENCE_ARTIFACT_DIGEST) {
+            throw 'installed-product evidence does not match the smoke job artifact digest'
+          }
+
+          $sumPath = Join-Path $env:ARTIFACT_DIRECTORY 'SHA256SUMS-windows'
+          $sumLines = @(Get-Content -LiteralPath $sumPath)
+          if ($sumLines.Count -ne 3) { throw 'SHA256SUMS-windows must contain exactly three entries' }
+          foreach ($line in $sumLines) {
+            if ($line -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9_.-]+)$') {
+              throw "invalid checksum line: $line"
+            }
+            $path = Join-Path $env:ARTIFACT_DIRECTORY $Matches[2]
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "checksummed file is missing: $path" }
+            $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -cne $Matches[1]) { throw "checksum mismatch for $($Matches[2])" }
+          }
+
+          if (-not (Test-Path -LiteralPath $env:EVIDENCE_DIRECTORY -PathType Container)) {
+            throw 'downloaded installed-product evidence directory is missing'
+          }
+          $evidenceRoot = Get-Item -LiteralPath $env:EVIDENCE_DIRECTORY -Force
+          if ($evidenceRoot.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            throw 'downloaded installed-product evidence root must not be a reparse point'
+          }
+          $evidenceItems = @(Get-ChildItem -LiteralPath $env:EVIDENCE_DIRECTORY -Recurse -Force)
+          $reparseItems = @(
+            $evidenceItems |
+              Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint }
+          )
+          if ($reparseItems.Count -ne 0) {
+            throw "downloaded installed-product evidence contains reparse points: $($reparseItems.FullName -join ', ')"
+          }
+
+          $requiredEvidence = [ordered]@{
+            result = 'result.json'
+            installed = 'installed-product-acceptance.json'
+            screenshot = 'installed-application.png'
+            node = 'installed-node-consensus.json'
+            comms = 'installed-comms-ipc.json'
+          }
+          $evidencePaths = @{}
+          foreach ($entry in $requiredEvidence.GetEnumerator()) {
+            $matches = @(
+              $evidenceItems |
+                Where-Object { -not $_.PSIsContainer -and $_.Name -ceq $entry.Value }
+            )
+            if ($matches.Count -ne 1) {
+              throw "installed-product evidence must contain exactly one $($entry.Value)"
+            }
+            $evidencePaths[$entry.Key] = $matches[0].FullName
+          }
+
+          $result = Get-Content -LiteralPath $evidencePaths.result -Raw | ConvertFrom-Json
+          if ($result.schemaVersion -ne 1 -or
+              [string]$result.expectedVersion -cne $env:RELEASE_VERSION -or
+              [string]$result.sourceSha -cne $env:EXPECTED_SOURCE_SHA -or
+              [int]$result.failureCount -ne 0 -or
+              @($result.failures).Count -ne 0 -or
+              @($result.checks | Where-Object { -not $_.passed }).Count -ne 0) {
+            throw 'installer result evidence does not prove a clean accepted run'
+          }
+          $productCheck = @($result.checks | Where-Object { $_.name -ceq 'installed product acceptance' })
+          if ($productCheck.Count -ne 1 -or -not $productCheck[0].passed) {
+            throw 'installer result evidence does not contain a unique passed installed-product check'
+          }
+
+          $installed = Get-Content -LiteralPath $evidencePaths.installed -Raw | ConvertFrom-Json
+          if ($installed.schemaVersion -ne 1 -or -not $installed.passed -or $installed.error -or
+              $null -eq $installed.renderedApplication -or
+              $null -eq $installed.interruptedImport -or
+              $null -eq $installed.resumedImport -or
+              $null -eq $installed.node -or $null -eq $installed.comms) {
+            throw 'installed-product acceptance evidence is incomplete or did not pass'
+          }
+          if ([int]$installed.interruptedImport.importerOrphans -ne 0 -or
+              [int]$installed.resumedImport.importerOrphans -ne 0 -or
+              [int]$installed.resumedImport.gracefulShutdownMemoryProcessCount -ne 0) {
+            throw 'installed-product evidence reports an orphaned knowledge importer'
+          }
+
+          $screenshot = Get-Item -LiteralPath $evidencePaths.screenshot
+          $screenshotHash = (Get-FileHash -LiteralPath $screenshot.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $screenshotHeader = [System.IO.File]::ReadAllBytes($screenshot.FullName)
+          $pngMagic = if ($screenshotHeader.Length -ge 8) {
+            [Convert]::ToHexString($screenshotHeader[0..7]).ToLowerInvariant()
+          } else {
+            ''
+          }
+          if ([string]$installed.renderedApplication.screenshot -cne $screenshot.Name -or
+              [string]$installed.renderedApplication.screenshotSha256 -cne $screenshotHash -or
+              [int]$installed.renderedApplication.width -lt 800 -or
+              [int]$installed.renderedApplication.height -lt 500 -or
+              [int]$installed.renderedApplication.sampledColours -lt 8 -or
+              $pngMagic -cne '89504e470d0a1a0a') {
+            throw 'rendered-application screenshot evidence is invalid'
+          }
+
+          $node = Get-Content -LiteralPath $evidencePaths.node -Raw | ConvertFrom-Json
+          if ($null -eq $node.rpcListener -or
+              $null -eq $node.rpcListener.before -or
+              $null -eq $node.rpcListener.after) {
+            throw 'node consensus evidence does not include before/after RPC listener ownership'
+          }
+          $listenerBefore = $node.rpcListener.before
+          $listenerAfter = $node.rpcListener.after
+          $allowedListenerAddresses = @('127.0.0.1', '::1', '0.0.0.0', '::')
+          if ([long]$listenerBefore.pid -le 0 -or
+              [long]$listenerBefore.pid -ne [long]$listenerAfter.pid -or
+              [long]$listenerBefore.creationTimeUtcTicks -le 0 -or
+              [long]$listenerBefore.creationTimeUtcTicks -ne [long]$listenerAfter.creationTimeUtcTicks -or
+              [string]::IsNullOrWhiteSpace([string]$listenerBefore.creationTimeUtc) -or
+              [string]$listenerBefore.creationTimeUtc -cne [string]$listenerAfter.creationTimeUtc -or
+              [int]$listenerBefore.localPort -ne 8545 -or
+              [int]$listenerAfter.localPort -ne 8545 -or
+              [string]$listenerBefore.localAddress -notin $allowedListenerAddresses -or
+              [string]$listenerAfter.localAddress -notin $allowedListenerAddresses -or
+              [string]$listenerBefore.localAddress -cne [string]$listenerAfter.localAddress -or
+              -not [System.IO.Path]::IsPathFullyQualified([string]$listenerBefore.executablePath) -or
+              [System.IO.Path]::GetFileName([string]$listenerBefore.executablePath) -ine 'citrate.exe' -or
+              -not [string]::Equals(
+                [string]$listenerBefore.executablePath,
+                [string]$listenerAfter.executablePath,
+                [System.StringComparison]::OrdinalIgnoreCase
+              )) {
+            throw 'node consensus evidence does not bind port 8545 to one stable installed citrate.exe process'
+          }
+          if ($node.supervisorStatus.state -cne 'running' -or
+              [long]$node.supervisorStatus.height -lt 2001 -or
+              [int]$node.gracefulShutdownProcessCount -ne 0 -or
+              [int]$node.rootVerifiedLineCount -lt 1 -or
+              [int]$node.stateRootMismatchLineCount -ne 0 -or
+              $node.genesis.local.hash -cne $node.genesis.expectedHash -or
+              $node.genesis.local.stateRoot -cne $node.genesis.expectedStateRoot -or
+              $node.genesis.canonical.hash -cne $node.genesis.expectedHash -or
+              $node.genesis.canonical.stateRoot -cne $node.genesis.expectedStateRoot -or
+              $node.block2001.local.hash -cne $node.block2001.canonical.hash -or
+              $node.block2001.local.stateRoot -cne $node.block2001.canonical.stateRoot) {
+            throw 'node consensus evidence does not prove supervised canonical parity through block 2001'
+          }
+
+          $comms = Get-Content -LiteralPath $evidencePaths.comms -Raw | ConvertFrom-Json
+          if ($comms.bearerHandshake -cne 'ready' -or
+              $comms.request -cne 'listGroups' -or
+              $comms.responseType -cne 'groups' -or
+              [string]$comms.executablePath -notlike '*\comms-member-daemon.exe') {
+            throw 'Comms evidence does not prove the installed named-pipe round trip'
+          }
+
+          $evidenceZipPath = Join-Path $env:ARTIFACT_DIRECTORY $env:EVIDENCE_FILE_NAME
+          if (Test-Path -LiteralPath $evidenceZipPath) { throw "evidence package collision: $evidenceZipPath" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $env:EVIDENCE_DIRECTORY,
+            $evidenceZipPath,
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $false
+          )
+          $evidenceZipHash = (Get-FileHash -LiteralPath $evidenceZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $provenancePath = Join-Path $env:ARTIFACT_DIRECTORY 'PROVENANCE-windows.txt'
+          $pendingPrefixes = @(
+            'Rendered-App-Acceptance:',
+            'Knowledge-Import-Acceptance:',
+            'Node-Acceptance:',
+            'Comms-Acceptance:',
+            'Installed-Product-Acceptance:'
+          )
+          $baseProvenance = @(
+            foreach ($line in Get-Content -LiteralPath $provenancePath) {
+              $trimmed = $line.TrimStart()
+              $isPending = @($pendingPrefixes | Where-Object { $trimmed.StartsWith($_) }).Count -gt 0
+              if (-not $isPending) { $line }
+            }
+          )
+          $finalProvenance = $baseProvenance + @(
+            'Installed-Product-Acceptance: PASSED'
+            'Rendered-App-Acceptance: PASSED; loopback CDP screenshot, visible-surface, and pixel checks'
+            'Knowledge-Import-Acceptance: PASSED; interrupted import, graceful orphan cleanup, and resumed completion'
+            'Node-Acceptance: PASSED; supervised block 2001, canonical genesis/block parity, and executor root-verification evidence'
+            'Comms-Acceptance: PASSED; installed daemon bearer handshake and listGroups named-pipe round trip'
+            "Evidence-Artifact: $env:EVIDENCE_ARTIFACT_NAME"
+            "Evidence-Artifact-SHA256: $env:EVIDENCE_ARTIFACT_DIGEST"
+            "Evidence-Package: $env:EVIDENCE_FILE_NAME"
+            "Evidence-Package-SHA256: $evidenceZipHash"
+            "Evidence-Result-SHA256: $((Get-FileHash -LiteralPath $evidencePaths.result -Algorithm SHA256).Hash.ToLowerInvariant())"
+            "Evidence-Installed-Product-SHA256: $((Get-FileHash -LiteralPath $evidencePaths.installed -Algorithm SHA256).Hash.ToLowerInvariant())"
+            "Evidence-Screenshot-SHA256: $screenshotHash"
+            "Evidence-Node-SHA256: $((Get-FileHash -LiteralPath $evidencePaths.node -Algorithm SHA256).Hash.ToLowerInvariant())"
+            "Evidence-Comms-SHA256: $((Get-FileHash -LiteralPath $evidencePaths.comms -Algorithm SHA256).Hash.ToLowerInvariant())"
+          )
+          $finalProvenance | Set-Content -LiteralPath $provenancePath -Encoding UTF8
+
+          $finalChecksumFiles = @(
+            (Join-Path $env:ARTIFACT_DIRECTORY $env:INSTALLER_FILE_NAME),
+            (Join-Path $env:ARTIFACT_DIRECTORY $env:PAYLOAD_MANIFEST_FILE_NAME),
+            $provenancePath,
+            $evidenceZipPath
+          )
+          $finalChecksumLines = @(
+            foreach ($filePath in $finalChecksumFiles) {
+              $hash = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $([System.IO.Path]::GetFileName($filePath))"
+            }
+          )
+          $finalChecksumLines |
+            Set-Content -LiteralPath (Join-Path $env:ARTIFACT_DIRECTORY 'SHA256SUMS-windows') -Encoding ascii
+          if ($finalChecksumLines.Count -ne 4 -or
+              (Get-Content -LiteralPath $provenancePath -Raw) -match 'required downstream') {
+            throw 'final provenance or checksum contract still contains a pending acceptance state'
+          }
+          foreach ($line in $finalChecksumLines) {
+            if ($line -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9_.-]+)$') {
+              throw "invalid final checksum line: $line"
+            }
+            $path = Join-Path $env:ARTIFACT_DIRECTORY $Matches[2]
+            $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -cne $Matches[1]) { throw "final checksum mismatch for $($Matches[2])" }
+          }
+
+          $encodedTag = [uri]::EscapeDataString($env:SOURCE_TAG)
+          $remoteRef = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/git/ref/tags/$encodedTag" `
+            -Headers $headers
+           if ($remoteRef.object.type -cne 'tag' -or
+               $remoteRef.object.sha -cne $env:EXPECTED_SOURCE_TAG_OBJECT -or
+               $remoteRef.object.sha -cne $env:SOURCE_TAG_OBJECT) {
+            throw 'source tag changed after the build'
+          }
+          $remoteTag = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/git/tags/$env:SOURCE_TAG_OBJECT" `
+            -Headers $headers
+          if ($remoteTag.object.sha -cne $env:EXPECTED_SOURCE_SHA -or
+              -not $remoteTag.verification.verified -or
+              $remoteTag.verification.reason -cne 'valid') {
+            throw 'source tag no longer has the expected signed annotated target'
+          }
+
+          $collisions = @()
+          $page = 1
+          do {
+            $releases = @(
+              Invoke-RestMethod -Method Get `
+                -Uri "https://api.github.com/repos/$env:REPOSITORY/releases?per_page=100&page=$page" `
+                -Headers $headers
+            )
+            $collisions += @(
+              $releases | Where-Object {
+                $_.tag_name -ceq $env:SOURCE_TAG -or $_.name -ceq $env:RELEASE_TITLE
+              }
+            )
+            $page++
+          } while ($releases.Count -eq 100)
+          if ($collisions.Count -gt 1) {
+            throw 'multiple releases collide with the source tag or exact release title'
+          }
+          if ($collisions.Count -eq 1) {
+            $candidate = $collisions[0]
+            $runMarker = "<!-- windows-staging-run:$env:GITHUB_RUN_ID -->"
+            $sourceMarker = "<!-- windows-source-sha:$env:EXPECTED_SOURCE_SHA -->"
+            if (-not $candidate.draft -or
+                $candidate.tag_name -cne $env:SOURCE_TAG -or
+                $candidate.name -cne $env:RELEASE_TITLE -or
+                -not ([string]$candidate.body).Contains($runMarker) -or
+                -not ([string]$candidate.body).Contains($sourceMarker)) {
+              throw 'an existing release collision is not this run-owned hidden staging release'
+            }
+          }
+
+      - name: Stage verified assets privately, then publish atomically
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_TAG: ${{ needs.validate_inputs.outputs.source_tag }}
+          SOURCE_TAG_OBJECT: ${{ needs.build_windows.outputs.source_tag_object }}
+          ARTIFACT_DIRECTORY: ${{ runner.temp }}/windows-release-publish
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $PSNativeCommandUseErrorActionPreference = $true
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $runMarker = "<!-- windows-staging-run:$env:GITHUB_RUN_ID -->"
+          $sourceMarker = "<!-- windows-source-sha:$env:EXPECTED_SOURCE_SHA -->"
+          $controlMarker = "<!-- windows-control-sha:$env:CONTROL_SHA -->"
+          $bodyText = @"
+          Unsigned Windows x86_64 installer for Citrate Core v0.5.1.
+
+          Authenticode: NotSigned.
+          Passkey: WAIVED (owner 2026-10-17)
+          Membership-Activation: WAIVED (owner 2026-10-17)
+          Visual-Resize: WAIVED (owner 2026-10-17)
+          Toolchain-Panel: WAIVED (owner 2026-10-17)
+          Certification: not yet certified
+          Hosted Windows acceptance verifies a rendered installed application, interrupted knowledge-import recovery, node consensus parity through block 2001, real Comms IPC, supervisor health, reinstall, and uninstall.
+          The release includes EVIDENCE-windows.zip and provenance bound to the successful same-run acceptance artifact.
+          Windows updater artifacts and latest.json are intentionally not published.
+
+          $runMarker
+          $sourceMarker
+          $controlMarker
+          "@
+
+          function Get-CollidingReleases {
+            $found = @()
+            $page = 1
+            do {
+              $pageRows = @(
+                Invoke-RestMethod -Method Get `
+                  -Uri "https://api.github.com/repos/$env:REPOSITORY/releases?per_page=100&page=$page" `
+                  -Headers $headers
+              )
+              $found += @($pageRows | Where-Object {
+                $_.tag_name -ceq $env:SOURCE_TAG -or $_.name -ceq $env:RELEASE_TITLE
+              })
+              $page++
+            } while ($pageRows.Count -eq 100)
+            return @($found)
+          }
+
+          function Assert-OwnedDraft([object]$Candidate) {
+            if (-not $Candidate.draft -or
+                $Candidate.tag_name -cne $env:SOURCE_TAG -or
+                $Candidate.name -cne $env:RELEASE_TITLE -or
+                -not ([string]$Candidate.body).Contains($runMarker) -or
+                -not ([string]$Candidate.body).Contains($sourceMarker) -or
+                -not ([string]$Candidate.body).Contains($controlMarker)) {
+              throw 'release collision is not the hidden staging release owned by this run and source'
+            }
+          }
+
+          function New-OwnedDraft {
+            $request = @{
+              tag_name = $env:SOURCE_TAG
+              target_commitish = $env:EXPECTED_SOURCE_SHA
+              name = $env:RELEASE_TITLE
+              body = $bodyText
+              draft = $true
+              prerelease = $true
+              make_latest = 'false'
+            } | ConvertTo-Json
+            return Invoke-RestMethod -Method Post `
+              -Uri "https://api.github.com/repos/$env:REPOSITORY/releases" `
+              -Headers $headers -ContentType 'application/json' -Body $request
+          }
+
+          $collisions = @(Get-CollidingReleases)
+          if ($collisions.Count -gt 1) { throw 'multiple releases collide with the source tag or title' }
+          $recoveredDraft = $false
+          if ($collisions.Count -eq 1) {
+            Assert-OwnedDraft $collisions[0]
+            $release = $collisions[0]
+            $recoveredDraft = $true
+          } else {
+            try {
+              $release = New-OwnedDraft
+            } catch {
+              $statusCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+              if ($statusCode -notin @(409, 422)) { throw }
+              $collisions = @(Get-CollidingReleases)
+              if ($collisions.Count -ne 1) { throw 'release staging raced and no unique draft can be recovered' }
+              Assert-OwnedDraft $collisions[0]
+              $release = $collisions[0]
+              $recoveredDraft = $true
+            }
+          }
+          Assert-OwnedDraft $release
+
+          # A rerun has the same run ID but a new attempt and a newly built (timestamped) NSIS
+          # installer. Recover only our still-hidden draft; never replace a public or foreign
+          # release asset in place. Deleting the owned draft does not delete the signed source tag.
+          if ($recoveredDraft) {
+            Invoke-RestMethod -Method Delete `
+              -Uri "https://api.github.com/repos/$env:REPOSITORY/releases/$($release.id)" `
+              -Headers $headers
+            $afterDelete = @(Get-CollidingReleases)
+            if ($afterDelete.Count -ne 0) {
+              throw 'owned hidden staging release still exists after rerun reset'
+            }
+            $release = New-OwnedDraft
+            Assert-OwnedDraft $release
+          }
+
+          $expected = [ordered]@{}
+          foreach ($name in @(
+            $env:INSTALLER_FILE_NAME,
+            $env:PAYLOAD_MANIFEST_FILE_NAME,
+            'SHA256SUMS-windows',
+            'PROVENANCE-windows.txt',
+            $env:EVIDENCE_FILE_NAME
+          )) {
+            $path = Join-Path $env:ARTIFACT_DIRECTORY $name
+            $expected[$name] = [pscustomobject]@{
+              path = $path
+              size = (Get-Item -LiteralPath $path).Length
+              sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+
+          function Get-ReleaseAssets([long]$ReleaseId) {
+            return @(
+              Invoke-RestMethod -Method Get `
+                -Uri "https://api.github.com/repos/$env:REPOSITORY/releases/$ReleaseId/assets?per_page=100" `
+                -Headers $headers
+            )
+          }
+
+          function Assert-RemoteAsset([object]$Asset, [object]$Wanted, [string]$DownloadRoot) {
+            if ([long]$Asset.size -ne [long]$Wanted.size -or $Asset.state -cne 'uploaded') {
+              throw "remote release asset metadata mismatch: $($Asset.name)"
+            }
+            $download = Join-Path $DownloadRoot $Asset.name
+            $assetHeaders = $headers.Clone()
+            $assetHeaders.Accept = 'application/octet-stream'
+            Invoke-WebRequest -Method Get -Uri $Asset.url -Headers $assetHeaders -OutFile $download
+            $hash = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -cne $Wanted.sha256) {
+              throw "remote release asset digest mismatch: $($Asset.name)"
+            }
+          }
+
+          $verifyRoot = Join-Path $env:RUNNER_TEMP 'windows-release-remote-verification'
+          if (Test-Path -LiteralPath $verifyRoot) { throw "remote verification staging collision: $verifyRoot" }
+          New-Item -ItemType Directory -Path $verifyRoot | Out-Null
+          $remoteAssets = @(Get-ReleaseAssets ([long]$release.id))
+          $unexpected = @($remoteAssets | Where-Object { -not $expected.Contains($_.name) })
+          if ($unexpected.Count -ne 0) {
+            throw "hidden staging release has unexpected assets: $($unexpected.name -join ', ')"
+          }
+          foreach ($asset in $remoteAssets) {
+            $duplicates = @($remoteAssets | Where-Object { $_.name -ceq $asset.name })
+            if ($duplicates.Count -ne 1) { throw "hidden staging release has duplicate asset $($asset.name)" }
+            Assert-RemoteAsset $asset $expected[$asset.name] $verifyRoot
+          }
+
+          $missingAssets = @(
+            foreach ($entry in $expected.GetEnumerator()) {
+              if (-not ($remoteAssets | Where-Object { $_.name -ceq $entry.Key })) {
+                [pscustomobject]@{ name = $entry.Key; path = $entry.Value.path }
+              }
+            }
+          )
+          $uploadBase = ([string]$release.upload_url).Split('{')[0]
+          $expectedUploadBase = "https://uploads.github.com/repos/$env:REPOSITORY/releases/$($release.id)/assets"
+          if ($uploadBase -cne $expectedUploadBase) {
+            throw "hidden staging release returned an unexpected upload endpoint: $uploadBase"
+          }
+          foreach ($missingAsset in $missingAssets) {
+            $encodedName = [uri]::EscapeDataString([string]$missingAsset.name)
+            $uploaded = Invoke-RestMethod -Method Post `
+              -Uri "${uploadBase}?name=$encodedName" `
+              -Headers $headers -ContentType 'application/octet-stream' `
+              -InFile $missingAsset.path
+            if ($uploaded.name -cne $missingAsset.name -or
+                $uploaded.state -cne 'uploaded' -or
+                [long]$uploaded.size -ne [long]$expected[$missingAsset.name].size) {
+              throw "known-draft upload response mismatch: $($missingAsset.name)"
+            }
+          }
+
+          Remove-Item -LiteralPath $verifyRoot -Recurse -Force
+          New-Item -ItemType Directory -Path $verifyRoot | Out-Null
+          $remoteAssets = @(Get-ReleaseAssets ([long]$release.id))
+          if ($remoteAssets.Count -ne $expected.Count) {
+            throw "hidden staging release asset count mismatch: $($remoteAssets.Count)"
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $matches = @($remoteAssets | Where-Object { $_.name -ceq $entry.Key })
+            if ($matches.Count -ne 1) { throw "hidden staging release is missing unique asset $($entry.Key)" }
+            Assert-RemoteAsset $matches[0] $entry.Value $verifyRoot
+          }
+
+          # Last possible identity check: the immutable signed tag must still be the exact build
+          # source immediately before this release becomes visible.
+          $encodedTag = [uri]::EscapeDataString($env:SOURCE_TAG)
+          $remoteRef = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/git/ref/tags/$encodedTag" `
+            -Headers $headers
+           if ($remoteRef.object.type -cne 'tag' -or
+               $remoteRef.object.sha -cne $env:EXPECTED_SOURCE_TAG_OBJECT -or
+               $remoteRef.object.sha -cne $env:SOURCE_TAG_OBJECT) {
+            throw 'source tag changed while assets were staged'
+          }
+          $remoteTag = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/git/tags/$env:SOURCE_TAG_OBJECT" `
+            -Headers $headers
+          if ($remoteTag.object.type -cne 'commit' -or
+              $remoteTag.object.sha -cne $env:EXPECTED_SOURCE_SHA -or
+              -not $remoteTag.verification.verified -or
+              $remoteTag.verification.reason -cne 'valid') {
+            throw 'source tag signature or immutable target changed while assets were staged'
+          }
+
+          $publishRequest = @{
+            tag_name = $env:SOURCE_TAG
+            target_commitish = $env:EXPECTED_SOURCE_SHA
+            name = $env:RELEASE_TITLE
+            body = $bodyText
+            draft = $false
+            prerelease = $true
+            make_latest = 'false'
+          } | ConvertTo-Json
+          $published = Invoke-RestMethod -Method Patch `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/releases/$($release.id)" `
+            -Headers $headers -ContentType 'application/json' -Body $publishRequest
+          if ($published.draft -or -not $published.prerelease -or
+              $published.tag_name -cne $env:SOURCE_TAG -or
+              $published.name -cne $env:RELEASE_TITLE) {
+            throw 'final release visibility transition did not preserve the publication contract'
+          }
