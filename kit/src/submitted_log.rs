@@ -211,16 +211,18 @@ impl SubmittedTxLog {
         }
     }
 
-    /// Record `hash` BEFORE it is broadcast. `Ok(true)` only when this is provably its first
-    /// submission (never seen, history certain) and the record is durable. `Ok(false)` for a
-    /// re-submission or an uncertain history. `Err` when the record could not be written: the
-    /// hash is not kept, and the caller must not send.
-    pub fn try_record(&self, hash: &str) -> Result<bool, String> {
+    /// [`Self::try_record_for`] with no sender or nonce (tests: history from before they were
+    /// kept). Such an entry, once evicted, leaves the whole history uncertain.
+    #[cfg(test)]
+    pub(crate) fn try_record(&self, hash: &str) -> Result<bool, String> {
         self.record_entry(hash, None)
     }
 
-    /// [`Self::try_record`] for a transaction whose sender and nonce are known, so an eviction
-    /// can be bounded by nonce instead of making the whole history uncertain.
+    /// Record a signed tx BEFORE it is broadcast, with its sender and nonce so an eviction can be
+    /// bounded by nonce. `Ok(true)` only when this is provably its first submission (never seen,
+    /// history certain, nonce above the sender's evicted high-water mark) and the record is
+    /// durable. `Ok(false)` for a re-submission or an unknown history. `Err` when the record could
+    /// not be written: the hash is not kept, and the caller must not send.
     pub fn try_record_for(&self, hash: &str, sender: &str, nonce: u64) -> Result<bool, String> {
         self.record_entry(hash, Some((sender, nonce)))
     }

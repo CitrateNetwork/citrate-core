@@ -573,7 +573,8 @@ impl AnchorCeremony {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let first_submission = match log.try_record(&in_flight.tx_hash) {
+        // The anchor key's address and this tx's nonce let an eviction be bounded by nonce.
+        let first_submission = match log.try_record_for(&in_flight.tx_hash, &from, nonce) {
             Ok(first) => first,
             Err(e) => {
                 (guards.not_sent)(&in_flight);

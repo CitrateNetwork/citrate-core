@@ -2571,7 +2571,7 @@ fn tripwire_every_raw_send_uses_the_classifier_and_the_first_submission_record()
             }
             sites += 1;
             let classifies = src.contains("is_definitive_send_error(") || src.contains("send_refused(&e)");
-            let records = src.contains(".try_record(&");
+            let records = src.contains(".try_record_for(&");
             if !(classifies && records) {
                 offenders.push(p.display().to_string());
             }
