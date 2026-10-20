@@ -1277,10 +1277,17 @@ pub(crate) fn revoke_invite<R: tauri::Runtime>(
 pub(crate) fn redeem_invite<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     group: String,
-    token: String,
+    token: crate::invites::WireToken,
     name: String,
 ) -> std::result::Result<(), String> {
-    parse_ok(route(app, Request::RedeemInvite { group, token, name })?)
+    parse_ok(route(
+        app,
+        Request::RedeemInvite {
+            group,
+            token: token.into_hex(),
+            name,
+        },
+    )?)
 }
 
 /// **groups_roster** — the (address, role) roster.

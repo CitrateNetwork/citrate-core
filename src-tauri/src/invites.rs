@@ -216,15 +216,9 @@ pub async fn group_invite_create(
 /// or the invite was revoked (Rule 1 — never a fabricated "joined"). Records the joiner's audit copy (#73).
 #[tauri::command]
 pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<(), String> {
-    let group = link_param(&link, "g").ok_or("invite link missing group")?;
-    let token = link_param(&link, "t").ok_or("invite link missing token")?;
-    let name = link_param(&link, "n")
-        .and_then(|h| hex::decode(h).ok())
-        .and_then(|b| String::from_utf8(b).ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Invited group".to_string());
-    let wire = redeem_token_wire(&token)?;
-    crate::comms::redeem_invite(&app, group.clone(), wire, name.clone())?;
+    let req = redeem_request(&link)?;
+    crate::comms::redeem_invite(&app, req.group.clone(), req.token, req.name.clone())?;
+    let (group, name, token_hash) = (req.group, req.name, req.token_hash);
     append_referral(
         &app,
         ReferralEvent {
@@ -232,7 +226,7 @@ pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<
             event: "joined".into(),
             group,
             group_name: name,
-            token_hash: blake3_token_hash(&token),
+            token_hash,
             for_handle: String::new(),
             ts: now_unix(),
         },
@@ -249,7 +243,7 @@ const INVITE_TOKEN_LEN: usize = 43;
 /// itself, hex-encoded (not the base64url-decoded value, which would hash to a different record).
 /// Validates the minted shape first (43 base64url chars that decode to 32 bytes). Errors never
 /// contain the token.
-pub(crate) fn redeem_token_wire(token: &str) -> Result<String, String> {
+pub(crate) fn redeem_token_wire(token: &str) -> Result<WireToken, String> {
     use base64::Engine as _;
     let shaped = token.len() == INVITE_TOKEN_LEN
         && token
@@ -262,7 +256,57 @@ pub(crate) fn redeem_token_wire(token: &str) -> Result<String, String> {
     if !shaped {
         return Err("invite link token is malformed; ask for a new link".to_string());
     }
-    Ok(hex::encode(token.as_bytes()))
+    Ok(WireToken(hex::encode(token.as_bytes())))
+}
+
+/// An invite token in the member daemon's wire encoding (see [`redeem_token_wire`]). The field is
+/// private, so [`redeem_token_wire`] is the only way to make one, and `comms::redeem_invite` takes
+/// this type: a raw link token can't reach the daemon (it doesn't compile). No `Debug`.
+pub(crate) struct WireToken(String);
+
+impl WireToken {
+    /// The hex the daemon IPC carries.
+    pub(crate) fn as_hex(&self) -> &str {
+        &self.0
+    }
+    /// Hand the hex to the IPC request.
+    pub(crate) fn into_hex(self) -> String {
+        self.0
+    }
+}
+
+/// Everything the invitee's self-admit needs, read from a `citrate://invite?g=…&t=…[&n=…]` link.
+pub(crate) struct RedeemRequest {
+    pub(crate) group: String,
+    /// The token in the daemon's encoding (never the raw link value).
+    pub(crate) token: WireToken,
+    /// The display name for the joined group (from `n=`, else a generic label).
+    pub(crate) name: String,
+    /// `BLAKE3(token)`, the key the relay and the referral log share.
+    pub(crate) token_hash: String,
+}
+
+/// Build the redeem request from an invite link (pure; no IPC). Fails closed on a missing group or
+/// token, and on a token that isn't the minted shape. Errors never contain the token.
+pub(crate) fn redeem_request(link: &str) -> Result<RedeemRequest, String> {
+    let group = link_param(link, "g")
+        .filter(|g| !g.is_empty())
+        .ok_or("invite link missing group")?;
+    let token = link_param(link, "t").ok_or("invite link missing token")?;
+    let name = link_param(link, "n")
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Invited group".to_string());
+    let token_hash = blake3_token_hash(&token);
+    // RED stub: the old behaviour, the raw link token.
+    let token = WireToken(token);
+    Ok(RedeemRequest {
+        group,
+        token,
+        name,
+        token_hash,
+    })
 }
 
 /// Decode a hex-encoded group name back to a display string (empty on any failure).
@@ -516,11 +560,12 @@ mod tests {
             let token = real_token_from_link();
             assert_eq!(token.len(), 43);
             let wire = super::redeem_token_wire(&token).expect("a real token is accepted");
+            let wire = wire.as_hex();
             assert!(
                 wire.chars().all(|c| c.is_ascii_hexdigit()),
                 "the daemon hex-decodes it"
             );
-            let bytes = hex::decode(&wire).expect("hex");
+            let bytes = hex::decode(wire).expect("hex");
             assert_eq!(bytes, token.as_bytes());
             assert_eq!(
                 hex::encode(blake3::hash(&bytes).as_bytes()),
@@ -538,19 +583,22 @@ mod tests {
         const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
         const TOKEN_UTF8_HEX: &str = "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838";
         const TOKEN_HASH: &str = "0807456e11ea80a0cabf51014bdab6bb6ae59402cacb3b323853203b178e28d3";
-        assert_eq!(super::redeem_token_wire(T).as_deref(), Ok(TOKEN_UTF8_HEX));
+        assert_eq!(
+            super::redeem_token_wire(T).map(|w| w.into_hex()).as_deref(),
+            Ok(TOKEN_UTF8_HEX)
+        );
         assert_eq!(super::blake3_token_hash(T), TOKEN_HASH);
         let bytes = hex::decode(TOKEN_UTF8_HEX).expect("hex");
         assert_eq!(hex::encode(blake3::hash(&bytes).as_bytes()), TOKEN_HASH);
     }
 
-    /// The raw string a real token used to be sent as is NOT valid hex, which is the failure this
-    /// fixes ("token must be hex" from the daemon).
+    /// The §13 token `T` itself is not hex, even cut to an even length: sending it raw is what made
+    /// the daemon answer "token must be hex". (`T[..42]` keeps base64url letters outside `0-9a-f`.)
     #[test]
-    fn a_real_token_is_not_hex_on_its_own() {
-        let token = real_token_from_link();
-        assert!(hex::decode(&token).is_err() || token.len() % 2 == 1);
-        assert_ne!(super::redeem_token_wire(&token).ok(), Some(token));
+    fn the_raw_contract_token_is_not_hex_even_at_even_length() {
+        const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        assert!(hex::decode(&T[..42]).is_err());
+        assert!(hex::decode(T).is_err());
     }
 
     #[test]
@@ -568,20 +616,129 @@ mod tests {
             padded.as_str(),
             "tok123",
         ] {
-            let err = super::redeem_token_wire(bad).expect_err(bad);
+            let err = match super::redeem_token_wire(bad) {
+                Ok(_) => panic!("accepted a malformed token"),
+                Err(e) => e,
+            };
             if !bad.is_empty() {
                 assert!(!err.contains(bad), "the error never repeats the token");
             }
         }
     }
 
+    /// A link in the exact share format `group_invite_create` builds, with a real minted token.
+    fn real_link() -> (String, String) {
+        let token = crate::connections::random_state();
+        let link = format!(
+            "citrate://invite?g={}&t={token}&k={}&n={}",
+            "ab".repeat(16),
+            "02".repeat(33),
+            hex::encode("Garden club")
+        );
+        (link, token)
+    }
+
+    /// What reaches the daemon for a real link is hex of the `t=` bytes, and BLAKE3 of those bytes is
+    /// the hash the owner published, so the relay finds the invite. Fails for any variant that sends
+    /// the raw token.
     #[test]
-    fn redeem_sends_the_wire_form_not_the_raw_token() {
-        let src = include_str!("invites.rs");
-        let body = &src[src.find("pub async fn group_invite_redeem").expect("fn")..];
-        let body = &body[..body.find("\n}\n").expect("end")];
-        assert!(body.contains("redeem_token_wire(&token)"));
-        assert!(!body.contains("redeem_invite(&app, group.clone(), token.clone()"));
+    fn redeem_request_sends_hex_of_the_link_token_bytes() {
+        for _ in 0..32 {
+            let (link, t) = real_link();
+            let req = super::redeem_request(&link).expect("a real link is accepted");
+            assert_eq!(req.group, "ab".repeat(16));
+            assert_eq!(req.name, "Garden club");
+            let sent = hex::decode(req.token.as_hex()).ok();
+            assert_eq!(sent.as_deref(), Some(t.as_bytes()), "hex of the t= bytes");
+            let sent = sent.unwrap_or_default();
+            assert_eq!(
+                hex::encode(blake3::hash(&sent).as_bytes()),
+                super::blake3_token_hash(&t),
+                "the relay's BLAKE3(bytes) is the published hash"
+            );
+            assert_eq!(req.token_hash, super::blake3_token_hash(&t));
+        }
+    }
+
+    #[test]
+    fn redeem_request_matches_the_relay_contract_vector() {
+        const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        const TOKEN_UTF8_HEX: &str = "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838";
+        let link = format!(
+            "citrate://invite?g={}&t={T}&k={}",
+            "11".repeat(32),
+            "02".repeat(33)
+        );
+        let req = super::redeem_request(&link).expect("the contract token is accepted");
+        assert_eq!(req.token.as_hex(), TOKEN_UTF8_HEX);
+        assert_eq!(req.name, "Invited group", "no n= gives the generic label");
+    }
+
+    /// Fail closed: a link whose token isn't the minted shape, or with no group or token, never
+    /// becomes a request, and the error never repeats the token.
+    #[test]
+    fn redeem_request_refuses_bad_links_without_echoing_the_token() {
+        let (_, good) = real_link();
+        let g = "ab".repeat(16);
+        let cases = [
+            format!("citrate://invite?g={g}&t={}", &good[..42]),
+            format!("citrate://invite?g={g}&t={good}A"),
+            format!("citrate://invite?g={g}&t={}%2B", &good[..42]),
+            format!("citrate://invite?g={g}&t={}=", &good[..42]),
+            format!("citrate://invite?g={g}&t={good}#frag"),
+            format!("citrate://invite?g={g}&t=tok123"),
+            format!("citrate://invite?g={g}&t=deadbeef"),
+            format!("citrate://invite?g={g}&t="),
+            format!("citrate://invite?g={g}"),
+            format!("citrate://invite?t={good}"),
+            format!("citrate://invite?g=&t={good}"),
+            "citrate://invite".to_string(),
+        ];
+        for link in &cases {
+            let err = match super::redeem_request(link) {
+                Ok(_) => panic!("accepted {link}"),
+                Err(e) => e,
+            };
+            assert!(!err.contains(&good), "the error never repeats the token");
+        }
+    }
+
+    /// Tripwire for this bug class: the daemon's `RedeemInvite` request is built in exactly one place
+    /// (`comms::redeem_invite`), from a [`super::WireToken`]. A second construction site, or one that
+    /// passes a plain string, fails here (and the type makes a raw token fail to compile).
+    #[test]
+    fn redeem_invite_request_is_built_only_from_a_wire_token() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sites = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("src dir").flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap_or_default();
+            let prod = src.split("\n#[cfg(test)]\nmod tests").next().unwrap_or("");
+            for (i, _) in prod.match_indices("Request::RedeemInvite") {
+                sites.push((
+                    name.clone(),
+                    prod[i..].chars().take(160).collect::<String>(),
+                ));
+            }
+        }
+        assert_eq!(sites.len(), 1, "one RedeemInvite construction: {sites:?}");
+        assert_eq!(sites[0].0, "comms.rs");
+        let comms = include_str!("comms.rs");
+        let f = &comms[comms.find("pub(crate) fn redeem_invite").expect("fn")..];
+        let f = &f[..f.find("\n}\n").expect("end")];
+        assert!(
+            f.contains("token: crate::invites::WireToken"),
+            "takes a WireToken"
+        );
+        assert!(f.contains("token: token.into_hex()"), "sends its hex");
     }
 
     // Pure helper: the invite link format the invitee's app parses.
