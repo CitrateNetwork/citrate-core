@@ -42,3 +42,12 @@ export function withWebSettingsLock<T>(write: () => Promise<T>): Promise<T> {
   tail = run.catch(() => undefined);
   return run;
 }
+
+/**
+ * A view's own read of the saved settings (its initial load). Resolves to null when another view
+ * published a save while the read was in flight: that save is newer than this answer, and the
+ * view has already adopted it through its subscription.
+ */
+export function readWebSettingsUnlessSuperseded<T>(read: () => Promise<T>): Promise<T | null> {
+  return read();
+}

@@ -14,6 +14,9 @@ vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () =>
 const saved: { settings: HermesWebSettings; searxngFound: boolean } = { settings: DEFAULT_WEB_SETTINGS, searxngFound: true };
 // Every command the page sent, in order.
 const calls: string[] = [];
+// Reads to hold (by 1-based order of hermes_web_settings_get) until the test releases them: a
+// delayed core response. A held read still answers with what was saved when it was made.
+const hold: { reads: Set<number>; count: number; release: Map<number, () => void> } = { reads: new Set(), count: 0, release: new Map() };
 const status = (settings: HermesWebSettings): HermesWebStatus => ({
   settings,
   managedChromium: null,
@@ -33,8 +36,10 @@ vi.mock("../bridge/tauri/invoke", async (importOriginal) => {
       // Like core over IPC, each call answers on a later turn: a read returns what was saved when
       // it was made, a write lands when it is answered. Two writers can therefore interleave.
       if (cmd === "hermes_web_settings_get") {
+        const n = ++hold.count;
         const snapshot = saved.settings;
-        await new Promise((r) => setTimeout(r, 0));
+        if (hold.reads.has(n)) await new Promise<void>((r) => hold.release.set(n, r));
+        else await new Promise((r) => setTimeout(r, 0));
         return status(snapshot);
       }
       if (cmd === "hermes_web_settings_set") {
@@ -89,6 +94,9 @@ beforeEach(() => {
   saved.settings = { ...DEFAULT_WEB_SETTINGS };
   saved.searxngFound = true;
   calls.length = 0;
+  hold.reads = new Set();
+  hold.count = 0;
+  hold.release = new Map();
   hermesRunningSlice.set({ webSearch: null, learn: null, starting: 0 });
 });
 
@@ -271,5 +279,75 @@ describe("Hermes › Controls with the Controls panel and the Web search form mo
     expect($("toggle-web-search")?.disabled).toBe(false);
     await click("toggle-web-search");
     expect(saved.settings.searchEnabled).toBe(false);
+  });
+
+  // Review finding on #343 (P2): a view's INITIAL read can answer after the other view already saved
+  // and announced a newer value. That late answer is older than what the view adopted, so it must
+  // be dropped, not shown and used as the baseline.
+  // On this page the Controls panel sends the first read and the form the second.
+  const PANEL_INITIAL_READ = 1;
+  const FORM_INITIAL_READ = 2;
+  async function release(n: number) {
+    await act(async () => {
+      hold.release.get(n)?.();
+    });
+    await flush();
+  }
+
+  it("the form's initial read answers late, after the top switch enabled search: the form keeps showing on, and turning it off saves off", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: false };
+    hold.reads = new Set([FORM_INITIAL_READ]);
+    await mountControls();
+    expect(hold.release.has(FORM_INITIAL_READ)).toBe(true);
+
+    await click("toggle-web-search");
+    expect(saved.settings.searchEnabled).toBe(true);
+    expect($("web-search-toggle")?.checked).toBe(true);
+
+    // The delayed initial answer (search off, from before the switch) arrives now.
+    await release(FORM_INITIAL_READ);
+    expect($("web-search-toggle")?.checked).toBe(true);
+
+    // The member turns search off in the form and saves: what they see is what is saved.
+    await click("web-search-toggle");
+    expect($("web-search-toggle")?.checked).toBe(false);
+    await click("web-save");
+    expect(saved.settings.searchEnabled).toBe(false);
+    expect($("toggle-web-search")?.checked).toBe(false);
+  });
+
+  it("the reported sequence: late initial read, then on, off and save in the form, saves off", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: false };
+    hold.reads = new Set([FORM_INITIAL_READ]);
+    await mountControls();
+    await click("toggle-web-search");
+    await release(FORM_INITIAL_READ);
+    // On and back off, as the member did when the form showed off.
+    if ($("web-search-toggle")?.checked === false) await click("web-search-toggle");
+    await click("web-search-toggle");
+    expect($("web-search-toggle")?.checked).toBe(false);
+    await click("web-save");
+    expect(saved.settings.searchEnabled).toBe(false);
+  });
+
+  it("the Controls panel's initial read answers late, after the form saved: the top switch shows the saved value", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: false };
+    hold.reads = new Set([PANEL_INITIAL_READ]);
+    await mountControls();
+    await click("web-search-toggle");
+    await click("web-save");
+    expect(saved.settings.searchEnabled).toBe(true);
+    expect($("toggle-web-search")?.checked).toBe(true);
+    await release(PANEL_INITIAL_READ);
+    expect($("toggle-web-search")?.checked).toBe(true);
+  });
+
+  it("a late initial read with nothing published meanwhile is still applied", async () => {
+    saved.settings = { ...DEFAULT_WEB_SETTINGS, searchEnabled: true };
+    hold.reads = new Set([FORM_INITIAL_READ]);
+    await mountControls();
+    expect($("web-search-toggle")?.checked).toBe(false); // not loaded yet: defaults
+    await release(FORM_INITIAL_READ);
+    expect($("web-search-toggle")?.checked).toBe(true);
   });
 });

@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
-import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
+import { publishWebSettings, readWebSettingsUnlessSuperseded, subscribeWebSettings } from "../agent/webSettingsSync";
 import { writeWebSettingsUnlessStarting } from "../agent/webSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
@@ -120,9 +120,11 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   useEffect(() => {
     if (!desktop) return;
     let live = true;
-    loadWebSettings(io)
+    // Dropped (null) if the other view saved while this read was in flight: the subscription above
+    // already applied that newer value, and this answer is older.
+    readWebSettingsUnlessSuperseded(() => loadWebSettings(io))
       .then((st) => {
-        if (!live) return;
+        if (!live || !st) return;
         setStatus(st);
         setDraft(st.settings);
         setBaseline(st.settings);

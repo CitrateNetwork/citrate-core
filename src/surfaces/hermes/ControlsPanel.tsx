@@ -31,7 +31,7 @@ import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
-import { publishWebSettings, subscribeWebSettings } from "../../agent/webSettingsSync";
+import { publishWebSettings, readWebSettingsUnlessSuperseded, subscribeWebSettings } from "../../agent/webSettingsSync";
 import { writeWebSettingsUnlessStarting } from "../../agent/webSettingsWrite";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
@@ -243,8 +243,9 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   useEffect(() => {
     let live = true;
     if (webDesktop) {
-      loadWebSettings(io.web).then(
-        (st) => live && (setWeb(st), setWebErr(st.loadError ?? null), noteRunning("webSearch", st.settings.searchEnabled)),
+      // Dropped (null) if the form saved while this read was in flight: the subscription applied it.
+      readWebSettingsUnlessSuperseded(() => loadWebSettings(io.web)).then(
+        (st) => live && st && (setWeb(st), setWebErr(st.loadError ?? null), noteRunning("webSearch", st.settings.searchEnabled)),
         (e) => live && setWebErr(msg(e)),
       );
     }
