@@ -5,13 +5,20 @@
 //! bytes: a re-send of bytes that were accepted and mined comes back with `NonceTooLow` or a
 //! balance error, which look definitive. So the first-ness of a send must survive an app restart.
 //! This keeps the keccak256 hashes of the last [`CAPACITY`] submissions in a small JSON file,
-//! `{"hashes": [...], "uncertain": bool}`, rewritten atomically (temp file in the same directory,
+//! `{"entries": [{hash, sender, nonce}], "evicted": {sender: nonce}, "uncertain": bool}`, rewritten
+//! atomically (temp file in the same directory,
 //! fsync, rename) BEFORE each broadcast.
 //!
 //! The rule: when the history can't prove an absent hash was never sent, the send is a
-//! re-submission ("outcome unknown"), never a first send ("not sent"). The history is *uncertain*,
-//! and stays uncertain across rewrites and restarts, once any of these happened:
-//! - a hash was evicted to keep the record at [`CAPACITY`];
+//! re-submission ("outcome unknown"), never a first send ("not sent").
+//!
+//! Each entry keeps the tx's sender and nonce when known. Evicting an entry to keep the record at
+//! [`CAPACITY`] raises that sender's *evicted nonce high-water mark*. Signed bytes fix their nonce,
+//! so an absent hash from a sender at a nonce ABOVE that mark can't be a resend of an evicted tx
+//! and is still a first submission; at or below it, it is unknown.
+//!
+//! The whole history is *uncertain* (every send unknown), across rewrites and restarts, once:
+//! - an entry with no sender/nonce was evicted (it can't be bounded);
 //! - the file existed but could not be read or parsed;
 //! - a pre-flag (bare list) file was already at capacity, so it may have evicted hashes.
 //!
@@ -27,15 +34,68 @@ use std::sync::Mutex;
 /// How many recent submissions are kept.
 pub const CAPACITY: usize = 256;
 
-#[derive(Debug)]
+/// One submitted transaction: its hash, and its sender and nonce when known.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Entry {
+    hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nonce: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
 struct Inner {
-    hashes: VecDeque<String>,
-    /// The history can't prove an absent hash was never sent (see the module docs).
+    entries: VecDeque<Entry>,
+    /// Per sender (lower case): the highest nonce among evicted entries.
+    evicted: std::collections::BTreeMap<String, u64>,
+    /// The history can't prove any absent hash was never sent (see the module docs).
     uncertain: bool,
+}
+
+impl Inner {
+    fn contains(&self, hash: &str) -> bool {
+        self.entries.iter().any(|e| e.hash == hash)
+    }
+
+    /// Whether an absent tx is provably a first submission.
+    fn absent_is_first(&self, origin: Option<(&str, u64)>) -> bool {
+        if self.uncertain {
+            return false;
+        }
+        match origin {
+            Some((sender, nonce)) => self.evicted.get(sender).is_none_or(|hw| nonce > *hw),
+            None => self.evicted.is_empty(),
+        }
+    }
+
+    /// Drop the oldest entries down to CAPACITY, raising the high-water marks.
+    fn evict_to_capacity(&mut self) {
+        while self.entries.len() > CAPACITY {
+            if let Some(e) = self.entries.pop_front() {
+                match (e.sender, e.nonce) {
+                    (Some(s), Some(n)) => {
+                        let hw = self.evicted.entry(s).or_insert(n);
+                        *hw = (*hw).max(n);
+                    }
+                    _ => self.uncertain = true,
+                }
+            }
+        }
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct OnDisk {
+    entries: Vec<Entry>,
+    #[serde(default)]
+    evicted: std::collections::BTreeMap<String, u64>,
+    uncertain: bool,
+}
+
+/// The format before sender/nonce were kept: `{hashes, uncertain}`.
+#[derive(serde::Deserialize)]
+struct OnDiskV2 {
     hashes: Vec<String>,
     uncertain: bool,
 }
@@ -54,7 +114,8 @@ impl SubmittedTxLog {
         SubmittedTxLog {
             path: None,
             inner: Mutex::new(Inner {
-                hashes: VecDeque::new(),
+                entries: VecDeque::new(),
+                evicted: Default::default(),
                 uncertain: false,
             }),
         }
@@ -63,30 +124,54 @@ impl SubmittedTxLog {
     /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt
     /// one is empty and uncertain.
     pub fn open(path: PathBuf) -> Self {
-        let (list, mut uncertain) = match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<OnDisk>(&bytes) {
-                Ok(d) => (d.hashes, d.uncertain),
-                // The bare-list format from before the flag: at capacity it may have evicted.
-                Err(_) => match serde_json::from_slice::<Vec<String>>(&bytes) {
-                    Ok(list) => {
-                        let full = list.len() >= CAPACITY;
-                        (list, full)
-                    }
-                    Err(_) => (Vec::new(), true),
-                },
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), false),
-            Err(_) => (Vec::new(), true),
+        let bare = |hashes: Vec<String>| -> Vec<Entry> {
+            hashes
+                .into_iter()
+                .map(|hash| Entry {
+                    hash,
+                    sender: None,
+                    nonce: None,
+                })
+                .collect()
         };
-        let mut hashes: VecDeque<String> =
-            list.into_iter().map(|h| h.to_ascii_lowercase()).collect();
-        while hashes.len() > CAPACITY {
-            hashes.pop_front();
-            uncertain = true;
-        }
+        let (entries, evicted, uncertain) = match std::fs::read(&path) {
+            Ok(bytes) => {
+                if let Ok(d) = serde_json::from_slice::<OnDisk>(&bytes) {
+                    (d.entries, d.evicted, d.uncertain)
+                } else if let Ok(d) = serde_json::from_slice::<OnDiskV2>(&bytes) {
+                    (bare(d.hashes), Default::default(), d.uncertain)
+                } else if let Ok(list) = serde_json::from_slice::<Vec<String>>(&bytes) {
+                    // The bare-list format from before the flag: at capacity it may have evicted.
+                    let full = list.len() >= CAPACITY;
+                    (bare(list), Default::default(), full)
+                } else {
+                    (Vec::new(), Default::default(), true)
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (Vec::new(), Default::default(), false)
+            }
+            Err(_) => (Vec::new(), Default::default(), true),
+        };
+        let mut inner = Inner {
+            entries: entries
+                .into_iter()
+                .map(|e| Entry {
+                    hash: e.hash.to_ascii_lowercase(),
+                    sender: e.sender.map(|s| s.to_ascii_lowercase()),
+                    nonce: e.nonce,
+                })
+                .collect(),
+            evicted: evicted
+                .into_iter()
+                .map(|(k, v)| (k.to_ascii_lowercase(), v))
+                .collect(),
+            uncertain,
+        };
+        inner.evict_to_capacity();
         SubmittedTxLog {
             path: Some(path),
-            inner: Mutex::new(Inner { hashes, uncertain }),
+            inner: Mutex::new(inner),
         }
     }
 
@@ -95,36 +180,41 @@ impl SubmittedTxLog {
     /// re-submission or an uncertain history. `Err` when the record could not be written: the
     /// hash is not kept, and the caller must not send.
     pub fn try_record(&self, hash: &str) -> Result<bool, String> {
+        self.record_entry(hash, None)
+    }
+
+    /// [`Self::try_record`] for a transaction whose sender and nonce are known, so an eviction
+    /// can be bounded by nonce instead of making the whole history uncertain.
+    pub fn try_record_for(&self, hash: &str, sender: &str, nonce: u64) -> Result<bool, String> {
+        self.record_entry(hash, Some((sender, nonce)))
+    }
+
+    fn record_entry(&self, hash: &str, origin: Option<(&str, u64)>) -> Result<bool, String> {
         let hash = hash.to_ascii_lowercase();
+        let origin = origin.map(|(s, n)| (s.to_ascii_lowercase(), n));
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if g.hashes.iter().any(|h| *h == hash) {
+        if g.contains(&hash) {
             return Ok(false);
         }
-        let mut next = g.hashes.clone();
-        next.push_back(hash);
-        let mut uncertain = g.uncertain;
-        while next.len() > CAPACITY {
-            next.pop_front();
-            uncertain = true;
-        }
+        let first = g.absent_is_first(origin.as_ref().map(|(s, n)| (s.as_str(), *n)));
+        let mut next = g.clone();
+        next.entries.push_back(Entry {
+            hash,
+            sender: origin.as_ref().map(|(s, _)| s.clone()),
+            nonce: origin.as_ref().map(|(_, n)| *n),
+        });
+        next.evict_to_capacity();
         if let Some(path) = &self.path {
             let disk = OnDisk {
-                hashes: next.iter().cloned().collect(),
-                uncertain,
+                entries: next.entries.iter().cloned().collect(),
+                evicted: next.evicted.clone(),
+                uncertain: next.uncertain,
             };
             write_atomic(path, &disk)
                 .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         }
-        let first = !g.uncertain;
-        g.hashes = next;
-        g.uncertain = uncertain;
+        *g = next;
         Ok(first)
-    }
-
-    /// [`Self::try_record`] for a transaction whose sender and nonce are known.
-    pub fn try_record_for(&self, hash: &str, sender: &str, nonce: u64) -> Result<bool, String> {
-        let _ = (sender, nonce);
-        self.try_record(hash)
     }
 
     /// [`Self::try_record`] for callers that only need first-ness. A failed write is never a
@@ -138,7 +228,7 @@ impl SubmittedTxLog {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .hashes
+            .entries
             .len()
     }
 

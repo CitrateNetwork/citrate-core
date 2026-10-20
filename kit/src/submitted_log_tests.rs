@@ -88,7 +88,7 @@ fn the_write_is_atomic_and_leaves_no_temp_file() {
         .collect();
     assert_eq!(names, vec!["submitted-tx.json".to_string()]);
     let body: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
-    assert_eq!(body["hashes"], serde_json::json!([h(1)]));
+    assert_eq!(body["entries"], serde_json::json!([{ "hash": h(1) }]));
     assert_eq!(body["uncertain"], false);
 }
 
@@ -238,7 +238,7 @@ fn a_record_that_cannot_be_made_durable_is_refused_and_not_kept() {
     // Nothing was sent, so the refused hash is not history.
     assert_eq!(log.try_record(&h(2)), Ok(true));
     let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
-    assert_eq!(on_disk["hashes"], serde_json::json!([h(1), h(2)]));
+    assert_eq!(on_disk["entries"], serde_json::json!([{ "hash": h(1) }, { "hash": h(2) }]));
 }
 
 // ---- Eviction keeps "not sent" possible: a per-sender nonce high-water mark ----
@@ -298,4 +298,15 @@ fn evicting_an_entry_with_no_sender_or_nonce_leaves_the_whole_history_uncertain(
     }
     assert!(log.is_uncertain(), "an evicted entry without a nonce can't be bounded");
     assert_eq!(log.try_record_for(&h(9_999), B, 0), Ok(false));
+}
+
+#[test]
+fn a_record_in_the_previous_format_loads_and_keeps_its_flag() {
+    let t = Tmp::new("v2");
+    std::fs::write(t.file(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": false })).expect("json")).expect("write");
+    let log = SubmittedTxLog::open(t.file());
+    assert!(!log.is_uncertain());
+    assert!(!log.record(&h(1)));
+    std::fs::write(t.file(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": true })).expect("json")).expect("write");
+    assert!(SubmittedTxLog::open(t.file()).is_uncertain());
 }
