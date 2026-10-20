@@ -31,26 +31,55 @@ pub fn price_url(base: &str) -> String {
     format!("{}/api/membership/price", base.trim_end_matches('/'))
 }
 
-/// The amount in minor units that `display` states (digits, at most one `.`, at most two decimals;
-/// thousands separators and the currency symbol are ignored). None when it can't be read.
-fn display_minor_units(display: &str) -> Option<u64> {
-    let kept: String = display
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    let mut parts = kept.split('.');
-    let whole = parts.next()?;
-    let frac = parts.next().unwrap_or("");
-    if parts.next().is_some() || whole.is_empty() || frac.len() > 2 {
+/// The symbol and minor-unit scale of each currency the app can state (ISO 4217). Any other
+/// currency is refused, and the app shows the pricing link instead.
+fn currency_format(currency: &str) -> Option<(&'static str, u32)> {
+    match currency {
+        "usd" => Some(("$", 2)),
+        "eur" => Some(("€", 2)),
+        "gbp" => Some(("£", 2)),
+        "jpy" => Some(("¥", 0)),
+        _ => None,
+    }
+}
+
+/// The amount in minor units that `display` states for `currency`, or None unless the WHOLE
+/// string is that currency's symbol followed by the amount: whole units with no leading zero,
+/// optionally grouped in threes by commas, then (for a 2-decimal currency) optionally "." and
+/// exactly two digits. A 0-decimal currency takes no decimal part.
+fn display_minor_units(currency: &str, display: &str) -> Option<u64> {
+    let (symbol, scale) = currency_format(currency)?;
+    let rest = display.strip_prefix(symbol)?;
+    let (whole, frac) = match rest.split_once('.') {
+        Some((w, f)) => (w, Some(f)),
+        None => (rest, None),
+    };
+    // Whole units: plain digits, or digit groups of three after a 1–3 digit lead.
+    let groups: Vec<&str> = whole.split(',').collect();
+    let well_grouped = groups.len() == 1
+        || (!groups[0].is_empty()
+            && groups[0].len() <= 3
+            && groups[1..].iter().all(|g| g.len() == 3));
+    if whole.is_empty()
+        || !well_grouped
+        || !groups
+            .iter()
+            .all(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit()))
+    {
         return None;
     }
-    let whole: u64 = whole.parse().ok()?;
-    let frac: u64 = if frac.is_empty() {
-        0
-    } else {
-        format!("{frac:0<2}").parse().ok()?
+    let digits: String = groups.concat();
+    if digits.len() > 1 && digits.starts_with('0') {
+        return None;
+    }
+    let whole: u64 = digits.parse().ok()?;
+    let minor: u64 = match (scale, frac) {
+        (0, None) => 0,
+        (2, None) => 0,
+        (2, Some(f)) if f.len() == 2 && f.bytes().all(|b| b.is_ascii_digit()) => f.parse().ok()?,
+        _ => return None,
     };
-    whole.checked_mul(100)?.checked_add(frac)
+    whole.checked_mul(10u64.pow(scale))?.checked_add(minor)
 }
 
 /// Decide the price from the route's HTTP status and body.
@@ -88,8 +117,11 @@ pub fn parse_price(status: u16, body: &[u8]) -> Result<MembershipPrice, String> 
         })
         .ok_or("membership price: missing or invalid displayAmount")?
         .to_string();
-    if display_minor_units(&display_amount) != Some(unit_amount) {
-        return Err("membership price: displayAmount does not match unitAmount".to_string());
+    if display_minor_units(&currency, &display_amount) != Some(unit_amount) {
+        return Err(
+            "membership price: displayAmount does not state unitAmount in the declared currency"
+                .to_string(),
+        );
     }
     Ok(MembershipPrice {
         currency,
