@@ -2377,6 +2377,56 @@ fn two_ceremonies_sharing_one_record_see_each_others_submissions() {
 
 // ---- #347 Codex P1s: when history is uncertain, "outcome unknown", never "not sent" ----
 
+/// `send_once` at a chosen pending nonce (hex quantity).
+fn send_at(c: &SignatureCeremony, v: &CustodyVault, nonce_hex: &str, send: JsonValue) -> (Result<BroadcastResult>, String) {
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![ok(JsonValue::String(nonce_hex.into())), ok(JsonValue::String("0x1".into())), send]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(v, &client, &view.id, false, bcfg(1));
+    let reqs = client.transport.requests.borrow();
+    let raw = reqs
+        .iter()
+        .find(|q| q["method"] == "eth_sendRawTransaction")
+        .and_then(|q| q["params"][0].as_str())
+        .map(str::to_string)
+        .unwrap_or_default();
+    use sha3::{Digest, Keccak256};
+    let bytes = hex::decode(raw.trim_start_matches("0x")).unwrap_or_default();
+    (r, format!("0x{}", hex::encode(Keccak256::digest(&bytes))))
+}
+
+#[test]
+fn after_eviction_a_new_tx_at_a_higher_nonce_is_still_a_first_send() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let me = canonical_addr_lower();
+    // The wallet's own nonce 0 is sent, then pushed out of the window by later nonces.
+    let (first, _) = send_at(&c, &v, "0x0", node_error("Failed to submit transaction: Full"));
+    assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
+    for n in 1..=(crate::submitted_log::CAPACITY as u64) {
+        c.submitted_log().try_record_for(&format!("0x{n:064x}"), &me, n).expect("record");
+    }
+    // A resend at the evicted nonce 0 may be a resend of the evicted tx.
+    let (resend, hash) = send_at(&c, &v, "0x0", node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
+    assert_eq!(submitted_outcome_unknown(&resend), Some(hash));
+    // A tx at a nonce above everything evicted can't be: a definitive refusal is "not sent".
+    let (fresh, _) = send_at(&c, &v, "0x1f4", node_error("Failed to submit transaction: Full"));
+    assert!(matches!(fresh, Err(CeremonyError::Broadcast(_))), "{fresh:?}");
+}
+
+#[test]
+fn eviction_of_another_senders_history_does_not_affect_this_wallet() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let other = "0x00000000000000000000000000000000000000cc";
+    for n in 0..=(crate::submitted_log::CAPACITY as u64) {
+        c.submitted_log().try_record_for(&format!("0x{n:064x}"), other, n).expect("record");
+    }
+    let (r, _) = send_at(&c, &v, "0x0", node_error("Failed to submit transaction: Full"));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "{r:?}");
+}
+
 #[test]
 fn a_resend_after_the_history_was_truncated_is_unknown() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-evict-{}", std::process::id()));

@@ -121,6 +121,12 @@ impl SubmittedTxLog {
         Ok(first)
     }
 
+    /// [`Self::try_record`] for a transaction whose sender and nonce are known.
+    pub fn try_record_for(&self, hash: &str, sender: &str, nonce: u64) -> Result<bool, String> {
+        let _ = (sender, nonce);
+        self.try_record(hash)
+    }
+
     /// [`Self::try_record`] for callers that only need first-ness. A failed write is never a
     /// first submission (the hash is not kept).
     pub fn record(&self, hash: &str) -> bool {

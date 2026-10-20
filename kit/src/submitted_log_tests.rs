@@ -56,6 +56,7 @@ fn the_record_survives_a_restart() {
     assert!(again.record(&h(8)));
 }
 
+// Hashes recorded without a sender/nonce: an eviction can't be bounded, so the history is uncertain.
 #[test]
 fn the_record_keeps_the_last_256_and_then_treats_absent_hashes_as_unknown() {
     let t = Tmp::new("bound");
@@ -238,4 +239,63 @@ fn a_record_that_cannot_be_made_durable_is_refused_and_not_kept() {
     assert_eq!(log.try_record(&h(2)), Ok(true));
     let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
     assert_eq!(on_disk["hashes"], serde_json::json!([h(1), h(2)]));
+}
+
+// ---- Eviction keeps "not sent" possible: a per-sender nonce high-water mark ----
+
+const A: &str = "0x00000000000000000000000000000000000000aa";
+const B: &str = "0x00000000000000000000000000000000000000bb";
+
+/// Fill the record with CAPACITY + 1 submissions from A at nonces 0..=CAPACITY, evicting A's nonce 0.
+fn evict_a_nonce_0(log: &SubmittedTxLog) {
+    for n in 0..=(CAPACITY as u32) {
+        assert_eq!(log.try_record_for(&h(n), A, u64::from(n)), Ok(true));
+    }
+}
+
+#[test]
+fn after_eviction_a_resend_at_an_evicted_nonce_is_unknown() {
+    let log = SubmittedTxLog::in_memory();
+    evict_a_nonce_0(&log);
+    // Different bytes at A's evicted nonce 0 (e.g. a re-signed copy): can't prove it was never sent.
+    assert_eq!(log.try_record_for(&h(10_000), A, 0), Ok(false));
+}
+
+#[test]
+fn after_eviction_a_new_tx_at_a_higher_nonce_from_the_same_sender_is_a_first_send() {
+    let log = SubmittedTxLog::in_memory();
+    evict_a_nonce_0(&log);
+    assert_eq!(log.try_record_for(&h(10_001), A, 1), Ok(true), "nonce 1 is above everything evicted");
+    assert_eq!(log.try_record_for(&h(10_002), A, 5_000), Ok(true));
+}
+
+#[test]
+fn after_eviction_another_sender_is_unaffected() {
+    let log = SubmittedTxLog::in_memory();
+    evict_a_nonce_0(&log);
+    assert_eq!(log.try_record_for(&h(10_003), B, 0), Ok(true));
+}
+
+#[test]
+fn the_nonce_high_water_mark_survives_a_restart() {
+    let t = Tmp::new("hwm-restart");
+    let log = SubmittedTxLog::open(t.file());
+    evict_a_nonce_0(&log);
+    drop(log);
+    let again = SubmittedTxLog::open(t.file());
+    assert!(!again.is_uncertain(), "eviction with known nonces keeps the history usable");
+    assert_eq!(again.try_record_for(&h(20_000), A, 0), Ok(false));
+    assert_eq!(again.try_record_for(&h(20_001), A, 300), Ok(true));
+    assert_eq!(again.try_record_for(&h(20_002), B, 0), Ok(true));
+}
+
+#[test]
+fn evicting_an_entry_with_no_sender_or_nonce_leaves_the_whole_history_uncertain() {
+    let log = SubmittedTxLog::in_memory();
+    assert_eq!(log.try_record(&h(1)), Ok(true));
+    for n in 0..(CAPACITY as u32) {
+        log.try_record_for(&h(100 + n), A, u64::from(n)).expect("record");
+    }
+    assert!(log.is_uncertain(), "an evicted entry without a nonce can't be bounded");
+    assert_eq!(log.try_record_for(&h(9_999), B, 0), Ok(false));
 }

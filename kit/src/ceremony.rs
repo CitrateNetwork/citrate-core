@@ -770,11 +770,15 @@ impl SignatureCeremony {
             use sha3::{Digest, Keccak256};
             format!("0x{}", hex::encode(Keccak256::digest(&signed.raw)))
         };
-        let first_submission = self.submitted.try_record(&local_hash).map_err(|e| {
-            CeremonyError::Broadcast(format!(
-                "the submission could not be recorded durably, so nothing was sent: {e}"
-            ))
-        })?;
+        let sender = wallet::address(vault)?.address;
+        let first_submission = self
+            .submitted
+            .try_record_for(&local_hash, &sender, fields.nonce)
+            .map_err(|e| {
+                CeremonyError::Broadcast(format!(
+                    "the submission could not be recorded durably, so nothing was sent: {e}"
+                ))
+            })?;
         let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
             Ok(h) => h,
             Err(e) if first_submission && is_definitive_send_error(&e) => {
