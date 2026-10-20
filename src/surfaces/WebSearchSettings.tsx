@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
-import { publishWebSettings, readWebSettingsUnlessSuperseded, subscribeWebSettings } from "../agent/webSettingsSync";
+import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
 import { writeWebSettingsUnlessStarting } from "../agent/webSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
@@ -30,6 +30,7 @@ import {
   type HermesWebStatus,
   type WebSettingsIo,
 } from "../agent/webSearch";
+import { readWebSettingsUnlessSuperseded } from "../agent/webSettingsSync";
 
 /** The fields of `draft` that differ from `baseline` (what the form loaded or last saved). */
 export function changedFields(baseline: HermesWebSettings, draft: HermesWebSettings): Partial<HermesWebSettings> {

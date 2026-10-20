@@ -31,11 +31,12 @@ import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
-import { publishWebSettings, readWebSettingsUnlessSuperseded, subscribeWebSettings } from "../../agent/webSettingsSync";
+import { publishWebSettings, subscribeWebSettings } from "../../agent/webSettingsSync";
 import { writeWebSettingsUnlessStarting } from "../../agent/webSettingsWrite";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
+import { readWebSettingsUnlessSuperseded } from "../../agent/webSettingsSync";
 
 export type ControlId = "local-model" | "web-search" | "terminal" | "daemons" | "learn" | "voice";
 
