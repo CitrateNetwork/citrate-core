@@ -97,7 +97,7 @@ fn an_unreadable_record_treats_every_send_as_a_resubmission() {
     let t = Tmp::new("corrupt");
     std::fs::write(t.file(), b"{not json").expect("write");
     let log = SubmittedTxLog::open(t.file());
-    assert!(log.is_degraded());
+    assert!(log.is_uncertain());
     assert!(!log.record(&h(1)));
     assert!(!log.record(&h(2)));
 }
@@ -106,7 +106,7 @@ fn an_unreadable_record_treats_every_send_as_a_resubmission() {
 fn a_missing_file_is_an_empty_record() {
     let t = Tmp::new("missing");
     let log = SubmittedTxLog::open(t.file());
-    assert!(!log.is_degraded());
+    assert!(!log.is_uncertain());
     assert!(log.record(&h(1)));
 }
 
@@ -155,7 +155,7 @@ fn a_temp_file_left_by_a_crash_does_not_affect_the_record() {
     // A crash between writing the temp file and the rename leaves the old file intact plus a temp.
     std::fs::write(t.0.join(".submitted-tx.json.tmp-99999"), b"[\"0xpartial").expect("tmp");
     let again = SubmittedTxLog::open(t.file());
-    assert!(!again.is_degraded());
+    assert!(!again.is_uncertain());
     assert!(!again.record(&h(1)));
 }
 
@@ -164,7 +164,7 @@ fn a_truncated_record_is_degraded_and_never_proves_a_first_send() {
     let t = Tmp::new("truncated");
     std::fs::write(t.file(), format!("[\"{}\",\"0x", h(1))).expect("write");
     let log = SubmittedTxLog::open(t.file());
-    assert!(log.is_degraded());
+    assert!(log.is_uncertain());
     assert!(!log.record(&h(9)));
 }
 
@@ -218,7 +218,7 @@ fn a_record_at_an_unreadable_location_fails_closed() {
     let blocker = t.0.join("blocker");
     std::fs::write(&blocker, b"x").expect("blocker");
     let log = SubmittedTxLog::open(blocker.join("submitted-tx.json"));
-    assert!(log.is_degraded());
+    assert!(log.is_uncertain());
     assert!(!log.record(&h(5)));
 }
 
