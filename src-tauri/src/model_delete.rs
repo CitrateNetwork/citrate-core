@@ -226,9 +226,16 @@ pub fn delete_and_forget(
     bundled_dir: Option<&Path>,
     file: &str,
     usage: &dyn ModelUsage,
-    _selection: &dyn ModelSelection,
+    selection: &dyn ModelSelection,
 ) -> Result<Deleted, DeleteRefusal> {
-    delete(models_dir, bundled_dir, file, usage)
+    let mut out = delete(models_dir, bundled_dir, file, usage)?;
+    // The chat server's selection pointed at the deleted file: fall back to the default path
+    // (not started; the Models screen shows nothing selected) and drop its adapter.
+    out.selection_cleared = selection.forget_if(
+        &models_dir.join(&out.file),
+        models_dir.join(crate::model::MODEL_FILE),
+    );
+    Ok(out)
 }
 
 /// The delete state of every listed (verified) model.
@@ -320,15 +327,8 @@ pub async fn model_delete(app: tauri::AppHandle, file: String) -> Result<Deleted
             .ok_or("internal: serve state unavailable")?;
         let (models, bundled) = dirs(&app)?;
         let usage = LiveUsage { serve: &serve.0 };
-        let mut out =
-            delete(&models, bundled.as_deref(), &file, &usage).map_err(|e| e.to_string())?;
-        // The chat server's selection pointed at the deleted file: fall back to the default path
-        // (not started; the Models screen shows nothing selected).
-        out.selection_cleared = serve.0.forget_model_if(
-            &models.join(&out.file),
-            models.join(crate::model::MODEL_FILE),
-        );
-        Ok(out)
+        delete_and_forget(&models, bundled.as_deref(), &file, &usage, &serve.0)
+            .map_err(|e| e.to_string())
     })
     .await
 }

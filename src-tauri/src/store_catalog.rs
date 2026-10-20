@@ -1118,9 +1118,20 @@ pub(crate) fn install_sync(
         Plan::Model(_) => install_model(listing, t, on_progress),
     };
     if let Err(e) = created {
-        let _ = update_installs(root, |installs| {
-            installs.retain(|i| !(i.listing_id == record.listing_id && i.pending));
-        });
+        // A model download that failed partway leaves its `.part` (it can be GBs). It is removed
+        // under the download lock before the record goes, so no bytes are left untracked. When
+        // the lock is held, a running download owns those bytes (the Models screen shows it);
+        // when removal fails otherwise, the record stays pending so Store > Remove can retry.
+        let keep_record = listing.kind == ListingKind::Model
+            && matches!(
+                remove_unverified_model(&t.models_dir, &record.target),
+                Err(ref r) if r.code != "in_use"
+            );
+        if !keep_record {
+            let _ = update_installs(root, |installs| {
+                installs.retain(|i| !(i.listing_id == record.listing_id && i.pending));
+            });
+        }
         return Err(e);
     }
     // 3. Confirm. A failed confirming write keeps the pending record, which still tracks the
