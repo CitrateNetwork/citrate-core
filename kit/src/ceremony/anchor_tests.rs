@@ -1090,3 +1090,52 @@ fn no_anchor_is_broadcast_when_its_record_cannot_be_made_durable() {
     assert_eq!(c.pending().len(), 1, "the card stays for another try");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// #347 refinement, anchor side: the anchor records its sender and nonce, so an eviction from the
+// shared record only makes nonces at or below the evicted ones uncertain.
+#[test]
+fn after_eviction_an_anchor_above_the_evicted_nonces_can_still_be_refused_definitively() {
+    let kr = FakeKeyring::default();
+    let addr = ensure_anchor_key(&kr).unwrap().to_ascii_lowercase();
+    let log = std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::in_memory());
+    // CAPACITY + 1 earlier anchors at nonces 0..=CAPACITY: nonce 0 is evicted.
+    for n in 0..=(crate::submitted_log::CAPACITY as u64) {
+        log.try_record_for(&format!("0x{n:064x}"), &addr, n)
+            .unwrap();
+    }
+    let c = AnchorCeremony::new();
+    c.use_submitted_log(log);
+    let v = c
+        .request(good_request(20_000, root(0x67)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+        node_error("Failed to submit transaction: Full"),
+        ok(Value::Null),
+    ]));
+    let vault = unlocked_vault();
+    let rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+    let withdrawn = RefCell::new(0usize);
+    let gone = |_: &AnchorReceipt| *withdrawn.borrow_mut() += 1;
+    let r = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &gone,
+        },
+    );
+    assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
+    assert_eq!(
+        *withdrawn.borrow(),
+        1,
+        "nonce 5 is above the evicted nonce 0: a definitive refusal frees the day"
+    );
+    assert_eq!(c.pending().len(), 1);
+}
