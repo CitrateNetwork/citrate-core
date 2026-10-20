@@ -1036,3 +1036,57 @@ fn certain_anchor() -> AnchorCeremony {
     ));
     c
 }
+
+// #347 Codex P1 (durability), anchor side: no anchor is broadcast unless its hash is durably in
+// the shared first-submission record. A refused anchor is withdrawn and its card stays.
+#[test]
+fn no_anchor_is_broadcast_when_its_record_cannot_be_made_durable() {
+    let dir = std::env::temp_dir().join(format!("citrate-anchor-nodurable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir(dir.join(format!(".submitted-tx.json.tmp-{}", std::process::id())))
+        .unwrap();
+    let log = std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::open(
+        dir.join("submitted-tx.json"),
+    ));
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    c.use_submitted_log(log);
+    let v = c
+        .request(good_request(20_000, root(0x66)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+        ok(json!(format!("0x{}", "ab".repeat(32)))),
+    ]));
+    let vault = unlocked_vault();
+    let rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+    let withdrawn = RefCell::new(0usize);
+    let gone = |_: &AnchorReceipt| *withdrawn.borrow_mut() += 1;
+    let r = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &gone,
+        },
+    );
+    assert!(matches!(r, Err(AnchorError::NotRecorded(_))), "{r:?}");
+    assert!(
+        !rpc.transport()
+            .methods()
+            .iter()
+            .any(|m| m == "eth_sendRawTransaction"),
+        "nothing is broadcast without a durable record"
+    );
+    assert_eq!(*withdrawn.borrow(), 1, "the in-flight record is withdrawn");
+    assert_eq!(c.pending().len(), 1, "the card stays for another try");
+    let _ = std::fs::remove_dir_all(&dir);
+}
