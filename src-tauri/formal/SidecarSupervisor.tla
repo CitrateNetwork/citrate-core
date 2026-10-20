@@ -752,6 +752,12 @@ W_UnattestedTickPastHealthy ==
 W_TimedOutWorkerHeldWhileAlive ==
     ~(phase = "Alive" /\ \E w \in workers : w.t)
 
+\* Action reachability (review round 2): a member Start can fire from Failed,
+\* and after failures were recorded under the current member Start. Both are
+\* required by INV-15 and INV-17 being non-vacuous.
+W_MemberStartFromFailed    == ~(phase = "Failed" /\ ENABLED MemberStart)
+W_MemberStartAfterFailures == ~(sinceMember > 0 /\ ENABLED MemberStart)
+
 \* StopIgnoresWorkers (on the green base): a stop has released the child
 \* and the tickets but a probe worker is still running.
 W_StopWaitsOnWorker ==

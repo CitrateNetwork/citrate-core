@@ -321,6 +321,7 @@ FinalRestart ==
     /\ UNCHANGED << ownerState, tickets, deadlineLeft, expired, trigger, hermesChildren,
                     runtimeAdmission, passedClosing, forced, actuated, retries >>
 
+\* COVERAGE-EXEMPT: UpdaterDirectExit (enabled only under its mutant)
 UpdaterDirectExit ==
     /\ Mutant = "InstallWinNoClosing"
     /\ app = "Open"
