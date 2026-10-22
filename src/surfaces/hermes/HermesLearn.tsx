@@ -1,6 +1,8 @@
 // =====================================================================
 // K2 (0.5.2): Hermes › Learn. One place for what Hermes learns, composed from the existing pieces:
 //
+//   Hermes running        agent_harness_status via refreshAgent (read on mount)
+//
 //   What Hermes learned   LearnedPanel (src/shell/LearnedPanel.tsx): proposals waiting for you,
 //                         saved skills, learned memories, and Teach Hermes (TeachHermesCard).
 //                         hermes_learn_status / proposals / accept / reject / memories,
@@ -16,13 +18,19 @@ import { SurfaceProps } from "../shared";
 import { LearnedPanel } from "../../shell/LearnedPanel";
 import { TrajectoryConsent } from "../../fl/TrajectoryConsent";
 import { KnowledgeImportStatus } from "../Storage";
-import { agentSlice } from "../../shell/slices/agent";
+import { useEffect } from "react";
+import { agentSlice, refreshAgent } from "../../shell/slices/agent";
 import { bridge } from "../../bridge";
 
 const para = { fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 } as const;
 
 export function HermesLearn({ store, s }: SurfaceProps) {
   const st = agentSlice.use();
+  // Read the harness status here (agent_harness_status): agentSlice starts with Hermes off, and
+  // Learn must not depend on the Agent page having been opened first.
+  useEffect(() => {
+    void refreshAgent();
+  }, []);
   const running = st.attached.some((r) => r.id === "hermes" && r.wired && r.state === "running");
   const importing = s.knowledgeImport.state === "running";
   return (

@@ -71,7 +71,18 @@ function ApprovalRecords({ io }: { io: RecordsIo }) {
     if (!io.webSignIn) return;
     let live = true;
     io.webSignIn().then(
-      (st) => live && setWeb([...normalizeStatus(st).snapshot.records].sort((a, b) => b.recordId - a.recordId)),
+      (st) => {
+        if (!live) return;
+        // Core answers with health "failed" (and an empty default store) when the store can't be
+        // trusted (keychain unavailable, integrity check failed). That is an error, not "no
+        // decisions", and any records that came back with it are not shown.
+        const { snapshot } = normalizeStatus(st);
+        if (snapshot.health.state === "failed") {
+          setWebErr(`the record store can't be trusted: ${snapshot.health.reason}`);
+          return;
+        }
+        setWeb([...snapshot.records].sort((a, b) => b.recordId - a.recordId));
+      },
       (e) => live && setWebErr(msg(e)),
     );
     return () => {
