@@ -333,3 +333,103 @@ describe("tripwires", () => {
     }
   });
 });
+
+describe("slice 2: Node › Services, node agent", () => {
+  const agentRow = (c) => c.renderVals().svRows.find((r) => r.name === "Node agent");
+
+  it("stopping the node agent shows it Stopped in the row and the detail", async () => {
+    const c = await mount("p2"); // P2: node running
+    c.setState({ route: "node", nPage: "services", svcSel: "agent" });
+    expect(agentRow(c).phase).toBe("Alive");
+    c.svcStop("agent");
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(c.state.svc.agent.log.at(-1).line).toMatch(/stop complete/);
+    expect(agentRow(c).phase).toBe("Stopped");
+    expect(c.renderVals().svdPhase).toBe("Stopped");
+  });
+
+  it("a stopped agent starts again while the node is Alive", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "node", nPage: "services", svcSel: "agent" });
+    c.svcStop("agent");
+    await vi.advanceTimersByTimeAsync(1100);
+    c.svcRestart("agent");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(agentRow(c).phase).toBe("Alive");
+  });
+
+  it("starting the agent while the node is off is refused: it stays Stopped and nothing claims it is alive", async () => {
+    const c = await mount("p3"); // P3: node off, agent stopped
+    c.setState({ route: "node", nPage: "services", svcSel: "agent" });
+    c.svcRestart("agent");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(agentRow(c).phase).toBe("Stopped");
+    expect(c.state.svc.agent.phase).toBe("stopped");
+    expect(c.state.svc.agent.log.map((l) => l.line).join("\n")).not.toMatch(/process alive/);
+    expect(c.state.toast).toMatch(/node/i);
+  });
+
+  it("tripwire: with the node Alive, every service's row shows its own phase", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "node", nPage: "services" });
+    const names = Component.SERVICES().filter((d) => d.id !== "node");
+    for (const d of names) {
+      c.setState((st) => ({ svc: { ...st.svc, [d.id]: { ...st.svc[d.id], phase: "stopped" } } }));
+      expect(c.renderVals().svRows.find((r) => r.name === d.name).phase, d.id).toBe("Stopped");
+      c.setState((st) => ({ svc: { ...st.svc, [d.id]: { ...st.svc[d.id], phase: "alive" } } }));
+      expect(c.renderVals().svRows.find((r) => r.name === d.name).phase, d.id).toBe("Alive");
+    }
+  });
+});
+
+describe("slice 2: Store daemons do what their listing says", () => {
+  async function installStartFinish(c, id) {
+    c.setState({ webSearch: true });
+    c.restartHermes();
+    await vi.advanceTimersByTimeAsync(1000);
+    c.storeInstall(id);
+    c.daemonStart(id);
+    expect(c.state.daemons.find((d) => d.id === id).state).toBe("running");
+    await vi.advanceTimersByTimeAsync(3000);
+  }
+
+  it("Group thread digest proposes its journal summary, and approving appends it to today's page", async () => {
+    const c = await mount("p2");
+    await installStartFinish(c, "d-triage");
+    const a = c.state.approvals.find((x) => x.daemonId === "d-triage");
+    expect(a).toBeTruthy();
+    expect(c.state.daemons.find((d) => d.id === "d-triage").state).toBe("awaiting");
+    c.resolveApproval(a.id, true);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(c.state.jPages.find((p) => p.id === "d-" + today).blocks.join("\n")).toMatch(/Group thread digest/);
+  });
+
+  it("tripwire: every Store daemon whose listing says it writes after approval proposes a change", async () => {
+    const writers = Component.LISTINGS().filter((l) => l.kind === "daemons" && l.perms.some(([t]) => /only after you approve/i.test(t)));
+    expect(writers.length).toBeGreaterThanOrEqual(2);
+    for (const l of writers) {
+      const c = await mount("p2");
+      await installStartFinish(c, l.id);
+      expect(c.state.approvals.some((x) => x.daemonId === l.id), l.id).toBe(true);
+    }
+  });
+});
+
+describe("slice 2: deep links reach the Node, Store and web pages", () => {
+  const cases = [
+    ["#/settings/node", { route: "node", nPage: "advanced" }],
+    ["#/storage", { route: "node", nPage: "storage", nStore: "memory" }],
+    ["#/files", { route: "node", nPage: "storage", nStore: "files" }],
+    ["#/node/storage/pins", { route: "node", nPage: "storage", nStore: "pins" }],
+    ["#/node/earnings", { route: "node", nPage: "rewards" }],
+    ["#/commissary", { route: "store", stPage: "catalog", stKind: "apps" }],
+    ["#/store/models", { route: "store", stPage: "catalog", stKind: "models" }],
+    ["#/store/listing/d-brief", { route: "store", stPage: "listing", stSel: "d-brief" }],
+    ["#/web/download", { web: "download" }],
+    ["#/web/join/ABC123", { web: "join" }],
+  ];
+  it.each(cases)("%s", async (hash, want) => {
+    const c = await mount("p2");
+    expect(c.resolveHash(hash)).toMatchObject(want);
+  });
+});
