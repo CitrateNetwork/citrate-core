@@ -142,7 +142,8 @@ describe("tripwire: run log views show unreadable lines", () => {
         if (e.isDirectory()) walk(p);
         else if (/\.tsx$/.test(e.name) && !/\.test\.tsx$/.test(e.name)) {
           const t = fs.readFileSync(p, "utf8");
-          const calls = (t.match(/useDaemonRuns\(io/g) ?? []).length;
+          // Calls only (`useDaemonRuns(io)` / `useDaemonRuns(io, ...)`), not the hook's definition.
+          const calls = (t.match(/useDaemonRuns\(io[,)]/g) ?? []).length;
           views += calls;
           if (calls > 0 && (t.match(/<RunLogUnreadable\b/g) ?? []).length < calls) offenders.push(path.relative(srcDir, p));
         }

@@ -79,6 +79,23 @@ function RunRow({ r, testid }: { r: DaemonRunEntry; testid: string }) {
 
 export { RunRow as DaemonRunRow };
 
+/** daemon_runs_between skips the log lines it cannot read and counts them. Every view of the run
+ *  log shows that count (a tripwire in hermesWork.test.tsx checks it), so a partly or wholly
+ *  unreadable log is never drawn as complete or empty. Renders nothing when every line was read. */
+export function RunLogUnreadable({ count, testid, style }: { count: number; testid: string; style?: React.CSSProperties }) {
+  if (count <= 0) return null;
+  return (
+    <p data-testid={testid} role="status" style={{ ...small, color: "var(--warn)", ...style }}>
+      {count} line{count === 1 ? "" : "s"} of the log could not be read and {count === 1 ? "was" : "were"} skipped, not guessed.
+    </p>
+  );
+}
+
+/** The empty state of a run log view: "no runs" only when every line was read. */
+export function runLogEmptyText(unreadable: number, readAll: string): string {
+  return unreadable > 0 ? `No runs could be read in the last ${RUN_WINDOW_DAYS} days.` : readAll;
+}
+
 /** Hermes › Work: the newest daemon runs, with a link to the full history. */
 export function DaemonRunLog({ io: ioProp, onFullHistory }: { io?: RunLogIo; onFullHistory: () => void }) {
   const [io] = useState<RunLogIo>(() => ioProp ?? appRunLogIo());
@@ -102,10 +119,11 @@ export function DaemonRunLog({ io: ioProp, onFullHistory }: { io?: RunLogIo; onF
       ) : !log ? (
         <p style={small}>Reading the run log…</p>
       ) : runs.length === 0 ? (
-        <p style={small}>No runs yet in the last {RUN_WINDOW_DAYS} days. Each finished daemon run is written here with its outcome and token count.</p>
+        <p style={small}>{runLogEmptyText(log.unreadable, `No runs yet in the last ${RUN_WINDOW_DAYS} days. Each finished daemon run is written here with its outcome and token count.`)}</p>
       ) : (
         runs.map((r) => <RunRow key={r.daemonId + r.runId} r={r} testid="work-run-row" />)
       )}
+      {log && !error && <RunLogUnreadable count={log.unreadable} testid="work-runs-unreadable" />}
     </div>
   );
 }

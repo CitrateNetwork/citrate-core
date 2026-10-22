@@ -20,7 +20,7 @@ import { formatMicros } from "../../agent/escalation";
 import { budgetsApi, normalizeStatus, type DecisionRecord, type WebBudgetStatus } from "../../budgets/budgets";
 import { createSlice } from "../../shell/slices/createSlice";
 import { DAEMONS_NO_SALT } from "../../daemons/DaemonsPanel";
-import { DaemonRunRow, RUN_WINDOW_DAYS, appRunLogIo, fmtWhen, useDaemonRuns, type RunLogIo } from "../../daemons/DaemonRunLog";
+import { DaemonRunRow, RUN_WINDOW_DAYS, RunLogUnreadable, appRunLogIo, fmtWhen, runLogEmptyText, useDaemonRuns, type RunLogIo } from "../../daemons/DaemonRunLog";
 
 export { RUN_WINDOW_DAYS };
 
@@ -262,15 +262,11 @@ function RunHistory({ io, daemonId }: { io: RecordsIo; daemonId: string | null }
         ) : !log ? (
           <p style={para}>Reading the run log…</p>
         ) : runs.length === 0 ? (
-          <p style={para}>No runs recorded in the last {RUN_WINDOW_DAYS} days. A daemon’s runs appear here after its first run.</p>
+          <p style={para}>{runLogEmptyText(log.unreadable, `No runs recorded in the last ${RUN_WINDOW_DAYS} days. A daemon’s runs appear here after its first run.`)}</p>
         ) : (
           runs.map((r) => <DaemonRunRow key={r.daemonId + r.runId} r={r} testid="run-row" />)
         )}
-        {log && log.unreadable > 0 && (
-          <p data-testid="runs-unreadable" style={{ ...para, color: "var(--warn)" }}>
-            {log.unreadable} line{log.unreadable === 1 ? "" : "s"} of the log could not be read and {log.unreadable === 1 ? "was" : "were"} skipped, not guessed.
-          </p>
-        )}
+        {log && !error && <RunLogUnreadable count={log.unreadable} testid="runs-unreadable" style={para} />}
       </div>
       <p style={foot}>From the run log in the metering folder, last {RUN_WINDOW_DAYS} days. Conversation content is never kept in this log. {DAEMONS_NO_SALT}</p>
     </>
