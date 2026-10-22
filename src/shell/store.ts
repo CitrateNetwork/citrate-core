@@ -1019,11 +1019,30 @@ export class Store {
    * chat falls back to the honest built-in demo agent (Rule 1 — never a fabricated
    * "gateway" reply). Web-dev has no keyring, so this always resolves to the demo.
    * Called on launch and after a provider config change (Settings), so the active
-   * provider tracks the config. Never throws — a failed status read keeps the demo.
+   * provider tracks the config. Never throws. A failed status read means no remote route is
+   * known; the chat route and the local model still apply (Local model only never uses the demo).
    */
   async rebuildProvider(): Promise<void> {
+    // K2: the member's chat route, stored in core, is read first and on its own: an unreadable
+    // provider record must never drop Local model only. An unreadable route setting comes back as
+    // local_only from core; a core without the command keeps the current value (default ask_first).
+    let route: ChatRoute = this.state.chatRoute;
     try {
-      const statuses = await bridge.chat.providerStatus();
+      route = (await bridge.chat.route()).route;
+    } catch {
+      /* an older core: keep what the app has */
+    }
+    if (route !== this.state.chatRoute) this.setState({ chatRoute: route });
+    try {
+      // Provider metadata (OS keyring). A failed read (keyring unavailable, an undecodable saved
+      // record, the web shim) means no remote route is known: nothing remote is offered, and the
+      // local model and the route are still honoured.
+      let statuses: { id: string; configured: boolean }[] = [];
+      try {
+        statuses = await bridge.chat.providerStatus();
+      } catch {
+        statuses = [];
+      }
       const def = this.state.aiDefault;
       // BC-3.2 — is a gateway key configured? (used both for the local-fallback
       // routing computed in Rust AND for the gateway leg of the selection here.)
@@ -1038,15 +1057,6 @@ export class Store {
       } catch {
         inferenceState = "demo";
       }
-      // K2: the member's chat route, stored in core. An unreadable setting comes back as
-      // local_only from core; a core without the command keeps the current value (default ask_first).
-      let route: ChatRoute = this.state.chatRoute;
-      try {
-        route = (await bridge.chat.route()).route;
-      } catch {
-        /* an older core: keep what the app has */
-      }
-      if (route !== this.state.chatRoute) this.setState({ chatRoute: route });
       const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState, route);
       this.routeKind = kind;
       this.routeAsk = routeAskOptions(inferenceState, route, gatewayConfigured);
@@ -1131,10 +1141,16 @@ export class Store {
       this.provider = createDemoProvider(() => this.snapshot());
       this.reflectProvider();
     } catch {
-      // Honest no-op: providerStatus unavailable (web shim / failed read) — keep
-      // the built-in demo agent rather than a fabricated provider.
-      this.routeKind = "demo";
-      this.provider = createDemoProvider(() => this.snapshot());
+      // Any other failure while choosing a provider. Local model only stays held (the message is
+      // not sent, and nothing remote is offered); otherwise the honest built-in demo agent.
+      if (route === "local_only" && BRIDGE_MODE === "tauri") {
+        this.routeKind = "ask";
+        this.routeAsk = { restart: false, gateway: false };
+        this.provider = createLocalStoppedProvider(LOCAL_ONLY_LABEL);
+      } else {
+        this.routeKind = "demo";
+        this.provider = createDemoProvider(() => this.snapshot());
+      }
       this.reflectProvider();
     }
   }

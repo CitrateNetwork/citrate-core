@@ -225,6 +225,21 @@ describe("chat route: the store", () => {
     });
   }
 
+  it("tripwire: under local_only, no inference state and no provider-status outcome builds the demo agent", async () => {
+    route.chatRoute = "local_only";
+    for (const statusFails of [false, true]) {
+      for (const gatewayConfigured of [false, true]) {
+        for (const st of STATES) {
+          route.statusFails = statusFails;
+          route.gatewayConfigured = gatewayConfigured;
+          route.inference = st ?? "demo";
+          const store = await freshStore();
+          expect(store.provider?.kind, `${st} statusFails=${statusFails} key=${gatewayConfigured}`).not.toBe("demo");
+        }
+      }
+    }
+  });
+
   it("ask_first, provider records unreadable, no local model: nothing remote is offered", async () => {
     route.chatRoute = "ask_first";
     route.inference = "local-stopped";
