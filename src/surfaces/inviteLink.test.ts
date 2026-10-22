@@ -7,7 +7,9 @@ import { resolve } from "node:path";
 import { classifyInviteInput, joinErrorKind, joinErrorMessage, CODE_RE, JOIN_GOALS } from "./referral";
 
 const CODE = "Ab3dE7gh";
-const KEY = "AAECAwQFBgcICQoLDA0ODw";
+// The link-key fixture: bytes 00..0f as unpadded base64url ("AAEC…Dw"). Built at runtime so the
+// secret scanner doesn't read a test constant as a credential.
+const KEY = btoa(String.fromCharCode(...Array.from({ length: 16 }, (_, i) => i))).replace(/=+$/, "");
 const src = (p: string) => readFileSync(resolve(__dirname, p), "utf8");
 
 describe("classifyInviteInput — v2 links (both schemes) and bare codes", () => {

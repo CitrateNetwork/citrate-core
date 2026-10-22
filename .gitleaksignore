@@ -1,0 +1,7 @@
+# gitleaks findings reviewed and accepted as false positives. One fingerprint per line
+# (commit:file:rule:line). Add a line only for a value that is provably not a credential.
+#
+# core#355 (24538fe9): the test fixture KEY, bytes 00..0f as base64url ("AAEC…Dw"), not a
+# secret. The fixtures are now built at runtime, so later commits don't carry the literal.
+24538fe956faafa309f374bbe39e33204f8ceb07:src/shell/joinDeepLink.test.ts:generic-api-key:12
+24538fe956faafa309f374bbe39e33204f8ceb07:src/surfaces/inviteLink.test.ts:generic-api-key:10
