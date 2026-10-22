@@ -33,8 +33,10 @@ describe("PendingJoinCardView", () => {
     expect(html).not.toContain('data-testid="pending-join-join"');
   });
 
-  it("a memory-only hold says it won't survive a restart", () => {
-    expect(render({ ...waiting, persisted: false }, false)).toMatch(/restart/i);
+  it("a memory-only hold says it won't survive a restart, and that an earlier invite may show instead", () => {
+    const html = render({ ...waiting, persisted: false }, false);
+    expect(html).toMatch(/restart/i);
+    expect(html).toMatch(/earlier invite may show/i);
   });
 
   it("a resolved direct invite names the cluster and inviter on one explicit Join button", () => {

@@ -585,3 +585,49 @@ fn not_found_and_expiry_forget_the_opened_invite() {
     assert!(r.store.get().is_none());
     assert_eq!(forgot(&r), vec![CODE.to_string()]);
 }
+
+/// Another store over the same keyring: what the app finds after a restart.
+fn restarted(r: &Rig) -> PendingJoinStore {
+    let c = r.clock.clone();
+    PendingJoinStore::new(
+        Box::new(Handle(r.kr.clone())),
+        Box::new(move || c.load(Ordering::SeqCst)),
+        Box::new(|_: &str| {}),
+    )
+}
+
+/// A new invite that arrived while the keyring was down is saved as soon as the keyring is back,
+/// over the old slot, so a restart then finds the new invite, never the one it replaced.
+#[test]
+fn a_replacement_during_an_outage_is_saved_once_the_keyring_is_back() {
+    let r = rig();
+    r.store.set(&link()).expect("set A");
+    r.kr.dead.store(true, Ordering::SeqCst);
+    let v = r.store.set("citrate://join/Zz9yX8wv").expect("set B");
+    assert!(!v.persisted, "B is in memory only for now");
+    assert!(restarted(&r).get().is_none(), "nothing readable while down");
+    r.kr.dead.store(false, Ordering::SeqCst);
+    assert_eq!(r.store.get().map(|g| g.persisted), Some(true), "saved now");
+    let raw = String::from_utf8(slot(&r).expect("slot")).expect("utf8");
+    assert!(raw.contains("Zz9yX8wv") && !raw.contains(CODE), "B replaced A");
+    assert_eq!(
+        restarted(&r).link().as_deref().map(|s| s.as_str()),
+        Some("Zz9yX8wv"),
+        "after a restart: B, never A"
+    );
+}
+
+/// While the replacement is still unsaved, the old slot is never read back in this session, even
+/// if the in-memory copy is cancelled.
+#[test]
+fn a_cancelled_unsaved_replacement_does_not_bring_back_the_old_invite() {
+    let r = rig();
+    r.store.set(&link()).expect("set A");
+    r.kr.dead.store(true, Ordering::SeqCst);
+    r.store.set("citrate://join/Zz9yX8wv").expect("set B");
+    assert!(r.store.clear().is_err());
+    r.kr.dead.store(false, Ordering::SeqCst);
+    assert!(r.store.get().is_none());
+    assert!(slot(&r).is_none(), "the old slot was deleted once the keyring was back");
+    assert!(restarted(&r).get().is_none());
+}
