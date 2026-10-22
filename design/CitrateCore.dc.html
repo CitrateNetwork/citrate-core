@@ -1882,7 +1882,7 @@
                   <span style="font-size:11.5px;color:var(--tx-3);line-height:1.45;">{{ bs.v }}</span>
                 </div>
               </sc-for>
-              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;padding:10px 16px;">Drawn from UI truth contract v1 §1 (IPFSIncentivesV3.getPin, getChallenge). No pin is in these states today.</p>
+              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;padding:10px 16px;">Drawn from UI truth contract v1 §1 (IPFSIncentivesV3.getPin, getChallenge). No pin is in these states yet.</p>
             </div>
           </div>
         </div>
@@ -3140,7 +3140,7 @@
             <sc-if value="{{ hasSbtV }}" hint-placeholder-val="{{ true }}">
             <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
               <span class="eyebrow">Membership grant</span>
-              <!-- UI truth contract §5.4 / §5.6 / §5.7: the one grant explanation (core src/data/grantCopy.ts, PR #349) -->
+              <!-- UI truth contract §5.4 / §5.6 / §5.7: the one grant explanation (core src/data/grantCopy.ts, planned, PR #349) -->
               <p style="font-size:13px;line-height:1.6;color:var(--tx-1);margin:0;">{{ grantCustody }}</p>
               <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:var(--tx-2);">Grant · locked in your bond</span><span class="mono tabular" style="font-size:12.5px;">32,000 SALT</span></div>
               <div style="display:flex;justify-content:space-between;" title="MemberBond.activated()"><span style="font-size:12.5px;color:var(--tx-2);">Bond</span><span class="mono" style="font-size:11.5px;">Bond locked · not staked</span></div>
@@ -3490,6 +3490,9 @@ class Component extends DCLogic {
   // A run's completion lives in a timer, which a reload loses. A daemon saved mid-run comes back
   // paused (the state Start is offered from) with the run logged as stopped. Nothing was written.
   recoverInterruptedRuns(s) {
+    // Daemons saved before `writes` was declared: what they write follows their listing or seed.
+    const WRITES = { 'd-brief': 'page', 'd-triage': 'daily', 'd-inbox': 'daily', 'd-notes': 'daily', 'd-digest': null };
+    s.daemons = (s.daemons || []).map((d) => (d.writes === undefined ? Object.assign({}, d, { writes: WRITES[d.id] !== undefined ? WRITES[d.id] : null }) : d));
     const cut = (s.daemons || []).filter((d) => d.state === 'running');
     if (!cut.length) return;
     const now = Date.now();
@@ -4954,9 +4957,9 @@ class Component extends DCLogic {
     s.terminal = pid === 'p3';
     s.mcp = { mem: true, scan: false, node: pid === 'p2' };
     s.daemons = [
-      { id: 'd-inbox', name: 'Inbox triage', prompt: 'Read new Comms threads in my groups and draft a one-line summary of each into today’s journal.', schedule: 'every day · 07:30', source: 'created by you', paused: false, state: 'scheduled', runsToday: 1, maxRuns: 4, tokensToday: 4210, maxTok: 20000, needsWeb: false, next: 'next run tomorrow 07:30', tokenSrc: 'measured' },
-      { id: 'd-digest', name: 'Repo digest', prompt: 'Summarise commits in ~/projects/site since the last run.', schedule: 'every 2 h', source: 'created by you', paused: false, state: 'over', runsToday: 4, maxRuns: 4, tokensToday: 19880, maxTok: 20000, needsWeb: false, next: 'skipped until 00:00 · 2 runs skipped', tokenSrc: 'estimated' },
-      { id: 'd-notes', name: 'Release-notes watcher', prompt: 'Check the citrate-core release page and note anything new.', schedule: 'every day · 18:00', source: 'created by you', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: true, next: 'paused', tokenSrc: null },
+      { id: 'd-inbox', name: 'Inbox triage', prompt: 'Read new Comms threads in my groups and draft a one-line summary of each into today’s journal.', schedule: 'every day · 07:30', source: 'created by you', paused: false, state: 'scheduled', runsToday: 1, maxRuns: 4, tokensToday: 4210, maxTok: 20000, needsWeb: false, next: 'next run tomorrow 07:30', tokenSrc: 'measured', writes: 'daily' },
+      { id: 'd-digest', name: 'Repo digest', prompt: 'Summarise commits in ~/projects/site since the last run.', schedule: 'every 2 h', source: 'created by you', paused: false, state: 'over', runsToday: 4, maxRuns: 4, tokensToday: 19880, maxTok: 20000, needsWeb: false, next: 'skipped until 00:00 · 2 runs skipped', tokenSrc: 'estimated', writes: null },
+      { id: 'd-notes', name: 'Release-notes watcher', prompt: 'Check the citrate-core release page and note anything new.', schedule: 'every day · 18:00', source: 'created by you', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: true, next: 'paused', tokenSrc: null, writes: 'daily' },
     ];
     s.approvals = [
       { id: 'a-shell', kind: 'shell', title: 'Run a terminal command', origin: 'chat · Hermes · session 3f1a', ts: now - 6 * 60e3, hic: 'HIC-1 · asks every time', preview: [{ text: '$ git status --short', color: 'var(--tx-1)' }, { text: 'folder  ~/projects/site · sandbox: no network', color: 'var(--tx-3)' }] },
@@ -5037,18 +5040,19 @@ class Component extends DCLogic {
     if (!d || d.state !== 'running') return;
     const today = new Date().toISOString().slice(0, 10);
     const tokens = id === 'd-brief' ? 3412 : 2200;
-    const writes = id === 'd-brief' || d.needsWeb;
+    // What the daemon writes is declared on it ('page', 'daily' or null), never inferred from its id or needs.
+    const writes = !!d.writes;
     this.setState((st) => ({
       runLog: [{ atMs: Date.now(), name: d.name, daemonId: id, outcome: 'answered', tokens, src: 'measured' }].concat(st.runLog),
       approvals: writes ? [{
         id: 'a-' + id + '-' + Date.now(), kind: 'journal', daemonId: id, ts: Date.now(), hic: 'HIC-1 · asks every time',
         // The proposed change itself: the page it writes and the lines it adds. Approving applies exactly this.
-        target: id === 'd-brief'
-          ? { pageId: 'p-brief-' + today, title: 'Web brief · ' + today, pageKind: 'page', blocks: ['@agent Morning web brief · approved by you', '3 sources read through local search (SearXNG)', 'Summary drafted on this machine'] }
+        target: d.writes === 'page'
+          ? { pageId: id === 'd-brief' ? 'p-brief-' + today : 'p-' + id + '-' + today, title: (id === 'd-brief' ? 'Web brief' : d.name) + ' · ' + today, pageKind: 'page', blocks: id === 'd-brief' ? ['@agent Morning web brief · approved by you', '3 sources read through local search (SearXNG)', 'Summary drafted on this machine'] : ['@agent ' + d.name + ' · approved by you'] }
           : { pageId: 'd-' + today, title: today, pageKind: 'daily', blocks: ['@agent ' + d.name + ': nothing new since the last run'] },
-        title: id === 'd-brief' ? 'Add the page “Web brief · ' + today + '” to your Journal' : 'Add a note to today’s journal',
+        title: d.writes === 'page' ? 'Add the page “' + (id === 'd-brief' ? 'Web brief' : d.name) + ' · ' + today + '” to your Journal' : 'Add a note to today’s journal',
         origin: 'daemon · ' + d.name + ' · first run',
-        preview: id === 'd-brief'
+        preview: d.writes === 'page' && id === 'd-brief'
           ? [{ text: '+ # Web brief · ' + today, color: 'var(--ok)' }, { text: '+ - 3 sources read through local search (SearXNG)', color: 'var(--ok)' }, { text: '+ - Summary drafted on this machine', color: 'var(--ok)' }, { text: 'journal · new page · nothing else changes', color: 'var(--tx-3)' }]
           : [{ text: '+ ' + d.name + ': nothing new since the last run', color: 'var(--ok)' }],
       }].concat(st.approvals) : st.approvals,
@@ -5087,7 +5091,7 @@ class Component extends DCLogic {
   stubInstall() {
     if (this.state.daemons.find((d) => d.id === 'd-brief')) return;
     this.setState((st) => ({
-      daemons: [{ id: 'd-brief', name: 'Morning web brief', prompt: 'Search the web for the topics in my pinned journal pages and draft a short brief as a new journal page.', schedule: 'every day · 08:00', source: 'installed from Store', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: true, next: 'paused · arrived from Store', tokenSrc: null }].concat(st.daemons),
+      daemons: [{ id: 'd-brief', name: 'Morning web brief', prompt: 'Search the web for the topics in my pinned journal pages and draft a short brief as a new journal page.', schedule: 'every day · 08:00', source: 'installed from Store', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: true, writes: 'page', next: 'paused · arrived from Store', tokenSrc: null }].concat(st.daemons),
       cp2: Object.assign({}, st.cp2, { installed: true }), hl: 'd-brief',
     }));
     this.toast('Installed paused. Start it from Hermes › Work.');
@@ -5575,8 +5579,8 @@ class Component extends DCLogic {
       model: 'M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z M3 8 L12 13 L21 8 M12 13 V21', mcp: 'M8 7 L3 12 L8 17 M16 7 L21 12 L16 17',
     };
     return [
-      { id: 'd-brief', kind: 'daemons', icon: I.daemon, name: 'Morning web brief', version: '1.0.0', tier: 'pilot', blurb: 'A short web brief each morning on the topics in your pinned journal pages, as a page you approve.', desc: 'Each morning, searches the web for the topics in your pinned journal pages and drafts a short brief as a new journal page. The page is only written if you approve it.', needsWeb: true, budget: '4 runs a day · 20,000 tokens a day · 6,000 tokens a run', perms: [['Uses web search', 'web'], ['Writes a new journal page, only after you approve it', 'asks every time'], ['No terminal, no files outside the journal, no chain actions', 'not requested']] },
-      { id: 'd-triage', kind: 'daemons', icon: I.daemon, name: 'Group thread digest', version: '1.0.0', tier: 'pilot', blurb: 'Summarises new threads in your groups into today’s journal, for you to approve.', desc: 'Reads new Comms threads in the groups you choose and drafts a one-line summary of each into today’s journal. Nothing is written until you approve it.', needsWeb: false, budget: '4 runs a day · 20,000 tokens a day · 5,000 tokens a run', perms: [['Reads messages in the groups you pick', 'you pick'], ['Appends to today’s journal, only after you approve it', 'asks every time'], ['No web, no terminal, no chain actions', 'not requested']] },
+      { id: 'd-brief', kind: 'daemons', icon: I.daemon, name: 'Morning web brief', version: '1.0.0', tier: 'pilot', writes: 'page', blurb: 'A short web brief each morning on the topics in your pinned journal pages, as a page you approve.', desc: 'Each morning, searches the web for the topics in your pinned journal pages and drafts a short brief as a new journal page. The page is only written if you approve it.', needsWeb: true, budget: '4 runs a day · 20,000 tokens a day · 6,000 tokens a run', perms: [['Uses web search', 'web'], ['Writes a new journal page, only after you approve it', 'asks every time'], ['No terminal, no files outside the journal, no chain actions', 'not requested']] },
+      { id: 'd-triage', kind: 'daemons', icon: I.daemon, name: 'Group thread digest', version: '1.0.0', tier: 'pilot', writes: 'daily', blurb: 'Summarises new threads in your groups into today’s journal, for you to approve.', desc: 'Reads new Comms threads in the groups you choose and drafts a one-line summary of each into today’s journal. Nothing is written until you approve it.', needsWeb: false, budget: '4 runs a day · 20,000 tokens a day · 5,000 tokens a run', perms: [['Reads messages in the groups you pick', 'you pick'], ['Appends to today’s journal, only after you approve it', 'asks every time'], ['No web, no terminal, no chain actions', 'not requested']] },
       { id: 'w-node', kind: 'widgets', icon: I.widget, name: 'Node status tile', version: '1.0.0', tier: 'free', blurb: 'A Hermes rail tile with the node’s one-sentence status.', desc: 'Shows the node’s status sentence in the Hermes rail. It runs in a sandbox and sees only the data it declares.', perms: [['Reads node.status (node_status): the node word and direct peers', 'declared data'], ['No network access, no chain numbers', 'not requested']] },
       { id: 'w-journal', kind: 'widgets', icon: I.widget, name: 'Today’s page tile', version: '1.0.0', tier: 'free', blurb: 'Today’s journal page and anything waiting for your review.', desc: 'Shows today’s journal page title and the count of changes waiting for your review.', perms: [['Reads your journal (local)', 'declared data'], ['Reads the approvals queue (hermes_pending_approvals)', 'declared data']] },
       { id: 'a-js', kind: 'apps', icon: I.app, name: 'citrate-js', version: '0.9.2', tier: 'free', blurb: 'TypeScript SDK: chain reads, UserOps and the memory client.', desc: 'The TypeScript SDK. Installing adds it to the developer kit folder and shows the install command for your projects: npm install @citrate/sdk.', perms: [['Writes to the developer kit folder you choose', 'you pick'], ['No keys, no signing', 'not requested']] },
@@ -5678,6 +5682,12 @@ class Component extends DCLogic {
     if (c.phase === 'quarantined' && !c.cleanup) { this.toast('Restart is refused while the old process is still owned. It opens once cleanup finishes.'); return; }
     const def = Component.SERVICES().find((d) => d.id === id) || { kind: 'na' };
     if (id === 'node') { this.startNode(); this.svcLog('node', 'supervisor: start requested by you'); this.save(); return; }
+    if (id === 'agent' && !this.nodeAlive()) {
+      // Fail closed on the prerequisite: nothing starts, and the log says why.
+      this.svcLog('agent', 'supervisor: start refused: the node is not Alive', true);
+      this.toast('The node agent needs the node running. Start the node first.');
+      return;
+    }
     const wasAlive = c.phase === 'alive';
     this.patchSvc(id, () => ({ phase: wasAlive ? 'stopping' : 'starting', ready: wasAlive ? 'unavailable' : 'awaiting', reason: '', remaining: '' }));
     this.svcLog(id, 'supervisor: ' + (wasAlive ? 'restart' : 'start') + ' requested by you');
@@ -5693,6 +5703,14 @@ class Component extends DCLogic {
       }, 1300);
     }, toStart);
   }
+  // The node word (contract §1): the node's run state, or the word picked in the annotation strip.
+  nodeWordOf(s) {
+    const liveWord = { off: 'off', prov: 'starting', syncing: 'syncing', synced: 'synced', paused: 'off', validating: 'synced', error: 'error' }[s.node] || 'off';
+    return s.nWord || liveWord;
+  }
+  // The node supervisor phase for a node word: only these words mean the process isn't Alive.
+  static nodePhaseOf(word) { return { off: 'stopped', starting: 'starting', error: 'failed', update: 'stopped' }[word] || 'alive'; }
+  nodeAlive() { return Component.nodePhaseOf(this.nodeWordOf(this.state)) === 'alive'; }
   svcStop(id) {
     if (id === 'node') { this.setState({ node: 'off', nWord: null }); this.save(); return; }
     this.patchSvc(id, () => ({ phase: 'stopping', ready: 'unavailable' }));
@@ -5746,7 +5764,7 @@ class Component extends DCLogic {
     this.setState((st) => {
       const u = { installed: st.installed.filter((x) => x.id !== id).concat([{ id, at: today }]), isOpen: null };
       if (L.kind === 'daemons' && !st.daemons.find((d) => d.id === id)) {
-        u.daemons = [{ id, name: L.name, prompt: L.desc, schedule: 'every day · 08:00', source: 'installed from Store', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: !!L.needsWeb, next: 'paused · arrived from Store', tokenSrc: null }].concat(st.daemons);
+        u.daemons = [{ id, name: L.name, prompt: L.desc, schedule: 'every day · 08:00', source: 'installed from Store', paused: true, state: 'paused', runsToday: 0, maxRuns: 4, tokensToday: 0, maxTok: 20000, needsWeb: !!L.needsWeb, writes: L.writes || null, next: 'paused · arrived from Store', tokenSrc: null }].concat(st.daemons);
         u.hl = id;
       }
       if (id === 'd-brief') u.cp2 = Object.assign({}, st.cp2, { installed: true });
@@ -5847,8 +5865,7 @@ class Component extends DCLogic {
     V.xsShow = false;
 
     // ----- node words (contract §1) -----
-    const liveWord = { off: 'off', prov: 'starting', syncing: 'syncing', synced: 'synced', paused: 'off', validating: 'synced', error: 'error' }[s.node] || 'off';
-    const word = s.nWord || liveWord;
+    const word = this.nodeWordOf(s);
     const WORDS = {
       off: ['Off', 'The node process isn’t running.', 'var(--tx-3)'],
       starting: ['Starting', 'The process started but isn’t answering RPC yet.', '#ffbd10'],
@@ -5963,12 +5980,12 @@ class Component extends DCLogic {
     ];
     V.n2NetFxNote = V.fxFoot;
     const svcList = Component.SERVICES();
+    // The node's phase comes from the node word. The node agent has its own phase, and its
+    // prerequisite is the node being Alive: while the node isn't, the agent is shown Stopped.
+    const nodePhase = () => (freshNode ? 'stopped' : Component.nodePhaseOf(word));
     const phaseOf = (id) => {
-      if (id === 'node' || id === 'agent') {
-        if (freshNode) return 'stopped';
-        const m = { off: 'stopped', starting: 'starting', error: 'failed', update: 'stopped' }[word];
-        return m || (id === 'agent' && s.svc.agent.phase === 'stopped' && word === 'off' ? 'stopped' : 'alive');
-      }
+      if (id === 'node') return nodePhase();
+      if (id === 'agent' && nodePhase() !== 'alive') return 'stopped';
       return s.svc[id].phase;
     };
     const readyOf = (id) => (id === 'node' || id === 'agent') ? (phaseOf(id) === 'alive' ? 'notassessed' : phaseOf(id) === 'starting' ? 'awaiting' : 'notassessed') : s.svc[id].ready;

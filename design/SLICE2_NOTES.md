@@ -2,7 +2,7 @@
 created: 2026-10-19
 branch: beta/design-slice2
 author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
-status: review (design slice 2, due 2026-10-28); chain-team review of 37c5d36 (B1 to B7) addressed
+status: review (design slice 2, due 2026-10-28); chain-team review signed at 6d80821; slice 1 752e8e5 merged and Codex P2s at 6d80821 addressed 2026-10-22
 ---
 
 # Design slice 2: Node, Store, web join and download
@@ -65,6 +65,7 @@ Every screen above has its empty, error and unavailable variant. Errors and unav
 - **This node** rows say where each value comes from. The prototype has no live local reads, so local height is drawn as a relation ("within 5 blocks of the head", "N blocks behind") rather than a made-up number. "Producing blocks" is "— · not read" because no command scans proposers yet.
 - **Services** use the two SPEC-001 axes: process phase (Stopped, Starting, Alive, Backoff, Failed, Stopping, Quarantined) and readiness (Not assessed, Awaiting, Ready, Stale, Unavailable). Node, node agent, memory and IPFS are process-only, so they read Not assessed when Alive. Llama chat, Llama embed and Hermes have HTTP probes; Comms and Cluster have connect-only probes.
 - **Quarantined** shows the reason and what is still owned. Restart stays disabled until cleanup actually finishes, matching SPEC-001: recovery needs the old work to end and a fresh explicit start, never a timer. In the prototype the held `ipfs init` exits about three seconds after you open the log.
+- **Node agent.** Its phase is its own (`svc.agent`), and its prerequisite is the node being Alive. While the node isn't Alive, the agent reads Stopped. Starting it then is refused with "the node is not Alive" in its log, and nothing claims it started. Stop and Start change what the row and detail show.
 - Each service shows its probe, prerequisites, log budget (256 KiB or 500 lines, 16 KiB per line), crash files (two of 16 MiB) and module.
 
 ## Click paths
@@ -79,9 +80,27 @@ Every screen above has its empty, error and unavailable variant. Errors and unav
 6. Join Orchard Lab with one explicit click.
 7. Land in Hermes › Chat with a greeting and the group card in the rail; Groups shows the group as joined.
 
-**Path 2 (everyday): works end to end on the post-ceremony Store variant.** "Go to step 1" switches the Store to that variant, because the 0.5.2 default fails closed and lists nothing. Controls › Web search on, then "Find daemons in Store" opens the Morning web brief listing. Install paused opens the install sheet (signature, hash, stage, declared permissions and budget). Approve, start it from Work, approve its first change.
+**Path 2 (everyday): works end to end on the post-ceremony Store variant.** "Go to step 1" switches the Store to that variant, because the 0.5.2 default fails closed and lists nothing; a reload returns to the fail-closed default. Controls › Web search on, then Restart Hermes (Hermes reads web search when it starts, as core #341 shows), then "Find daemons in Store" opens the Morning web brief listing. Install paused opens the install sheet (signature, hash, stage, declared permissions and budget). Approve, start it from Work, approve its first change.
 
 **Path 3 (operator): works end to end.** Node › Services shows IPFS Quarantined. Open its log; once cleanup finishes, restart it (Starting, then Alive · Not assessed). Storage › Pins pins a file on this node with "No bond. Pin bonds not live yet."
+
+Each Store daemon declares what it writes (`writes`: a new page, today's journal, or nothing), and a run proposes exactly that for approval. Group thread digest proposes its summary for today's journal; before, only the web brief and web daemons did.
+
+## Revised 2026-10-22
+
+- Merged slice 1 at 752e8e5. That brings in the one pending ask-first turn, reload-safe daemon runs, saved-vs-effective Controls, the K0 hash router, Privacy & recovery in Settings, and no price anywhere (N-a).
+- The hash router (`resolveHash`) now carries slice 2's routes on the K0 map:
+  - `node/<page>[/<sub>]`, `store/<page>[/<id>]`, `web/join/<code>` and `web/download`;
+  - K0's `store/apps` and `store/models` open the catalog on that kind;
+  - `storage` opens Node › Storage › Memory and `settings/node` opens Node › Advanced (core `places.ts`);
+  - `node/earnings` opens Rewards.
+- Codex P2s at 6d80821, with tests in `scripts/design-prototype.test.mjs`:
+  - the node agent's displayed phase now follows its own state;
+  - Store daemons declare their output.
+- Chain-team notes at 6d80821:
+  - N-c: the Store resets to the fail-closed default on load;
+  - N-d: "No pin is in these states yet";
+  - N-e: the Settings comment says grantCopy.ts is planned.
 
 ## UI truth contract decisions
 

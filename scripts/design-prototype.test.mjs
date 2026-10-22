@@ -362,11 +362,11 @@ describe("slice 2: Node › Services, node agent", () => {
     const c = await mount("p3"); // P3: node off, agent stopped
     c.setState({ route: "node", nPage: "services", svcSel: "agent" });
     c.svcRestart("agent");
+    expect(c.state.toast ?? "").toMatch(/node/i);
     await vi.advanceTimersByTimeAsync(3000);
     expect(agentRow(c).phase).toBe("Stopped");
     expect(c.state.svc.agent.phase).toBe("stopped");
     expect(c.state.svc.agent.log.map((l) => l.line).join("\n")).not.toMatch(/process alive/);
-    expect(c.state.toast).toMatch(/node/i);
   });
 
   it("tripwire: with the node Alive, every service's row shows its own phase", async () => {
