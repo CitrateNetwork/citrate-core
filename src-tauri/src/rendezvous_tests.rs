@@ -703,7 +703,7 @@ fn marker_reads_and_writes_go_through_the_marker_lock() {
     ] {
         let body = &prod[prod.find(f).expect(f)..];
         let body = &body[..body.find("\n}\n").expect("end")];
-        assert!(body.contains("MARKERS"), "{f} takes the marker lock");
+        assert!(body.contains("markers()"), "{f} takes the marker lock");
     }
     assert_eq!(prod.matches("write_secret_file(").count(), 1, "one marker writer");
     assert!(prod.contains("std::fs::rename("), "the marker is replaced atomically");

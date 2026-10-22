@@ -255,49 +255,85 @@ pub(crate) fn active_join_groups(views: &TickViews) -> Vec<String> {
     groups
 }
 
+/// Every read and write of a local-work marker takes this lock (the ticker, `tick_soon` threads and
+/// the join commands all touch it). It also holds each marker's generation: bumped by every note, so
+/// a tick that read its views before a note can't erase that note when it finishes.
+static MARKERS: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn markers() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<std::path::PathBuf, u64>>
+{
+    MARKERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The marker's generation at `path` (read before a tick asks the daemon).
-pub(crate) fn marker_generation(_path: &std::path::Path) -> u64 {
-    0
+pub(crate) fn marker_generation(path: &std::path::Path) -> u64 {
+    markers().get(path).copied().unwrap_or(0)
 }
 
 /// Write a tick's active groups to the marker at `path`; `seen` is [`marker_generation`] from before
-/// the tick asked the daemon.
-pub(crate) fn reconcile_active_joins_at(path: &std::path::Path, active: &[String], _seen: u64) {
-    write_active_joins_at(path, active);
+/// the tick asked the daemon. If a join was noted since, the tick's views may predate it, so the
+/// marker keeps its groups as well (the next tick drops any that have finished).
+pub(crate) fn reconcile_active_joins_at(path: &std::path::Path, active: &[String], seen: u64) {
+    let gens = markers();
+    let mut groups = active.to_vec();
+    if gens.get(path).copied().unwrap_or(0) != seen {
+        groups.extend(read_active_joins(path));
+    }
+    groups.sort();
+    groups.dedup();
+    write_active_joins(path, &groups);
 }
 
 /// The groups in the local-work marker at `path` (empty when missing or unreadable).
 pub(crate) fn active_joins_at(path: &std::path::Path) -> Vec<String> {
+    let _gens = markers();
+    read_active_joins(path)
+}
+
+fn read_active_joins(path: &std::path::Path) -> Vec<String> {
     std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
 }
 
-fn write_active_joins_at(path: &std::path::Path, groups: &[String]) {
-    if let Ok(bytes) = serde_json::to_vec(groups) {
-        let _ = citrate_core_kit::fsutil::write_secret_file(path, &bytes);
+/// Replace the marker atomically (write a sibling, then rename), so a crash or a reader never sees
+/// a half-written file. Call only under [`MARKERS`].
+fn write_active_joins(path: &std::path::Path, groups: &[String]) {
+    let Ok(bytes) = serde_json::to_vec(groups) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if citrate_core_kit::fsutil::write_secret_file(&tmp, &bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
     }
 }
 
 /// Remove `group` from the local-work marker at `path`.
 pub(crate) fn drop_active_join_at(path: &std::path::Path, group: &str) {
-    let mut groups = active_joins_at(path);
+    let _gens = markers();
+    let mut groups = read_active_joins(path);
     let before = groups.len();
     groups.retain(|g| g != group);
     if groups.len() != before {
-        write_active_joins_at(path, &groups);
+        write_active_joins(path, &groups);
     }
 }
 
 /// Add `group` to the local-work marker at `path` (this device asked to join it), so a restart
-/// resumes ticking even before the next tick wrote the marker.
+/// resumes ticking even before the next tick wrote the marker. Always bumps the generation, so a
+/// tick already in flight keeps the group.
 pub(crate) fn note_active_join_at(path: &std::path::Path, group: &str) {
-    let mut groups = active_joins_at(path);
+    let mut gens = markers();
+    *gens.entry(path.to_path_buf()).or_insert(0) += 1;
+    let mut groups = read_active_joins(path);
     if !groups.iter().any(|g| g == group) {
         groups.push(group.to_string());
         groups.sort();
-        write_active_joins_at(path, &groups);
+        write_active_joins(path, &groups);
     }
 }
 
