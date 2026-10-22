@@ -279,3 +279,18 @@ fn civil_dates() {
     assert_eq!(civil_date(20_741), "2026-10-15");
     assert_eq!(civil_date(11_016), "2000-02-29");
 }
+
+// #358 DGX review: the block number must be a strict 0x hex quantity. u64::from_str_radix accepts a
+// leading '+', so "0x+<height>" parsed as the check height and its hash was compared. A number
+// with a sign, whitespace or any non-hex digit is "not yet", never a mismatch.
+#[test]
+fn a_block_number_that_is_not_strict_hex_is_not_yet() {
+    let h = format!("{:x}", CHECK.height);
+    for number in [format!("0x+{h}"), format!("0x {h}"), format!("0x{h} "), format!("0X{h}"), format!("0x-{h}")] {
+        let node = RawNode {
+            head: 400_000,
+            block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": number, "hash": WITHDRAWN_HASH } }),
+        };
+        assert_eq!(assess(&node, &CHECK), Verdict::Unknown, "number {number:?}");
+    }
+}
