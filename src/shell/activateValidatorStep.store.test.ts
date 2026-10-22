@@ -785,3 +785,80 @@ describe("tripwire: the recorded-tx guard lives in the shared entry", () => {
     expect(guard).toBeLessThan(build);
   });
 });
+
+describe("Node surface: a recorded activation can be recovered from Node", () => {
+  function doneStore(): Store {
+    const store = memberStore();
+    store.setState({ stage: "done", activation: null });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    return store;
+  }
+
+  it("a failed send keeps the hash; once it has gone unseen past the forget window, Node offers activation again", async () => {
+    const store = doneStore();
+    expect(await store.requestValidatorActivation()).toBe(true);
+    sendPreparedMock.mockRejectedValueOnce(new Error("ceremony: broadcast failed: timeout"));
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    chain.current = readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } });
+    registerValidatorMock.mockClear();
+    expect(await store.requestValidatorActivation()).toBe(false); // still inside the window
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    store.setState({ s7TxAt: Date.now() - 11 * 60_000 });
+    expect(await store.requestValidatorActivation()).toBe(true);
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("restart with a recorded hash the chain shows REVERTED: Node clears it and offers activation again", async () => {
+    const first = doneStore();
+    first.recordActivationTx("0xdead");
+    const reopened = new Store();
+    reopened.setState({ hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true, stage: "done" });
+    (reopened as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(reopened.state.s7TxHash).toBe("0xdead");
+    chain.current = readyStatus({ tx: { hash: "0xdead", included: true, blockNumber: 501, success: false } });
+    expect(await reopened.requestValidatorActivation()).toBe(true);
+    expect(activationStatusMock).toHaveBeenCalledWith(WALLET, "0xdead"); // asked with the recorded hash
+    expect(reopened.state.s7TxHash).toBeNull();
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("restart with a recorded hash still pending (inside the window): refused, the guard holds", async () => {
+    const store = doneStore();
+    store.recordActivationTx("0xfeed");
+    chain.current = readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } });
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("included and successful but the bond read not yet activated: refused (no retry on a mined tx)", async () => {
+    const store = doneStore();
+    store.recordActivationTx("0xfeed");
+    store.setState({ s7TxAt: Date.now() - 11 * 60_000 });
+    chain.current = readyStatus({ tx: { hash: "0xfeed", included: true, blockNumber: 501, success: true } });
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("a failed read never clears a recorded hash, even past the window (fail closed)", async () => {
+    const store = doneStore();
+    store.recordActivationTx("0xfeed");
+    store.setState({
+      s7TxAt: Date.now() - 11 * 60_000,
+      activation: readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } }),
+    });
+    activationStatusMock.mockRejectedValueOnce(new Error("rpc timeout"));
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("a revert reported for a DIFFERENT hash than the recorded one does not clear it", async () => {
+    const store = doneStore();
+    store.recordActivationTx("0xfeed");
+    chain.current = readyStatus({ tx: { hash: "0xother", included: true, blockNumber: 501, success: false } });
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+  });
+});

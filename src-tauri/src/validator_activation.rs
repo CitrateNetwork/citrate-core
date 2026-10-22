@@ -32,6 +32,31 @@ use serde_json::{json, Value};
 
 use crate::rpc::RpcTransport;
 
+/// Aggregate wall-clock budget for one activation read (~18 sequential RPCs at up to 6 s each).
+/// Reads not started inside it fail as unknown (None), so the gate fails closed. The whole command
+/// is bounded by this plus one RPC timeout; the webview deadline (`invoke.ts`) sits above that.
+pub const READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// An RPC transport that refuses new calls once `deadline` has passed (shared by the public and
+/// local transports of one read).
+pub struct Budgeted<'a, T: RpcTransport> {
+    inner: &'a T,
+    #[allow(dead_code)]
+    deadline: std::time::Instant,
+}
+
+impl<'a, T: RpcTransport> Budgeted<'a, T> {
+    pub fn new(inner: &'a T, deadline: std::time::Instant) -> Self {
+        Budgeted { inner, deadline }
+    }
+}
+
+impl<T: RpcTransport> RpcTransport for Budgeted<'_, T> {
+    fn call(&self, body: Value) -> Result<Value, crate::rpc::RpcError> {
+        self.inner.call(body)
+    }
+}
+
 /// Blocks sampled for the measured block time (contract §2: "timestamp delta over the last 100
 /// blocks"). Never the configured 1 s, never an assumed 12 s.
 pub const BLOCK_TIME_SAMPLE: u64 = 100;
