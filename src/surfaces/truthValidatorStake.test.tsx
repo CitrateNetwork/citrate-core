@@ -395,7 +395,7 @@ describe("#348 review — widget unknowns", () => {
 describe("#348 review — the activation ceremony states the bond principal, not 32,000", () => {
   it("labels the review from the grant read", async () => {
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ walletReview: null, s5StakeWei: wei(33_500) });
+    store.setState({ walletReview: null, s5StakeWei: wei(33_500), hasGrant: true, bondedStake: 0, validatorActivation: null, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } });
     vi.spyOn(bridge.node, "registerValidator").mockResolvedValue({ id: "c1", decoded: { action: "MemberBond.activate", cost: "0", destination: "0x" } } as never);
     await store.activateValidator();
     const r = store.state.walletReview!;

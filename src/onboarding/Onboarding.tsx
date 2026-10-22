@@ -11,7 +11,20 @@ import book from "../../src-tauri/addresses/40204.json";
 import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
 import { MEMBERSHIP_BUYS } from "../data/membership";
 import { PricingLink } from "../components/PricingLink";
-import { CONSENSUS_LAG_NOTE, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, activationClosedReason, canOfferActivation, validatorDash, validatorWord } from "../shell/chainTruth";
+
+/**
+ * chain#331: why an un-activated bond with no registered stake is not offered activation —
+ * "activation window closed" (MemberBond.isUnlocked(), MemberBond.sol:219) or the lock not read yet.
+ */
+function activationNote(s: AppState): string | null {
+  const notActivated = !!s.memberBond?.deployed && s.memberBond.activated === false && !(s.bondedStake > 0);
+  if (!notActivated) return null;
+  const reason = activationClosedReason(s.memberBond);
+  if (reason === "activation window closed") return "activation window closed: the bond is unlocked, so it can no longer be staked";
+  if (reason && validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond) === "Bond locked · not staked") return reason;
+  return null;
+}
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -998,7 +1011,8 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                ValidatorRegistry.validatorInfo status · MemberBond.activated()
+                ValidatorRegistry.validatorInfo status · MemberBond.activated() · MemberBond.isUnlocked()
+                {activationNote(s) && <> · {activationNote(s)}</>}
               </div>
             </div>
           </div>

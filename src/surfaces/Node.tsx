@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { CONSENSUS_LAG_NOTE, canOfferActivation, validatorDash, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, activationClosedReason, canOfferActivation, validatorDash, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -126,6 +126,9 @@ export function Node({ store, s }: SurfaceProps) {
   const vDash = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
   // C1-V4: activation is offered only when MemberBond.activated() reads false.
   const offerActivation = canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  // chain#331: why an un-activated bond (no registered stake) is not offered activation.
+  const bondNotActivated = !!s.memberBond?.deployed && s.memberBond.activated === false && !(s.bondedStake > 0);
+  const activationClosed = bondNotActivated ? activationClosedReason(s.memberBond) : null;
   const pWord = producingWord(s.producers, s.validatorPubkey);
   const producingStr = !isRegisteredValidator
     ? "— · not a registered validator"
@@ -337,6 +340,13 @@ export function Node({ store, s }: SurfaceProps) {
                 {/* C1-V2/C1-V4 and #348 review: only a bond that is not activated, with no registered
                     stake, is offered activation; an Exiting / Slashed key, a registered stake that
                     isn't active yet, or an unread status never is (canOfferActivation). */}
+                {TAURI && s.node === "synced" && !offerActivation && activationClosed && (
+                  <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }} title="MemberBond.isUnlocked(); MemberBond.activate reverts ActivationWindowClosed once it is true">
+                    {activationClosed === "activation window closed"
+                      ? "Activation unavailable · activation window closed: the bond is unlocked, so it can no longer be staked."
+                      : "Activation unavailable · bond lock not read yet."}
+                  </p>
+                )}
                 {TAURI && s.node === "synced" && offerActivation && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as

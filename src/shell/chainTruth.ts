@@ -290,7 +290,7 @@ export interface MemberBondState {
   unlocked?: boolean | null;
 }
 
-type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" };
+type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" | "activation window closed" };
 
 /**
  * The validator state, from the registry and the bond only (contract v1.1 §1 Validators).
@@ -306,10 +306,13 @@ type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" 
  */
 function validatorState(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond: MemberBondState | null | undefined): WordOrReason {
   const bondNotActivated = !!bond && bond.deployed && bond.activated === false;
+  // chain#331: an un-activated bond that reads unlocked can no longer be activated
+  // (MemberBond.sol:219), so it is not "Bond locked"; say why instead.
+  const notStaked: WordOrReason = bond?.unlocked === true ? { reason: "activation window closed" } : { word: "Bond locked · not staked" };
   if (!activation) {
     // A registered stake is already staked: with the status unread it is never "Bond locked · not
     // staked", so no activation is offered for it (#348 review).
-    if (bondNotActivated) return stakeSalt > 0 ? { reason: "registry not read yet" } : { word: "Bond locked · not staked" };
+    if (bondNotActivated) return stakeSalt > 0 ? { reason: "registry not read yet" } : notStaked;
     // A deployed bond with no key read (and not known to be un-activated) is still being read;
     // the store retries the grant status on the next poll.
     if (bond?.deployed && !bond.pubkey) return { reason: "reading validator key" };
@@ -324,7 +327,7 @@ function validatorState(stakeSalt: number, activation: ValidatorActivation | nul
   if (activation.status !== 0) return { reason: "registry state inconsistent" };
   // Status None.
   if (stakeSalt > 0) return { reason: "registry state inconsistent" };
-  if (bondNotActivated) return { word: "Bond locked · not staked" };
+  if (bondNotActivated) return notStaked;
   if (bond?.deployed && bond.activated === true) return { reason: "registry state inconsistent" };
   if (!hasGrant && (!bond || !bond.deployed)) return { word: "Not a validator" };
   return { reason: "bond state not read yet" };
@@ -343,14 +346,20 @@ export function validatorDash(stakeSalt: number, activation: ValidatorActivation
 }
 
 /** Why activation is not offered for a bond that would otherwise be (chain#331), or null. */
-export function activationClosedReason(_bond?: MemberBondState | null): "activation window closed" | "bond lock not read yet" | null {
+export function activationClosedReason(bond?: MemberBondState | null): "activation window closed" | "bond lock not read yet" | null {
+  // MemberBond.activate reverts ActivationWindowClosed once isUnlocked() (MemberBond.sol:219).
+  if (bond?.unlocked === true) return "activation window closed";
+  // Unread (or an older backend that doesn't report it): fail closed.
+  if (bond?.unlocked !== false) return "bond lock not read yet";
   return null;
 }
 
 /**
- * Stake / activate is offered only for a bond that is not activated and has no registered stake
- * (C1-V4, #348 review). The one gate for onboarding S6, the Node page and maybeAutoBond.
+ * Stake / activate is offered only for a bond that is not activated, has no registered stake
+ * (C1-V4, #348 review) and reads as still locked (chain#331). The one gate for onboarding S6, the
+ * Node page, maybeAutoBond and activateValidator itself.
  */
 export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond?: MemberBondState | null): boolean {
-  return validatorWord(stakeSalt, activation, hasGrant, bond) === "Bond locked · not staked";
+  // chain#331: only inside the lock; an unlocked or unread lock is never offered (MemberBond.sol:219).
+  return validatorWord(stakeSalt, activation, hasGrant, bond) === "Bond locked · not staked" && activationClosedReason(bond) === null;
 }

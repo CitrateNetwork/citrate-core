@@ -457,7 +457,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
     let bond_deployed = unlock_ret.len() >= 32;
 
-    let (unlock_block, is_unlocked, is_kyc_verified) = if bond_deployed {
+    let (unlock_block, bond_unlocked, is_kyc_verified) = if bond_deployed {
         let unlock = decode_uint256_word(&unlock_ret)
             .map_err(|e| GrantStatusError::Decode(e.to_string()))?;
         let unlocked_ret = rpc
@@ -468,16 +468,17 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
             .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
         (
             Some(unlock as u64),
-            decode_uint256_word(&unlocked_ret)
-                .map(|v| v == 1)
-                .unwrap_or(false),
+            // Carried as read: an undecodable value is None (unread), never "locked" (chain#331).
+            decode_uint256_word(&unlocked_ret).ok().map(|v| v == 1),
             decode_uint256_word(&kyc_ret)
                 .map(|v| v == 1)
                 .unwrap_or(false),
         )
     } else {
-        (None, false, false)
+        (None, None, false)
     };
+    // The legacy flag (describeBond, withdrawal eligibility) keeps its fail-closed "locked" reading.
+    let is_unlocked = bond_unlocked.unwrap_or(false);
 
     // ValidatorRegistry: the STAKER's pubkey binding, then its bonded principal.
     //
@@ -542,7 +543,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         is_kyc_verified,
         bond_activated,
         bond_pubkey,
-        bond_unlocked: None,
+        bond_unlocked,
     })
 }
 

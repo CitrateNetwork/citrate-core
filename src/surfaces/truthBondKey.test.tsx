@@ -56,7 +56,8 @@ function member(over: Partial<AppState> = {}): AppState {
 
 const none: ValidatorActivation = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 511 };
 const active: ValidatorActivation = { isActive: true, status: 1, actEpoch: 480, currentEpoch: 511 };
-const notActivated: MemberBondState = { deployed: true, activated: false, pubkey: null };
+// Still locked (MemberBond.isUnlocked() = false), so activation is open (chain#331, MemberBond.sol:219).
+const notActivated: MemberBondState = { deployed: true, activated: false, pubkey: null, unlocked: false };
 const activatedBond: MemberBondState = { deployed: true, activated: true, pubkey: BOND_KEY };
 const bondUnread: MemberBondState = { deployed: true, activated: null, pubkey: null };
 const noBond: MemberBondState = { deployed: false, activated: null, pubkey: null };
@@ -192,7 +193,7 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
     const reads = await poll(grant({}));
     expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
     expect(reads.validatorActivation).not.toHaveBeenCalledWith(NODE_KEY);
-    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY });
+    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null });
   });
 
   it("falls back to the node's key only when no bond exists", async () => {
@@ -278,7 +279,7 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
     const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
     await store.refreshNode();
     expect(gs).toHaveBeenCalledTimes(1);
-    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY });
+    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null });
     expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
     expect(store.state.validatorActivation).toEqual(active);
   });

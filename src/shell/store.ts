@@ -59,7 +59,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorDash, type ChainReads, type MemberBondState, type ValidatorActivation } from "./chainTruth";
+import { activationClosedReason, canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorDash, type ChainReads, type MemberBondState, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
@@ -267,7 +267,13 @@ export function describeBond(g: {
  */
 export function memberBondFromGrant(g: GrantStatus): MemberBondState {
   const pubkey = typeof g.bondPubkey === "string" && /^0x[0-9a-fA-F]{64}$/.test(g.bondPubkey) ? g.bondPubkey.toLowerCase() : null;
-  return { deployed: g.bondDeployed, activated: g.bondDeployed ? (g.bondActivated ?? null) : null, pubkey };
+  return {
+    deployed: g.bondDeployed,
+    activated: g.bondDeployed ? (g.bondActivated ?? null) : null,
+    pubkey,
+    // chain#331 activation window; absent (older backend) or failed = unread.
+    unlocked: g.bondDeployed ? (g.bondUnlocked ?? null) : null,
+  };
 }
 
 export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
@@ -4531,6 +4537,16 @@ export class Store {
    * honestly — never a fabricated activation.
    */
   async activateValidator(): Promise<boolean> {
+    // chain#331: the one activation gate, checked before anything else (arming included), so no
+    // entry point can open an activation the chain refuses (MemberBond.sol:219).
+    {
+      const s = this.state;
+      if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)) {
+        const why = activationClosedReason(s.memberBond) ?? validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+        this.toast("Validator activation not available — " + why + ".");
+        return false;
+      }
+    }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
