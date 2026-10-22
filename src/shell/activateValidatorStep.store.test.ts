@@ -486,3 +486,30 @@ describe("tripwire: a signed tx is sent only after its hash is durably saved", (
     for (const c of calls) expect(c).toMatch(/if \(!r\.onSigned\(/);
   });
 });
+
+describe("a recorded activation guards every entry, not only S7", () => {
+  it("pending activation → Explore free → Node's Activate opens no second ceremony", async () => {
+    const store = memberStore();
+    store.recordActivationTx("0xfeed");
+    chain.current = readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } });
+    store.onS7Skip();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.activateValidator()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    // It reconciled the recorded tx with the chain (asked with that hash) before refusing.
+    expect(activationStatusMock).toHaveBeenLastCalledWith(WALLET, "0xfeed");
+  });
+
+  it("once the chain shows the recorded tx included and the bond activated, Node still opens nothing", async () => {
+    const store = memberStore();
+    store.recordActivationTx("0xfeed");
+    store.onS7Skip();
+    chain.current = readyStatus({ bondActivated: true, registryStatus: 1, tx: { hash: "0xfeed", included: true, blockNumber: 501, success: true } });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.activateValidator()).toBe(false);
+    expect(store.state.s7TxHash).toBeNull(); // reconciled
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+});
