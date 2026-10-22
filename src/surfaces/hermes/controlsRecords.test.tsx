@@ -133,6 +133,28 @@ describe("Controls › 3 · Records: approval records", () => {
     expect($$("web-record").length).toBe(0);
   });
 
+  // Codex review of #364 at 4e6a85d: core answers web_budget_status with health.state = "failed"
+  // (and an empty default store) when the store can't be trusted. That is not "no decisions".
+  it("a failed store health names web_budget_status and its reason, and never says there are no decisions", async () => {
+    const failed = { ...webStatus([]), snapshot: { ...webStatus([]).snapshot, health: { state: "failed", reason: "integrity check failed" } } } as WebBudgetStatus;
+    await mount(io({ webSignIn: vi.fn(async () => failed) }));
+    const err = $("web-records-error");
+    expect(err, "the health failure is shown").toBeTruthy();
+    expect(err?.textContent).toContain("web_budget_status");
+    expect(err?.textContent).toContain("integrity check failed");
+    expect(text()).not.toContain("No web sign-in decisions yet");
+    expect($$("web-record").length).toBe(0);
+  });
+
+  it("a failed store health hides records even if some came back", async () => {
+    const rec = { record_id: 1, kind: "auto_sign", budget_id: 1, principal: "0xabc", origin: "https://a.example", at_ms: NOW, prev_hash: "0x0", hash: "0x1", status: "signed" };
+    const failed = { ...webStatus([rec]), snapshot: { ...webStatus([rec]).snapshot, health: { state: "failed", reason: "keychain unavailable" } } } as WebBudgetStatus;
+    await mount(io({ webSignIn: vi.fn(async () => failed) }));
+    expect($("web-records-error"), "the health failure is shown").toBeTruthy();
+    expect($("web-records-error")?.textContent).toContain("keychain unavailable");
+    expect($$("web-record").length).toBe(0);
+  });
+
   it("outside the desktop app it says so", async () => {
     await mount(io({ webSignIn: null, runsBetween: null }));
     expect($("web-records-unavailable")?.textContent).toContain("desktop app");
@@ -248,5 +270,33 @@ describe("Controls › 3 · Records: daemon run history", () => {
     await mount(io({ runsBetween: null }));
     await click($("records-nav-runs"));
     expect($("runs-unavailable")?.textContent).toContain("desktop app");
+  });
+});
+
+// Tripwire: every view of web_budget_status data checks the store's health first, so a store core
+// can't trust is never drawn as an empty or valid list.
+describe("tripwire: web_budget_status readers check health", () => {
+  it("every src/ file that reads snapshot.records or snapshot.budgets also reads snapshot.health", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const srcDir = path.resolve(__dirname, "../..");
+    const offenders: string[] = [];
+    let readers = 0;
+    const walk = (d: string) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.tsx$/.test(e.name) && !/\.test\.tsx$/.test(e.name)) {
+          const t = fs.readFileSync(p, "utf8");
+          if (/snapshot\.(records|budgets)\b/.test(t)) {
+            readers++;
+            if (!/snapshot\.health\b/.test(t)) offenders.push(path.relative(srcDir, p));
+          }
+        }
+      }
+    };
+    walk(srcDir);
+    expect(readers).toBeGreaterThanOrEqual(2);
+    expect(offenders).toEqual([]);
   });
 });
