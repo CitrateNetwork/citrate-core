@@ -1052,7 +1052,13 @@ impl SignatureCeremony {
         let tx_hash = match rpc.send_raw_transaction(&tx.raw) {
             Ok(h) => h,
             Err(e) if first_submission && is_definitive_send_error(&e) => {
-                return Err(CeremonyError::Broadcast(e.to_string()))
+                // Not sent: the node refused the first submission of these bytes. Take the send
+                // out of recovery (latest_call) durably, so a restart or the next read does not
+                // show it as Pending; the hash stays in the history, so the same bytes are never
+                // a first submission again. A failed write keeps it recoverable (it then shows as
+                // Pending until Forget: fail safe), and the refusal is reported either way.
+                let _ = self.submitted.forget(&local_hash);
+                return Err(CeremonyError::Broadcast(e.to_string()));
             }
             Err(e) => {
                 return Err(CeremonyError::SubmittedOutcomeUnknown {

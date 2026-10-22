@@ -3346,6 +3346,12 @@ fn durable_send_violations(src: &str) -> Vec<String> {
             if !matches!((rec, send), (Some(r), Some(s)) if r < s) {
                 out.push("send_signed must record durably (try_record_call) before send_raw_transaction".into());
             }
+            // A definitive first-send refusal is taken out of recovery (Codex P2 at f98f8ae).
+            let refusal = body.find("is_definitive_send_error(");
+            let forget = refusal.and_then(|r| body[r..].find(".forget(&local_hash)"));
+            if forget.is_none() {
+                out.push("send_signed must forget a definitively refused submission from recovery".into());
+            }
         }
         None => out.push("fn send_signed not found".into()),
     }
@@ -3372,4 +3378,40 @@ fn join8_tripwire_every_send_goes_through_the_durable_record() {
     assert!(!durable_send_violations(two).is_empty());
     let late = "fn send_signed() { rpc.send_raw_transaction(&r); x.try_record_call(); }\nfn sign_send_prepared_sync() { broadcast_err_str }";
     assert!(!durable_send_violations(late).is_empty());
+}
+
+#[test]
+fn join8_a_definitively_refused_activation_is_not_recovered_but_stays_in_history() {
+    // Codex P2 at f98f8ae: a first-submission refusal ("not sent") must not come back as the
+    // member's pending activation from the durable record, yet those bytes stay a re-submission.
+    let dir = tmp_dir("refused");
+    let file = dir.join("submitted-tx.json");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let view = c.request(activate_intent());
+    let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+    let refused = MockRpc::new(vec![node_error("Failed to submit transaction: SenderLimitExceeded")]);
+    let r = c.send_prepared(&RpcClient::with_transport(refused), &view.id, bcfg(1));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "a first definitive refusal is not sent: {r:?}");
+    assert_eq!(c.submitted_log().latest_call(&canonical_addr_lower(), &activate_meta()), None, "not recovered in this run");
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+    assert_eq!(reopened.latest_call(&canonical_addr_lower(), &activate_meta()), None, "nor after a restart");
+    assert_eq!(reopened.try_record_for(&hash, &canonical_addr_lower(), 7), Ok(false), "still in the submission history");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn join8_an_unknown_outcome_activation_is_still_recovered() {
+    // The other side: an error that is NOT a definitive first-send refusal keeps the record.
+    let dir = tmp_dir("unknown");
+    let file = dir.join("submitted-tx.json");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let view = c.request(activate_intent());
+    let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+    let r = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![])), &view.id, bcfg(1));
+    assert_eq!(submitted_outcome_unknown(&r), Some(hash.clone()));
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+    assert_eq!(reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash), Some(hash));
+    let _ = std::fs::remove_dir_all(&dir);
 }

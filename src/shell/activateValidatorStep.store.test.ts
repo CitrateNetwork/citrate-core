@@ -740,6 +740,16 @@ describe("tripwire: the recorded-tx guard lives in the shared entry", () => {
     expect(guard).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(build);
+    // The reconciling read is unconditional and comes before any ceremony is built: after a
+    // restart nothing is in memory, and only that read brings back a recorded send. Here the one
+    // caller of the private activateValidator, requestValidatorActivation, makes that read first.
+    expect(src).toMatch(/private async activateValidator\(/);
+    const entry = src.slice(src.search(/async requestValidatorActivation\(/));
+    const read = entry.indexOf("await this.refreshActivation()");
+    const call = entry.indexOf("this.activateValidator(");
+    expect(read).toBeGreaterThan(-1);
+    expect(read).toBeLessThan(call);
+    expect(entry.slice(0, read)).not.toMatch(/if \(this\.state\.s7TxHash\)/);
   });
 });
 
@@ -922,5 +932,42 @@ describe("Try again after a revert", () => {
     await store.onS7RetryAfterRevert();
     expect(activationForgetMock).not.toHaveBeenCalled();
     expect(store.state.s7TxHash).toBe("0xfeed");
+  });
+});
+
+describe("Node's Activate reconciles the durable record on every entry (Codex P2 at f98f8ae)", () => {
+  function exploredFree(): Store {
+    const store = new Store();
+    store.setState({ stage: "done", validatorSkipped: true, hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    return store;
+  }
+
+  it("restart after Explore free with a pending recorded send: Node opens no second ceremony, without a prior read", async () => {
+    const store = exploredFree();
+    expect(store.state.s7TxHash ?? null).toBeNull(); // nothing in memory after the restart
+    chain.current = readyStatus({
+      recordedTx: { hash: "0xfeed", atMs: Date.now() },
+      tx: { hash: "0xfeed", included: false, blockNumber: null, success: null },
+    } as Partial<ActivationStatusView>);
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(activationStatusMock).toHaveBeenCalled();
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.s7TxHash).toBe("0xfeed");
+  });
+
+  it("if that reconciling read fails, Node opens nothing (a record may exist: fail closed)", async () => {
+    const store = exploredFree();
+    activationStatusMock.mockRejectedValueOnce(new Error("rpc timeout"));
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  it("with no recorded send and a fresh read, Node still opens the ceremony", async () => {
+    const store = exploredFree();
+    chain.current = readyStatus({ recordedTx: null } as Partial<ActivationStatusView>);
+    expect(await store.requestValidatorActivation()).toBe(true);
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
   });
 });
