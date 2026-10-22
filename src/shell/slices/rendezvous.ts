@@ -46,6 +46,17 @@ export function applyViews(s: RendezvousState, v: RendezvousViews, at: number = 
   return { joins: v.joins, invites: v.invites, lastKnownJoin, lastKnownInvite, receivedAt: at };
 }
 
+const membershipListeners = new Set<() => void>();
+
+/** Run `fn` when a join reaches the group (so a surface can reload its group list). Returns an
+ *  unsubscribe. */
+export function onJoinCompleted(fn: () => void): () => void {
+  membershipListeners.add(fn);
+  return () => {
+    membershipListeners.delete(fn);
+  };
+}
+
 export function ingest(v: RendezvousViews): void {
   rendezvousSlice.set((s) => applyViews(s, v));
 }
