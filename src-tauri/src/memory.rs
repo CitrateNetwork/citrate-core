@@ -538,8 +538,9 @@ pub struct MemoryManager {
     transport: Box<dyn MemoryTransport>,
     /// The live supervisor, present only while the daemon is running.
     sup: Mutex<Option<Supervisor>>,
-    /// Held by [`MemoryManager::stop`] from taking the supervisor until the child has exited, so
-    /// a second stop (a backup's or an import's pause) returns only once the store is free.
+    /// Held by [`MemoryManager::stop`] from taking the supervisor until the child has exited, and
+    /// by [`MemoryManager::start`], so a second stop (a backup's or an import's pause) returns only
+    /// once the store is free and a start never overlaps a stop.
     lifecycle: Mutex<()>,
     /// W3.2/BGE — the bundled BGE model dir (`config.json` + `tokenizer.json` +
     /// `model.safetensors`). When present, the daemon is spawned with
@@ -751,6 +752,9 @@ impl MemoryManager {
     /// minted/loaded from the keyring and handed to the child via env. Fails
     /// CLOSED if the binary is missing or the keyring is unreachable.
     pub fn start(&self) -> Result<()> {
+        // A stop in progress has taken the supervisor but its child may still hold the store:
+        // wait for it (same lock order as `stop`: lifecycle, then supervisor).
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(MemoryError::AlreadyRunning);

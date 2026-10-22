@@ -1629,6 +1629,10 @@ fn every_memory_pause_waits_for_the_whole_stop() {
     let held = stop.find("self.lifecycle.lock()").expect("stop holds the lifecycle lock");
     assert!(held < stop.find("guard.take()").expect("take"), "lock before taking the supervisor");
     assert!(stop.find("sup.stop()").expect("terminate") > held, "and across the termination");
+    let start = &memory[memory.find("pub fn start(&self) -> Result<()> {").expect("start")..];
+    let start = &start[..start.find("\n    }\n").expect("start ends")];
+    let held = start.find("self.lifecycle.lock()").expect("start holds the lifecycle lock");
+    assert!(held < start.find("self.sup.lock()").expect("sup"), "lifecycle before the supervisor lock");
 }
 
 // ---------------------------------------------------------------- Codex round 2 at e8bbd8c
