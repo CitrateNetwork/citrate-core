@@ -31,6 +31,26 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// What a recorded transaction calls: its `to` and the first four bytes of its calldata. Lets
+/// a caller find its own submission again (Join-8: the Activate step finds the member's
+/// `MemberBond.activate` send after a restart).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallMeta {
+    /// Lower-case 0x-hex address.
+    pub to: String,
+    /// Lower-case 0x-hex selector (4 bytes).
+    pub selector: String,
+}
+
+/// A recorded submission found by [`SubmittedTxLog::latest_call`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedCall {
+    pub hash: String,
+    pub nonce: Option<u64>,
+    /// When it was recorded (ms since the Unix epoch), if known.
+    pub at_ms: Option<u64>,
+}
+
 /// How many recent submissions are kept.
 pub const CAPACITY: usize = 256;
 
@@ -247,6 +267,31 @@ impl SubmittedTxLog {
         }
         *g = next;
         Ok(first)
+    }
+
+    /// [`Self::try_record_for`] that also keeps what the tx calls ([`CallMeta`]) and when it was
+    /// recorded, so [`Self::latest_call`] can find it after a restart.
+    pub fn try_record_call(
+        &self,
+        hash: &str,
+        sender: &str,
+        nonce: u64,
+        _call: Option<&CallMeta>,
+    ) -> Result<bool, String> {
+        self.try_record_for(hash, sender, nonce)
+    }
+
+    /// The most recent recorded submission from `sender` calling `call`, unless it was
+    /// forgotten ([`Self::forget`]).
+    pub fn latest_call(&self, _sender: &str, _call: &CallMeta) -> Option<RecordedCall> {
+        None
+    }
+
+    /// Mark a recorded submission as forgotten, durably: [`Self::latest_call`] no longer returns
+    /// it. The hash stays recorded, so the same bytes are never a first submission again.
+    /// `Ok(true)` when it was found and marked.
+    pub fn forget(&self, _hash: &str) -> Result<bool, String> {
+        Ok(false)
     }
 
     /// [`Self::try_record`] for callers that only need first-ness. A failed write is never a

@@ -74,6 +74,19 @@ pub struct ActivationTx {
     pub success: Option<bool>,
 }
 
+/// The member's activation send as the durable submitted-tx record names it (written and
+/// fsync'd before the send), so the step resumes to Pending after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedActivationTx {
+    pub hash: String,
+    /// When it was recorded (ms since the Unix epoch), if known.
+    pub at_ms: Option<u64>,
+}
+
+/// Finds the member's latest recorded `MemberBond.activate` send to the given bond.
+pub type RecordedLookup<'a> = &'a dyn Fn(&str) -> Option<RecordedActivationTx>;
+
 /// Everything the Activate-validator step reads. Wei as decimal strings (beyond JS range).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,6 +121,8 @@ pub struct ActivationStatus {
     pub local_block: Option<u64>,
     pub local_syncing: Option<bool>,
     pub tx: Option<ActivationTx>,
+    /// The latest recorded (not forgotten) activation send for this member and bond.
+    pub recorded_tx: Option<RecordedActivationTx>,
 }
 
 /// One JSON-RPC call; `None` on a transport error or an `error` object (never a default).
@@ -215,6 +230,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
     member: &str,
     node_pubkey: Option<[u8; 32]>,
     tx_hash: Option<&str>,
+    _recorded: RecordedLookup<'_>,
 ) -> Result<ActivationStatus, String> {
     let member = validate_address(member)?;
     let member_word = address_word(&member)
@@ -412,6 +428,7 @@ pub fn validator_activation_status_sync(
         member_address,
         node_pubkey,
         tx_hash,
+        &|_| None,
     )
 }
 

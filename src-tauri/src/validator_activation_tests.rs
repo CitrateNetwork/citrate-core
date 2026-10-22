@@ -123,7 +123,7 @@ fn granted(activated: bool, bond_key: Option<[u8; 32]>) -> Chain {
 }
 
 fn read(public: &Chain, local: Option<&Chain>, node_key: Option<[u8; 32]>, tx: Option<&str>) -> ActivationStatus {
-    read_activation_status(public, local, &targets(), MEMBER, node_key, tx).expect("valid member")
+    read_activation_status(public, local, &targets(), MEMBER, node_key, tx, &|_| None).expect("valid member")
 }
 
 fn keccak4(sig: &str) -> [u8; 4] {
@@ -152,7 +152,7 @@ fn pinned_selectors_are_keccak_of_their_signatures() {
 #[test]
 fn a_bad_member_address_fails_closed_before_any_read() {
     let chain = Chain::default();
-    let err = read_activation_status(&chain, None::<&Chain>, &targets(), "0x12", None, None);
+    let err = read_activation_status(&chain, None::<&Chain>, &targets(), "0x12", None, None, &|_| None);
     assert!(err.is_err());
     assert!(chain.seen.borrow().is_empty(), "no RPC for a malformed address");
 }
@@ -287,6 +287,7 @@ fn a_registry_status_outside_the_enum_is_not_reported() {
 fn the_command_is_in_the_main_window_acl() {
     let acl = include_str!("../permissions/main-window.toml");
     assert!(acl.contains("\"validator_activation_status\""));
+    assert!(acl.contains("\"validator_activation_forget\""), "Forget writes the durable record");
 }
 
 #[test]
@@ -324,4 +325,48 @@ fn an_eth_block_number_of_0x0_is_unknown_not_zero() {
     let st = read(&public, Some(&local), None, None);
     assert_eq!(st.head_block, None);
     assert_eq!(st.local_block, None);
+}
+
+// Join-8 x #347: the activation record is the fsync'd submitted-tx record, read back here.
+const RECORDED: &str = "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed";
+
+#[test]
+fn a_recorded_activation_is_returned_and_its_receipt_read_without_a_ui_hash() {
+    let public = granted(false, None).receipt(RECORDED, JsonValue::Null);
+    let asked = RefCell::new(Vec::<String>::new());
+    let lookup = |bond: &str| {
+        asked.borrow_mut().push(bond.to_string());
+        Some(RecordedActivationTx { hash: RECORDED.into(), at_ms: Some(1_800_000_000_000) })
+    };
+    let st = read_activation_status(&public, None::<&Chain>, &targets(), MEMBER, Some(NODE_KEY), None, &lookup).expect("read");
+    assert_eq!(asked.borrow().as_slice(), [BOND.to_string()], "looked up for the bond read from bondOf");
+    assert_eq!(st.recorded_tx, Some(RecordedActivationTx { hash: RECORDED.into(), at_ms: Some(1_800_000_000_000) }));
+    let tx = st.tx.expect("the recorded tx's receipt is read");
+    assert_eq!(tx.hash, RECORDED);
+    assert_eq!(tx.included, Some(false));
+}
+
+#[test]
+fn no_bond_read_means_no_record_lookup_and_no_record() {
+    let public = Chain::default(); // every read fails
+    let asked = RefCell::new(0);
+    let lookup = |_: &str| {
+        *asked.borrow_mut() += 1;
+        Some(RecordedActivationTx { hash: RECORDED.into(), at_ms: None })
+    };
+    let st = read_activation_status(&public, None::<&Chain>, &targets(), MEMBER, None, None, &lookup).expect("read");
+    assert_eq!(*asked.borrow(), 0);
+    assert_eq!(st.recorded_tx, None);
+    assert_eq!(st.tx, None);
+}
+
+#[test]
+fn tripwire_the_command_reads_the_record_from_the_ceremonys_submitted_log() {
+    let src = include_str!("validator_activation.rs");
+    let start = src.find("pub fn validator_activation_status_sync(").expect("command body");
+    let body = &src[start..];
+    let body = &body[..body.find("\n}\n").map(|e| e + 3).unwrap_or(body.len())];
+    assert!(body.contains("submitted_log()"), "the lookup reads the ceremony's durable record");
+    assert!(body.contains("latest_call("), "it looks up the activation call");
+    assert!(!body.contains("&|_| None"), "the command never skips the record");
 }

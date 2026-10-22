@@ -49,6 +49,7 @@ const prepareMock = vi.fn(async () => ({ txHash: "0xfeed" }));
 const sendPreparedMock = vi.fn(async (): Promise<{ txHash: string; blockNumber: number | null }> => ({ txHash: "0xfeed", blockNumber: 501 }));
 const approveMock = vi.fn(async () => ({}));
 const rejectMock = vi.fn(async (_id: string) => {});
+const activationForgetMock = vi.fn(async (_hash: string) => true);
 
 vi.mock("../bridge", () => ({
   bindSimHost: () => {},
@@ -57,6 +58,7 @@ vi.mock("../bridge", () => ({
     node: {
       activationStatus: (m: string, tx?: string | null) => activationStatusMock(m, tx),
       registerValidator: () => registerValidatorMock(),
+      activationForget: (h: string) => activationForgetMock(h),
       armMining: () => armMiningMock(),
       status: async () => ({ state: "running", height: 1, peers: 1, syncPct: 100 }),
       logs: async () => [],
@@ -112,6 +114,8 @@ beforeEach(() => {
   prepareMock.mockClear();
   sendPreparedMock.mockClear();
   approveMock.mockClear();
+  activationForgetMock.mockReset();
+  activationForgetMock.mockImplementation(async () => true);
   try {
     localStorage.clear();
   } catch {
@@ -527,5 +531,81 @@ describe("tripwire: the recorded-tx guard lives in the shared entry", () => {
     expect(guard).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(build);
+  });
+});
+
+describe("the activation record is the durable Rust record (#347), not localStorage", () => {
+  it("a relaunch with storage cleared resumes to Pending from the recorded send", async () => {
+    const at = Date.now() - 60_000;
+    try {
+      localStorage.clear();
+    } catch {
+      /* jsdom */
+    }
+    const reopened = memberStore();
+    expect(reopened.state.s7TxHash ?? null).toBeNull();
+    chain.current = readyStatus({
+      recordedTx: { hash: "0xfeed", atMs: at },
+      tx: { hash: "0xfeed", included: false, blockNumber: null, success: null },
+    } as Partial<ActivationStatusView>);
+    await reopened.refreshActivation();
+    expect(reopened.state.s7TxHash).toBe("0xfeed");
+    expect(reopened.state.s7TxAt).toBe(at);
+    expect(activationPhase(reopened.state.activation, true, reopened.state.s7TxHash)).toBe("pending");
+    (reopened as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await reopened.onS7Activate()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("a recorded send the chain shows mined with the bond activated is not brought back", async () => {
+    const store = memberStore();
+    chain.current = readyStatus({
+      bondActivated: true,
+      registryStatus: 1,
+      recordedTx: { hash: "0xfeed", atMs: Date.now() },
+      tx: { hash: "0xfeed", included: true, blockNumber: 501, success: true },
+    } as Partial<ActivationStatusView>);
+    await store.refreshActivation();
+    expect(store.state.s7TxHash ?? null).toBeNull();
+  });
+
+  it("the activation hash is not written to localStorage", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    store.saveNow();
+    expect(persisted().s7TxHash).toBeUndefined();
+    expect(persisted().s7TxAt).toBeUndefined();
+  });
+
+  it("a send the backend refused before submission (no durable record) leaves nothing recorded", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.onS7Activate();
+    sendPreparedMock.mockRejectedValueOnce(
+      new Error("not submitted: ceremony: broadcast failed: the submission could not be recorded durably, so nothing was sent: disk full"),
+    );
+    await store.approveWalletReview(false);
+    expect(store.state.s7TxHash ?? null).toBeNull(); // nothing was sent: activation is offered again
+    expect(String(store.state.toast ?? "")).toMatch(/not sent/i);
+  });
+
+  it("Forget writes the durable record first; if that write fails, the hash is kept", async () => {
+    const store = memberStore();
+    store.recordActivationTx("0xfeed");
+    store.setState({
+      s7TxAt: Date.now() - 11 * 60_000,
+      activation: readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } }),
+    });
+    activationForgetMock.mockRejectedValueOnce(new Error("could not write submitted-tx.json"));
+    await store.onS7ForgetTx();
+    expect(activationForgetMock).toHaveBeenCalledWith("0xfeed");
+    expect(store.state.s7TxHash).toBe("0xfeed");
+    await store.onS7ForgetTx();
+    expect(store.state.s7TxHash ?? null).toBeNull();
   });
 });

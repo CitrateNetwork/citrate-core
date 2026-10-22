@@ -445,3 +445,69 @@ fn production_code_builds_the_record_only_persisted_or_uncertain() {
     }
     assert!(offenders.is_empty(), "a certain in-memory record outside tests:\n{}", offenders.join("\n"));
 }
+
+// Join-8: the Activate step finds its own send again after a restart, and Forget is durable.
+fn activate_call() -> CallMeta {
+    CallMeta { to: "0x2222222222222222222222222222222222222222".into(), selector: "0x4bac89ff".into() }
+}
+const MEMBER: &str = "0x1111111111111111111111111111111111111111";
+
+#[test]
+fn join8_the_latest_recorded_call_survives_a_restart() {
+    let t = Tmp::new("latest-call");
+    {
+        let log = SubmittedTxLog::open(t.file());
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+        assert_eq!(log.try_record_call(&h(2), MEMBER, 6, None), Ok(true)); // another tx
+        assert_eq!(log.try_record_call(&h(3), MEMBER, 7, Some(&activate_call())), Ok(true));
+    }
+    let log = SubmittedTxLog::open(t.file());
+    let found = log.latest_call(MEMBER, &activate_call()).expect("found after a restart");
+    assert_eq!(found.hash, h(3));
+    assert_eq!(found.nonce, Some(7));
+    assert!(found.at_ms.is_some_and(|ms| ms > 1_600_000_000_000), "recorded time is kept");
+    // Another sender, or another call, finds nothing.
+    assert_eq!(log.latest_call("0x9999999999999999999999999999999999999999", &activate_call()), None);
+    let other = CallMeta { to: activate_call().to, selector: "0xdeadbeef".into() };
+    assert_eq!(log.latest_call(MEMBER, &other), None);
+}
+
+#[test]
+fn join8_forget_is_durable_and_never_makes_a_hash_first_again() {
+    let t = Tmp::new("forget");
+    {
+        let log = SubmittedTxLog::open(t.file());
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+        assert_eq!(log.forget(&h(1)), Ok(true));
+        assert_eq!(log.latest_call(MEMBER, &activate_call()), None);
+    }
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.latest_call(MEMBER, &activate_call()), None, "forgotten across a restart");
+    // The same signed bytes (a re-sign at the same nonce) are still a re-submission.
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(false));
+    assert_eq!(log.forget(&h(42)), Ok(false), "an unknown hash is not forgotten");
+}
+
+#[test]
+fn join8_a_forget_that_cannot_be_written_is_an_error_and_changes_nothing() {
+    let t = Tmp::new("forget-fail");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+    std::fs::create_dir(t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    assert!(log.forget(&h(1)).is_err());
+    assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)));
+}
+
+#[test]
+fn join8_a_file_from_before_call_metadata_still_loads() {
+    let t = Tmp::new("old-format");
+    std::fs::write(
+        t.file(),
+        format!(r#"{{"entries":[{{"hash":"{}","sender":"{}","nonce":5}}],"evicted":{{}},"uncertain":false}}"#, h(1), MEMBER),
+    )
+    .expect("write");
+    let log = SubmittedTxLog::open(t.file());
+    assert!(!log.is_uncertain());
+    assert_eq!(log.latest_call(MEMBER, &activate_call()), None);
+    assert_eq!(log.try_record_for(&h(1), MEMBER, 5), Ok(false));
+}
