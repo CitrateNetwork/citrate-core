@@ -278,7 +278,10 @@ function retryTimerViolations(src: string): string[] {
   if (read === null) bad.push("no readPendingWithdrawals");
   else if (read.includes("setTimeout(")) bad.push("readPendingWithdrawals sets its own timer");
   const schedule = body("private schedulePendingRetry(");
-  if (schedule === null || !schedule.includes("clearTimeout(")) bad.push("schedulePendingRetry does not replace the pending timer");
+  const clear = body("private clearPendingRetry(");
+  if (schedule === null || !schedule.includes("this.clearPendingRetry()") || clear === null || !clear.includes("clearTimeout(")) {
+    bad.push("schedulePendingRetry does not replace the pending timer");
+  }
   const refresh = body("async refreshPendingWithdrawals(");
   if (refresh === null || !refresh.includes("clearPendingRetry()")) bad.push("a fresh read does not clear the pending timer");
   return bad;

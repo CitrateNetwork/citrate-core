@@ -4555,6 +4555,9 @@ export class Store {
     // C1-W (#371 review): one read at a time. Overlapping callers (launch, Wallet mount, after a
     // ceremony, the retry timers) share the read in flight, so the retry chains never multiply.
     if (this.pendingWithdrawalsRead) return this.pendingWithdrawalsRead;
+    // A fresh read replaces any scheduled retry: it schedules its own if it needs one, so one
+    // retry chain exists per Store (#371 review @31c065f).
+    this.clearPendingRetry();
     this.pendingWithdrawalsRead = this.readPendingWithdrawals().finally(() => {
       this.pendingWithdrawalsRead = null;
     });
@@ -4562,6 +4565,23 @@ export class Store {
   }
 
   private pendingWithdrawalsRead: Promise<void> | null = null;
+
+  /** C1-W — the one scheduled pending-withdrawals retry, if any. */
+  private pendingWithdrawalsRetry: ReturnType<typeof setTimeout> | null = null;
+
+  private clearPendingRetry(): void {
+    if (this.pendingWithdrawalsRetry !== null) clearTimeout(this.pendingWithdrawalsRetry);
+    this.pendingWithdrawalsRetry = null;
+  }
+
+  /** Read again in `ms`, replacing any retry already scheduled. */
+  private schedulePendingRetry(ms: number): void {
+    this.clearPendingRetry();
+    this.pendingWithdrawalsRetry = setTimeout(() => {
+      this.pendingWithdrawalsRetry = null;
+      void this.refreshPendingWithdrawals();
+    }, ms);
+  }
 
   private async readPendingWithdrawals(): Promise<void> {
     try {
@@ -4575,8 +4595,8 @@ export class Store {
       // C1-W: an incomplete read (the scan or the withdrawal reads ran out of budget) continues
       // soon; a complete but unconfirmed one (the node is behind, or has no citrate_getLogs) is
       // read again later, so the list catches up without a refresh.
-      if (!read.complete) setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_SCAN_RETRY_MS);
-      else if (!read.confirmed) setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_CATCHUP_RETRY_MS);
+      if (!read.complete) this.schedulePendingRetry(PENDING_SCAN_RETRY_MS);
+      else if (!read.confirmed) this.schedulePendingRetry(PENDING_CATCHUP_RETRY_MS);
     } catch (err) {
       // C1-W: a failed log window (or an unfinished first scan) is shown as "—" plus the
       // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read
@@ -4585,7 +4605,7 @@ export class Store {
       const failure = pendingReadFailure(err);
       this.setState({ pendingWithdrawalsError: failure.message });
       const retryMs = PENDING_RETRY_MS[failure.kind];
-      if (retryMs !== null) setTimeout(() => void this.refreshPendingWithdrawals(), retryMs);
+      if (retryMs !== null) this.schedulePendingRetry(retryMs);
     }
   }
 
