@@ -195,6 +195,8 @@ export function createChainReads(): ChainReads {
         client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "activeSet" }),
         client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "currentEpoch" }),
       ]);
+      // One validatorInfo read per active-set member, on each refresh (at most every 5 minutes).
+      // The registry caps the set at MAX_ACTIVE_SET = 100 (ValidatorRegistry.sol), so this is bounded.
       const infos = await Promise.all(
         set[0].map((k) => client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "validatorInfo", args: [k] })),
       );
@@ -281,16 +283,19 @@ export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | `R
  *  - `stakeSalt`: `ValidatorRegistry.stakeOf(pubkey)` for the member's key, in SALT (0 = none).
  *  - `activation`: isActive / validatorInfo / currentEpoch for the key, null when not read.
  *  - `hasGrant`: the membership grant is on chain (its bond exists), for the bond-locked word.
- * "Registered · active from epoch N" shows the real N (never a promised epoch); "Validator active"
+ * "Exiting" / "Slashed" follow `validatorInfo.status` (2 / 3) before any stake check: after a full exit
+ * the stake reads 0. "Registered · active from epoch N" shows the real N (never a promised epoch); "Validator active"
  * needs isActive AND actEpoch <= currentEpoch. Returns null when the stake is registered but the
  * activation has not been read, or the registry reads are inconsistent: the caller shows "—".
  * LiquidStakingPool self-stake is not an input: it never makes a validator.
  */
 export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean): ValidatorWord | null {
+  // C1-V2: the registry status comes first. A full exit moves the bonded stake to escrow, so
+  // `stakeOf` reads 0 while the status is Exiting (or Slashed); a stake check first would hide it.
+  if (activation?.status === 2) return "Exiting";
+  if (activation?.status === 3) return "Slashed";
   if (!(stakeSalt > 0)) return hasGrant ? "Bond locked · not staked" : "Not a validator";
   if (!activation) return null;
-  if (activation.status === 2) return "Exiting";
-  if (activation.status === 3) return "Slashed";
   if (activation.actEpoch > activation.currentEpoch) return `Registered · active from epoch ${activation.actEpoch}`;
   return isValidatorActive(activation) ? "Validator active" : null;
 }

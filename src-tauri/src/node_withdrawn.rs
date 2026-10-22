@@ -126,17 +126,14 @@ pub fn assess<T: RpcTransport>(local: &T, check: &ForkCheck) -> Verdict {
 }
 
 /// The hash of the returned block, only when it is the block at the check height (UI truth
-/// contract v1.1 §6). A null result, a block that names another height, or a missing or malformed
-/// hash is "not yet" (`None`), never a mismatch: only a returned check block with a different
-/// hash may move chain data aside.
+/// contract v1.1 §6). A null result, a block with no `number`, a block that names another height,
+/// or a missing or malformed hash is "not yet" (`None`), never a mismatch: only a returned block
+/// that states the check height and carries a different hash may move chain data aside (C1-V2).
 fn checkpoint_hash(check: &ForkCheck, block: Option<&Value>) -> Option<String> {
     let block = block?.as_object()?;
-    if let Some(n) = block.get("number") {
-        let n = n.as_str()?;
-        let n = u64::from_str_radix(n.trim_start_matches("0x"), 16).ok()?;
-        if n != check.height {
-            return None;
-        }
+    let n = block.get("number")?.as_str()?.strip_prefix("0x")?;
+    if n.is_empty() || u64::from_str_radix(n, 16).ok()? != check.height {
+        return None;
     }
     let hash = block.get("hash")?.as_str()?;
     let hex = hash.strip_prefix("0x")?;

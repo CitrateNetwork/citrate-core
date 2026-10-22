@@ -333,7 +333,8 @@ export function Node({ store, s }: SurfaceProps) {
                     packaged app when synced-but-not-yet-validating. A registered stake that
                     isn't active yet (pending, or isActive unread) is already staked: no
                     activation is offered for it (#348 review). */}
-                {TAURI && s.node === "synced" && !(s.bondedStake > 0) && (
+                {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
+                {TAURI && s.node === "synced" && !(s.bondedStake > 0) && vWord !== "Exiting" && vWord !== "Slashed" && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS

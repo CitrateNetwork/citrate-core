@@ -975,7 +975,20 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             </div>
           </div>
         )}
-        {s.node === "synced" && !(s.bondedStake > 0) && (
+        {/* C1-V2: after a full exit (or a slash) the registry stake reads 0, but validatorInfo.status
+            says Exiting / Slashed: show that word, and no "Stake my bond". */}
+        {s.node === "synced" && !(s.bondedStake > 0) && (s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant)}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                ValidatorRegistry.validatorInfo status for this node&rsquo;s key; no registered stake
+              </div>
+            </div>
+          </div>
+        )}
+        {s.node === "synced" && !(s.bondedStake > 0) && !(s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
