@@ -1516,7 +1516,17 @@ impl PendingWithdrawalsError {
 
 /// The structured error for a failed scan.
 pub fn pending_read_error(e: &StakingError) -> PendingWithdrawalsError {
-    PendingWithdrawalsError::failed(e.to_string())
+    let kind = match e {
+        StakingError::OutOfBudget => PendingReadErrorKind::Scanning,
+        StakingError::Indexing(_) => PendingReadErrorKind::Indexing,
+        StakingError::BadAddress(_) | StakingError::Rpc(_) | StakingError::Decode(_) => {
+            PendingReadErrorKind::Failed
+        }
+    };
+    PendingWithdrawalsError {
+        kind,
+        message: e.to_string(),
+    }
 }
 
 /// C1-W — what `wallet_pending_withdrawals` returns: the pending withdrawals found (each confirmed

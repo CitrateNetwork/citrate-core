@@ -37,6 +37,7 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
+import type { PendingReadErrorKind, PendingWithdrawalsError } from "../bridge/domains";
 import type { FlRoundPlan } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
@@ -139,6 +140,27 @@ export const PENDING_INDEXING_RETRY_MS = 10_000;
 export const PENDING_CATCHUP_RETRY_MS = 30_000;
 /** C1-W — how soon a read that missed the IPC deadline (InvokeTimeout) is tried again. */
 export const PENDING_TIMEOUT_RETRY_MS = 10_000;
+
+/** C1-W — when a failed pending-withdrawals read is read again, by kind: an unfinished scan soon,
+ *  a node still indexing (-32002) later, an IPC timeout later; any other failure is shown only. */
+const PENDING_RETRY_MS: Record<PendingReadErrorKind | "timeout", number | null> = {
+  scanning: PENDING_SCAN_RETRY_MS,
+  indexing: PENDING_INDEXING_RETRY_MS,
+  timeout: PENDING_TIMEOUT_RETRY_MS,
+  failed: null,
+};
+
+/** C1-W — the kind and the words of a failed pending-withdrawals read. A rejection that is not a
+ *  structured PendingWithdrawalsError (or an InvokeTimeout) is `failed`: fail closed. */
+function pendingReadFailure(err: unknown): { kind: PendingReadErrorKind | "timeout"; message: string } {
+  // InvokeTimeout (bridge/tauri/invoke.ts) by its type name: that module is loaded lazily here.
+  if (err instanceof Error && err.name === "InvokeTimeout") return { kind: "timeout", message: err.message };
+  const e = err as Partial<PendingWithdrawalsError> | null;
+  if (e && typeof e === "object" && typeof e.message === "string" && (e.kind === "scanning" || e.kind === "indexing" || e.kind === "failed")) {
+    return { kind: e.kind, message: e.message };
+  }
+  return { kind: "failed", message: String((err as Error)?.message ?? err) };
+}
 
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
@@ -4558,19 +4580,12 @@ export class Store {
     } catch (err) {
       // C1-W: a failed log window (or an unfinished first scan) is shown as "—" plus the
       // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read
-      // resumes; an unfinished scan is read again shortly until it reaches the head.
-      const msg = String((err as Error)?.message ?? err);
-      this.setState({ pendingWithdrawalsError: msg });
-      if (msg.includes("still reading chain history")) {
-        setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_SCAN_RETRY_MS);
-      } else if (msg.includes("still indexing chain history")) {
-        // The node asked for a retry (-32002) past the bounded back-off: try again later.
-        setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_INDEXING_RETRY_MS);
-      } else if ((err as Error)?.name === "InvokeTimeout") {
-        // The command missed the IPC deadline: shown as "—" plus the reason (above), and read
-        // again; the Rust scan keeps what it read, so the next read resumes.
-        setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_TIMEOUT_RETRY_MS);
-      }
+      // resumes. When to read again follows the error's kind (Rust PendingWithdrawalsError, or an
+      // IPC timeout), never the words of its message.
+      const failure = pendingReadFailure(err);
+      this.setState({ pendingWithdrawalsError: failure.message });
+      const retryMs = PENDING_RETRY_MS[failure.kind];
+      if (retryMs !== null) setTimeout(() => void this.refreshPendingWithdrawals(), retryMs);
     }
   }
 
