@@ -1540,3 +1540,65 @@ fn every_memory_dir_creator_rolls_back_first() {
     let rb = g.find("recover_interrupted_restore(").expect("the guard rolls back");
     assert!(rb < g.find("create_dir_all(").expect("then creates"), "roll back before creating");
 }
+
+// ---------------------------------------------------------------- data-root scan errors
+
+/// Injects a data-root scan failure on this thread for the duration of `f`.
+pub(crate) fn with_failing_data_root_scan<T>(stage: ScanFailure, f: impl FnOnce() -> T) -> T {
+    FAIL_DATA_ROOT_SCAN.with(|c| c.set(Some(stage)));
+    let out = f();
+    FAIL_DATA_ROOT_SCAN.with(|c| c.set(None));
+    out
+}
+
+/// An unreadable data root is not a fresh install: the rollback can't see a kept store, so the
+/// guard refuses and creates no empty memory dir (a later start would otherwise skip the
+/// rollback for good, since `memory/` would then exist).
+#[test]
+fn the_memory_dir_guard_fails_closed_when_the_data_root_scan_fails() {
+    for stage in [ScanFailure::Open, ScanFailure::Entry] {
+        let root = interrupted_root("scan-fail", &[("memory.before-restore-20261019-120000", b"old")]);
+        let mem = root.join("memory");
+        let err = with_failing_data_root_scan(stage, || recover_interrupted_restore(&mem))
+            .expect_err("a failed scan is an error, not a fresh install");
+        assert!(err.contains("memory daemon will not start"), "{stage:?}: {err}");
+        let r = with_failing_data_root_scan(stage, || ensure_memory_dir(&mem));
+        assert!(r.is_err(), "{stage:?}: the guard refuses");
+        assert!(!mem.exists(), "{stage:?}: no empty memory dir");
+        assert!(root.join("memory.before-restore-20261019-120000/store.bge.memdag/CURRENT").exists());
+        // Once the scan works again, the kept store comes back.
+        ensure_memory_dir(&mem).expect("guard");
+        assert_eq!(std::fs::read(mem.join("store.bge.memdag/CURRENT")).unwrap(), b"old");
+    }
+}
+
+/// The same with a real permission error (write + search but no read on the data root), the case
+/// where `memory/` could be created while the kept store stays invisible. Skipped as root.
+#[cfg(unix)]
+#[test]
+fn the_memory_dir_guard_fails_closed_on_an_unreadable_data_root() {
+    if running_as_root() {
+        eprintln!("skipped: root bypasses directory permissions (the injected test covers this)");
+        return;
+    }
+    let root = interrupted_root("scan-perm", &[("memory.before-restore-20261019-120000", b"old")]);
+    let mem = root.join("memory");
+    set_mode(&root, 0o300);
+    let r = ensure_memory_dir(&mem);
+    let created = std::fs::symlink_metadata(&mem).is_ok();
+    set_mode(&root, 0o700);
+    assert!(r.is_err(), "the guard refuses on an unreadable data root");
+    assert!(!created, "and creates no empty memory dir");
+    ensure_memory_dir(&mem).expect("guard");
+    assert_eq!(std::fs::read(mem.join("store.bge.memdag/CURRENT")).unwrap(), b"old");
+}
+
+/// Only a missing data root is a fresh install.
+#[test]
+fn a_missing_data_root_is_a_fresh_install() {
+    let root = tmp_dir("scan-missing");
+    let mem = root.join("not-yet").join("memory");
+    assert_eq!(recover_interrupted_restore(&mem), Ok(None));
+    ensure_memory_dir(&mem).expect("a fresh install gets an empty memory dir");
+    assert!(mem.is_dir());
+}

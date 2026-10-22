@@ -547,6 +547,10 @@ pub struct MemoryManager {
     /// HUP-S3.4 (fan-out 7): the learned-memory ledger. Recall and search leave out learned
     /// memories with an unresolved contradiction (`hermes_learn::RecallHide`).
     learned_ledger: Option<PathBuf>,
+    /// Tests only: runs inside [`MemoryManager::stop`] after the supervisor is taken and before
+    /// the child is terminated (holds a stop in that window).
+    #[cfg(test)]
+    stop_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// The bridge status shape surfaced to the MemoryDomain seam. PUBLIC facts only —
@@ -598,6 +602,8 @@ impl MemoryManager {
             sup: Mutex::new(None),
             model_dir: None,
             learned_ledger: None,
+            #[cfg(test)]
+            stop_hook: Mutex::new(None),
         };
         // K4 (N2): roll back an interrupted restore at init. A failure here is reported by
         // `start`, which runs the same check and refuses (fail closed, no empty store).
@@ -782,16 +788,34 @@ impl MemoryManager {
     /// Stop the daemon: graceful supervisor release (SIGTERM → grace → SIGKILL,
     /// no orphan). The daemon removes its own socket on a clean exit; a killed
     /// daemon's stale socket is reclaimed on the next start (it holds the DB
-    /// lock, which proves the socket stale). Idempotent.
-    pub fn stop(&self) {
+    /// lock, which proves the socket stale). Idempotent. Returns whether a daemon was running.
+    pub fn stop(&self) -> bool {
         let sup = {
             let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
         };
+        #[cfg(test)]
+        if let Some(hook) = self
+            .stop_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            hook();
+        }
+        let was_running = sup.is_some();
         if let Some(sup) = sup {
             sup.stop();
             drop(sup);
         }
+        was_running
+    }
+
+    /// Tests only: hold every later [`MemoryManager::stop`] in `hook` between taking the
+    /// supervisor and terminating the child.
+    #[cfg(test)]
+    pub(crate) fn set_stop_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self.stop_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
     /// The current supervisor state + socket path + semantic-model presence.

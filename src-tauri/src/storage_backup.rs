@@ -382,7 +382,7 @@ impl DaemonControl for crate::memory::MemoryManager {
         self.is_running_now()
     }
     fn stop(&self) {
-        crate::memory::MemoryManager::stop(self)
+        crate::memory::MemoryManager::stop(self);
     }
     fn start(&self) -> Result<(), String> {
         crate::memory::MemoryManager::start(self).map_err(|e| e.to_string())
@@ -1630,7 +1630,7 @@ pub(crate) fn recover_interrupted_restore(mem_dir: &Path) -> Result<Option<PathB
         return Ok(None);
     };
     let prefix = format!("{}{BEFORE_RESTORE_INFIX}", base.to_string_lossy());
-    let Ok(rd) = std::fs::read_dir(parent) else {
+    let Ok(rd) = read_data_root(parent) else {
         return Ok(None); // no data root yet (fresh install)
     };
     let newest = rd
@@ -1666,6 +1666,41 @@ thread_local! {
     /// Tests only: make the next rollback rename on this thread fail, so the fail-closed paths
     /// are exercised without relying on file permissions (which root bypasses).
     pub(crate) static FAIL_ROLLBACK_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Where the rollback's data-root scan fails (tests only).
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ScanFailure {
+    /// Opening the data root fails.
+    Open,
+    /// Opening works; reading an entry fails.
+    Entry,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: make the rollback's data-root scan fail on this thread (works as root too).
+    pub(crate) static FAIL_DATA_ROOT_SCAN: std::cell::Cell<Option<ScanFailure>> = const { std::cell::Cell::new(None) };
+}
+
+/// The rollback's scan of the data root: its entries, each one possibly an error.
+fn read_data_root(
+    parent: &Path,
+) -> std::io::Result<Box<dyn Iterator<Item = std::io::Result<std::fs::DirEntry>>>> {
+    #[cfg(test)]
+    if let Some(stage) = FAIL_DATA_ROOT_SCAN.with(|f| f.get()) {
+        let injected = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "injected scan failure",
+        );
+        if stage == ScanFailure::Open {
+            return Err(injected);
+        }
+        let rd = std::fs::read_dir(parent)?;
+        return Ok(Box::new(std::iter::once(Err(injected)).chain(rd)));
+    }
+    Ok(Box::new(std::fs::read_dir(parent)?))
 }
 
 /// The rollback's single `rename(2)`.

@@ -959,3 +959,71 @@ fn memory_start_fails_closed_when_the_rollback_cannot_run() {
     assert!(!root.join("memory").exists(), "no empty store was created");
     assert!(kept.join("store.bge.memdag").exists());
 }
+
+// ---------------------------------------------------------------------------
+// K4 — a backup waits for a stop already in progress
+// ---------------------------------------------------------------------------
+
+/// A memory stop takes the supervisor before the child has exited. A backup that starts in that
+/// window must not copy (or swap) the store until the child is gone: it waits for the whole stop.
+#[test]
+fn a_backup_waits_for_a_memory_stop_in_progress() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    let root = tmp_dir("stop-window");
+    let mgr = manager_at(&root);
+    mgr.start().expect("start");
+    let store = mgr.store_path().to_path_buf();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.join("data.enc").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(store.join("data.enc").exists(), "the stub daemon wrote its store");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let (taken_tx, taken_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let taken_tx = StdMutex::new(taken_tx);
+    let release_rx = StdMutex::new(release_rx);
+    mgr.set_stop_hook(Box::new(move || {
+        let _ = taken_tx.lock().unwrap().send(());
+        let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(20));
+    }));
+    let copy_started = AtomicBool::new(false);
+    let (copied_early, export_result) = std::thread::scope(|s| {
+        let stopper = s.spawn(|| mgr.stop());
+        taken_rx.recv_timeout(Duration::from_secs(10)).expect("the stop took the supervisor");
+        let backup = s.spawn(|| {
+            let src = crate::storage_backup::MemorySource {
+                dir: store.parent().unwrap().to_path_buf(),
+                store_path: store.clone(),
+                daemon: &mgr,
+                registry: Arc::new(crate::knowledge_import::ImportRegistry::default()),
+            };
+            let mut on = |p: &crate::storage_backup::Progress| {
+                if p.phase == "memory" {
+                    copy_started.store(true, Ordering::SeqCst);
+                }
+            };
+            crate::storage_backup::export(
+                &dest,
+                &[crate::storage_backup::Part::Memory],
+                None,
+                Some(&src),
+                1,
+                &mut on,
+            )
+        });
+        std::thread::sleep(Duration::from_millis(800));
+        let early = copy_started.load(Ordering::SeqCst);
+        let _ = release_tx.send(());
+        stopper.join().unwrap();
+        (early, backup.join().unwrap())
+    });
+    assert!(!copied_early, "the backup copied the store while the stop was still in progress");
+    let report = export_result.expect("export");
+    assert!(copy_started.load(Ordering::SeqCst), "the copy ran once the stop finished");
+    assert!(!report.daemon_restarted, "a daemon stopped by someone else stays stopped");
+    assert_eq!(mgr.status().state, "stopped");
+}
