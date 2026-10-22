@@ -32,7 +32,7 @@ import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
 import { subscribeWebSettings } from "../../agent/webSettingsSync";
-import { patchWebSettings } from "../../agent/webSettingsWrite";
+import { patchWebSettings, writeStartSettingUnlessStarting } from "../../agent/startSettingsWrite";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -281,7 +281,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
       try {
         // Field-specific: re-read what is saved now (another form may have changed it since this
         // panel loaded), change only searchEnabled, and show what core answers.
-        // One write at a time with the Web search form (patchWebSettings, webSettingsWrite.ts).
+        // One write at a time with the Web search form (patchWebSettings, startSettingsWrite.ts).
         // Held (null) if a Hermes start began while this write waited; the row says so.
         const st = await patchWebSettings(io.web, { searchEnabled: on }, me);
         if (!st) return;
@@ -311,8 +311,14 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
       if (hermesStarting()) return;
       try {
         // Turning it off keeps recorded sessions; deleting them is a second-depth choice.
-        if (learn) noteRunning("learn", learn.settings.enabled);
-        const st = await io.fl.setTrajectoryConsent(on, false);
+        // Under the start-time settings lock: a Hermes start that begins meanwhile waits for this
+        // write, and a write asked for during a start is held (null); the row says so.
+        const st = await writeStartSettingUnlessStarting(async () => {
+          const fresh = await io.fl.trajectoryStatus();
+          noteRunning("learn", fresh.settings.enabled);
+          return io.fl.setTrajectoryConsent(on, false);
+        });
+        if (!st) return;
         setLearn(st);
         setLearnErr(st.loadError);
       } catch (e) {

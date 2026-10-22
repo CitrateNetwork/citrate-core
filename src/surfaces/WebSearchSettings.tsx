@@ -17,7 +17,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting } from "../shell/slices/hermesRunning";
 import { subscribeWebSettings } from "../agent/webSettingsSync";
-import { patchWebSettings } from "../agent/webSettingsWrite";
+import { patchWebSettings } from "../agent/startSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -150,7 +150,7 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
     setError(null);
     try {
       const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
-      // One write at a time across every view (patchWebSettings, webSettingsWrite.ts): re-read, apply only the
+      // One write at a time across every view (patchWebSettings, startSettingsWrite.ts): re-read, apply only the
       // fields changed here, write, announce, then let the next writer in.
       // Held (null) if a Hermes start began while this write waited: the draft stays unsaved and
       // the "Hermes is starting" line shows; Save works again once Hermes is up.

@@ -84,8 +84,9 @@ export async function readSavedForHermes(): Promise<HermesSavedSnapshot> {
 export async function withHermesStart<T>(f: (snapshot: HermesSavedSnapshot) => Promise<T>, read: () => Promise<HermesSavedSnapshot> = readSavedForHermes): Promise<T> {
   hermesRunningSlice.set((st) => ({ starting: st.starting + 1 }));
   try {
-    // The snapshot is taken inside the web-settings write lock (webSettingsSync.ts): it waits for a
-    // write already in progress, and writes queued behind it see the start and hold. Only the read
+    // The snapshot is taken inside the start-time settings write lock (webSettingsSync.ts), which
+    // every writer of web search AND learning takes (agent/startSettingsWrite.ts): it waits for a
+    // write already in flight, and writes queued behind it see the start and hold. Only the read
     // is locked, never `f`, so a nested start (a restart inside a start) cannot wait on itself.
     // `read` must not take the lock.
     const snapshot = await withWebSettingsLock(read);

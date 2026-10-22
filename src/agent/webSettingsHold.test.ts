@@ -7,7 +7,7 @@
 //     work again once the start is over.
 import { beforeEach, describe, expect, it } from "vitest";
 import { withWebSettingsLock } from "./webSettingsSync";
-import { writeWebSettingsUnlessStarting } from "./webSettingsWrite";
+import { writeStartSettingUnlessStarting } from "./startSettingsWrite";
 import { hermesRunningSlice, hermesStarting, withHermesStart, type HermesSavedSnapshot } from "../shell/slices/hermesRunning";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -46,7 +46,7 @@ beforeEach(() => {
 describe("web-settings writes and the Hermes start hold", () => {
   it("a start that begins while a write is in progress snapshots the written value", async () => {
     const log: string[] = [];
-    const write = writeWebSettingsUnlessStarting(writeSearch(true, log));
+    const write = writeStartSettingUnlessStarting(writeSearch(true, log));
     await begun(log, "read true");
     const start = withHermesStart(async (snapshot) => snapshot, readSaved);
     const snapshot = await settles(start, "start");
@@ -57,7 +57,7 @@ describe("web-settings writes and the Hermes start hold", () => {
 
   it("a write asked for in the same turn as a start, before it took the lock, is held (the start came first)", async () => {
     const log: string[] = [];
-    const write = writeWebSettingsUnlessStarting(writeSearch(true, log));
+    const write = writeStartSettingUnlessStarting(writeSearch(true, log));
     const start = withHermesStart(async (snapshot) => snapshot, readSaved);
     expect(await settles(write, "write")).toBeNull();
     expect((await settles(start, "start")).webSearch).toBe(false);
@@ -66,9 +66,9 @@ describe("web-settings writes and the Hermes start hold", () => {
 
   it("a write still queued when a start begins is held: it does not run, and the caller learns it was held", async () => {
     const log: string[] = [];
-    const first = writeWebSettingsUnlessStarting(writeSearch(true, log));
+    const first = writeStartSettingUnlessStarting(writeSearch(true, log));
     await begun(log, "read true");
-    const queued = writeWebSettingsUnlessStarting(writeSearch(false, log));
+    const queued = writeStartSettingUnlessStarting(writeSearch(false, log));
     let release: () => void = () => {};
     const confirmed = new Promise<void>((r) => (release = r));
     const start = withHermesStart(async (snapshot) => {
@@ -91,23 +91,23 @@ describe("web-settings writes and the Hermes start hold", () => {
     const confirmed = new Promise<void>((r) => (release = r));
     const start = withHermesStart(() => confirmed, readSaved);
     await tick();
-    expect(await settles(writeWebSettingsUnlessStarting(writeSearch(true, log)), "held write")).toBeNull();
+    expect(await settles(writeStartSettingUnlessStarting(writeSearch(true, log)), "held write")).toBeNull();
     release();
     await settles(start, "start");
     expect(hermesStarting()).toBe(false);
-    expect(await settles(writeWebSettingsUnlessStarting(writeSearch(true, log)), "write after start")).toBe(true);
+    expect(await settles(writeStartSettingUnlessStarting(writeSearch(true, log)), "write after start")).toBe(true);
     expect(saved.searchEnabled).toBe(true);
   });
 
   it("nested starts (a restart inside a start, as the Controls restart does) and queued writes all settle", async () => {
     const log: string[] = [];
-    const w1 = writeWebSettingsUnlessStarting(writeSearch(true, log));
+    const w1 = writeStartSettingUnlessStarting(writeSearch(true, log));
     await begun(log, "read true");
     const outer = withHermesStart(
       (outerSnap) => withHermesStart(async (innerSnap) => [outerSnap.webSearch, innerSnap.webSearch], readSaved),
       readSaved,
     );
-    const w2 = writeWebSettingsUnlessStarting(writeSearch(false, log));
+    const w2 = writeStartSettingUnlessStarting(writeSearch(false, log));
     expect(await settles(outer, "nested start")).toEqual([true, true]);
     expect(await settles(w1, "w1")).toBe(true);
     expect(await settles(w2, "w2")).toBeNull();
@@ -122,6 +122,6 @@ describe("web-settings writes and the Hermes start hold", () => {
     });
     await expect(settles(failing, "failing start")).rejects.toThrow("core went away");
     expect(hermesStarting()).toBe(false);
-    expect(await settles(writeWebSettingsUnlessStarting(async () => "ok"), "write after failed start")).toBe("ok");
+    expect(await settles(writeStartSettingUnlessStarting(async () => "ok"), "write after failed start")).toBe("ok");
   });
 });

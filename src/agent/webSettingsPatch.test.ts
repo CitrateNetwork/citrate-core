@@ -1,4 +1,4 @@
-// The one writer of the saved web settings (patchWebSettings, webSettingsWrite.ts). Core's
+// The one writer of the saved web settings (patchWebSettings, startSettingsWrite.ts). Core's
 // hermes_web_settings_set replaces the WHOLE object, so two read-modify-writes that overlap can put
 // back a field the other just changed: a browser opt-out undone by a search toggle. These tests run
 // the real writer, lock and start hold against a core stand-in whose reads and writes answer on a
@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { DEFAULT_WEB_SETTINGS, type HermesWebSettings, type HermesWebStatus, type WebSettingsIo } from "./webSearch";
-import { patchWebSettings } from "./webSettingsWrite";
+import { patchWebSettings } from "./startSettingsWrite";
 import { subscribeWebSettings } from "./webSettingsSync";
 import { hermesRunningSlice, withHermesStart } from "../shell/slices/hermesRunning";
 
@@ -129,11 +129,11 @@ describe("tripwire: no component writes the whole web-settings object directly",
     expect(hits).toEqual(["agent/webSearch.ts"]);
   });
 
-  it("only agent/webSettingsWrite.ts calls saveWebSettings", () => {
+  it("only agent/startSettingsWrite.ts calls saveWebSettings", () => {
     const hits = files
       .filter((p) => rel(p) !== "agent/webSearch.ts")
       .filter((p) => /\bsaveWebSettings\s*\(/.test(readFileSync(p, "utf8")))
       .map(rel);
-    expect(hits).toEqual(["agent/webSettingsWrite.ts"]);
+    expect(hits).toEqual(["agent/startSettingsWrite.ts"]);
   });
 });
