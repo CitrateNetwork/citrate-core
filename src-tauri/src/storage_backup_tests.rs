@@ -1630,3 +1630,127 @@ fn every_memory_pause_waits_for_the_whole_stop() {
     assert!(held < stop.find("guard.take()").expect("take"), "lock before taking the supervisor");
     assert!(stop.find("sup.stop()").expect("terminate") > held, "and across the termination");
 }
+
+// ---------------------------------------------------------------- Codex round 2 at e8bbd8c
+
+/// A kubo that is down (`down`) or fails every `add` after the first `adds_ok`.
+struct FlakyKubo {
+    inner: Arc<FakeKubo>,
+    down: bool,
+    adds_ok: usize,
+    adds: AtomicUsize,
+}
+impl KuboTransport for FlakyKubo {
+    fn add(&self, filename: &str, bytes: &[u8]) -> std::result::Result<AddOutcome, StorageError> {
+        if self.down || self.adds.fetch_add(1, Ordering::SeqCst) >= self.adds_ok {
+            return Err(StorageError::Transport("kubo is not reachable".into()));
+        }
+        SharedKubo(self.inner.clone()).add(filename, bytes)
+    }
+    fn pin_add(&self, cid: &str) -> std::result::Result<(), StorageError> {
+        if self.down {
+            return Err(StorageError::Transport("kubo is not reachable".into()));
+        }
+        SharedKubo(self.inner.clone()).pin_add(cid)
+    }
+    fn pin_rm(&self, cid: &str) -> std::result::Result<(), StorageError> {
+        SharedKubo(self.inner.clone()).pin_rm(cid)
+    }
+    fn pin_ls(&self) -> std::result::Result<Vec<String>, StorageError> {
+        if self.down {
+            return Err(StorageError::Transport("kubo is not reachable".into()));
+        }
+        SharedKubo(self.inner.clone()).pin_ls()
+    }
+    fn cat(&self, cid: &str) -> std::result::Result<Vec<u8>, StorageError> {
+        SharedKubo(self.inner.clone()).cat(cid)
+    }
+}
+
+fn flaky_manager(root: &Path, down: bool, adds_ok: usize) -> (StorageManager, Arc<FakeKubo>) {
+    let inner = FakeKubo::new();
+    let t = FlakyKubo { inner: inner.clone(), down, adds_ok, adds: AtomicUsize::new(0) };
+    (StorageManager::new(Box::new(t), root.join("ipfs-restore")), inner)
+}
+
+/// The live memory store after the backup was taken (so a swap is visible).
+fn move_memory_on(mem: &Path) {
+    std::fs::write(mem.join("store.bge.memdag/000123.sst"), b"newer state").unwrap();
+}
+
+fn assert_memory_untouched(mem: &Path, daemon: &FakeDaemon) {
+    assert_eq!(std::fs::read(mem.join("store.bge.memdag/000123.sst")).unwrap(), b"newer state", "the live store was not swapped");
+    let parent = mem.parent().unwrap();
+    let kept: Vec<_> = std::fs::read_dir(parent)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("before-restore"))
+        .collect();
+    assert!(kept.is_empty(), "no previous store was moved aside");
+    assert_eq!(daemon.stops.load(Ordering::SeqCst), 0, "the daemon was not stopped");
+}
+
+#[test]
+fn a_combined_restore_with_kubo_down_changes_nothing() {
+    let (report, _kubo, mem, root) = export_both("r2-kubo-down");
+    move_memory_on(&mem);
+    let daemon = FakeDaemon::new(true, &mem);
+    let target = MemorySource { dir: mem.clone(), store_path: mem.join("store.bge.memdag"), daemon: &daemon, registry: open_registry() };
+    let (mgr, inner) = flaky_manager(&root, true, 0);
+    let err = restore(Path::new(&report.folder), &[Part::Files, Part::Memory], Some(&mgr), Some(&target), 42, &mut no_progress())
+        .expect_err("kubo is down");
+    assert!(err.to_string().contains("nothing was restored"), "{err}");
+    assert_memory_untouched(&mem, &daemon);
+    assert!(inner.blobs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_kubo_failure_mid_files_leaves_memory_untouched_and_says_what_was_restored() {
+    let (report, _kubo, mem, root) = export_both("r2-kubo-mid");
+    move_memory_on(&mem);
+    let daemon = FakeDaemon::new(true, &mem);
+    let target = MemorySource { dir: mem.clone(), store_path: mem.join("store.bge.memdag"), daemon: &daemon, registry: open_registry() };
+    let (mgr, _inner) = flaky_manager(&root, false, 1);
+    let err = restore(Path::new(&report.folder), &[Part::Files, Part::Memory], Some(&mgr), Some(&target), 42, &mut no_progress())
+        .expect_err("the second add fails");
+    let msg = err.to_string();
+    assert!(msg.contains("1 of 2 files"), "{msg}");
+    assert!(msg.contains("memory store was not changed"), "{msg}");
+    assert_memory_untouched(&mem, &daemon);
+}
+
+#[test]
+fn a_memory_failure_after_files_names_the_files_already_restored() {
+    let (report, _kubo, mem, root) = export_both("r2-mem-busy");
+    move_memory_on(&mem);
+    let daemon = FakeDaemon::new(true, &mem);
+    let target = MemorySource { dir: mem.clone(), store_path: mem.join("store.bge.memdag"), daemon: &daemon, registry: open_registry() };
+    let (mgr, _inner) = flaky_manager(&root, false, usize::MAX);
+    // A knowledge import holds the store: the Memory part is refused.
+    let _slot = crate::knowledge_import::ImportGuard::acquire(&target.store_path).expect("slot");
+    let err = restore(Path::new(&report.folder), &[Part::Files, Part::Memory], Some(&mgr), Some(&target), 42, &mut no_progress())
+        .expect_err("memory is busy");
+    let msg = err.to_string();
+    assert!(msg.contains("busy"), "{msg}");
+    assert!(msg.contains("2 of 2 files"), "{msg}");
+    assert!(msg.contains("memory store was not changed"), "{msg}");
+    assert_memory_untouched(&mem, &daemon);
+}
+
+#[test]
+fn an_oversized_files_entry_is_refused_before_anything_changes() {
+    let (report, _kubo, mem, root) = export_both("r2-oversized");
+    move_memory_on(&mem);
+    let daemon = FakeDaemon::new(true, &mem);
+    let target = MemorySource { dir: mem.clone(), store_path: mem.join("store.bge.memdag"), daemon: &daemon, registry: open_registry() };
+    let (mgr, inner) = flaky_manager(&root, false, usize::MAX);
+    // One backed-up file (37 bytes) is over a 16-byte limit for this test.
+    FILES_ENTRY_CAP.with(|c| c.set(Some(16)));
+    let r = restore(Path::new(&report.folder), &[Part::Files, Part::Memory], Some(&mgr), Some(&target), 42, &mut no_progress());
+    FILES_ENTRY_CAP.with(|c| c.set(None));
+    let err = r.expect_err("over the limit");
+    assert!(err.to_string().contains("limit"), "{err}");
+    assert!(err.to_string().contains("nothing was restored"), "{err}");
+    assert_memory_untouched(&mem, &daemon);
+    assert!(inner.blobs.lock().unwrap().is_empty(), "nothing was added to kubo");
+}

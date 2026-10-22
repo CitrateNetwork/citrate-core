@@ -1334,6 +1334,12 @@ pub fn verify_report(folder: &Path) -> VerifyReport {
 // Restore
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+thread_local! {
+    /// Tests only: a smaller per-file Files limit on this thread (the real one is 1 GiB).
+    pub(crate) static FILES_ENTRY_CAP: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 /// Restore `parts` from a backup folder. Verifies the whole folder FIRST and refuses on any
 /// mismatch before touching a daemon or a store. Files are re-added and pinned locally (no bond);
 /// the memory store is swapped in from a re-checked staging copy, keeping the replaced store.
