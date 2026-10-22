@@ -28,6 +28,8 @@ import {
   WalletReview,
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
+import { broadcastFailure } from "./broadcastOutcome";
+export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
@@ -85,7 +87,7 @@ import {
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
-/** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
+/** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
  * HUP-S2.4 — tools whose handler always stops at a member approval of its own (a ceremony, or the
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
@@ -522,11 +524,6 @@ export function tickPatch(
   // climbing height + steady ~24 peers a packaged build must never show.
   if (sim) {
     u.height = s.height + (rand() < 0.85 ? 1 : 2);
-    u.finAge = s.finAge + 0.6;
-    if (u.height - s.lastCp >= 50) {
-      u.lastCp = u.height;
-      u.finAge = 0;
-    }
     const target = running ? 24 : 0;
     let peers = s.peers;
     if (peers < target) peers += Math.ceil(rand() * 3);
@@ -560,7 +557,6 @@ export function tickPatch(
       u.claimable = s.claimable + (dv + dp + dc) * 0.85;
     }
     if (running) {
-      u.hb = (s.hb + 0.6) % 30;
       u.cpu = s.node === "paused" ? 2 + rand() * 2 : (s.node === "validating" ? 18 : 11) + rand() * 12;
       u.ram = (s.node === "validating" ? 780 : 540) + rand() * 140;
       if (rand() < 0.55) {
@@ -1404,10 +1400,6 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
-        // There is NO real finality/checkpoint-age source from the node yet
-        // (WO-1 adds citrate_getDagStats). Mark it unavailable (< 0) rather than
-        // leaving the fabricated seed value — displays render "—" (Rule 1).
-        finAge: -1,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
@@ -2142,7 +2134,6 @@ export class Store {
     return {
       height: s.height,
       peers: s.peers,
-      finalityAge: Math.round(s.finAge),
       nodeState: nodeLabelLocal(s.node),
       // "staked" now reflects the locked membership grant (falling back to the validator bond), so the
       // model no longer sees 0 for a granted member.
@@ -5108,7 +5099,7 @@ export class Store {
       try {
         await bridge.signing.broadcast(r.view.id, ack);
       } catch (err) {
-        this.toast(WALLET_ACTION_LABELS[r.kind] + " settles only in the desktop app — " + String((err as Error).message ?? err));
+        this.toast(WALLET_ACTION_LABELS[r.kind] + " can only be signed and sent in the desktop app — " + String((err as Error).message ?? err));
       }
       // Release the pending sim ceremony and clear the review (nothing settled).
       try {
@@ -5122,8 +5113,13 @@ export class Store {
       return;
     }
     // Tauri: sign + broadcast the real 40204 tx, then re-read balances from chain.
+    //
+    // C1-V #347 review: the broadcast and the follow-up refreshes are separate steps. "not sent"
+    // is said ONLY when the backend marks the failure as before submission; after the node has (or
+    // may have) accepted the tx, the outcome is unknown and the member gets the tx hash to check
+    // before trying again, so a payment is never reported as not sent when it may have gone out.
+    let result: Awaited<ReturnType<typeof bridge.signing.broadcast>>;
     try {
-      let result: Awaited<ReturnType<typeof bridge.signing.broadcast>>;
       if (r.onSigned) {
         // Join-8: sign WITHOUT sending, record the hash (persisted synchronously), THEN send.
         // The one-call broadcast polls for the receipt before it returns the hash, so a quit
@@ -5132,7 +5128,7 @@ export class Store {
         if (!r.onSigned(prepared.txHash)) {
           // Not saved means a quit could lose it, and a resume could offer a second activation.
           // Stop here: the catch below discards the signed, unsent tx.
-          throw new Error("this device could not save the signed transaction, so it was not sent; nothing was sent");
+          throw new Error("not submitted: this device could not save the signed transaction, so it was not sent; nothing was sent");
         }
         result = await bridge.signing.sendPrepared(r.view.id);
         // The node must report the very tx that was signed and saved. A different hash is a
@@ -5145,33 +5141,66 @@ export class Store {
       } else {
         result = await bridge.signing.broadcast(r.view.id, ack);
       }
-      this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
-      this.toast(r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
-      this.setState({ walletReview: null });
-      if (r.kind === "claim") await this.refreshEarnings();
-      else await this.refreshWallet();
-      // Activating the bond (MemberBond.activate) makes the clone bond its principal
-      // into the ValidatorRegistry — re-read the REAL bond now so the node flips to
-      // "validating" immediately instead of waiting for the next 2s poll.
-      if (r.kind === "stake") await this.refreshNode();
-      if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
-      await this.refreshActivity();
-      this.save();
-      // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
-      // Join-8: the tx hash goes with it, so the Activate-validator step can resume to "Pending".
-      await r.onResolved?.(true, result.txHash);
     } catch (err) {
-      // Honest failure — release the pending ceremony so it isn't left dangling.
+      const failure = broadcastFailure(err);
+      // Release the pending ceremony so it isn't left dangling (already consumed once submitted).
       try {
         await bridge.signing.reject(r.view.id);
       } catch {
         /* best-effort cleanup */
       }
       this.setState({ walletReview: null });
-      this.toast(r.label + " not settled — " + String((err as Error).message ?? err));
-      // The tx didn't settle → tell the sidecar to abort, not proceed.
+      if (failure.kind === "not-sent") {
+        // Contract v1.1 §1: a first-send NonceTooLow means the nonce is already used.
+        this.toast(
+          r.label +
+            " not sent — " +
+            (/NonceTooLow/.test(failure.reason)
+              ? "nonce already used; check your recent transactions before sending again (" + failure.reason + ")"
+              : failure.reason),
+        );
+      } else {
+        if (failure.txHash) this.addActivity(r.label + " · outcome unknown", r.view.decoded.cost || r.view.decoded.action, failure.txHash);
+        this.toast(
+          r.label +
+            " sent, outcome unknown — " +
+            (failure.txHash ? "check tx " + failure.txHash + " on the block explorer" : "check your recent transactions on the block explorer") +
+            " before trying again (" +
+            failure.reason +
+            ").",
+        );
+      }
+      // Not confirmed → the sidecar effect does not proceed.
       await r.onResolved?.(false);
+      return;
     }
+    this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
+    // C1-V §1 transaction words: Pending until a receipt names the block, then Included in block N.
+    const sentLine =
+      r.label +
+      " broadcast — tx " +
+      result.txHash.slice(0, 10) +
+      "… · " +
+      (result.blockNumber != null ? "Included in block " + result.blockNumber.toLocaleString("en-US") : "Pending; the balance re-reads once it is included in a block");
+    this.toast(sentLine + ".");
+    this.setState({ walletReview: null });
+    try {
+      if (r.kind === "claim") await this.refreshEarnings();
+      else await this.refreshWallet();
+      // Activating the bond (MemberBond.activate) makes the clone bond its principal
+      // into the ValidatorRegistry — re-read the REAL bond now so the node shows the
+      // registry state immediately instead of waiting for the next 2s poll.
+      if (r.kind === "stake") await this.refreshNode();
+      if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
+      await this.refreshActivity();
+      this.save();
+    } catch (err) {
+      // A failed re-read is NOT a broadcast failure: the tx went out with the hash above.
+      this.toast(sentLine + " · the balance could not be re-read: " + String((err as Error)?.message ?? err));
+    }
+    // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
+    // Join-8: the tx hash goes with it, so the Activate-validator step can resume to "Pending".
+    await r.onResolved?.(true, result.txHash);
   }
 
   /**
@@ -5213,13 +5242,13 @@ export class Store {
    * Today this is bonded pinning. (The WITHDRAW leg — LiquidStakingPool
    * `requestWithdrawal` → `claimWithdrawal` — is now wired via
    * walletRequestWithdrawal / walletClaimWithdrawal, WP2.) NEVER fabricates a hash
-   * or mutates a balance (Rule 1/3). Web-dev: settles only in the desktop app.
+   * or mutates a balance (Rule 1/3). Web-dev: can only be signed and sent in the desktop app.
    */
   settleUnwired(action: string): void {
     if (BRIDGE_MODE === "tauri") {
       this.toast(action + " isn't wired to a real 40204 transaction yet — no funds moved. (Grounded contract pending.)");
     } else {
-      this.toast(action + " settles only in the desktop app — no key or chain in web preview.");
+      this.toast(action + " can only be signed and sent in the desktop app — no key or chain in web preview.");
     }
   }
 
