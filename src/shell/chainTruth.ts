@@ -61,7 +61,7 @@ export interface ValidatorActivation {
 
 /** "Validator active" (§1): isActive AND the activation epoch has been reached. */
 export function isValidatorActive(a: ValidatorActivation | null): boolean {
-  return !!a && a.isActive;
+  return !!a && a.isActive && a.status === 1 && a.actEpoch <= a.currentEpoch;
 }
 
 /** The note every "Validator active" carries (§1): consensus follows the epoch snapshot. */
@@ -234,7 +234,7 @@ export function readsValidatorRewards(bondedStake: number, bondActivated: boolea
 }
 
 /** The §1 validator words this app can derive today (contract v1.1). */
-export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Staked · active from next epoch" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
+export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
 
 /**
  * The validator state word, from the registry only (contract v1.1 §1 Validators).
@@ -249,5 +249,8 @@ export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "S
 export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean): ValidatorWord | null {
   if (!(stakeSalt > 0)) return hasGrant ? "Bond locked · not staked" : "Not a validator";
   if (!activation) return null;
-  return activation.isActive ? "Validator active" : "Staked · active from next epoch";
+  if (activation.status === 2) return "Exiting";
+  if (activation.status === 3) return "Slashed";
+  if (activation.actEpoch > activation.currentEpoch) return `Registered · active from epoch ${activation.actEpoch}`;
+  return isValidatorActive(activation) ? "Validator active" : null;
 }

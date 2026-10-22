@@ -978,7 +978,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {s.hasGrant ? "Bond locked · not staked" : "Not a validator"}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                stake your membership bond to join the active set at the next epoch snapshot
+                stake your membership bond in the ValidatorRegistry; it shows the epoch your validator becomes active
               </div>
             </div>
             <button className="btn btn-primary" onClick={() => void store.activateValidator()}>

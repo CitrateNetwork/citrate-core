@@ -354,7 +354,7 @@ export function Node({ store, s }: SurfaceProps) {
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
                           Your node is synced and this wallet is linked to your identity. Activating stakes your membership
-                          bond in the ValidatorRegistry; the validator joins the active set at the next epoch snapshot.
+                          bond in the ValidatorRegistry; the registry sets the epoch your validator becomes active, shown here once registered.
                         </p>
                         <button
                           className="btn btn-primary btn-sm"
