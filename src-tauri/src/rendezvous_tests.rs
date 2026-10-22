@@ -640,3 +640,71 @@ fn the_legacy_path_clears_the_marker_for_its_group() {
     assert_eq!(r, Ok((JoinRedeemView::Legacy, true)));
     assert_eq!(active_joins_at(&m), vec!["other".to_string()]);
 }
+
+// ---- review round 4: marker writes are serialized, and a stale tick can't erase a newer note -------
+
+/// Codex round 4 (P2): a tick whose views were taken before a join was noted finishes after the note.
+/// Its snapshot doesn't erase the join.
+#[test]
+fn a_tick_that_started_before_a_note_doesnt_erase_it() {
+    let m = marker("stale-tick");
+    let seen = marker_generation(&m);
+    note_active_join_at(&m, "g1"); // join_opened_at, while the tick waits on the daemon
+    reconcile_active_joins_at(&m, &[], seen); // the older tick completes
+    assert_eq!(active_joins_at(&m), vec!["g1".to_string()]);
+}
+
+/// A tick that started after the note reconciles the marker with the daemon's views as before
+/// (a finished join leaves it).
+#[test]
+fn a_fresh_tick_reconciles_the_marker() {
+    let m = marker("fresh-tick");
+    note_active_join_at(&m, "g1");
+    note_active_join_at(&m, "g2");
+    let seen = marker_generation(&m);
+    reconcile_active_joins_at(&m, &["g2".to_string()], seen);
+    assert_eq!(active_joins_at(&m), vec!["g2".to_string()]);
+}
+
+/// Concurrent notes (two joins at once, or a join and the ticker) don't lose each other's group.
+#[test]
+fn parallel_marker_notes_dont_lose_a_group() {
+    let m = marker("parallel");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+    let hs: Vec<_> = (0..16)
+        .map(|n| {
+            let (m, b) = (m.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                b.wait();
+                for k in 0..4 {
+                    note_active_join_at(&m, &format!("g{n}-{k}"));
+                }
+            })
+        })
+        .collect();
+    for h in hs {
+        h.join().expect("thread");
+    }
+    assert_eq!(active_joins_at(&m).len(), 64);
+}
+
+/// Tripwire: every marker read and write takes the marker lock, and the file is written in one
+/// place (an atomic replace).
+#[test]
+fn marker_reads_and_writes_go_through_the_marker_lock() {
+    let src = include_str!("rendezvous.rs");
+    let prod = &src[..src.find("#[cfg(test)]").expect("tests")];
+    for f in [
+        "fn active_joins_at",
+        "fn note_active_join_at",
+        "fn drop_active_join_at",
+        "fn reconcile_active_joins_at",
+        "fn marker_generation",
+    ] {
+        let body = &prod[prod.find(f).expect(f)..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        assert!(body.contains("MARKERS"), "{f} takes the marker lock");
+    }
+    assert_eq!(prod.matches("write_secret_file(").count(), 1, "one marker writer");
+    assert!(prod.contains("std::fs::rename("), "the marker is replaced atomically");
+}

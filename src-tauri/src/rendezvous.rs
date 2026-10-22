@@ -224,8 +224,12 @@ pub(crate) fn join_needs_ticks(state: JoinState) -> bool {
 /// daemon hiccup never changes a shown state).
 pub(crate) fn tick_and_emit(app: &tauri::AppHandle) -> Result<TickViews, RvError> {
     use tauri::Emitter;
+    let marker = active_joins_path(app);
+    let seen = marker.as_deref().map(marker_generation);
     let views = crate::comms::rendezvous_tick(app)?;
-    record_active_joins(app, &views);
+    if let (Some(m), Some(seen)) = (marker.as_deref(), seen) {
+        reconcile_active_joins_at(m, &active_join_groups(&views), seen);
+    }
     let _ = app.emit(JOIN_STATE_EVENT, &views);
     Ok(views)
 }
@@ -251,12 +255,15 @@ pub(crate) fn active_join_groups(views: &TickViews) -> Vec<String> {
     groups
 }
 
-fn record_active_joins(app: &tauri::AppHandle, views: &TickViews) {
-    if let Some(path) = active_joins_path(app) {
-        if let Ok(bytes) = serde_json::to_vec(&active_join_groups(views)) {
-            let _ = citrate_core_kit::fsutil::write_secret_file(&path, &bytes);
-        }
-    }
+/// The marker's generation at `path` (read before a tick asks the daemon).
+pub(crate) fn marker_generation(_path: &std::path::Path) -> u64 {
+    0
+}
+
+/// Write a tick's active groups to the marker at `path`; `seen` is [`marker_generation`] from before
+/// the tick asked the daemon.
+pub(crate) fn reconcile_active_joins_at(path: &std::path::Path, active: &[String], _seen: u64) {
+    write_active_joins_at(path, active);
 }
 
 /// The groups in the local-work marker at `path` (empty when missing or unreadable).
