@@ -6,8 +6,8 @@
 //! balance error, which look definitive. So the first-ness of a send must survive an app restart.
 //! This keeps the keccak256 hashes of the last [`CAPACITY`] submissions in a small JSON file,
 //! `{"entries": [{hash, sender, nonce}], "evicted": {sender: nonce}, "uncertain": bool}`, rewritten
-//! atomically (temp file in the same directory,
-//! fsync, rename) BEFORE each broadcast.
+//! atomically and durably (temp file in the same directory, fsync, rename, fsync of the directory)
+//! BEFORE each broadcast.
 //!
 //! The rule: when the history can't prove an absent hash was never sent, the send is a
 //! re-submission ("outcome unknown"), never a first send ("not sent").
@@ -259,8 +259,10 @@ impl SubmittedTxLog {
     }
 }
 
-/// Write `disk` as JSON to `path` via a temp file in the same directory, fsync, then rename.
-fn write_atomic(path: &std::path::Path, disk: &OnDisk, _sync_dir: SyncDir) -> std::io::Result<()> {
+/// Write `disk` as JSON to `path` via a temp file in the same directory, fsync, rename, then fsync
+/// the directory so the rename itself survives a power loss. Any failure is an error: the caller
+/// must not broadcast on a record that isn't durable.
+fn write_atomic(path: &std::path::Path, disk: &OnDisk, sync_dir: SyncDir) -> std::io::Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -280,12 +282,23 @@ fn write_atomic(path: &std::path::Path, disk: &OnDisk, _sync_dir: SyncDir) -> st
     }
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
-    })
+    })?;
+    sync_dir(&dir)
 }
 
-/// Make a rename inside `dir` durable.
-fn sync_dir(_dir: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
+/// Make a rename inside `dir` durable: fsync the directory (on macOS `sync_all` is
+/// `F_FULLFSYNC`). A failure is returned, never ignored.
+#[cfg(unix)]
+fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// Non-unix: a directory can't be opened for fsync through std. This app ships on macOS and
+/// Linux; on other platforms the rename is as durable as the filesystem makes it, and the
+/// directory is still required to exist.
+#[cfg(not(unix))]
+fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::metadata(dir).map(|_| ())
 }
 
 #[cfg(test)]
