@@ -22,6 +22,7 @@
 (*   "StopIgnoresWorkers" StopComplete ignores probe workers    -> INV-16  *)
 (*   "AutoStartResets" an automated restart resets the budget   -> INV-17  *)
 (*   "StaleSuccess"   ProbeOk accepts an older incarnation      -> INV-13  *)
+(*   "SampleCredit"   credit from a sample count, no time span  -> INV-7   *)
 (*                                                                         *)
 (* Refinement notes. Every action names the Rust arm it models today, and  *)
 (* the SCL work package that changes it. A WP that changes one of those    *)
@@ -54,7 +55,8 @@ CONSTANTS
                        \*   probe (the fork-bomb configs).
     Profile,           \* "LivenessOnly" (no configured probe) or "Probed"
     HealthyAfterTicks, \* healthy_after, in ticks (LivenessOnly: elapsed; Probed:
-                       \*   consecutive fresh successful samples)
+                       \*   the ticks the successful samples of one uninterrupted
+                       \*   fresh window span, first to latest; SPEC-001 line 80)
     GraceTicks,        \* HealthCheck.grace, in ticks
     FreshTicks,        \* maximum success gap before Ready goes Stale
     MaxAge,            \* bound on ticks of one incarnation
@@ -62,7 +64,7 @@ CONSTANTS
 
 Profiles == {"LivenessOnly", "Probed"}
 Mutants  == {"none", "StopOff", "ElapsedCredit", "TimeoutFrees", "StopIgnoresWorkers",
-             "AutoStartResets", "StaleSuccess"}
+             "AutoStartResets", "StaleSuccess", "SampleCredit"}
 
 ASSUME MaxRetries \in Nat /\ MaxCrashes \in Nat /\ MaxInc \in Nat
 ASSUME MaxIntents \in Nat \ {0} /\ MaxGen \in Nat
@@ -87,6 +89,8 @@ VARIABLES
     probe,         \* the service's single probe permit: "Free" or "Busy"
     workers,       \* probe workers actually in flight [g, i, t]; t = timed out
     okWindow,      \* consecutive fresh successful samples of this incarnation
+    okFirst,       \* age of the first success of the current window (0 if none)
+    okLast,        \* age of the latest success of the current window (0 if none)
     okSinceSpawn,  \* some sample of this incarnation succeeded
     credited,      \* retry credit granted for the current uninterrupted window
     age,           \* ticks since this incarnation became Alive
@@ -99,12 +103,16 @@ VARIABLES
 
 ctrl    == << phase, desired, intentSeq, gen, inc, tickets, child, replacing >>
 probing == << probe, workers >>
-health  == << okWindow, okSinceSpawn, credited, age, sinceOk, readiness, lastOk >>
+health  == << okWindow, okFirst, okLast, okSinceSpawn, credited, age, sinceOk, readiness, lastOk >>
 vars    == << ctrl, probing, health, failures, crashes, sinceMember >>
 
 Min(a, b) == IF a < b THEN a ELSE b
 
 Tag == [g |-> gen, i |-> inc]
+
+\* The ticks the successful samples of the current window span, first to
+\* latest (SPEC-001: "successful samples span healthy_after").
+OkSpan == okLast - okFirst
 
 \* What a teardown still has to release (03 calls this `cleanup`). Derived
 \* from the owned resources so it cannot drift from them.
@@ -120,6 +128,8 @@ InGrace        == age < GraceTicks
 \* The health window of an incarnation ends.
 ResetWindow ==
     /\ okWindow' = 0
+    /\ okFirst' = 0
+    /\ okLast' = 0
     /\ okSinceSpawn' = FALSE
     /\ credited' = FALSE
     /\ age' = 0
@@ -138,6 +148,8 @@ TypeOK ==
     /\ probe \in {"Free", "Busy"}
     /\ \A w \in workers : w.g \in 0..MaxGen /\ w.i \in Nat /\ w.t \in BOOLEAN
     /\ okWindow \in 0..HealthyAfterTicks
+    /\ okFirst \in 0..MaxAge
+    /\ okLast \in okFirst..MaxAge
     /\ okSinceSpawn \in BOOLEAN
     /\ credited \in BOOLEAN
     /\ age \in 0..MaxAge
@@ -161,6 +173,8 @@ Init ==
     /\ probe = "Free"
     /\ workers = {}
     /\ okWindow = 0
+    /\ okFirst = 0
+    /\ okLast = 0
     /\ okSinceSpawn = FALSE
     /\ credited = FALSE
     /\ age = 0
@@ -318,12 +332,14 @@ SpawnReturns(t) ==
     /\ IF t.s = intentSeq /\ t.g = gen /\ desired = "Run" /\ phase = "Starting"
        THEN /\ phase' = "Alive"
             /\ okWindow' = 0
+            /\ okFirst' = 0
+            /\ okLast' = 0
             /\ okSinceSpawn' = FALSE
             /\ credited' = FALSE
             /\ age' = 0
             /\ sinceOk' = 0
             /\ readiness' = SpawnReadiness
-       ELSE UNCHANGED << phase, okWindow, okSinceSpawn, credited, age, sinceOk, readiness >>
+       ELSE UNCHANGED << phase, okWindow, okFirst, okLast, okSinceSpawn, credited, age, sinceOk, readiness >>
     /\ UNCHANGED << desired, intentSeq, gen, inc, replacing, probing, lastOk, failures, crashes, sinceMember >>
 
 \* The OS spawn fails (bad path, EACCES). Counted only for the current
@@ -361,9 +377,10 @@ Crash ==
     /\ FailStep
     /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, replacing, probing, lastOk >>
 
-\* Retry credit. Probed: only after HealthyAfterTicks consecutive fresh
-\* successes of this incarnation (INV-7). LivenessOnly: today's elapsed
-\* Running rule, unchanged (INV-9). Granted once per window.
+\* Retry credit. Probed: only once the successful samples of one
+\* uninterrupted fresh window span HealthyAfterTicks ticks (INV-7); a number
+\* of samples alone, with no time between them, earns nothing. LivenessOnly:
+\* today's elapsed Running rule, unchanged (INV-9). Granted once per window.
 \* Today: `refresh_health!` plus `if report.sustained_healthy` (elapsed time
 \* for every profile: defect (b) for Probed). Target: SCL-S3.2.
 ResetCredit ==
@@ -375,7 +392,8 @@ ResetCredit ==
        ELSE CanHealthy /\ age >= HealthyAfterTicks
     /\ failures' = 0
     /\ credited' = TRUE
-    /\ UNCHANGED << ctrl, probing, okWindow, okSinceSpawn, age, sinceOk, readiness, lastOk, crashes, sinceMember >>
+    /\ UNCHANGED << ctrl, probing, okWindow, okFirst, okLast, okSinceSpawn, age, sinceOk, readiness,
+                    lastOk, crashes, sinceMember >>
 
 \* Backoff elapsed: back to Starting; admission still checks the intent.
 \* Today: `backoff_or_control` Timeout arm.
@@ -404,6 +422,8 @@ TickStep ==
                         /\ age + 1 >= HealthyAfterTicks /\ ~credited
        IN  /\ readiness' = IF stale THEN "Stale" ELSE readiness
            /\ okWindow' = IF stale THEN 0 ELSE okWindow
+           /\ okFirst' = IF stale THEN 0 ELSE okFirst
+           /\ okLast' = IF stale THEN 0 ELSE okLast
            /\ credited' = IF mutCredit THEN TRUE ELSE IF stale THEN FALSE ELSE credited
            /\ failures' = IF mutCredit THEN 0 ELSE failures
     /\ UNCHANGED << ctrl, probing, okSinceSpawn, lastOk, crashes, sinceMember >>
@@ -441,6 +461,8 @@ ProbeOk(w) ==
     /\ workers' = workers \ {w}
     /\ probe' = "Free"
     /\ okWindow' = Min(okWindow + 1, HealthyAfterTicks)
+    /\ okFirst' = IF okWindow = 0 THEN age ELSE okFirst
+    /\ okLast' = age
     /\ okSinceSpawn' = TRUE
     /\ readiness' = "Ready"
     /\ lastOk' = [g |-> w.g, i |-> w.i]
@@ -458,6 +480,8 @@ ProbeFail(w) ==
     /\ probe' = "Free"
     /\ IF InGrace
        THEN /\ okWindow' = 0
+            /\ okFirst' = 0
+            /\ okLast' = 0
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
             /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
@@ -477,6 +501,8 @@ ProbeTimeout(w) ==
     /\ probe' = IF Mutant = "TimeoutFrees" THEN "Free" ELSE "Busy"
     /\ IF InGrace
        THEN /\ okWindow' = 0
+            /\ okFirst' = 0
+            /\ okLast' = 0
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
             /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
@@ -652,9 +678,12 @@ INV_NoOrphan == (phase \in {"Stopped", "Failed"}) => (~child /\ tickets = {})
 INV_StopNeverSpawns ==
     desired = "Stop" => (~ENABLED AdmitSpawn /\ \A t \in tickets : t.s < intentSeq)
 
-\* INV-7 (defect (b)): for Probed, credit only from an attested window.
+\* INV-7 (defect (b)): for Probed, credit only from an attested window whose
+\* successful samples span healthy_after in time (SPEC-001 line 80), not
+\* from a number of samples taken without time passing (Codex review of
+\* core#345 at 59cecef).
 INV_CreditOnlyFromAttestedHealth ==
-    (Profile = "Probed" /\ credited) => okWindow >= HealthyAfterTicks
+    (Profile = "Probed" /\ credited) => (okWindow > 0 /\ OkSpan >= HealthyAfterTicks)
 
 \* INV-8 (defect (b)): no credit while every sample since the spawn failed
 \* or timed out.
@@ -743,7 +772,7 @@ W_StopInStopped == ~(phase = "Stopped" /\ desired = "Stop" /\ ENABLED RequestSto
 W_UnattestedTickPastHealthy ==
     ~(/\ Profile = "Probed"
       /\ ~credited
-      /\ okWindow < HealthyAfterTicks
+      /\ (okWindow = 0 \/ OkSpan < HealthyAfterTicks)
       /\ age + 1 >= HealthyAfterTicks
       /\ ENABLED (GraceTick \/ ElapsedTick))
 
@@ -771,6 +800,21 @@ W_StoppedWithWorker == ~(phase = "Stopped" /\ workers # {})
 \* were recorded under the current member Start.
 W_AutoRestartAfterFailures ==
     ~(failures > 0 /\ ENABLED (AutoRestart \/ AutoStart))
+
+\* SampleCredit (on the green Probed base): an uncredited window already
+\* holds healthy_after samples while they span less than healthy_after
+\* ticks (where a sample-count rule would grant credit).
+W_SamplesWithoutSpan ==
+    ~(/\ Profile = "Probed"
+      /\ phase = "Alive"
+      /\ child
+      /\ ~credited
+      /\ okWindow >= HealthyAfterTicks
+      /\ OkSpan < HealthyAfterTicks)
+
+\* Positive control for INV-7 (on the green Probed base): credit is reached,
+\* so the span rule is satisfiable and INV-7 is not vacuous there.
+W_CreditFromSpan == ~(Profile = "Probed" /\ credited)
 
 \* StaleSuccess: an Alive incarnation has a worker of an older incarnation,
 \* or a timed-out one, still in flight.
