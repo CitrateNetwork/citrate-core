@@ -608,7 +608,25 @@ pub async fn group_invite_verify_consume(
     group: String,
     token: String,
 ) -> Result<bool, String> {
-    update_pending_at(&store_path(&app)?, |invites| {
+    let path = store_path(&app)?;
+    consume_at(
+        &path,
+        &group,
+        &token,
+        |lookup| crate::comms::rendezvous_close(&app, lookup),
+        |token_hash| crate::comms::revoke_invite(&app, token_hash),
+    )
+}
+
+/// The consume itself, over the `pending.json` at `path` and the two relay calls (as [`revoke_at`]).
+pub(crate) fn consume_at(
+    path: &std::path::Path,
+    group: &str,
+    token: &str,
+    _close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
+    _legacy: impl FnOnce(String) -> Result<(), String>,
+) -> Result<bool, String> {
+    update_pending_at(path, |invites| {
         let before = invites.len();
         invites.retain(|i| !(i.group == group && i.token == token));
         invites.len() < before
@@ -1146,6 +1164,105 @@ mod tests {
             assert!(body.contains("PENDING_LOCK"), "{f} takes the lock");
             assert!(body.contains("read_pending("), "{f} reads");
         }
+    }
+
+    /// Codex round 4 (P1): approving a claim consumes the invite. Its rendezvous is closed and its
+    /// legacy record revoked first, so another holder of the same link can't still be admitted.
+    #[test]
+    fn consuming_a_claim_closes_the_rendezvous_and_revokes_the_legacy_record() {
+        let path = scratch("consume");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let closed = std::cell::RefCell::new(None);
+        let revoked = std::cell::RefCell::new(None);
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            |l| {
+                *closed.borrow_mut() = Some(l);
+                Ok(())
+            },
+            |h| {
+                *revoked.borrow_mut() = Some(h);
+                Ok(())
+            },
+        );
+        assert_eq!(r, Ok(true));
+        assert_eq!(closed.into_inner().as_deref(), Some(LOOKUP));
+        assert_eq!(revoked.into_inner(), Some(super::blake3_token_hash(T)));
+        assert!(tokens(&path).is_empty());
+    }
+
+    /// A consume whose close fails keeps the record, so the approval can be retried (and revoked).
+    #[test]
+    fn a_consume_whose_close_fails_keeps_a_retryable_record() {
+        let path = scratch("consume-fails");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            |_| Err(RvError::Ipc("timed out".into())),
+            |_| Ok(()),
+        );
+        assert!(
+            r.is_err(),
+            "the claim isn't accepted while the rendezvous may be open"
+        );
+        assert_eq!(tokens(&path), vec![T.to_string()]);
+    }
+
+    /// A token with no outstanding invite is not valid, and nothing is sent.
+    #[test]
+    fn consuming_an_unknown_token_sends_nothing() {
+        let path = scratch("consume-unknown");
+        let calls = std::cell::Cell::new(0);
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert_eq!(r, Ok(false));
+        assert_eq!(calls.get(), 0);
+    }
+
+    /// Codex round 4 (P1): a recorded lookup means a capable daemon opened a rendezvous. A daemon that
+    /// now says it doesn't know the op (a downgrade) can't have closed it, so the revoke fails.
+    #[test]
+    fn a_recorded_rendezvous_with_an_unsupported_close_keeps_the_invite() {
+        let path = scratch("downgrade");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::revoke_at(
+            &path,
+            "g",
+            T,
+            |_| Err(RvError::DaemonUnsupported),
+            |_| Ok(()),
+        );
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(tokens(&path), vec![T.to_string()]);
+    }
+
+    /// Tripwire: an invite record is only ever removed by `revoke_at` (close + legacy revoke first).
+    #[test]
+    fn invite_records_are_only_removed_by_revoke_at() {
+        let src = include_str!("invites.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("tests")];
+        assert_eq!(prod.matches(".retain(").count(), 1, "one removal site");
+        let body = &prod[prod.find("pub(crate) fn revoke_at").expect("revoke_at")..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        assert!(body.contains(".retain("));
     }
 
     /// Tripwire: `pending.json` is only written through `update_pending_at` (one lock, read and write
