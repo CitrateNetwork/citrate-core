@@ -370,3 +370,93 @@ describe("cancelling a daemon before it is removed", () => {
     expect(r.state().error).toMatch(/no such daemon/);
   });
 });
+
+describe("cancel waits for the sidecar to confirm the run stopped (Codex P2, #356 at 81d3da7)", () => {
+  const ctx = () => ({ height: 1, peers: 0, finalityAge: 0, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" });
+  const tick = () => new Promise((res) => setTimeout(res, 2));
+  type Knobs = { stop?: () => Promise<void>; close?: () => Promise<void>; stopsTurn?: boolean };
+  /** A sidecar that behaves like the real one: a sent turn keeps running (busy) until a stop is
+   *  acknowledged; events long-poll briefly. */
+  function liveSidecar(k: Knobs = {}) {
+    const log: string[] = [];
+    let busy = false;
+    let closed = false;
+    const sidecar = {
+      openUnattended: vi.fn(async () => "s1"),
+      send: vi.fn(async () => {
+        busy = true;
+        log.push("send");
+      }),
+      events: vi.fn(async () => {
+        await tick();
+        if (closed) throw new Error("sidecar returned 404 Not Found");
+        return { events: [], lastSeq: 0, busy };
+      }),
+      toolResult: vi.fn(async () => undefined),
+      stop: vi.fn(async () => {
+        log.push("stop");
+        await (k.stop ?? (async () => undefined))();
+        if (k.stopsTurn !== false) busy = false;
+        log.push("stopped");
+      }),
+      close: vi.fn(async () => {
+        log.push("close");
+        await (k.close ?? (async () => undefined))();
+        closed = true;
+        log.push("closed");
+      }),
+    };
+    return { sidecar, log };
+  }
+  async function cancelDuringRun(k: Knobs, stopConfirm = { deadlineMs: 300, pollMs: 2 }) {
+    const { runDaemonTurn } = await import("./turn");
+    const api = fakeApi([[claim({ allowedTools: [] })]]);
+    const { sidecar, log } = liveSidecar(k);
+    const turnDeps = { providerKind: "sidecar", systemPrompt: () => "You are Hermes.", context: ctx, sidecar, handleTool: async () => "ok", stopConfirm };
+    const r = createDaemonRunner(deps(api, (c, signal, meter) => runDaemonTurn(c, signal, meter, turnDeps), { runTimeoutMs: 60_000 }));
+    const ticked = r.tick();
+    await vi.waitFor(() => expect(sidecar.send).toHaveBeenCalledTimes(1));
+    let cancelError: unknown = null;
+    await r.cancel("d1").then(() => log.push("cancelled"), (e) => {
+      cancelError = e;
+      log.push("cancel-refused");
+    });
+    await ticked;
+    return { api, log, cancelError, sidecar };
+  }
+
+  it("a delayed stop: cancel resolves only after the turn is idle and the session closed", async () => {
+    const { api, log, cancelError } = await cancelDuringRun({ stop: () => new Promise((res) => setTimeout(res, 40)) });
+    expect(cancelError).toBeNull();
+    expect(log.indexOf("stopped")).toBeGreaterThan(-1);
+    expect(log.indexOf("closed")).toBeGreaterThan(log.indexOf("stopped"));
+    expect(log.indexOf("cancelled")).toBeGreaterThan(log.indexOf("closed"));
+    expect(api.finished).toHaveLength(1);
+    expect(api.finished[0].outcome).toBe("stopped");
+  });
+
+  it("a rejected stop: cancel is refused and the run is not recorded as ended", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stop: async () => Promise.reject(new Error("sidecar returned 500")) });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a rejected close: cancel is refused", async () => {
+    const { api, cancelError } = await cancelDuringRun({ close: async () => Promise.reject(new Error("sidecar returned 500")) });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a turn still busy at the deadline: cancel is refused", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stopsTurn: false }, { deadlineMs: 30, pollMs: 2 });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a session the sidecar no longer has counts as stopped", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stop: async () => Promise.reject(new Error("sidecar returned 404 Not Found")) });
+    expect(cancelError).toBeNull();
+    expect(api.finished[0].outcome).toBe("stopped");
+  });
+
+});
