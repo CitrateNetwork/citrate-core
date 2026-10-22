@@ -59,7 +59,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { createChainReads, type ChainReads } from "./chainTruth";
+import { createChainReads, readsValidatorRewards, type ChainReads } from "./chainTruth";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -1411,6 +1411,7 @@ export class Store {
       // grant existed, and this was the only other read — but it folded ONLY the validator bond (0
       // pre-activation), so the 32k attributed stake never surfaced until a relaunch.
       let grantPatch: Partial<AppState> | null = null;
+      let bondActivated = this.state.bondActivated;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       if ((needBond || needGrant) && dueForBondRead) {
@@ -1418,6 +1419,8 @@ export class Store {
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
           bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
+          // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
+          bondActivated = g.bondActivated ?? null;
           // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
           // block), DISTINCT from the validator bond above — so a granted-but-not-yet-activated member
           // sees their locked 32k, not "0 staked". Null when the grant isn't genuinely on chain (Rule 1).
@@ -1458,6 +1461,7 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
+        bondActivated,
         validatorActive,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
@@ -4217,12 +4221,13 @@ export class Store {
   /**
    * C1-V V8 — the member's validator rewards, from `ValidatorRegistry.rewardsOf(proposerPubkey)`
    * (via `node_validator_earnings`) and nothing else (UI truth contract §1 Rewards, §2). With no
-   * registered stake there are no validator rewards: `rewards` is null and the Earning tab says
-   * "Not a validator". `ContributionAccounting.claimable` is not in the contract's catalog and is
+   * registered stake and no activated bond there are no validator rewards: `rewards` is null and the
+   * Rewards tab says "Not a validator". An activated bond is read whatever its stake (#348 review):
+   * after a full exit the stake is 0 but the bond can still claim the key's matured rewards. `ContributionAccounting.claimable` is not in the contract's catalog and is
    * no longer shown as rewards. A failed read keeps `rewards` null (unknown is not zero) and says so.
    */
   async refreshEarnings(): Promise<void> {
-    if (!(this.state.bondedStake > 0)) {
+    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
       this.setState({ rewards: null });
       return;
     }
@@ -4291,13 +4296,14 @@ export class Store {
     // Payout gate: KYC is required to take SALT out (participation is not gated).
     if (!(await this.assertPayoutKyc("Claiming rewards"))) return;
     // C1-V review round 2: choose the claim path from the SAME signal Rust's user_claim uses
-    // (grant status: bondDeployed && hasValidator, i.e. pubkeyOfStaker(bond) != 0), read now.
-    // Registry stake is NOT that signal: an exited validator has stake 0 and can still hold
-    // claimable validator rewards. If the grant status cannot be read, stop with the reason.
+    // (grant_status::claims_through_bond: bondDeployed && (hasValidator || bondActivated)), read now.
+    // Registry stake is NOT that signal, and neither is hasValidator alone: after a full exit both
+    // read 0 / false, yet the activated bond can still claim the key's matured rewards. If the
+    // grant status cannot be read, stop with the reason.
     let validator: boolean;
     try {
       const g = await bridge.membership.grantStatus(this.identity().wallet);
-      validator = g.bondDeployed && g.hasValidator;
+      validator = g.bondDeployed && (g.hasValidator || g.bondActivated === true);
     } catch (err) {
       this.toast("Claim unavailable — could not read your validator status: " + String((err as Error).message ?? err));
       return;

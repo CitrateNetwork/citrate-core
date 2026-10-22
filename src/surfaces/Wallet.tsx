@@ -18,7 +18,7 @@ import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
-import { blocksWithTime, saltFromWei } from "../shell/chainTruth";
+import { blocksWithTime, readsValidatorRewards, saltFromWei } from "../shell/chainTruth";
 
 /** `LiquidStakingPool.WITHDRAWAL_DELAY` (LiquidStakingPool.sol:26; src-tauri staking.rs). */
 const WITHDRAWAL_DELAY_BLOCKS = 50_400;
@@ -78,6 +78,12 @@ export function Wallet({ store, s }: SurfaceProps) {
     // the sim adapter echoes state.activity (unchanged).
     void store.refreshActivity();
   }, [store]);
+  // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
+  // once the node poll has reconciled the stake / bond after mount.
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  useEffect(() => {
+    void store.refreshEarnings();
+  }, [store, readsRewards]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);

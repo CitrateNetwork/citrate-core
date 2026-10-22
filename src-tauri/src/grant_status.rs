@@ -267,7 +267,7 @@ pub struct GrantStatus {
 /// (`MemberBond.claimRewards()`, which calls `ValidatorRegistry.claimRewards(bond.pubkey)`).
 /// The same signal the app uses to read and show those rewards.
 pub fn claims_through_bond(g: &GrantStatus) -> bool {
-    g.bond_deployed && g.has_validator
+    g.bond_deployed && (g.has_validator || g.bond_activated == Some(true))
 }
 
 /// Validate a `0x`-prefixed 20-byte hex address; return the lowercased canonical
@@ -493,6 +493,17 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         (false, 0)
     };
 
+    // `MemberBond.activated()`, read last and on its own: a failed read is None (unread), never
+    // false, and the reads above still stand. It stays true after an exit, unlike pubkeyOfStaker.
+    let bond_activated = if bond_deployed {
+        rpc.eth_call(bond_nullary_call(&bond_address, activated_selector()))
+            .ok()
+            .and_then(|r| decode_uint256_word(&r).ok())
+            .map(|v| v == 1)
+    } else {
+        None
+    };
+
     Ok(GrantStatus {
         attributed_stake_wei: attributed_stake.to_string(),
         attributed_principal_wei: attributed_principal.to_string(),
@@ -504,7 +515,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         unlock_block,
         is_unlocked,
         is_kyc_verified,
-        bond_activated: None,
+        bond_activated,
     })
 }
 

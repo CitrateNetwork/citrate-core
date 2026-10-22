@@ -8,6 +8,7 @@ import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
+import { validatorWord } from "../shell/chainTruth";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -957,7 +958,20 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             yet. Onboarding auto-opens the activation ceremony (maybeAutoBond); this is
             the visible fallback if the member dismissed it — one click re-opens the
             MemberBond.activate review (Rule 3: the human still approves). */}
-        {s.node === "synced" && (
+        {/* Registered stake that is not active yet (pending activation, or not read): the bond is
+            already staked, so no "Stake my bond" here (#348 review). */}
+        {s.node === "synced" && s.bondedStake > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActive, s.hasGrant) ?? "— · isActive not read yet"}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                stake {fmtI(s.bondedStake)} SALT in the ValidatorRegistry
+              </div>
+            </div>
+          </div>
+        )}
+        {s.node === "synced" && !(s.bondedStake > 0) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { producerShortfall, producerWindowLabel, producingWord, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
@@ -140,7 +140,8 @@ export function Node({ store, s }: SurfaceProps) {
   const rTotal = s.rewards ? saltFromWei(s.rewards.totalWei) : null;
   const rClaim = s.rewards ? saltFromWei(s.rewards.claimableWei) : null;
   const rMaturing = rTotal != null && rClaim != null ? Math.max(0, rTotal - rClaim) : null;
-  const rewardsReason = isRegisteredValidator ? "not read yet" : "Not a validator";
+  // An activated bond is read whatever its stake: after a full exit it can still claim (#348 review).
+  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? "not read yet" : "Not a validator";
   const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
   const claimDisabled = rClaim == null || rClaim < 5;
   const claimNote =
@@ -319,8 +320,10 @@ export function Node({ store, s }: SurfaceProps) {
                 {/* W1.3 — once the node is synced (proposer.key minted), the member
                     can bond the 32k and become a block producer. staker = the EOA;
                     the tx is approved through the ceremony. Shown only in the
-                    packaged app when synced-but-not-yet-validating. */}
-                {TAURI && s.node === "synced" && (
+                    packaged app when synced-but-not-yet-validating. A registered stake that
+                    isn't active yet (pending, or isActive unread) is already staked: no
+                    activation is offered for it (#348 review). */}
+                {TAURI && s.node === "synced" && !(s.bondedStake > 0) && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS

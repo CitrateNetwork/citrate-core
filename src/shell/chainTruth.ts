@@ -175,6 +175,16 @@ export function saltFromWei(wei: string | null | undefined): number | null {
   }
 }
 
+/**
+ * Whether this member's validator rewards (`ValidatorRegistry.rewardsOf`) are read, shown and
+ * claimed through the bond: registered stake, or a bond that activated (`MemberBond.activated()`).
+ * After a full exit or a slash the stake reads 0 and pubkeyOfStaker is cleared, but the bond stays
+ * activated and can still claim the key's matured rewards. An unread flag (null) is not activated.
+ */
+export function readsValidatorRewards(bondedStake: number, bondActivated: boolean | null): boolean {
+  return bondedStake > 0 || bondActivated === true;
+}
+
 /** The §1 validator words this app can derive today. */
 export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Staked · active from next epoch" | "Validator active";
 

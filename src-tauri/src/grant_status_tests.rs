@@ -279,7 +279,12 @@ fn read_grant_status_granted_member_reads_real_stake_and_sbt() {
     // the staker, so asking about the member reads zero forever and would report a
     // fully-activated validator as having none.
     let reqs = rpc.transport().requests();
-    assert_eq!(reqs.len(), 8, "stake, principal, sbt, bondOf, 3 bond getters, pubkeyOfStaker");
+    assert_eq!(
+        reqs.len(),
+        9,
+        "stake, principal, sbt, bondOf, 3 bond getters, pubkeyOfStaker, then MemberBond.activated()"
+    );
+    assert_eq!(status.bond_activated, None, "no scripted activated() answer: unread, not false");
     let staker_calldata = reqs[7]["params"][0]["data"].as_str().unwrap().to_ascii_lowercase();
     assert!(
         staker_calldata.ends_with(&BOND_ADDR[2..].to_ascii_lowercase()),
