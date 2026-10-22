@@ -1173,3 +1173,77 @@ fn an_unwired_anchor_ceremony_never_reports_a_refusal_as_not_sent() {
     );
     assert_eq!(pending, 0, "no second approval while it may be on the way");
 }
+
+// #347 Codex P1, anchor side: another attempt recorded (and may have sent) the same signed anchor
+// bytes while this one was sending. A definitive-looking refusal plus "not held" must then keep the
+// day in flight, never withdraw it as not sent.
+struct RacedAnchorSend {
+    inner: MockRpc,
+    log: std::sync::Arc<crate::submitted_log::SubmittedTxLog>,
+}
+impl RpcTransport for RacedAnchorSend {
+    fn call(&self, body: Value) -> std::result::Result<Value, RpcError> {
+        if body["method"] == "eth_sendRawTransaction" {
+            use sha3::{Digest, Keccak256};
+            let raw = body["params"][0].as_str().unwrap_or_default().to_string();
+            let bytes = hex::decode(raw.trim_start_matches("0x")).unwrap_or_default();
+            let hash = format!("0x{}", hex::encode(Keccak256::digest(&bytes)));
+            assert_eq!(
+                self.log.try_record(&hash),
+                Ok(false),
+                "the second attempt sees the first's record"
+            );
+            self.inner.requests.borrow_mut().push(body);
+            return Err(RpcError::Node("Failed to submit transaction: Full".into()));
+        }
+        self.inner.call(body)
+    }
+}
+
+#[test]
+fn an_anchor_refusal_after_another_attempt_recorded_the_same_bytes_stays_in_flight() {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let log = std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::in_memory());
+    let c = AnchorCeremony::new();
+    c.use_submitted_log(log.clone());
+    let v = c
+        .request(good_request(20_000, root(0x6a)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(RacedAnchorSend {
+        inner: MockRpc::new(vec![
+            ok(json!("0x5")),
+            ok(json!("0x3b9aca00")),
+            ok(json!("0xb000")),
+            ok(Value::Null),
+        ]),
+        log,
+    });
+    let vault = unlocked_vault();
+    let rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+    let forgotten = RefCell::new(0usize);
+    let forget = |_: &AnchorReceipt| *forgotten.borrow_mut() += 1;
+    let r = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &forget,
+        },
+    );
+    assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
+    assert_eq!(
+        *forgotten.borrow(),
+        0,
+        "never withdrawn as not sent once another attempt may have sent it"
+    );
+    assert_eq!(
+        c.pending().len(),
+        0,
+        "no second approval while it may be on the way"
+    );
+}
