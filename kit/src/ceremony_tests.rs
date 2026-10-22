@@ -2521,3 +2521,16 @@ fn nothing_is_broadcast_when_the_submission_cannot_be_recorded_durably() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// C1-V6 (#347, anchor-path audit): a record that can't survive a restart must never be certain in a
+// production build. A ceremony built with no record location (`new()` / `default()`) is uncertain,
+// so its sends are never "not sent".
+#[test]
+fn a_ceremony_built_without_a_record_location_is_never_certain() {
+    assert!(SignatureCeremony::new().submitted_log().is_uncertain());
+    assert!(SignatureCeremony::default().submitted_log().is_uncertain());
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let (first, hash) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&first), Some(hash), "never \"not sent\" without a durable record");
+}

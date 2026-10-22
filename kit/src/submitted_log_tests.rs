@@ -409,3 +409,39 @@ fn an_unpersisted_record_stays_uncertain_through_eviction() {
     }
     assert!(log.is_uncertain());
 }
+
+/// Tripwire (C1-V6): outside tests, a SubmittedTxLog is built only by `open(path)` (persisted) or
+/// `unpersisted()` (uncertain). No production path can hold a certain in-memory record.
+#[test]
+fn production_code_builds_the_record_only_persisted_or_uncertain() {
+    let roots = [
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../src-tauri/src"),
+    ];
+    let mut offenders = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = roots.iter().map(std::path::PathBuf::from).collect();
+    while let Some(p) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&p) else { continue };
+        for e in rd.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "submitted_log.rs" {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap_or_default();
+            for (i, line) in src.lines().enumerate() {
+                if let Some(at) = line.find("SubmittedTxLog::") {
+                    let rest = &line[at + "SubmittedTxLog::".len()..];
+                    if !(rest.starts_with("open(") || rest.starts_with("unpersisted(")) {
+                        offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "a certain in-memory record outside tests:\n{}", offenders.join("\n"));
+}
