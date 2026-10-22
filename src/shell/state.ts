@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { ValidatorActivation } from "./chainTruth";
+import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -427,6 +427,8 @@ export interface AppState {
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;
+  /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
+  validatorCounts: ValidatorCounts | null;
   /**
    * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
    * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
@@ -807,6 +809,7 @@ export function freshState(pid: string): AppState {
     hasSbt: false,
     rewards: null,
     validatorActivation: null,
+    validatorCounts: null,
     bondActivated: null,
     blockSecs: null,
     minStakeWei: null,

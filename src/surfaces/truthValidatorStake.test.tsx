@@ -115,6 +115,7 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
       minStakeWei: async () => 32_000n * WEI,
       blockSeconds: async () => 2,
       producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
+      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
     } as unknown as ChainReads & { validatorActivation: ReturnType<typeof vi.fn> };
     (store as unknown as { chainReads: ChainReads }).chainReads = reads;
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
