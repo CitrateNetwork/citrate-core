@@ -1627,26 +1627,49 @@ fn before_restore_key(suffix: &str) -> Option<(String, u32)> {
 /// other kept folders and any `<base>.restore-staging-*` folder are left as they are, and a failed
 /// rename is an error (the caller refuses to start, so no empty store is created in its place).
 pub(crate) fn recover_interrupted_restore(mem_dir: &Path) -> Result<Option<PathBuf>, String> {
-    if std::fs::symlink_metadata(mem_dir).is_ok() {
-        return Ok(None);
+    let unreadable = |what: &str, e: std::io::Error| {
+        format!(
+            "could not check {} for an interrupted memory restore ({what}: {e}); the memory daemon \
+             will not start until it can be read",
+            mem_dir.parent().unwrap_or(mem_dir).display()
+        )
+    };
+    match std::fs::symlink_metadata(mem_dir) {
+        Ok(_) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(unreadable("the memory dir", e)),
     }
     let (Some(parent), Some(base)) = (mem_dir.parent(), mem_dir.file_name()) else {
         return Ok(None);
     };
     let prefix = format!("{}{BEFORE_RESTORE_INFIX}", base.to_string_lossy());
-    let Ok(rd) = read_data_root(parent) else {
-        return Ok(None); // no data root yet (fresh install)
+    // Only a missing data root is a fresh install. Any other failure to read it could hide a kept
+    // store, and creating `memory/` then would skip the rollback for good.
+    let rd = match read_data_root(parent) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(unreadable("open", e)),
     };
-    let newest = rd
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .filter_map(|e| {
-            let name = e.file_name().to_str()?.to_string();
-            let key = before_restore_key(name.strip_prefix(&prefix)?)?;
-            Some((key, e.path()))
-        })
-        .max_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, p)| p);
+    let mut newest: Option<((String, u32), PathBuf)> = None;
+    for entry in rd {
+        let entry = entry.map_err(|e| unreadable("read an entry", e))?;
+        let name = entry.file_name();
+        let Some(key) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(&prefix))
+            .and_then(before_restore_key)
+        else {
+            continue;
+        };
+        let is_dir = entry
+            .file_type()
+            .map_err(|e| unreadable("read an entry's type", e))?
+            .is_dir();
+        if is_dir && newest.as_ref().is_none_or(|(k, _)| key > *k) {
+            newest = Some((key, entry.path()));
+        }
+    }
+    let newest = newest.map(|(_, p)| p);
     let Some(kept) = newest else {
         return Ok(None);
     };

@@ -86,7 +86,8 @@ and SHA-256; and nothing in the folder is unlisted.
   part never stops the daemon or touches the live store. Nothing to restore is an error.
 - Memory: the importer slot and the memory store lock are held (while the lock is held,
   `MemoryManager::start` refuses, so nothing can start the daemon mid-restore), a running daemon
-  is stopped, the files are copied into a staging dir beside the store and hashed again there,
+  is stopped (the stop returns only once the daemon process has exited, and it also waits for a
+  stop someone else already began), the files are copied into a staging dir beside the store and hashed again there,
   each file and directory gets its recorded mode back, masked so it is never group- or
   world-writable (0600 / 0700 when none was recorded), and the restore checks it took, the current memory dir is moved to `memory.before-restore-<time>`
   (kept, not deleted), the staging dir takes its place, the lock is released, and the daemon is
@@ -126,6 +127,9 @@ Not backed up: the daemon socket (`memdag.sock`) and the crash log.
   - **If the rename fails,** the guard refuses: the daemon does not start, the import does not
     run, and no `memory/` is created. The error names the folder. Move it back by hand (with the
     app quit) and start again.
+  - **If the data root can't be read** (opening it, reading an entry, or reading an entry's
+    type fails), the guard refuses the same way: a kept folder could be hidden, so no `memory/`
+    is created. Only a missing data root counts as a fresh install.
   - The restored copy that was being swapped in is not promoted; run the restore again.
 - **A deliberately removed `memory/` is rolled back too.** The rollback can't tell an interrupted
   swap from a `memory/` folder someone deleted on purpose. If `memory/` is removed while a

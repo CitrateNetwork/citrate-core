@@ -1027,3 +1027,27 @@ fn a_backup_waits_for_a_memory_stop_in_progress() {
     assert!(!report.daemon_restarted, "a daemon stopped by someone else stays stopped");
     assert_eq!(mgr.status().state, "stopped");
 }
+
+#[test]
+fn memory_start_fails_closed_when_the_data_root_scan_fails() {
+    use crate::storage_backup::ScanFailure;
+    for stage in [ScanFailure::Open, ScanFailure::Entry] {
+        let root = tmp_dir("scan-start");
+        std::fs::create_dir_all(&root).unwrap();
+        let kept = root.join("memory.before-restore-20261019-120000");
+        std::fs::create_dir_all(kept.join("store.bge.memdag")).unwrap();
+        let (mgr, started) = crate::storage_backup::tests::with_failing_data_root_scan(stage, || {
+            let mgr = manager_at(&root);
+            let started = mgr.start();
+            (mgr, started)
+        });
+        if started.is_ok() {
+            mgr.stop();
+        }
+        let err = started.expect_err("start refuses");
+        assert!(err.to_string().contains("will not start"), "{stage:?}: {err}");
+        assert_eq!(mgr.status().state, "stopped", "{stage:?}: nothing was spawned");
+        assert!(!root.join("memory").exists(), "{stage:?}: no empty store was created");
+        assert!(kept.join("store.bge.memdag").exists());
+    }
+}
