@@ -123,7 +123,11 @@ export async function cancelJoin(group: string): Promise<void> {
   try {
     upsertJoin(await bridge.rendezvous.cancel(group));
   } catch (e) {
-    rendezvousSlice.set({ error: { group, text: e instanceof Error ? e.message : String(e) } });
+    // Not confirmed is not withdrawn: keep the last confirmed state and say the request may still go
+    // through (the daemon may have the cancel persisted, or never got it).
+    rendezvousSlice.set({
+      error: { group, text: `Couldn't confirm the cancel: ${e instanceof Error ? e.message : String(e)}. Your request may still be accepted.` },
+    });
   } finally {
     rendezvousSlice.set({ busy: null });
   }
@@ -135,7 +139,7 @@ export async function forgetJoin(group: string): Promise<void> {
     await bridge.rendezvous.forget(group);
     rendezvousSlice.set((s) => ({ joins: s.joins.filter((j) => j.group !== group) }));
   } catch (e) {
-    rendezvousSlice.set({ error: { group, text: e instanceof Error ? e.message : String(e) } });
+    rendezvousSlice.set({ error: { group, text: `Couldn't dismiss this request: ${e instanceof Error ? e.message : String(e)}` } });
   } finally {
     rendezvousSlice.set({ busy: null });
   }

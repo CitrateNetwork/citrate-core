@@ -47,7 +47,7 @@ export interface JoinRequestsProps {
 }
 
 /** One row per join the daemon tracks. Renders nothing when there are none. */
-export function JoinRequests({ joins, lastKnown, listedGroups, busy, receivedAt, now, onRetry, onCancel, onForget }: JoinRequestsProps) {
+export function JoinRequests({ joins, lastKnown, listedGroups, busy, receivedAt, now, onRetry, onCancel, onForget, error }: JoinRequestsProps) {
   const clock = useNow();
   const t = now ?? clock;
   if (joins.length === 0) return null;
@@ -70,6 +70,9 @@ export function JoinRequests({ joins, lastKnown, listedGroups, busy, receivedAt,
               <span style={{ fontSize: 13, fontWeight: 500, color: toneColor[c.tone] }}>{c.title}</span>
               {c.sub && <span style={{ display: "block", fontSize: 11.5, color: "var(--tx-3)" }}>{c.sub}</span>}
               {c.lastKnown && <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{c.lastKnown}</span>}
+              {error?.group === j.group && (
+                <span role="alert" style={{ display: "block", fontSize: 11.5, color: "var(--danger, var(--tx-1))" }}>{error.text}</span>
+              )}
             </span>
             {c.retry && <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={onRetry}>Retry</button>}
             {c.cancel && <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => onCancel(j.group)}>Cancel</button>}

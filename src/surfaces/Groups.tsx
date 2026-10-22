@@ -535,6 +535,7 @@ export function Groups({ store, s }: SurfaceProps) {
         listedGroups={st.groups.map((g) => g.id)}
         busy={rv.busy}
         receivedAt={rv.receivedAt}
+        error={rv.error}
         onRetry={() => void refreshRendezvous().then(() => refreshGroups())}
         onCancel={(g) => void cancelJoin(g)}
         onForget={(g) => void forgetJoin(g)}

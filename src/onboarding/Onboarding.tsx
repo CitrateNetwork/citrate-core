@@ -300,6 +300,7 @@ function OnboardingJoins({ store, s }: { store: Store; s: AppState }) {
       listedGroups={s.myGroups.map((g) => g.id)}
       busy={rv.busy}
       receivedAt={rv.receivedAt}
+      error={rv.error}
       onRetry={() => void refreshRendezvous()}
       onCancel={(g) => void cancelJoin(g)}
       onForget={(g) => void forgetJoin(g)}
