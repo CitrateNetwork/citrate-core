@@ -1680,6 +1680,8 @@ fn k6_tok_close(toks: &[K6Tok], i: usize) -> usize {
 /// - `include!` (any path prefix, any delimiter): its literal argument;
 /// - `#[path = …]`, and every `path = …` inside a `#[cfg_attr(…)]` (at any nesting);
 /// - a `use` that names `include` (a renamed `include!` the scan cannot follow): `None`.
+/// - an attribute whose body is a macro fragment (`#[$a]`, `#![$a]`, `#[$($t)*]`), or a
+///   `cfg_attr` holding one: `None`, since the fragment can expand to a `path`.
 ///
 /// `include_str!` / `include_bytes!` read a file as data and compile nothing, so they are not
 /// references.
@@ -1715,13 +1717,20 @@ fn k6_module_refs(src: &str) -> Vec<Option<String>> {
             continue;
         }
         let end = k6_tok_close(&t, open);
-        if word(open + 1, "path") && punct(open + 2, '=') {
+        if punct(open + 1, '$') {
+            // `#[$a]`, `#[$($t)*]`: the whole attribute is a macro fragment.
+            out.push(None);
+        } else if word(open + 1, "path") && punct(open + 2, '=') {
             out.push(lit(open + 3));
         } else if (open + 1..end).any(|m| word(m, "cfg_attr")) {
             for m in open + 1..end {
                 if word(m, "path") && punct(m + 1, '=') {
                     out.push(lit(m + 2));
                 }
+            }
+            // A fragment inside `cfg_attr` can expand to a `path`.
+            if (open + 1..end).any(|m| punct(m, '$')) {
+                out.push(None);
             }
         }
     }
@@ -1748,16 +1757,68 @@ fn k6_ref_in_tree(file: &std::path::Path, lit: &str, root: &std::path::Path) -> 
 /// The source files a rustc dep-info (`.d`) file lists: the prerequisites of every rule, in
 /// order, with `\ ` read as a space. Comment lines (`# env-dep:…`) carry no sources.
 fn k6_dep_info_sources(text: &str) -> Vec<String> {
-    let _ = text;
-    Vec::new()
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        // The rule's target ends at the first `:` followed by a space or the line end (a
+        // Windows drive colon is followed by `\`).
+        let b = line.as_bytes();
+        let Some(colon) =
+            (0..b.len()).find(|&i| b[i] == b':' && (i + 1 == b.len() || b[i + 1] == b' '))
+        else {
+            continue;
+        };
+        let mut cur = String::new();
+        let mut chars = line[colon + 1..].chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' && chars.peek() == Some(&' ') {
+                cur.push(' ');
+                chars.next();
+            } else if c.is_whitespace() {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            } else {
+                cur.push(c);
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
 }
 
 /// Whether a dep-info path (relative to the workspace root `ws`, or absolute) lies under one of
 /// `roots`. A path that exists is compared canonically, so a symlink counts as its target; a
 /// missing one (a stale entry for a deleted file) is compared lexically, with `..` applied.
 fn k6_dep_in(p: &str, ws: &std::path::Path, roots: &[std::path::PathBuf]) -> bool {
-    let _ = (p, ws, roots);
-    true
+    use std::path::{Component, Path, PathBuf};
+    let lexical = |p: &Path| {
+        let mut n = PathBuf::new();
+        for c in p.components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    n.pop();
+                }
+                other => n.push(other),
+            }
+        }
+        n
+    };
+    let path = ws.join(p);
+    match path.canonicalize() {
+        Ok(abs) => roots
+            .iter()
+            .any(|r| r.canonicalize().map(|r| abs.starts_with(r)).unwrap_or(false)),
+        Err(_) => {
+            let n = lexical(&path);
+            roots.iter().any(|r| n.starts_with(lexical(r)))
+        }
+    }
 }
 
 /// STRUCTURAL (K6, MAC round 4 on core#363): the key-access scan reads every .rs under kit/src
@@ -1866,9 +1927,15 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
 /// look for every way a source can pull in another file; this asks the compiler instead. rustc
 /// writes the full source list of each build to a dep-info file beside the binary, and every
 /// macro, attribute and include form ends up there. So every source of this test binary must lie
-/// under kit/src. Any other kit or app build whose dep-info sits in the same directory (the kit
-/// lib, the app lib and binary, which `cargo test --workspace` builds first) is held to its own
-/// tree too: kit/src, or src-tauri/src plus the app build script's OUT_DIR.
+/// under kit/src. Any other kit build whose dep-info sits in the same directory (the kit lib,
+/// which `cargo test --workspace` builds first) is held to kit/src too.
+///
+/// The app's dep-info is checked as far as it can be. It also lists the many data files the app
+/// reads with `include_str!` / `include_bytes!` (fixtures, JSON, TypeScript sources for parity
+/// tests), and dep-info does not say which entries were compiled. So for an app build: every `.rs`
+/// entry lies under src-tauri/src or the app build script's OUT_DIR, and every other entry lies
+/// inside this checkout. A non-`.rs` file compiled through `#[path]` or `include!` is left to the
+/// token scans above.
 #[test]
 fn k6_compiled_sources_stay_in_the_scanned_trees() {
     use std::path::{Path, PathBuf};
@@ -1887,6 +1954,8 @@ fn k6_compiled_sources_stay_in_the_scanned_trees() {
         }
     }
     let kit_roots = vec![kit.join("src")];
+    let mut data_roots = app_roots[1..].to_vec();
+    data_roots.push(ws.to_path_buf());
     let mut files = vec![own.clone()];
     for e in std::fs::read_dir(deps).expect("read deps dir").flatten() {
         let p = e.path();
@@ -1905,13 +1974,16 @@ fn k6_compiled_sources_stay_in_the_scanned_trees() {
         let text = std::fs::read_to_string(f)
             .unwrap_or_else(|e| panic!("read dep-info {}: {e}", f.display()));
         let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let roots: &[PathBuf] = if name.starts_with("citrate_core_kit-") {
-            &kit_roots
-        } else {
-            &app_roots
-        };
+        let is_kit = name.starts_with("citrate_core_kit-");
         let srcs = k6_dep_info_sources(&text);
         for s in &srcs {
+            let roots: &[PathBuf] = if is_kit {
+                &kit_roots
+            } else if s.ends_with(".rs") {
+                &app_roots
+            } else {
+                &data_roots
+            };
             if !k6_dep_in(s, ws, roots) {
                 bad.push(format!("{}: {s}", f.display()));
             }
