@@ -782,7 +782,12 @@ impl SignatureCeremony {
             })?;
         let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
             Ok(h) => h,
-            Err(e) if first_submission && is_definitive_send_error(&e) => {
+            // Definitive only for a first submission that no other attempt overlapped (#347 P1).
+            Err(e)
+                if first_submission
+                    && self.submitted.sole_attempt(&local_hash)
+                    && is_definitive_send_error(&e) =>
+            {
                 return Err(CeremonyError::Broadcast(e.to_string()))
             }
             Err(e) => {
