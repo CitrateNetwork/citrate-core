@@ -242,9 +242,10 @@ export interface WalletReview {
    * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
    * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
    * which polls for the receipt before returning). A caller that must survive a quit at any
-   * point after signing (S7 records the activation tx) persists here.
+   * point after signing (S7 records the activation tx) persists here. Returns true only when
+   * the hash is durably saved; on false nothing is sent and the signed tx is discarded.
    */
-  onSigned?: (txHash: string) => void;
+  onSigned?: (txHash: string) => boolean;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;

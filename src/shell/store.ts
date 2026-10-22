@@ -1547,11 +1547,15 @@ export class Store {
    * Record a broadcast activation tx: persisted immediately (a quit right after must resume to
    * Pending) and the read generation bumped, so any read in flight without it is discarded.
    */
-  recordActivationTx(txHash: string): void {
+  recordActivationTx(txHash: string): boolean {
     this.activationGen++;
     this.activationInFlight = false; // the superseded read can no longer apply
+    const prev = { s7TxHash: this.state.s7TxHash, s7TxAt: this.state.s7TxAt };
     this.setState({ s7TxHash: txHash, s7TxAt: Date.now() });
-    this.saveNow();
+    if (this.saveNow()) return true;
+    // Not on disk: the caller must not send. Nothing is sent, so the member stays free to retry.
+    this.setState(prev);
+    return false;
   }
 
   /**
@@ -2103,21 +2107,27 @@ export class Store {
     this._saveT = setTimeout(() => this.writePersisted(), 400);
   }
 
-  /** Persist NOW, not on the debounced timer: for state that must survive an immediate quit. */
-  saveNow(): void {
+  /**
+   * Persist NOW, not on the debounced timer: for state that must survive an immediate quit.
+   * Returns true only when the write is on disk (read back equal); a caller that depends on it
+   * (S7's signed-tx hash) must stop on false.
+   */
+  saveNow(): boolean {
     if (this._saveT) clearTimeout(this._saveT);
     this._saveT = null;
-    this.writePersisted();
+    return this.writePersisted();
   }
 
-  private writePersisted(): void {
+  private writePersisted(): boolean {
     const s = this.state;
     const keep: Record<string, unknown> = {};
     for (const k of PERSIST_KEYS) keep[k] = s[k];
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));
+      const json = JSON.stringify(keep);
+      localStorage.setItem(STORAGE_KEY, json);
+      return localStorage.getItem(STORAGE_KEY) === json;
     } catch {
-      /* ignore */
+      return false;
     }
   }
 
@@ -5106,7 +5116,11 @@ export class Store {
         // The one-call broadcast polls for the receipt before it returns the hash, so a quit
         // during that poll would lose it; here the hash is on disk before anything is sent.
         const prepared = await bridge.signing.prepare(r.view.id, ack);
-        r.onSigned(prepared.txHash);
+        if (!r.onSigned(prepared.txHash)) {
+          // Not saved means a quit could lose it, and a resume could offer a second activation.
+          // Stop here: the catch below discards the signed, unsent tx.
+          throw new Error("this device could not save the signed transaction, so it was not sent; nothing was sent");
+        }
         result = await bridge.signing.sendPrepared(r.view.id);
         // The node must report the very tx that was signed and saved. A different hash is a
         // fault: report it (the catch below) rather than resolve on a hash nobody recorded.
