@@ -39,3 +39,31 @@ describe("StorageFiles honesty — subsidy-framed, no user-earnings/guaranteed/d
     expect(lower).not.toMatch(/approve the bond/);
   });
 });
+
+// Codex P1 on #368 at a82035c: the local IPFS node is a normal networked kubo node, and added
+// files are plaintext and announced by CID. Nothing gates retrieval behind a Share action, so the
+// surface must not promise privacy; it says plainly that a CID can be fetched from this node.
+const PRIVACY_PROMISE = /nothing (is sent|leaves)|until you (pin or )?share|private until|stays? (private|on this (machine|node) until)/i;
+
+describe("StorageFiles never promises a file stays private (IPFS content is retrievable by CID)", () => {
+  it("says that anyone with a file's CID can fetch it from this node", () => {
+    expect(html).toContain("anyone with its CID can fetch it from this node while the store is running");
+    expect(html).toContain("don't add files you need to keep private");
+  });
+
+  it("makes no privacy promise", () => {
+    expect(html).not.toMatch(PRIVACY_PROMISE);
+  });
+
+  it("tripwire: no storage surface or the storage doc promises privacy for IPFS content", async () => {
+    const { readFileSync, readdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const files = readdirSync(__dirname)
+      .filter((f) => /^Storage.*\.tsx$/.test(f) || f === "storageTruth.ts" || f === "storageParts.ts")
+      .map((f) => join(__dirname, f));
+    files.push(join(__dirname, "../../docs/STORAGE_K4.md"));
+    for (const f of files) {
+      expect(readFileSync(f, "utf8"), f).not.toMatch(PRIVACY_PROMISE);
+    }
+  });
+});
