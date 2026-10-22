@@ -48,6 +48,14 @@ fn jwk(kid: &str, pub_hex: &str) -> serde_json::Value {
     serde_json::json!({ "kty": "OKP", "crv": "Ed25519", "x": x_of(pub_hex), "kid": kid, "use": "sig", "alg": "EdDSA" })
 }
 
+/// The pins the tests trust: the RFC 8032 key 1 as `join-1` (current) and key 2 as `join-2` (next).
+pub(super) fn test_pins() -> Vec<PinnedKey> {
+    vec![
+        PinnedKey::new("join-1", &x_of(PUB_CURRENT)).expect("pin"),
+        PinnedKey::new("join-2", &x_of(PUB_NEXT)).expect("pin"),
+    ]
+}
+
 fn served_jwks() -> serde_json::Value {
     // A compromised / swapped JWKS that ALSO carries a rogue kid: the client must ignore it.
     serde_json::json!({ "keys": [jwk("join-1", PUB_CURRENT), jwk("join-2", PUB_NEXT), jwk("rogue", PUB_ROGUE)] })
@@ -430,7 +438,7 @@ fn jwt_good_signature_verifies_under_current_and_next_kid() {
         &ResolveSpec::direct(CODE, &env).body(),
         CODE,
         &served_jwks_typed(),
-        JOIN_PINNED_KIDS,
+        &test_pins(),
     )
     .expect("verify");
     assert_eq!(v.kind, JoinKind::Direct);
@@ -441,7 +449,7 @@ fn jwt_good_signature_verifies_under_current_and_next_kid() {
         seed: SEED_NEXT,
         ..ResolveSpec::referral(CODE)
     };
-    assert!(verify_resolve(&next.body(), CODE, &served_jwks_typed(), JOIN_PINNED_KIDS).is_ok());
+    assert!(verify_resolve(&next.body(), CODE, &served_jwks_typed(), &test_pins()).is_ok());
 }
 
 #[test]
@@ -453,7 +461,7 @@ fn jwt_wrong_kid_fails() {
         ..ResolveSpec::referral(CODE)
     };
     assert_eq!(
-        verify_resolve(&spec.body(), CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&spec.body(), CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
     // A pinned kid that the fetched JWKS doesn't carry.
@@ -465,7 +473,7 @@ fn jwt_wrong_kid_fails() {
             &ResolveSpec::referral(CODE).body(),
             CODE,
             &jwks,
-            JOIN_PINNED_KIDS
+            &test_pins()
         ),
         Err(JoinError::Signature)
     );
@@ -479,9 +487,153 @@ fn jwt_unpinned_kid_fails_even_when_the_jwks_serves_it() {
         ..ResolveSpec::referral(CODE)
     };
     assert_eq!(
-        verify_resolve(&spec.body(), CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&spec.body(), CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
+}
+
+fn jwks_of(keys: serde_json::Value) -> Jwks {
+    serde_json::from_value(serde_json::json!({ "keys": keys })).expect("jwks")
+}
+
+/// A different key served under a pinned kid, signing the resolve itself, is refused: the pin is
+/// the key, not the name.
+#[test]
+fn jwt_a_different_key_under_a_pinned_kid_fails() {
+    for kid in ["join-1", "join-2"] {
+        let spec = ResolveSpec {
+            kid: kid.into(),
+            seed: SEED_ROGUE,
+            ..ResolveSpec::referral(CODE)
+        };
+        let jwks = jwks_of(serde_json::json!([jwk(kid, PUB_ROGUE)]));
+        assert_eq!(
+            verify_resolve(&spec.body(), CODE, &jwks, &test_pins()),
+            Err(JoinError::Signature),
+            "{kid}"
+        );
+    }
+}
+
+/// The served set has the pinned kid with different material and the real key under another kid:
+/// refused whichever key signed.
+#[test]
+fn jwt_pinned_kid_with_other_material_fails_even_if_the_real_key_is_served_elsewhere() {
+    let jwks = jwks_of(serde_json::json!([jwk("join-1", PUB_ROGUE), jwk("join-9", PUB_CURRENT)]));
+    for seed in [SEED_ROGUE, SEED_CURRENT] {
+        let spec = ResolveSpec {
+            kid: "join-1".into(),
+            seed,
+            ..ResolveSpec::referral(CODE)
+        };
+        assert_eq!(
+            verify_resolve(&spec.body(), CODE, &jwks, &test_pins()),
+            Err(JoinError::Signature)
+        );
+    }
+    let spec = ResolveSpec {
+        kid: "join-9".into(),
+        seed: SEED_CURRENT,
+        ..ResolveSpec::referral(CODE)
+    };
+    assert_eq!(
+        verify_resolve(&spec.body(), CODE, &jwks, &test_pins()),
+        Err(JoinError::Signature),
+        "an unpinned kid, even with real material"
+    );
+}
+
+/// A second, different key under a pinned kid makes the set untrustworthy, in either order.
+#[test]
+fn jwt_a_pinned_kid_served_twice_with_different_material_fails() {
+    for keys in [
+        serde_json::json!([jwk("join-1", PUB_ROGUE), jwk("join-1", PUB_CURRENT)]),
+        serde_json::json!([jwk("join-1", PUB_CURRENT), jwk("join-1", PUB_ROGUE)]),
+    ] {
+        for seed in [SEED_ROGUE, SEED_CURRENT] {
+            let spec = ResolveSpec {
+                seed,
+                ..ResolveSpec::referral(CODE)
+            };
+            assert_eq!(
+                verify_resolve(&spec.body(), CODE, &jwks_of(keys.clone()), &test_pins()),
+                Err(JoinError::Signature)
+            );
+        }
+    }
+}
+
+/// Rotation: a successor this release doesn't pin is refused, even when the service serves it with
+/// its real key and signs with it.
+#[test]
+fn jwt_rotation_to_an_unpinned_successor_fails() {
+    let only_current = vec![PinnedKey::new("join-1", &x_of(PUB_CURRENT)).expect("pin")];
+    let spec = ResolveSpec {
+        kid: "join-2".into(),
+        seed: SEED_NEXT,
+        ..ResolveSpec::referral(CODE)
+    };
+    assert_eq!(
+        verify_resolve(&spec.body(), CODE, &served_jwks_typed(), &only_current),
+        Err(JoinError::Signature)
+    );
+    // The pinned current key still verifies.
+    assert!(verify_resolve(
+        &ResolveSpec::referral(CODE).body(),
+        CODE,
+        &served_jwks_typed(),
+        &only_current
+    )
+    .is_ok());
+    // No pins at all: nothing verifies.
+    assert_eq!(
+        verify_resolve(&ResolveSpec::referral(CODE).body(), CODE, &served_jwks_typed(), &[]),
+        Err(JoinError::Signature)
+    );
+}
+
+#[test]
+fn pinned_key_parsing_refuses_anything_but_32_bytes() {
+    assert!(PinnedKey::new("join-1", &x_of(PUB_CURRENT)).is_some());
+    for bad in ["", "AAAA", &x_of(&PUB_CURRENT[..62]), &format!("{}A", x_of(PUB_CURRENT)), "not base64!"] {
+        assert!(PinnedKey::new("join-1", bad).is_none(), "{bad:?}");
+    }
+    assert!(PinnedKey::new("", &x_of(PUB_CURRENT)).is_none());
+}
+
+/// The release pins: every entry well-formed (none silently dropped), kids unique and named as the
+/// contract names them. Empty until the service's production keys exist (GROW-S1 task 5).
+#[test]
+fn production_pins_are_well_formed_and_use_the_contract_kids() {
+    assert_eq!(PinnedKey::production().len(), JOIN_PINNED_KEYS.len());
+    let mut kids: Vec<&str> = JOIN_PINNED_KEYS.iter().map(|(k, _)| *k).collect();
+    kids.sort();
+    kids.dedup();
+    assert_eq!(kids.len(), JOIN_PINNED_KEYS.len(), "duplicate kid");
+    for kid in kids {
+        assert!(kid.starts_with("join-"), "{kid}");
+    }
+    assert_eq!(JoinConfig::production().pinned, PinnedKey::production());
+}
+
+/// Tripwire: the verifier and the JWKS filter compare key MATERIAL with the pin, and the signature
+/// is checked with the pinned bytes, not the fetched ones.
+#[test]
+fn verify_compares_key_material_not_only_the_kid() {
+    let src = include_str!("join.rs");
+    let f = &src[src.find("pub fn verify_resolve(").expect("fn")..];
+    let f = &f[..f.find("\n}\n").expect("end")];
+    assert!(f.contains("pin.matches("), "verify_resolve checks the served key against the pin");
+    assert!(
+        f.contains("DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(pin.x))"),
+        "the signature is checked with the pinned bytes"
+    );
+    let m = &src[src.find("pub fn matches(&self, jwk: &Jwk)").expect("matches")..];
+    let m = &m[..m.find("\n    }\n").expect("end")];
+    assert!(m.contains("== self.x"), "matches compares the public key bytes");
+    let j = &src[src.find("fn fetch_jwks(").expect("fetch")..];
+    let j = &j[..j.find("\n    }\n").expect("end")];
+    assert!(j.contains("p.matches(k)"), "the JWKS filter keeps only pinned material");
 }
 
 #[test]
@@ -500,7 +652,7 @@ fn jwt_tampered_field_fails() {
         b[field] = value;
         let body: ResolveBody = serde_json::from_value(b).expect("body");
         assert_eq!(
-            verify_resolve(&body, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+            verify_resolve(&body, CODE, &served_jwks_typed(), &test_pins()),
             Err(JoinError::Signature),
             "{field}"
         );
@@ -517,7 +669,7 @@ fn jwt_tampered_field_fails() {
     b["clusterName"] = "Free airdrop".into();
     let body: ResolveBody = serde_json::from_value(b).expect("body");
     assert_eq!(
-        verify_resolve(&body, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&body, CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
     // Asking for a different code than the one signed.
@@ -526,7 +678,7 @@ fn jwt_tampered_field_fails() {
             &spec.body(),
             "Ab3dE7gj",
             &served_jwks_typed(),
-            JOIN_PINNED_KIDS
+            &test_pins()
         ),
         Err(JoinError::Signature)
     );
@@ -541,7 +693,7 @@ fn jwt_env_hash_mismatch_fails() {
     b["env"] = other_env.clone().into();
     let body: ResolveBody = serde_json::from_value(b).expect("body");
     assert_eq!(
-        verify_resolve(&body, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&body, CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
     // envHash rewritten in the body to match the swapped envelope: no longer equals the claim.
@@ -550,7 +702,7 @@ fn jwt_env_hash_mismatch_fails() {
     b["envHash"] = envelope_hash(&other_env).expect("hash").into();
     let body: ResolveBody = serde_json::from_value(b).expect("body");
     assert_eq!(
-        verify_resolve(&body, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&body, CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
     // A direct body with its envelope stripped.
@@ -558,7 +710,7 @@ fn jwt_env_hash_mismatch_fails() {
     b.as_object_mut().expect("obj").remove("env");
     let body: ResolveBody = serde_json::from_value(b).expect("body");
     assert_eq!(
-        verify_resolve(&body, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&body, CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
 }
@@ -570,7 +722,7 @@ fn jwt_referral_carrying_an_envelope_fails() {
     b["env"] = env.into();
     let body: ResolveBody = serde_json::from_value(b).expect("body");
     assert_eq!(
-        verify_resolve(&body, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&body, CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
 }
@@ -587,7 +739,7 @@ fn jwt_expired_wrong_issuer_and_wrong_alg_fail() {
             &expired.body(),
             CODE,
             &served_jwks_typed(),
-            JOIN_PINNED_KIDS
+            &test_pins()
         ),
         Err(JoinError::Signature)
     );
@@ -597,7 +749,7 @@ fn jwt_expired_wrong_issuer_and_wrong_alg_fail() {
     body["sig"] = spec.sign(&claims).into();
     let b: ResolveBody = serde_json::from_value(body).expect("body");
     assert_eq!(
-        verify_resolve(&b, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&b, CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
     // HS256 with the public x as the HMAC secret (alg confusion).
@@ -610,7 +762,7 @@ fn jwt_expired_wrong_issuer_and_wrong_alg_fail() {
         .into();
     let b: ResolveBody = serde_json::from_value(body).expect("body");
     assert_eq!(
-        verify_resolve(&b, CODE, &served_jwks_typed(), JOIN_PINNED_KIDS),
+        verify_resolve(&b, CODE, &served_jwks_typed(), &test_pins()),
         Err(JoinError::Signature)
     );
 }
@@ -774,6 +926,8 @@ struct StubState {
     fail_jwks: Option<u16>,
     /// Serve a JWKS that carries only an unpinned kid.
     jwks_unpinned_only: bool,
+    /// Serve a different key under the pinned `join-1` (and the real one under no pinned kid).
+    jwks_swapped: bool,
     /// Answer every request (except the redirect target) with a 307 to `<base>/followed`.
     redirect_everything: bool,
     /// Sign resolves with this `envVersion` instead of 1 (a future envelope format).
@@ -972,6 +1126,10 @@ fn handle(
             }
             (201, out)
         }
+        ("GET", "/jwks") if s.jwks_swapped && s.fail_jwks.is_none() => (
+            200,
+            serde_json::json!({ "keys": [jwk("join-1", PUB_ROGUE), jwk("join-9", PUB_CURRENT)] }),
+        ),
         ("GET", "/jwks") => match (s.fail_jwks, s.jwks_unpinned_only) {
             (Some(st), _) => (st, serde_json::json!({ "ok": false, "message": "not configured" })),
             (None, true) => (200, serde_json::json!({ "keys": [jwk("rogue", PUB_ROGUE)] })),
@@ -1412,6 +1570,24 @@ fn e2e_jwks_failure_does_not_spend_a_resolve() {
     assert_eq!(c.resolve(&url), Err(JoinError::Signature));
     assert_eq!(resolves_of(&stub, &m.code), 0, "an unusable JWKS spent a resolve");
     stub.state().jwks_unpinned_only = false;
+    stub.state().jwks_swapped = true;
+    assert_eq!(c.resolve(&url), Err(JoinError::Signature));
+    assert_eq!(
+        resolves_of(&stub, &m.code),
+        0,
+        "a JWKS with other material under a pinned kid spent a resolve"
+    );
+    stub.state().jwks_swapped = false;
+    // A client with no pinned keys (this release's production pins) fails closed, unspent.
+    let unpinned = JoinClient::new(
+        JoinConfig {
+            api_base: stub.base.clone(),
+            pinned: Vec::new(),
+        },
+        Box::new(JoinHttp),
+    );
+    assert_eq!(unpinned.resolve(&url), Err(JoinError::Signature));
+    assert_eq!(resolves_of(&stub, &m.code), 0, "no pins spent a resolve");
     // The single allowed resolve is still there.
     assert!(c.resolve(&url).expect("resolve").actionable);
     assert_eq!(resolves_of(&stub, &m.code), 1);
@@ -1473,7 +1649,7 @@ fn verify_carries_the_signed_env_version() {
         &ResolveSpec::direct(CODE, &env).body(),
         CODE,
         &served_jwks_typed(),
-        JOIN_PINNED_KIDS,
+        &test_pins(),
     )
     .expect("verify v1");
     assert_eq!(v1.env_version, Some(1));
@@ -1482,14 +1658,14 @@ fn verify_carries_the_signed_env_version() {
         env_version: 2,
         ..ResolveSpec::direct(CODE, &env)
     };
-    let got = verify_resolve(&v2.body(), CODE, &served_jwks_typed(), JOIN_PINNED_KIDS)
+    let got = verify_resolve(&v2.body(), CODE, &served_jwks_typed(), &test_pins())
         .expect("verify v2");
     assert_eq!(got.env_version, Some(2));
     let r = verify_resolve(
         &ResolveSpec::referral(CODE).body(),
         CODE,
         &served_jwks_typed(),
-        JOIN_PINNED_KIDS,
+        &test_pins(),
     )
     .expect("verify referral");
     assert_eq!(r.env_version, None);
