@@ -126,6 +126,10 @@ describe("a sidecar daemon turn", () => {
     expect(JSON.parse((sidecar.openUnattended.mock.calls[0] as unknown as [string, string])[1]).map((t: { function: { name: string } }) => t.function.name)).not.toContain("app_navigate");
     expect(d.handled).toEqual([["journal_append", { hic: "required", hicReason: expect.stringContaining("Node digest") }]]);
     expect(sidecar.close).toHaveBeenCalledWith("s1-ab");
+    // The open names the claimed run too, so core can bind the session to it.
+    const args = sidecar.openUnattended.mock.calls[0] as unknown as [string, string, string, string];
+    expect(args[2]).toBe(claim.daemonId);
+    expect(args[3]).toBe(claim.runId);
   });
 });
 

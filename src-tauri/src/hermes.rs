@@ -2425,10 +2425,14 @@ pub async fn hermes_session_open_unattended(
     // K5a: the daemon this run belongs to. A Store daemon is re-checked against the sidecar's
     // CURRENT environment right before its session opens (an older runner sends none).
     daemon_id: Option<String>,
+    // The claimed run this session is for; core checks it is in flight for `daemon_id`.
+    run_id: Option<String>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
-        // DGX R3: fail closed. A missing or unknown daemon id is refused inside the check.
-        let store_allowed = crate::daemons::check_store_daemon_open(&app, daemon_id.as_deref())?;
+        // DGX R3: fail closed. A missing or unknown daemon id, or a run that is not this
+        // daemon's run in flight, is refused inside the check.
+        let store_allowed =
+            crate::daemons::check_store_daemon_open(&app, daemon_id.as_deref(), run_id.as_deref())?;
         match store_allowed {
             // A Store daemon: only its approved core tools, exactly its approved host tool sets,
             // and no prompt additions from the sidecar.

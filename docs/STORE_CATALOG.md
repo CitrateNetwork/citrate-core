@@ -166,8 +166,10 @@ Three more rules close the gaps around restarts and the launch environment:
 - **Re-checked right before the session opens.** The claim records which host sets were on.
   `hermes_session_open_unattended` (given the daemon id) refuses the open when the environment is
   now unknown, when the sets changed since the claim, or when an uncovered set is on.
-- **Fail closed at open.** The daemon session open must name a daemon the book holds; a missing
-  or unknown id is refused. A refusal at open is recorded as `not_started`, not `failed`.
+- **Fail closed at open.** The daemon session open must name a daemon the book holds and the run
+  core claimed for it, still in flight; a missing or unknown id, a missing run id, another
+  daemon's run, or a finished or released run is refused. A refusal at open is recorded as
+  `not_started`, not `failed`.
 - **Environment names follow the platform.** On Windows, where variable names are
   case-insensitive, `citrate_hermes_search` counts as `CITRATE_HERMES_SEARCH`.
 - **The effective environment is checked.** The sidecar inherits the app's own environment, so a

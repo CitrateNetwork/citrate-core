@@ -1069,6 +1069,15 @@ impl DaemonBook {
         self.records.iter().any(|r| r.id == id)
     }
 
+    /// Whether daemon `id` has run `run_id` in flight (claimed, not yet finished or released).
+    pub(crate) fn run_in_flight(&self, id: &str, run_id: &str) -> bool {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.running.as_ref())
+            .is_some_and(|run| run.run_id == run_id)
+    }
+
     /// The host tool sets the daemon's run in flight was claimed against.
     pub(crate) fn claimed_host_sets(&self, id: &str) -> Option<Vec<String>> {
         self.records
@@ -1557,13 +1566,21 @@ fn sidecar_facts(app: &tauri::AppHandle) -> SidecarFactsOwned {
 pub(crate) fn open_target(
     book: &DaemonBook,
     daemon_id: Option<&str>,
-    _run_id: Option<&str>,
+    run_id: Option<&str>,
 ) -> Result<Option<Vec<String>>, String> {
     let id = daemon_id.ok_or_else(|| {
         "Not started: the daemon run did not say which daemon it is for.".to_string()
     })?;
     if !book.contains(id) {
         return Err("Not started: that daemon is no longer in the daemon list.".into());
+    }
+    // Bound in core: the session is for the run core claimed for this daemon, still in flight.
+    // The webview names both; any other pairing (no run, another daemon's run, a finished or
+    // released run) opens nothing.
+    let run_id = run_id
+        .ok_or_else(|| "Not started: the daemon run did not say which run it is.".to_string())?;
+    if !book.run_in_flight(id, run_id) {
+        return Err("Not started: that run is not in flight for this daemon.".into());
     }
     Ok(book.allowed_tools_of(id))
 }
@@ -1584,9 +1601,10 @@ pub(crate) struct StoreOpen {
 pub(crate) fn check_store_daemon_open(
     app: &tauri::AppHandle,
     id: Option<&str>,
+    run_id: Option<&str>,
 ) -> Result<Option<StoreOpen>, String> {
     let (allowed, claimed) = with_book(app, false, |b| {
-        let allowed = open_target(b, id, None)?;
+        let allowed = open_target(b, id, run_id)?;
         Ok((allowed, id.and_then(|id| b.claimed_host_sets(id))))
     })?;
     let Some(allowed) = allowed else {

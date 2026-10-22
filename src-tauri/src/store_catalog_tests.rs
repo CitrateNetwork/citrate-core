@@ -1530,3 +1530,18 @@ fn a_session_open_is_bound_to_the_daemons_claimed_run() {
     })
     .expect("book");
 }
+
+/// Tripwire: the open command passes the run id into the bound check, and the check refuses
+/// before anything else when the pair is not a run in flight.
+#[test]
+fn tripwire_the_unattended_open_checks_the_claimed_run() {
+    let hermes = include_str!("hermes.rs");
+    let cmd = &hermes[hermes.find("pub async fn hermes_session_open_unattended(").expect("cmd")..];
+    let cmd = &cmd[..cmd.find("\n}\n").expect("ends")];
+    assert!(cmd.contains("run_id: Option<String>"), "the command takes the run id");
+    assert!(cmd.contains("run_id.as_deref()"), "and passes it to the check");
+    let daemons = include_str!("daemons.rs");
+    let ot = &daemons[daemons.find("pub(crate) fn open_target(").expect("open_target")..];
+    let ot = &ot[..ot.find("\n}\n").expect("ends")];
+    assert!(ot.find("run_in_flight(").expect("bound") < ot.find("allowed_tools_of(").expect("allowed"));
+}
