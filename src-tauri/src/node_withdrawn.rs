@@ -132,7 +132,11 @@ pub fn assess<T: RpcTransport>(local: &T, check: &ForkCheck) -> Verdict {
 fn checkpoint_hash(check: &ForkCheck, block: Option<&Value>) -> Option<String> {
     let block = block?.as_object()?;
     let n = block.get("number")?.as_str()?.strip_prefix("0x")?;
-    if n.is_empty() || u64::from_str_radix(n, 16).ok()? != check.height {
+    // Strictly hex digits: from_str_radix alone would accept a leading '+' (#358 DGX review).
+    if n.is_empty()
+        || !n.bytes().all(|b| b.is_ascii_hexdigit())
+        || u64::from_str_radix(n, 16).ok()? != check.height
+    {
         return None;
     }
     let hash = block.get("hash")?.as_str()?;
