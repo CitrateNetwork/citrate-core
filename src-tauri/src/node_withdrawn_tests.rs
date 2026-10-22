@@ -23,7 +23,8 @@ impl RpcTransport for FakeNode {
             }
             Some("eth_getBlockByNumber") => {
                 let h = self.hash.ok_or_else(fail)?;
-                Ok(json!({ "jsonrpc": "2.0", "id": 1, "result": { "hash": h } }))
+                let n = body["params"][0].clone();
+                Ok(json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": n, "hash": h } }))
             }
             _ => Err(fail()),
         }
@@ -121,6 +122,29 @@ fn a_block_for_another_height_is_not_that_block() {
         block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": "0x61a80", "hash": WITHDRAWN_HASH } }),
     };
     assert_eq!(assess(&node, &CHECK), Verdict::Unknown);
+}
+
+// C1-V2(b): the hash is compared only when the returned block states its number and that number
+// is the check height. A block with no number, or a number that is not a hex quantity, is not
+// known to be the check block, so it is "not yet", never a mismatch.
+#[test]
+fn a_block_without_a_number_is_not_yet_even_with_another_hash() {
+    let node = RawNode {
+        head: 400_000,
+        block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "hash": WITHDRAWN_HASH } }),
+    };
+    assert_eq!(assess(&node, &CHECK), Verdict::Unknown);
+}
+
+#[test]
+fn a_block_with_an_unreadable_number_is_not_yet() {
+    for number in [json!(null), json!(""), json!("0x"), json!("zz"), json!(CHECK.height)] {
+        let node = RawNode {
+            head: 400_000,
+            block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": number, "hash": WITHDRAWN_HASH } }),
+        };
+        assert_eq!(assess(&node, &CHECK), Verdict::Unknown, "number {number:?}");
+    }
 }
 
 #[test]

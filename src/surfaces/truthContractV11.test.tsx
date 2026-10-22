@@ -75,6 +75,14 @@ describe("§1 — activation epoch", () => {
     expect(validatorWord(32_000, pending, true)).toBe("Registered · active from epoch 501");
   });
 
+  // The most common pending case: registered this epoch, active from the next one.
+  it("is 'Registered · active from epoch N' when actEpoch is exactly currentEpoch + 1", () => {
+    const next: ValidatorActivation = { isActive: true, status: 1, actEpoch: 500, currentEpoch: 499 };
+    expect(isValidatorActive(next)).toBe(false);
+    expect(validatorWord(32_000, next, true)).toBe("Registered · active from epoch 500");
+    expect(mapNodeState("running", 100, next)).toBe("synced");
+  });
+
   it("is 'Validator active' only when isActive and actEpoch <= currentEpoch", () => {
     expect(isValidatorActive(active)).toBe(true);
     expect(validatorWord(32_000, active, true)).toBe("Validator active");
