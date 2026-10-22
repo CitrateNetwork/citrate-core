@@ -62,6 +62,18 @@ struct Entry {
     sender: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nonce: Option<u64>,
+    /// What the tx calls, when the sender recorded it (Join-8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selector: Option<String>,
+    /// When it was recorded (ms since the Unix epoch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at_ms: Option<u64>,
+    /// Forgotten by the member ([`SubmittedTxLog::forget`]): no longer found by
+    /// [`SubmittedTxLog::latest_call`], but still a recorded submission.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    forgotten: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +194,10 @@ impl SubmittedTxLog {
                     hash,
                     sender: None,
                     nonce: None,
+                    to: None,
+                    selector: None,
+                    at_ms: None,
+                    forgotten: false,
                 })
                 .collect()
         };
@@ -210,7 +226,9 @@ impl SubmittedTxLog {
                 .map(|e| Entry {
                     hash: e.hash.to_ascii_lowercase(),
                     sender: e.sender.map(|s| s.to_ascii_lowercase()),
-                    nonce: e.nonce,
+                    to: e.to.map(|s| s.to_ascii_lowercase()),
+                    selector: e.selector.map(|s| s.to_ascii_lowercase()),
+                    ..e
                 })
                 .collect(),
             evicted: evicted
@@ -232,16 +250,21 @@ impl SubmittedTxLog {
     /// re-submission or an uncertain history. `Err` when the record could not be written: the
     /// hash is not kept, and the caller must not send.
     pub fn try_record(&self, hash: &str) -> Result<bool, String> {
-        self.record_entry(hash, None)
+        self.record_entry(hash, None, None)
     }
 
     /// [`Self::try_record`] for a transaction whose sender and nonce are known, so an eviction
     /// can be bounded by nonce instead of making the whole history uncertain.
     pub fn try_record_for(&self, hash: &str, sender: &str, nonce: u64) -> Result<bool, String> {
-        self.record_entry(hash, Some((sender, nonce)))
+        self.record_entry(hash, Some((sender, nonce)), None)
     }
 
-    fn record_entry(&self, hash: &str, origin: Option<(&str, u64)>) -> Result<bool, String> {
+    fn record_entry(
+        &self,
+        hash: &str,
+        origin: Option<(&str, u64)>,
+        call: Option<&CallMeta>,
+    ) -> Result<bool, String> {
         let hash = hash.to_ascii_lowercase();
         let origin = origin.map(|(s, n)| (s.to_ascii_lowercase(), n));
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -254,8 +277,25 @@ impl SubmittedTxLog {
             hash,
             sender: origin.as_ref().map(|(s, _)| s.clone()),
             nonce: origin.as_ref().map(|(_, n)| *n),
+            to: call.map(|c| c.to.to_ascii_lowercase()),
+            selector: call.map(|c| c.selector.to_ascii_lowercase()),
+            // Kept only for a recorded call (what latest_call returns); other entries are unchanged.
+            at_ms: call.and_then(|_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            }),
+            forgotten: false,
         });
         next.evict_to_capacity();
+        self.persist(&next)?;
+        *g = next;
+        Ok(first)
+    }
+
+    /// Write `next` durably (no-op without a path). The caller swaps it in only on success.
+    fn persist(&self, next: &Inner) -> Result<(), String> {
         if let Some(path) = &self.path {
             let disk = OnDisk {
                 entries: next.entries.iter().cloned().collect(),
@@ -265,8 +305,7 @@ impl SubmittedTxLog {
             write_atomic(path, &disk, self.sync_dir)
                 .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         }
-        *g = next;
-        Ok(first)
+        Ok(())
     }
 
     /// [`Self::try_record_for`] that also keeps what the tx calls ([`CallMeta`]) and when it was
@@ -276,22 +315,47 @@ impl SubmittedTxLog {
         hash: &str,
         sender: &str,
         nonce: u64,
-        _call: Option<&CallMeta>,
+        call: Option<&CallMeta>,
     ) -> Result<bool, String> {
-        self.try_record_for(hash, sender, nonce)
+        self.record_entry(hash, Some((sender, nonce)), call)
     }
 
     /// The most recent recorded submission from `sender` calling `call`, unless it was
     /// forgotten ([`Self::forget`]).
-    pub fn latest_call(&self, _sender: &str, _call: &CallMeta) -> Option<RecordedCall> {
-        None
+    pub fn latest_call(&self, sender: &str, call: &CallMeta) -> Option<RecordedCall> {
+        let (sender, to, selector) = (
+            sender.to_ascii_lowercase(),
+            call.to.to_ascii_lowercase(),
+            call.selector.to_ascii_lowercase(),
+        );
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        // Only the LATEST matching send counts: a forgotten newer send never brings back an older one.
+        let e = g.entries.iter().rev().find(|e| {
+            e.sender.as_deref() == Some(sender.as_str())
+                && e.to.as_deref() == Some(to.as_str())
+                && e.selector.as_deref() == Some(selector.as_str())
+        })?;
+        (!e.forgotten).then(|| RecordedCall {
+            hash: e.hash.clone(),
+            nonce: e.nonce,
+            at_ms: e.at_ms,
+        })
     }
 
     /// Mark a recorded submission as forgotten, durably: [`Self::latest_call`] no longer returns
     /// it. The hash stays recorded, so the same bytes are never a first submission again.
     /// `Ok(true)` when it was found and marked.
-    pub fn forget(&self, _hash: &str) -> Result<bool, String> {
-        Ok(false)
+    pub fn forget(&self, hash: &str) -> Result<bool, String> {
+        let hash = hash.to_ascii_lowercase();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = g.clone();
+        let Some(e) = next.entries.iter_mut().find(|e| e.hash == hash) else {
+            return Ok(false);
+        };
+        e.forgotten = true;
+        self.persist(&next)?;
+        *g = next;
+        Ok(true)
     }
 
     /// [`Self::try_record`] for callers that only need first-ness. A failed write is never a

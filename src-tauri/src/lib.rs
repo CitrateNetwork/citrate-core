@@ -758,6 +758,8 @@ pub fn run() {
             node::node_register_validator,
             // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
             validator_activation::validator_activation_status,
+            // Join-8 — Forget an unseen activation send in the durable submitted-tx record.
+            validator_activation::validator_activation_forget,
             // W1.x — arm the producer once synced (consensus-gated); the respawn
             // mints proposer.key, the validator identity the bond activation needs.
             node::node_arm_mining,

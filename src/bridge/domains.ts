@@ -322,6 +322,12 @@ export interface ActivationStatusView {
   localSyncing: boolean | null;
   /** `eth_getTransactionReceipt` for a sent activation (null when none was sent). */
   tx: { hash: string; included: boolean | null; blockNumber: number | null; success: boolean | null } | null;
+  /**
+   * The member's latest activation send to this bond as the durable submitted-tx record names it
+   * (written and fsync'd in Rust BEFORE the send; #347). Null when none is recorded, or it was
+   * forgotten. This, not localStorage, is how the step resumes to Pending after a restart.
+   */
+  recordedTx: { hash: string; atMs: number | null } | null;
 }
 
 export interface NodeDomain {
@@ -341,6 +347,13 @@ export interface NodeDomain {
    * `validator_activation_status`; the sim shim is honestly Unavailable (no chain, no node).
    */
   activationStatus(memberAddress: string, txHash?: string | null): Promise<ActivationStatusView>;
+  /**
+   * Join-8 — Forget a recorded activation send (S7's Forget after 10 minutes unseen, or Try again
+   * after a revert): marks it forgotten in the durable record so a restart does not bring it back.
+   * Resolves true when the record held it; rejects when the write fails. Tauri →
+   * `validator_activation_forget`; the sim shim is honestly Unavailable.
+   */
+  activationForget(txHash: string): Promise<boolean>;
   /**
    * The most recent supervised-node crash, or null if it has never crashed.
    * Used by the liveness watchdog to name the REAL reason a node stopped.

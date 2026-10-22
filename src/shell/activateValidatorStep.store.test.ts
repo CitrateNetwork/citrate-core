@@ -139,10 +139,12 @@ describe("S6 → S7 hand-off", () => {
 });
 
 describe("resume after quit", () => {
-  it("persists the step and the sent activation's tx hash", () => {
+  it("persists the step; the sent activation's record is not in localStorage", () => {
     expect(PERSIST_KEYS).toContain("stage");
-    expect(PERSIST_KEYS).toContain("s7TxHash");
     expect(PERSIST_KEYS).toContain("validatorSkipped");
+    // The activation record is #347's fsync'd submitted-tx record in Rust, never localStorage.
+    expect(PERSIST_KEYS).not.toContain("s7TxHash");
+    expect(PERSIST_KEYS).not.toContain("s7TxAt");
     expect(PERSIST_KEYS).not.toContain("activation"); // chain is the truth, re-read on launch
   });
   it("re-reads the chain with the persisted tx hash, so a sent activation shows as Pending", async () => {
@@ -220,43 +222,47 @@ describe("no silent signing", () => {
     expect(store.state.walletReview?.label).not.toContain("32,000");
   });
 
-  it("records the tx hash on disk BEFORE the send starts", async () => {
+  it("shows the tx hash as Pending BEFORE the send starts (the send writes the durable record)", async () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     await store.onS7Activate();
-    let onDiskAtSend: unknown = "unset";
+    let shownAtSend: unknown = "unset";
     sendPreparedMock.mockImplementationOnce(async () => {
-      onDiskAtSend = persisted().s7TxHash;
+      shownAtSend = store.state.s7TxHash;
       return { txHash: "0xfeed", blockNumber: 501 };
     });
     await store.approveWalletReview(false);
     expect(prepareMock).toHaveBeenCalledTimes(1);
     expect(sendPreparedMock).toHaveBeenCalledTimes(1);
     expect(broadcastMock).not.toHaveBeenCalled(); // the one-call path would poll before returning the hash
-    expect(onDiskAtSend).toBe("0xfeed");
+    expect(shownAtSend).toBe("0xfeed");
   });
 
-  it("QUIT DURING RECEIPT POLLING: the send never returns, the relaunch resumes to Pending", async () => {
+  it("QUIT DURING RECEIPT POLLING: the send never returns, the relaunch resumes to Pending from the record", async () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     await store.onS7Activate();
-    // sign_send_prepared polls for the receipt before returning; the member quits meanwhile.
+    // sign_send_prepared records durably, sends, then polls for the receipt; the member quits.
     sendPreparedMock.mockImplementationOnce(() => new Promise(() => {}));
     void store.approveWalletReview(false);
     await flush();
     expect(sendPreparedMock).toHaveBeenCalledTimes(1);
-    expect(persisted().s7TxHash).toBe("0xfeed");
+    store.save();
+    await new Promise((res) => setTimeout(res, 450));
     expect(persisted().stage).toBe("s7");
 
     const reopened = new Store();
     reopened.setState({ hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true });
     expect(reopened.state.stage).toBe("s7");
-    expect(reopened.state.s7TxHash).toBe("0xfeed");
-    chain.current = readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } });
+    // The Rust record (written before the send) names the tx; the read returns it.
+    chain.current = readyStatus({
+      recordedTx: { hash: "0xfeed", atMs: Date.now() },
+      tx: { hash: "0xfeed", included: false, blockNumber: null, success: null },
+    } as Partial<ActivationStatusView>);
     await reopened.refreshActivation();
-    expect(activationStatusMock).toHaveBeenLastCalledWith(WALLET, "0xfeed");
+    expect(reopened.state.s7TxHash).toBe("0xfeed");
     expect(activationPhase(reopened.state.activation, true, reopened.state.s7TxHash)).toBe("pending");
     (reopened as unknown as { validatorArmed: boolean }).validatorArmed = true;
     const calls = registerValidatorMock.mock.calls.length;
@@ -292,15 +298,11 @@ describe("no silent signing", () => {
     expect(resolved).toHaveBeenCalledWith(true, "0xfeed");
   });
 
-  it("STORAGE FAILS: the hash can't be saved, so nothing is sent and the signed tx is discarded", async () => {
+  it("localStorage failing does not touch the send: the record is written in Rust", async () => {
     const store = memberStore();
     await store.refreshActivation();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     await store.onS7Activate();
-    const resolved = vi.fn();
-    const r = store.state.walletReview;
-    if (r) store.setState({ walletReview: { ...r, onResolved: resolved } });
-    rejectMock.mockClear();
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("quota exceeded", "QuotaExceededError");
     });
@@ -309,48 +311,8 @@ describe("no silent signing", () => {
     } finally {
       setItem.mockRestore();
     }
-    expect(prepareMock).toHaveBeenCalledTimes(1);
-    expect(sendPreparedMock).not.toHaveBeenCalled();
-    expect(rejectMock).toHaveBeenCalledWith("cer_1"); // the prepared (signed, unsent) tx is dropped
-    expect(store.state.s7TxHash).toBeNull(); // nothing was sent: the member is not blocked
-    expect(store.state.walletReview).toBeNull();
-    expect(resolved).toHaveBeenCalledWith(false);
-    expect(String(store.state.toast ?? "")).toMatch(/nothing was sent/i);
-  });
-
-  it("STORAGE SILENTLY DROPS THE WRITE: a save that can't be read back counts as failed", async () => {
-    const store = memberStore();
-    await store.refreshActivation();
-    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {});
-    try {
-      await store.approveWalletReview(false);
-    } finally {
-      setItem.mockRestore();
-    }
-    expect(sendPreparedMock).not.toHaveBeenCalled();
-    expect(store.state.s7TxHash).toBeNull();
-  });
-
-  it("after a storage failure, activation can be offered again once storage works", async () => {
-    const store = memberStore();
-    await store.refreshActivation();
-    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    await store.onS7Activate();
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("storage unavailable");
-    });
-    try {
-      await store.approveWalletReview(false);
-    } finally {
-      setItem.mockRestore();
-    }
-    expect(sendPreparedMock).not.toHaveBeenCalled();
-    expect(await store.onS7Activate()).toBe(true);
-    await store.approveWalletReview(false);
     expect(sendPreparedMock).toHaveBeenCalledTimes(1);
-    expect(persisted().s7TxHash).toBe("0xfeed");
+    expect(store.state.s7TxHash).toBe("0xfeed");
   });
 
   it("a failed send keeps the recorded hash (the chain decides) and reports the failure", async () => {
@@ -480,17 +442,6 @@ describe("single-flight periodic reads (a slow read is still applied)", () => {
   });
 });
 
-describe("tripwire: a signed tx is sent only after its hash is durably saved", () => {
-  it("every onSigned call in the store gates the send on its result", async () => {
-    const { readFileSync } = await import("node:fs");
-    const { join } = await import("node:path");
-    const src = readFileSync(join(__dirname, "store.ts"), "utf8");
-    const calls = [...src.matchAll(/\bonSigned\s*\(/g)].map((m) => src.slice(Math.max(0, m.index - 12), m.index + 9));
-    expect(calls.length).toBeGreaterThan(0);
-    for (const c of calls) expect(c).toMatch(/if \(!r\.onSigned\(/);
-  });
-});
-
 describe("a recorded activation guards every entry, not only S7", () => {
   it("pending activation → Explore free → Node's Activate opens no second ceremony", async () => {
     const store = memberStore();
@@ -576,7 +527,7 @@ describe("the activation record is the durable Rust record (#347), not localStor
     await store.onS7Activate();
     await store.approveWalletReview(false);
     expect(store.state.s7TxHash).toBe("0xfeed");
-    store.saveNow();
+    (store as unknown as { writePersisted(): void }).writePersisted();
     expect(persisted().s7TxHash).toBeUndefined();
     expect(persisted().s7TxAt).toBeUndefined();
   });
@@ -607,5 +558,33 @@ describe("the activation record is the durable Rust record (#347), not localStor
     expect(store.state.s7TxHash).toBe("0xfeed");
     await store.onS7ForgetTx();
     expect(store.state.s7TxHash ?? null).toBeNull();
+  });
+});
+
+describe("Try again after a revert", () => {
+  it("forgets the reverted send in the durable record, so a later read does not bring it back", async () => {
+    const store = memberStore();
+    store.recordActivationTx("0xdead");
+    const reverted = { hash: "0xdead", included: true, blockNumber: 501, success: false };
+    chain.current = readyStatus({ tx: reverted, recordedTx: { hash: "0xdead", atMs: Date.now() } } as Partial<ActivationStatusView>);
+    await store.refreshActivation();
+    expect(activationPhase(store.state.activation, true, store.state.s7TxHash)).toBe("failed");
+    await store.onS7RetryAfterRevert();
+    expect(activationForgetMock).toHaveBeenCalledWith("0xdead");
+    expect(store.state.s7TxHash ?? null).toBeNull();
+    chain.current = readyStatus({ recordedTx: null } as Partial<ActivationStatusView>); // forgotten in the record
+    await store.refreshActivation();
+    expect(store.state.s7TxHash ?? null).toBeNull();
+    expect(activationPhase(store.state.activation, true, store.state.s7TxHash)).not.toBe("failed");
+  });
+
+  it("does nothing for a tx that has not reverted", async () => {
+    const store = memberStore();
+    store.recordActivationTx("0xfeed");
+    chain.current = readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } });
+    await store.refreshActivation();
+    await store.onS7RetryAfterRevert();
+    expect(activationForgetMock).not.toHaveBeenCalled();
+    expect(store.state.s7TxHash).toBe("0xfeed");
   });
 });

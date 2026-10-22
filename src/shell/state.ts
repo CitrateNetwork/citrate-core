@@ -242,10 +242,13 @@ export interface WalletReview {
    * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
    * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
    * which polls for the receipt before returning). A caller that must survive a quit at any
-   * point after signing (S7 records the activation tx) persists here. Returns true only when
-   * the hash is durably saved; on false nothing is sent and the signed tx is discarded.
+   * point after signing (S7 shows the activation tx as Pending) gets the hash here. The durable
+   * record is written in Rust (#347's fsync'd submitted-tx record) by the send itself, before
+   * the tx reaches the node; with no durable record nothing is sent.
    */
-  onSigned?: (txHash: string) => boolean;
+  onSigned?: (txHash: string) => void;
+  /** Join-8 — with `onSigned`: the backend refused the send before submission; nothing was sent. */
+  onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
@@ -577,12 +580,14 @@ export interface AppState {
   dataReady: boolean;
   s6ready?: boolean;
   /**
-   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate, kept so a member who
-   * quits before it is included comes back to "Pending" rather than a fresh button. Persisted;
-   * cleared once the chain shows the bond activated.
+   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate. NOT persisted here:
+   * the durable record is #347's fsync'd submitted-tx record in Rust, written before the send, and
+   * the activation read returns it (`activation.recordedTx`) so a relaunch resumes to "Pending".
+   * Cleared once the chain shows the bond activated, or by Forget / Try again (which also mark the
+   * durable record forgotten).
    */
   s7TxHash: string | null;
-  /** Join-8 — when `s7TxHash` was recorded (ms since epoch). Persisted. */
+  /** Join-8 — when `s7TxHash` was recorded (ms since epoch; from the durable record after a relaunch). */
   s7TxAt: number | null;
   /** Join-8 — the member chose "Explore free" at S7 (activate later from Node). Persisted. */
   validatorSkipped: boolean;
@@ -1021,7 +1026,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "s7TxHash", "s7TxAt", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.

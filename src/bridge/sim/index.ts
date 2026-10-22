@@ -451,6 +451,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("node.activationStatus");
         throw new Unavailable("node", "activationStatus");
       },
+      async activationForget(): Promise<never> {
+        assertSimAllowed("node.activationForget");
+        throw new Unavailable("node", "activationForget");
+      },
       // No real node to arm in the web preview → honest no-op (never a fabricated arm).
       async armMining() {
         assertSimAllowed("node.armMining");

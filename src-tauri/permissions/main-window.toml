@@ -254,6 +254,7 @@ commands.allow = [
   "node_proposer_identity",
   "node_register_validator",
   "validator_activation_status",
+  "validator_activation_forget",
   "node_arm_mining",
   "node_validator_earnings",
   "node_last_crash",

@@ -452,6 +452,9 @@ struct Prepared {
     /// The signer's address (lower-case hex) and the tx nonce, for the submitted-tx record.
     sender: String,
     nonce: u64,
+    /// What the tx calls (`to` + selector) when it has calldata, so its record can be found
+    /// again (Join-8: the Activate step after a restart).
+    call: Option<crate::submitted_log::CallMeta>,
     value: u128,
     to: Option<[u8; 20]>,
     origin: String,
@@ -814,6 +817,13 @@ impl SignatureCeremony {
                 raw: signed.raw,
                 sender,
                 nonce: fields.nonce,
+                call: match (parsed.to, parsed.data.get(..4)) {
+                    (Some(to), Some(sel)) => Some(crate::submitted_log::CallMeta {
+                        to: format!("0x{}", hex::encode(to)),
+                        selector: format!("0x{}", hex::encode(sel)),
+                    }),
+                    _ => None,
+                },
                 value: parsed.value,
                 to: parsed.to,
                 origin: pending.intent.origin.clone(),
@@ -836,15 +846,18 @@ impl SignatureCeremony {
             .lock_prepared()
             .remove(&key)
             .ok_or(CeremonyError::UnknownCeremony)?;
-        Self::send_signed(rpc, prepared, cfg, false)
+        self.send_signed(rpc, prepared, cfg)
     }
 
-    /// Send a signed tx the caller owns and poll its receipt. Signs nothing.
+    /// Send a signed tx the caller owns and poll its receipt. Signs nothing. The ONE place a
+    /// signed tx reaches `eth_sendRawTransaction` (both the one-call and the prepared path): the
+    /// submission is recorded durably first (#347's fsync'd [`crate::submitted_log`]), and with
+    /// no durable record nothing is sent.
     fn send_signed<T: crate::rpc::RpcTransport>(
+        &self,
         rpc: &crate::rpc::RpcClient<T>,
         prepared: Prepared,
         cfg: BroadcastConfig,
-        first_submission: bool,
     ) -> Result<BroadcastResult> {
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
@@ -857,6 +870,19 @@ impl SignatureCeremony {
             use sha3::{Digest, Keccak256};
             format!("0x{}", hex::encode(Keccak256::digest(&prepared.raw)))
         };
+        let first_submission = self
+            .submitted
+            .try_record_call(
+                &local_hash,
+                &prepared.sender,
+                prepared.nonce,
+                prepared.call.as_ref(),
+            )
+            .map_err(|e| {
+                CeremonyError::Broadcast(format!(
+                    "the submission could not be recorded durably, so nothing was sent: {e}"
+                ))
+            })?;
         let tx_hash = match rpc.send_raw_transaction(&prepared.raw) {
             Ok(h) => h,
             Err(e) if first_submission && is_definitive_send_error(&e) => {
@@ -914,16 +940,8 @@ impl SignatureCeremony {
     ) -> Result<BroadcastResult> {
         // Sign and send with the tx held locally the whole time: it never enters the shared
         // `prepared` map, so a concurrent reject / send_prepared on this id cannot take it.
-        let (_key, prepared, hash) = self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id)?;
-        let first_submission = self
-            .submitted
-            .try_record_for(&hash, &prepared.sender, prepared.nonce)
-            .map_err(|e| {
-                CeremonyError::Broadcast(format!(
-                    "the submission could not be recorded durably, so nothing was sent: {e}"
-                ))
-            })?;
-        Self::send_signed(rpc, prepared, cfg, first_submission)
+        let (_key, prepared, _hash) = self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id)?;
+        self.send_signed(rpc, prepared, cfg)
     }
 
     /// **Step 2' — reject.** Consume the ceremony with no signature. Unknown id
@@ -1498,7 +1516,7 @@ pub fn sign_send_prepared_sync(
                 poll_interval: std::time::Duration::from_secs(2),
             },
         )
-        .map_err(err_str)?;
+        .map_err(broadcast_err_str)?;
     notify_broadcast(&result);
     Ok(result)
 }

@@ -1243,7 +1243,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
             </div>
             {store.canForgetActivationTx(Date.now()) && (
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.onS7ForgetTx()} data-testid="s7-forget">
+                <button className="btn btn-ghost btn-sm" onClick={() => void store.onS7ForgetTx()} data-testid="s7-forget">
                   Forget this transaction
                 </button>
                 <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
@@ -1265,10 +1265,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
           <div>
             <button
               className="btn btn-ghost btn-sm"
-              onClick={() => {
-                store.setState({ s7TxHash: null, s7TxAt: null, activation: { ...a, tx: null } });
-                store.save();
-              }}
+              onClick={() => void store.onS7RetryAfterRevert()}
             >
               Try again
             </button>

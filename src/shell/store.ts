@@ -1525,8 +1525,15 @@ export class Store {
       // Forget the recorded tx only when THIS read observed its receipt and the bond activated.
       const recorded = this.state.s7TxHash;
       if (recorded && st.bondActivated === true && st.tx?.hash === recorded && st.tx.included === true) patch.s7TxHash = null;
+      // After a relaunch the hash comes back from the durable record (Rust, fsync'd before the
+      // send), unless this very read shows that send included and the bond activated.
+      const rec = st.recordedTx;
+      const settled = !!rec && st.bondActivated === true && st.tx?.hash === rec.hash && st.tx.included === true;
+      if (!recorded && rec && !settled) {
+        patch.s7TxHash = rec.hash;
+        patch.s7TxAt = rec.atMs ?? Date.now();
+      }
       this.setState(patch);
-      if (patch.s7TxHash === null) this.save();
     } catch (err) {
       if (gen !== this.activationGen) return;
       this.setState({ activationError: String((err as Error)?.message ?? err) });
@@ -1536,18 +1543,39 @@ export class Store {
   }
 
   /**
-   * Record a broadcast activation tx: persisted immediately (a quit right after must resume to
-   * Pending) and the read generation bumped, so any read in flight without it is discarded.
+   * Show a signed activation tx as Pending, and bump the read generation so any read in flight
+   * without it is discarded. In memory only: the durable record is written in Rust by the send
+   * itself (#347's fsync'd submitted-tx record) before the tx reaches the node.
    */
-  recordActivationTx(txHash: string): boolean {
+  recordActivationTx(txHash: string): void {
     this.activationGen++;
     this.activationInFlight = false; // the superseded read can no longer apply
-    const prev = { s7TxHash: this.state.s7TxHash, s7TxAt: this.state.s7TxAt };
     this.setState({ s7TxHash: txHash, s7TxAt: Date.now() });
-    if (this.saveNow()) return true;
-    // Not on disk: the caller must not send. Nothing is sent, so the member stays free to retry.
-    this.setState(prev);
-    return false;
+  }
+
+  /** Drop the shown activation tx and bump the read generation (a read in flight can't apply). */
+  private clearActivationTx(): void {
+    this.activationGen++;
+    this.activationInFlight = false;
+    const a = this.state.activation;
+    this.setState({ s7TxHash: null, s7TxAt: null, activation: a ? { ...a, tx: null } : a });
+  }
+
+  /**
+   * Mark the shown activation tx forgotten in the durable record (so a relaunch does not bring it
+   * back), then drop it. If the record can't be written the tx stays Pending (fail closed).
+   */
+  private async forgetActivationTx(): Promise<boolean> {
+    const hash = this.state.s7TxHash;
+    if (!hash) return false;
+    try {
+      await bridge.node.activationForget(hash);
+    } catch (err) {
+      this.toast("Could not forget the activation on this device — " + String((err as Error)?.message ?? err));
+      return false;
+    }
+    this.clearActivationTx();
+    return true;
   }
 
   /**
@@ -1566,12 +1594,17 @@ export class Store {
   }
 
   /** S7 — forget an activation tx the chain never saw (see `canForgetActivationTx`). */
-  onS7ForgetTx(): void {
+  async onS7ForgetTx(): Promise<void> {
     if (!this.canForgetActivationTx(Date.now())) return;
-    this.activationGen++;
-    this.setState({ s7TxHash: null, s7TxAt: null });
-    this.saveNow();
-    void this.refreshActivation();
+    if (await this.forgetActivationTx()) void this.refreshActivation();
+  }
+
+  /** S7 — "Try again" after the activation tx reverted on chain (its receipt says so). */
+  async onS7RetryAfterRevert(): Promise<void> {
+    const { s7TxHash, activation } = this.state;
+    const tx = activation?.tx;
+    if (!s7TxHash || tx?.hash !== s7TxHash || tx.included !== true || tx.success !== false) return;
+    await this.forgetActivationTx();
   }
 
   /** S6 → S7 for a member with a granted bond; anyone else enters the app (there is no bond). */
@@ -1607,6 +1640,8 @@ export class Store {
     return this.activateValidator({
       // Persist the signed tx's hash before it is sent (and before any receipt poll).
       onSigned: (txHash) => this.recordActivationTx(txHash),
+      // The backend refused the send before submission (e.g. no durable record): nothing was sent.
+      onNotSent: () => this.clearActivationTx(),
       // The re-read is a separate, later step.
       onResolved: async (approved) => {
         if (approved) await this.refreshActivation();
@@ -2099,27 +2134,14 @@ export class Store {
     this._saveT = setTimeout(() => this.writePersisted(), 400);
   }
 
-  /**
-   * Persist NOW, not on the debounced timer: for state that must survive an immediate quit.
-   * Returns true only when the write is on disk (read back equal); a caller that depends on it
-   * (S7's signed-tx hash) must stop on false.
-   */
-  saveNow(): boolean {
-    if (this._saveT) clearTimeout(this._saveT);
-    this._saveT = null;
-    return this.writePersisted();
-  }
-
-  private writePersisted(): boolean {
+  private writePersisted(): void {
     const s = this.state;
     const keep: Record<string, unknown> = {};
     for (const k of PERSIST_KEYS) keep[k] = s[k];
     try {
-      const json = JSON.stringify(keep);
-      localStorage.setItem(STORAGE_KEY, json);
-      return localStorage.getItem(STORAGE_KEY) === json;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));
     } catch {
-      return false;
+      /* ignore */
     }
   }
 
@@ -4528,7 +4550,11 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
-  async activateValidator(hooks?: { onSigned?: WalletReview["onSigned"]; onResolved?: WalletReview["onResolved"] }): Promise<boolean> {
+  async activateValidator(hooks?: {
+    onSigned?: WalletReview["onSigned"];
+    onNotSent?: WalletReview["onNotSent"];
+    onResolved?: WalletReview["onResolved"];
+  }): Promise<boolean> {
     // A recorded activation tx guards EVERY entry (S7 and Node): reconcile it with the chain
     // first; while it is unresolved, never build a second ceremony for the same bond.
     if (this.state.s7TxHash) {
@@ -4582,7 +4608,7 @@ export class Store {
     const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
     this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, hooks?.onResolved);
     if (hooks?.onSigned && this.state.walletReview) {
-      this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned } });
+      this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned, onNotSent: hooks.onNotSent } });
     }
     return true;
   }
@@ -5121,15 +5147,11 @@ export class Store {
     let result: Awaited<ReturnType<typeof bridge.signing.broadcast>>;
     try {
       if (r.onSigned) {
-        // Join-8: sign WITHOUT sending, record the hash (persisted synchronously), THEN send.
-        // The one-call broadcast polls for the receipt before it returns the hash, so a quit
-        // during that poll would lose it; here the hash is on disk before anything is sent.
+        // Join-8: sign WITHOUT sending and show the hash as Pending at once, THEN send. The send
+        // writes the durable record (Rust, fsync'd) before the tx reaches the node, so a quit at
+        // any point after it resumes to Pending; with no durable record nothing is sent.
         const prepared = await bridge.signing.prepare(r.view.id, ack);
-        if (!r.onSigned(prepared.txHash)) {
-          // Not saved means a quit could lose it, and a resume could offer a second activation.
-          // Stop here: the catch below discards the signed, unsent tx.
-          throw new Error("not submitted: this device could not save the signed transaction, so it was not sent; nothing was sent");
-        }
+        r.onSigned(prepared.txHash);
         result = await bridge.signing.sendPrepared(r.view.id);
         // The node must report the very tx that was signed and saved. A different hash is a
         // fault: report it (the catch below) rather than resolve on a hash nobody recorded.
@@ -5151,6 +5173,7 @@ export class Store {
       }
       this.setState({ walletReview: null });
       if (failure.kind === "not-sent") {
+        r.onNotSent?.(); // nothing reached the node
         // Contract v1.1 §1: a first-send NonceTooLow means the nonce is already used.
         this.toast(
           r.label +
