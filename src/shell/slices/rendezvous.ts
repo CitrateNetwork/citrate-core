@@ -3,7 +3,8 @@
 //
 // The latest relay-rendezvous views from the member daemon: the invitee's joins and the inviter's
 // invites. Fed by the `join://state` event (the Rust tick emits it at app start, every ≤ 30 s and
-// after a join) and by `refresh()` (a tick on demand). Views only; no secrets.
+// after a join) and by `refresh()` (a tick on demand). Views only; no secrets. When a join reaches
+// the group, the group list (groupsSlice) is reloaded so the row can say Joined.
 //
 // `lastKnown*` keeps, per join / invite, the last view that wasn't `relay_unreachable`, so the UI can
 // show "last known: Waiting… (time)" and never turn an unreachable relay into "expired" (§11).
@@ -53,36 +54,32 @@ export function applyViews(s: RendezvousState, v: RendezvousViews, at: number = 
   return { joins: v.joins, invites: v.invites, lastKnownJoin, lastKnownInvite, receivedAt: at };
 }
 
-const membershipListeners = new Set<() => void>();
-
-/** Run `fn` when a join reaches the group (so a surface can reload its group list). Returns an
- *  unsubscribe. */
-export function onJoinCompleted(fn: () => void): () => void {
-  membershipListeners.add(fn);
-  return () => {
-    membershipListeners.delete(fn);
-  };
-}
-
 /** Whether these views mean the group list is out of date (pure; exported for tests): a join newly
- *  reached `joined` or `taken`, or a `joined` group still isn't in `listed`. The row only says
- *  Joined once the group is listed (§11), so the list has to be reloaded for it to get there. */
-export function needsMembershipRefresh(prev: JoinViewDto[], next: JoinViewDto[], listed: string[]): boolean {
+ *  reached `joined` or `taken`, a `joined` group still isn't in `listed`, or a `taken` group isn't
+ *  listed and the last list read failed (so non-membership isn't confirmed). The row only says
+ *  Joined once the group is listed (§11), so the list has to be reloaded for it to get there. Every
+ *  join surface reads `groupsSlice` (the daemon's `listGroups`), the list this refresh fills. */
+export function needsMembershipRefresh(prev: JoinViewDto[], next: JoinViewDto[], listed: string[], lastListFailed = false): boolean {
   return next.some((j) => {
     if (j.state !== "joined" && j.state !== "taken") return false;
     const before = prev.find((p) => p.group === j.group);
     if (before?.state !== j.state) return true;
-    return j.state === "joined" && !listed.includes(j.group);
+    if (listed.includes(j.group)) return false;
+    return j.state === "joined" || lastListFailed;
   });
 }
+
+/** Whether the last group-list read this slice asked for failed. */
+let lastListFailed = false;
 
 export function ingest(v: RendezvousViews): void {
   const prev = rendezvousSlice.get().joins;
   rendezvousSlice.set((s) => applyViews(s, v));
   const listed = groupsSlice.get().groups.map((g) => g.id);
-  if (needsMembershipRefresh(prev, v.joins, listed)) {
-    void refreshGroups();
-    for (const fn of membershipListeners) fn();
+  if (needsMembershipRefresh(prev, v.joins, listed, lastListFailed)) {
+    void refreshGroups().then(() => {
+      lastListFailed = groupsSlice.get().error !== null;
+    });
   }
 }
 

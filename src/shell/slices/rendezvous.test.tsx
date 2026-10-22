@@ -6,7 +6,7 @@ import { join as joinPath } from "node:path";
 import { bridge } from "../../bridge";
 import type { Group, JoinViewDto } from "../../bridge/domains";
 import { groupsSlice, refreshGroups } from "./groups";
-import { cancelJoin, forgetJoin, ingest, onJoinCompleted, rendezvousSlice } from "./rendezvous";
+import { cancelJoin, forgetJoin, ingest, rendezvousSlice } from "./rendezvous";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JoinRequests } from "../../surfaces/JoinRequests";
 import { OnboardingJoins } from "../../onboarding/Onboarding";
@@ -30,21 +30,16 @@ afterEach(() => {
 });
 
 describe("join completion refreshes the group list", () => {
-  it("waiting → joined after the initial group-list load reloads the list and tells listeners", async () => {
+  it("waiting → joined after the initial group-list load reloads the list", async () => {
     const list = vi.spyOn(bridge.groups, "list").mockResolvedValueOnce([]).mockResolvedValue([group("g1")]);
-    const seen = vi.fn();
-    const off = onJoinCompleted(seen);
     await refreshGroups(); // Groups opened while the request waits
     ingest({ joins: [join("waiting")], invites: [] });
     await flush();
     expect(list).toHaveBeenCalledTimes(1);
-    expect(seen).not.toHaveBeenCalled();
     ingest({ joins: [join("joined")], invites: [] }); // the background tick's join://state
     await flush();
     expect(list).toHaveBeenCalledTimes(2);
     expect(groupsSlice.get().groups.map((g) => g.id)).toEqual(["g1"]);
-    expect(seen).toHaveBeenCalledTimes(1);
-    off();
   });
 
   it("a taken join (already a member) refreshes too", async () => {
@@ -79,14 +74,7 @@ describe("join completion refreshes the group list", () => {
     expect(groupsSlice.get().groups.map((g) => g.id)).toEqual(["g1"]);
   });
 
-  it("an unsubscribed listener isn't called", async () => {
-    vi.spyOn(bridge.groups, "list").mockResolvedValue([group("g1")]);
-    const seen = vi.fn();
-    onJoinCompleted(seen)();
-    ingest({ joins: [join("joined")], invites: [] });
-    await flush();
-    expect(seen).not.toHaveBeenCalled();
-  });
+
 
 });
 
