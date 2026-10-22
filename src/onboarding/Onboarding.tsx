@@ -285,19 +285,19 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
  */
 // GROW-S2 (Join 9) — a join through an invite keeps going during setup (the daemon persists it and
 // the tick resumes it). Its state shows here in the contract §11 words; nothing when there is none.
-function OnboardingJoins({ store, s }: { store: Store; s: AppState }) {
+export function OnboardingJoins({ store, s }: { store?: Store; s?: AppState }) {
   const rv = rendezvousSlice.use();
   useEffect(() => {
     void startRendezvousFeed();
     void refreshRendezvous();
     // The rows read s.myGroups, so a completed join reloads it (Joined only once listed, §11).
-    return onJoinCompleted(() => void store.refreshPeople());
+    return onJoinCompleted(() => void store?.refreshPeople());
   }, [store]);
   return (
     <JoinRequests
       joins={rv.joins}
       lastKnown={rv.lastKnownJoin}
-      listedGroups={s.myGroups.map((g) => g.id)}
+      listedGroups={(s?.myGroups ?? []).map((g) => g.id)}
       busy={rv.busy}
       receivedAt={rv.receivedAt}
       error={rv.error}

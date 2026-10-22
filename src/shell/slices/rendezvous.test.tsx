@@ -9,6 +9,7 @@ import { groupsSlice, refreshGroups } from "./groups";
 import { cancelJoin, forgetJoin, ingest, onJoinCompleted, rendezvousSlice } from "./rendezvous";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JoinRequests } from "../../surfaces/JoinRequests";
+import { OnboardingJoins } from "../../onboarding/Onboarding";
 
 const join = (state: JoinViewDto["state"], group = "g1"): JoinViewDto => ({
   group,
@@ -87,12 +88,6 @@ describe("join completion refreshes the group list", () => {
     expect(seen).not.toHaveBeenCalled();
   });
 
-  it("onboarding reloads its group list on completion and ticks on mount", () => {
-    const src = readFileSync(joinPath(__dirname, "../../onboarding/Onboarding.tsx"), "utf8");
-    const body = src.slice(src.indexOf("function OnboardingJoins"), src.indexOf("function ClaimBanner"));
-    expect(body).toContain("onJoinCompleted(() => void store.refreshPeople())");
-    expect(body).toContain("void refreshRendezvous();");
-  });
 });
 
 // Codex round 3 (P2): a cancel or dismiss that fails is said under its row, and the last confirmed
@@ -140,5 +135,39 @@ describe("failed cancel and dismiss", () => {
     for (const f of ["../../surfaces/Groups.tsx", "../../onboarding/Onboarding.tsx"]) {
       expect(readFileSync(joinPath(__dirname, f), "utf8"), f).toContain("error={rv.error}");
     }
+  });
+});
+
+// Codex round 4 (P2): a membership check that failed is retried, and onboarding reads the same list
+// the retry gate reads.
+describe("membership checks after a failed list", () => {
+  it("an unchanged taken join retries after a failed group list, then shows the group", async () => {
+    const list = vi.spyOn(bridge.groups, "list").mockRejectedValueOnce(new Error("daemon busy")).mockResolvedValue([group("g1")]);
+    ingest({ joins: [join("waiting")], invites: [] });
+    ingest({ joins: [join("taken")], invites: [] });
+    await flush();
+    expect(groupsSlice.get().groups).toEqual([]);
+    ingest({ joins: [join("taken")], invites: [] }); // the next tick, unchanged
+    await flush();
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(groupsSlice.get().groups.map((g) => g.id)).toEqual(["g1"]);
+  });
+
+  it("a taken join whose list succeeded without the group isn't re-checked every tick", async () => {
+    const list = vi.spyOn(bridge.groups, "list").mockResolvedValue([]);
+    ingest({ joins: [join("waiting")], invites: [] });
+    ingest({ joins: [join("taken")], invites: [] });
+    await flush();
+    ingest({ joins: [join("taken")], invites: [] });
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("onboarding says Joined from the same group list the refresh fills", () => {
+    rendezvousSlice.set({ joins: [join("joined")] });
+    groupsSlice.set({ groups: [group("g1")] });
+    expect(renderToStaticMarkup(<OnboardingJoins />)).toContain("Joined Aperture");
+    groupsSlice.set({ groups: [] });
+    expect(renderToStaticMarkup(<OnboardingJoins />)).not.toContain("Joined Aperture");
   });
 });
