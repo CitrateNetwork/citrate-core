@@ -472,7 +472,8 @@ impl SignatureCeremony {
     pub fn new() -> Self {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
-            submitted: std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::in_memory()),
+            // No record location: uncertain, so no send through it is ever "not sent" (C1-V6).
+            submitted: std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::unpersisted()),
             next_id: AtomicU64::new(1),
             abis: crate::abi_book::AbiBook::default(),
         }

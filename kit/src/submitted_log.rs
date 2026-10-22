@@ -115,7 +115,11 @@ pub struct SubmittedTxLog {
 
 impl SubmittedTxLog {
     /// A record that lives only as long as the process.
-    pub fn in_memory() -> Self {
+    ///
+    /// Test-only: a certain record that does not survive a restart is never valid in the app,
+    /// which uses [`Self::open`] or [`Self::unpersisted`].
+    #[cfg(test)]
+    pub(crate) fn in_memory() -> Self {
         SubmittedTxLog {
             path: None,
             inner: Mutex::new(Inner {
@@ -132,12 +136,15 @@ impl SubmittedTxLog {
     /// sent in an earlier run: it is uncertain from the start, and every send is a re-submission
     /// ("outcome unknown" on any error, never "not sent").
     pub fn unpersisted() -> Self {
-        let log = Self::in_memory();
-        log.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .uncertain = true;
-        log
+        SubmittedTxLog {
+            path: None,
+            inner: Mutex::new(Inner {
+                entries: VecDeque::new(),
+                evicted: Default::default(),
+                uncertain: true,
+            }),
+            sync_dir,
+        }
     }
 
     /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt

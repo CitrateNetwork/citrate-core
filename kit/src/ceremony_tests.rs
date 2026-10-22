@@ -1524,7 +1524,7 @@ fn b1_4_broadcast_node_error_surfaces_no_fake_hash() {
     // "insufficient funds". The ceremony surfaces that (proving the round-trip
     // reached the node) and returns NO fabricated tx hash (Rule 1).
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::new();
+    let c = certain_ceremony();
     let from = canonical_addr_lower();
     let view = c.request(tx_intent(
         &from,
@@ -2153,7 +2153,7 @@ fn a_transport_failure_on_send_is_an_unknown_outcome_with_the_locally_computed_h
 #[test]
 fn a_node_rejection_on_send_is_marked_not_submitted() {
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::new();
+    let c = certain_ceremony();
     let from = canonical_addr_lower();
     let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
     let mock = MockRpc::new(vec![
@@ -2245,7 +2245,7 @@ fn send_once(c: &SignatureCeremony, v: &CustodyVault, send: JsonValue) -> (Resul
 fn each_definitive_message_is_not_sent_on_first_send_and_unknown_on_resend() {
     for msg in DEFINITIVE {
         let (v, _p) = vault_with_wallet();
-        let c = SignatureCeremony::new();
+        let c = certain_ceremony();
         let (first, _) = send_once(&c, &v, node_error(msg));
         assert!(matches!(first, Err(CeremonyError::Broadcast(_))), "first send of {msg:?}: {first:?}");
         assert!(broadcast_err_str(first.expect_err("error")).starts_with("not submitted: "), "{msg}");
@@ -2283,14 +2283,14 @@ fn a_definitive_first_send_still_marks_the_bytes_as_sent() {
     // After a definitive refusal, the same bytes sent again are a re-submission: even a different
     // definitive message on the re-send is an unknown outcome.
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::new();
+    let c = certain_ceremony();
     let (first, h1) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
     assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
     let (again, h2) = send_once(&c, &v, node_error("Invalid hex"));
     assert_eq!(h1, h2, "same intent, nonce and gas price sign the same bytes");
     assert_eq!(submitted_outcome_unknown(&again), Some(h2));
     // A different ceremony object (e.g. a separate signer) has its own record.
-    let other = SignatureCeremony::new();
+    let other = certain_ceremony();
     let (fresh, _) = send_once(&other, &v, node_error("Invalid hex"));
     assert!(matches!(fresh, Err(CeremonyError::Broadcast(_))));
 }
@@ -2309,10 +2309,17 @@ impl RpcTransport for RateLimitedSend {
     }
 }
 
+/// A ceremony over a CERTAIN in-memory record (test-only): the classification tests need a record
+/// that can prove a first submission without a file. The app never builds one (C1-V6); it uses a
+/// persisted record or an uncertain one.
+fn certain_ceremony() -> SignatureCeremony {
+    SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::in_memory())
+}
+
 #[test]
 fn http_429_is_definitive_on_first_send_only() {
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::new();
+    let c = certain_ceremony();
     let run = |c: &SignatureCeremony| {
         let from = canonical_addr_lower();
         let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
@@ -2392,8 +2399,8 @@ fn a_definitive_phrase_that_is_not_the_whole_or_leading_message_is_not_definitiv
 #[test]
 fn two_ceremonies_sharing_one_record_see_each_others_submissions() {
     let (v, _p) = vault_with_wallet();
-    let a = SignatureCeremony::new();
-    let mut b = SignatureCeremony::new();
+    let a = certain_ceremony();
+    let mut b = certain_ceremony();
     b.submitted = a.submitted_log();
     let (first, _) = send_once(&a, &v, node_error("Failed to submit transaction: Full"));
     assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
@@ -2425,7 +2432,7 @@ fn send_at(c: &SignatureCeremony, v: &CustodyVault, nonce_hex: &str, send: JsonV
 #[test]
 fn after_eviction_a_new_tx_at_a_higher_nonce_is_still_a_first_send() {
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::new();
+    let c = certain_ceremony();
     let me = canonical_addr_lower();
     // The wallet's own nonce 0 is sent, then pushed out of the window by later nonces.
     let (first, _) = send_at(&c, &v, "0x0", node_error("Failed to submit transaction: Full"));
@@ -2444,7 +2451,7 @@ fn after_eviction_a_new_tx_at_a_higher_nonce_is_still_a_first_send() {
 #[test]
 fn eviction_of_another_senders_history_does_not_affect_this_wallet() {
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::new();
+    let c = certain_ceremony();
     let other = "0x00000000000000000000000000000000000000cc";
     for n in 0..=(crate::submitted_log::CAPACITY as u64) {
         c.submitted_log().try_record_for(&format!("0x{n:064x}"), other, n).expect("record");
