@@ -11,8 +11,11 @@
 // owned by DGX); until then `membershipPriceLabel()` returns null and callers show the link.
 // =====================================================================
 
-/** The public membership page, which states the current price. */
-export const MEMBERSHIP_PRICING_URL = "https://membership.citrate.ai";
+/**
+ * The public membership page on citrate.ai, which states the current price. Not
+ * membership.citrate.ai: that host describes the membership service and shows no price (#349 review).
+ */
+export const MEMBERSHIP_PRICING_URL = "https://citrate.ai/membership";
 
 /** The link text every surface shows in place of a price. */
 export const SEE_PRICING = "See membership pricing";
