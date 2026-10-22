@@ -977,18 +977,21 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         )}
         {/* C1-V2: after a full exit (or a slash) the registry stake reads 0, but validatorInfo.status
             says Exiting / Slashed: show that word, and no "Stake my bond". */}
-        {s.node === "synced" && !(s.bondedStake > 0) && (s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
+        {/* #348/#349 review: an already-activated bond (MemberBond.activated() = true) with no
+            registered stake has exited or been slashed; it can't activate again, so it gets the
+            status card (word or "—"), never "Stake my bond". */}
+        {s.node === "synced" && !(s.bondedStake > 0) && (s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3 || s.bondActivated === true) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant)}</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated) ?? (s.validatorActivation ? "— · registry state inconsistent" : "— · registry not read yet")}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 ValidatorRegistry.validatorInfo status for this node&rsquo;s key; no registered stake
               </div>
             </div>
           </div>
         )}
-        {s.node === "synced" && !(s.bondedStake > 0) && !(s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
+        {s.node === "synced" && !(s.bondedStake > 0) && !(s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3 || s.bondActivated === true) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>

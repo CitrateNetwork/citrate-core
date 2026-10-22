@@ -1579,6 +1579,9 @@ export class Store {
     if (s.bondedStake >= 32000) return; // already a bonded validator — nothing to do
     if (!this.walletIsLinked()) return; // S4: the EOA must be the member's wallet_address
     if (!s.hasGrant) return; // the grant must have deployed + funded the bond clone (settled S5)
+    // #348/#349 review: a bond that already activated (then exited or was slashed) never re-opens
+    // activation, and neither does an Exiting / Slashed key.
+    if (s.bondActivated === true || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) return;
 
     // STEP 1 — ARM the producer so the node mints `proposer.key` (the validator
     // identity activation needs). The node runs as a plain follower and NEVER mints
@@ -3399,7 +3402,7 @@ export class Store {
         const a = this.state.validatorActivation;
         result = JSON.stringify({
           ...(await bridge.node.status()),
-          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant),
+          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated),
           validatorActivation: a,
         });
       } catch (e) {

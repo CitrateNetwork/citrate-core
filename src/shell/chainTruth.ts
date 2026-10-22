@@ -289,11 +289,14 @@ export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | `R
  * activation has not been read, or the registry reads are inconsistent: the caller shows "—".
  * LiquidStakingPool self-stake is not an input: it never makes a validator.
  */
-export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean): ValidatorWord | null {
+export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null): ValidatorWord | null {
   // C1-V2: the registry status comes first. A full exit moves the bonded stake to escrow, so
   // `stakeOf` reads 0 while the status is Exiting (or Slashed); a stake check first would hide it.
   if (activation?.status === 2) return "Exiting";
   if (activation?.status === 3) return "Slashed";
+  // #348/#349 review: an activated bond with no registered stake (and no Exiting / Slashed status
+  // read) has left the registry; it is not "Bond locked", and its state can't be stated: "—".
+  if (!(stakeSalt > 0) && bondActivated === true) return null;
   if (!(stakeSalt > 0)) return hasGrant ? "Bond locked · not staked" : "Not a validator";
   if (!activation) return null;
   if (activation.actEpoch > activation.currentEpoch) return `Registered · active from epoch ${activation.actEpoch}`;

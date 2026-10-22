@@ -122,7 +122,7 @@ export function Node({ store, s }: SurfaceProps) {
   const isRegisteredValidator = s.bondedStake > 0;
   // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
   // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
-  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant);
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated);
   const pWord = producingWord(s.producers, s.validatorPubkey);
   const producingStr = !isRegisteredValidator
     ? "— · not a registered validator"
@@ -334,7 +334,7 @@ export function Node({ store, s }: SurfaceProps) {
                     isn't active yet (pending, or isActive unread) is already staked: no
                     activation is offered for it (#348 review). */}
                 {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
-                {TAURI && s.node === "synced" && !(s.bondedStake > 0) && vWord !== "Exiting" && vWord !== "Slashed" && (
+                {TAURI && s.node === "synced" && !(s.bondedStake > 0) && s.bondActivated !== true && vWord !== "Exiting" && vWord !== "Slashed" && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
