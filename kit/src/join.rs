@@ -15,7 +15,8 @@
 //!    to a server, so the service never holds anything that admits a member.
 //!
 //! The invitee resolves the code (`GET /api/join/<code>`), verifies the Ed25519 resolve signature
-//! against a **pinned set of key ids** ([`JOIN_PINNED_KIDS`]), checks every response field against
+//! against **pinned key material** ([`JOIN_PINNED_KEYS`]: key id + public key), checks every
+//! response field against
 //! the signed claims (including `envHash`), and opens the envelope with `K` from the link.
 //!
 //! ## Envelope wire format (version 1)
@@ -30,7 +31,7 @@
 //!
 //! Data sources (Rule 7): the citrate.ai join service (citrate-landing `src/app/api/join/*`, rows
 //! in the landing Postgres) for mint / attach / resolve / revoke / list; `GET /api/join/jwks` for the
-//! verify keys, accepted only under a pinned kid; the relay invite comes from the caller
+//! verify keys, accepted only when kid and key material equal a pin; the relay invite comes from the caller
 //! (`group_invite_create` in citrate-core).
 
 use std::collections::HashMap;
@@ -63,14 +64,68 @@ pub const JOIN_SHARE_BASE: &str = "https://citrate.ai/join";
 /// The `iss` of a resolve signature (citrate-landing `JOIN_ISSUER`).
 pub const JOIN_ISSUER: &str = "https://citrate.ai/join";
 
-/// The resolve-signature key ids this release trusts: the CURRENT kid and the NEXT kid.
+/// The resolve-signature keys this release trusts, as `(kid, x)`: the key id and the Ed25519 public
+/// key (unpadded base64url, as in the JWK). The contract names the CURRENT key `join-1` and the
+/// NEXT key `join-2`.
 ///
-/// ROTATION NOTE. A fetched JWKS key is used only when its `kid` is in this set, so a compromised
-/// or swapped JWKS can't introduce a new signer. To rotate without breaking shipped apps: the
-/// service publishes `join-2` as `JOIN_SIGNING_JWK_NEXT`, a release ships with
-/// `["join-2", "join-3"]` once `join-2` is current, and the service only signs with a kid every
-/// supported release pins. Never sign with a kid that is not in the oldest supported release's set.
-pub const JOIN_PINNED_KIDS: &[&str] = &["join-1", "join-2"];
+/// A fetched JWKS key is used only when BOTH its `kid` and its public key equal a pinned entry, and
+/// the signature is checked with the pinned bytes. A JWKS that serves different material under a
+/// pinned kid, an unknown kid, or a successor this release doesn't pin is refused, so the fetched
+/// set can never introduce a signer.
+///
+/// EMPTY until the service's production keys exist: `GET /api/join/jwks` answers 503 "not
+/// configured" (GROW-S1 task 5). Until the public keys are pinned here, every resolve fails closed
+/// with [`JoinError::Signature`] before a resolve is spent.
+///
+/// ROTATION. The service publishes the next key as `JOIN_SIGNING_JWK_NEXT`; a release pins it
+/// (kid + key) before the service promotes it; a later release drops the retired key. The service
+/// never signs with a key that the oldest supported release doesn't pin.
+pub const JOIN_PINNED_KEYS: &[(&str, &str)] = &[];
+
+/// One pinned resolve-signing key: its key id and its Ed25519 public key bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedKey {
+    pub kid: String,
+    pub x: [u8; 32],
+}
+
+impl PinnedKey {
+    /// A pin from a kid and an unpadded base64url Ed25519 public key. `None` if the key isn't
+    /// 32 bytes of base64url.
+    pub fn new(kid: &str, x_b64: &str) -> Option<Self> {
+        let bytes = URL_SAFE_NO_PAD.decode(x_b64).ok()?;
+        let x: [u8; 32] = bytes.try_into().ok()?;
+        if kid.is_empty() {
+            return None;
+        }
+        Some(PinnedKey {
+            kid: kid.to_string(),
+            x,
+        })
+    }
+
+    /// The release's pins ([`JOIN_PINNED_KEYS`]). A malformed entry is dropped (never trusted).
+    pub fn production() -> Vec<PinnedKey> {
+        JOIN_PINNED_KEYS
+            .iter()
+            .filter_map(|(kid, x)| PinnedKey::new(kid, x))
+            .collect()
+    }
+
+    /// Whether a fetched JWK is this pinned key: same kid, an Ed25519 OKP key, EdDSA if an alg is
+    /// given, and the same public key bytes.
+    pub fn matches(&self, jwk: &Jwk) -> bool {
+        jwk.kid.as_deref() == Some(self.kid.as_str())
+            && jwk.kty == "OKP"
+            && jwk.crv.as_deref() == Some("Ed25519")
+            && jwk.alg.as_deref().is_none_or(|a| a == "EdDSA")
+            && jwk
+                .x
+                .as_deref()
+                .and_then(|x| URL_SAFE_NO_PAD.decode(x).ok())
+                .is_some_and(|b| b.as_slice() == self.x)
+    }
+}
 
 /// The envelope format version this client seals and opens (`envVersion`).
 pub const ENVELOPE_VERSION: u32 = 1;
@@ -523,21 +578,43 @@ fn decode_envelope(env: &str) -> Result<Vec<u8>, JoinError> {
     Ok(bytes)
 }
 
-/// Open an envelope with `K`. Fails (`Envelope`) for a wrong key, a wrong `kind` or `code`, or any
-/// changed byte.
+/// The envelope versions this client can open. A resolve whose SIGNED `envVersion` is not listed
+/// is refused (never opened as another version). Adding a version means adding its derivation here
+/// and in [`open_versioned`].
+pub const SUPPORTED_ENVELOPE_VERSIONS: &[u32] = &[ENVELOPE_VERSION];
+
+/// Open an envelope with `K` as the current version ([`ENVELOPE_VERSION`]). Fails (`Envelope`) for a
+/// wrong key, a wrong `kind` or `code`, or any changed byte. A resolved envelope is opened with
+/// [`open_versioned`] and its signed `envVersion` instead.
 pub fn open(
     key: &LinkKey,
     kind: JoinKind,
     code: &str,
     env: &str,
 ) -> Result<InvitePayload, JoinError> {
+    open_versioned(key, kind, code, env, ENVELOPE_VERSION)
+}
+
+/// Open an envelope under the given `env_version`: the version taken from the verified (signed)
+/// resolve claims, which is also the version bound into the AAD. An unsupported version is refused
+/// (`Envelope`) before any decryption is attempted.
+pub fn open_versioned(
+    key: &LinkKey,
+    kind: JoinKind,
+    code: &str,
+    env: &str,
+    env_version: u32,
+) -> Result<InvitePayload, JoinError> {
+    if !SUPPORTED_ENVELOPE_VERSIONS.contains(&env_version) {
+        return Err(JoinError::Envelope);
+    }
     check_code(code)?;
     let bytes = decode_envelope(env)?;
     let (nonce, ct) = bytes.split_at(NONCE_LEN);
     let aead_key = derive_aead_key(key)?;
     let cipher =
         XChaCha20Poly1305::new_from_slice(&aead_key[..]).map_err(|_| JoinError::Envelope)?;
-    let aad = aad_bytes(kind, code, ENVELOPE_VERSION)?;
+    let aad = aad_bytes(kind, code, env_version)?;
     let plaintext = Zeroizing::new(
         cipher
             .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: &aad })
@@ -643,16 +720,20 @@ pub struct VerifiedInvite {
     pub exp: u64,
     /// The ISO expiry string as sent (consistent with `exp`).
     pub exp_iso: String,
+    /// Direct only: the SIGNED envelope version. Open the envelope with exactly this version
+    /// ([`open_versioned`]); it may be one this client doesn't support.
+    pub env_version: Option<u32>,
 }
 
 /// Verify a resolve response for `expected_code` against the fetched JWKS, accepting a key only
-/// under one of `pinned_kids`. Every body field must equal its signed claim; a direct invite's
-/// `env` must hash to the signed `envHash`; a referral must carry no envelope.
+/// when its kid and its key material equal one of `pinned`. Every body field must equal its signed
+/// claim; a direct invite's `env` must hash to the signed `envHash`; a referral must carry no
+/// envelope.
 pub fn verify_resolve(
     body: &ResolveBody,
     expected_code: &str,
     jwks: &Jwks,
-    pinned_kids: &[&str],
+    pinned: &[PinnedKey],
 ) -> Result<VerifiedInvite, JoinError> {
     check_code(expected_code)?;
     let header = jsonwebtoken::decode_header(&body.sig).map_err(|_| JoinError::Signature)?;
@@ -660,25 +741,23 @@ pub fn verify_resolve(
         return Err(JoinError::Signature);
     }
     let kid = header.kid.as_deref().ok_or(JoinError::Signature)?;
-    if !pinned_kids.contains(&kid) {
-        return Err(JoinError::Signature);
-    }
-    let jwk = jwks
+    let pin = pinned
+        .iter()
+        .find(|p| p.kid == kid)
+        .ok_or(JoinError::Signature)?;
+    // The served set must carry this kid, and every key it serves under the kid must be the pinned
+    // key: other material under a pinned name means the set can't be trusted.
+    let mut served = jwks
         .keys
         .iter()
-        .find(|k| k.kid.as_deref() == Some(kid))
-        .ok_or(JoinError::Signature)?;
-    if jwk.kty != "OKP"
-        || jwk.crv.as_deref() != Some("Ed25519")
-        || jwk.alg.as_deref().is_some_and(|a| a != "EdDSA")
-    {
+        .filter(|k| k.kid.as_deref() == Some(kid))
+        .peekable();
+    if served.peek().is_none() || !served.all(|k| pin.matches(k)) {
         return Err(JoinError::Signature);
     }
-    let x = jwk.x.as_deref().ok_or(JoinError::Signature)?;
-    if URL_SAFE_NO_PAD.decode(x).map(|b| b.len()).ok() != Some(32) {
-        return Err(JoinError::Signature);
-    }
-    let dkey = DecodingKey::from_ed_components(x).map_err(|_| JoinError::Signature)?;
+    // Verify with the pinned bytes, never the fetched ones.
+    let dkey = DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(pin.x))
+        .map_err(|_| JoinError::Signature)?;
     let mut val = Validation::new(Algorithm::EdDSA);
     val.set_issuer(&[JOIN_ISSUER]);
     val.sub = Some(expected_code.to_string());
@@ -715,7 +794,9 @@ pub fn verify_resolve(
     match body.kind {
         JoinKind::Direct => {
             let env = body.env.as_deref().ok_or(JoinError::Signature)?;
-            if body.env_version != Some(ENVELOPE_VERSION) {
+            // The version must be present and signed (body == claim is checked above). Whether this
+            // client can open it is decided at open time, not here.
+            if claims.env_version.is_none() {
                 return Err(JoinError::Signature);
             }
             let h = envelope_hash(env).map_err(|_| JoinError::Signature)?;
@@ -738,6 +819,7 @@ pub fn verify_resolve(
         inviter_verified: body.inviter_verified,
         exp: claims.exp,
         exp_iso: body.exp.clone(),
+        env_version: claims.env_version,
     })
 }
 
@@ -1003,14 +1085,14 @@ impl HttpClient for JoinHttp {
 #[derive(Debug, Clone)]
 pub struct JoinConfig {
     pub(crate) api_base: String,
-    pub(crate) pinned_kids: Vec<&'static str>,
+    pub(crate) pinned: Vec<PinnedKey>,
 }
 
 impl JoinConfig {
     pub fn production() -> Self {
         JoinConfig {
             api_base: JOIN_API_BASE.to_string(),
-            pinned_kids: JOIN_PINNED_KIDS.to_vec(),
+            pinned: PinnedKey::production(),
         }
     }
 
@@ -1018,7 +1100,7 @@ impl JoinConfig {
     pub(crate) fn for_tests(api_base: &str) -> Self {
         JoinConfig {
             api_base: api_base.trim_end_matches('/').to_string(),
-            pinned_kids: JOIN_PINNED_KIDS.to_vec(),
+            pinned: tests::test_pins(),
         }
     }
 }
@@ -1200,22 +1282,24 @@ impl JoinClient {
         })
     }
 
-    /// Fetch the published resolve keys, keeping only pinned kids.
+    /// Fetch the published resolve keys, keeping only keys that equal a pin (kid and material).
     fn fetch_jwks(&self) -> Result<Jwks, JoinError> {
         let url = format!("{}/jwks", self.cfg.api_base);
         let body = self.http.get(&url, None).map_err(map_http_error)?;
         let mut jwks: Jwks = serde_json::from_str(&body).map_err(|_| JoinError::BadResponse)?;
-        jwks.keys.retain(|k| {
-            k.kid
-                .as_deref()
-                .is_some_and(|kid| self.cfg.pinned_kids.contains(&kid))
-                && k.kty == "OKP"
-                && k.crv.as_deref() == Some("Ed25519")
-                && k.x
-                    .as_deref()
-                    .and_then(|x| URL_SAFE_NO_PAD.decode(x).ok())
-                    .is_some_and(|b| b.len() == 32)
+        // Other material under a pinned kid (alone or next to the real key) makes the whole set
+        // untrustworthy: refuse it before a resolve is spent.
+        let conflicting = jwks.keys.iter().any(|k| {
+            self.cfg
+                .pinned
+                .iter()
+                .any(|p| k.kid.as_deref() == Some(p.kid.as_str()) && !p.matches(k))
         });
+        if conflicting {
+            return Err(JoinError::Signature);
+        }
+        jwks.keys
+            .retain(|k| self.cfg.pinned.iter().any(|p| p.matches(k)));
         // No usable pinned key: nothing could verify a resolve, so don't spend one.
         if jwks.keys.is_empty() {
             return Err(JoinError::Signature);
@@ -1254,13 +1338,15 @@ impl JoinClient {
         let url = format!("{}/{code}", self.cfg.api_base);
         let resp = self.http.get(&url, None).map_err(map_http_error)?;
         let body: ResolveBody = serde_json::from_str(&resp).map_err(|_| JoinError::BadResponse)?;
-        let v = verify_resolve(&body, code, &jwks, &self.cfg.pinned_kids)?;
+        let v = verify_resolve(&body, code, &jwks, &self.cfg.pinned)?;
         let mut actionable = false;
         let mut key_missing = false;
         if v.kind == JoinKind::Direct {
             match (key, body.env.as_deref()) {
                 (Some(k), Some(env)) => {
-                    let payload = open(k, JoinKind::Direct, code, env)?;
+                    // The signed version, which is also the version bound in the AAD.
+                    let ver = v.env_version.ok_or(JoinError::Signature)?;
+                    let payload = open_versioned(k, JoinKind::Direct, code, env, ver)?;
                     self.opened().insert(
                         code.to_string(),
                         Opened {
