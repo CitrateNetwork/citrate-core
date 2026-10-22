@@ -1,0 +1,9 @@
+# gitleaks config for the merge-gate secret-scan (merge-gate.yml picks this file up).
+# The default rules apply; the only exception is the GROW-S2 §13 public derivation
+# vectors, which are fixed published test inputs and outputs, not credentials.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "GROW-S2 §13 public rendezvous test vectors (see the file's provenance field)"
+paths = ['''^kit/src/fixtures/rendezvous-v1\.json$''']
