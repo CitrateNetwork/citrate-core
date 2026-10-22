@@ -1954,6 +1954,7 @@ fn k6_compiled_sources_stay_in_the_scanned_trees() {
         }
     }
     let kit_roots = vec![kit.join("src")];
+    let manifest = ws.join("Cargo.toml").canonicalize().ok();
     let mut data_roots = app_roots[1..].to_vec();
     data_roots.push(ws.to_path_buf());
     let mut files = vec![own.clone()];
@@ -1984,6 +1985,11 @@ fn k6_compiled_sources_stay_in_the_scanned_trees() {
             } else {
                 &data_roots
             };
+            // clippy records the workspace manifest it read for lint settings (`Cargo.toml`,
+            // relative to the workspace root). It is not Rust, so it cannot be compiled in.
+            if ws.join(s).canonicalize().ok() == manifest {
+                continue;
+            }
             if !k6_dep_in(s, ws, roots) {
                 bad.push(format!("{}: {s}", f.display()));
             }
