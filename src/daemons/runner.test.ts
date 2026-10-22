@@ -431,3 +431,79 @@ describe("an open-time refusal through the real turn charges nothing", () => {
     }
   });
 });
+
+describe("a stop while the session open is still pending (Codex P2, #376 at 796ffc7)", () => {
+  const ctx = () => ({ height: 1, peers: 0, finalityAge: 0, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" });
+  /** A sidecar whose session open waits until the test settles it. */
+  function pendingOpenSidecar() {
+    let settle!: { resolve: (id: string) => void; reject: (e: Error) => void };
+    const opening = new Promise<string>((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    return {
+      settle: () => settle,
+      sidecar: {
+        openUnattended: vi.fn(() => opening),
+        // A send that never answers: if one happens, the run's inference started.
+        send: vi.fn(() => new Promise<undefined>(() => undefined)),
+        events: vi.fn(async () => ({ events: [], lastSeq: 0, busy: false })),
+        toolResult: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      },
+    };
+  }
+  async function runAndStopDuringOpen(how: "stop" | "pause", end: (s: { resolve: (id: string) => void; reject: (e: Error) => void }) => void) {
+    const { runDaemonTurn } = await import("./turn");
+    const api = fakeApi([[claim({ allowedTools: [] })]]);
+    const { sidecar, settle } = pendingOpenSidecar();
+    const turnDeps = { providerKind: "sidecar", systemPrompt: () => "You are Hermes. ".repeat(200), context: ctx, sidecar, handleTool: async () => "ok" };
+    const r = createDaemonRunner(deps(api, (c, signal, meter) => runDaemonTurn(c, signal, meter, turnDeps)));
+    const ticked = r.tick();
+    await vi.waitFor(() => expect(sidecar.openUnattended).toHaveBeenCalledTimes(1));
+    if (how === "stop") r.stopRunning();
+    else await r.pause("d1");
+    await vi.waitFor(() => expect(api.finished).toHaveLength(1));
+    end(settle());
+    await ticked;
+    // Let a late open's continuation run.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await new Promise((res) => setTimeout(res, 10));
+    return { api, sidecar };
+  }
+
+  it("charges 0 tokens when the open is refused after the stop", async () => {
+    const { api } = await runAndStopDuringOpen("stop", (s) => s.reject(new Error("Not started: the tools Hermes offers changed since this run was claimed")));
+    expect(api.finished[0].outcome).toBe("stopped");
+    expect(api.finished[0].tokens).toBe(0);
+  });
+
+  it("charges 0 tokens when the member pauses the daemon during the open", async () => {
+    const { api } = await runAndStopDuringOpen("pause", (s) => s.reject(new Error("Not started: Hermes is restarting")));
+    expect(api.finished[0].outcome).toBe("stopped");
+    expect(api.finished[0].tokens).toBe(0);
+  });
+
+  it("an open that succeeds after the stop sends nothing and is closed", async () => {
+    const { api, sidecar } = await runAndStopDuringOpen("stop", (s) => s.resolve("s-late"));
+    expect(api.finished[0].tokens).toBe(0);
+    expect(sidecar.send).not.toHaveBeenCalled();
+    expect(sidecar.close).toHaveBeenCalledWith("s-late");
+  });
+
+  it("a run whose open succeeded is still charged (the meter starts at the open)", async () => {
+    const { runDaemonTurn } = await import("./turn");
+    const api = fakeApi([[claim({ allowedTools: [] })]]);
+    const { sidecar, settle } = pendingOpenSidecar();
+    const turnDeps = { providerKind: "sidecar", systemPrompt: () => "You are Hermes. ".repeat(200), context: ctx, sidecar, handleTool: async () => "ok" };
+    const r = createDaemonRunner(deps(api, (c, signal, meter) => runDaemonTurn(c, signal, meter, turnDeps)));
+    const ticked = r.tick();
+    await vi.waitFor(() => expect(sidecar.openUnattended).toHaveBeenCalledTimes(1));
+    settle().resolve("s1");
+    await vi.waitFor(() => expect(sidecar.send).toHaveBeenCalledTimes(1));
+    r.stopRunning();
+    await ticked;
+    expect(api.finished[0].outcome).toBe("stopped");
+    expect(api.finished[0].tokens).toBeGreaterThan(0);
+  });
+});
