@@ -265,7 +265,8 @@ pub(crate) fn redeem_token_wire(token: &str) -> Result<WireToken, String> {
 pub(crate) struct WireToken(String);
 
 impl WireToken {
-    /// The hex the daemon IPC carries.
+    /// The hex the daemon IPC carries (tests read it; production only moves it into the request).
+    #[cfg(test)]
     pub(crate) fn as_hex(&self) -> &str {
         &self.0
     }
@@ -299,8 +300,7 @@ pub(crate) fn redeem_request(link: &str) -> Result<RedeemRequest, String> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Invited group".to_string());
     let token_hash = blake3_token_hash(&token);
-    // RED stub: the old behaviour, the raw link token.
-    let token = WireToken(token);
+    let token = redeem_token_wire(&token)?;
     Ok(RedeemRequest {
         group,
         token,
