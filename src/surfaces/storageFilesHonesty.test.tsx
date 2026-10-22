@@ -48,7 +48,7 @@ const PRIVACY_PROMISE = /nothing (is sent|leaves)|until you (pin or )?share|priv
 describe("StorageFiles never promises a file stays private (IPFS content is retrievable by CID)", () => {
   it("says that anyone with a file's CID can fetch it from this node", () => {
     expect(html).toContain("anyone with its CID can fetch it from this node while the store is running");
-    expect(html).toContain("don't add files you need to keep private");
+    expect(html).toContain("do not add files you need to keep private");
   });
 
   it("makes no privacy promise", () => {

@@ -24,6 +24,12 @@ exported together from `src/surfaces/storageParts.ts`:
 
 Until Node › Storage lands, all four are tabs of the Files hub.
 
+**Files are not private.** The local kubo node is a normal node on the public IPFS network
+(`ipfs daemon`, `lowpower` profile). Added files are stored unencrypted, and any peer that has a
+file's CID can fetch it from this node while the store runs; there is no sharing gate. The Files
+surface says so at the drop zone and asks members not to add files they need to keep private
+(`storageFilesHonesty.test.tsx` refuses any privacy promise on the storage surfaces or here).
+
 ## 2. Pins: "Local pin · no bond"
 
 IPFSIncentivesV3 is deployed but not funded and holds no pins, and the on-chain bond (S2.2) is

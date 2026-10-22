@@ -140,7 +140,7 @@ export function StorageFiles({ store }: SurfaceProps) {
           <button className="btn btn-secondary btn-sm" onClick={() => void browse()} disabled={down}>Browse…</button>
         </span>
         <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6, maxWidth: 420 }}>
-          each file gets a CID in your local IPFS store — pinning keeps it on this node; nothing is sent until you share it
+          each file gets a CID in your local IPFS store, a node on the public IPFS network: files are not encrypted, and anyone with its CID can fetch it from this node while the store is running, so do not add files you need to keep private. Pinning keeps it on this node
         </span>
       </div>
 
