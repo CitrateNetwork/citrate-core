@@ -24,8 +24,14 @@ export interface RendezvousState {
   receivedAt: number;
   /** A cancel / forget / retry in flight, by group or lookup. */
   busy: string | null;
-  /** The last action error (never a join state), or null. */
-  error: string | null;
+  /** The last cancel / forget that failed, or null. */
+  error: JoinActionError | null;
+}
+
+/** A failed invitee action on one join: which group, and the words to show under its row. */
+export interface JoinActionError {
+  group: string;
+  text: string;
 }
 
 export const rendezvousSlice = createSlice<RendezvousState>({
@@ -117,7 +123,7 @@ export async function cancelJoin(group: string): Promise<void> {
   try {
     upsertJoin(await bridge.rendezvous.cancel(group));
   } catch (e) {
-    rendezvousSlice.set({ error: e instanceof Error ? e.message : String(e) });
+    rendezvousSlice.set({ error: { group, text: e instanceof Error ? e.message : String(e) } });
   } finally {
     rendezvousSlice.set({ busy: null });
   }
@@ -129,7 +135,7 @@ export async function forgetJoin(group: string): Promise<void> {
     await bridge.rendezvous.forget(group);
     rendezvousSlice.set((s) => ({ joins: s.joins.filter((j) => j.group !== group) }));
   } catch (e) {
-    rendezvousSlice.set({ error: e instanceof Error ? e.message : String(e) });
+    rendezvousSlice.set({ error: { group, text: e instanceof Error ? e.message : String(e) } });
   } finally {
     rendezvousSlice.set({ busy: null });
   }

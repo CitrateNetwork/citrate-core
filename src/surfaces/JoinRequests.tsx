@@ -3,6 +3,7 @@
 // rendezvous slice (member daemon views, Rule 7). Nothing here invents a state.
 import { useEffect, useState } from "react";
 import type { InviteViewDto, JoinViewDto } from "../bridge/domains";
+import type { JoinActionError } from "../shell/slices/rendezvous";
 import { inviteCopy, joinCopy, type StateCopy } from "./joinCopy";
 
 export const fmtDate = (ms: number): string =>
@@ -41,6 +42,8 @@ export interface JoinRequestsProps {
   onRetry: () => void;
   onCancel: (group: string) => void;
   onForget: (group: string) => void;
+  /** The last failed cancel / forget (the slice's `error`). */
+  error?: JoinActionError | null;
 }
 
 /** One row per join the daemon tracks. Renders nothing when there are none. */

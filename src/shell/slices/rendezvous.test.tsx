@@ -6,7 +6,9 @@ import { join as joinPath } from "node:path";
 import { bridge } from "../../bridge";
 import type { Group, JoinViewDto } from "../../bridge/domains";
 import { groupsSlice, refreshGroups } from "./groups";
-import { ingest, onJoinCompleted, rendezvousSlice } from "./rendezvous";
+import { cancelJoin, forgetJoin, ingest, onJoinCompleted, rendezvousSlice } from "./rendezvous";
+import { renderToStaticMarkup } from "react-dom/server";
+import { JoinRequests } from "../../surfaces/JoinRequests";
 
 const join = (state: JoinViewDto["state"], group = "g1"): JoinViewDto => ({
   group,
@@ -23,7 +25,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 afterEach(() => {
   vi.restoreAllMocks();
   groupsSlice.set({ groups: [], error: null });
-  rendezvousSlice.set({ joins: [], invites: [], lastKnownJoin: {}, lastKnownInvite: {}, receivedAt: 0 });
+  rendezvousSlice.set({ joins: [], invites: [], lastKnownJoin: {}, lastKnownInvite: {}, receivedAt: 0, busy: null, error: null });
 });
 
 describe("join completion refreshes the group list", () => {
@@ -90,5 +92,53 @@ describe("join completion refreshes the group list", () => {
     const body = src.slice(src.indexOf("function OnboardingJoins"), src.indexOf("function ClaimBanner"));
     expect(body).toContain("onJoinCompleted(() => void store.refreshPeople())");
     expect(body).toContain("void refreshRendezvous();");
+  });
+});
+
+// Codex round 3 (P2): a cancel or dismiss that fails is said under its row, and the last confirmed
+// state stays. A failed cancel is never shown as withdrawn: the request may still be accepted.
+describe("failed cancel and dismiss", () => {
+  it("a rejected cancel keeps the last confirmed state and says the cancel wasn't confirmed", async () => {
+    vi.spyOn(bridge.groups, "list").mockResolvedValue([]);
+    ingest({ joins: [join("waiting")], invites: [] });
+    vi.spyOn(bridge.rendezvous, "cancel").mockRejectedValue(new Error("comms daemon did not respond within 15000 ms"));
+    await cancelJoin("g1");
+    const s = rendezvousSlice.get();
+    expect(s.joins.map((j) => j.state)).toEqual(["waiting"]);
+    expect(s.busy).toBeNull();
+    expect(s.error?.group).toBe("g1");
+    expect(s.error?.text).toContain("Couldn't confirm the cancel");
+    expect(s.error?.text).toContain("may still");
+  });
+
+  it("a rejected dismiss keeps the row and says so", async () => {
+    vi.spyOn(bridge.groups, "list").mockResolvedValue([]);
+    ingest({ joins: [join("expired")], invites: [] });
+    vi.spyOn(bridge.rendezvous, "forget").mockRejectedValue(new Error("daemon down"));
+    await forgetJoin("g1");
+    const s = rendezvousSlice.get();
+    expect(s.joins).toHaveLength(1);
+    expect(s.error).toEqual({ group: "g1", text: "Couldn't dismiss this request: daemon down" });
+  });
+
+  it("the row renders the error, and both surfaces pass it", () => {
+    const html = renderToStaticMarkup(
+      <JoinRequests
+        joins={[join("waiting")]}
+        lastKnown={{}}
+        listedGroups={[]}
+        busy={null}
+        receivedAt={1}
+        now={1}
+        onRetry={() => {}}
+        onCancel={() => {}}
+        onForget={() => {}}
+        error={{ group: "g1", text: "Couldn't confirm the cancel: x. Your request may still be accepted." }}
+      />,
+    );
+    expect(html).toContain("Couldn&#x27;t confirm the cancel");
+    for (const f of ["../../surfaces/Groups.tsx", "../../onboarding/Onboarding.tsx"]) {
+      expect(readFileSync(joinPath(__dirname, f), "utf8"), f).toContain("error={rv.error}");
+    }
   });
 });
