@@ -794,9 +794,21 @@ fn approve_logged(
     Vec<AnchorReceipt>,
     usize,
 ) {
+    approve_logged_with(certain_anchor(), send)
+}
+
+/// [`approve_logged`] through a given anchor ceremony.
+fn approve_logged_with(
+    c: AnchorCeremony,
+    send: &[Value],
+) -> (
+    Result<AnchorReceipt>,
+    Vec<AnchorReceipt>,
+    Vec<AnchorReceipt>,
+    usize,
+) {
     let kr = FakeKeyring::default();
     ensure_anchor_key(&kr).unwrap();
-    let c = certain_anchor();
     let v = c
         .request(good_request(20_000, root(0x61)), REGISTRY)
         .unwrap();
@@ -1138,4 +1150,26 @@ fn after_eviction_an_anchor_above_the_evicted_nonces_can_still_be_refused_defini
         "nonce 5 is above the evicted nonce 0: a definitive refusal frees the day"
     );
     assert_eq!(c.pending().len(), 1);
+}
+
+// C1-V6 (anchor-path audit): the app wires the shared persisted record into the anchor ceremony on
+// each approve, only when the signature ceremony's state is managed (chain_agent.rs). An anchor
+// ceremony that was never wired must not be able to prove a first send: a definitive-looking
+// refusal is "may be on the way" (kept in flight, card not re-offered), never "not sent".
+#[test]
+fn an_unwired_anchor_ceremony_never_reports_a_refusal_as_not_sent() {
+    let (r, recorded, forgotten, pending) = approve_logged_with(
+        AnchorCeremony::new(),
+        &[
+            node_error("Failed to submit transaction: Full"),
+            ok(Value::Null),
+        ],
+    );
+    assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
+    assert_eq!(recorded.len(), 1);
+    assert!(
+        forgotten.is_empty(),
+        "never withdrawn as not sent without a durable record"
+    );
+    assert_eq!(pending, 0, "no second approval while it may be on the way");
 }
