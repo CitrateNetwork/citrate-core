@@ -57,7 +57,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { activationGate, principalSalt } from "../onboarding/activateValidator";
+import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -1516,29 +1516,31 @@ export class Store {
    * receipt). A failed read keeps the last honest status and records why (unknown is not zero).
    * Once the chain shows the bond activated, the persisted tx hash is no longer needed.
    */
-  async refreshActivation(reason: "event" | "poll" = "event"): Promise<void> {
+  async refreshActivation(reason: "event" | "poll" = "event"): Promise<boolean> {
     const member = this.identity().wallet;
-    if (!member) return;
+    if (!member) return false;
     // Single-flight for the 15 s poll: one backend read is ~16 sequential RPCs with 6 s
     // timeouts, so it can outlast the interval. A tick never starts a read while one is in
     // flight (otherwise each tick would supersede the last and none would ever apply). Only an
     // explicit event (S6 hand-off, S7 mount, a recorded tx, the post-send read) supersedes.
-    if (reason === "poll" && this.activationInFlight) return;
+    if (reason === "poll" && this.activationInFlight) return false;
     const gen = ++this.activationGen;
     this.activationInFlight = true;
     const askedTx = this.state.s7TxHash;
     try {
       const st = await bridge.node.activationStatus(member, askedTx);
-      if (gen !== this.activationGen) return; // a newer read was issued: this one is stale
+      if (gen !== this.activationGen) return false; // a newer read was issued: this one is stale
       const patch: Partial<AppState> = { activation: st, activationError: null };
       // Forget the recorded tx only when THIS read observed its receipt and the bond activated.
       const recorded = this.state.s7TxHash;
       if (recorded && st.bondActivated === true && st.tx?.hash === recorded && st.tx.included === true) patch.s7TxHash = null;
       this.setState(patch);
       if (patch.s7TxHash === null) this.save();
+      return true;
     } catch (err) {
-      if (gen !== this.activationGen) return;
+      if (gen !== this.activationGen) return false;
       this.setState({ activationError: String((err as Error)?.message ?? err) });
+      return false;
     } finally {
       if (gen === this.activationGen) this.activationInFlight = false;
     }
@@ -1618,12 +1620,27 @@ export class Store {
       this.toast("Activation already sent — waiting for it to be included.");
       return false;
     }
-    // The Node surface can call this without S7 ever having read the chain: read first.
-    if (!this.state.activation) await this.refreshActivation();
+    // Every request reads the chain again: a read cached on S7 or by an earlier click (Node has
+    // no poll) may be stale in either direction. No fresh read, no ceremony.
+    const fresh = await this.refreshActivation();
     if (this.state.s7TxHash) return false;
+    if (!fresh) {
+      this.toast("Activation not available yet — the chain could not be read just now" + (this.state.activationError ? ` (${this.state.activationError})` : "") + ".");
+      return false;
+    }
     const gate = activationGate(this.state.activation, this.walletIsLinked());
     if (!gate.ready) {
-      const why = gate.checks.find((c) => c.ok !== true);
+      const blocking = gate.checks.filter((c) => c.ok !== true);
+      // The proposer key is minted by arming the producer, and arming signs nothing. When the key
+      // is the ONLY missing prerequisite, arm now (S7 arms on its own; Node has nothing else that
+      // does) and let the member click again once the key lands.
+      if (blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false && !this.validatorArmed) {
+        if (!(await this.armProducer())) {
+          this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
+        }
+        return false;
+      }
+      const why = blocking[0];
       this.toast("Activation not available yet — " + (why ? why.detail : "the chain has not been read"));
       return false;
     }
@@ -4560,6 +4577,25 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
+  /**
+   * Arm the block producer so the node mints its proposer key (`arm_mining_if_synced`, which
+   * re-checks the network tip and no-ops if the node is not caught up). Signs nothing. True when
+   * armed; a failure is an honest no-op the caller reports.
+   */
+  private async armProducer(): Promise<boolean> {
+    let armed = false;
+    try {
+      armed = await bridge.node.armMining();
+    } catch {
+      armed = false;
+    }
+    if (armed) {
+      this.validatorArmed = true;
+      this.toast("Block production armed — minting your validator key, then activation opens.");
+    }
+    return armed;
+  }
+
   private async activateValidator(hooks?: {
     onSigned?: WalletReview["onSigned"];
     onNotSent?: WalletReview["onNotSent"];
@@ -4576,19 +4612,7 @@ export class Store {
     // the node is not caught up or has no coinbase, so calling it here is safe and
     // idempotent. The key appears a few seconds later on respawn, so we do NOT open
     // a ceremony on this pass — we say what is happening and let the caller retry.
-    if (!this.validatorArmed) {
-      let armed = false;
-      try {
-        armed = await bridge.node.armMining();
-      } catch {
-        /* honest no-op: surfaced by the registerValidator error below */
-      }
-      if (armed) {
-        this.validatorArmed = true;
-        this.toast("Block production armed — minting your validator key, then activation opens.");
-        return false; // retry once the key lands
-      }
-    }
+    if (!this.validatorArmed && (await this.armProducer())) return false; // retry once the key lands
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
     try {
       view = await bridge.node.registerValidator();
@@ -4602,7 +4626,7 @@ export class Store {
     // The bond's principal as READ (MemberBond.principal), never a hard-coded 32,000. The tx moves
     // no SALT from the wallet; the bond forwards its own principal, and the wallet pays gas.
     const principal = principalSalt(this.state.activation);
-    const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
+    const label = activateValidatorLabel(this.state.activation);
     this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, hooks?.onResolved);
     if (hooks?.onSigned && this.state.walletReview) {
       this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned, onNotSent: hooks.onNotSent } });

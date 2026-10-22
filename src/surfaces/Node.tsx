@@ -2,6 +2,7 @@ import { useRef, useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { activateValidatorLabel } from "../onboarding/activateValidator";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -382,15 +383,15 @@ export function Node({ store, s }: SurfaceProps) {
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
-                          Your node is synced and this wallet is linked to your identity. Activate it as a validator to
-                          bond your 32,000 SALT and start producing blocks + earning.
+                          Your node is synced and this wallet is linked to your identity. Activating moves your
+                          bond&rsquo;s principal into the ValidatorRegistry. You approve it in the Signature Ceremony.
                         </p>
                         <button
                           className="btn btn-primary btn-sm"
                           style={{ alignSelf: "flex-start" }}
                           onClick={() => void store.requestValidatorActivation()}
                         >
-                          Activate validator · bond 32,000 SALT
+                          {activateValidatorLabel(s.activation)}
                         </button>
                       </>
                     )}
