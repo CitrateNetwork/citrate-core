@@ -321,3 +321,28 @@ fn a_restart_waits_for_a_store_open_in_progress() {
     assert!(!stopped_early, "Hermes stopped while a checked open was still in flight");
     assert_eq!(opened.expect("opened in the checked sidecar"), "s1-abc");
 }
+
+/// Tripwire: the Store daemon open goes through one sidecar generation end to end: the check
+/// reads the generation before the environment, the command opens with `session_open_in`, and
+/// start/stop take the open gate for writing.
+#[test]
+fn tripwire_a_store_daemon_open_is_bound_to_one_sidecar_generation() {
+    let hermes = include_str!("hermes.rs");
+    let daemons = include_str!("daemons.rs");
+    let body = |src: &'static str, sig: &str| -> &'static str {
+        let start = src.find(sig).unwrap_or_else(|| panic!("{sig}"));
+        let rest = &src[start..];
+        let end = if sig.starts_with("    ") { "\n    }\n" } else { "\n}\n" };
+        &rest[..rest.find(end).expect("ends")]
+    };
+    let check = body(daemons, "pub(crate) fn check_store_daemon_open(");
+    assert!(check.find("m.generation()").expect("generation") < check.find("m.started_env()").expect("env"));
+    let cmd = body(hermes, "pub async fn hermes_session_open_unattended(");
+    assert!(cmd.contains("open_local_session_in(") && cmd.contains("generation"));
+    assert!(body(hermes, "fn open_local_session_in(").contains("session_open_in(g, &body)"));
+    for sig in ["    pub fn start(&self) -> Result<()> {", "    pub fn stop(&self) {"] {
+        assert!(body(hermes, sig).contains("self.open_gate.write()"), "{sig}");
+    }
+    let open_in = body(hermes, "    pub fn session_open_in(");
+    assert!(open_in.find("open_gate.read()").expect("gate") < open_in.find("self.generation()").expect("compare"));
+}

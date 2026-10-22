@@ -113,6 +113,9 @@ pub enum HermesError {
     /// one of its choices, or an edit dropped a required gate. Carries the sidecar's reason verbatim
     /// so the interview card can show it inline.
     BriefRefused(String),
+    /// K5a: Hermes restarted since a Store daemon's tools were checked; the session was not
+    /// opened (the new sidecar may offer other host tool sets).
+    Restarted,
 }
 
 impl std::fmt::Display for HermesError {
@@ -138,6 +141,10 @@ impl std::fmt::Display for HermesError {
                 "STALE_APPROVAL: the agent's pending action is no longer the one you reviewed (it expired or was replaced), so the agent did not receive this decision"
             ),
             HermesError::BriefRefused(m) => write!(f, "BRIEF_REFUSED: {m}"),
+            HermesError::Restarted => write!(
+                f,
+                "Not started: Hermes restarted after this run's tools were checked; nothing was opened"
+            ),
         }
     }
 }
@@ -421,6 +428,9 @@ pub struct HermesManager {
     /// K5a: which sidecar a check was made against. A Store daemon's tool check and its session
     /// open must be about the same running sidecar (see [`Self::session_open_in`]).
     generation: std::sync::atomic::AtomicU64,
+    /// Held for writing by [`Self::start`] and [`Self::stop`], for reading by
+    /// [`Self::session_open_in`] across its request: a checked open never straddles a restart.
+    open_gate: std::sync::RwLock<()>,
 }
 
 /// HUP-S2.1: how sending a changed grant document to the open agent sessions went.
@@ -462,6 +472,7 @@ impl HermesManager {
             bridged_by_call: Mutex::new(HashMap::new()),
             grant_sessions: Mutex::new(std::collections::BTreeSet::new()),
             generation: std::sync::atomic::AtomicU64::new(0),
+            open_gate: std::sync::RwLock::new(()),
         }
     }
 
@@ -706,6 +717,8 @@ impl HermesManager {
     /// spawn under the supervisor. Fails CLOSED if the token can't be minted or the binary is
     /// missing; idempotent (`AlreadyRunning`).
     pub fn start(&self) -> Result<()> {
+        // A start is a new generation: no checked open is in flight across it.
+        let _gate = self.open_gate.write().unwrap_or_else(|e| e.into_inner());
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(HermesError::AlreadyRunning);
@@ -760,6 +773,8 @@ impl HermesManager {
             }
         };
         *guard = Some(sup);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
         *self.started_env.lock().unwrap_or_else(|e| e.into_inner()) = env_used;
         Ok(())
@@ -767,6 +782,10 @@ impl HermesManager {
 
     /// Stop the sidecar (SIGTERM → grace → SIGKILL, no orphan) and drop the session bearer. Idempotent.
     pub fn stop(&self) {
+        // Waits for a checked open in flight; any check made before this stop is now stale.
+        let _gate = self.open_gate.write().unwrap_or_else(|e| e.into_inner());
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let sup = {
             let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
@@ -991,8 +1010,13 @@ impl HermesManager {
     }
 
     /// [`Self::session_open`] into the sidecar generation `generation` was read from.
+    /// Refused (nothing is sent) when Hermes stopped or started since `generation` was read; a
+    /// stop or start waits until this open has returned.
     pub fn session_open_in(&self, generation: u64, body: &str) -> Result<String> {
-        let _ = generation;
+        let _gate = self.open_gate.read().unwrap_or_else(|e| e.into_inner());
+        if self.generation() != generation {
+            return Err(HermesError::Restarted);
+        }
         self.session_open(body)
     }
 
@@ -2244,9 +2268,11 @@ pub fn build_daemon_session_body(
 /// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
 type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
 
-/// Open a session on the local model with the body `build` makes (chat or daemon).
-fn open_local_session(
+/// Open a sidecar session on the LOCAL model (endpoint and key from serve state), into sidecar
+/// `generation` when one was checked (a Store daemon).
+fn open_local_session_in(
     app: &tauri::AppHandle,
+    generation: Option<u64>,
     system_prompt: &str,
     tools_json: &str,
     build: SessionBodyFn,
@@ -2267,7 +2293,12 @@ fn open_local_session(
         &serve.0.current_model_file(),
         serve.0.ctx_size(),
     )?;
-    manager(app)?.session_open(&body).map_err(|e| e.to_string())
+    let m = manager(app)?;
+    match generation {
+        Some(g) => m.session_open_in(g, &body),
+        None => m.session_open(&body),
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// **hermes_session_open_unattended** — open a sidecar session for a scheduled daemon run, on the
@@ -2282,10 +2313,18 @@ pub async fn hermes_session_open_unattended(
     daemon_id: Option<String>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
-        if let Some(id) = &daemon_id {
-            crate::daemons::check_store_daemon_open(&app, id)?;
-        }
-        open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
+        // A Store daemon is checked against one sidecar generation and opened in that same one.
+        let generation = match &daemon_id {
+            Some(id) => crate::daemons::check_store_daemon_open(&app, id)?,
+            None => None,
+        };
+        open_local_session_in(
+            &app,
+            generation,
+            &system_prompt,
+            &tools_json,
+            build_daemon_session_body,
+        )
     })
     .await
 }

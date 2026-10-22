@@ -1337,3 +1337,26 @@ fn a_store_model_install_waits_out_a_models_download_of_the_same_name() {
     drop(lock);
     assert!(!fx.models.join("tiny-model.gguf").exists());
 }
+
+/// Tripwire: every model download that ends in a verify goes through `download_and_verify` (one
+/// operation under the shared download lock); no production caller pairs the bare download with
+/// a verify.
+#[test]
+fn tripwire_model_downloads_verify_under_the_shared_lock() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(&dir).expect("src") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "model.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains(".download_with_progress("), "{name}: use download_and_verify");
+    }
+    let model = include_str!("model.rs");
+    let f = &model[model.find("pub fn download_and_verify(").expect("fn")..];
+    let f = &f[..f.find("\n    }\n").expect("ends")];
+    let guard = f.find("DownloadGuard::acquire(").expect("guard");
+    assert!(guard < f.find("self.final_path().exists()").expect("exists check"), "the lock covers the check");
+    assert!(guard < f.find("self.verify()").expect("verify"), "and the verify");
+}

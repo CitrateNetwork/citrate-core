@@ -1267,6 +1267,10 @@ fn install_model(
             crate::model::ModelError::AlreadyDownloading => {
                 refuse("in_use", "A download of this model is running")
             }
+            crate::model::ModelError::Occupied => refuse(
+                "already_installed",
+                "A model with this file name is already on this machine; manage it in Models",
+            ),
             other => refuse("install_failed", other.to_string()),
         })?;
     Ok(())

@@ -1384,17 +1384,24 @@ pub(crate) fn with_book_file<T>(
 
 /// K5a: for a Store daemon, the open-time check (`store_open_check`) against the sidecar's
 /// current environment. A member daemon (or an unknown id) passes unchanged.
-pub(crate) fn check_store_daemon_open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+/// Returns the sidecar generation a Store daemon was checked against (`None` for a member
+/// daemon); the session must be opened in that generation (`HermesManager::session_open_in`).
+pub(crate) fn check_store_daemon_open(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<Option<u64>, String> {
     let (allowed, claimed) = with_book(app, false, |b| {
         Ok((b.allowed_tools_of(id), b.claimed_host_sets(id)))
     })?;
     let Some(allowed) = allowed else {
-        return Ok(());
+        return Ok(None);
     };
-    let current = crate::hermes::manager(app)
-        .ok()
-        .and_then(|m| m.started_env());
-    store_open_check(&allowed, claimed.as_deref(), current.as_deref())
+    let m = crate::hermes::manager(app).map_err(|e| e.to_string())?;
+    // The generation first, then the environment: a restart between them makes the open refuse.
+    let generation = m.generation();
+    let current = m.started_env();
+    store_open_check(&allowed, claimed.as_deref(), current.as_deref())?;
+    Ok(Some(generation))
 }
 
 fn views(book: &DaemonBook, now_ms: u64, offset_min: i32) -> DaemonsView {

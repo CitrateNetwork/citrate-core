@@ -217,6 +217,8 @@ pub enum ModelError {
     /// HUP-S0.3b: a Hugging Face origin answered `401`/`403`: the repo is gated or private and
     /// needs a token with access. Final (not retried); the message says where to add the token.
     Gated { token_sent: bool },
+    /// A different model is already saved under this file name; nothing was changed.
+    Occupied,
 }
 
 impl std::fmt::Display for ModelError {
@@ -243,6 +245,10 @@ impl std::fmt::Display for ModelError {
                 }
             ),
             ModelError::BadMagic => write!(f, "model download is not a GGUF file (bad magic)"),
+            ModelError::Occupied => write!(
+                f,
+                "a different model is already saved under this file name; nothing was changed"
+            ),
             ModelError::ShortStream { got, want } => {
                 write!(f, "model download ended short: {got} of {want} bytes")
             }
@@ -738,14 +744,67 @@ impl ModelManager {
     /// final file exists). A resume of an existing `.part` continues its bytes.
     /// Download (unless a complete file is already here) and verify, as one operation on this
     /// file name. `existing` says what a file already at the final path means.
+    ///
+    /// The whole operation holds this file's [`DownloadGuard`] (the Store and the Models screen
+    /// share it), so no other download can create or replace the file between the check, the
+    /// download and the verify. A file already here that is verified against ANOTHER hash is
+    /// never re-verified against this one (that would quarantine a different model): it is
+    /// refused with [`ModelError::Occupied`].
     pub fn download_and_verify(
         &self,
         existing: ExistingFile,
-        on_progress: impl FnMut(u64, u64),
+        mut on_progress: impl FnMut(u64, u64),
     ) -> Result<()> {
-        let _ = existing;
-        self.download_with_progress(on_progress)?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| ModelError::Io(e.to_string()))?;
+        let _guard = DownloadGuard::acquire(&self.part_path())?;
+        if self.final_path().exists() {
+            if existing == ExistingFile::Refuse {
+                return Err(ModelError::Occupied);
+            }
+            if self.read_verified() {
+                // Verified already: this model when the recorded hash is ours, another one when
+                // it is not (or none is recorded and the bytes differ). Never quarantined here.
+                let ours = match verified_sha256(&self.dir, &self.file) {
+                    Some(h) => h.eq_ignore_ascii_case(&self.expected_hash),
+                    None => self.matches_pinned()?,
+                };
+                if !ours {
+                    return Err(ModelError::Occupied);
+                }
+                on_progress(self.expected_size, self.expected_size);
+                return self.write_verified(true);
+            }
+            // An unverified file under the lock is this name's own interrupted download.
+            on_progress(self.expected_size, self.expected_size);
+            return self.verify();
+        }
+        self.download_locked(&mut on_progress)?;
         self.verify()
+    }
+
+    /// Whether the final file has the pinned size and SHA-256 (no side effects).
+    fn matches_pinned(&self) -> Result<bool> {
+        use sha2::{Digest, Sha256};
+        let path = self.final_path();
+        let size = std::fs::metadata(&path)
+            .map_err(|e| ModelError::Io(e.to_string()))?
+            .len();
+        if size != self.expected_size {
+            return Ok(false);
+        }
+        let mut file = std::fs::File::open(&path).map_err(|e| ModelError::Io(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; DOWNLOAD_CHUNK];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| ModelError::Io(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        Ok(hex::encode(hasher.finalize()) == self.expected_hash)
     }
 
     pub fn download(&self) -> Result<Vec<u64>> {
