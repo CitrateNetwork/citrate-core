@@ -2243,19 +2243,29 @@ fn header_values_round_trip_through_the_base64_sentinel() {
     assert_eq!(dec("=?base64?!!!?=").as_deref(), None);
 }
 
-/// `encode_header_value` against the predicate it had before the clippy rewrite (one nested
-/// negation, short-circuited), on a table of named cases and on every 4-part concatenation of
-/// edge fragments (11^4 = 14,641 inputs). Each result also round-trips through
-/// `decode_header_value`.
+/// `encode_header_value` against the predicate it had before the clippy rewrite, on a table of
+/// named cases and on every 4-part concatenation of edge fragments (11^4 = 14,641 inputs). The
+/// old predicate is restated as an early-return chain, one rule per clause in its order, so it
+/// is structurally independent of the boolean expression it checks and is lint-clean on every
+/// toolchain (the nested `!(prefix && suffix)` form trips clippy's `nonminimal_bool` from 1.96).
+/// Each result also round-trips through `decode_header_value`.
 #[test]
 fn encode_header_value_matches_the_pre_rewrite_predicate() {
     use crate::node_mcp_http::{decode_header_value as dec, encode_header_value as enc};
     let was_plain = |v: &str| {
-        !v.is_empty()
-            && v.chars().all(|c| c.is_ascii_graphic() || c == ' ')
-            && !v.starts_with(' ')
-            && !v.ends_with(' ')
-            && !(v.starts_with("=?base64?") && v.ends_with("?="))
+        if v.is_empty() {
+            return false;
+        }
+        if !v.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+            return false;
+        }
+        if v.starts_with(' ') || v.ends_with(' ') {
+            return false;
+        }
+        if v.starts_with("=?base64?") && v.ends_with("?=") {
+            return false;
+        }
+        true
     };
     let sentinel = |v: &str| {
         use base64::Engine as _;
