@@ -22,6 +22,10 @@
 //! - the file existed but could not be read or parsed;
 //! - a pre-flag (bare list) file was already at capacity, so it may have evicted hashes.
 //!
+//! Uncertainty is never cleared: once set it is written back on every rewrite, so after one corrupt
+//! or unreadable file no send is reported as "not sent" again (every error is "outcome unknown").
+//! That fails closed by design.
+//!
 //! A missing file is an empty, certain record. A hash whose record can't be made durable is
 //! refused ([`SubmittedTxLog::try_record`] returns `Err`) and not kept: the caller must not send.
 //! Hashes are public transaction ids, not key material.
