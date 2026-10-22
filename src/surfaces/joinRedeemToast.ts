@@ -44,3 +44,8 @@ export function redeemToast(r: JoinRedeemResult, groupListed: boolean): string {
       return "Couldn't finish joining";
   }
 }
+
+/** Whether the invite stays offered after a Join. */
+export function keepInviteAfter(_r: JoinRedeemResult): boolean {
+  return false;
+}
