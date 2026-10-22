@@ -27,7 +27,8 @@
 #                                         [--appimage NEW.AppImage [--appimage-from OLD.AppImage]]
 #                                         [--log-dir DIR] [--work DIR]
 #   scripts/ci/linux-native-acceptance.sh --fetch <aarch64|x86_64> [--cache DIR] ...
-#        download the packages pinned in linux-native-acceptance/pins.txt (sha256-checked)
+#        download the packages pinned in linux-native-acceptance/pins.txt (sha256-checked);
+#        add --fetch-only to download and stop
 #   scripts/ci/linux-native-acceptance.sh --self-test [--log-dir DIR]
 #        run the scenarios against a stand-in app in four modes (one good, three broken) and
 #        require PASS for the good one and the matching FAIL for each broken one
@@ -55,7 +56,7 @@ die() { echo "::error::$*" >&2; exit 2; }
 # Outer phase: stage the packages, then enter the namespace.
 # ============================================================================================
 outer_main() {
-  local DEB="" DEB_FROM="" AI="" AI_FROM="" FETCH="" CACHE="" WORK="" LOG_DIR="" SELFTEST=0
+  local DEB="" DEB_FROM="" AI="" AI_FROM="" FETCH="" CACHE="" WORK="" LOG_DIR="" SELFTEST=0 FETCH_ONLY=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --deb) DEB="$2"; shift 2 ;;
@@ -67,6 +68,7 @@ outer_main() {
       --work) WORK="$2"; shift 2 ;;
       --log-dir) LOG_DIR="$2"; shift 2 ;;
       --self-test) SELFTEST=1; shift ;;
+      --fetch-only) FETCH_ONLY=1; shift ;;
       -h|--help) sed -n '2,46p' "$SELF"; exit 0 ;;
       *) die "unknown argument: $1" ;;
     esac
@@ -85,8 +87,11 @@ outer_main() {
     CACHE="${CACHE:-$WORK/cache}"
     mkdir -p "$CACHE"
     fetch_pinned "$FETCH" "$CACHE" || exit 1
-    DEB="${DEB:-$CACHE/to.deb}"; DEB_FROM="${DEB_FROM:-$CACHE/from.deb}"
-    AI="${AI:-$CACHE/to.AppImage}"; AI_FROM="${AI_FROM:-$CACHE/from.AppImage}"
+    [ "$FETCH_ONLY" -eq 1 ] && exit 0
+    [ -z "$DEB" ] && [ -f "$CACHE/to.deb" ] && DEB="$CACHE/to.deb"
+    [ -z "$DEB_FROM" ] && [ -f "$CACHE/from.deb" ] && DEB_FROM="$CACHE/from.deb"
+    [ -z "$AI" ] && [ -f "$CACHE/to.AppImage" ] && AI="$CACHE/to.AppImage"
+    [ -z "$AI_FROM" ] && [ -f "$CACHE/from.AppImage" ] && AI_FROM="$CACHE/from.AppImage"
   fi
 
   if ! unshare --user --map-root-user --pid --fork --mount-proc --net --ipc --uts true 2>/dev/null; then
@@ -336,8 +341,18 @@ p_socket_scan_control() {
   [ "$after" != "$before" ] && [ "$(listening)" = "$before" ]
 }
 
-listening() { # every listening TCP/UDP/unix socket in this network namespace, sorted
-  { ss -Hlntu | awk '{print $1, $5}'; ss -Hlx | awk '{print "unix", $5}'; } 2>/dev/null | sort -u
+listening() { # [exempt-pid ...]: listening TCP/UDP/unix sockets in this network namespace,
+  # sorted, leaving out sockets held only by the exempt pids (the session's own services).
+  local ex=" $* "
+  { ss -Hlntup; ss -Hlxp; } 2>/dev/null | awk -v ex="$ex" '{
+      proto = $1; addr = $5; owned = 0; other = 0; line = $0
+      while (match(line, /pid=[0-9]+/)) {
+        pid = substr(line, RSTART + 4, RLENGTH - 4); line = substr(line, RSTART + RLENGTH)
+        if (index(ex, " " pid " ")) owned = 1; else other = 1
+      }
+      if (owned && !other) next
+      print proto, addr
+    }' | sort -u
 }
 
 alive() { [ -e "/proc/$1" ] && [ "$(state_of "$1")" != Z ]; }
@@ -423,11 +438,45 @@ launch_app() { # kind label
   return 0
 }
 
-quit_app() { # kind label (red: checks not written yet)
-  local kind="$1" label="$2"
-  kill -TERM "$APP_PID" 2>/dev/null; wait_gone "$APP_PID" "$K1L_QUIT_TIMEOUT"
-  local p; for p in $(descendants 1 | awk '{print $1}'); do case " ${INFRA_PIDS[*]} " in *" $p "*) ;; *) kill -KILL "$p" 2>/dev/null ;; esac; done
-  pass "$kind quit [$label]"
+quit_app() { # kind label → app and everything it started gone, no listener left
+  local kind="$1" label="$2" t0=$SECONDS asked=0 p
+  local -a before; mapfile -t before < <(descendants "$APP_PID" | awk '{print $1}')
+  if [ "$K1L_QUIT" = x11 ]; then
+    for p in "$APP_PID" "${before[@]}"; do
+      DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I "$HERE/x11_windows.py" close "$p" >>"$W/logs/quit.log" 2>&1 && asked=1
+    done
+    [ "$asked" -eq 1 ] || { fail "$kind quit [$label]: no window of the app accepts WM_DELETE_WINDOW"; force_stop "${before[@]}"; return 1; }
+  else
+    kill -TERM "$APP_PID" 2>/dev/null
+  fi
+  if ! wait_gone "$APP_PID" "$K1L_QUIT_TIMEOUT"; then
+    fail "$kind quit [$label]: the app was still running ${K1L_QUIT_TIMEOUT}s after quit"
+    force_stop "$APP_PID" "${before[@]}"; return 1
+  fi
+  wait "$APP_PID" 2>/dev/null
+  local left=() i
+  for i in $(seq 1 "$K1L_QUIT_TIMEOUT"); do
+    infra_tree
+    scan_strays 1 "${INFRA_TREE[@]}"
+    [ "${#STRAYS[@]}" -eq 0 ] && break
+    sleep 1
+  done
+  left=("${STRAYS[@]}")
+  local svc; svc="$(for p in "${INFRA_TREE[@]}"; do case " ${INFRA_PIDS[*]} " in *" $p "*) ;; *) readlink "/proc/$p/exe" 2>/dev/null ;; esac; done | sed 's|.*/||' | sort -u | tr '\n' ' ')"
+  [ -n "$svc" ] && say "     $kind quit [$label]: session services the private bus started (not counted): $svc"
+  local now; now="$(listening "${INFRA_TREE[@]}")"
+  if [ "${#left[@]}" -ne 0 ]; then
+    fail "$kind quit [$label]: ${#left[@]} process(es) left after quit"
+    printf '    left: %s\n' "${left[@]}" | tee -a "$SUMMARY"
+    local l; for l in "${left[@]}"; do kill -KILL "${l%% *}" 2>/dev/null; done
+    return 1
+  fi
+  if [ "$now" != "$BASE_SOCKETS" ]; then
+    fail "$kind quit [$label]: listening sockets left after quit"
+    comm -13 <(echo "$BASE_SOCKETS") <(echo "$now") | sed 's/^/    socket: /' | tee -a "$SUMMARY"
+    return 1
+  fi
+  pass "$kind quit [$label] in $((SECONDS - t0))s: no process and no listening socket left"
 }
 
 # The session's own processes: Xvfb, the private bus, the keyring, and anything the bus started
@@ -443,14 +492,53 @@ infra_tree() {
 
 force_stop() { local p; for p in "$@"; do kill -KILL "$p" 2>/dev/null; done; sleep 1; }
 
-scenario_restart() { # kind (red: check not written yet)
-  pass "$1 restart"
+scenario_restart() { # kind
+  local kind="$1" old new exe line i
+  line="$(sidecars_of "$APP_PID" | awk -v t="$K1L_RESTART_TARGET" '$1 == t {print; exit}')"
+  [ -n "$line" ] || { fail "$kind restart: no '$K1L_RESTART_TARGET' sidecar to kill"; return 1; }
+  old="$(echo "$line" | awk '{print $2}')"; exe="$(echo "$line" | awk '{print $3}')"
+  kill -KILL "$old"
+  for i in $(seq 1 "$K1L_RESTART_TIMEOUT"); do
+    new="$(sidecars_of "$APP_PID" | awk -v e="$exe" -v o="$old" '$3 == e && $2 != o {print $2; exit}')"
+    [ -n "$new" ] && ! alive "$old" && break
+    sleep 1
+  done
+  if [ -n "$new" ] && ! alive "$old"; then
+    pass "$kind restart: $K1L_RESTART_TARGET killed (pid $old), started again as pid $new in ${i}s"
+  else
+    fail "$kind restart: $K1L_RESTART_TARGET (pid $old) not started again within ${K1L_RESTART_TIMEOUT}s"
+    return 1
+  fi
 }
 
-scenario_reap() { # kind (red: check not written yet)
-  launch_app "$1" crash-1 || return 1
-  pass "$1 reap"
-  quit_app "$1" crash-1
+scenario_reap() { # kind
+  local kind="$1" orphans=() pid name exe i
+  launch_app "$kind" crash-1 || return 1
+  local -a sc; mapfile -t sc < <(sidecars_of "$APP_PID")
+  # Kill the app process itself (for the AppImage, the process running citrate-core).
+  local victim="$APP_PID" p e
+  for p in $(descendants "$APP_PID" | awk '$2 ~ /\/citrate-core$/ {print $1}'); do victim="$p"; done
+  kill -KILL "$victim"; [ "$victim" != "$APP_PID" ] && kill -KILL "$APP_PID" 2>/dev/null
+  wait "$APP_PID" 2>/dev/null
+  sleep 2
+  for line in "${sc[@]}"; do
+    read -r name pid exe <<<"$line"; alive "$pid" && orphans+=("$name:$pid")
+  done
+  say "     $kind reap: after SIGKILL of the app, ${#orphans[@]} sidecar(s) still running: ${orphans[*]:-none}"
+  launch_app "$kind" crash-2 || { force_stop "${orphans[@]##*:}"; return 1; }
+  local left=() o
+  for i in $(seq 1 "$K1L_QUIT_TIMEOUT"); do
+    left=(); for o in "${orphans[@]}"; do alive "${o##*:}" && left+=("$o"); done
+    [ "${#left[@]}" -eq 0 ] && break
+    sleep 1
+  done
+  if [ "${#left[@]}" -eq 0 ]; then
+    pass "$kind reap: the relaunch stopped all ${#orphans[@]} orphaned sidecar(s) of the killed run"
+  else
+    fail "$kind reap: orphaned sidecar(s) of the killed run still running after relaunch: ${left[*]}"
+    force_stop "${left[@]##*:}"
+  fi
+  quit_app "$kind" crash-2
 }
 
 install_pkg() { # kind role
@@ -482,7 +570,7 @@ check_sidecars_are_new() { # kind
     got="$(sha256sum <"/proc/$pid/exe" 2>/dev/null | cut -d' ' -f1)"
     if [ "$kind" = deb ]; then want="$(sha256sum <"$W/root-deb/usr/bin/$name" | cut -d' ' -f1)"
     else want="$(sha256sum <"$W/ref-appimage-to/usr/bin/$name" 2>/dev/null | cut -d' ' -f1)"; fi
-    [ -n "$got" ] && [ "$got" = "$want" ] || { bad=1; say "    $name pid $pid runs ${got:0:12}, new package has ${want:0:12}"; }
+    [ -n "$got" ] && [ -n "$want" ] && [ "$got" = "$want" ] || { bad=1; say "    $name pid $pid runs ${got:0:12}, new package has ${want:0:12}"; }
   done < <(sidecars_of "$APP_PID")
   [ "$bad" -eq 0 ]
 }
@@ -491,11 +579,15 @@ run_kind() { # kind
   local kind="$1"
   HOME_DIR="$W/home-$kind"; mkdir -p "$HOME_DIR"
   start_session_services "$kind" || { fail "$kind session: could not start the private bus/keyring"; return 1; }
-  BASE_SOCKETS="$(listening)"
+  infra_tree; BASE_SOCKETS="$(listening "${INFRA_TREE[@]}")"
   if [ "$kind" = appimage ]; then
     # Reference copy of the new AppImage's files, to identify the binaries it runs.
-    ( cd "$W" && mkdir -p ref-appimage-to && cd ref-appimage-to &&
-      "$W/pkgs/to.AppImage" --appimage-extract >/dev/null 2>&1 && mv squashfs-root/* . ) || true
+    # (The staged package is a hard link and may not be executable; run a private copy.)
+    ( mkdir -p "$W/ref-appimage-to" && cp "$W/pkgs/to.AppImage" "$W/ref-to.AppImage" && chmod +x "$W/ref-to.AppImage" &&
+      cd "$W/ref-appimage-to" && "$W/ref-to.AppImage" --appimage-extract >>"$W/logs/ref-extract.log" 2>&1 &&
+      mv squashfs-root/* . && rmdir squashfs-root ) && rm -f -- "$W/ref-to.AppImage"
+    [ -x "$W/ref-appimage-to/usr/bin/citrate-core" ] ||
+      say "     $kind: could not extract the new AppImage for reference (logs/ref-extract.log)"
   fi
   local from=0; [ -f "$W/pkgs/from.$( [ "$kind" = deb ] && echo deb || echo AppImage)" ] && from=1
   if [ "$from" -eq 1 ]; then
@@ -527,8 +619,19 @@ run_kind() { # kind
 XRT=""
 start_session_services() { # kind: private session bus + keyring for this HOME
   XRT="$W/xdg-run-$1"; mkdir -p "$XRT" && chmod 0700 "$XRT"
-  local out
-  out="$(dbus-daemon --session --fork --print-pid --address="unix:path=$XRT/bus" 2>>"$W/logs/session.log")" || return 1
+  # The bus runs as a child subreaper (PR_SET_CHILD_SUBREAPER survives the exec), so services
+  # it activates for the app (portal, gvfs, at-spi, dconf) stay its descendants even when they
+  # daemonize. They belong to the session, as on a desktop, and are reported separately.
+  local -a senv=(HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" XDG_DATA_HOME="$HOME_DIR/.local/share"
+    XDG_CACHE_HOME="$HOME_DIR/.cache" XDG_STATE_HOME="$HOME_DIR/.local/state" XDG_RUNTIME_DIR="$XRT"
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$XRT/bus" DISPLAY="${K1L_PRIVATE_DISPLAY:-}" NO_AT_BRIDGE=1)
+  env "${senv[@]}" python3 -I -c 'import ctypes, os, sys
+if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0: sys.exit("prctl(PR_SET_CHILD_SUBREAPER) failed")
+os.execvp(sys.argv[1], sys.argv[1:])' dbus-daemon --session --nofork --nopidfile --address="unix:path=$XRT/bus" \
+    </dev/null >>"$W/logs/session.log" 2>&1 &
+  local out=$!
+  local i; for i in $(seq 1 50); do [ -S "$XRT/bus" ] && break; sleep 0.1; done
+  [ -S "$XRT/bus" ] || return 1
   SESSION_PIDS=("$out"); INFRA_PIDS+=("$out")
   if command -v gnome-keyring-daemon >/dev/null; then
     local kr
