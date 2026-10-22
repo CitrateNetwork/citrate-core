@@ -2455,18 +2455,25 @@ class Component extends DCLogic {
     }).catch((e) => console.error('chat-harness', e));
     this.timer = setInterval(() => this.tick(), 600);
     this.onHash = () => {
-      // K0 five-place map. 0.5.1 routes keep working as deep links and open their new home.
-      const parts = (location.hash || '').replace(/^#\//, '').split('/');
-      const LEGACY = { dashboard: ['hermes', 'chat'], agent: ['hermes', 'work'], journal: ['hermes', 'journal'], commissary: ['store'], models: ['store'], storage: ['node'], files: ['node'], comms: ['groups'], people: ['groups'], cluster: ['groups'], train: ['groups'], connections: ['settings'] };
-      let [r, t] = parts;
-      if (LEGACY[r]) [r, t] = [LEGACY[r][0], t || LEGACY[r][1]];
-      if (['hermes', 'groups', 'wallet', 'node', 'store', 'settings'].indexOf(r) < 0) return;
-      const u = { route: r, legacy: null };
-      if (r === 'hermes' && ['chat', 'journal', 'work', 'learn', 'controls'].indexOf(t) >= 0) u.hTab = t;
-      if (r !== this.state.route || (u.hTab && u.hTab !== this.state.hTab)) this.setState(u);
+      const u = this.resolveHash(location.hash);
+      if (!u) return;
+      const st = this.state;
+      if (Object.keys(u).some((k) => st[k] !== u[k])) this.setState(u);
     };
     window.addEventListener('hashchange', this.onHash);
     this.onHash();
+  }
+  // A location hash -> the state patch that opens it, or null for an unknown route.
+  resolveHash(hash) {
+    // K0 five-place map. 0.5.1 routes keep working as deep links and open their new home.
+    const parts = (hash || '').replace(/^#\//, '').split('/');
+    const LEGACY = { dashboard: ['hermes', 'chat'], agent: ['hermes', 'work'], journal: ['hermes', 'journal'], commissary: ['store'], models: ['store'], storage: ['node'], files: ['node'], comms: ['groups'], people: ['groups'], cluster: ['groups'], train: ['groups'], connections: ['settings'] };
+    let [r, t] = parts;
+    if (LEGACY[r]) [r, t] = [LEGACY[r][0], t || LEGACY[r][1]];
+    if (['hermes', 'groups', 'wallet', 'node', 'store', 'settings'].indexOf(r) < 0) return null;
+    const u = { route: r, legacy: null };
+    if (r === 'hermes' && ['chat', 'journal', 'work', 'learn', 'controls'].indexOf(t) >= 0) u.hTab = t;
+    return u;
   }
   componentWillUnmount() { clearInterval(this.timer); window.removeEventListener('hashchange', this.onHash); }
 
@@ -2648,6 +2655,13 @@ class Component extends DCLogic {
     patch((m) => Object.assign({}, m, { streaming: false }));
     this.setState({ chatStatus: 'ready' });
     this.scrollChat(); this.save();
+  }
+  // The member's answer to the ask-before-gateway card.
+  resolveAsk(allow) {
+    const t = this.state.askPending;
+    this.setState({ askPending: null });
+    if (allow) { this.recordDecision('agent.tool_approval', 'approved', 'gateway · one reply via infer.citrate.ai', 'chat · ask before gateway'); this.sendChat(t, { via: 'gateway' }); }
+    else { this.recordDecision('agent.tool_approval', 'denied', 'gateway · kept the reply local', 'chat · ask before gateway'); this.sendChat(t, { via: 'local' }); }
   }
   scrollChat() {
     requestAnimationFrame(() => {
@@ -3777,6 +3791,8 @@ class Component extends DCLogic {
   patchDaemon(id, fn) {
     this.setState((st) => ({ daemons: st.daemons.map((d) => (d.id === id ? Object.assign({}, d, fn(d)) : d)) }));
   }
+  // Restart Hermes so the saved Controls settings apply (core: restartHermesConfirmed).
+  restartHermes() {}
   daemonStart(id) {
     const s = this.state;
     const d = s.daemons.find((x) => x.id === id);
@@ -3941,8 +3957,8 @@ class Component extends DCLogic {
     V.chatBackendLabel = s.routing === 'local' ? 'local model · llama-server on this machine' : 'local first · asks before infer.citrate.ai';
     V.askShow = !!s.askPending;
     V.askText = s.askPending || '';
-    V.onAskAllow = () => { const t = s.askPending; this.setState({ askPending: null }); this.recordDecision('agent.tool_approval', 'approved', 'gateway · one reply via infer.citrate.ai', 'chat · ask before gateway'); this.sendChat(t, { via: 'gateway' }); };
-    V.onAskLocal = () => { const t = s.askPending; this.setState({ askPending: null }); this.recordDecision('agent.tool_approval', 'denied', 'gateway · kept the reply local', 'chat · ask before gateway'); this.sendChat(t, { via: 'local' }); };
+    V.onAskAllow = () => this.resolveAsk(true);
+    V.onAskLocal = () => this.resolveAsk(false);
     V.apprCount = String(apprList.length);
     V.apprEmpty = apprList.length === 0;
     V.apprRail = apprList.slice(0, 3).map((a) => ({ title: a.title, origin: a.origin }));
