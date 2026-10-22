@@ -148,12 +148,12 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
-// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
 mod model_catalog;
-// GROW-S2 (Join 9): relay rendezvous join, app side (IPC views, tick, join://state).
+// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod model_delete;
+// GROW-S2 (Join 9): relay rendezvous join, app side (IPC views, tick, join://state).
 mod rendezvous;
 mod social;
 mod storage;

@@ -201,8 +201,8 @@ pub(crate) fn is_relay_unsupported(err: &RvError) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Whether a scheduled tick should run. A tick starts the comms daemon if it isn't running, so the
-/// scheduled tick only does that when this device has rendezvous work: invites it minted, or joins
-/// it asked for. Once the daemon is running (any comms use this session), every tick runs.
+/// scheduled tick only does that when this device has rendezvous work ([`local_work`]): live invites
+/// it minted, or joins it asked for. Once the daemon is running (any comms use this session), every tick runs.
 pub(crate) fn should_tick(daemon_running: bool, local_work: bool) -> bool {
     daemon_running || local_work
 }
@@ -291,18 +291,26 @@ fn has_local_work(app: &tauri::AppHandle) -> bool {
     )
 }
 
-/// Whether this device has rendezvous work: a join still in progress, or an invite it minted.
+/// Whether this device has rendezvous work: a join still in progress, or an invite it minted with a
+/// rendezvous that hasn't expired. Pre-S2 invites (no lookup) and invites past their TTL have nothing
+/// to tick, so they never start the daemon. `now_unix` is in seconds, like `created_at`.
 pub(crate) fn local_work(
     active_joins: &[String],
     invites: &[crate::invites::PendingInvite],
-    _now_unix: u64,
+    now_unix: u64,
 ) -> bool {
-    !active_joins.is_empty() || !invites.is_empty()
+    let ttl_secs = crate::invites::INVITE_TTL_MS / 1000;
+    !active_joins.is_empty()
+        || invites
+            .iter()
+            .any(|i| !i.lookup.is_empty() && i.created_at.saturating_add(ttl_secs) > now_unix)
 }
 
-/// Whether the scheduled tick keeps running after this tick's result.
-pub(crate) fn scheduled_tick_continues(_tick: &Result<TickViews, RvError>) -> bool {
-    true
+/// Whether the scheduled tick keeps running after this tick's result. A daemon without the
+/// rendezvous ops stops it for the session (the sidecar doesn't change while the app runs); the
+/// Groups screen's own tick still runs on demand.
+pub(crate) fn scheduled_tick_continues(tick: &Result<TickViews, RvError>) -> bool {
+    !matches!(tick, Err(RvError::DaemonUnsupported))
 }
 
 /// Start the background tick: once shortly after app start, then every [`TICK_INTERVAL`] while the

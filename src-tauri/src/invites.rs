@@ -23,7 +23,7 @@ use tauri::Manager;
 use crate::connections::random_state;
 
 /// INVITE-S2 default time-to-live for a published invite: 14 days (Unix ms are added at publish).
-const INVITE_TTL_MS: u64 = 14 * 24 * 60 * 60 * 1000;
+pub(crate) const INVITE_TTL_MS: u64 = 14 * 24 * 60 * 60 * 1000;
 
 /// A one-time claimable invite the owner minted for a group. `for_handle` is a label only.
 #[derive(Serialize, Deserialize, Clone)]
@@ -47,15 +47,6 @@ pub struct PendingInvite {
     /// Public (the relay's own index). Revoke closes it with `rendezvousClose`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub lookup: String,
-    /// GROW-S2 — whether the INVITE-S2 `publishInvite` succeeded for this invite (so revoke knows
-    /// whether there is a legacy invite record to revoke). Records from before GROW-S2 were only kept
-    /// when the publish succeeded, so the default is `true`.
-    #[serde(default = "default_true")]
-    pub published: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
@@ -127,8 +118,6 @@ pub(crate) fn blake3_token_hash(token: &str) -> String {
 /// GROW-S2 (§15 M2) — the result of the two publishes at mint that handed out a link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MintDecision {
-    /// The INVITE-S2 `publishInvite` worked (there is a legacy invite record to revoke).
-    pub published: bool,
     /// The rendezvous lookup to record for revoke ("" only when the daemon or relay doesn't speak
     /// rendezvous, so nothing can have been opened).
     pub lookup: String,
@@ -164,7 +153,9 @@ fn lookup_to_record(
 /// rendezvous `rendezvousOpen` (same `expires_at`). Fail-closed: no link when both fail; one
 /// confirmed success is enough (a relay without rendezvous still serves the legacy self-admit, and
 /// a rendezvous still works if the legacy publish failed). A confirmed open needs the daemon's
-/// lookup to equal the §3 derivation computed here.
+/// lookup to equal the §3 derivation computed here. A failed publish is not recorded as "nothing
+/// published": its answer may have been lost after the relay stored the invite, so revoke always
+/// needs the legacy revoke confirmed (or the relay's "no such invite").
 pub(crate) fn decide_mint(
     publish: Result<(), String>,
     open: Result<crate::comms::RendezvousOpened, crate::rendezvous::RvError>,
@@ -179,14 +170,7 @@ pub(crate) fn decide_mint(
         Err(e) => Err(e.to_string()),
     };
     match (publish, opened) {
-        (Ok(()), _) => Ok(MintDecision {
-            published: true,
-            lookup,
-        }),
-        (Err(_), Ok(())) => Ok(MintDecision {
-            published: false,
-            lookup,
-        }),
+        (Ok(()), _) | (Err(_), Ok(())) => Ok(MintDecision { lookup }),
         (Err(p), Err(o)) => Err(MintRefused {
             message: format!("couldn't publish the invite to the relay ({p}; rendezvous: {o})"),
             lookup_to_close: lookup,
@@ -212,29 +196,26 @@ pub(crate) fn minted_invite(
         priv_key,
         link,
         lookup: decision.lookup,
-        published: decision.published,
     }
 }
 
-/// GROW-S2 (§9 "call both") — what revoking an invite does: close its rendezvous whenever one was
-/// recorded, and always send the INVITE-S2 revoke. `legacy_must_succeed` is false only for an
-/// invite whose legacy publish failed (the relay may have no record to revoke).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RevokePlan {
-    pub close: Option<String>,
-    pub legacy_must_succeed: bool,
-}
-
-pub(crate) fn revoke_plan(invite: Option<&PendingInvite>) -> RevokePlan {
-    match invite {
-        Some(i) => RevokePlan {
-            close: (!i.lookup.is_empty()).then(|| i.lookup.clone()),
-            legacy_must_succeed: i.published,
-        },
-        None => RevokePlan {
-            close: None,
-            legacy_must_succeed: true,
-        },
+/// GROW-S2 (§9 "call both") — the outcome of a revoke from its two answers: `close` is the
+/// `rendezvousClose` answer (`None` when no rendezvous was recorded), `legacy` the INVITE-S2
+/// revoke's. Fail-closed: both must be confirmed. A daemon without the rendezvous ops never opened
+/// one, and the relay's "no such invite" means there is no legacy record left to redeem.
+pub(crate) fn revoke_outcome(
+    close: Option<Result<(), crate::rendezvous::RvError>>,
+    legacy: Result<(), String>,
+) -> Result<(), String> {
+    use crate::rendezvous::RvError;
+    match close {
+        None | Some(Ok(())) | Some(Err(RvError::DaemonUnsupported)) => {}
+        Some(Err(e)) => return Err(format!("couldn't revoke the invite: {e}")),
+    }
+    match legacy {
+        Ok(()) => Ok(()),
+        Err(e) if e.contains("no such invite") => Ok(()),
+        Err(e) => Err(format!("couldn't revoke the invite: {e}")),
     }
 }
 
@@ -273,20 +254,24 @@ fn read_pending(path: &std::path::Path) -> Vec<PendingInvite> {
     }
 }
 
-/// Read, change and write `pending.json` in one step.
+/// Serializes every `pending.json` read-change-write in this process (Tauri commands and the MCP
+/// tools both mint and revoke).
+static PENDING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read, change and write `pending.json` in one step, under [`PENDING_LOCK`]. Every writer goes
+/// through here, and none holds a copy across a network call, so a create that lands while a revoke
+/// waits on the relay isn't overwritten, and a removed record isn't written back.
 fn update_pending_at<T>(
     path: &std::path::Path,
     f: impl FnOnce(&mut Vec<PendingInvite>) -> T,
 ) -> Result<T, String> {
+    let _guard = PENDING_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut v = read_pending(path);
     let out = f(&mut v);
     write_pending(path, &v)?;
     Ok(out)
-}
-
-fn save(app: &tauri::AppHandle, v: &[PendingInvite]) -> Result<(), String> {
-    let p = store_path(app)?;
-    write_pending(&p, v)
 }
 
 /// Serialize the pending invites and write them owner-only (`0600`).
@@ -352,8 +337,7 @@ pub async fn group_invite_create(
     } else {
         format!("citrate://invite?g={group}&t={token}&k={pub_key}&n={name_hex}")
     };
-    let mut invites = load(&app);
-    invites.push(minted_invite(
+    let record = minted_invite(
         &group,
         &token,
         &for_handle,
@@ -361,8 +345,8 @@ pub async fn group_invite_create(
         priv_key,
         link.clone(),
         decision,
-    ));
-    save(&app, &invites)?;
+    );
+    update_pending_at(&store_path(&app)?, |v| v.push(record))?;
     // #73 — the inviter's audit copy (provable intent; the relay tally is authoritative for scoring).
     append_referral(
         &app,
@@ -609,14 +593,11 @@ pub async fn group_invite_verify_consume(
     group: String,
     token: String,
 ) -> Result<bool, String> {
-    let mut invites = load(&app);
-    let before = invites.len();
-    invites.retain(|i| !(i.group == group && i.token == token));
-    let consumed = invites.len() < before;
-    if consumed {
-        save(&app, &invites)?;
-    }
-    Ok(consumed)
+    update_pending_at(&store_path(&app)?, |invites| {
+        let before = invites.len();
+        invites.retain(|i| !(i.group == group && i.token == token));
+        invites.len() < before
+    })
 }
 
 /// `group_invite_revoke` — drop an outstanding invite the owner no longer wants redeemable. Revokes
@@ -648,24 +629,20 @@ pub(crate) fn revoke_at(
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut invites = read_pending(path);
-    let plan = revoke_plan(
-        invites
-            .iter()
-            .find(|i| i.group == group && i.token == token),
-    );
-    if let Some(lookup) = plan.close {
-        match close(lookup) {
-            Ok(()) | Err(crate::rendezvous::RvError::DaemonUnsupported) => {}
-            Err(e) => return Err(format!("couldn't revoke the invite: {e}")),
-        }
-    }
+    // Read only the lookup here; the removal below re-reads the file under the lock.
+    let lookup = read_pending(path)
+        .into_iter()
+        .find(|i| i.group == group && i.token == token)
+        .map(|i| i.lookup)
+        .filter(|l| !l.is_empty());
+    // Close first (the daemon persists the close and resends it until the relay confirms; it also
+    // drops its local secrets for it), then always the INVITE-S2 revoke, whatever the close said.
+    let close = lookup.map(close);
     let legacy = legacy(blake3_token_hash(token));
-    if plan.legacy_must_succeed {
-        legacy?;
-    }
-    invites.retain(|i| !(i.group == group && i.token == token));
-    write_pending(path, &invites)
+    revoke_outcome(close, legacy)?;
+    update_pending_at(path, |v| {
+        v.retain(|i| !(i.group == group && i.token == token))
+    })
 }
 
 #[cfg(test)]
@@ -684,9 +661,8 @@ mod tests {
         })
     }
 
-    fn ok(published: bool, lookup: &str) -> Result<super::MintDecision, super::MintRefused> {
+    fn ok(lookup: &str) -> Result<super::MintDecision, super::MintRefused> {
         Ok(super::MintDecision {
-            published,
             lookup: lookup.to_string(),
         })
     }
@@ -696,7 +672,7 @@ mod tests {
         assert_eq!(crate::rendezvous::lookup_hex(T), LOOKUP);
         assert_eq!(
             super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP),
-            ok(true, LOOKUP)
+            ok(LOOKUP)
         );
     }
 
@@ -706,7 +682,7 @@ mod tests {
             Err(RvError::Daemon("relay_unsupported".into())),
             Err(RvError::DaemonUnsupported),
         ] {
-            assert_eq!(super::decide_mint(Ok(()), open, LOOKUP), ok(true, ""));
+            assert_eq!(super::decide_mint(Ok(()), open, LOOKUP), ok(""));
         }
     }
 
@@ -722,7 +698,7 @@ mod tests {
             Err(RvError::Ipc("connect: refused".into())),
             Err(RvError::Daemon("relay unreachable".into())),
         ] {
-            assert_eq!(super::decide_mint(Ok(()), open, LOOKUP), ok(true, LOOKUP));
+            assert_eq!(super::decide_mint(Ok(()), open, LOOKUP), ok(LOOKUP));
         }
     }
 
@@ -730,16 +706,44 @@ mod tests {
     fn open_times_out_then_revoke_still_closes_the_rendezvous() {
         let d = super::decide_mint(Ok(()), Err(RvError::Ipc("timed out".into())), LOOKUP)
             .expect("the link is handed out (the legacy publish worked)");
-        let plan = super::revoke_plan(Some(&invite(&d.lookup, d.published)));
-        assert_eq!(plan.close.as_deref(), Some(LOOKUP));
-        assert!(plan.legacy_must_succeed);
+        let path = scratch("open-timed-out");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let closed = std::cell::RefCell::new(None);
+        let r = super::revoke_at(
+            &path,
+            "g",
+            T,
+            |l| {
+                *closed.borrow_mut() = Some(l);
+                Ok(())
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(closed.into_inner().as_deref(), Some(LOOKUP));
+    }
+
+    #[test]
+    fn an_invite_without_a_rendezvous_is_revoked_by_the_legacy_call_alone() {
+        let d = super::decide_mint(Ok(()), Err(RvError::DaemonUnsupported), LOOKUP).expect("link");
+        let path = scratch("no-rendezvous");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::revoke_at(
+            &path,
+            "g",
+            T,
+            |_| panic!("no rendezvous was recorded, so nothing is closed"),
+            |_| Ok(()),
+        );
+        assert_eq!(r, Ok(()));
+        assert!(tokens(&path).is_empty());
     }
 
     #[test]
     fn mint_hands_out_the_link_when_only_the_rendezvous_opened() {
         assert_eq!(
             super::decide_mint(Err("relay down".into()), opened(LOOKUP), LOOKUP),
-            ok(false, LOOKUP)
+            ok(LOOKUP)
         );
     }
 
@@ -781,68 +785,25 @@ mod tests {
         // daemon actually holds.
         assert_eq!(
             super::decide_mint(Ok(()), opened(&other), LOOKUP),
-            ok(true, &other)
+            ok(&other)
         );
         let e = super::decide_mint(Err("x".into()), opened(&other), LOOKUP).expect_err("no link");
         assert_eq!(e.lookup_to_close, other);
         assert_eq!(
             super::decide_mint(Ok(()), opened(&LOOKUP.to_uppercase()), LOOKUP),
-            ok(true, LOOKUP)
-        );
-    }
-
-    fn invite(lookup: &str, published: bool) -> super::PendingInvite {
-        super::PendingInvite {
-            group: "g".into(),
-            token: T.into(),
-            for_handle: "h".into(),
-            created_at: 1,
-            priv_key: String::new(),
-            link: String::new(),
-            lookup: lookup.into(),
-            published,
-        }
-    }
-
-    #[test]
-    fn revoke_always_sends_both_when_a_rendezvous_was_recorded() {
-        let p = super::revoke_plan(Some(&invite(LOOKUP, true)));
-        assert_eq!(
-            (p.close.as_deref(), p.legacy_must_succeed),
-            (Some(LOOKUP), true)
-        );
-        // The legacy revoke is still sent when its publish failed; only its error is tolerated.
-        let p = super::revoke_plan(Some(&invite(LOOKUP, false)));
-        assert_eq!(
-            (p.close.as_deref(), p.legacy_must_succeed),
-            (Some(LOOKUP), false)
-        );
-        let p = super::revoke_plan(Some(&invite("", true)));
-        assert_eq!((p.close, p.legacy_must_succeed), (None, true));
-        let p = super::revoke_plan(None);
-        assert_eq!((p.close, p.legacy_must_succeed), (None, true));
-    }
-
-    #[test]
-    fn revoke_body_sends_close_then_the_legacy_revoke_unconditionally() {
-        let src = include_str!("invites.rs");
-        let body = &src[src.find("pub async fn group_invite_revoke").expect("fn")..];
-        let body = &body[..body.find("\n}\n").expect("end")];
-        let close = body.find("rendezvous_close(").expect("close");
-        let legacy = body.find("revoke_invite(&app").expect("legacy");
-        assert!(close < legacy);
-        assert!(
-            !body.contains("if revoke_legacy"),
-            "the legacy revoke is always sent"
+            ok(LOOKUP)
         );
     }
 
     #[test]
-    fn pre_s2_pending_records_load_as_published_without_a_rendezvous() {
+    fn pre_s2_pending_records_load_without_a_rendezvous() {
         let old = r#"[{"group":"g","token":"t","forHandle":"h","createdAt":1,"privKey":"aa","link":"l"}]"#;
         let v: Vec<super::PendingInvite> = serde_json::from_str(old).expect("old file loads");
-        assert!(v[0].published);
         assert!(v[0].lookup.is_empty());
+        // A record written by an earlier build of this branch (with `published`) still loads.
+        let s2 = r#"[{"group":"g","token":"t","forHandle":"h","createdAt":1,"privKey":"aa","link":"l","lookup":"ab","published":false}]"#;
+        let v2: Vec<super::PendingInvite> = serde_json::from_str(s2).expect("loads");
+        assert_eq!(v2[0].lookup, "ab");
         let view = super::PendingInviteView::from(&v[0]);
         assert_eq!(view.lookup, "");
     }
@@ -1146,7 +1107,6 @@ mod tests {
             priv_key: "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
             lookup: String::new(),
-            published: true,
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
         assert_eq!(views.len(), 1);
@@ -1181,7 +1141,6 @@ mod tests {
             priv_key: "deadbeef".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
             lookup: String::new(),
-            published: true,
         }];
         super::write_pending(&path, &invites).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
