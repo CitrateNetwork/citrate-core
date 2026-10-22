@@ -1767,6 +1767,8 @@ export interface PendingInvite {
   createdAt: number;
   /** CONNECT-S1 — the full share link (with the sealed-invite key); "" for pre-S1 invites. */
   link?: string;
+  /** GROW-S2 — the relay rendezvous lookup (hex) when one was opened; matches `InviteViewDto.lookup`. */
+  lookup?: string;
 }
 export interface InviteMinted {
   token: string;
@@ -1815,6 +1817,74 @@ export interface InvitesDomain {
   referralLog(): Promise<ReferralEvent[]>;
   /** #73 — the referral ledger as pretty JSON, for the member to save as their audit copy. */
   exportReferralLog(): Promise<string>;
+}
+
+// ── GROW-S2 (Join 9) — relay rendezvous views. Mirror the Rust `rendezvous::JoinView` /
+// `InviteView` (camelCase), which mirror the member daemon's §9 IPC views (GROW-S2 contract,
+// citrate-federation .agentile/planset/2026-10-19-betanet/JOIN_GROW_S2_RELAY.md). No secrets: no
+// relay token, auth or MAC key ever crosses invoke.
+export type JoinStateWord =
+  | "requesting"
+  | "waiting"
+  | "joining"
+  | "joined"
+  | "expired"
+  | "revoked"
+  | "taken"
+  | "dropped"
+  | "withdrawn"
+  | "unknown"
+  | "welcome_expired"
+  | "reply_unverified"
+  | "relay_unreachable"
+  | "relay_unsupported"
+  | "failed";
+/** The invitee's view of one join. `reason` is the daemon's stable code (e.g. `no_rendezvous`). */
+export interface JoinViewDto {
+  group: string;
+  name: string;
+  state: JoinStateWord;
+  reason: string | null;
+  expiresAt: number | null;
+  graceUntil: number | null;
+  updatedAt: number | null;
+}
+export type InviteStateWord =
+  | "open"
+  | "adding"
+  | "added"
+  | "picked_up"
+  | "welcome_expired"
+  | "expired"
+  | "revoked"
+  | "failed"
+  | "relay_unreachable"
+  | "unknown";
+/** The inviter's view of one rendezvous it opened. `joiner` is the full address; shorten it on screen. */
+export interface InviteViewDto {
+  lookup: string;
+  group: string;
+  state: InviteStateWord;
+  joiner: string | null;
+  expiresAt: number;
+  updatedAt: number | null;
+  reason: string | null;
+  dropped: number;
+}
+/** The `rendezvous_tick` answer and the `join://state` event payload. */
+export interface RendezvousViews {
+  joins: JoinViewDto[];
+  invites: InviteViewDto[];
+}
+export interface RendezvousDomain {
+  /** Run one rendezvous tick now (daemon `rendezvousTick`); also emitted on `join://state`. */
+  tick(): Promise<RendezvousViews>;
+  /** Invitee: withdraw a requesting / waiting join. Returns the view after the attempt. */
+  cancel(group: string): Promise<JoinViewDto>;
+  /** Invitee: clear a terminal join from the list. */
+  forget(group: string): Promise<void>;
+  /** Subscribe to `join://state`. Resolves to an unsubscribe. */
+  onState(fn: (views: RendezvousViews) => void): Promise<() => void>;
 }
 
 /** A volunteered claim recovered from the server-blind inbox (owner-side). */
@@ -2325,4 +2395,5 @@ export interface CxBridge {
   social: SocialDomain;
   invites: InvitesDomain;
   components: ComponentsDomain;
+  rendezvous: RendezvousDomain;
 }
