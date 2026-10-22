@@ -4538,6 +4538,19 @@ export class Store {
    * honestly — never a fabricated activation.
    */
   async activateValidator(hooks?: { onSigned?: WalletReview["onSigned"]; onResolved?: WalletReview["onResolved"] }): Promise<boolean> {
+    // A recorded activation tx guards EVERY entry (S7 and Node): reconcile it with the chain
+    // first; while it is unresolved, never build a second ceremony for the same bond.
+    if (this.state.s7TxHash) {
+      await this.refreshActivation();
+      if (this.state.s7TxHash) {
+        this.toast("Activation already sent — waiting for it to be included.");
+        return false;
+      }
+      if (this.state.activation?.bondActivated === true) {
+        this.toast("Your bond is already activated; there is nothing to sign.");
+        return false;
+      }
+    }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who

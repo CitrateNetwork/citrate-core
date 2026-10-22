@@ -513,3 +513,19 @@ describe("a recorded activation guards every entry, not only S7", () => {
     expect(registerValidatorMock).not.toHaveBeenCalled();
   });
 });
+
+describe("tripwire: the recorded-tx guard lives in the shared entry", () => {
+  it("activateValidator checks s7TxHash before it can build a ceremony", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(__dirname, "store.ts"), "utf8");
+    const start = src.search(/async activateValidator\(/);
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start);
+    const guard = body.indexOf("this.state.s7TxHash");
+    const build = body.indexOf("bridge.node.registerValidator");
+    expect(guard).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(build);
+  });
+});
