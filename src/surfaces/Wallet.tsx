@@ -81,7 +81,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   }, [store]);
   // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
   // once the node poll has reconciled the stake / bond after mount.
-  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null);
   useEffect(() => {
     void store.refreshEarnings();
   }, [store, readsRewards]);

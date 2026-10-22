@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, canOfferActivation, validatorDash, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -60,7 +60,7 @@ export function Node({ store, s }: SurfaceProps) {
   }, [store]);
   // Read again when the reward eligibility changes while the tab is open (the stake or the bond's
   // activated flag reconciles after mount; #348 review).
-  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
   }, [store, s.nTab, readsRewards]);
@@ -122,7 +122,10 @@ export function Node({ store, s }: SurfaceProps) {
   const isRegisteredValidator = s.bondedStake > 0;
   // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
   // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
-  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant);
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  const vDash = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  // C1-V4: activation is offered only when MemberBond.activated() reads false.
+  const offerActivation = canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
   const pWord = producingWord(s.producers, s.validatorPubkey);
   const producingStr = !isRegisteredValidator
     ? "— · not a registered validator"
@@ -145,7 +148,7 @@ export function Node({ store, s }: SurfaceProps) {
   const rClaim = s.rewards ? saltFromWei(s.rewards.claimableWei) : null;
   const rMaturing = rTotal != null && rClaim != null ? Math.max(0, rTotal - rClaim) : null;
   // An activated bond is read whatever its stake: after a full exit it can still claim (#348 review).
-  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? "not read yet" : "Not a validator";
+  const rewardsReason = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null) ? "not read yet" : "Not a validator";
   const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
   const claimDisabled = rClaim == null || rClaim < 5;
   const claimNote =
@@ -330,11 +333,11 @@ export function Node({ store, s }: SurfaceProps) {
                 {/* W1.3 — once the node is synced (proposer.key minted), the member
                     can bond the 32k and become a block producer. staker = the EOA;
                     the tx is approved through the ceremony. Shown only in the
-                    packaged app when synced-but-not-yet-validating. A registered stake that
-                    isn't active yet (pending, or isActive unread) is already staked: no
-                    activation is offered for it (#348 review). */}
-                {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
-                {TAURI && s.node === "synced" && !(s.bondedStake > 0) && vWord !== "Exiting" && vWord !== "Slashed" && (
+                    packaged app when synced-but-not-yet-validating. */}
+                {/* C1-V2/C1-V4 and #348 review: only a bond that is not activated, with no registered
+                    stake, is offered activation; an Exiting / Slashed key, a registered stake that
+                    isn't active yet, or an unread status never is (canOfferActivation). */}
+                {TAURI && s.node === "synced" && offerActivation && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
@@ -379,7 +382,7 @@ export function Node({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Status</span>
                   <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch, currentEpoch() and stakeOf(pubkey)">
-                    {vWord ?? "— · registry not read yet"}
+                    {vDash}
                     {vWord === "Validator active" && (
                       <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
                     )}

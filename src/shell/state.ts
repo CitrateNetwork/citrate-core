@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
+import type { MemberBondState, ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -438,14 +438,15 @@ export interface AppState {
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;
+  /**
+   * C1-V4/C1-V5 — the member's bond (deployed, activated(), pubkey()); null = grant status not read.
+   * Observed, never persisted. `activated` outlives a full exit or a slash (the registry stake reads
+   * 0, pubkeyOfStaker is cleared), so with the stake it also decides whether `rewardsOf` is read
+   * (#348 review).
+   */
+  memberBond: MemberBondState | null;
   /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
   validatorCounts: ValidatorCounts | null;
-  /**
-   * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
-   * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
-   * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
-   */
-  bondActivated: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
@@ -820,8 +821,8 @@ export function freshState(pid: string): AppState {
     hasSbt: false,
     rewards: null,
     validatorActivation: null,
+    memberBond: null,
     validatorCounts: null,
-    bondActivated: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,

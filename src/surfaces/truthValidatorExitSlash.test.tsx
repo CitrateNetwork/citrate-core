@@ -66,11 +66,11 @@ describe("C1-V2(a) — the word follows validatorInfo.status before any stake ch
     expect(validatorWord(0, slashed, false)).toBe("Slashed");
   });
 
-  it("stake 0 with status None (or not read) keeps the bond / not-a-validator words", () => {
-    expect(validatorWord(0, none, true)).toBe("Bond locked · not staked");
-    expect(validatorWord(0, none, false)).toBe("Not a validator");
-    expect(validatorWord(0, null, true)).toBe("Bond locked · not staked");
-    expect(validatorWord(0, null, false)).toBe("Not a validator");
+  it("stake 0 with status None keeps the bond / not-a-validator words; unread is unread (C1-V4)", () => {
+    expect(validatorWord(0, none, true, { deployed: true, activated: false, pubkey: null })).toBe("Bond locked · not staked");
+    expect(validatorWord(0, none, false, { deployed: false, activated: null, pubkey: null })).toBe("Not a validator");
+    expect(validatorWord(0, null, true)).toBeNull();
+    expect(validatorWord(0, null, false)).toBeNull();
   });
 
   it("the poll reads validatorInfo for a known key even when the registry stake is 0", async () => {
@@ -101,6 +101,9 @@ describe("C1-V2(a) — the word follows validatorInfo.status before any stake ch
       unlockBlock: 16_000_000,
       isUnlocked: false,
       isKycVerified: false,
+      // C1-V5: after the exit the bond keeps its pubkey (pubkeyOfStaker is cleared).
+      bondActivated: true,
+      bondPubkey: KEY,
     };
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(g);
     await store.refreshNode();

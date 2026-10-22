@@ -612,6 +612,8 @@ export interface GrantStatus {
    * key's matured rewards. null = no bond, or the read failed. Optional for older backends.
    */
   bondActivated?: boolean | null;
+  /** C1-V5 — `MemberBond.pubkey()` (kept after an exit); null = zero, no bond, or not read. */
+  bondPubkey?: string | null;
   /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
   unlockBlock: number | null;
   /** `MemberBond.isUnlocked()` — either leg elapsed. Eligibility, not a payout. */

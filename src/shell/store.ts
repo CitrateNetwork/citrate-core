@@ -59,7 +59,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorDash, type ChainReads, type MemberBondState, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
@@ -261,6 +261,15 @@ export function describeBond(g: {
  * Returning `null` (rather than an empty patch) keeps "no grant" a distinct,
  * non-mutating outcome — a member mid-flow is never nudged forward (Rule 1).
  */
+/**
+ * C1-V4/C1-V5 — the member's bond as the grant read reports it: deployed, `MemberBond.activated()`
+ * and `MemberBond.pubkey()` (null = not read). The one place the grant read becomes `memberBond`.
+ */
+export function memberBondFromGrant(g: GrantStatus): MemberBondState {
+  const pubkey = typeof g.bondPubkey === "string" && /^0x[0-9a-fA-F]{64}$/.test(g.bondPubkey) ? g.bondPubkey.toLowerCase() : null;
+  return { deployed: g.bondDeployed, activated: g.bondDeployed ? (g.bondActivated ?? null) : null, pubkey };
+}
+
 export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
   if (!isGrantOnChain(g) || !g.hasSbt) return null;
   return {
@@ -1307,10 +1316,10 @@ export class Store {
       this.setState(guard);
       this.save();
     }
-    // #348 review: the bond's activated flag is observed, never persisted. Fold it from this
-    // node-independent read on every launch, settled or not, so an exited validator's rewards load
-    // even with the node stopped. A failed read stays null (unread).
-    this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    // #348 review: the bond state (activated flag, key) is observed, never persisted. Fold it from
+    // this node-independent read on every launch, settled or not, so an exited validator's rewards
+    // load even with the node stopped. A failed read stays null (unread).
+    this.setState({ memberBond: memberBondFromGrant(grant) });
     // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
     // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
     // that is on chain; otherwise the last value stands.
@@ -1337,13 +1346,24 @@ export class Store {
     if (!nodeRunning || Date.now() - this.lastActiveReadAt < ACTIVE_READ_MS) return this.state.validatorActivation;
     this.lastActiveReadAt = Date.now();
     try {
-      if (!this.validatorPubkey) {
-        const v = await bridge.node.validatorEarnings();
-        if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
-        this.validatorPubkey = v.proposerPubkey as `0x${string}`;
-        this.setState({ validatorPubkey: this.validatorPubkey.toLowerCase() });
+      // C1-V5: the member's validator key is MemberBond.pubkey() where the bond defines it (it is
+      // kept after an exit); the node's proposer key is used only when no bond exists. A bond
+      // whose key is unset (not activated) or unread has no registry key to ask about yet.
+      const bond = this.state.memberBond;
+      let key: `0x${string}` | null = null;
+      if (bond?.deployed) {
+        key = (bond.pubkey as `0x${string}` | null) ?? null;
+      } else if (bond) {
+        if (!this.validatorPubkey) {
+          const v = await bridge.node.validatorEarnings();
+          if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
+          this.validatorPubkey = v.proposerPubkey as `0x${string}`;
+          this.setState({ validatorPubkey: this.validatorPubkey.toLowerCase() });
+        }
+        key = this.validatorPubkey;
       }
-      return await this.chainReads.validatorActivation(this.validatorPubkey);
+      if (!key) return null;
+      return await this.chainReads.validatorActivation(key);
     } catch {
       return null;
     }
@@ -1435,20 +1455,21 @@ export class Store {
       // grant existed, and this was the only other read — but it folded ONLY the validator bond (0
       // pre-activation), so the 32k attributed stake never surfaced until a relaunch.
       let grantPatch: Partial<AppState> | null = null;
-      let bondActivated = this.state.bondActivated;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
       // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
       // own read (whatever the node is doing) until it lands.
-      const needActivation = this.state.hasGrant && bondActivated === null;
+      const needActivation = this.state.hasGrant && this.state.memberBond === null;
       if ((needBond || needGrant || needActivation) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
           bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
-          // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
-          bondActivated = g.bondActivated ?? null;
+          // C1-V4/C1-V5 and #348 review: the bond's own activation flag and key (null = not read).
+          // MemberBond.activated() outlives an exit (unlike pubkeyOfStaker): it decides the validator
+          // word, the activation offer, and whether rewardsOf is read and claimed through the bond.
+          this.setState({ memberBond: memberBondFromGrant(g) });
           // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
           // block), DISTINCT from the validator bond above — so a granted-but-not-yet-activated member
           // sees their locked 32k, not "0 staked". Null when the grant isn't genuinely on chain (Rule 1).
@@ -1488,7 +1509,6 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
-        bondActivated,
         validatorActivation,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
@@ -1581,6 +1601,9 @@ export class Store {
     if (s.bondedStake >= 32000) return; // already a bonded validator — nothing to do
     if (!this.walletIsLinked()) return; // S4: the EOA must be the member's wallet_address
     if (!s.hasGrant) return; // the grant must have deployed + funded the bond clone (settled S5)
+    // C1-V4: only a bond the chain reports as not activated is offered activation. An unread
+    // status or bond state (e.g. an exiting member) never opens it.
+    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)) return;
 
     // STEP 1 — ARM the producer so the node mints `proposer.key` (the validator
     // identity activation needs). The node runs as a plain follower and NEVER mints
@@ -3401,7 +3424,7 @@ export class Store {
         const a = this.state.validatorActivation;
         result = JSON.stringify({
           ...(await bridge.node.status()),
-          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant),
+          validator: validatorDash(this.state.bondedStake, a, this.state.hasGrant, this.state.memberBond),
           validatorActivation: a,
         });
       } catch (e) {
@@ -4263,7 +4286,7 @@ export class Store {
    * no longer shown as rewards. A failed read keeps `rewards` null (unknown is not zero) and says so.
    */
   async refreshEarnings(): Promise<void> {
-    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
+    if (!readsValidatorRewards(this.state.bondedStake, this.state.memberBond?.activated ?? null)) {
       this.setState({ rewards: null });
       return;
     }

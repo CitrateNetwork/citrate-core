@@ -46,3 +46,21 @@ fn tx_hashes_are_0x_and_64_hex_digits() {
     assert!(!is_tx_hash(&format!("{HASH}00")));
     assert!(!is_tx_hash(&HASH.replace('a', "g")));
 }
+
+// Contract v1.1 §1 (#347): an ambiguous node error ("already known", DuplicateNonce, -32603) or
+// any error on a re-send now reaches core as an unknown outcome with the hash, so an agent payment
+// is reported as submitted; only a definitive first-send refusal stays a failure.
+#[test]
+fn ambiguous_send_errors_reach_the_agent_as_an_unknown_outcome() {
+    let h = format!("0x{}", "ab".repeat(32));
+    for reason in [
+        "rpc node error: already known",
+        "rpc node error: Failed to submit transaction: DuplicateNonce { nonce: 0 }",
+        "rpc node error: Failed to submit transaction: NonceTooLow { expected: 3, got: 0 }",
+    ] {
+        let err = format!("ceremony: submitted, outcome unknown (tx {h}): {reason}");
+        assert_eq!(submitted_tx_hash(&err).as_deref(), Some(h.as_str()), "{reason}");
+    }
+    let refused = "not submitted: ceremony: broadcast failed: rpc node error: Failed to submit transaction: Full";
+    assert_eq!(submitted_tx_hash(refused), None);
+}

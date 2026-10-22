@@ -76,8 +76,11 @@ describe("chainTruth helpers", () => {
   });
 
   it("derives the §1 validator word from the registry only (V4)", () => {
-    expect(validatorWord(0, null, false)).toBe("Not a validator");
-    expect(validatorWord(0, null, true)).toBe("Bond locked · not staked");
+    // C1-V4: "Not a validator" needs status None; "Bond locked" needs MemberBond.activated() = false.
+    const NONE = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 499 };
+    expect(validatorWord(0, NONE, false, { deployed: false, activated: null, pubkey: null })).toBe("Not a validator");
+    expect(validatorWord(0, null, true, { deployed: true, activated: false, pubkey: null })).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, false)).toBeNull();
     expect(validatorWord(32_000, ACT_PENDING, true)).toBe("Registered · active from epoch 501");
     expect(validatorWord(32_000, ACT_ON, true)).toBe("Validator active");
     expect(validatorWord(32_000, null, true)).toBeNull();
@@ -108,6 +111,9 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
       unlockBlock: 16_000_000,
       isUnlocked: false,
       isKycVerified: false,
+      // C1-V5: the bond keeps the key it activated with; the registry is read for that key.
+      bondActivated: stakeSalt > 0,
+      bondPubkey: stakeSalt > 0 ? "0x" + "11".repeat(32) : null,
     };
   }
 
@@ -149,7 +155,8 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
     // full exit); self-stake is still never an input, and status None is not a validator.
     await poll(0, true, { selfStake: 40_000 });
     expect(store.state.node).toBe("synced");
-    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, false)).toBe("Not a validator");
+    // C1-V4/V5: the bond is deployed and not activated, so the word comes from the bond.
+    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, true, store.state.memberBond)).toBe("Bond locked · not staked");
   });
 
   it("the re-arm toast does not say 'producing again'", async () => {
