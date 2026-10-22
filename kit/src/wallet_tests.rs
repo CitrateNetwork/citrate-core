@@ -1679,7 +1679,10 @@ fn k6_tok_close(toks: &[K6Tok], i: usize) -> usize {
 /// matter, and nothing inside a comment or a literal counts:
 /// - `include!` (any path prefix, any delimiter): its literal argument;
 /// - `#[path = …]`, and every `path = …` inside a `#[cfg_attr(…)]` (at any nesting);
-/// - a `use` that names `include` (a renamed `include!` the scan cannot follow): `None`.
+/// - `include` anywhere else (a `use` that renames it, or the identifier passed to a macro that
+///   calls it as `$i!`): `None`, since the scan cannot follow it to a literal;
+/// - a macro call whose name is a metavariable (`$m!(…)`): `None`, since `$m` can be `include`
+///   (this holds whatever `#[cfg]` gates the call: the scan reads every token, on every target);
 /// - an attribute whose body is a macro fragment (`#[$a]`, `#![$a]`, `#[$($t)*]`), or a
 ///   `cfg_attr` holding one: `None`, since the fragment can expand to a `path`.
 ///
@@ -1694,19 +1697,17 @@ fn k6_module_refs(src: &str) -> Vec<Option<String>> {
         _ => None,
     };
     let mut out = Vec::new();
-    let mut in_use = false;
     for k in 0..t.len() {
-        if word(k, "use") {
-            in_use = true;
-        } else if punct(k, ';') {
-            in_use = false;
-        }
         if word(k, "include") {
             if punct(k + 1, '!') && (punct(k + 2, '(') || punct(k + 2, '[') || punct(k + 2, '{')) {
                 out.push(lit(k + 3));
-            } else if in_use {
+            } else {
                 out.push(None);
             }
+            continue;
+        }
+        if punct(k, '$') && matches!(t.get(k + 1), Some(K6Tok::Ident(_))) && punct(k + 2, '!') {
+            out.push(None);
             continue;
         }
         if !punct(k, '#') {
