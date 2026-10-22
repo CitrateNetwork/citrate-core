@@ -2597,3 +2597,31 @@ fn a_refusal_with_no_other_attempt_is_still_not_sent() {
     let (r, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
     assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "{r:?}");
 }
+
+/// Tripwire (#347 Codex P1): any send path that classifies a refusal by first submission must also
+/// require that no other attempt recorded the same bytes (`sole_attempt`). Scans non-test sources.
+#[test]
+fn tripwire_first_submission_classification_checks_for_overlapping_attempts() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut dirs = vec![root.join("src"), root.join("../src-tauri/src")];
+    let mut offenders = Vec::new();
+    while let Some(d) = dirs.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+                continue;
+            }
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap_or_default();
+            if src.contains("first_submission") && !src.contains(".sole_attempt(") {
+                offenders.push(p.display().to_string());
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "first-submission classification without sole_attempt: {offenders:?}");
+}
