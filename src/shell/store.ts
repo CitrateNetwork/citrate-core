@@ -84,6 +84,7 @@ import {
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
+import { locate, resolveRoute } from "./places";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 /**
@@ -2133,9 +2134,13 @@ export class Store {
   }
 
   go(route: string): void {
-    this.setState({ route });
+    // Five-place navigation: an old route id or a moved Settings section opens its new home
+    // (src/shell/places.ts). Unknown ids are kept as given, as before.
+    const r = resolveRoute(route);
+    const target = r ? r.route : route;
+    this.setState({ route: target, ...(r?.patch ?? {}) });
     try {
-      if ((location.hash || "").replace(/^#\//, "") !== route) location.hash = "#/" + route;
+      if ((location.hash || "").replace(/^#\//, "") !== target) location.hash = "#/" + target;
     } catch {
       /* ignore */
     }
@@ -3750,7 +3755,7 @@ export class Store {
       this.toast(`Couldn't read the "${skill.name}" skill: ` + (e instanceof Error ? e.message : String(e)));
       return;
     }
-    if (this.state.route !== "dashboard") this.go("dashboard");
+    if (locate(this.state.route).route !== "hermes/chat") this.go("hermes/chat");
     void this.sendChat(runPrompt({ name: skill.name, instruction }));
   }
 

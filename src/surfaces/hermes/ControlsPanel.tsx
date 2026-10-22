@@ -31,9 +31,12 @@ import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
+import { publishWebSettings, subscribeWebSettings } from "../../agent/webSettingsSync";
+import { writeWebSettingsUnlessStarting } from "../../agent/webSettingsWrite";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
+import { readWebSettingsUnlessSuperseded } from "../../agent/webSettingsSync";
 
 export type ControlId = "local-model" | "web-search" | "terminal" | "daemons" | "learn" | "voice";
 
@@ -224,12 +227,26 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const [restarting, setRestarting] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
 
+  // One source of truth with the Settings › Web search form mounted below: when it saves, show
+  // what core saved (webSettingsSync.ts). This panel announces its own saves the same way.
+  const [me] = useState(() => Symbol("controls-panel"));
+  useEffect(
+    () =>
+      subscribeWebSettings((st, source) => {
+        if (source === me) return;
+        setWeb(st);
+        setWebErr(st.loadError ?? null);
+      }),
+    [me],
+  );
+
   // Reads only. Nothing here writes, so opening the panel changes no setting.
   useEffect(() => {
     let live = true;
     if (webDesktop) {
-      loadWebSettings(io.web).then(
-        (st) => live && (setWeb(st), setWebErr(st.loadError ?? null), noteRunning("webSearch", st.settings.searchEnabled)),
+      // Dropped (null) if the form saved while this read was in flight: the subscription applied it.
+      readWebSettingsUnlessSuperseded(() => loadWebSettings(io.web)).then(
+        (st) => live && st && (setWeb(st), setWebErr(st.loadError ?? null), noteRunning("webSearch", st.settings.searchEnabled)),
         (e) => live && setWebErr(msg(e)),
       );
     }
@@ -264,9 +281,16 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
       try {
         // Field-specific: re-read what is saved now (another form may have changed it since this
         // panel loaded), change only searchEnabled, and show what core answers.
-        const fresh = await loadWebSettings(io.web);
-        noteRunning("webSearch", fresh.settings.searchEnabled);
-        const st = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
+        // One write at a time with the Web search form (webSettingsSync.ts).
+        // Held (null) if a Hermes start began while this write waited; the row says so.
+        const st = await writeWebSettingsUnlessStarting(async () => {
+          const fresh = await loadWebSettings(io.web);
+          noteRunning("webSearch", fresh.settings.searchEnabled);
+          const saved = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
+          publishWebSettings(saved, me);
+          return saved;
+        });
+        if (!st) return;
         setWeb(st);
         setWebErr(st.loadError ?? null);
       } catch (e) {
@@ -277,7 +301,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     ? "Web search needs the desktop app. This preview cannot change it."
     : held
       ? HELD_DURING_START
-      : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (More, in Settings › Web search)." : null);
+      : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (set it in Hermes › Controls › Web search & decisions)." : null);
 
   const webPending =
     web && web.appliesOnRestart && webStarted !== null && web.settings.searchEnabled !== webStarted

@@ -12,10 +12,12 @@
 // fields that differ from what the form loaded, and writes that. Another writer (Hermes › Controls,
 // mounted next to this form) may have changed other fields since the form loaded; those are kept.
 // =====================================================================
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
+import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
+import { writeWebSettingsUnlessStarting } from "../agent/webSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -28,6 +30,7 @@ import {
   type HermesWebStatus,
   type WebSettingsIo,
 } from "../agent/webSearch";
+import { readWebSettingsUnlessSuperseded } from "../agent/webSettingsSync";
 
 /** The fields of `draft` that differ from `baseline` (what the form loaded or last saved). */
 export function changedFields(baseline: HermesWebSettings, draft: HermesWebSettings): Partial<HermesWebSettings> {
@@ -92,13 +95,37 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   const [originsText, setOriginsText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // This form's id on the web-settings channel (webSettingsSync.ts), and its latest state for the
+  // listener below, which runs outside a render.
+  const [me] = useState(() => Symbol("web-search-form"));
+  const latest = useRef({ draft, baseline, originsText });
+  latest.current = { draft, baseline, originsText };
+
+  // Another view (the Controls panel's Web search switch) saved: show what core saved now, and
+  // re-baseline so Save compares against it. The member's own unsaved edits here are kept.
+  useEffect(
+    () =>
+      subscribeWebSettings((st, source) => {
+        if (source === me) return;
+        const cur = latest.current;
+        const edits = changedFields(cur.baseline, { ...cur.draft, jevOrigins: parseOrigins(cur.originsText).origins });
+        const next = { ...st.settings, ...edits };
+        setStatus(st);
+        setBaseline(st.settings);
+        setDraft(next);
+        if (!("jevOrigins" in edits)) setOriginsText(next.jevOrigins.join("\n"));
+      }),
+    [me],
+  );
 
   useEffect(() => {
     if (!desktop) return;
     let live = true;
-    loadWebSettings(io)
+    // Dropped (null) if the other view saved while this read was in flight: the subscription above
+    // already applied that newer value, and this answer is older.
+    readWebSettingsUnlessSuperseded(() => loadWebSettings(io))
       .then((st) => {
-        if (!live) return;
+        if (!live || !st) return;
         setStatus(st);
         setDraft(st.settings);
         setBaseline(st.settings);
@@ -124,10 +151,19 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
     setError(null);
     try {
       const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
-      const fresh = await loadWebSettings(io);
-      // Hermes reads search at start: remember what it runs with before changing the saved value.
-      noteRunning("webSearch", fresh.settings.searchEnabled);
-      const st = await saveWebSettings(io, { ...fresh.settings, ...edits });
+      // One write at a time across every view (webSettingsSync.ts): re-read, apply only the
+      // fields changed here, write, announce, then let the next writer in.
+      // Held (null) if a Hermes start began while this write waited: the draft stays unsaved and
+      // the "Hermes is starting" line shows; Save works again once Hermes is up.
+      const st = await writeWebSettingsUnlessStarting(async () => {
+        const fresh = await loadWebSettings(io);
+        // Hermes reads search at start: remember what it runs with before changing the saved value.
+        noteRunning("webSearch", fresh.settings.searchEnabled);
+        const saved = await saveWebSettings(io, { ...fresh.settings, ...edits });
+        publishWebSettings(saved, me);
+        return saved;
+      });
+      if (!st) return;
       setStatus(st);
       setDraft(st.settings);
       setBaseline(st.settings);

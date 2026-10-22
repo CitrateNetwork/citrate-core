@@ -24,6 +24,7 @@ import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
 import { invoke } from "../../bridge/tauri/invoke";
 import type { HermesWebStatus } from "../../agent/webSearch";
+import { withWebSettingsLock } from "../../agent/webSettingsSync";
 
 export type HermesStartSetting = "webSearch" | "learn";
 
@@ -83,7 +84,11 @@ export async function readSavedForHermes(): Promise<HermesSavedSnapshot> {
 export async function withHermesStart<T>(f: (snapshot: HermesSavedSnapshot) => Promise<T>, read: () => Promise<HermesSavedSnapshot> = readSavedForHermes): Promise<T> {
   hermesRunningSlice.set((st) => ({ starting: st.starting + 1 }));
   try {
-    const snapshot = await read();
+    // The snapshot is taken inside the web-settings write lock (webSettingsSync.ts): it waits for a
+    // write already in progress, and writes queued behind it see the start and hold. Only the read
+    // is locked, never `f`, so a nested start (a restart inside a start) cannot wait on itself.
+    // `read` must not take the lock.
+    const snapshot = await withWebSettingsLock(read);
     return await f(snapshot);
   } finally {
     hermesRunningSlice.set((st) => ({ starting: Math.max(0, st.starting - 1) }));
