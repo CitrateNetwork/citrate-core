@@ -252,6 +252,13 @@ describe("Controls › 3 · Records: daemon run history", () => {
     expect($$("run-row")[0].textContent).toContain("Morning digest");
   });
 
+  it("a wholly unreadable log is not reported as having no runs", async () => {
+    await mount(io({ runsBetween: vi.fn(async () => ({ runs: [], unreadable: 3 })) }));
+    await click($("records-nav-runs"));
+    expect($("runs-unreadable")?.textContent).toContain("3 lines");
+    expect(text()).not.toContain("No runs recorded");
+  });
+
   it("counts unreadable lines instead of guessing them", async () => {
     await mount(io({ runsBetween: vi.fn(async () => ({ runs: [], unreadable: 3 })) }));
     await click($("records-nav-runs"));

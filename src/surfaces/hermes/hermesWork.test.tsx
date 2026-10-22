@@ -81,6 +81,23 @@ describe("Hermes › Work run log", () => {
     expect($("daemon-run-log")?.textContent).toContain("desktop app");
   });
 
+  // Codex review of #364 at 4c75911: daemon_runs_between counts the log lines it could not read.
+  // A log with only unreadable lines is not "no runs", and a partly readable one is not complete.
+  it("a wholly unreadable log says how many lines could not be read, never \"No runs yet\"", async () => {
+    await render(<DaemonRunLog io={{ runsBetween: vi.fn(async () => ({ runs: [], unreadable: 3 })), now: () => NOW }} onFullHistory={() => {}} />);
+    expect($("daemon-run-log")?.textContent).not.toContain("No runs yet");
+    expect($("work-runs-unreadable"), "the unreadable count is shown").toBeTruthy();
+    expect($("work-runs-unreadable")?.textContent).toContain("3 lines");
+    expect($$("work-run-row").length).toBe(0);
+  });
+
+  it("a partly readable log shows its runs and says it is incomplete", async () => {
+    await render(<DaemonRunLog io={{ runsBetween: vi.fn(async () => ({ runs: [run(0)], unreadable: 1 })), now: () => NOW }} onFullHistory={() => {}} />);
+    expect($$("work-run-row").length).toBe(1);
+    expect($("work-runs-unreadable"), "the unreadable count is shown").toBeTruthy();
+    expect($("work-runs-unreadable")?.textContent).toContain("1 line");
+  });
+
   it("Full history opens Controls › 3 · Records on the run history", async () => {
     const onFullHistory = vi.fn();
     await render(<DaemonRunLog io={{ runsBetween: vi.fn(async () => ({ runs: [run(0)], unreadable: 0 })), now: () => NOW }} onFullHistory={onFullHistory} />);
@@ -107,5 +124,32 @@ describe("Hermes › Work links into Controls › 3 · Records", () => {
     });
     expect(store.state.route).toBe("hermes/controls/records");
     expect(recordsSlice.get()).toEqual({ view: "runs", daemonId: null });
+  });
+});
+
+// Tripwire: every view of the daemon run log (useDaemonRuns) shows the unreadable-line count
+// through the shared RunLogUnreadable, so a new view cannot draw a partial log as complete.
+describe("tripwire: run log views show unreadable lines", () => {
+  it("every src/ file that calls useDaemonRuns( also renders <RunLogUnreadable", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const srcDir = path.resolve(__dirname, "../..");
+    const offenders: string[] = [];
+    let views = 0;
+    const walk = (d: string) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.tsx$/.test(e.name) && !/\.test\.tsx$/.test(e.name)) {
+          const t = fs.readFileSync(p, "utf8");
+          const calls = (t.match(/useDaemonRuns\(io/g) ?? []).length;
+          views += calls;
+          if (calls > 0 && (t.match(/<RunLogUnreadable\b/g) ?? []).length < calls) offenders.push(path.relative(srcDir, p));
+        }
+      }
+    };
+    walk(srcDir);
+    expect(views).toBeGreaterThanOrEqual(2);
+    expect(offenders).toEqual([]);
   });
 });
