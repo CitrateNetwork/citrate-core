@@ -165,7 +165,10 @@ fn the_view_that_crosses_invoke_never_carries_the_code_or_the_key() {
 fn debug_output_is_redacted() {
     let r = rig();
     r.store.set(&link()).expect("set");
-    let dbg = format!("{:?}", r.store.load());
+    let dbg = {
+        let mut g = r.store.lock();
+        format!("{:?}", r.store.load(&mut g))
+    };
     assert!(!dbg.contains(KEY), "{dbg}");
     assert!(!dbg.contains(CODE), "{dbg}");
 }
@@ -195,9 +198,14 @@ fn an_expired_invite_is_wiped_on_read() {
 fn the_signed_expiry_can_only_shorten_the_hold() {
     let r = rig();
     r.store.set(&link()).expect("set");
-    r.store.cap_expiry(T0 + 60);
+    let cap = |exp: &str| {
+        r.store
+            .resolve_held(|_| Ok(view_for(exp)))
+            .expect("resolved");
+    };
+    cap(EXP_T0_PLUS_60);
     assert_eq!(r.store.get().map(|v| v.expires_at), Some(T0 + 60));
-    r.store.cap_expiry(T0 + PENDING_JOIN_TTL_SECS * 10);
+    cap("2100-01-01T00:00:00.000Z");
     assert_eq!(r.store.get().map(|v| v.expires_at), Some(T0 + 60));
     r.clock.store(T0 + 61, Ordering::SeqCst);
     assert!(r.store.get().is_none());

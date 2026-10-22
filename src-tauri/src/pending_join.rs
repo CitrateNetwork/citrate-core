@@ -27,7 +27,7 @@ use zeroize::{Zeroize, Zeroizing};
 /// Keyring account for the one pending invite.
 pub(crate) const PENDING_JOIN_ACCOUNT: &str = "join-pending-v1";
 /// Longest hold: a direct invite's relay TTL (14 days). The signed expiry, once resolved, can only
-/// shorten it ([`PendingJoinStore::cap_expiry`]).
+/// shorten it ([`PendingJoinStore::resolve_held`]).
 pub(crate) const PENDING_JOIN_TTL_SECS: u64 = 14 * 24 * 3600;
 /// Upper bound on an accepted link, before parsing.
 const MAX_LINK_LEN: usize = 2048;
@@ -78,8 +78,21 @@ pub struct PendingJoinView {
 pub struct PendingJoinStore {
     keyring: Box<dyn Keyring>,
     now: Box<dyn Fn() -> u64 + Send + Sync>,
+    /// Every read and write of the hold runs under this lock, so a set, a clear and the result of
+    /// a resolve never interleave half-way. The resolve's network call runs outside it.
+    inner: Mutex<Inner>,
+}
+
+#[derive(Default)]
+struct Inner {
     /// Fallback only while the keyring is unreachable.
-    memory: Mutex<Option<Stored>>,
+    memory: Option<Stored>,
+    /// Bumped by every set and every wipe. A resolve applies its answer only if the generation it
+    /// started on is still current, so it never acts on an invite that replaced the one it checked.
+    generation: u64,
+    /// The member cancelled but the keyring slot could not be deleted (keyring unreachable). Reads
+    /// ignore the slot and retry the delete until it succeeds, so the invite does not come back.
+    unwiped_slot: bool,
 }
 
 fn view(s: &Stored, persisted: bool) -> PendingJoinView {
@@ -91,35 +104,57 @@ fn view(s: &Stored, persisted: bool) -> PendingJoinView {
     }
 }
 
+/// The error a resolve returns when the invite changed (replaced or cancelled) while it was out.
+const CHANGED: &str =
+    "join: the waiting invite changed while it was being checked, review it again";
+
 impl PendingJoinStore {
     pub fn new(keyring: Box<dyn Keyring>, now: Box<dyn Fn() -> u64 + Send + Sync>) -> Self {
         PendingJoinStore {
             keyring,
             now,
-            memory: Mutex::new(None),
+            inner: Mutex::new(Inner::default()),
         }
     }
 
-    fn memory(&self) -> std::sync::MutexGuard<'_, Option<Stored>> {
-        self.memory.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn write(&self, s: Stored) -> bool {
+    fn write(&self, g: &mut Inner, s: Stored) -> bool {
         let bytes = match serde_json::to_vec(&s) {
             Ok(b) => Zeroizing::new(b),
             Err(_) => {
-                *self.memory() = Some(s);
+                g.memory = Some(s);
                 return false;
             }
         };
         match self.keyring.set(PENDING_JOIN_ACCOUNT, &bytes) {
             Ok(()) => {
-                *self.memory() = None;
+                g.memory = None;
+                g.unwiped_slot = false;
                 true
             }
             Err(_) => {
-                *self.memory() = Some(s);
+                g.memory = Some(s);
                 false
+            }
+        }
+    }
+
+    /// Wipe memory and the keyring slot. If the slot can't be deleted now, remember that so reads
+    /// never trust it again and the delete is retried.
+    fn wipe(&self, g: &mut Inner) -> Result<(), String> {
+        g.memory = None;
+        g.generation = g.generation.wrapping_add(1);
+        match self.keyring.delete(PENDING_JOIN_ACCOUNT) {
+            Ok(()) => {
+                g.unwiped_slot = false;
+                Ok(())
+            }
+            Err(e) => {
+                g.unwiped_slot = true;
+                Err(e.to_string())
             }
         }
     }
@@ -141,22 +176,29 @@ impl PendingJoinStore {
             stored_at: now,
             expires_at: now.saturating_add(PENDING_JOIN_TTL_SECS),
         };
-        let persisted = self.write(s.clone());
+        let mut g = self.lock();
+        g.generation = g.generation.wrapping_add(1);
+        let persisted = self.write(&mut g, s.clone());
         Ok(view(&s, persisted))
     }
 
     /// The held invite, if any and not expired. An expired or unreadable one is wiped.
-    pub(crate) fn load(&self) -> Option<(Stored, bool)> {
-        let from_memory = self.memory().clone();
-        let (s, persisted) = match from_memory {
+    fn load(&self, g: &mut Inner) -> Option<(Stored, bool)> {
+        let (s, persisted) = match g.memory.clone() {
             Some(s) => (s, false),
+            None if g.unwiped_slot => {
+                if self.keyring.delete(PENDING_JOIN_ACCOUNT).is_ok() {
+                    g.unwiped_slot = false;
+                }
+                return None;
+            }
             None => match self.keyring.get(PENDING_JOIN_ACCOUNT) {
                 Ok(Some(bytes)) => {
                     let bytes = Zeroizing::new(bytes);
                     match serde_json::from_slice::<Stored>(&bytes) {
                         Ok(s) if join::parse_link(&s.link).is_ok() => (s, true),
                         _ => {
-                            let _ = self.keyring.delete(PENDING_JOIN_ACCOUNT);
+                            let _ = self.wipe(g);
                             return None;
                         }
                     }
@@ -165,7 +207,7 @@ impl PendingJoinStore {
             },
         };
         if (self.now)() >= s.expires_at {
-            let _ = self.clear();
+            let _ = self.wipe(g);
             return None;
         }
         Some((s, persisted))
@@ -173,61 +215,71 @@ impl PendingJoinStore {
 
     /// The webview's view of the held invite.
     pub fn get(&self) -> Option<PendingJoinView> {
-        self.load().map(|(s, p)| view(&s, p))
+        let mut g = self.lock();
+        self.load(&mut g).map(|(s, p)| view(&s, p))
     }
 
-    /// The held `<code>[#K]`, for resolve. Stays in Rust.
+    /// The held `<code>[#K]`. Stays in Rust.
+    #[cfg(test)]
     pub(crate) fn link(&self) -> Option<Zeroizing<String>> {
-        self.load().map(|(s, _)| Zeroizing::new(s.link.clone()))
+        let mut g = self.lock();
+        self.load(&mut g)
+            .map(|(s, _)| Zeroizing::new(s.link.clone()))
     }
 
-    /// Wipe the held invite (memory and keyring slot).
+    /// Wipe the held invite (memory and keyring slot). An unreachable keyring is reported, and the
+    /// slot is still never read back.
     pub fn clear(&self) -> Result<(), String> {
-        *self.memory() = None;
-        self.keyring
-            .delete(PENDING_JOIN_ACCOUNT)
-            .map_err(|e| e.to_string())
+        let mut g = self.lock();
+        self.wipe(&mut g)
     }
 
     /// Wipe the held invite only if it is for `code` (after that code was redeemed or found gone).
     pub fn forget_code(&self, code: &str) {
-        if let Some((s, _)) = self.load() {
+        let mut g = self.lock();
+        if let Some((s, _)) = self.load(&mut g) {
             if s.code() == code {
-                let _ = self.clear();
-            }
-        }
-    }
-
-    /// Shorten the hold to the invite's signed expiry (never lengthen it).
-    pub fn cap_expiry(&self, exp: u64) {
-        if let Some((mut s, _)) = self.load() {
-            if exp < s.expires_at {
-                s.expires_at = exp;
-                self.write(s);
+                let _ = self.wipe(&mut g);
             }
         }
     }
 
     /// Resolve the held invite with `resolve` (the join service, injected so tests can drive it),
-    /// then apply the answer to the hold: a signed expiry caps it, and a code the service reports
-    /// gone is wiped. The network call runs without holding anything locked.
+    /// then apply the answer to the hold: a signed expiry caps it (never lengthens it), and a code
+    /// the service reports gone is wiped. The network call runs without the lock. If the invite was
+    /// replaced or cancelled meanwhile, the answer is about an invite no longer held: it is not
+    /// applied and not returned.
     pub(crate) fn resolve_held(
         &self,
         resolve: impl FnOnce(&str) -> Result<ResolvedView, JoinError>,
     ) -> Result<ResolvedView, String> {
-        let link = self
-            .link()
-            .ok_or_else(|| "join: no invite is waiting".to_string())?;
-        match resolve(&link) {
+        let (link, started) = {
+            let mut g = self.lock();
+            let (s, _) = self
+                .load(&mut g)
+                .ok_or_else(|| "join: no invite is waiting".to_string())?;
+            (Zeroizing::new(s.link.clone()), g.generation)
+        };
+        let out = resolve(&link);
+        let mut g = self.lock();
+        if g.generation != started {
+            return Err(CHANGED.to_string());
+        }
+        match out {
             Ok(v) => {
                 if let Some(exp) = join::parse_iso_utc_secs(&v.exp) {
-                    self.cap_expiry(exp);
+                    if let Some((mut s, _)) = self.load(&mut g) {
+                        if exp < s.expires_at {
+                            s.expires_at = exp;
+                            self.write(&mut g, s);
+                        }
+                    }
                 }
                 Ok(v)
             }
             Err(e) => {
                 if e == JoinError::NotFound {
-                    let _ = self.clear();
+                    let _ = self.wipe(&mut g);
                 }
                 Err(e.to_string())
             }
