@@ -1470,7 +1470,8 @@ export class Store {
       // state, or a deployed bond whose key (or activated flag) did not read, is UNREAD: read the
       // grant status on the next due poll until it lands.
       const mb = this.state.memberBond;
-      const needBondKey = !mb || (mb.deployed && mb.activated !== false && !mb.pubkey);
+      // #366 Codex P2: an unread activated() flag is retried on its own, whether or not the key read.
+      const needBondKey = !mb || (mb.deployed && (mb.activated === null || (mb.activated !== false && !mb.pubkey)));
       if ((needBond || needGrant || needBondKey) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
