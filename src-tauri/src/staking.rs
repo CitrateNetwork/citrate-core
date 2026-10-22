@@ -801,12 +801,42 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
     scan: &mut WithdrawalScan,
     deadline: Option<std::time::Instant>,
 ) -> Result<Vec<PendingWithdrawal>, StakingError> {
+    read_pending_withdrawals_timed(rpc, wallet_address, scan, deadline, &SystemClock)
+}
+
+/// C1-W — the clock a scan reads its deadline against and waits with. Production uses
+/// [`SystemClock`]; tests inject a clock that slow answers advance, so no test sleeps for real.
+pub trait ScanClock {
+    fn now(&self) -> std::time::Instant;
+    fn sleep(&self, d: std::time::Duration);
+}
+
+/// The wall clock.
+pub struct SystemClock;
+
+impl ScanClock for SystemClock {
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+    fn sleep(&self, d: std::time::Duration) {
+        std::thread::sleep(d);
+    }
+}
+
+/// [`read_pending_withdrawals_with`] against an explicit clock.
+pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    wallet_address: &str,
+    scan: &mut WithdrawalScan,
+    deadline: Option<std::time::Instant>,
+    clock: &dyn ScanClock,
+) -> Result<Vec<PendingWithdrawal>, StakingError> {
     let addr = validate_address(wallet_address)?;
     let staker_topic = address_topic(&addr);
     scan.last_read_confirmed = false;
     scan.last_read_complete = false;
     scan.last_read_note = None;
-    let spent = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
+    let spent = || deadline.is_some_and(|d| clock.now() >= d);
 
     // The head, read once: the claimable gate and the confirmation, never scan progress.
     if spent() {
@@ -820,7 +850,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         .cursor
         .as_ref()
         .map_or(LIQUID_STAKING_POOL_DEPLOY_BLOCK, |c| c.number + 1);
-    let pass = read_served(rpc, &staker_topic, scan, deadline)?;
+    let pass = read_served(rpc, &staker_topic, scan, deadline, clock)?;
     let pass = match pass {
         Some(p) => p,
         None => {
@@ -840,6 +870,7 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
                 current_block,
                 &mut scan.session,
                 deadline,
+                clock,
             )?;
             LogPass::Unbounded { reached }
         }
@@ -1006,6 +1037,7 @@ fn read_served<T: crate::rpc::RpcTransport>(
     staker_topic: &str,
     scan: &mut WithdrawalScan,
     deadline: Option<std::time::Instant>,
+    clock: &dyn ScanClock,
 ) -> Result<Option<LogPass>, StakingError> {
     use crate::rpc::GetLogsError;
     let mut window = LOG_WINDOW_BLOCKS;
@@ -1014,7 +1046,7 @@ fn read_served<T: crate::rpc::RpcTransport>(
     let mut advanced = false;
     loop {
         // At least one window per call, so every call makes progress.
-        if served > 0 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+        if served > 0 && deadline.is_some_and(|d| clock.now() >= d) {
             return Ok(Some(LogPass::Served {
                 caught_up: false,
                 advanced,
@@ -1062,7 +1094,7 @@ fn read_served<T: crate::rpc::RpcTransport>(
                 if retries >= LOGS_RETRY_ATTEMPTS {
                     return Err(StakingError::Indexing(format!("blocks {from}-{to}: {m}")));
                 }
-                std::thread::sleep(logs_retry_backoff(retries - 1));
+                clock.sleep(logs_retry_backoff(retries - 1));
             }
             Err(GetLogsError::RangeTooLarge(m)) => {
                 if window == 1 {
@@ -1091,6 +1123,7 @@ fn read_unbounded<T: crate::rpc::RpcTransport>(
     end: u64,
     session: &mut ScanSession,
     deadline: Option<std::time::Instant>,
+    clock: &dyn ScanClock,
 ) -> Result<bool, StakingError> {
     use crate::rpc::GetLogsError;
     let mut from = start;
@@ -1098,7 +1131,7 @@ fn read_unbounded<T: crate::rpc::RpcTransport>(
     let mut retries = 0u32;
     let mut read = 0usize;
     while from <= end {
-        if read > 0 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+        if read > 0 && deadline.is_some_and(|d| clock.now() >= d) {
             return Ok(false);
         }
         let to = from.saturating_add(window - 1).min(end);
@@ -1115,7 +1148,7 @@ fn read_unbounded<T: crate::rpc::RpcTransport>(
                 if retries >= LOGS_RETRY_ATTEMPTS {
                     return Err(StakingError::Indexing(format!("blocks {from}-{to}: {m}")));
                 }
-                std::thread::sleep(logs_retry_backoff(retries - 1));
+                clock.sleep(logs_retry_backoff(retries - 1));
             }
             Err(GetLogsError::RangeTooLarge(m)) if window == 1 => {
                 return Err(StakingError::Rpc(format!(

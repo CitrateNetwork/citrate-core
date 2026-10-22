@@ -12,8 +12,9 @@ vi.mock("../bridge/mode", () => ({
 
 import { Wallet } from "./Wallet";
 import { freshState, type AppState } from "../shell/state";
-import { store, PENDING_SCAN_RETRY_MS, PENDING_CATCHUP_RETRY_MS, type Store } from "../shell/store";
+import { store, PENDING_SCAN_RETRY_MS, PENDING_CATCHUP_RETRY_MS, PENDING_TIMEOUT_RETRY_MS, type Store } from "../shell/store";
 import { bridge } from "../bridge";
+import { InvokeTimeout } from "../bridge/tauri/invoke";
 
 const stubStore = {
   identity: () => ({ name: "Member", initials: "M", email: "m@example.com", sub: "sub-1", wallet: "0x" + "0".repeat(40), tier: "pilot", role: "member", org: null, real: true }),
@@ -148,5 +149,23 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     expect(read).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(PENDING_CATCHUP_RETRY_MS);
     expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  // #371 @66b6fd4: if the command still misses the webview's IPC deadline (InvokeTimeout), the
+  // queue shows "—" and the reason, and is read again; the Rust scan kept its progress.
+  it("an IPC timeout shows '—' and is read again", async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .spyOn(bridge.wallet, "pendingWithdrawals")
+      .mockRejectedValueOnce(new InvokeTimeout("wallet_pending_withdrawals", 30_000))
+      .mockResolvedValueOnce({ withdrawals: [], confirmed: true, complete: true, note: null });
+    store.setState({ pendingWithdrawals: [], pendingWithdrawalsError: null });
+    await store.refreshPendingWithdrawals();
+    expect(store.state.pendingWithdrawalsError).toContain("timed out");
+    const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: store.state.pendingWithdrawalsError })} />);
+    expect(html).not.toContain("No pending withdrawals");
+    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_RETRY_MS + 10);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(store.state.pendingWithdrawalsError).toBeNull();
   });
 });

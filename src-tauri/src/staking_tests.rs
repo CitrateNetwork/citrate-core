@@ -1303,6 +1303,12 @@ struct Node {
     unclaim: RefCell<std::collections::HashSet<u128>>,
     logs_delay: Cell<std::time::Duration>,
     batch_delay: Cell<std::time::Duration>,
+    /// A virtual clock the scan reads its deadline from (#371 @66b6fd4): each request advances it
+    /// by `vcost` of its method ("batch" for a JSON-RPC batch), the way a slow answer just under
+    /// the 6 s RPC timeout would, and its start is recorded. No test sleeps for real.
+    vclock: RefCell<Option<std::rc::Rc<TestClock>>>,
+    vcost: RefCell<std::collections::HashMap<String, std::time::Duration>>,
+    vstarts: RefCell<Vec<(String, std::time::Duration)>>,
     requests: RefCell<Vec<JsonValue>>,
 }
 
@@ -1329,6 +1335,9 @@ impl Node {
             unclaim: RefCell::new(Default::default()),
             logs_delay: Cell::new(std::time::Duration::ZERO),
             batch_delay: Cell::new(std::time::Duration::ZERO),
+            vclock: RefCell::new(None),
+            vcost: RefCell::new(Default::default()),
+            vstarts: RefCell::new(Vec::new()),
             requests: RefCell::new(Vec::new()),
         }
     }
@@ -1586,6 +1595,12 @@ impl Node {
 impl RpcTransport for Node {
     fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
         self.requests.borrow_mut().push(body.clone());
+        if let Some(clock) = self.vclock.borrow().clone() {
+            let method = body["method"].as_str().unwrap_or("batch").to_string();
+            self.vstarts.borrow_mut().push((method.clone(), clock.at.get()));
+            let cost = self.vcost.borrow().get(&method).copied().unwrap_or_default();
+            clock.at.set(clock.at.get() + cost);
+        }
         if let Some(batch) = body.as_array() {
             std::thread::sleep(self.batch_delay.get());
             let mut out = Vec::new();
@@ -1959,4 +1974,324 @@ fn tripwire_catches_progress_from_a_head_read() {
         let bad = served_through_violations(src);
         assert!(bad.iter().any(|b| b.contains(want)), "{want}: {bad:?}");
     }
+}
+
+// ===========================================================================
+// #371 @66b6fd4 (Codex P2 x2): the IPC deadline, and a reorg during an unfinished detail pass.
+// ===========================================================================
+
+/// A virtual clock: `sleep` and slow answers move it forward; nothing waits for real.
+struct TestClock {
+    base: std::time::Instant,
+    at: Cell<std::time::Duration>,
+}
+
+impl TestClock {
+    fn new() -> std::rc::Rc<TestClock> {
+        std::rc::Rc::new(TestClock { base: std::time::Instant::now(), at: Cell::new(std::time::Duration::ZERO) })
+    }
+}
+
+impl ScanClock for TestClock {
+    fn now(&self) -> std::time::Instant {
+        self.base + self.at.get()
+    }
+    fn sleep(&self, d: std::time::Duration) {
+        self.at.set(self.at.get() + d);
+    }
+}
+
+const SECS: fn(f64) -> std::time::Duration = std::time::Duration::from_secs_f64;
+
+/// The webview's deadline for `wallet_pending_withdrawals` (src/bridge/tauri/invoke.ts, `LONG`).
+fn ipc_deadline() -> std::time::Duration {
+    let src = include_str!("../../src/bridge/tauri/invoke.ts");
+    let at = src.find("wallet_pending_withdrawals:").expect("wallet_pending_withdrawals has its own IPC deadline");
+    let ms: String = src[at + "wallet_pending_withdrawals:".len()..]
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .take_while(|c| c.is_ascii_digit() || *c == '_')
+        .filter(|c| *c != '_')
+        .collect();
+    std::time::Duration::from_millis(ms.parse().expect("a number of ms"))
+}
+
+/// The kit's per-request RPC timeout (kit/src/rpc.rs RPC_TIMEOUT_SECS).
+fn rpc_timeout() -> std::time::Duration {
+    let src = include_str!("../../kit/src/rpc.rs");
+    let at = src.find("const RPC_TIMEOUT_SECS: u64 =").expect("RPC_TIMEOUT_SECS");
+    let n: String = src[at + "const RPC_TIMEOUT_SECS: u64 =".len()..].trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    std::time::Duration::from_secs(n.parse().expect("seconds"))
+}
+
+/// Put `node` on a virtual clock with these per-method answer times.
+fn on_clock(node: &Node, costs: &[(&str, f64)]) -> std::rc::Rc<TestClock> {
+    let clock = TestClock::new();
+    *node.vclock.borrow_mut() = Some(clock.clone());
+    *node.vcost.borrow_mut() = costs.iter().map(|(m, s)| (m.to_string(), SECS(*s))).collect();
+    clock
+}
+
+/// One `wallet_pending_withdrawals` call on the virtual clock, with the production budget. Asserts
+/// the call's deadline contract: no request starts at or after the scan deadline, and the call
+/// answers (Ok, or a real error) before the webview's IPC deadline.
+fn timed_call(rpc: &RpcClient<Node>, clock: &TestClock, scan: &mut WithdrawalScan) -> Result<Vec<PendingWithdrawal>, StakingError> {
+    let start = clock.at.get();
+    let deadline = clock.now() + SCAN_BUDGET;
+    let n = rpc.transport().vstarts.borrow().len();
+    let out = read_pending_withdrawals_timed(rpc, STAKER_ADDR, scan, Some(deadline), clock);
+    let late: Vec<(String, std::time::Duration)> = rpc.transport().vstarts.borrow()[n..]
+        .iter()
+        .filter(|(_, at)| *at >= start + SCAN_BUDGET)
+        .cloned()
+        .collect();
+    assert!(late.is_empty(), "requests started after the scan deadline ({:?} after the call began): {late:?}", SCAN_BUDGET);
+    let took = clock.at.get() - start;
+    assert!(took < ipc_deadline(), "the call took {took:?}, past the {:?} IPC deadline", ipc_deadline());
+    out
+}
+
+/// Calls until a read is complete (at most `max`), each under [`timed_call`]'s contract.
+fn timed_until_complete(rpc: &RpcClient<Node>, clock: &TestClock, scan: &mut WithdrawalScan, max: usize) -> Vec<PendingWithdrawal> {
+    let mut rows = Vec::new();
+    for _ in 0..max {
+        rows = timed_call(rpc, clock, scan).expect("an incomplete read is an answer, not an error");
+        if scan.last_read_complete {
+            return rows;
+        }
+    }
+    panic!("not complete after {max} calls: {:?}", scan.last_read_note);
+}
+
+// Codex P2 #2: five -32002 answers just under the RPC timeout plus the back-off pass 30 s. The
+// call stops before the deadline with an incomplete answer, and the next calls resume the scan.
+#[test]
+fn slow_retryable_answers_end_the_call_before_the_ipc_deadline_and_the_scan_resumes() {
+    let node = Node::new(5_000, vec![(1, 4_500, false)]);
+    node.warming.set(4);
+    let clock = on_clock(&node, &[("citrate_getLogs", 5.9), ("batch", 5.9), ("citrate_isExecuted", 5.9)]);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let first = timed_call(&rpc, &clock, &mut scan).expect("an incomplete answer, not an error");
+    assert!(first.is_empty() && !scan.last_read_complete && !scan.last_read_confirmed);
+    assert!(scan.last_read_note.clone().unwrap_or_default().contains("reading chain history"), "{:?}", scan.last_read_note);
+    let rows = timed_until_complete(&rpc, &clock, &mut scan, 20);
+    assert_eq!(ids_of(&rows), vec!["1"]);
+    assert_eq!(scan.cursor(), Some((5_000, stub_hash(5_000))));
+}
+
+// Codex P2 #2: range reduction before the first served window is also bounded, and the reduced
+// window is kept for the next call, so a slow -32005 cannot stall the scan call after call.
+#[test]
+fn slow_range_reduction_ends_the_call_before_the_ipc_deadline_and_the_scan_resumes() {
+    let node = Node::new(1_500, vec![(1, 440, false)]);
+    node.max_range.set(10);
+    let clock = on_clock(&node, &[("citrate_getLogs", 5.9)]);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let rows = timed_until_complete(&rpc, &clock, &mut scan, 200);
+    assert_eq!(ids_of(&rows), vec!["1"]);
+    assert!(scan.last_read_confirmed);
+    let reads = rpc.transport().log_reads();
+    let refused = reads.iter().filter(|r| r.2 - r.1 > 10).count();
+    assert!(refused <= 7, "the window is halved {refused} times: halvings were lost between calls");
+}
+
+// Codex P2 #2: a -32001 recovery that has to try many checkpoints, each answered slowly, stops
+// before the deadline and continues on the next call from the checkpoints not yet tried.
+#[test]
+fn slow_checkpoint_recovery_ends_the_call_before_the_ipc_deadline_and_resumes() {
+    let node = Node::new(20_000, vec![(1, 1_000, false), (2, 19_000, false)]);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    read_all(&rpc, &mut scan);
+    assert_eq!(scan.checkpoints.len(), SCAN_CHECKPOINTS_KEPT);
+    let kept: Vec<u64> = scan.checkpoints.iter().map(|c| c.number).collect();
+    assert_eq!(kept.first(), Some(&4_426));
+    rpc.transport().fork.set(Some((4_500, 0xB)));
+    let clock = on_clock(rpc.transport(), &[("citrate_isExecuted", 2.0), ("citrate_getLogs", 0.5)]);
+    let n = rpc.transport().requests.borrow().len();
+    let rows = timed_until_complete(&rpc, &clock, &mut scan, 20);
+    assert_eq!(ids_of(&rows), vec!["1"], "the abandoned branch's withdrawal is not listed");
+    assert_eq!(scan.cursor(), Some((20_000, branch_hash(0xB, 20_000))));
+    assert!(scan.last_read_confirmed);
+    let asked: Vec<String> = rpc.transport().requests.borrow()[n..]
+        .iter()
+        .filter(|r| r["method"] == "citrate_isExecuted")
+        .filter_map(|r| r["params"][0].as_str().map(str::to_string))
+        .collect();
+    let mut unique = asked.clone();
+    unique.sort();
+    unique.dedup();
+    // Each checkpoint asked once (the final confirmation asks for the new cursor).
+    assert_eq!(asked.len(), unique.len(), "a checkpoint was asked again: the recovery restarted");
+    let restarts = rpc.transport().log_reads().iter().filter(|r| r.1 == LIQUID_STAKING_POOL_DEPLOY_BLOCK).count();
+    assert_eq!(restarts, 1, "the recovery resumed from the confirmed checkpoint, not the deployment block");
+}
+
+// Codex P2 #2: the plain eth_getLogs read (no citrate_getLogs) is bounded the same way.
+#[test]
+fn a_slow_plain_log_fallback_ends_the_call_before_the_ipc_deadline_and_resumes() {
+    let node = Node::today(5_000, vec![(1, 4_500, false)]);
+    node.warming.set(4);
+    let clock = on_clock(&node, &[("eth_getLogs", 5.9), ("citrate_getLogs", 0.2), ("batch", 5.9)]);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let first = timed_call(&rpc, &clock, &mut scan).expect("an incomplete answer, not an error");
+    assert!(first.is_empty() && !scan.last_read_complete);
+    let rows = timed_until_complete(&rpc, &clock, &mut scan, 30);
+    assert_eq!(ids_of(&rows), vec!["1"]);
+    assert!(!scan.last_read_confirmed, "the plain read never confirms");
+}
+
+// Codex P2 #2: slow log windows spend the budget; no withdrawal batch starts after it.
+#[test]
+fn no_withdrawal_batch_starts_after_the_deadline() {
+    let w: Vec<(u128, u64, bool)> = (1..=120u128).map(|i| (i, 500 + i as u64, false)).collect();
+    let node = Node::new(9_000, w);
+    let clock = on_clock(&node, &[("citrate_getLogs", 5.0), ("batch", 5.9), ("citrate_isExecuted", 5.9)]);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let rows = timed_until_complete(&rpc, &clock, &mut scan, 20);
+    assert_eq!(rows.len(), 120);
+}
+
+/// 120 withdrawals (three batches), id 1 claimed; one call reads the logs and two of the batches.
+fn unfinished_detail_pass() -> (RpcClient<Node>, std::rc::Rc<TestClock>, WithdrawalScan) {
+    let w: Vec<(u128, u64, bool)> = (1..=120u128).map(|i| (i, 1_000 + i as u64, i == 1)).collect();
+    let node = Node::new(5_000, w);
+    let clock = on_clock(&node, &[("batch", 9.0)]);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let rows = timed_call(&rpc, &clock, &mut scan).expect("first call");
+    assert!(!scan.last_read_complete, "the detail pass is unfinished");
+    assert!(!ids_of(&rows).contains(&"1".to_string()), "id 1 is claimed");
+    (rpc, clock, scan)
+}
+
+// Codex P2 #1: a reorg between two calls of one detail pass replaces id 1's claim. The recovery
+// starts the pass again, so id 1 is read again and listed; the pass is never confirmed on the
+// claim read before the reorg.
+#[test]
+fn a_reorg_between_calls_of_an_unfinished_detail_pass_reads_every_id_again() {
+    let (rpc, clock, mut scan) = unfinished_detail_pass();
+    rpc.transport().fork.set(Some((4_000, 0xB)));
+    rpc.transport().unclaim.borrow_mut().insert(1);
+    let n = rpc.transport().requests.borrow().len();
+    let rows = timed_until_complete(&rpc, &clock, &mut scan, 10);
+    assert_eq!(scan.generation, 1, "the reorg was recovered");
+    assert!(scan.last_read_confirmed);
+    assert!(ids_of(&rows).contains(&"1".to_string()), "the unclaimed withdrawal is hidden: {:?}", ids_of(&rows));
+    assert_eq!(rows.len(), 120);
+    assert!(rpc.transport().asked_ids(n).contains(&1), "id 1 was not read again after the reorg");
+}
+
+// Codex P2 #1, through a merge: another read recovered from the reorg; this read's unfinished
+// pass (from before the reorg) is merged under the recovery. The pass starts again.
+#[test]
+fn an_unfinished_detail_pass_merged_under_a_recovery_reads_every_id_again() {
+    let (rpc, clock, stale) = unfinished_detail_pass();
+    rpc.transport().fork.set(Some((4_000, 0xB)));
+    rpc.transport().unclaim.borrow_mut().insert(1);
+    let mut other = stale.clone();
+    timed_until_complete(&rpc, &clock, &mut other, 10);
+    assert_eq!(other.generation, 1);
+    let mut merged = merge_scans(&other, &stale);
+    let rows = timed_until_complete(&rpc, &clock, &mut merged, 10);
+    assert!(merged.last_read_confirmed);
+    assert!(ids_of(&rows).contains(&"1".to_string()), "the unclaimed withdrawal is hidden: {:?}", ids_of(&rows));
+}
+
+// ---------------------------------------------------------------------------
+// TRIPWIRE (#371 @66b6fd4): every RPC request and every wait in the scan goes through the budget,
+// which checks the deadline first; and the budget arithmetic fits the webview's IPC deadline.
+// ---------------------------------------------------------------------------
+
+/// The body of the first `fn <name>` in `src`, by brace matching.
+fn fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    let at = [format!("fn {name}("), format!("fn {name}<")].iter().filter_map(|p| src.find(p.as_str())).min()?;
+    let open = at + src[at..].find('{')?;
+    let mut depth = 0usize;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open..open + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+const SCAN_FNS: [&str; 4] = ["read_pending_withdrawals_timed", "read_served", "read_unbounded", "recover"];
+
+fn unbudgeted_scan_calls(prod: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    for name in SCAN_FNS {
+        let Some(body) = fn_body(prod, name) else {
+            bad.push(format!("no fn {name}"));
+            continue;
+        };
+        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut rest = flat.as_str();
+        let mut seen = 0usize;
+        while let Some(i) = rest.find("rpc.") {
+            if !rest[..i].ends_with("budget.run(|| ") {
+                let ctx: String = rest[i..].chars().take(40).collect();
+                bad.push(format!("{name}: an RPC request not checked against the deadline: {ctx}"));
+            }
+            seen += 1;
+            rest = &rest[i + 4..];
+        }
+        if name != "recover" && name != "read_unbounded" && seen == 0 {
+            bad.push(format!("{name}: no RPC request found (did the scan move?)"));
+        }
+        if flat.contains("sleep(") {
+            bad.push(format!("{name}: a wait that does not check the deadline (use budget.wait)"));
+        }
+        if flat.contains("Instant::now()") {
+            bad.push(format!("{name}: reads the wall clock instead of the injected clock"));
+        }
+    }
+    match fn_body(prod, "run") {
+        Some(b) if b.contains("self.spent()") => {}
+        _ => bad.push("Budget::run does not check the deadline".into()),
+    }
+    match fn_body(prod, "wait") {
+        Some(b) if b.contains("deadline") => {}
+        _ => bad.push("Budget::wait does not check the deadline".into()),
+    }
+    bad
+}
+
+#[test]
+fn tripwire_every_scan_request_and_wait_checks_the_deadline() {
+    let bad = unbudgeted_scan_calls(&production_source());
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn tripwire_catches_an_unbudgeted_request_or_wait() {
+    // Negative control: the 66b6fd4 shapes.
+    let shapes = [
+        ("fn read_served() { match rpc.citrate_get_logs(filter) {} } fn run() { self.spent() } fn wait() { deadline }", "not checked against the deadline"),
+        ("fn read_served() { budget.run(|| rpc.citrate_get_logs(f)); clock.sleep(d); } fn run() { self.spent() } fn wait() { deadline }", "a wait that does not check"),
+        ("fn recover() { match rpc.is_executed(&cp.hash) {} } fn run() { self.spent() } fn wait() { deadline }", "recover: an RPC request not checked"),
+        ("fn read_served() { budget.run(|| rpc.x()) } fn run() { true } fn wait() { deadline }", "Budget::run does not check"),
+    ];
+    for (src, want) in shapes {
+        let bad = unbudgeted_scan_calls(src);
+        assert!(bad.iter().any(|b| b.contains(want)), "{want}: {bad:?}");
+    }
+}
+
+// The budget arithmetic: the last request may start just before the scan deadline and take the
+// whole RPC timeout; that must still answer before the webview gives up on the command.
+#[test]
+fn the_scan_budget_plus_one_request_fits_the_ipc_deadline() {
+    assert!(SCAN_BUDGET + rpc_timeout() < ipc_deadline(), "{SCAN_BUDGET:?} + {:?} >= {:?}", rpc_timeout(), ipc_deadline());
 }

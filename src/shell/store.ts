@@ -137,6 +137,8 @@ export const PENDING_INDEXING_RETRY_MS = 10_000;
 /** C1-W — how soon a complete but unconfirmed read (the node is behind, or gives no evidence) is
  *  read again. */
 export const PENDING_CATCHUP_RETRY_MS = 30_000;
+/** C1-W — how soon a read that missed the IPC deadline (InvokeTimeout) is tried again. */
+export const PENDING_TIMEOUT_RETRY_MS = 10_000;
 
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
