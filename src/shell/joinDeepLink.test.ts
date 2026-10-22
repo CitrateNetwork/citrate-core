@@ -239,6 +239,21 @@ describe("v2 invite deep links (task 12)", () => {
     expect(store.state.pendingJoin).toBeNull();
   });
 
+  it("a Join that finishes after a new invite arrived leaves the new one waiting", async () => {
+    let done!: () => void;
+    spies.redeem.mockImplementationOnce(() => new Promise<void>((res) => (done = res)));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    await store.reviewPendingJoin();
+    const join = store.redeemPendingJoin();
+    store.handleDeepLink("citrate://join/Zz9yX8wv");
+    await flush();
+    done();
+    await join;
+    expect(spies.redeem).toHaveBeenCalledWith(CODE);
+    expect(store.state.pendingJoin).toMatchObject({ phase: "waiting" });
+  });
+
   it("the start-up check doesn't clear an invite that arrived while it ran", async () => {
     let none!: (v: PendingJoinView | null) => void;
     spies.get.mockImplementationOnce(() => new Promise<PendingJoinView | null>((res) => (none = res)));
