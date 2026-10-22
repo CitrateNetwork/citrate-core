@@ -4549,12 +4549,12 @@ export class Store {
         pendingWithdrawalsNote: read.confirmed ? null : read.note,
       });
       // C1-W: an incomplete read (the scan or the withdrawal reads ran out of budget) continues
-      // soon; a complete but unconfirmed one (the node is behind, or reports no executed head) is
+      // soon; a complete but unconfirmed one (the node is behind, or has no citrate_getLogs) is
       // read again later, so the list catches up without a refresh.
       if (!read.complete) setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_SCAN_RETRY_MS);
       else if (!read.confirmed) setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_CATCHUP_RETRY_MS);
     } catch (err) {
-      // C1-W: a failed eth_getLogs window (or an unfinished first scan) is shown as "—" plus the
+      // C1-W: a failed log window (or an unfinished first scan) is shown as "—" plus the
       // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read
       // resumes; an unfinished scan is read again shortly until it reaches the head.
       const msg = String((err as Error)?.message ?? err);

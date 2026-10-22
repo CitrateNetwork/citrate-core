@@ -355,21 +355,6 @@ fn eth_call_batch_answers_in_call_order() {
     assert!(rpc3.eth_call_batch(&[json!({}), json!({})]).is_err(), "no partial list");
 }
 
-// C1-W — citrate_executedHead: served → (number, hash); an older node (-32601) → None; any other
-// error (citrate-chain#337: -32603 when there is no applied tip) is an error, never "absent".
-#[test]
-fn executed_head_answers() {
-    let h = format!("0x{}", "ab".repeat(32));
-    let served = json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": "0xbb8", "hash": h } });
-    let absent = json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -32601, "message": "Method not found" } });
-    let no_tip = json!({ "jsonrpc": "2.0", "id": 3, "error": { "code": -32603, "message": "citrate_executedHead: no applied tip" } });
-    let rpc = RpcClient::with_transport(MockTransport::new(vec![served, absent, no_tip]));
-    assert_eq!(rpc.executed_head(), Ok(Some((3000, h))));
-    assert_eq!(rpc.executed_head(), Ok(None));
-    assert!(rpc.executed_head().is_err(), "-32603 is an error, not an older node");
-}
-
-
 // chain#337 citrate_isExecuted(hash) -> {executed, number|null}. -32601 = an older node (None);
 // -32603 (no tip), -32602 (malformed hash) and a malformed result are errors.
 #[test]

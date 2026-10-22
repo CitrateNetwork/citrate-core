@@ -423,14 +423,14 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
             {/* C1-W: an unread, failed or unfinished read is "—" plus why, never an empty queue. */}
             {s.pendingWithdrawalsError !== null && (
-              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="LiquidStakingPool WithdrawalRequested logs (eth_getLogs, 1000-block windows) from rpc.citrate.ai">
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="LiquidStakingPool WithdrawalRequested logs (citrate_getLogs, 1000-block windows; eth_getLogs where the RPC lacks it) from rpc.citrate.ai">
                 — · pending withdrawals: {s.pendingWithdrawalsError}
               </p>
             )}
-            {/* C1-W: no evidence of how far the node executed (citrate_executedHead not served):
-                found rows are real, but an empty list is not "none". */}
+            {/* C1-W: the scan can't confirm it reached the chain head (citrate_getLogs not served, or
+                the node is behind): found rows are real, but an empty list is not "none". */}
             {s.pendingWithdrawalsError === null && s.pendingWithdrawalsUnconfirmed && (
-              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="citrate_executedHead (citrate-chain#334, #336, #337) is not on the public RPC yet">
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="citrate_getLogs (citrate-chain#334, #336, #337) is not on the public RPC yet">
                 {pending.length === 0 ? "— · pending withdrawals: " : ""}can&apos;t confirm the scan reached the chain head
                 {s.pendingWithdrawalsNote ? ": " + s.pendingWithdrawalsNote : ""}
               </p>

@@ -160,9 +160,9 @@ export interface WalletDomain {
   claimWithdrawal(id: string): Promise<CeremonyView>;
   /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
    * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * Never fabricated (Rule 1). C1-W: `confirmed` is false when the node gave no evidence of how
-   * far it executed (citrate_executedHead), so withdrawals in unserved blocks may be missing and an
-   * empty list is not "none". */
+   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
+   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
+   * missing and an empty list is not "none". */
   pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,

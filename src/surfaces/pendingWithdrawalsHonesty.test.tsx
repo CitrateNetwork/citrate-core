@@ -98,7 +98,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     expect(read).toHaveBeenCalledTimes(2);
   });
 
-  // DGX (#371): until citrate_executedHead (chain#334, #336, #337) is on the public RPC, the scan
+  // DGX (#371): until citrate_getLogs (chain#334, #336, #337) is on the public RPC, the scan
   // cannot prove it read up to the chain head. An empty list is then "can't confirm", never "No
   // pending withdrawals"; rows that were found (each confirmed from contract state) still show.
   it("an unconfirmed read shows '—' and can't confirm, never 'No pending withdrawals'", async () => {

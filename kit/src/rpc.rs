@@ -285,11 +285,90 @@ impl<T: RpcTransport> RpcClient<T> {
     }
 
     /// `eth_getLogs([filter])` for a caller that pages a block range (C1-W). Like
-    /// [`RpcClient::get_logs`], except a node that refuses the range as too wide (JSON-RPC
-    /// error [`RPC_LIMIT_EXCEEDED`], citrate-chain#334) is [`GetLogsError::RangeTooLarge`], so the
-    /// caller can halve its window instead of failing.
+    /// [`RpcClient::get_logs`], except the answers a paging caller acts on are told apart
+    /// ([`GetLogsError`]): a range over the node's limit, a retryable answer, a missing method.
     pub fn get_logs_range(&self, filter: Value) -> Result<Vec<LogEntry>, GetLogsError> {
-        let body = self.build_request("eth_getLogs", json!([filter]));
+        let result = self.logs_request("eth_getLogs", filter)?;
+        parse_logs(&result).map_err(GetLogsError::Rpc)
+    }
+
+    /// `citrate_getLogs([filter])` (citrate-chain#337): the `eth_getLogs` logs plus `through`, the
+    /// executed block the answer is complete through, both from one read of the node's applied
+    /// tip (`null` when nothing in the range has executed). `filter` may carry `afterBlockHash`,
+    /// the caller's previous `through`; a node whose chain no longer holds it at `fromBlock - 1`
+    /// answers -32001 ([`GetLogsError::Reorged`]). A malformed answer is an error: a `through`
+    /// outside `fromBlock..=toBlock`, a hash that is not 32 bytes, a log outside
+    /// `fromBlock..=through`, or logs without a `through` (C1-W).
+    pub fn citrate_get_logs(&self, filter: Value) -> Result<ServedLogs, GetLogsError> {
+        let bad =
+            |m: String| GetLogsError::Rpc(RpcError::BadResponse(format!("citrate_getLogs: {m}")));
+        let window = |field: &str| {
+            filter
+                .get(field)
+                .ok_or_else(|| bad(format!("the filter has no {field}")))
+                .and_then(|v| parse_hex_quantity(v, field).map_err(GetLogsError::Rpc))
+        };
+        let (from, to) = (window("fromBlock")?, window("toBlock")?);
+        let result = self.logs_request("citrate_getLogs", filter.clone())?;
+        let logs =
+            parse_logs(result.get("logs").unwrap_or(&Value::Null)).map_err(GetLogsError::Rpc)?;
+        let through = match result.get("through") {
+            None => return Err(bad("no through".into())),
+            Some(Value::Null) => None,
+            Some(t) => {
+                let number = t
+                    .get("number")
+                    .ok_or_else(|| bad("through.number missing".into()))
+                    .and_then(|v| {
+                        parse_hex_quantity(v, "through.number").map_err(GetLogsError::Rpc)
+                    })?;
+                let hash = t
+                    .get("hash")
+                    .and_then(Value::as_str)
+                    .filter(|h| is_block_hash(h))
+                    .ok_or_else(|| bad("through.hash is not a 32-byte hash".into()))?;
+                Some(BlockRef {
+                    number,
+                    hash: hash.to_ascii_lowercase(),
+                })
+            }
+        };
+        match &through {
+            None if !logs.is_empty() => return Err(bad("logs without a through".into())),
+            Some(t) if t.number < from || t.number > to => {
+                return Err(bad(format!(
+                    "through {} is outside the window {from}-{to}",
+                    t.number
+                )))
+            }
+            _ => {}
+        }
+        if let Some(t) = &through {
+            if let Some(l) = logs
+                .iter()
+                .find(|l| l.block_number < from || l.block_number > t.number)
+            {
+                return Err(bad(format!(
+                    "a log at block {} is outside the served range {from}-{}",
+                    l.block_number, t.number
+                )));
+            }
+        }
+        Ok(ServedLogs { logs, through })
+    }
+
+    /// One log request (`eth_getLogs` or `citrate_getLogs`) with its error answers told apart:
+    /// - -32005 with `data.maxBlockRange`: the range is over the node's limit
+    ///   (citrate-chain core/api/src/canonical_logs.rs:127-146). The method budget also answers
+    ///   -32005, with no data (core/api/src/rate_limit.rs:96-101); a smaller window does not help
+    ///   there, so it is an ordinary error.
+    /// - -32002 with `data.retryable: true`: retry the same range (index warming, or a receipt not
+    ///   stored yet; canonical_logs.rs:285-291, 646-658). Without the flag it is an ordinary error.
+    /// - -32001 with `data.reorged: true`: `afterBlockHash` is not on the node's executed chain
+    ///   (canonical_logs.rs:660-673).
+    /// - -32601: the node does not have the method.
+    fn logs_request(&self, method: &str, filter: Value) -> Result<Value, GetLogsError> {
+        let body = self.build_request(method, json!([filter]));
         let resp = self.transport.call(body).map_err(GetLogsError::Rpc)?;
         if let Some(err) = resp.get("error") {
             let msg = || {
@@ -298,52 +377,22 @@ impl<T: RpcTransport> RpcClient<T> {
                     .unwrap_or("node error")
                     .to_string()
             };
+            let flag = |name: &str| err.pointer(name).and_then(Value::as_bool) == Some(true);
             match err.get("code").and_then(Value::as_i64) {
-                Some(RPC_LIMIT_EXCEEDED) => return Err(GetLogsError::RangeTooLarge(msg())),
-                // #371 review: only an answer that says it is retryable is retried.
-                Some(RPC_RETRY)
-                    if err.pointer("/data/retryable").and_then(Value::as_bool) == Some(true) =>
-                {
+                Some(RPC_LIMIT_EXCEEDED) if err.pointer("/data/maxBlockRange").is_some() => {
+                    return Err(GetLogsError::RangeTooLarge(msg()))
+                }
+                Some(RPC_RETRY) if flag("/data/retryable") => {
                     return Err(GetLogsError::Retry(msg()))
                 }
+                Some(RPC_REORGED) if flag("/data/reorged") => {
+                    return Err(GetLogsError::Reorged(msg()))
+                }
+                Some(RPC_METHOD_NOT_FOUND) => return Err(GetLogsError::MethodNotFound),
                 _ => {}
             }
         }
-        let result = Self::result_of(resp).map_err(GetLogsError::Rpc)?;
-        parse_logs(&result).map_err(GetLogsError::Rpc)
-    }
-
-    /// RED STUB (C1-W, replaced in the fix commit): `citrate_getLogs` keeps the old behaviour, a
-    /// plain `eth_getLogs` read with no served-through bound.
-    pub fn citrate_get_logs(&self, filter: Value) -> Result<ServedLogs, GetLogsError> {
-        self.get_logs_range(filter).map(|logs| ServedLogs {
-            logs,
-            through: None,
-        })
-    }
-
-    /// `eth_blockNumber` → the node's current head height (real value from the
-    /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
-    /// a `0x`-prefixed hex quantity.
-    /// `citrate_executedHead` → `(number, hash)` of the node's executed (applied) tip, the last
-    /// block `eth_getLogs` serves (citrate-chain, stacked on #334). `None` when the node does not
-    /// have the method (JSON-RPC -32601: an older node) (C1-W).
-    pub fn executed_head(&self) -> Result<Option<(u64, String)>, RpcError> {
-        let body = self.build_request("citrate_executedHead", json!([]));
-        let resp = self.transport.call(body)?;
-        if resp.pointer("/error/code").and_then(Value::as_i64) == Some(RPC_METHOD_NOT_FOUND) {
-            return Ok(None);
-        }
-        let result = Self::result_of(resp)?;
-        let number = result
-            .get("number")
-            .ok_or_else(|| RpcError::MissingField("citrate_executedHead.number".into()))
-            .and_then(|v| parse_hex_quantity(v, "citrate_executedHead.number"))?;
-        let hash = result
-            .get("hash")
-            .and_then(Value::as_str)
-            .ok_or_else(|| RpcError::MissingField("citrate_executedHead.hash".into()))?;
-        Ok(Some((number, hash.to_string())))
+        Self::result_of(resp).map_err(GetLogsError::Rpc)
     }
 
     /// `citrate_isExecuted(hash)` → `(executed, number)` (citrate-chain#337): whether the block with
@@ -403,6 +452,9 @@ impl<T: RpcTransport> RpcClient<T> {
             .collect()
     }
 
+    /// `eth_blockNumber` → the node's current head height (real value from the
+    /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
+    /// a `0x`-prefixed hex quantity.
     pub fn block_number(&self) -> Result<u64, RpcError> {
         let result = self.request("eth_blockNumber", json!([]))?;
         parse_hex_quantity(&result, "eth_blockNumber")
@@ -514,6 +566,12 @@ fn parse_hex_quantity_u128(v: &Value, field: &str) -> Result<u128, RpcError> {
         .map_err(|_| RpcError::MissingField(format!("{field}: not hex ({s})")))
 }
 
+/// Whether `h` is a `0x`-prefixed 32-byte hex block hash.
+fn is_block_hash(h: &str) -> bool {
+    h.strip_prefix("0x")
+        .is_some_and(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Decode an `eth_getLogs` result array. A malformed entry errors rather than being dropped.
 fn parse_logs(result: &Value) -> Result<Vec<LogEntry>, RpcError> {
     let arr = result
@@ -550,14 +608,20 @@ fn parse_logs(result: &Value) -> Result<Vec<LogEntry>, RpcError> {
     Ok(logs)
 }
 
-/// The JSON-RPC error code for a request over a node limit; citrate-chain#334 returns it for an
-/// `eth_getLogs` range wider than 1000 blocks.
+/// The JSON-RPC error code for a request over a node limit; citrate-chain#334 returns it, with
+/// `data.maxBlockRange`, for a log range wider than 1000 blocks (the method budget uses it too,
+/// without data).
 pub const RPC_LIMIT_EXCEEDED: i64 = -32005;
 
-/// The JSON-RPC code citrate-chain#334 returns while a deep historical `eth_getLogs` range is not
-/// served yet (the node's cache fills over several requests), with `data.retryable = true`: retry
-/// the same range later. Without that flag it is an ordinary error.
+/// The JSON-RPC code citrate-chain#334/#337 return, with `data.retryable = true`, while a deep
+/// historical range is not served yet (the node's cache fills over several requests) or, for
+/// `citrate_getLogs`, while an executed block's receipts are not stored yet: retry the same range
+/// later. Without that flag it is an ordinary error.
 pub const RPC_RETRY: i64 = -32002;
+
+/// The JSON-RPC code citrate-chain#337 `citrate_getLogs` returns, with `data.reorged = true`, when
+/// `afterBlockHash` is not the executed block at `fromBlock - 1`.
+pub const RPC_REORGED: i64 = -32001;
 
 /// The JSON-RPC "method not found" code.
 pub const RPC_METHOD_NOT_FOUND: i64 = -32601;
@@ -576,12 +640,15 @@ pub struct ServedLogs {
     pub through: Option<BlockRef>,
 }
 
-/// An `eth_getLogs` failure, telling a too-wide range apart from every other error (C1-W).
+/// A log-read failure (`eth_getLogs`, `citrate_getLogs`), with the answers a paging caller acts on
+/// told apart from every other error (C1-W).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GetLogsError {
-    /// RED STUB: never produced yet.
+    /// `afterBlockHash` is not the node's executed block at `fromBlock - 1`: the chain the caller
+    /// scanned was replaced ([`RPC_REORGED`] with `data.reorged`, citrate-chain#337).
     Reorged(String),
-    /// RED STUB: never produced yet.
+    /// The node does not have the method ([`RPC_METHOD_NOT_FOUND`]): today's public RPC has no
+    /// `citrate_getLogs`.
     MethodNotFound,
     /// The node refused the block range as too wide ([`RPC_LIMIT_EXCEEDED`]).
     RangeTooLarge(String),
