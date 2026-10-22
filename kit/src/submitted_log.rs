@@ -100,12 +100,17 @@ struct OnDiskV2 {
     uncertain: bool,
 }
 
+/// Makes a rename inside `dir` durable (see [`sync_dir`]). A parameter so tests can observe the
+/// order of the write and make the sync fail.
+type SyncDir = fn(&std::path::Path) -> std::io::Result<()>;
+
 /// The submitted-transaction record. `path` = None keeps it in memory only (tests, and any
 /// ceremony built without an app data dir).
 #[derive(Debug)]
 pub struct SubmittedTxLog {
     path: Option<PathBuf>,
     inner: Mutex<Inner>,
+    sync_dir: SyncDir,
 }
 
 impl SubmittedTxLog {
@@ -118,12 +123,18 @@ impl SubmittedTxLog {
                 evicted: Default::default(),
                 uncertain: false,
             }),
+            sync_dir,
         }
     }
 
     /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt
     /// one is empty and uncertain.
     pub fn open(path: PathBuf) -> Self {
+        Self::open_with(path, sync_dir)
+    }
+
+    /// [`Self::open`] with the directory sync given.
+    fn open_with(path: PathBuf, sync_dir: SyncDir) -> Self {
         let bare = |hashes: Vec<String>| -> Vec<Entry> {
             hashes
                 .into_iter()
@@ -172,6 +183,7 @@ impl SubmittedTxLog {
         SubmittedTxLog {
             path: Some(path),
             inner: Mutex::new(inner),
+            sync_dir,
         }
     }
 
@@ -210,7 +222,7 @@ impl SubmittedTxLog {
                 evicted: next.evicted.clone(),
                 uncertain: next.uncertain,
             };
-            write_atomic(path, &disk)
+            write_atomic(path, &disk, self.sync_dir)
                 .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         }
         *g = next;
@@ -248,7 +260,7 @@ impl SubmittedTxLog {
 }
 
 /// Write `disk` as JSON to `path` via a temp file in the same directory, fsync, then rename.
-fn write_atomic(path: &std::path::Path, disk: &OnDisk) -> std::io::Result<()> {
+fn write_atomic(path: &std::path::Path, disk: &OnDisk, _sync_dir: SyncDir) -> std::io::Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -269,6 +281,11 @@ fn write_atomic(path: &std::path::Path, disk: &OnDisk) -> std::io::Result<()> {
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// Make a rename inside `dir` durable.
+fn sync_dir(_dir: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

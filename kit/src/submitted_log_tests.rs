@@ -310,3 +310,80 @@ fn a_record_in_the_previous_format_loads_and_keeps_its_flag() {
     std::fs::write(t.file(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": true })).expect("json")).expect("write");
     assert!(SubmittedTxLog::open(t.file()).is_uncertain());
 }
+
+// Durability of the rename (Codex review of #347): the record must be durable BEFORE the caller
+// broadcasts. The temp file is fsynced, renamed over the record, and then the directory holding it
+// is fsynced, so a power loss after the broadcast can't bring back an older record (or none) and
+// turn a resend of a mined tx into a "first" submission. Only then does try_record return.
+
+thread_local! {
+    /// What each directory sync saw: (dir, the record file's text, temp files left in the dir).
+    static SYNC_SEEN: std::cell::RefCell<Vec<(std::path::PathBuf, String, usize)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn spy_sync(dir: &std::path::Path) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(dir.join("submitted-tx.json")).unwrap_or_default();
+    let temps = std::fs::read_dir(dir)
+        .map(|it| {
+            it.filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+                .count()
+        })
+        .unwrap_or(usize::MAX);
+    SYNC_SEEN.with(|s| s.borrow_mut().push((dir.to_path_buf(), text, temps)));
+    Ok(())
+}
+
+fn failing_sync(_dir: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::other("directory sync failed"))
+}
+
+#[test]
+fn the_directory_is_synced_after_the_rename_before_the_record_is_used() {
+    SYNC_SEEN.with(|s| s.borrow_mut().clear());
+    let t = Tmp::new("dirsync-order");
+    let log = SubmittedTxLog::open_with(t.file(), spy_sync);
+    assert_eq!(log.try_record_for(&h(41), A, 0), Ok(true));
+    let seen = SYNC_SEEN.with(|s| s.borrow().clone());
+    assert_eq!(seen.len(), 1, "one directory sync per record write");
+    let (dir, text, temps) = &seen[0];
+    assert_eq!(dir, &t.0, "the directory that holds the record is synced");
+    assert!(text.contains(&h(41)), "the sync runs after the rename put the new record in place");
+    assert_eq!(*temps, 0, "the temp file was already renamed when the directory was synced");
+}
+
+#[test]
+fn a_failed_directory_sync_refuses_the_record_and_keeps_nothing() {
+    let t = Tmp::new("dirsync-fail");
+    let log = SubmittedTxLog::open_with(t.file(), failing_sync);
+    let r = log.try_record_for(&h(42), A, 0);
+    assert!(r.is_err(), "a record that isn't durable must stop the send, got {r:?}");
+    assert_eq!(log.len(), 0, "the refused hash is not kept");
+    assert!(!log.record(&h(43)), "record() is never a first send when the write isn't durable");
+}
+
+#[test]
+fn every_record_write_syncs_the_directory_including_on_eviction() {
+    SYNC_SEEN.with(|s| s.borrow_mut().clear());
+    let t = Tmp::new("dirsync-every");
+    let log = SubmittedTxLog::open_with(t.file(), spy_sync);
+    for n in 0..(CAPACITY as u32 + 2) {
+        log.try_record_for(&h(50_000 + n), A, u64::from(n)).expect("record");
+    }
+    assert_eq!(SYNC_SEEN.with(|s| s.borrow().len()), CAPACITY + 2);
+}
+
+#[test]
+fn the_platform_directory_sync_works_on_a_real_directory() {
+    let t = Tmp::new("dirsync-real");
+    assert!(sync_dir(&t.0).is_ok());
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_for(&h(44), A, 0), Ok(true));
+}
+
+#[test]
+fn a_directory_sync_on_a_missing_directory_fails_closed() {
+    let t = Tmp::new("dirsync-missing");
+    assert!(sync_dir(&t.0.join("not-there")).is_err());
+}
