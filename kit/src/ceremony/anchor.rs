@@ -593,7 +593,9 @@ impl AnchorCeremony {
                 // these bytes, the node answered with a definitive refusal, and it says it does not
                 // hold the transaction. Anything else (an unlisted or ambiguous error, a transport
                 // failure, a re-send, a failed lookup) keeps the day held as possibly sent.
+                // #347 Codex P1: and no other attempt recorded the same bytes while this one sent.
                 let not_held = first_submission
+                    && log.sole_attempt(&in_flight.tx_hash)
                     && send_refused(&e)
                     && matches!(rpc.transaction_known(&in_flight.tx_hash), Ok(false));
                 if not_held {
