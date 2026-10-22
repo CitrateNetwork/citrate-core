@@ -1344,11 +1344,9 @@ pub(crate) fn remove_sync(
         // Not the Store's bytes on disk. For the Store's own unfinished install (a pending
         // record) its unverified file and side files go with the record; a verified file is
         // never removed here. Otherwise the target is gone or belongs to a replacement, and only
-        // the stale record goes.
-        ListingKind::Model => {
-            if rec.pending {
-                remove_unverified_model(&t.models_dir, &rec.target)?;
-            }
+        // the stale record goes (the catch-all arm below).
+        ListingKind::Model if rec.pending => {
+            remove_unverified_model(&t.models_dir, &rec.target)?;
         }
         _ => {}
     }
