@@ -460,3 +460,24 @@ describe("cancel waits for the sidecar to confirm the run stopped (Codex P2, #35
   });
 
 });
+
+describe("tripwire: a run that did not answer ends only through confirmed termination", () => {
+  it("runDaemonTurn closes sessions without confirmation only after an answered turn", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(__dirname, "turn.ts"), "utf8");
+    const fn = src.slice(src.indexOf("export async function runDaemonTurn("));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    const fin = body.slice(body.lastIndexOf("} finally {"));
+    const answered = fin.indexOf("if (answered)");
+    const otherwise = fin.indexOf("} else if (sc)");
+    expect(answered).toBeGreaterThan(0);
+    expect(otherwise).toBeGreaterThan(answered);
+    // The only unconfirmed close is in the answered branch.
+    const unconfirmedClose = [...fin.matchAll(/\.close\(id\)\.catch\(/g)].map((m) => m.index ?? -1);
+    expect(unconfirmedClose.length).toBe(1);
+    expect(unconfirmedClose[0]).toBeGreaterThan(answered);
+    expect(unconfirmedClose[0]).toBeLessThan(otherwise);
+    expect(fin.slice(otherwise)).toContain("await terminateSession(");
+  });
+});
