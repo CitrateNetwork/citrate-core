@@ -1376,6 +1376,103 @@ fn a_claim_is_reread_until_settled_and_again_after_a_rewind() {
     assert!(r3.transport().asked_ids(0).contains(&7), "a rewind makes the claim unsettled again");
 }
 
+// Codex P1 (#371 @5b6445a): a session cursor read on a branch that was replaced, or read with no
+// evidence at all, must never be promoted into committed coverage. Call 1 reads branch A to 5000
+// and the commit is refused (h1 and h2 name 5000 with two hashes). Branch B has a withdrawal at
+// 4500. Call 2 on B must read from the committed position, find it, and only then commit.
+#[test]
+fn a_session_cursor_from_a_refused_commit_is_never_promoted() {
+    let mut scan = WithdrawalScan::default();
+    let a = ChainStub::new(5_000, vec![]);
+    a.executed_next.borrow_mut().extend([Ok(5_000), Ok(5_000)]);
+    a.executed_next_hashes.borrow_mut().extend([format!("0x{}", "aa".repeat(32)), stub_hash(5_000)]);
+    read_pending_withdrawals_with(&RpcClient::with_transport(a), STAKER_ADDR, &mut scan, None).unwrap_or_default();
+    assert_eq!(scan.next_block, 0, "the replacement commits nothing");
+    let b = ChainStub::new(5_000, vec![(45, 4_500, false)]);
+    *b.executed_head.borrow_mut() = Some(5_000);
+    let rpc = RpcClient::with_transport(b);
+    let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).unwrap_or_default();
+    assert_eq!(rpc.transport().log_ranges()[0].0, LIQUID_STAKING_POOL_DEPLOY_BLOCK, "read again from the committed position");
+    assert_eq!(ids_of(&rows), vec!["45"], "the withdrawal on the replacement branch is found");
+    assert!(scan.last_read_confirmed);
+}
+
+// The same promotion from a read with no evidence (today's RPC, no citrate_executedHead), when
+// evidence appears later in the session (the RPC is upgraded) or the anchor check fails.
+#[test]
+fn a_session_cursor_read_without_evidence_is_never_promoted() {
+    type Setup = fn(&ChainStub);
+    let no_evidence: [(&str, Setup); 3] = [
+        ("no executedHead", |_| {}),
+        ("executedHead error", |s| *s.executed_head_error.borrow_mut() = Some(-32603)),
+        ("executedHead timeout", |s| *s.executed_head_timeout.borrow_mut() = true),
+    ];
+    for (name, setup) in no_evidence {
+        let mut scan = WithdrawalScan::default();
+        let first = ChainStub::new(5_000, vec![]);
+        setup(&first);
+        read_pending_withdrawals_with(&RpcClient::with_transport(first), STAKER_ADDR, &mut scan, None).unwrap_or_default();
+        assert_eq!(scan.next_block, 0, "{name}: nothing committed");
+        let later = ChainStub::new(5_000, vec![(45, 4_500, false)]);
+        *later.executed_head.borrow_mut() = Some(5_000);
+        let rpc = RpcClient::with_transport(later);
+        let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).unwrap_or_default();
+        assert_eq!(ids_of(&rows), vec!["45"], "{name}: found once evidence is read");
+        assert_eq!(rpc.transport().log_ranges()[0].0, LIQUID_STAKING_POOL_DEPLOY_BLOCK, "{name}");
+    }
+    // An anchor check that fails is no evidence too: the session cursor it leaves is not promoted.
+    let anchored = WithdrawalScan { next_block: 2_901, anchor: Some((3_000, stub_hash(3_000))), ..Default::default() };
+    let mut scan = anchored;
+    let s = ChainStub::new(5_000, vec![]);
+    *s.executed_head.borrow_mut() = Some(5_000);
+    *s.is_executed.borrow_mut() = Some(Err(-32603));
+    read_pending_withdrawals_with(&RpcClient::with_transport(s), STAKER_ADDR, &mut scan, None).unwrap_or_default();
+    assert_eq!(scan.next_block, 2_901, "no advance without evidence");
+    let s = ChainStub::new(5_000, vec![(46, 3_500, false)]);
+    *s.executed_head.borrow_mut() = Some(5_000);
+    let rpc = RpcClient::with_transport(s);
+    let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).unwrap_or_default();
+    assert_eq!(rpc.transport().log_ranges()[0].0, 2_901, "read from the committed position");
+    assert_eq!(ids_of(&rows), vec!["46"]);
+}
+
+// Codex P1 (#371 @5b6445a): an eth_call at `latest` may see a later block than the executed head
+// read before it, and on another branch. A claim seen at h1 = h2 = 5000 (the claim tx in 5001) is
+// replaced by a fork that keeps 5000 and grows to 5200. The anchor still checks out, the position
+// moves past 5000, and the withdrawal must still be listed: in the same session, after a relaunch,
+// and after a merge.
+#[test]
+fn a_claim_seen_past_the_executed_head_and_forked_out_is_listed_again() {
+    let dir = std::env::temp_dir().join(format!("c1w-claim-fork-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("withdrawal-scans.json");
+    let claimed = ChainStub::new(5_000, vec![(7, 1_000, true)]);
+    *claimed.executed_head.borrow_mut() = Some(5_000);
+    let mut scan = WithdrawalScan::default();
+    let first = read_pending_withdrawals_with(&RpcClient::with_transport(claimed), STAKER_ADDR, &mut scan, None).unwrap_or_default();
+    assert!(first.is_empty(), "claimed: not listed");
+    save_scan(&file, "k", &scan).expect("save");
+    let forked = || {
+        let s = ChainStub::new(5_200, vec![(7, 1_000, true)]);
+        *s.executed_head.borrow_mut() = Some(5_200);
+        s.unclaim.borrow_mut().insert(7);
+        RpcClient::with_transport(s)
+    };
+    let mut same_session = scan.clone();
+    let rpc = forked();
+    let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut same_session, None).unwrap_or_default();
+    assert!(same_session.next_block > 5_000, "the position passed the head the claim was seen at");
+    assert!(rpc.transport().asked_ids(0).contains(&7), "the claimed id is read again");
+    assert_eq!(ids_of(&rows), vec!["7"], "same session: listed again");
+    let mut relaunched = load_scan(&file, "k");
+    let rows = read_pending_withdrawals_with(&forked(), STAKER_ADDR, &mut relaunched, None).unwrap_or_default();
+    assert_eq!(ids_of(&rows), vec!["7"], "after a relaunch: listed again");
+    let mut merged = merge_scans(&same_session, &load_scan(&file, "k"));
+    let rows = read_pending_withdrawals_with(&forked(), STAKER_ADDR, &mut merged, None).unwrap_or_default();
+    assert_eq!(ids_of(&rows), vec!["7"], "after a merge: listed again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // Codex P2: confirmed means the served history reached the requested head. Stored head 5000,
 // executed tip 3000, a withdrawal at 3500: the read is complete as far as the node serves, but NOT
 // confirmed, and the note says how far the node has served.
@@ -1663,6 +1760,29 @@ fn scan_position_violations(prod: &str) -> Vec<String> {
     if !prod.contains(".min(scan_end)") {
         bad.push("the log windows are not capped at the executed head".into());
     }
+    // #371 @5b6445a: with executed evidence the read starts at the committed position; the session
+    // cursor (read without validated evidence) only moves the start when nothing can be committed.
+    match prod.find("let start") {
+        None => bad.push("no read start".into()),
+        Some(i) => {
+            let def = &prod[i..i + prod[i..].find(';').unwrap_or(prod.len() - i)];
+            let compact: String = def.split_whitespace().collect();
+            if def.contains("session.next_block") && !compact.contains("Some(_)=>scan.next_block,") {
+                bad.push("the session cursor moves the read start under executed evidence".into());
+            }
+        }
+    }
+    // #371 @5b6445a: an eth_call at `latest` is not bound to a validated block, so a claim read
+    // there never stops a withdrawal from being read again.
+    if prod.contains("claim_settled") {
+        bad.push("a withdrawal read is skipped on a stored claim".into());
+    }
+    if let Some(i) = prod.find("let wanted") {
+        let def = &prod[i..i + prod[i..].find(';').unwrap_or(prod.len() - i)];
+        if def.contains(".filter(") {
+            bad.push("a withdrawal read is skipped on a stored claim".into());
+        }
+    }
     bad
 }
 
@@ -1689,6 +1809,20 @@ fn tripwire_catches_a_fixed_depth_position() {
                scan.next_block = (head + 1).saturating_sub(SAFE_DEPTH_BLOCKS);\n";
     let bad = scan_position_violations(old);
     for want in ["unbounded scan-position write", "no margin", "without evidence", "read twice", "eth_syncing", "citrate_isExecuted", "by hash or number", "not capped at the executed head"] {
+        assert!(bad.iter().any(|b| b.contains(want)), "{want}: {bad:?}");
+    }
+}
+
+#[test]
+fn tripwire_catches_a_promoted_session_cursor_and_a_settled_claim() {
+    // Negative control: the 5b6445a shapes, and a filter that skips claimed ids under another name.
+    let shapes = [
+        ("let start = scan.next_block.max(scan.session.next_block.saturating_sub(M)).max(D);", "session cursor"),
+        ("fn claim_settled(&self, id: u128) -> bool { true }", "skipped on a stored claim"),
+        ("let wanted: Vec<u128> = scan.ids.iter().copied().filter(|id| !done(*id)).collect();", "skipped on a stored claim"),
+    ];
+    for (src, want) in shapes {
+        let bad = scan_position_violations(src);
         assert!(bad.iter().any(|b| b.contains(want)), "{want}: {bad:?}");
     }
 }
