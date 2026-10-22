@@ -280,12 +280,29 @@ pub(crate) fn note_active_join(app: &tauri::AppHandle, group: &str) {
 }
 
 fn has_local_work(app: &tauri::AppHandle) -> bool {
-    let joins = active_joins_path(app)
+    let joins: Vec<String> = active_joins_path(app)
         .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
-        .map(|g| !g.is_empty())
-        .unwrap_or(false);
-    joins || !crate::invites::load(app).is_empty()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    local_work(
+        &joins,
+        &crate::invites::load(app),
+        crate::invites::now_unix(),
+    )
+}
+
+/// Whether this device has rendezvous work: a join still in progress, or an invite it minted.
+pub(crate) fn local_work(
+    active_joins: &[String],
+    invites: &[crate::invites::PendingInvite],
+    _now_unix: u64,
+) -> bool {
+    !active_joins.is_empty() || !invites.is_empty()
+}
+
+/// Whether the scheduled tick keeps running after this tick's result.
+pub(crate) fn scheduled_tick_continues(_tick: &Result<TickViews, RvError>) -> bool {
+    true
 }
 
 /// Start the background tick: once shortly after app start, then every [`TICK_INTERVAL`] while the
@@ -297,8 +314,10 @@ pub fn spawn_ticker(app: tauri::AppHandle) {
         .spawn(move || {
             std::thread::sleep(FIRST_TICK_DELAY);
             loop {
-                if should_tick(crate::comms::daemon_running(), has_local_work(&app)) {
-                    let _ = tick_and_emit(&app);
+                if should_tick(crate::comms::daemon_running(), has_local_work(&app))
+                    && !scheduled_tick_continues(&tick_and_emit(&app))
+                {
+                    return;
                 }
                 std::thread::sleep(TICK_INTERVAL);
             }
