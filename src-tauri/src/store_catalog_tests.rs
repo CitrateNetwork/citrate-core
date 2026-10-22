@@ -1231,7 +1231,7 @@ fn a_pending_record_never_removes_a_verified_replacement() {
     .expect("pending");
     assert_eq!(fx.fx_installed()[0].state, "missing");
     fx.fx_remove("tiny-model", &Usage(None)).expect("removable");
-    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).expect("kept"), other);
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(other.clone()), "the other model is kept");
 }
 
 #[test]
@@ -1291,4 +1291,49 @@ fn tripwire_store_model_state_and_removal_go_through_the_ownership_check() {
     }
     let owns = body("fn store_owns_model(");
     assert!(owns.contains("verified_sha256(") && owns.contains("r.size"), "hash and size are both checked");
+}
+
+// ---- Codex P2 on #356 at 2c0cbb3: the model target is reserved against the Models downloader --
+
+#[test]
+fn a_model_saved_under_the_target_name_during_the_install_is_never_quarantined() {
+    let fx = Fx::standard("race-same-name");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    let mut other = model_bytes();
+    other[40] = 5;
+    let models = fx.models.clone();
+    let b = other.clone();
+    // The transport is built after the Store's name check and before its download: a Models
+    // download of another model finishing under the same name at that moment.
+    let transport = move |_: &str| -> Box<dyn crate::model::ModelTransport> {
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(models.join("tiny-model.gguf"), &b).unwrap();
+        crate::model::ModelManager::new(models.clone(), Box::new(MemTransport(Vec::new())), sha(&b), b.len() as u64)
+            .with_file("tiny-model.gguf".to_string())
+            .verify()
+            .expect("the other model verifies");
+        Box::new(MemTransport(model_bytes()))
+    };
+    let usage = Usage(None);
+    let t = fx.fx_targets(&usage, &transport);
+    let err = install_sync(&fx.root, &fx.key.root(), &t, 0, &st.stage_id, NOW, NOW_MS, 0, &mut |_, _| {}).unwrap_err();
+    assert_eq!(err.code, "already_installed", "{err:?}");
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).expect("kept"), other);
+    assert_eq!(crate::model::verified_sha256(&fx.models, "tiny-model.gguf"), Some(sha(&other)));
+    assert!(fx.fx_installed().is_empty(), "no Store record for a file it did not install");
+}
+
+#[test]
+fn a_store_model_install_waits_out_a_models_download_of_the_same_name() {
+    let fx = Fx::standard("race-guard");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    std::fs::create_dir_all(&fx.models).unwrap();
+    // A Models download holds the file's download lock.
+    let lock = crate::model::DownloadGuard::acquire(&fx.models.join("tiny-model.gguf.part")).expect("lock");
+    let err = fx.fx_install(&st.stage_id, 0).unwrap_err();
+    assert_eq!(err.code, "in_use", "{err:?}");
+    drop(lock);
+    assert!(!fx.models.join("tiny-model.gguf").exists());
 }

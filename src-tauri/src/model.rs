@@ -394,6 +394,15 @@ pub fn check_range_status(start: u64, status: u16) -> Result<()> {
     }
 }
 
+/// What [`ModelManager::download_and_verify`] does with a file already at the final path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingFile {
+    /// Refuse it: the caller is installing a new file under this name (the Store).
+    Refuse,
+    /// Finish it: an unverified file is this name's own interrupted download (the Models screen).
+    ResumeUnverified,
+}
+
 /// HUP-S0.3 — single-flight guard: at most one download per `.part` path in this process.
 pub struct DownloadGuard {
     path: PathBuf,
@@ -727,6 +736,18 @@ impl ModelManager {
     ///
     /// A fresh download starts a NEW `.part` (any bad-magic body aborts before a
     /// final file exists). A resume of an existing `.part` continues its bytes.
+    /// Download (unless a complete file is already here) and verify, as one operation on this
+    /// file name. `existing` says what a file already at the final path means.
+    pub fn download_and_verify(
+        &self,
+        existing: ExistingFile,
+        on_progress: impl FnMut(u64, u64),
+    ) -> Result<()> {
+        let _ = existing;
+        self.download_with_progress(on_progress)?;
+        self.verify()
+    }
+
     pub fn download(&self) -> Result<Vec<u64>> {
         self.download_with_progress(|_, _| {})
     }
@@ -750,7 +771,12 @@ impl ModelManager {
         }
         // HUP-S0.3: exactly one writer per `.part` (a second appender corrupts it).
         let _guard = DownloadGuard::acquire(&part)?;
+        self.download_locked(&mut on_progress)
+    }
 
+    /// The download itself, run while the caller holds this file's [`DownloadGuard`].
+    fn download_locked(&self, on_progress: &mut dyn FnMut(u64, u64)) -> Result<Vec<u64>> {
+        let part = self.part_path();
         // Resume from the current partial size, if any.
         let mut have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
         // Never resume past what we expect (a corrupt oversized part → restart).

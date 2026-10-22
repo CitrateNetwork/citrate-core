@@ -251,3 +251,73 @@ fn build_session_body_matches_the_live_parity_fixture() {
     // decision, 6 vs 8, is still open).
     assert!(got.get("maxSteps").is_none());
 }
+
+// ---- Codex P1 on #356 at 2c0cbb3: a Store daemon's check and its open are about one sidecar ----
+
+#[test]
+fn a_store_open_is_refused_after_a_restart_between_check_and_open() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    *rec.reply.lock().unwrap() = vec![(201, r#"{"id":"s1-abc"}"#.into())];
+    let m = mgr(rec.clone());
+    let body = build_session_body("p", "[]", "http://127.0.0.1:1/v1", "", "m", 8192).unwrap();
+    // The check read this generation (and then the environment) ...
+    let checked = m.generation();
+    // ... then Hermes restarted (with other host tool sets): a new child and bearer.
+    m.stop();
+    m.set_token_for_test("a-new-bearer");
+    let r = m.session_open_in(checked, &body);
+    let posted = rec.posts.lock().unwrap().iter().any(|(u, _)| u.ends_with("/sessions"));
+    assert!(!posted, "no session was opened in the restarted sidecar");
+    let err = r.expect_err("refused");
+    assert!(err.to_string().contains("restarted"), "{err}");
+}
+
+/// A control transport whose POST waits until the test releases it.
+struct HeldControl {
+    entered: StdMutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: StdMutex<std::sync::mpsc::Receiver<()>>,
+}
+impl HermesControl for HeldControl {
+    fn get(&self, _u: &str, _b: &str) -> std::result::Result<ControlResp, HermesError> {
+        Ok(ControlResp { status: 200, body: "{}".into() })
+    }
+    fn post(&self, _u: &str, _b: &str, _body: &str) -> std::result::Result<ControlResp, HermesError> {
+        if let Some(tx) = self.entered.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        let _ = self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(20));
+        Ok(ControlResp { status: 201, body: r#"{"id":"s1-abc"}"#.into() })
+    }
+}
+
+#[test]
+fn a_restart_waits_for_a_store_open_in_progress() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let dir = std::env::temp_dir().join(format!("hsess-held-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c")).with_control(Box::new(HeldControl {
+        entered: StdMutex::new(Some(entered_tx)),
+        release: StdMutex::new(release_rx),
+    }));
+    m.set_token_for_test("deadbeef");
+    let body = build_session_body("p", "[]", "http://127.0.0.1:1/v1", "", "m", 8192).unwrap();
+    let checked = m.generation();
+    let stopped = AtomicBool::new(false);
+    let (stopped_early, opened) = std::thread::scope(|s| {
+        let opener = s.spawn(|| m.session_open_in(checked, &body));
+        entered_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the open reached the sidecar");
+        let stopper = s.spawn(|| {
+            m.stop();
+            stopped.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let early = stopped.load(Ordering::SeqCst);
+        let _ = release_tx.send(());
+        stopper.join().unwrap();
+        (early, opener.join().unwrap())
+    });
+    assert!(!stopped_early, "Hermes stopped while a checked open was still in flight");
+    assert_eq!(opened.expect("opened in the checked sidecar"), "s1-abc");
+}

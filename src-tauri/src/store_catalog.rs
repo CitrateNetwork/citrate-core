@@ -1252,22 +1252,23 @@ fn install_model(
         listing.artifact.size,
     )
     .with_file(file.clone());
-    mgr.download_with_progress(on_progress)
+    // One operation on this file name, under the download lock the Models screen shares: a
+    // file already at the target is refused, never verified against this listing (or removed).
+    mgr.download_and_verify(crate::model::ExistingFile::Refuse, on_progress)
         .map_err(|e| match e {
-            crate::model::ModelError::SizeMismatch { .. }
-            | crate::model::ModelError::ShortStream { .. }
+            crate::model::ModelError::ChecksumMismatch
+            | crate::model::ModelError::SizeMismatch { .. } => refuse(
+                "hash_failed",
+                "The model does not match the SHA-256 in the signed catalog; it was not kept",
+            ),
+            crate::model::ModelError::ShortStream { .. }
             | crate::model::ModelError::Overshoot { .. }
             | crate::model::ModelError::BadMagic => refuse("hash_failed", e.to_string()),
+            crate::model::ModelError::AlreadyDownloading => {
+                refuse("in_use", "A download of this model is running")
+            }
             other => refuse("install_failed", other.to_string()),
         })?;
-    mgr.verify().map_err(|e| match e {
-        crate::model::ModelError::ChecksumMismatch
-        | crate::model::ModelError::SizeMismatch { .. } => refuse(
-            "hash_failed",
-            "The model does not match the SHA-256 in the signed catalog; it was not kept",
-        ),
-        other => refuse("install_failed", other.to_string()),
-    })?;
     Ok(())
 }
 

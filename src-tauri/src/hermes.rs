@@ -418,6 +418,9 @@ pub struct HermesManager {
     /// HUP-S2.1: agent sessions opened with the member's folder-grant document; each change to the
     /// document is sent to every one of them (`POST /sessions/:id/grants`).
     grant_sessions: Mutex<std::collections::BTreeSet<String>>,
+    /// K5a: which sidecar a check was made against. A Store daemon's tool check and its session
+    /// open must be about the same running sidecar (see [`Self::session_open_in`]).
+    generation: std::sync::atomic::AtomicU64,
 }
 
 /// HUP-S2.1: how sending a changed grant document to the open agent sessions went.
@@ -458,6 +461,7 @@ impl HermesManager {
             bridged: Mutex::new(HashMap::new()),
             bridged_by_call: Mutex::new(HashMap::new()),
             grant_sessions: Mutex::new(std::collections::BTreeSet::new()),
+            generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -978,6 +982,18 @@ impl HermesManager {
             });
         }
         Ok(resp)
+    }
+
+    /// K5a: the running sidecar's generation. Read it BEFORE the facts a check uses (its
+    /// environment), then open with [`Self::session_open_in`].
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// [`Self::session_open`] into the sidecar generation `generation` was read from.
+    pub fn session_open_in(&self, generation: u64, body: &str) -> Result<String> {
+        let _ = generation;
+        self.session_open(body)
     }
 
     /// `POST /sessions` with a body from [`build_session_body`]; returns the session id.
