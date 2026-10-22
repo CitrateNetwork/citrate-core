@@ -1051,3 +1051,42 @@ fn memory_start_fails_closed_when_the_data_root_scan_fails() {
         assert!(kept.join("store.bge.memdag").exists());
     }
 }
+
+/// DGX (non-blocking, fed#331): a Start must not overlap a Stop in progress. While a stop has
+/// taken the supervisor but its child is still running, a start would spawn a second daemon on
+/// the same store; it waits for the stop to finish instead.
+#[test]
+fn a_start_waits_for_a_memory_stop_in_progress() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    let root = tmp_dir("start-window");
+    let mgr = manager_at(&root);
+    mgr.start().expect("start");
+    let (taken_tx, taken_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let taken_tx = StdMutex::new(taken_tx);
+    let release_rx = StdMutex::new(release_rx);
+    mgr.set_stop_hook(Box::new(move || {
+        let _ = taken_tx.lock().unwrap().send(());
+        let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(20));
+    }));
+    let started = AtomicBool::new(false);
+    let (started_early, result) = std::thread::scope(|s| {
+        let stopper = s.spawn(|| mgr.stop());
+        taken_rx.recv_timeout(Duration::from_secs(10)).expect("the stop took the supervisor");
+        let starter = s.spawn(|| {
+            let r = mgr.start();
+            started.store(true, Ordering::SeqCst);
+            r
+        });
+        std::thread::sleep(Duration::from_millis(800));
+        let early = started.load(Ordering::SeqCst);
+        let _ = release_tx.send(());
+        stopper.join().unwrap();
+        (early, starter.join().unwrap())
+    });
+    assert!(!started_early, "a start ran while the stop was still in progress");
+    result.expect("the start runs once the stop is done");
+    assert!(mgr.is_running_now());
+    mgr.stop();
+}
