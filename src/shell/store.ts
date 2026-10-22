@@ -1309,6 +1309,10 @@ export class Store {
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
     this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
+    // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
+    // that is on chain; otherwise the last value stands.
+    if (isGrantOnChain(grant) && grant.unlockBlock != null) this.setState({ s5UnlockBlock: grant.unlockBlock });
     // Onboarding-step reconcile: only needed while the flow is not already settled.
     if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
     const patch = reconciledGrantPatch(grant);
