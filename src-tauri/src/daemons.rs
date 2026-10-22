@@ -1593,11 +1593,14 @@ pub(crate) struct StoreOpen {
     /// must then echo `toolSets` and `promptSnapshot: false` back, or it is closed and refused.
     /// `false` = the env-hold fallback: no uncovered host set is on in the sidecar at all.
     pub scoped: bool,
+    /// The sidecar generation the check read (`HermesManager::generation`), before its facts.
+    pub generation: u64,
 }
 
 /// K5a: for a Store daemon, the open-time check (`store_open_check`) against the sidecar's
 /// current environment and capability. `Ok(Some(..))` for a Store daemon that may open;
-/// `Ok(None)` for a member daemon or an unknown id.
+/// `Ok(None)` for a member daemon. The Store daemon is checked against one sidecar generation
+/// (`StoreOpen::generation`), and its session must be opened in that same generation.
 pub(crate) fn check_store_daemon_open(
     app: &tauri::AppHandle,
     id: Option<&str>,
@@ -1610,6 +1613,9 @@ pub(crate) fn check_store_daemon_open(
     let Some(allowed) = allowed else {
         return Ok(None);
     };
+    // The generation first, then the environment and capability: a restart between them makes
+    // the open refuse.
+    let generation = crate::hermes::manager(app).ok().map(|m| m.generation());
     let (current, sets) = sidecar_facts(app);
     store_open_check(
         &allowed,
@@ -1617,9 +1623,11 @@ pub(crate) fn check_store_daemon_open(
         current.as_deref(),
         sets.as_deref(),
     )?;
+    let generation = generation.ok_or_else(|| "Not started: Hermes is not running.".to_string())?;
     Ok(Some(StoreOpen {
         allowed,
         scoped: sidecar_scopes_host_sets(sets.as_deref()),
+        generation,
     }))
 }
 

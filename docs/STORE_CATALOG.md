@@ -77,7 +77,11 @@ Verify → stage → review → approve (HIC) → install paused.
   and its verify (the app quit in that window) is checked again by its pinned hash on the next
   read of the installed list: confirmed when it matches, otherwise the file and its record are
   removed together. Removing a pending model record also removes its unverified file. Daemons are created paused in one write of the
-  daemon book; models are downloaded and verified and not selected.
+  daemon book; models are downloaded and verified and not selected. A model install holds the
+  file's download lock (shared with the Models screen) from its name check through the verify, so
+  another download cannot land under that name mid-install; a file already there is refused, never
+  verified against the listing or removed, and a Models download never re-verifies a different
+  verified model of that name.
 - **Remove.** One call, no key. A target removed elsewhere counts as removed (a daemon already
   deleted from the Daemons screen included: there is no run left to stop). A model counts as
   the Store's only while its file is verified against the listing's pinned SHA-256 (recorded by
@@ -166,6 +170,9 @@ Three more rules close the gaps around restarts and the launch environment:
 - **Re-checked right before the session opens.** The claim records which host sets were on.
   `hermes_session_open_unattended` (given the daemon id) refuses the open when the environment is
   now unknown, when the sets changed since the claim, or when an uncovered set is on.
+  The check and the open are bound to one Hermes generation: a stop or start between them makes
+  the open refuse ("Not started: Hermes restarted …"), and a stop or start waits until an open
+  in flight has returned.
 - **Fail closed at open.** The daemon session open must name a daemon the book holds and the run
   core claimed for it, still in flight; a missing or unknown id, a missing run id, another
   daemon's run, or a finished or released run is refused. A refusal at open is recorded as

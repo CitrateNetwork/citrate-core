@@ -1427,7 +1427,7 @@ fn a_pending_record_never_removes_a_verified_replacement() {
     .expect("pending");
     assert_eq!(fx.fx_installed()[0].state, "missing");
     fx.fx_remove("tiny-model", &Usage(None)).expect("removable");
-    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).expect("kept"), other);
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(other.clone()), "the other model is kept");
 }
 
 #[test]
@@ -1544,4 +1544,72 @@ fn tripwire_the_unattended_open_checks_the_claimed_run() {
     let ot = &daemons[daemons.find("pub(crate) fn open_target(").expect("open_target")..];
     let ot = &ot[..ot.find("\n}\n").expect("ends")];
     assert!(ot.find("run_in_flight(").expect("bound") < ot.find("allowed_tools_of(").expect("allowed"));
+}
+
+// ---- Codex P2 on #356 at 2c0cbb3: the model target is reserved against the Models downloader --
+
+#[test]
+fn a_model_saved_under_the_target_name_during_the_install_is_never_quarantined() {
+    let fx = Fx::standard("race-same-name");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    let mut other = model_bytes();
+    other[40] = 5;
+    let models = fx.models.clone();
+    let b = other.clone();
+    // The transport is built after the Store's name check and before its download: a Models
+    // download of another model finishing under the same name at that moment.
+    let transport = move |_: &str| -> Box<dyn crate::model::ModelTransport> {
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(models.join("tiny-model.gguf"), &b).unwrap();
+        crate::model::ModelManager::new(models.clone(), Box::new(MemTransport(Vec::new())), sha(&b), b.len() as u64)
+            .with_file("tiny-model.gguf".to_string())
+            .verify()
+            .expect("the other model verifies");
+        Box::new(MemTransport(model_bytes()))
+    };
+    let usage = Usage(None);
+    let t = fx.fx_targets(&usage, &transport);
+    let err = install_sync(&fx.root, &fx.key.root(), &t, 0, &st.stage_id, NOW, NOW_MS, 0, &mut |_, _| {}).unwrap_err();
+    assert_eq!(err.code, "already_installed", "{err:?}");
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).expect("kept"), other);
+    assert_eq!(crate::model::verified_sha256(&fx.models, "tiny-model.gguf"), Some(sha(&other)));
+    assert!(fx.fx_installed().is_empty(), "no Store record for a file it did not install");
+}
+
+#[test]
+fn a_store_model_install_waits_out_a_models_download_of_the_same_name() {
+    let fx = Fx::standard("race-guard");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    std::fs::create_dir_all(&fx.models).unwrap();
+    // A Models download holds the file's download lock.
+    let lock = crate::model::DownloadGuard::acquire(&fx.models.join("tiny-model.gguf.part")).expect("lock");
+    let err = fx.fx_install(&st.stage_id, 0).unwrap_err();
+    assert_eq!(err.code, "in_use", "{err:?}");
+    drop(lock);
+    assert!(!fx.models.join("tiny-model.gguf").exists());
+}
+
+/// Tripwire: every model download that ends in a verify goes through `download_and_verify` (one
+/// operation under the shared download lock); no production caller pairs the bare download with
+/// a verify.
+#[test]
+fn tripwire_model_downloads_verify_under_the_shared_lock() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(&dir).expect("src") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "model.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains(".download_with_progress("), "{name}: use download_and_verify");
+    }
+    let model = include_str!("model.rs");
+    let f = &model[model.find("pub fn download_and_verify(").expect("fn")..];
+    let f = &f[..f.find("\n    }\n").expect("ends")];
+    let guard = f.find("DownloadGuard::acquire(").expect("guard");
+    assert!(guard < f.find("self.final_path().exists()").expect("exists check"), "the lock covers the check");
+    assert!(guard < f.find("self.verify()").expect("verify"), "and the verify");
 }
