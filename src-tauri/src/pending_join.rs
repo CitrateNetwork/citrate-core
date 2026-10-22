@@ -149,7 +149,9 @@ impl PendingJoinStore {
                 true
             }
             Err(_) => {
+                // The slot may still hold an older invite: never trust it again in this session.
                 g.memory = Some(s);
+                g.unwiped_slot = true;
                 false
             }
         }
@@ -207,7 +209,12 @@ impl PendingJoinStore {
     /// The held invite, if any and not expired. An expired or unreadable one is wiped.
     fn load(&self, g: &mut Inner) -> Option<(Stored, bool)> {
         let (s, persisted) = match g.memory.clone() {
-            Some(s) => (s, false),
+            // Held in memory because a write failed. Save it now if the keyring is back: that also
+            // overwrites any older invite still in the slot, so a restart never finds that one.
+            Some(s) => {
+                let saved = self.write(g, s.clone());
+                (s, saved)
+            }
             None if g.unwiped_slot => {
                 if self.keyring.delete(PENDING_JOIN_ACCOUNT).is_ok() {
                     g.unwiped_slot = false;

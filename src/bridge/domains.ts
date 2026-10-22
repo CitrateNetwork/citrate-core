@@ -1877,9 +1877,6 @@ export interface JoinDomain {
   mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
   /** Retry attaching a pending direct code's envelope (idempotent). */
   attach(code: string): Promise<JoinMinted>;
-  /** Resolve + verify a link (or bare code). Each call counts against the code's resolve limit
-   *  (direct 1–50, default 50); resolve on the member's action, not on a preview. */
-  resolve(link: string): Promise<JoinResolved>;
   /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
    *  stays held (until it expires), so calling it again retries. */
   redeem(code: string): Promise<void>;

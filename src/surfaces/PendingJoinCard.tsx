@@ -35,7 +35,7 @@ export function PendingJoinCardView({ pj, canJoin, onReview, onJoin, onCancel }:
   );
   const memoryNote = !pj.persisted ? (
     <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.5 }}>
-      This device couldn't save the invite, so it's kept only until the app quits. If you restart, paste the link again.
+      This device couldn't save the invite, so it's kept only until the app quits. If you restart, paste the link again: an earlier invite may show in its place.
     </span>
   ) : null;
   const r = pj.resolved;

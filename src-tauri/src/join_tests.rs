@@ -5,7 +5,7 @@
 // crosses `invoke`, and that a rebuilt relay link feeds the existing redeem parser unchanged.
 
 use super::*;
-use citrate_core_kit::join::JoinKind;
+use citrate_core_kit::join::{JoinKind, ResolvedView};
 use std::collections::BTreeSet;
 
 const COMMANDS: &[&str] = &[

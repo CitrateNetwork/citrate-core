@@ -13,9 +13,6 @@ export function simJoin(_host: SimHost): JoinDomain {
     async attach(): Promise<JoinMinted> {
       throw new Error(DESKTOP);
     },
-    async resolve(): Promise<JoinResolved> {
-      throw new Error(DESKTOP);
-    },
     async redeem(): Promise<void> {
       throw new Error(DESKTOP);
     },

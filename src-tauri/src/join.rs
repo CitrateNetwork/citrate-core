@@ -4,16 +4,18 @@
 //! The inviter mints a short code at the citrate.ai join service with their auth.citrate.ai
 //! session (the kit [`AuthState`] bearer, never handed to the webview), seals the relay invite in
 //! Rust, and gets back one share URL `https://citrate.ai/join/<code>#<K>`. The invitee's app
-//! resolves the code, verifies the signature against the pinned kids, opens the envelope, and holds
+//! resolves the held invite (`pending_join_resolve`, the only resolve path), verifies the signature
+//! against the pinned keys, opens the envelope, and holds
 //! the relay invite in Rust until the member clicks Join (`join_redeem`), which runs the existing
 //! self-admit path ([`crate::invites::redeem_link`]).
 //!
 //! What crosses `invoke`: [`MintView`] (code, kind, status, expiry, and the final share URL, the only
-//! value that contains `K`), [`ResolvedView`] (signed display data and two flags), and
+//! value that contains `K`), [`citrate_core_kit::join::ResolvedView`] (signed display data and two
+//! flags, from `pending_join_resolve`), and
 //! [`JoinCodeEntry`] rows. Never `K` on its own, the envelope, the relay token or the bearer.
 //!
 //! Data sources (Rule 7): `https://www.citrate.ai/api/join` (citrate-landing join service: POST
-//! reserve, PUT attach, GET resolve, DELETE revoke, GET mine) and `/api/join/jwks` (pinned kids
+//! reserve, PUT attach, GET resolve, DELETE revoke, GET mine) and `/api/join/jwks` (pinned keys
 //! only); the relay invite link comes from `group_invite_create`; redeem goes to the comms relay
 //! through the existing `group_invite_redeem` body.
 //!
@@ -21,7 +23,7 @@
 
 use citrate_core_kit::join::{
     InvitePayload, JoinClient, JoinCodeEntry, JoinConfig, JoinError, JoinHttp, MintRequest,
-    MintView, ResolvedView,
+    MintView,
 };
 use citrate_core_kit::oidc::AuthState;
 use tauri::Manager;
@@ -86,18 +88,8 @@ pub async fn join_attach(app: tauri::AppHandle, code: String) -> Result<MintView
         .await
 }
 
-/// `join_resolve` — resolve and verify an invite link (`https://citrate.ai/join/<code>#K`,
-/// `citrate://join/<code>#K` or a bare code). Signed display data only; a direct invite that opened
-/// is held in Rust for `join_redeem`. Resolve is not redeem: the service allows a code up to its
-/// `maxResolves` (direct 1..=50, default 50) and the relay redeem is the single-use step, but each
-/// call counts, so resolve on the member's action. The JWKS is checked before a resolve is spent.
-#[tauri::command]
-pub async fn join_resolve(app: tauri::AppHandle, link: String) -> Result<ResolvedView, String> {
-    crate::blocking::off_main(move || with_states(&app, |join, _auth| join.resolve(&link))).await
-}
-
 /// `join_redeem` — the member's explicit Join for a resolved direct invite: hands the opened relay
-/// invite (held in Rust since `join_resolve`) to the existing self-admit path. The invite is
+/// invite (held in Rust since `pending_join_resolve`, the only resolve path) to the existing self-admit path. The invite is
 /// forgotten only on success; if the self-admit fails (relay or daemon unreachable) it stays held
 /// until it expires, so the member can press Join again.
 #[tauri::command]

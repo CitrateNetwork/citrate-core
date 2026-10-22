@@ -512,7 +512,6 @@ pub fn run() {
             // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
             join::join_mint,
             join::join_attach,
-            join::join_resolve,
             join::join_redeem,
             join::join_revoke,
             join::join_list,

@@ -10,9 +10,6 @@ export const tauriJoin: JoinDomain = {
   attach(code: string): Promise<JoinMinted> {
     return invoke<JoinMinted>("join_attach", { code });
   },
-  resolve(link: string): Promise<JoinResolved> {
-    return invoke<JoinResolved>("join_resolve", { link });
-  },
   async redeem(code: string): Promise<void> {
     await invoke("join_redeem", { code });
   },
