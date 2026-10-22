@@ -2938,6 +2938,12 @@ fn durable_send_violations(src: &str) -> Vec<String> {
             if !matches!((rec, send), (Some(r), Some(s)) if r < s) {
                 out.push("send_signed must record durably (try_record_call) before send_raw_transaction".into());
             }
+            // A definitive first-send refusal is taken out of recovery (Codex P2 at f98f8ae).
+            let refusal = body.find("is_definitive_send_error(");
+            let forget = refusal.and_then(|r| body[r..].find(".forget(&local_hash)"));
+            if forget.is_none() {
+                out.push("send_signed must forget a definitively refused submission from recovery".into());
+            }
         }
         None => out.push("fn send_signed not found".into()),
     }

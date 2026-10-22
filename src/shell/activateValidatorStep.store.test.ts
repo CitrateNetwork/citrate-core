@@ -484,6 +484,11 @@ describe("tripwire: the recorded-tx guard lives in the shared entry", () => {
     expect(guard).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(build);
+    // The reconciling read is unconditional (not inside the s7TxHash check) and gates the build:
+    // after a restart nothing is in memory, and only that read brings back a recorded send.
+    const read = body.indexOf("if (!(await this.refreshActivation()))");
+    expect(read).toBeGreaterThan(-1);
+    expect(read).toBeLessThan(guard);
   });
 });
 

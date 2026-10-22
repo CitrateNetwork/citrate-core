@@ -1507,20 +1507,20 @@ export class Store {
    * receipt). A failed read keeps the last honest status and records why (unknown is not zero).
    * Once the chain shows the bond activated, the persisted tx hash is no longer needed.
    */
-  async refreshActivation(reason: "event" | "poll" = "event"): Promise<void> {
+  async refreshActivation(reason: "event" | "poll" = "event"): Promise<boolean> {
     const member = this.identity().wallet;
-    if (!member) return;
+    if (!member) return false;
     // Single-flight for the 15 s poll: one backend read is ~16 sequential RPCs with 6 s
     // timeouts, so it can outlast the interval. A tick never starts a read while one is in
     // flight (otherwise each tick would supersede the last and none would ever apply). Only an
     // explicit event (S6 hand-off, S7 mount, a recorded tx, the post-send read) supersedes.
-    if (reason === "poll" && this.activationInFlight) return;
+    if (reason === "poll" && this.activationInFlight) return false;
     const gen = ++this.activationGen;
     this.activationInFlight = true;
     const askedTx = this.state.s7TxHash;
     try {
       const st = await bridge.node.activationStatus(member, askedTx);
-      if (gen !== this.activationGen) return; // a newer read was issued: this one is stale
+      if (gen !== this.activationGen) return false; // a newer read was issued: this one is stale
       const patch: Partial<AppState> = { activation: st, activationError: null };
       // Forget the recorded tx only when THIS read observed its receipt and the bond activated.
       const recorded = this.state.s7TxHash;
@@ -1534,9 +1534,11 @@ export class Store {
         patch.s7TxAt = rec.atMs ?? Date.now();
       }
       this.setState(patch);
+      return true;
     } catch (err) {
-      if (gen !== this.activationGen) return;
+      if (gen !== this.activationGen) return false;
       this.setState({ activationError: String((err as Error)?.message ?? err) });
+      return false;
     } finally {
       if (gen === this.activationGen) this.activationInFlight = false;
     }
@@ -4555,18 +4557,21 @@ export class Store {
     onNotSent?: WalletReview["onNotSent"];
     onResolved?: WalletReview["onResolved"];
   }): Promise<boolean> {
-    // A recorded activation tx guards EVERY entry (S7 and Node): reconcile it with the chain
-    // first; while it is unresolved, never build a second ceremony for the same bond.
+    // Every entry (S7 and Node) reconciles with the chain AND the durable record first: after a
+    // restart nothing is in memory, and only this read brings back a recorded send. No fresh read,
+    // no ceremony (a record may exist). While a recorded send is unresolved, never build a second
+    // ceremony for the same bond.
+    if (!(await this.refreshActivation())) {
+      this.toast("Activation not available yet — the chain could not be read just now" + (this.state.activationError ? ` (${this.state.activationError})` : "") + ".");
+      return false;
+    }
     if (this.state.s7TxHash) {
-      await this.refreshActivation();
-      if (this.state.s7TxHash) {
-        this.toast("Activation already sent — waiting for it to be included.");
-        return false;
-      }
-      if (this.state.activation?.bondActivated === true) {
-        this.toast("Your bond is already activated; there is nothing to sign.");
-        return false;
-      }
+      this.toast("Activation already sent — waiting for it to be included.");
+      return false;
+    }
+    if (this.state.activation?.bondActivated === true) {
+      this.toast("Your bond is already activated; there is nothing to sign.");
+      return false;
     }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
