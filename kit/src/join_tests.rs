@@ -928,6 +928,8 @@ struct StubState {
     jwks_unpinned_only: bool,
     /// Serve a different key under the pinned `join-1` (and the real one under no pinned kid).
     jwks_swapped: bool,
+    /// Serve the real `join-1` AND a second, different key under `join-1`.
+    jwks_duplicate: bool,
     /// Answer every request (except the redirect target) with a 307 to `<base>/followed`.
     redirect_everything: bool,
     /// Sign resolves with this `envVersion` instead of 1 (a future envelope format).
@@ -1126,6 +1128,10 @@ fn handle(
             }
             (201, out)
         }
+        ("GET", "/jwks") if s.jwks_duplicate && s.fail_jwks.is_none() => (
+            200,
+            serde_json::json!({ "keys": [jwk("join-1", PUB_CURRENT), jwk("join-1", PUB_ROGUE)] }),
+        ),
         ("GET", "/jwks") if s.jwks_swapped && s.fail_jwks.is_none() => (
             200,
             serde_json::json!({ "keys": [jwk("join-1", PUB_ROGUE), jwk("join-9", PUB_CURRENT)] }),
@@ -1578,6 +1584,14 @@ fn e2e_jwks_failure_does_not_spend_a_resolve() {
         "a JWKS with other material under a pinned kid spent a resolve"
     );
     stub.state().jwks_swapped = false;
+    stub.state().jwks_duplicate = true;
+    assert_eq!(c.resolve(&url), Err(JoinError::Signature));
+    assert_eq!(
+        resolves_of(&stub, &m.code),
+        0,
+        "a JWKS with a second, different key under a pinned kid spent a resolve"
+    );
+    stub.state().jwks_duplicate = false;
     // A client with no pinned keys (this release's production pins) fails closed, unspent.
     let unpinned = JoinClient::new(
         JoinConfig {
