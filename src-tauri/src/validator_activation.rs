@@ -103,6 +103,19 @@ pub struct ActivationTx {
     pub success: Option<bool>,
 }
 
+/// The member's activation send as the durable submitted-tx record names it (written and
+/// fsync'd before the send), so the step resumes to Pending after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedActivationTx {
+    pub hash: String,
+    /// When it was recorded (ms since the Unix epoch), if known.
+    pub at_ms: Option<u64>,
+}
+
+/// Finds the member's latest recorded `MemberBond.activate` send to the given bond.
+pub type RecordedLookup<'a> = &'a dyn Fn(&str) -> Option<RecordedActivationTx>;
+
 /// Everything the Activate-validator step reads. Wei as decimal strings (beyond JS range).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,6 +150,8 @@ pub struct ActivationStatus {
     pub local_block: Option<u64>,
     pub local_syncing: Option<bool>,
     pub tx: Option<ActivationTx>,
+    /// The latest recorded (not forgotten) activation send for this member and bond.
+    pub recorded_tx: Option<RecordedActivationTx>,
 }
 
 /// One JSON-RPC call; `None` on a transport error or an `error` object (never a default).
@@ -244,6 +259,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
     member: &str,
     node_pubkey: Option<[u8; 32]>,
     tx_hash: Option<&str>,
+    recorded: RecordedLookup<'_>,
 ) -> Result<ActivationStatus, String> {
     let member = validate_address(member)?;
     let member_word = address_word(&member)
@@ -355,7 +371,15 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         });
     }
 
-    if let Some(hash) = tx_hash.filter(|h| !h.is_empty()) {
+    // The durable record of this member's activation send to this bond (#347's fsync'd log),
+    // looked up only once the bond address is read. Its receipt is read when the UI has no hash
+    // of its own (after a restart).
+    st.recorded_tx = st.bond_address.as_deref().and_then(recorded);
+    let recorded_hash = st.recorded_tx.as_ref().map(|r| r.hash.clone());
+    let tx_hash = tx_hash
+        .filter(|h| !h.is_empty())
+        .or(recorded_hash.as_deref());
+    if let Some(hash) = tx_hash {
         let mut tx = ActivationTx {
             hash: hash.to_string(),
             included: None,
@@ -410,7 +434,9 @@ pub async fn validator_activation_status(
     crate::blocking::off_main(move || {
         let node = tauri::Manager::try_state::<crate::node::NodeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        validator_activation_status_sync(node, &member_address, tx_hash.as_deref())
+        let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        validator_activation_status_sync(node, ceremony, &member_address, tx_hash.as_deref())
     })
     .await
 }
@@ -418,6 +444,7 @@ pub async fn validator_activation_status(
 /// Blocking body of [`validator_activation_status`]; reached only through `off_main`.
 pub fn validator_activation_status_sync(
     node: tauri::State<'_, crate::node::NodeState>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     member_address: &str,
     tx_hash: Option<&str>,
 ) -> std::result::Result<ActivationStatus, String> {
@@ -433,6 +460,13 @@ pub fn validator_activation_status_sync(
     let deadline = std::time::Instant::now() + READ_BUDGET;
     let local_budgeted = Budgeted::new(&local, deadline);
     let public_budgeted = Budgeted::new(&public, deadline);
+    // The ceremony's durable submitted-tx record (#347): the activation send is written there,
+    // fsync'd, before it is sent.
+    let log = ceremony.0.submitted_log();
+    let activate_selector = format!(
+        "0x{}",
+        hex::encode(crate::validator::MEMBER_BOND_ACTIVATE_SELECTOR)
+    );
     let targets = Targets {
         vault: crate::addresses::membership_stake_vault(),
         sbt: crate::addresses::citrate_member_sbt(),
@@ -445,7 +479,38 @@ pub fn validator_activation_status_sync(
         member_address,
         node_pubkey,
         tx_hash,
+        &|bond: &str| {
+            log.latest_call(
+                member_address,
+                &citrate_core_kit::submitted_log::CallMeta {
+                    to: bond.to_string(),
+                    selector: activate_selector.clone(),
+                },
+            )
+            .map(|c| RecordedActivationTx {
+                hash: c.hash,
+                at_ms: c.at_ms,
+            })
+        },
     )
+}
+
+/// `validator_activation_forget` command — S7/Node Forget: mark the recorded activation send
+/// `tx_hash` as forgotten in the durable submitted-tx record (fsync'd). The UI applies the
+/// 10-minute unseen rule first. The hash stays recorded, so re-sending those bytes is never a
+/// first submission. `Ok(false)` when the record does not hold it; an error when the write
+/// fails (the UI then keeps the activation as Pending).
+#[tauri::command]
+pub async fn validator_activation_forget(
+    app_h: tauri::AppHandle,
+    tx_hash: String,
+) -> std::result::Result<bool, String> {
+    crate::blocking::off_main(move || {
+        let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ceremony.0.submitted_log().forget(&tx_hash)
+    })
+    .await
 }
 
 #[cfg(test)]

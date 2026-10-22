@@ -858,7 +858,8 @@ function S6({ store, s }: { store: Store; s: AppState }) {
   // The REAL height. This used to subtract `(100 - syncPct) * 14` to fake a
   // "catching up" number off the 0/100 stub — a fabricated height (Rule 1). With a
   // real syncPct there is nothing to estimate: show what the node actually has.
-  const heightStr = fmtI(s.height);
+  // C1-V V10: 0 is "no reading yet" (eth_blockNumber returns 0x0 on error), never a height.
+  const heightStr = s.height > 0 ? fmtI(s.height) : "—";
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S6 · Node ignition</div>
@@ -925,7 +926,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             </div>
             <div style={{ display: "flex", gap: 20 }}>
               <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }}>
-                height {heightStr} / {fmtI(s.height)}
+                height {heightStr}
               </span>
               <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }}>
                 peers {s.peers}
@@ -1242,7 +1243,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
             </div>
             {store.canForgetActivationTx(Date.now()) && (
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.onS7ForgetTx()} data-testid="s7-forget">
+                <button className="btn btn-ghost btn-sm" onClick={() => void store.onS7ForgetTx()} data-testid="s7-forget">
                   Forget this transaction
                 </button>
                 <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
@@ -1264,7 +1265,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
           <div>
             <button
               className="btn btn-ghost btn-sm"
-              onClick={() => store.onS7RetryAfterRevert()}
+              onClick={() => void store.onS7RetryAfterRevert()}
             >
               Try again
             </button>

@@ -337,7 +337,15 @@ pub fn run() {
             // `wallet::sign_message` is reachable ONLY from `approve`. @rule8:
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
-            app.manage(ceremony::build_ceremony_state());
+            // Contract v1.1 §1: the first-submission record persists under the app data dir, so
+            // a re-send after a restart is never mistaken for a first submission.
+            app.manage(match app.path().app_data_dir() {
+                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
+                Err(e) => {
+                    eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+            });
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
             app.manage(popout_contract::ContractInbox::default());
@@ -750,6 +758,8 @@ pub fn run() {
             node::node_register_validator,
             // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
             validator_activation::validator_activation_status,
+            // Join-8 — Forget an unseen activation send in the durable submitted-tx record.
+            validator_activation::validator_activation_forget,
             // W1.x — arm the producer once synced (consensus-gated); the respawn
             // mints proposer.key, the validator identity the bond activation needs.
             node::node_arm_mining,

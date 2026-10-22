@@ -242,11 +242,13 @@ export interface WalletReview {
    * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
    * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
    * which polls for the receipt before returning). A caller that must survive a quit at any
-   * point after signing (S7 records the activation tx) persists here. Returns true only when
-   * the hash is durably saved; on false nothing is sent and the signed tx is discarded.
+   * point after signing (S7 shows the activation tx as Pending) gets the hash here. The durable
+   * record is written in Rust (#347's fsync'd submitted-tx record) by the send itself, before
+   * the tx reaches the node; with no durable record nothing is sent.
    */
-  onSigned?: (txHash: string) => boolean;
-  /** Join-8 — with `onSigned`: the signed tx expired in the ceremony before it was sent. */
+  onSigned?: (txHash: string) => void;
+  /** Join-8 — with `onSigned`: nothing was sent (the signed tx expired in the ceremony, or the
+   *  backend refused the send before submission, e.g. no durable record). */
   onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
@@ -364,10 +366,13 @@ export interface AppState {
   coachDone: boolean;
   demoOpen: boolean;
   toast: string | null;
+  /**
+   * The local node's `eth_blockNumber`. 0 means no reading yet (UI truth contract §2: the
+   * call returns 0x0 on error, so 0 is never shown as a height). There is no finality-age
+   * field: checkpoint finality is not running on 40204 (contract §4), so nothing may show one.
+   */
   height: number;
   peers: number;
-  lastCp: number;
-  finAge: number;
   node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "stalled" | "error";
   /**
    * What the MEMBER wants the node to do, as distinct from what it is doing.
@@ -388,7 +393,6 @@ export interface AppState {
   /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
   miningHold: string | null;
   syncPct: number;
-  hb: number;
   cpu: number;
   ram: number;
   logs: LogLine[];
@@ -577,12 +581,14 @@ export interface AppState {
   dataReady: boolean;
   s6ready?: boolean;
   /**
-   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate, kept so a member who
-   * quits before it is included comes back to "Pending" rather than a fresh button. Persisted;
-   * cleared once the chain shows the bond activated.
+   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate. NOT persisted here:
+   * the durable record is #347's fsync'd submitted-tx record in Rust, written before the send, and
+   * the activation read returns it (`activation.recordedTx`) so a relaunch resumes to "Pending".
+   * Cleared once the chain shows the bond activated, or by Forget / Try again (which also mark the
+   * durable record forgotten).
    */
   s7TxHash: string | null;
-  /** Join-8 — when `s7TxHash` was recorded (ms since epoch). Persisted. */
+  /** Join-8 — when `s7TxHash` was recorded (ms since epoch; from the durable record after a relaunch). */
   s7TxAt: number | null;
   /** Join-8 — the member chose "Explore free" at S7 (activate later from Node). Persisted. */
   validatorSkipped: boolean;
@@ -777,17 +783,15 @@ export function freshState(pid: string): AppState {
     coachDone: !P.fresh,
     demoOpen: false,
     toast: null,
-    height: 131204 + ((Math.random() * 40) | 0),
+    // No reading until the node is polled (contract rule 2): never a seeded height.
+    height: 0,
     peers: 0,
-    lastCp: 131200,
-    finAge: 8,
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
     nodeBlocked: null,
     miningHold: null,
     syncPct: 0,
-    hb: 4,
     cpu: 0,
     ram: 0,
     logs: [],
@@ -934,7 +938,7 @@ export function freshState(pid: string): AppState {
         pinned: true,
         blocks: [
           "Keep stake ≥ 32,000 — eligibility is a hard floor.",
-          "The heartbeat is slashing protection. Never kill -9 the agent mid-job.",
+          "Stop the node from the Node page rather than killing it mid-job.",
           "Claims batch until ≥ 5 SALT to avoid dust gas.",
           "Pause before OS upgrades; resume re-attests the machine.",
         ],
@@ -983,7 +987,7 @@ export function freshState(pid: string): AppState {
       s.earnComp = 9.31;
       s.earnToday = 3.86;
       s.selfStake = 2500;
-      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s; heartbeat continuity held." }];
+      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
       s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Add stake|−2,500.00 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
@@ -1022,13 +1026,16 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
-  "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "s7TxHash", "s7TxAt", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
+  "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
   "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
+
+/** Observed node state: rewritten by every poll, so it is never persisted or restored. */
+export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1038,6 +1045,9 @@ export function loadState(): AppState {
     saved = null;
   }
   const base = freshState((saved && saved.persona) || "p1");
+  // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
+  // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
+  if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // Owner decision 2026-10-01: the sidecar agent loop is on for members. Installs that saved the
   // old default (off) are switched on once; a member who turns it off afterwards stays off.

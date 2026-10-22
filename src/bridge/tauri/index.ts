@@ -263,6 +263,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async activationStatus(memberAddress: string, txHash?: string | null) {
         return invoke<ActivationStatusView>("validator_activation_status", { memberAddress, txHash: txHash ?? null });
       },
+      async activationForget(txHash: string) {
+        return invoke<boolean>("validator_activation_forget", { txHash });
+      },
       async lastCrash() {
         return invoke<{ reason: string; atUnixMs: number } | null>("node_last_crash");
       },
