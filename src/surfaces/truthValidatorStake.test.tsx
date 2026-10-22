@@ -40,6 +40,8 @@ const WEI = 10n ** 18n;
 // Contract v1.1 §1: the registry activation readings (isActive, validatorInfo.actEpoch, currentEpoch).
 const ACT_ON = { isActive: true, status: 1, actEpoch: 499, currentEpoch: 499 };
 const ACT_PENDING = { isActive: true, status: 1, actEpoch: 501, currentEpoch: 499 };
+// What the registry returns for a key it never registered (status None).
+const ACT_NONE = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 499 };
 const wei = (salt: number) => (BigInt(salt) * WEI).toString();
 
 const stub = {
@@ -111,7 +113,7 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
 
   async function poll(stakeSalt: number, active: boolean, over: Partial<AppState> = {}) {
     const reads = {
-      validatorActivation: vi.fn(async () => (active ? ACT_ON : ACT_PENDING)),
+      validatorActivation: vi.fn(async () => (stakeSalt > 0 ? (active ? ACT_ON : ACT_PENDING) : ACT_NONE)),
       minStakeWei: async () => 32_000n * WEI,
       blockSeconds: async () => 2,
       producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
@@ -142,9 +144,11 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
   });
 
   it("LiquidStakingPool self-stake never makes a validator", async () => {
-    const reads = await poll(0, true, { selfStake: 40_000 });
+    // C1-V2: the registry is read for the key whatever the stake (so Exiting/Slashed show after a
+    // full exit); self-stake is still never an input, and status None is not a validator.
+    await poll(0, true, { selfStake: 40_000 });
     expect(store.state.node).toBe("synced");
-    expect(reads.validatorActivation).not.toHaveBeenCalled();
+    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, false)).toBe("Not a validator");
   });
 
   it("the re-arm toast does not say 'producing again'", async () => {
