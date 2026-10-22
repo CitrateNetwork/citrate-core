@@ -37,6 +37,9 @@ import type { GrantStatus } from "../bridge/domains";
 import book from "../../src-tauri/addresses/40204.json";
 
 const WEI = 10n ** 18n;
+// Contract v1.1 §1: the registry activation readings (isActive, validatorInfo.actEpoch, currentEpoch).
+const ACT_ON = { isActive: true, status: 1, actEpoch: 499, currentEpoch: 499 };
+const ACT_PENDING = { isActive: true, status: 1, actEpoch: 501, currentEpoch: 499 };
 const wei = (salt: number) => (BigInt(salt) * WEI).toString();
 
 const stub = {
@@ -73,18 +76,18 @@ describe("chainTruth helpers", () => {
   it("derives the §1 validator word from the registry only (V4)", () => {
     expect(validatorWord(0, null, false)).toBe("Not a validator");
     expect(validatorWord(0, null, true)).toBe("Bond locked · not staked");
-    expect(validatorWord(32_000, false, true)).toBe("Staked · active from next epoch");
-    expect(validatorWord(32_000, true, true)).toBe("Validator active");
+    expect(validatorWord(32_000, ACT_PENDING, true)).toBe("Registered · active from epoch 501");
+    expect(validatorWord(32_000, ACT_ON, true)).toBe("Validator active");
     expect(validatorWord(32_000, null, true)).toBeNull();
   });
 });
 
 describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
-  it("mapNodeState takes the isActive reading, not a stake amount", () => {
-    expect(mapNodeState("running", 100, true)).toBe("validating");
-    expect(mapNodeState("running", 100, false)).toBe("synced");
+  it("mapNodeState takes the registry activation, not a stake amount", () => {
+    expect(mapNodeState("running", 100, ACT_ON)).toBe("validating");
+    expect(mapNodeState("running", 100, ACT_PENDING)).toBe("synced");
     expect(mapNodeState("running", 100, null)).toBe("synced");
-    expect(mapNodeState("running", 40, true)).toBe("syncing");
+    expect(mapNodeState("running", 40, ACT_ON)).toBe("syncing");
   });
 
   it("the node label uses the §1 word", () => {
@@ -107,12 +110,17 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
   }
 
   async function poll(stakeSalt: number, active: boolean, over: Partial<AppState> = {}) {
-    const reads: ChainReads = { isActive: vi.fn(async () => active), minStakeWei: async () => 32_000n * WEI, blockSeconds: async () => 2 };
+    const reads = {
+      validatorActivation: vi.fn(async () => (active ? ACT_ON : ACT_PENDING)),
+      minStakeWei: async () => 32_000n * WEI,
+      blockSeconds: async () => 2,
+      producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
+    } as unknown as ChainReads & { validatorActivation: ReturnType<typeof vi.fn> };
     (store as unknown as { chainReads: ChainReads }).chainReads = reads;
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
     (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActive: null, ...over });
+    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActivation: null, ...over });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: "0x" + "11".repeat(32) });
@@ -121,22 +129,22 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
     return reads;
   }
 
-  it("registered stake that is not in the active set is not 'validating'", async () => {
+  it("registered stake whose activation epoch is not reached is not 'validating'", async () => {
     await poll(32_000, false);
-    expect(store.state.validatorActive).toBe(false);
+    expect(store.state.validatorActivation).toEqual(ACT_PENDING);
     expect(store.state.node).toBe("synced");
   });
 
-  it("isActive = true makes the node a validator", async () => {
+  it("an activated validator (actEpoch reached) makes the node a validator", async () => {
     const reads = await poll(32_000, true);
-    expect(reads.isActive).toHaveBeenCalledWith("0x" + "11".repeat(32));
+    expect(reads.validatorActivation).toHaveBeenCalledWith("0x" + "11".repeat(32));
     expect(store.state.node).toBe("validating");
   });
 
   it("LiquidStakingPool self-stake never makes a validator", async () => {
     const reads = await poll(0, true, { selfStake: 40_000 });
     expect(store.state.node).toBe("synced");
-    expect(reads.isActive).not.toHaveBeenCalled();
+    expect(reads.validatorActivation).not.toHaveBeenCalled();
   });
 
   it("the re-arm toast does not say 'producing again'", async () => {
@@ -153,17 +161,17 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
   });
 
   it("the Node surface shows the §1 word and no made-up election odds", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: false })} />);
-    expect(html).toContain("Staked · active from next epoch");
+    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_PENDING })} />);
+    expect(html).toContain("Registered · active from epoch 501");
     expect(html).not.toContain("Election odds");
-    const active = renderToStaticMarkup(<Node store={stub} s={member({ node: "validating", bondedStake: 32_000, validatorActive: true })} />);
+    const active = renderToStaticMarkup(<Node store={stub} s={member({ node: "validating", bondedStake: 32_000, validatorActivation: ACT_ON })} />);
     expect(active).toContain("Validator active");
   });
 
   it("onboarding never says every full node builds blocks", () => {
     const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "synced" })} />);
     expect(html).not.toContain("builds blocks");
-    const v = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "validating", bondedStake: 32_000, validatorActive: true })} />);
+    const v = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "validating", bondedStake: 32_000, validatorActivation: ACT_ON })} />);
     expect(v).toContain("Validator active");
     expect(v).not.toContain(">Validating<");
   });
@@ -237,7 +245,7 @@ describe("V8 — reward and balance captions per §1 Rewards", () => {
   });
 
   it("the Node Earning tab names rewardsOf, splits claimable/maturing, and has no off-chain estimates", () => {
-    const s = member({ nTab: "earn", bondedStake: 32_000, validatorActive: true, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
+    const s = member({ nTab: "earn", bondedStake: 32_000, validatorActivation: ACT_ON, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
     const html = renderToStaticMarkup(<Node store={stub} s={s} />);
     expect(html).not.toContain("off-chain estimate");
     expect(html).not.toContain("ContributionAccounting.claimable");
@@ -418,16 +426,16 @@ describe("#348 review — 'Producing blocks' from a sampled proposer set", () =>
     await store.refreshProducers();
     expect(store.state.producers).toBeNull();
     expect(store.state.producersError).toContain("rpc 503");
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: ME, producers: null, producersError: "rpc 503" })} />);
+    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: null, producersError: "rpc 503" })} />);
     expect(html).toContain("— · producer sample unavailable: rpc 503");
     expect(html.toLowerCase()).not.toContain("not producing");
   });
 
   it("the Node card shows the word and names the window", () => {
-    const seen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: OTHER, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
+    const seen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: OTHER, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
     expect(seen).toContain("Producing blocks");
     expect(seen).toContain("sampled over the last 100 blocks");
-    const unseen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: ME, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
+    const unseen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
     expect(unseen).toContain("Not seen producing in the last 100 blocks");
     expect(unseen).not.toContain(">Producing blocks<");
   });
@@ -453,7 +461,7 @@ describe("#348 round 2 — the producer labels state the N actually sampled", ()
     const short = { head: 1, window: 37, proposers: [ME] };
     expect(producerShortfall(short)).toBe("only 37 of 100 blocks came back");
     expect(producingWord(short, ME)).toBeNull();
-    const node = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActive: true, validatorPubkey: ME, producers: short })} />);
+    const node = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: short })} />);
     expect(node).toContain("— · producer sample incomplete: only 37 of 100 blocks came back");
     expect(node).not.toContain(">Producing blocks<");
     expect(node).not.toContain("last 100 blocks");

@@ -487,24 +487,26 @@ describe("store.refreshActivity — folds the real indexed history (item 4)", ()
 // a Tauri build so height/peers/sync are live 40204 truth, not fabricated.
 describe("mapNodeState — supervisor state → app node lifecycle", () => {
   it("stopped/unknown → off", () => {
-    expect(mapNodeState("stopped", 0, 0)).toBe("off");
-    expect(mapNodeState("whatever", 100, 99999)).toBe("off");
+    expect(mapNodeState("stopped", 0, null)).toBe("off");
+    expect(mapNodeState("whatever", 100, null)).toBe("off");
   });
   it("starting/restarting → prov; failed → error", () => {
-    expect(mapNodeState("starting", 0, 0)).toBe("prov");
-    expect(mapNodeState("restarting", 0, 0)).toBe("prov");
-    expect(mapNodeState("failed", 0, 0)).toBe("error");
+    expect(mapNodeState("starting", 0, null)).toBe("prov");
+    expect(mapNodeState("restarting", 0, null)).toBe("prov");
+    expect(mapNodeState("failed", 0, null)).toBe("error");
   });
-  // C1-V V4: the third argument is ValidatorRegistry.isActive(pubkey), not a stake amount. A stake
-  // >= 32k used to mean "validating"; the UI truth contract §1 bans that (only isActive does).
+  // C1-V v1.1: the third argument is the registry activation (isActive, validatorInfo.actEpoch,
+  // currentEpoch), not a stake amount. Only an activated key is "validating" (contract §1).
+  const ON = { isActive: true, status: 1, actEpoch: 499, currentEpoch: 499 };
   it("running while not fully synced → syncing", () => {
-    expect(mapNodeState("running", 42, true)).toBe("syncing");
+    expect(mapNodeState("running", 42, ON)).toBe("syncing");
   });
-  it("running + synced + isActive → validating", () => {
-    expect(mapNodeState("running", 100, true)).toBe("validating");
+  it("running + synced + activated → validating", () => {
+    expect(mapNodeState("running", 100, ON)).toBe("validating");
   });
-  it("running + synced but not in the active set (or unread) → synced", () => {
-    expect(mapNodeState("running", 100, false)).toBe("synced");
+  it("running + synced but pending activation, not active, or unread → synced", () => {
+    expect(mapNodeState("running", 100, { ...ON, actEpoch: 500 })).toBe("synced");
+    expect(mapNodeState("running", 100, { ...ON, isActive: false })).toBe("synced");
     expect(mapNodeState("running", 100, null)).toBe("synced");
   });
 });

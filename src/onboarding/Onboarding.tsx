@@ -8,7 +8,7 @@ import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
-import { validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, validatorWord } from "../shell/chainTruth";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -940,15 +940,16 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             )}
           </div>
         )}
-        {/* C1-V V4: `validating` is set only from ValidatorRegistry.isActive(pubkey) (UI truth
-            contract §1), never from a stake amount, so this card uses the §1 word. */}
+        {/* C1-V (contract v1.1 §1): `validating` is set only when the key is isActive AND its
+            validatorInfo.actEpoch <= currentEpoch, never from a stake amount, so this card uses the
+            §1 word and the consensus-lag note. */}
         {s.node === "validating" && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", animation: "ccPulse 2.4s var(--ease-standard) infinite", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Validator active</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · in the active set (ValidatorRegistry.isActive) · stake {fmtI(s.bondedStake)} SALT
+                synced · activation epoch reached · stake {fmtI(s.bondedStake)} SALT · {CONSENSUS_LAG_NOTE}
               </div>
             </div>
           </div>
@@ -958,13 +959,13 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             yet. Onboarding auto-opens the activation ceremony (maybeAutoBond); this is
             the visible fallback if the member dismissed it — one click re-opens the
             MemberBond.activate review (Rule 3: the human still approves). */}
-        {/* Registered stake that is not active yet (pending activation, or not read): the bond is
-            already staked, so no "Stake my bond" here (#348 review). */}
+        {/* Registered stake that is not active yet (pending activation, exiting, or not read):
+            the bond is already staked, so no "Stake my bond" here. */}
         {s.node === "synced" && s.bondedStake > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActive, s.hasGrant) ?? "— · isActive not read yet"}</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant) ?? "— · registry not read yet"}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 stake {fmtI(s.bondedStake)} SALT in the ValidatorRegistry
               </div>

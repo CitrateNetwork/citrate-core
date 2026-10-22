@@ -59,7 +59,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { createChainReads, readsValidatorRewards, type ChainReads } from "./chainTruth";
+import { createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -394,12 +394,13 @@ export function foldNodeLogs(lines: { ts: number; stream: "out" | "err"; line: s
  * Map the REAL node supervisor state (bridge.node.status → node.rs `map_state`:
  * stopped/starting/running/restarting/failed) onto the app's node lifecycle
  * enum. A `running` node is `syncing` until fully synced, then `validating` ONLY
- * when `ValidatorRegistry.isActive(pubkey)` read true, else `synced`. C1-V V4: a
- * stake amount (bond or LiquidStakingPool self-stake) never makes a validator; an
- * unread or failed isActive (null) is not active (UI truth contract §1 Validators).
+ * when the key is "Validator active" (contract v1.1 §1: isActive AND validatorInfo.actEpoch <=
+ * currentEpoch), else `synced`. A registration still pending activation is not active, a stake
+ * amount (bond or LiquidStakingPool self-stake) never makes a validator, and an unread or failed
+ * read (null) is not active.
  * This is the seam that replaces the sim `tick()` node state in a Tauri build.
  */
-export function mapNodeState(state: string, syncPct: number, validatorActive: boolean | null): AppState["node"] {
+export function mapNodeState(state: string, syncPct: number, activation: ValidatorActivation | null): AppState["node"] {
   switch (state) {
     case "starting":
     case "restarting":
@@ -408,7 +409,7 @@ export function mapNodeState(state: string, syncPct: number, validatorActive: bo
       return "error";
     case "running":
       if (syncPct < 100) return "syncing";
-      return validatorActive === true ? "validating" : "synced";
+      return isValidatorActive(activation) ? "validating" : "synced";
     case "stopped":
     default:
       return "off";
@@ -1312,15 +1313,15 @@ export class Store {
   }
 
   /**
-   * C1-V V4 — `ValidatorRegistry.isActive(pubkey)` for this node's validator key, the only source
-   * of "Validator active" (UI truth contract §1). No registered stake ⇒ false without a read.
-   * Re-read at most every 60 s; between reads the last reading stands. A failed read is null
-   * (unknown), which is never shown as active.
+   * C1-V (contract v1.1 §1) — this node's key in the registry: isActive, validatorInfo (status,
+   * actEpoch) and currentEpoch, the only source of the validator words. No registered stake ⇒ null
+   * without a read. Re-read at most every 60 s; between reads the last reading stands. A failed
+   * read is null (unknown), which is never shown as active.
    */
-  private async readValidatorActive(bondedSalt: number, nodeRunning: boolean): Promise<boolean | null> {
-    if (!(bondedSalt > 0)) return false;
+  private async readValidatorActivation(bondedSalt: number, nodeRunning: boolean): Promise<ValidatorActivation | null> {
+    if (!(bondedSalt > 0)) return null;
     const ACTIVE_READ_MS = 60_000;
-    if (!nodeRunning || Date.now() - this.lastActiveReadAt < ACTIVE_READ_MS) return this.state.validatorActive;
+    if (!nodeRunning || Date.now() - this.lastActiveReadAt < ACTIVE_READ_MS) return this.state.validatorActivation;
     this.lastActiveReadAt = Date.now();
     try {
       if (!this.validatorPubkey) {
@@ -1329,7 +1330,7 @@ export class Store {
         this.validatorPubkey = v.proposerPubkey as `0x${string}`;
         this.setState({ validatorPubkey: this.validatorPubkey.toLowerCase() });
       }
-      return await this.chainReads.isActive(this.validatorPubkey);
+      return await this.chainReads.validatorActivation(this.validatorPubkey);
     } catch {
       return null;
     }
@@ -1437,10 +1438,10 @@ export class Store {
           /* honest no-op: keep the last real values, never fabricate */
         }
       }
-      // C1-V V4 — "Validator active" comes ONLY from ValidatorRegistry.isActive(pubkey). With no
-      // registered stake there is nothing to ask: not a validator. Otherwise read it at most every
-      // ACTIVE_READ_MS (the active set only changes at epoch snapshots, every 1,000 blocks).
-      const validatorActive = await this.readValidatorActive(bonded, st.state === "running");
+      // C1-V (contract v1.1 §1) — the validator words come ONLY from the registry: isActive,
+      // validatorInfo.actEpoch and currentEpoch. With no registered stake there is nothing to ask:
+      // not a validator. Otherwise read at most every ACTIVE_READ_MS.
+      const validatorActivation = await this.readValidatorActivation(bonded, st.state === "running");
       void this.refreshProducers();
       // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
       // respawns the node with `--mine --coinbase`. So an ALREADY-BONDED validator
@@ -1470,7 +1471,7 @@ export class Store {
         syncPct: st.syncPct,
         bondedStake: bonded,
         bondActivated,
-        validatorActive,
+        validatorActivation,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
@@ -1486,7 +1487,7 @@ export class Store {
       // wedge). Surface a distinct "stalled" state rather than a "syncing…" that never advances.
       // Detection lives here (we own the per-tick height); recovery is in the 30s watchdog. Peers==0
       // is a connectivity problem, not a stall — left as syncing.
-      let nextNode = mapNodeState(st.state, st.syncPct, validatorActive);
+      let nextNode = mapNodeState(st.state, st.syncPct, validatorActivation);
       if (nextNode === "syncing") {
         if (st.height > this.nodeStallLastHeight) {
           this.nodeStallLastHeight = st.height; // advanced — reset the freeze window
@@ -3374,8 +3375,13 @@ export class Store {
       result = "ok";
     } else if (call.name === "node_status") {
       try {
-        // C1-V V4: the validator word's only source, ValidatorRegistry.isActive (null = not read).
-        result = JSON.stringify({ ...(await bridge.node.status()), validatorActive: this.state.validatorActive });
+        // C1-V v1.1 §1: the validator word and its registry inputs (null = not read).
+        const a = this.state.validatorActivation;
+        result = JSON.stringify({
+          ...(await bridge.node.status()),
+          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant),
+          validatorActivation: a,
+        });
       } catch (e) {
         result = "node status unavailable: " + (e instanceof Error ? e.message : String(e));
       }
@@ -4470,8 +4476,8 @@ export class Store {
    * bond CLONE), then STOPS and surfaces the decoded tx for human approval. The tx is
    * sent from the member EOA to the clone and carries NO value — the 32k already lives
    * in the clone. On approval it broadcasts (B1.4): the clone forwards its principal
-   * into ValidatorRegistry, and the validator joins the active set at the next epoch
-   * snapshot. Only meaningful once the node is synced + its proposer.key is
+   * into ValidatorRegistry. The registry records an activation epoch; the validator reads
+   * "Registered · active from epoch N" until currentEpoch reaches it (contract v1.1 §1). Only meaningful once the node is synced + its proposer.key is
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
@@ -5098,9 +5104,9 @@ export class Store {
       if (r.kind === "claim") await this.refreshEarnings();
       else await this.refreshWallet();
       // Activating the bond (MemberBond.activate) makes the clone bond its principal
-      // into the ValidatorRegistry — re-read the REAL bond now. The validator joins the active
-      // set at the next epoch snapshot; until isActive reads true it shows "Staked · active from
-      // next epoch" (C1-V V4), never "validating".
+      // into the ValidatorRegistry — re-read the REAL bond now. Until currentEpoch reaches the
+      // registry's actEpoch it reads "Registered · active from epoch N" (contract v1.1 §1),
+      // never "validating".
       if (r.kind === "stake") {
         this.lastActiveReadAt = 0; // re-read isActive on this poll
         await this.refreshNode();

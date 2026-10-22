@@ -58,6 +58,9 @@ function member(over: Partial<AppState> = {}): AppState {
   return { ...freshState("p1"), signedIn: true, node: "synced", peers: 3, syncPct: 100, height: 546_000, hasGrant: true, s5StakeWei: wei(32000), ...over };
 }
 
+// Registered this epoch, active from the next (contract v1.1 §1).
+const PENDING = { isActive: true, status: 1, actEpoch: 547, currentEpoch: 546 };
+
 const exitedGrant: GrantStatus = {
   attributedStakeWei: wei(32000),
   attributedPrincipalWei: wei(32000),
@@ -98,13 +101,14 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
 
   it("the poll folds MemberBond.activated() from the grant read", async () => {
     const reads = {
-      validatorActive: vi.fn(async () => false),
+      validatorActivation: vi.fn(async () => ({ isActive: false, status: 0, actEpoch: 0, currentEpoch: 546 })),
       minStakeWei: async () => 32_000n * WEI,
       blockSeconds: async () => 2,
       producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
     } as unknown as ChainReads;
     (store as unknown as { chainReads: ChainReads }).chainReads = reads;
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     store.setState({ node: "synced", hasGrant: true, bondedStake: 0, bondActivated: null });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 546_000, syncPct: 100, miningArmed: false });
@@ -152,30 +156,30 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
 
 describe("#348 review — S6 never offers 'Stake my bond' for a registered stake", () => {
   it("registered stake not in the active set yet shows the §1 word and no 'Stake my bond'", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActive: false })} />);
-    expect(html).toContain("Staked · active from next epoch");
+    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: PENDING })} />);
+    expect(html).toContain("Registered · active from epoch 547");
     expect(html).not.toContain("Bond locked · not staked");
     expect(html).not.toContain("Stake my bond");
   });
 
-  it("registered stake with isActive unread shows '—' and no 'Stake my bond'", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActive: null })} />);
+  it("registered stake with the registry unread shows '—' and no 'Stake my bond'", () => {
+    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: null })} />);
     expect(html).toContain("—");
     expect(html).not.toContain("Bond locked · not staked");
     expect(html).not.toContain("Stake my bond");
   });
 
   it("the Node page offers no 'Activate validator' for a registered stake that isn't active yet", () => {
-    for (const validatorActive of [false, null]) {
-      const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 32_000, validatorActive })} />);
+    for (const validatorActivation of [PENDING, null]) {
+      const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 32_000, validatorActivation })} />);
       expect(html).not.toContain("Activate validator");
     }
-    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActive: null })} />);
+    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null })} />);
     expect(html).toContain("Activate validator");
   });
 
   it("a granted bond with no registered stake still gets 'Stake my bond'", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActive: null })} />);
+    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null })} />);
     expect(html).toContain("Bond locked · not staked");
     expect(html).toContain("Stake my bond");
   });

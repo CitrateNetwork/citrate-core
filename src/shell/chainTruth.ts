@@ -6,8 +6,8 @@
 // the state words it may use (§1). This module holds the reads and the pure helpers that turn
 // them into those words, so every surface uses the same definition:
 //
-//   - validator state: from ValidatorRegistry.isActive(pubkey) and stakeOf, never stake >= 32k
-//     and never LiquidStakingPool self-stake (§1 Validators);
+//   - validator state: from ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch and
+//     currentEpoch() (contract v1.1 §1), never stake >= 32k and never LiquidStakingPool self-stake;
 //   - minimum stake: ValidatorRegistry.minStake(), read, never a hard-coded 32,000 (§2);
 //   - durations in blocks: blocks x the block time measured over the last 100 blocks, never an
 //     assumed 12 s (§2 "Durations given in blocks").
@@ -21,18 +21,59 @@ import book from "../../src-tauri/addresses/40204.json";
 
 export const VALIDATOR_REGISTRY = book.addresses.ValidatorRegistry as `0x${string}`;
 
-const REGISTRY_ABI = [
+export const REGISTRY_ABI = [
   { type: "function", name: "isActive", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }] },
   { type: "function", name: "minStake", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  // currentEpoch() — selector 0x76671808. EPOCH() = 1,000 blocks.
+  { type: "function", name: "currentEpoch", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  // validatorInfo(bytes32) — selector 0x00408838 (ValidatorRegistry.sol).
+  {
+    type: "function",
+    name: "validatorInfo",
+    stateMutability: "view",
+    inputs: [{ type: "bytes32" }],
+    outputs: [
+      { type: "address", name: "staker" },
+      { type: "uint256", name: "bonded" },
+      { type: "uint256", name: "rewards" },
+      { type: "uint256", name: "escrow" },
+      { type: "uint256", name: "admissionMin" },
+      { type: "uint64", name: "actEpoch" },
+      { type: "uint64", name: "exitEpoch" },
+      { type: "uint64", name: "escrowUnlock" },
+      { type: "uint8", name: "status" },
+      { type: "uint256", name: "claimableNow" },
+    ],
+  },
 ] as const;
+
+/**
+ * This node's key as the registry sees it (contract v1.1 §1). `isActive(pubkey)` is already true
+ * at registration, so it cannot tell a pending activation from an active validator on its own;
+ * `actEpoch` against `currentEpoch` does. `status`: 0 None, 1 Active, 2 Exiting, 3 Slashed.
+ */
+export interface ValidatorActivation {
+  isActive: boolean;
+  status: number;
+  actEpoch: number;
+  currentEpoch: number;
+}
+
+/** "Validator active" (§1): isActive AND the activation epoch has been reached. */
+export function isValidatorActive(a: ValidatorActivation | null): boolean {
+  return !!a && a.isActive;
+}
+
+/** The note every "Validator active" carries (§1): consensus follows the epoch snapshot. */
+export const CONSENSUS_LAG_NOTE = "consensus can lag by up to an epoch; Producing blocks is the evidence of participation";
 
 /** How many blocks the block-time measurement spans (contract §2: "the last 100 blocks"). */
 export const BLOCK_TIME_WINDOW = 100n;
 
 /** The reads this module makes. Injected into the store so tests can supply a fixed chain. */
 export interface ChainReads {
-  /** `ValidatorRegistry.isActive(pubkey)`. */
-  isActive(pubkey: `0x${string}`): Promise<boolean>;
+  /** `isActive(pubkey)`, `validatorInfo(pubkey)` (status, actEpoch) and `currentEpoch()`. */
+  validatorActivation(pubkey: `0x${string}`): Promise<ValidatorActivation>;
   /** `ValidatorRegistry.minStake()` in wei. */
   minStakeWei(): Promise<bigint>;
   /** Seconds per block, measured over the last BLOCK_TIME_WINDOW blocks; null when it can't be. */
@@ -109,8 +150,15 @@ export function measuredBlockSeconds(latest: BlockStamp, older: BlockStamp): num
 export function createChainReads(): ChainReads {
   const client = createPublicClient({ chain: citrate, transport: http() });
   return {
-    async isActive(pubkey) {
-      return client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "isActive", args: [pubkey] });
+    async validatorActivation(pubkey) {
+      const read = <F extends "isActive" | "validatorInfo" | "currentEpoch">(functionName: F, args?: readonly [`0x${string}`]) =>
+        client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName, args } as never);
+      const [isActive, info, epoch] = await Promise.all([
+        read("isActive", [pubkey]) as Promise<boolean>,
+        read("validatorInfo", [pubkey]) as Promise<readonly unknown[]>,
+        read("currentEpoch") as Promise<bigint>,
+      ]);
+      return { isActive, status: Number(info[8]), actEpoch: Number(info[5]), currentEpoch: Number(epoch) };
     },
     async minStakeWei() {
       return client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "minStake" });
@@ -185,19 +233,21 @@ export function readsValidatorRewards(bondedStake: number, bondActivated: boolea
   return bondedStake > 0 || bondActivated === true;
 }
 
-/** The §1 validator words this app can derive today. */
-export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Staked · active from next epoch" | "Validator active";
+/** The §1 validator words this app can derive today (contract v1.1). */
+export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Staked · active from next epoch" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
 
 /**
- * The validator state word, from the registry only (§1 Validators).
+ * The validator state word, from the registry only (contract v1.1 §1 Validators).
  *  - `stakeSalt`: `ValidatorRegistry.stakeOf(pubkey)` for the member's key, in SALT (0 = none).
- *  - `active`: `ValidatorRegistry.isActive(pubkey)`, null when not read.
+ *  - `activation`: isActive / validatorInfo / currentEpoch for the key, null when not read.
  *  - `hasGrant`: the membership grant is on chain (its bond exists), for the bond-locked word.
- * Returns null when the stake is registered but `isActive` has not been read: the caller shows
- * "—" rather than guess. LiquidStakingPool self-stake is not an input: it never makes a validator.
+ * "Registered · active from epoch N" shows the real N (never a promised epoch); "Validator active"
+ * needs isActive AND actEpoch <= currentEpoch. Returns null when the stake is registered but the
+ * activation has not been read, or the registry reads are inconsistent: the caller shows "—".
+ * LiquidStakingPool self-stake is not an input: it never makes a validator.
  */
-export function validatorWord(stakeSalt: number, active: boolean | null, hasGrant: boolean): ValidatorWord | null {
+export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean): ValidatorWord | null {
   if (!(stakeSalt > 0)) return hasGrant ? "Bond locked · not staked" : "Not a validator";
-  if (active === null) return null;
-  return active ? "Validator active" : "Staked · active from next epoch";
+  if (!activation) return null;
+  return activation.isActive ? "Validator active" : "Staked · active from next epoch";
 }

@@ -435,7 +435,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "node_status",
-      description: "Read the member's node: sync state, block height, peer count, and whether its validator is in the active set (ValidatorRegistry.isActive). Read-only, live from the local node.",
+      description: "Read the member's node: sync state, block height, peer count, and its validator state (ValidatorRegistry isActive, validatorInfo.actEpoch and currentEpoch: Registered · active from epoch N until the epoch is reached). Read-only, live from the local node.",
       parameters: { type: "object", properties: {} },
     },
   },

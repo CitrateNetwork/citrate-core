@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
@@ -118,9 +118,9 @@ export function Node({ store, s }: SurfaceProps) {
   // on the window). Not seen → "Not seen producing in the last 100 blocks", never "not producing".
   // No sample → "—" plus the reason. There is still no per-proposer COUNT, so none is shown.
   const isRegisteredValidator = s.bondedStake > 0;
-  // C1-V V4: the validator word comes from the registry only (stakeOf + isActive), per the UI
-  // truth contract §1. null = registered stake but isActive not read yet → "—".
-  const vWord = validatorWord(s.bondedStake, s.validatorActive, s.hasGrant);
+  // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
+  // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant);
   const pWord = producingWord(s.producers, s.validatorPubkey);
   const producingStr = !isRegisteredValidator
     ? "— · not a registered validator"
@@ -369,8 +369,11 @@ export function Node({ store, s }: SurfaceProps) {
                 )}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Status</span>
-                  <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey) and stakeOf(pubkey)">
-                    {vWord ?? "— · isActive not read yet"}
+                  <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch, currentEpoch() and stakeOf(pubkey)">
+                    {vWord ?? "— · registry not read yet"}
+                    {vWord === "Validator active" && (
+                      <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
+                    )}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>

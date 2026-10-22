@@ -10,6 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
+import type { ValidatorActivation } from "./chainTruth";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -418,11 +419,12 @@ export interface AppState {
    */
   rewards: { totalWei: string; claimableWei: string } | null;
   /**
-   * C1-V V4 — `ValidatorRegistry.isActive(pubkey)` for this node's validator key. The ONLY input to
-   * "Validator active" (contract §1); stake amounts and LiquidStakingPool self-stake never are.
-   * null = not read (no registered stake yet, or the read failed). Observed, never persisted.
+   * C1-V (contract v1.1 §1) — this node's key in the registry: `isActive(pubkey)`,
+   * `validatorInfo(pubkey)` status + actEpoch, and `currentEpoch()`. The ONLY input to the
+   * validator words; stake amounts and LiquidStakingPool self-stake never are. null = not read
+   * (no registered stake yet, or the read failed). Observed, never persisted.
    */
-  validatorActive: boolean | null;
+  validatorActivation: ValidatorActivation | null;
   /**
    * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
    * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
@@ -801,7 +803,7 @@ export function freshState(pid: string): AppState {
     hasGrant: false,
     hasSbt: false,
     rewards: null,
-    validatorActive: null,
+    validatorActivation: null,
     bondActivated: null,
     blockSecs: null,
     minStakeWei: null,
