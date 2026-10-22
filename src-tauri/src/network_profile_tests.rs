@@ -323,8 +323,14 @@ fn a_partly_set_profile_gives_a_gate_that_refuses() {
 /// The `cfg` names a build script's output sets (`cargo:rustc-cfg=…` or `cargo::rustc-cfg=…`),
 /// value included (`name` or `name="value"`).
 fn k6_emitted_cfgs(output: &str) -> Vec<String> {
-    let _ = output;
-    Vec::new()
+    output
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("cargo::rustc-cfg=")
+                .or_else(|| l.strip_prefix("cargo:rustc-cfg="))
+        })
+        .map(|c| c.trim().to_string())
+        .collect()
 }
 
 /// K6 (MAC round 6 on core#363): the key-access scans in kit read `#[cfg(test)]` as test-only.
