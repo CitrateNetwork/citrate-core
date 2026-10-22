@@ -108,9 +108,12 @@ function memberStore(): Store {
 
 beforeEach(() => {
   chain.current = readyStatus();
-  activationStatusMock.mockClear();
+  // Reset (not just clear): a once-queued value a test didn't consume must not leak into the next.
+  activationStatusMock.mockReset();
+  activationStatusMock.mockImplementation(async () => chain.current);
   registerValidatorMock.mockClear();
-  armMiningMock.mockClear();
+  armMiningMock.mockReset();
+  armMiningMock.mockImplementation(async () => false);
   broadcastMock.mockClear();
   prepareMock.mockClear();
   sendPreparedMock.mockClear();
@@ -539,6 +542,96 @@ describe("follow-up: Try again after a revert resets the read generation", () =>
     expect(store.state.activation?.tx ?? null).toBeNull();
     expect(activationPhase(store.state.activation, true, store.state.s7TxHash)).not.toBe("failed");
     expect(persisted().s7TxHash).toBeNull(); // written now, not on the debounced timer
+    // The superseded read must not leave the single-flight flag set: the next tick reads again.
+    const calls = activationStatusMock.mock.calls.length;
+    await store.refreshActivation("poll");
+    expect(activationStatusMock.mock.calls.length).toBe(calls + 1);
+  });
+
+  it("Forget re-reads the chain at once (the step does not wait for the next tick)", async () => {
+    const store = memberStore();
+    store.recordActivationTx("0xfeed");
+    chain.current = readyStatus({ tx: { hash: "0xfeed", included: false, blockNumber: null, success: null } });
+    await store.refreshActivation();
+    store.setState({ s7TxAt: Date.now() - 11 * 60_000 });
+    const calls = activationStatusMock.mock.calls.length;
+    store.onS7ForgetTx();
+    await flush();
+    expect(store.state.s7TxHash).toBeNull();
+    expect(activationStatusMock.mock.calls.length).toBe(calls + 1);
+    expect(activationStatusMock).toHaveBeenLastCalledWith(WALLET, null);
+  });
+});
+
+describe("Node surface: arming comes before the key prerequisite", () => {
+  it("a finished member with no key and an unarmed producer gets the producer armed, not a refusal", async () => {
+    const store = memberStore();
+    store.setState({ stage: "done", activation: null });
+    chain.current = readyStatus({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null });
+    armMiningMock.mockResolvedValueOnce(true);
+    expect(await store.requestValidatorActivation()).toBe(false); // the key lands after the respawn
+    expect(armMiningMock).toHaveBeenCalledTimes(1);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(String(store.state.toast ?? "")).toMatch(/armed/i);
+    // The key has landed: the next click opens the ceremony.
+    chain.current = readyStatus();
+    expect(await store.requestValidatorActivation()).toBe(true);
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
+    expect(store.state.walletReview?.kind).toBe("stake");
+  });
+
+  it("arming that the node declines (not caught up, no coinbase) is reported, and no ceremony opens", async () => {
+    const store = memberStore();
+    store.setState({ stage: "done", activation: null });
+    chain.current = readyStatus({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null });
+    armMiningMock.mockResolvedValueOnce(false);
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(armMiningMock).toHaveBeenCalledTimes(1);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  it("never arms for a member who fails any other prerequisite", async () => {
+    const store = memberStore();
+    store.setState({ stage: "done", activation: null });
+    chain.current = readyStatus({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null, membershipActive: false });
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(armMiningMock).not.toHaveBeenCalled();
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Node surface: every request reads the chain again", () => {
+  it("a blocked first read does not stick: once the chain is ready, the next click opens the ceremony", async () => {
+    const store = memberStore();
+    store.setState({ stage: "done", activation: null });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    chain.current = readyStatus({ membershipActive: false });
+    expect(await store.requestValidatorActivation()).toBe(false);
+    chain.current = readyStatus();
+    expect(await store.requestValidatorActivation()).toBe(true);
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a ready read cached earlier does not open the ceremony when the fresh read fails (fail closed)", async () => {
+    const store = memberStore();
+    await store.refreshActivation(); // ready
+    store.setState({ stage: "done" });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    activationStatusMock.mockRejectedValueOnce(new Error("rpc timeout"));
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  it("a ready read cached earlier does not open the ceremony when the chain has changed since", async () => {
+    const store = memberStore();
+    await store.refreshActivation(); // ready
+    store.setState({ stage: "done" });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    chain.current = readyStatus({ membershipActive: false }); // membership lapsed meanwhile
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
   });
 });
 

@@ -2390,7 +2390,7 @@ fn mutates_map(body: &str) -> bool {
 ///
 /// Returns one message per violation (empty = clean).
 fn prepared_map_violations(src: &str) -> Vec<String> {
-    const ALLOWED: [&str; 7] = [
+    const ALLOWED: [&str; 8] = [
         "new",
         "lock_prepared",
         "approve_and_sign",
@@ -2398,6 +2398,7 @@ fn prepared_map_violations(src: &str) -> Vec<String> {
         "reject",
         "prepared_len",
         "backdate_wall",
+        "forward_date_wall",
     ];
     let src = strip_test_module(src);
     let code: String = src
@@ -2651,6 +2652,37 @@ fn join8_send_errors_are_structured_and_only_expiry_says_nothing_was_sent() {
     ));
     assert_eq!(send_prepared_error(quoted).code, "failed");
     assert_eq!(send_prepared_error(CeremonyError::UnknownCeremony).code, "failed");
+}
+
+#[test]
+fn join8_expiry_counts_monotonic_time_when_the_wall_clock_goes_back() {
+    // The other half of max(monotonic, wall): a wall clock set backwards after signing makes
+    // wall elapsed read as zero. The monotonic leg must still expire the tx.
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_millis(1));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    c.forward_date_wall(&view.id, std::time::Duration::from_secs(3600));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    assert_eq!(
+        c.send_prepared(&send_rpc, &view.id, bcfg(2)).err(),
+        Some(CeremonyError::PreparedExpired)
+    );
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
 }
 
 #[test]

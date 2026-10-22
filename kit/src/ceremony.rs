@@ -552,6 +552,17 @@ mod prepared_store {
                 }
             }
         }
+
+        /// Test seam: move a live slot's wall-clock stamp forward by `by` (models the wall clock
+        /// being set backwards: wall elapsed then reads as zero).
+        #[cfg(test)]
+        pub(super) fn forward_date_wall(&mut self, key: u64, by: Duration) {
+            if let Some(Slot::Live { wall, .. }) = self.map.get_mut(&key) {
+                if let Some(later) = wall.checked_add(by) {
+                    *wall = later;
+                }
+            }
+        }
     }
 }
 use prepared_store::{PreparedStore, Slot};
@@ -664,6 +675,15 @@ impl SignatureCeremony {
     fn backdate_wall(&self, id: &str, by: std::time::Duration) {
         if let Some(key) = Self::parse_id(id) {
             self.lock_prepared().backdate_wall(key, by);
+        }
+    }
+
+    /// Test seam: move a parked tx's wall-clock stamp forward by `by` (models the wall clock
+    /// being set backwards after the tx was signed).
+    #[cfg(test)]
+    fn forward_date_wall(&self, id: &str, by: std::time::Duration) {
+        if let Some(key) = Self::parse_id(id) {
+            self.lock_prepared().forward_date_wall(key, by);
         }
     }
 
