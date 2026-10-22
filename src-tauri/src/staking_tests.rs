@@ -1827,3 +1827,690 @@ fn tripwire_catches_a_promoted_session_cursor_and_a_settled_claim() {
         assert!(bad.iter().any(|b| b.contains(want)), "{want}: {bad:?}");
     }
 }
+
+// ===========================================================================
+// C1-W, aligned with citrate_getLogs (citrate-chain#337 @ 600d2984).
+//
+// `Node` answers the way that commit's RPC does. Every behaviour names the handler line or the
+// chain test it mirrors (STD #6). Paths are in citrate-chain at 600d2984:
+//   eth_rpc.rs = core/api/src/eth_rpc.rs, canonical_logs.rs = core/api/src/canonical_logs.rs,
+//   rate_limit.rs = core/api/src/rate_limit.rs, executed_head.rs = core/api/tests/executed_head.rs.
+// Model: one executed block per height on the applied tip's selected-parent chain
+// (canonical_logs.rs:7-13). Blocks above `fork.0` are on branch `fork.1`, so a reorg replaces
+// their hashes; the abandoned blocks stay stored and citrate_isExecuted says false for them
+// (canonical_logs.rs:33-38, 491-525; executed_head.rs:522).
+// ===========================================================================
+use std::cell::Cell;
+
+/// The hash of the block at height `n` on branch `tag` (branch 0 is `stub_hash(n)`).
+fn branch_hash(tag: u8, n: u64) -> String {
+    format!("0x{tag:02x}{n:062x}")
+}
+
+struct Node {
+    /// `eth_blockNumber`: the stored-header height, which can be ahead of the executed tip
+    /// (executed_head.rs:200 executed_head_is_below_block_number_when_headers_are_ahead).
+    head: Cell<u64>,
+    /// The persisted applied tip every executed-chain read starts from (canonical_logs.rs:706-712).
+    tip: Cell<u64>,
+    /// Blocks above `.0` are on branch `.1`; at and below it, branch 0.
+    fork: Cell<Option<(u64, u8)>>,
+    /// (id, request block, claimed, branch). A request exists on the chain only when its block is
+    /// on its branch.
+    withdrawals: RefCell<Vec<(u128, u64, bool, u8)>>,
+    /// false = today's public RPC, which has no citrate_getLogs or citrate_isExecuted (-32601).
+    citrate_methods: Cell<bool>,
+    /// `toBlock - fromBlock` above this is -32005 with `data.maxBlockRange` (canonical_logs.rs:127-146);
+    /// citrate_getLogs is never clamped (eth_rpc.rs:1994-1996).
+    max_range: Cell<u64>,
+    /// eth_getLogs on today's node: a wide range is cut to `fromBlock + 1000` without an error (the
+    /// legacy clamp, canonical_logs.rs:97-101, 132-134).
+    clamp: Cell<bool>,
+    /// The next N log reads exceed the method budget: -32005 with no data, checked before anything
+    /// else (rate_limit.rs:96-101; eth_rpc.rs:1958).
+    budget_exceeded: Cell<u32>,
+    /// The next N log reads answer -32002 `{retryable: true}`: the index warming
+    /// (canonical_logs.rs:285-291, 417-424, 480-483).
+    warming: Cell<u32>,
+    /// (block, reads): that block's receipt is not stored yet for the next `reads` log reads that
+    /// cover it. citrate_getLogs answers -32002 `{retryable, blockNumber}` (eth_rpc.rs:3335-3345,
+    /// canonical_logs.rs:646-658; executed_head.rs:1198); eth_getLogs skips the transaction
+    /// (eth_rpc.rs:1934-1940, ReceiptPolicy::SkipMissing).
+    missing_receipt: Cell<Option<(u64, u32)>>,
+    /// (block, low tip): the first log read whose range covers `block` is served from `low tip`, and
+    /// the tip is back right after: a rewind and return within one call. The handler reads the tip
+    /// once per call (canonical_logs.rs:554; executed_head.rs:1081
+    /// cursor_scan_never_skips_logs_across_a_rewind, "Codex's sequence for one call").
+    transient: Cell<Option<(u64, u64)>>,
+    /// Raw answers for the next citrate_getLogs calls (None = served normally).
+    getlogs_raw: RefCell<VecDeque<Option<JsonValue>>>,
+    /// Raw answers for the next citrate_isExecuted calls (None = served normally).
+    is_executed_raw: RefCell<VecDeque<Option<JsonValue>>>,
+    /// A log read whose range covers this block fails at the transport (a timeout).
+    fail_at: Cell<Option<u64>>,
+    /// `withdrawals(id)` reads `claimed = false` for these (a claim that was reorged out).
+    unclaim: RefCell<std::collections::HashSet<u128>>,
+    logs_delay: Cell<std::time::Duration>,
+    batch_delay: Cell<std::time::Duration>,
+    requests: RefCell<Vec<JsonValue>>,
+}
+
+impl Node {
+    /// A #337 node whose stored head and executed tip are both `tip`, with withdrawals on branch 0.
+    fn new(tip: u64, w: Vec<(u128, u64, bool)>) -> Self {
+        Node {
+            head: Cell::new(tip),
+            tip: Cell::new(tip),
+            fork: Cell::new(None),
+            withdrawals: RefCell::new(w.into_iter().map(|(i, b, c)| (i, b, c, 0)).collect()),
+            citrate_methods: Cell::new(true),
+            max_range: Cell::new(1_000),
+            clamp: Cell::new(false),
+            budget_exceeded: Cell::new(0),
+            warming: Cell::new(0),
+            missing_receipt: Cell::new(None),
+            transient: Cell::new(None),
+            getlogs_raw: RefCell::new(VecDeque::new()),
+            is_executed_raw: RefCell::new(VecDeque::new()),
+            fail_at: Cell::new(None),
+            unclaim: RefCell::new(Default::default()),
+            logs_delay: Cell::new(std::time::Duration::ZERO),
+            batch_delay: Cell::new(std::time::Duration::ZERO),
+            requests: RefCell::new(Vec::new()),
+        }
+    }
+    /// Today's public RPC: no citrate_* methods; eth_getLogs clamps a wide range.
+    fn today(tip: u64, w: Vec<(u128, u64, bool)>) -> Self {
+        let n = Node::new(tip, w);
+        n.citrate_methods.set(false);
+        n.clamp.set(true);
+        n
+    }
+    /// Both the stored head and the executed tip move to `n`.
+    fn grow(&self, n: u64) {
+        self.head.set(n);
+        self.tip.set(n);
+    }
+    fn tag_at(&self, n: u64) -> u8 {
+        match self.fork.get() {
+            Some((f, t)) if n > f => t,
+            _ => 0,
+        }
+    }
+    fn hash_at(&self, n: u64) -> String {
+        branch_hash(self.tag_at(n), n)
+    }
+    /// (method, fromBlock, toBlock, afterBlockHash) of every log read, in order.
+    fn log_reads(&self) -> Vec<(String, u64, u64, Option<String>)> {
+        self.requests
+            .borrow()
+            .iter()
+            .filter(|r| r["method"] == "eth_getLogs" || r["method"] == "citrate_getLogs")
+            .map(|r| {
+                let f = &r["params"][0];
+                (
+                    r["method"].as_str().unwrap_or_default().to_string(),
+                    hex_q(&f["fromBlock"]),
+                    hex_q(&f["toBlock"]),
+                    f["afterBlockHash"].as_str().map(str::to_string),
+                )
+            })
+            .collect()
+    }
+    fn methods(&self) -> Vec<String> {
+        self.requests
+            .borrow()
+            .iter()
+            .filter_map(|r| r["method"].as_str().map(str::to_string))
+            .collect()
+    }
+    /// The withdrawal ids read with `withdrawals(id)` in requests[from..].
+    fn asked_ids(&self, from: usize) -> std::collections::BTreeSet<u128> {
+        self.requests.borrow()[from..]
+            .iter()
+            .filter_map(|r| r.as_array().cloned())
+            .flatten()
+            .filter_map(|c| c["params"][0]["data"].as_str().map(|d| u128::from_str_radix(&d[d.len() - 32..], 16).unwrap_or(0)))
+            .collect()
+    }
+    fn batches(&self) -> usize {
+        self.requests.borrow().iter().filter(|r| r.is_array()).count()
+    }
+    /// The tip one log read is served from: read once per call (canonical_logs.rs:554).
+    fn snapshot_tip(&self, from: u64, to: u64) -> u64 {
+        match self.transient.get() {
+            Some((b, low)) if from <= b && b <= to => {
+                self.transient.set(None);
+                low
+            }
+            _ => self.tip.get(),
+        }
+    }
+    /// The withdrawal logs in `from..=to` on the current chain, ascending, with their block's hash
+    /// (eth_rpc.rs:3346-3364: blockHash/blockNumber from the receipt of the executed block).
+    fn logs_between(&self, from: u64, to: u64, skip_missing: bool) -> Vec<JsonValue> {
+        let mut w: Vec<(u128, u64, bool, u8)> = self.withdrawals.borrow().clone();
+        w.sort_by_key(|x| x.1);
+        w.into_iter()
+            .filter(|(_, b, _, t)| from <= *b && *b <= to && self.tag_at(*b) == *t)
+            .filter(|(_, b, _, _)| !(skip_missing && self.receipt_missing(*b)))
+            .map(|(id, b, _, _)| {
+                let mut l = withdrawal_log(id, b);
+                l["blockHash"] = JsonValue::String(self.hash_at(b));
+                l
+            })
+            .collect()
+    }
+    /// Whether block `b`'s receipt is missing for this read (counts the read down).
+    fn receipt_missing(&self, b: u64) -> bool {
+        match self.missing_receipt.get() {
+            Some((at, n)) if at == b && n > 0 => {
+                self.missing_receipt.set(Some((at, n - 1)));
+                true
+            }
+            _ => false,
+        }
+    }
+    fn err(code: i64, message: &str, data: JsonValue) -> JsonValue {
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": code, "message": message, "data": data } })
+    }
+    /// citrate_getLogs (eth_rpc.rs:1952-2026 with ExecutedChainIndex::executed_after,
+    /// canonical_logs.rs:547-574).
+    fn citrate_get_logs(&self, f: &JsonValue) -> Result<JsonValue, RpcError> {
+        if !self.citrate_methods.get() {
+            return Ok(Node::err(-32601, "Method not found", JsonValue::Null));
+        }
+        // eth_rpc.rs:1958: the method budget comes first.
+        if self.budget_exceeded.get() > 0 {
+            self.budget_exceeded.set(self.budget_exceeded.get() - 1);
+            return Ok(Node::err(-32005, "Method budget exceeded. Reduce call frequency for expensive methods.", JsonValue::Null));
+        }
+        if let Some(Some(raw)) = self.getlogs_raw.borrow_mut().pop_front() {
+            return Ok(raw);
+        }
+        std::thread::sleep(self.logs_delay.get());
+        let (from, to) = (hex_q(&f["fromBlock"]), hex_q(&f["toBlock"]));
+        if let Some(at) = self.fail_at.get() {
+            if from <= at && at <= to {
+                return Err(RpcError::Transport("rpc.citrate.ai timed out".into()));
+            }
+        }
+        let after = f["afterBlockHash"].as_str();
+        // eth_rpc.rs:1979-1993: afterBlockHash needs fromBlock >= 1.
+        if after.is_some() && from == 0 {
+            return Ok(Node::err(-32602, "citrate_getLogs: afterBlockHash needs fromBlock >= 1", JsonValue::Null));
+        }
+        // eth_rpc.rs:1994-1996 + canonical_logs.rs:127-146: over the limit is -32005, never clamped.
+        if to.saturating_sub(from) > self.max_range.get() {
+            return Ok(Node::err(-32005, "eth_getLogs range too large", serde_json::json!({ "maxBlockRange": self.max_range.get() })));
+        }
+        // canonical_logs.rs:554: ONE read of the applied tip.
+        let tip = self.snapshot_tip(from, to);
+        // canonical_logs.rs:555-563: a tip below the cursor serves nothing and judges nothing.
+        let lo = if after.is_some() { from - 1 } else { from };
+        if lo > tip {
+            return Ok(ok(serde_json::json!({ "logs": [], "through": null })));
+        }
+        if self.warming.get() > 0 {
+            self.warming.set(self.warming.get() - 1);
+            return Ok(Node::err(-32002, "eth_getLogs: log index is warming; retry the same request", serde_json::json!({ "retryable": true })));
+        }
+        // canonical_logs.rs:566-571 + 660-673: the cursor must be the executed block at fromBlock-1.
+        if let Some(a) = after {
+            if !self.hash_at(lo).eq_ignore_ascii_case(a) {
+                return Ok(Node::err(-32001, "citrate_getLogs: afterBlockHash is not the executed block", serde_json::json!({ "reorged": true, "height": format!("0x{lo:x}") })));
+            }
+        }
+        // canonical_logs.rs:378-381 + 572: heights above the tip have not executed.
+        let last = to.min(tip);
+        if from > last {
+            return Ok(ok(serde_json::json!({ "logs": [], "through": null })));
+        }
+        // eth_rpc.rs:3335-3345 (ReceiptPolicy::RequireAll): a missing receipt fails the range.
+        if let Some((b, _)) = self.missing_receipt.get() {
+            if from <= b && b <= last && self.receipt_missing(b) {
+                return Ok(Node::err(-32002, "citrate_getLogs: receipts are not stored; retry the same request", serde_json::json!({ "retryable": true, "blockNumber": format!("0x{b:x}") })));
+            }
+        }
+        // eth_rpc.rs:2019-2024: through = the last executed block served.
+        let logs = self.logs_between(from, last, false);
+        Ok(ok(serde_json::json!({ "logs": logs, "through": { "number": format!("0x{last:x}"), "hash": self.hash_at(last) } })))
+    }
+    /// eth_getLogs (eth_rpc.rs:1888-1944): the executed chain up to the tip, receipts that are
+    /// missing skipped; today's node clamps a wide range instead of -32005.
+    fn eth_get_logs(&self, f: &JsonValue) -> Result<JsonValue, RpcError> {
+        if self.budget_exceeded.get() > 0 {
+            self.budget_exceeded.set(self.budget_exceeded.get() - 1);
+            return Ok(Node::err(-32005, "Method budget exceeded. Reduce call frequency for expensive methods.", JsonValue::Null));
+        }
+        std::thread::sleep(self.logs_delay.get());
+        let from = hex_q(&f["fromBlock"]);
+        let mut to = hex_q(&f["toBlock"]);
+        if let Some(at) = self.fail_at.get() {
+            if from <= at && at <= to {
+                return Err(RpcError::Transport("rpc.citrate.ai timed out".into()));
+            }
+        }
+        if to.saturating_sub(from) > self.max_range.get() {
+            if self.clamp.get() {
+                to = from + self.max_range.get();
+            } else {
+                return Ok(Node::err(-32005, "eth_getLogs range too large", serde_json::json!({ "maxBlockRange": self.max_range.get() })));
+            }
+        }
+        if self.warming.get() > 0 {
+            self.warming.set(self.warming.get() - 1);
+            return Ok(Node::err(-32002, "eth_getLogs: log index is warming; retry the same request", serde_json::json!({ "retryable": true })));
+        }
+        let tip = self.snapshot_tip(from, to);
+        Ok(ok(JsonValue::Array(self.logs_between(from, to.min(tip), true))))
+    }
+    /// citrate_isExecuted (canonical_logs.rs:503-525 + 585-631): executed iff the block is the
+    /// executed block at its height under the tip; a malformed hash is -32602.
+    fn is_executed(&self, params: &JsonValue) -> JsonValue {
+        if !self.citrate_methods.get() {
+            return Node::err(-32601, "Method not found", JsonValue::Null);
+        }
+        if let Some(Some(raw)) = self.is_executed_raw.borrow_mut().pop_front() {
+            return raw;
+        }
+        let h = params[0].as_str().unwrap_or_default().to_ascii_lowercase();
+        let digits = h.strip_prefix("0x").unwrap_or_default();
+        if digits.len() != 64 || hex::decode(digits).is_err() {
+            return Node::err(-32602, "citrate_isExecuted: block hash must be 32 bytes", JsonValue::Null);
+        }
+        let n = u64::from_str_radix(&digits[2..], 16).unwrap_or(u64::MAX);
+        if n <= self.tip.get() && self.hash_at(n) == h {
+            ok(serde_json::json!({ "executed": true, "number": format!("0x{n:x}") }))
+        } else {
+            ok(serde_json::json!({ "executed": false, "number": null }))
+        }
+    }
+    fn one(&self, body: JsonValue) -> Result<JsonValue, RpcError> {
+        match body["method"].as_str() {
+            Some("eth_blockNumber") => Ok(ok(JsonValue::String(format!("0x{:x}", self.head.get())))),
+            Some("citrate_getLogs") => self.citrate_get_logs(&body["params"][0]),
+            Some("eth_getLogs") => self.eth_get_logs(&body["params"][0]),
+            Some("citrate_isExecuted") => Ok(self.is_executed(&body["params"])),
+            // canonical_logs.rs:714-728 (served so the code before this change can run here).
+            Some("citrate_executedHead") if self.citrate_methods.get() => Ok(ok(serde_json::json!({
+                "number": format!("0x{:x}", self.tip.get()), "hash": self.hash_at(self.tip.get()) }))),
+            Some("citrate_executedHead") => Ok(Node::err(-32601, "Method not found", JsonValue::Null)),
+            Some("eth_call") => {
+                // LiquidStakingPool.withdrawals(id) at `latest`: an id with no request on this chain
+                // reads the zero tuple (an unset mapping entry).
+                let data = body["params"][0]["data"].as_str().unwrap_or_default();
+                let id = u128::from_str_radix(&data[data.len().saturating_sub(32)..], 16).unwrap_or(0);
+                let found = self.withdrawals.borrow().iter().copied().find(|(i, b, _, t)| {
+                    *i == id && *b <= self.tip.get() && self.tag_at(*b) == *t
+                });
+                let ret = match found {
+                    Some((_, b, claimed, _)) => withdrawal_tuple_hex(
+                        STAKER_ADDR,
+                        1,
+                        2_000_000_000_000_000_000,
+                        b,
+                        claimed && !self.unclaim.borrow().contains(&id),
+                    ),
+                    None => vec![0u8; 160],
+                };
+                Ok(ok(JsonValue::String(format!("0x{}", hex::encode(ret)))))
+            }
+            _ => Err(RpcError::Transport("unexpected method".into())),
+        }
+    }
+}
+
+impl RpcTransport for Node {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        self.requests.borrow_mut().push(body.clone());
+        if let Some(batch) = body.as_array() {
+            std::thread::sleep(self.batch_delay.get());
+            let mut out = Vec::new();
+            for b in batch {
+                let mut r = self.one(b.clone())?;
+                r["id"] = b["id"].clone();
+                out.push(r);
+            }
+            return Ok(JsonValue::Array(out));
+        }
+        self.one(body)
+    }
+}
+
+fn scan_file(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("c1w-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("withdrawal-scans.json");
+    (dir, file)
+}
+
+fn read_all(rpc: &RpcClient<Node>, scan: &mut WithdrawalScan) -> Vec<PendingWithdrawal> {
+    read_pending_withdrawals_with(rpc, STAKER_ADDR, scan, None).unwrap_or_default()
+}
+
+// executed_head.rs:1081 cursor_scan_never_skips_logs_across_a_rewind ("Codex's sequence for one
+// call"): the tip is at 4480 while the window covering 4500 is served and back at 5000 right after.
+// That answer is complete only through 4480, so the next call resumes at 4481 and finds 4500.
+#[test]
+fn a_rewind_and_return_within_one_call_never_skips_a_withdrawal() {
+    let node = Node::new(5_000, vec![(1, 4_500, false)]);
+    node.transient.set(Some((4_500, 4_480)));
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    assert!(read_all(&rpc, &mut scan).is_empty(), "4500 was not served in this call");
+    assert_eq!(scan.cursor(), Some((4_480, stub_hash(4_480))), "the cursor is what the answer was complete through");
+    assert!(!scan.last_read_confirmed, "served to 4480 of 5000");
+    let n = rpc.transport().log_reads().len();
+    let rows = read_all(&rpc, &mut scan);
+    assert_eq!(ids_of(&rows), vec!["1"], "found on the next call");
+    let reads = rpc.transport().log_reads();
+    assert_eq!((reads[n].1, reads[n].3.clone()), (4_481, Some(stub_hash(4_480))), "resumes after the cursor, chained on it");
+    assert_eq!(scan.cursor(), Some((5_000, stub_hash(5_000))));
+    assert!(scan.last_read_confirmed);
+}
+
+// executed_head.rs:1125 cursor_scan_restarts_on_a_reorg_below_the_cursor: the chain the scan read
+// is replaced above 3000. The next window is -32001; the scan drops the cursor and the rows found
+// above the newest saved cursor citrate_isExecuted still confirms, and reads on from there.
+#[test]
+fn a_reorg_below_the_cursor_resumes_from_a_saved_cursor_citrate_is_executed_confirms() {
+    let node = Node::new(6_000, vec![(1, 2_000, false), (2, 4_200, false)]);
+    node.withdrawals.borrow_mut().push((3, 3_500, false, 0xB));
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    assert_eq!(ids_of(&read_all(&rpc, &mut scan)), vec!["1", "2"]);
+    rpc.transport().fork.set(Some((3_000, 0xB)));
+    rpc.transport().grow(7_000);
+    let (n, n_req) = (rpc.transport().log_reads().len(), rpc.transport().requests.borrow().len());
+    let rows = read_all(&rpc, &mut scan);
+    assert_eq!(ids_of(&rows), vec!["1", "3"], "the new branch's withdrawal, not the abandoned one");
+    let reads = rpc.transport().log_reads();
+    assert_eq!((reads[n].1, reads[n].3.clone()), (6_001, Some(stub_hash(6_000))), "the window chained on the old cursor");
+    let (resume, after) = (reads[n + 1].1, reads[n + 1].3.clone());
+    assert!(resume > LIQUID_STAKING_POOL_DEPLOY_BLOCK + 1 && resume <= 3_001, "resumed at {resume}: a saved cursor below the fork");
+    assert_eq!(after, Some(stub_hash(resume - 1)), "chained on that saved cursor");
+    assert!(rpc.transport().methods()[n_req..].iter().any(|m| m == "citrate_isExecuted"), "the saved cursor was checked");
+    assert!(!rpc.transport().asked_ids(n_req).contains(&2), "rows found above the saved cursor are dropped");
+    assert_eq!(scan.cursor(), Some((7_000, branch_hash(0xB, 7_000))));
+    assert_eq!(scan.generation, 1);
+    assert!(scan.last_read_confirmed);
+}
+
+// executed_head.rs:1156 cursor_scan_resumes_across_a_node_restart: the saved cursor survives an
+// app relaunch, and a node that comes back with its tip below the cursor serves nothing and judges
+// nothing (canonical_logs.rs:555-563): the cursor is kept, and the scan resumes after it.
+#[test]
+fn a_restart_with_the_tip_below_the_cursor_keeps_the_cursor() {
+    let (dir, file) = scan_file("restart");
+    let rpc = RpcClient::with_transport(Node::new(5_000, vec![]));
+    let mut scan = load_scan(&file, "k");
+    read_all(&rpc, &mut scan);
+    assert_eq!(scan.cursor(), Some((5_000, stub_hash(5_000))));
+    save_scan(&file, "k", &scan).expect("save");
+    // Replay after an unclean shutdown: the node is back at 4000 on the same chain.
+    let node = Node::new(5_000, vec![(9, 5_500, false)]);
+    node.tip.set(4_000);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = load_scan(&file, "k");
+    assert!(read_all(&rpc, &mut scan).is_empty());
+    assert_eq!(scan.cursor(), Some((5_000, stub_hash(5_000))), "nothing served, nothing judged: the cursor is kept");
+    assert_eq!(scan.generation, 0, "no rewind");
+    assert!(!scan.last_read_confirmed);
+    save_scan(&file, "k", &scan).expect("save");
+    rpc.transport().grow(6_000);
+    let mut scan = load_scan(&file, "k");
+    let n = rpc.transport().log_reads().len();
+    let rows = read_all(&rpc, &mut scan);
+    assert_eq!(rpc.transport().log_reads()[n].1, 5_001, "resumes after the saved cursor");
+    assert_eq!(ids_of(&rows), vec!["9"]);
+    assert!(scan.last_read_confirmed);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// executed_head.rs:1198 get_logs_refuses_a_range_with_missing_receipts: the producer writes
+// receipts just after it commits the tip, so a fresh block can be executed without its receipt.
+// citrate_getLogs answers -32002 retryable; the same window is read again and never skipped.
+#[test]
+fn missing_receipts_are_retried_and_never_skipped() {
+    let node = Node::new(5_000, vec![(4, 4_500, false)]);
+    node.missing_receipt.set(Some((4_500, 2)));
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let rows = read_all(&rpc, &mut scan);
+    assert_eq!(ids_of(&rows), vec!["4"], "the withdrawal in the block without a receipt is not skipped");
+    let covering: Vec<_> = rpc.transport().log_reads().into_iter().filter(|r| r.1 <= 4_500 && 4_500 <= r.2).collect();
+    assert_eq!(covering.len(), 3, "two -32002 answers, then the data");
+    assert!(covering.windows(2).all(|w| w[0] == w[1]), "the SAME window: {covering:?}");
+    assert!(scan.last_read_confirmed);
+}
+
+// A receipt lost in a crash keeps its block at -32002 (citrate-chain core/api/README.md, "Remaining
+// assumptions"): after the bounded retries the read is "still indexing", and the cursor stays
+// below that block.
+#[test]
+fn a_receipt_that_never_arrives_stops_the_scan_below_it() {
+    let node = Node::new(5_000, vec![(4, 4_500, false)]);
+    node.missing_receipt.set(Some((4_500, u32::MAX)));
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let err = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None);
+    assert!(matches!(err, Err(StakingError::Indexing(_))), "{err:?}");
+    assert_eq!(scan.cursor(), Some((4_426, stub_hash(4_426))), "the windows before it are kept, none past it");
+}
+
+// canonical_logs.rs:127-146: a range over the node's limit is -32005 with data.maxBlockRange; the
+// window halves, and the windows stay contiguous and chained.
+#[test]
+fn a_range_limit_halves_the_window_and_keeps_windows_chained() {
+    let node = Node::new(10_000, vec![(4, 3_333, false), (5, 9_999, false)]);
+    node.max_range.set(300);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    assert_eq!(ids_of(&read_all(&rpc, &mut scan)), vec!["4", "5"]);
+    let reads = rpc.transport().log_reads();
+    assert!(reads.iter().all(|r| r.0 == "citrate_getLogs"), "{reads:?}");
+    let served: Vec<_> = reads.iter().filter(|r| r.2 - r.1 <= 300).collect();
+    for w in served.windows(2) {
+        assert_eq!(w[1].1, w[0].2 + 1, "contiguous");
+        assert_eq!(w[1].3, Some(stub_hash(w[0].2)), "chained on the previous through");
+    }
+    assert_eq!(scan.cursor(), Some((10_000, stub_hash(10_000))));
+}
+
+// rate_limit.rs:96-101: the method budget also answers -32005, with no data. A smaller window does
+// not help, so it is an error: stop, commit nothing.
+#[test]
+fn a_method_budget_answer_is_not_a_range_limit() {
+    let node = Node::new(5_000, vec![(4, 600, false)]);
+    node.budget_exceeded.set(1);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None);
+    assert!(matches!(got, Err(StakingError::Rpc(ref m)) if m.contains("budget")), "{got:?}");
+    assert_eq!(rpc.transport().log_reads().len(), 1, "no halving");
+    assert_eq!(scan.cursor(), None);
+}
+
+// Any other answer stops the read and commits nothing of that window: an unknown error, a -32001
+// that does not say reorged, a -32002 that does not say retryable, and every malformed answer
+// (a through outside the window, a malformed hash, a log past the through, logs without one).
+#[test]
+fn an_unknown_error_or_a_malformed_answer_stops_and_commits_nothing() {
+    let res = |r: JsonValue| ok(r);
+    let through = |n: u64, h: String| serde_json::json!({ "number": format!("0x{n:x}"), "hash": h });
+    let cases: Vec<(&str, JsonValue)> = vec![
+        ("-32603", Node::err(-32603, "citrate_getLogs: no applied tip", JsonValue::Null)),
+        ("-32602", Node::err(-32602, "invalid params", JsonValue::Null)),
+        ("-32001 without data.reorged", Node::err(-32001, "not found", JsonValue::Null)),
+        ("-32002 not retryable", Node::err(-32002, "busy", JsonValue::Null)),
+        ("through past toBlock", res(serde_json::json!({ "logs": [], "through": through(2_427, stub_hash(2_427)) }))),
+        ("through before fromBlock", res(serde_json::json!({ "logs": [], "through": through(1_426, stub_hash(1_426)) }))),
+        ("malformed through hash", res(serde_json::json!({ "logs": [], "through": through(2_000, "0x12".into()) }))),
+        ("a log past through", res(serde_json::json!({ "logs": [withdrawal_log(5, 2_100)], "through": through(2_000, stub_hash(2_000)) }))),
+        ("a log before fromBlock", res(serde_json::json!({ "logs": [withdrawal_log(5, 1_000)], "through": through(2_000, stub_hash(2_000)) }))),
+        ("logs without a through", res(serde_json::json!({ "logs": [withdrawal_log(5, 1_500)], "through": null }))),
+        ("no through", res(serde_json::json!({ "logs": [] }))),
+    ];
+    for (name, raw) in cases {
+        let node = Node::new(5_000, vec![(5, 2_100, false)]);
+        node.getlogs_raw.borrow_mut().extend([None, Some(raw)]);
+        let rpc = RpcClient::with_transport(node);
+        let mut scan = WithdrawalScan::default();
+        let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None);
+        assert!(got.is_err(), "{name}: {got:?}");
+        assert_eq!(scan.cursor(), Some((1_426, stub_hash(1_426))), "{name}: the window before is kept, nothing of this one");
+        assert_eq!(rpc.transport().log_reads().len(), 2, "{name}: stopped");
+    }
+}
+
+// Today's public RPC has no citrate_getLogs (-32601): the plain eth_getLogs read still shows the
+// rows it finds, commits nothing, and says it can't confirm. It never reads citrate_executedHead,
+// eth_syncing or citrate_isExecuted.
+#[test]
+fn without_citrate_get_logs_the_plain_read_commits_nothing_and_cannot_confirm() {
+    let rpc = RpcClient::with_transport(Node::today(30_000, vec![(1, 900, false), (2, 29_000, false)]));
+    let mut scan = WithdrawalScan::default();
+    let rows = read_all(&rpc, &mut scan);
+    assert_eq!(ids_of(&rows), vec!["1", "2"], "rows are shown");
+    assert_eq!(scan.cursor(), None, "nothing committed");
+    assert!(scan.last_read_complete && !scan.last_read_confirmed);
+    let note = scan.last_read_note.clone().unwrap_or_default();
+    assert!(note.contains("citrate_getLogs"), "{note}");
+    let methods = rpc.transport().methods();
+    assert_eq!(methods.get(1).map(String::as_str), Some("citrate_getLogs"), "{methods:?}");
+    for m in ["citrate_executedHead", "eth_syncing", "citrate_isExecuted"] {
+        assert!(!methods.iter().any(|x| x == m), "{m} read: {methods:?}");
+    }
+    let plain: Vec<_> = rpc.transport().log_reads().into_iter().filter(|r| r.0 == "eth_getLogs").collect();
+    assert_eq!(plain.first().map(|r| r.1), Some(LIQUID_STAKING_POOL_DEPLOY_BLOCK));
+    assert_eq!(plain.last().map(|r| r.2), Some(30_000));
+    assert!(plain.windows(2).all(|w| w[1].1 == w[0].2 + 1), "contiguous");
+}
+
+// README "Log scanner protocol" rule 5: persist nothing derived from citrate_executedHead,
+// eth_blockNumber or eth_syncing. Stored head 9000, executed tip 5000: the cursor is exactly the
+// served through, and the read is not confirmed.
+#[test]
+fn the_cursor_is_the_served_through_never_a_head_read() {
+    let node = Node::new(5_000, vec![]);
+    node.head.set(9_000);
+    let rpc = RpcClient::with_transport(node);
+    let mut scan = WithdrawalScan::default();
+    read_all(&rpc, &mut scan);
+    assert_eq!(scan.cursor(), Some((5_000, stub_hash(5_000))));
+    assert!(scan.last_read_complete && !scan.last_read_confirmed);
+    let note = scan.last_read_note.clone().unwrap_or_default();
+    assert!(note.contains("5000") && note.contains("9000"), "{note}");
+    assert!(!rpc.transport().methods().iter().any(|m| m == "citrate_executedHead"));
+}
+
+// A scan file written by an earlier build of this PR holds a position from the withdrawn
+// two-read protocol, which can skip logs across a rewind (citrate-chain#337 at cfba7b9). It still
+// loads (and leaves other keys alone), but its position is not trusted: the scan starts at 427.
+#[test]
+fn a_scan_file_from_an_earlier_build_loads_and_starts_at_the_deployment_block() {
+    let (dir, file) = scan_file("legacy");
+    std::fs::create_dir_all(&dir).expect("dir");
+    let legacy = serde_json::json!({ "next_block": 40_001, "ids": [9], "claimed": { "4": 39_000 },
+        "anchor": [40_000, stub_hash(40_000)], "generation": 2 });
+    std::fs::write(&file, serde_json::json!({ "k": legacy, "other": legacy }).to_string()).expect("write");
+    let mut scan = load_scan(&file, "k");
+    assert_eq!(scan.cursor(), None);
+    let rpc = RpcClient::with_transport(Node::new(50_000, vec![(9, 45_000, false)]));
+    let rows = read_all(&rpc, &mut scan);
+    let first = rpc.transport().log_reads()[0].clone();
+    assert_eq!((first.1, first.3), (LIQUID_STAKING_POOL_DEPLOY_BLOCK, None), "from the deployment block, unchained");
+    assert_eq!(ids_of(&rows), vec!["9"]);
+    save_scan(&file, "k", &scan).expect("save");
+    assert_eq!(load_scan(&file, "k").cursor(), Some((50_000, stub_hash(50_000))));
+    let all: serde_json::Map<String, JsonValue> = serde_json::from_slice(&std::fs::read(&file).expect("read")).expect("json");
+    assert!(all.contains_key("other"), "other keys are kept");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// STD tripwire (C1-W, citrate-chain#337 @ 600d2984). The bug class: scan progress that is not a
+// served `through`, e.g. a position from citrate_executedHead, eth_blockNumber or eth_syncing, or a
+// fixed margin below one of them. Two head reads can't show how far one getLogs call served across
+// a rewind (the cfba7b9 blocker on #337). Structural checks over the production source:
+//  1. no head read or margin feeds the scan (executed_head, .syncing(), commit_cap, the margins);
+//  2. the scan reads citrate_getLogs and chains windows with afterBlockHash;
+//  3. every cursor write is a served `through`, a saved cursor citrate_isExecuted confirmed
+//     (`verified`), or a drop, and never mentions a head;
+//  4. the plain eth_getLogs read is one function that touches no saved state.
+// ---------------------------------------------------------------------------
+fn served_through_violations(prod: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    for banned in ["executed_head", ".syncing()", "commit_cap", "EXECUTED_HEAD_MARGIN_BLOCKS", "SAFE_DEPTH_BLOCKS"] {
+        if prod.contains(banned) {
+            bad.push(format!("scan progress from a head read or a margin: {banned}"));
+        }
+    }
+    if !prod.contains("rpc.citrate_get_logs(") {
+        bad.push("the scan does not read citrate_getLogs".into());
+    }
+    if !prod.contains("\"afterBlockHash\"") {
+        bad.push("windows are not chained with afterBlockHash".into());
+    }
+    for stmt in prod.split(';') {
+        let mut rest = stmt;
+        while let Some(i) = rest.find("cursor =") {
+            let after = &rest[i + "cursor =".len()..];
+            if !after.starts_with('=') {
+                let rhs = after.trim();
+                let from_served = rhs.starts_with("Some(through") || rhs.starts_with("Some(verified") || rhs == "None";
+                let names_a_head = ["current_block", "block_number", "head"].iter().any(|h| stmt.contains(h));
+                if !from_served || names_a_head {
+                    bad.push(format!("a cursor that is not a served through: {}", stmt.trim()));
+                }
+            }
+            rest = after;
+        }
+    }
+    match prod.find("fn read_unbounded") {
+        None => bad.push("no separate unbounded (eth_getLogs) read".into()),
+        Some(i) => {
+            let body = &prod[i..];
+            let end = body[1..].find("\nfn ").or_else(|| body[1..].find("\npub fn ")).map_or(body.len(), |e| e + 1);
+            let body = &body[..end];
+            if body.contains("scan.") {
+                bad.push("the unbounded read touches saved scan state".into());
+            }
+        }
+    }
+    if prod.matches("get_logs_range(").count() != 1 {
+        bad.push("eth_getLogs is read outside the unbounded fallback".into());
+    }
+    bad
+}
+
+fn production_source() -> String {
+    let src = include_str!("staking.rs");
+    let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src);
+    // Doc comments may name the methods; only code counts.
+    prod.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn tripwire_scan_progress_is_only_a_served_through() {
+    let bad = served_through_violations(&production_source());
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn tripwire_catches_progress_from_a_head_read() {
+    // Negative control: the shapes of the withdrawn protocol and of a head-derived cursor.
+    let shapes = [
+        ("let (h2, hash2) = rpc.executed_head().ok().flatten()?;", "executed_head"),
+        ("let commit_cap = Some(n.saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS));", "commit_cap"),
+        ("scan.cursor = Some((current_block, hash));", "not a served through"),
+        ("scan.cursor = Some(through_or(head));", "not a served through"),
+        ("fn read_unbounded() { scan.rows.insert(1, 2); rpc.get_logs_range(f) }", "touches saved scan state"),
+        ("let a = rpc.get_logs_range(f); let b = rpc.get_logs_range(g);", "outside the unbounded fallback"),
+    ];
+    for (src, want) in shapes {
+        let bad = served_through_violations(src);
+        assert!(bad.iter().any(|b| b.contains(want)), "{want}: {bad:?}");
+    }
+}

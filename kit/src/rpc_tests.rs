@@ -391,3 +391,80 @@ fn is_executed_answers() {
     assert_eq!(rpc.transport().requests()[0]["method"], "citrate_isExecuted");
     assert_eq!(rpc.transport().requests()[0]["params"][0], json!(h));
 }
+
+// C1-W (citrate-chain#337 @ 600d2984) — -32005 has two sources on the chain: a log range over
+// MAX_LOG_BLOCK_RANGE carries `data.maxBlockRange` (core/api/src/canonical_logs.rs:127-146), while
+// the per-method budget answers -32005 with no data (core/api/src/rate_limit.rs:96-101). Only the
+// first is a reason to halve the window.
+#[test]
+fn get_logs_range_halves_only_on_a_range_limit() {
+    let budget = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32005, "message": "Method budget exceeded. Reduce call frequency for expensive methods." } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![budget]));
+    let got = rpc.get_logs_range(json!({ "fromBlock": "0x1ab", "toBlock": "0x592" }));
+    assert!(matches!(got, Err(GetLogsError::Rpc(RpcError::Node(ref m))) if m.contains("budget")), "{got:?}");
+}
+
+// citrate_getLogs([filter]) -> {"logs": [...], "through": {number, hash} | null}
+// (core/api/src/eth_rpc.rs:1946-2026; core/api/tests/executed_head.rs:910
+// get_logs_answers_logs_and_the_block_it_is_complete_through).
+#[test]
+fn citrate_get_logs_answers_logs_and_through() {
+    let h = format!("0x{}", "ab".repeat(32));
+    let served = json!({ "jsonrpc": "2.0", "id": 1, "result": {
+        "logs": [ { "topics": ["0x01"], "data": "0x", "blockNumber": "0x10" } ],
+        "through": { "number": "0x12", "hash": h } } });
+    let nothing = json!({ "jsonrpc": "2.0", "id": 2, "result": { "logs": [], "through": null } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![served, nothing]));
+    let f = json!({ "fromBlock": "0x10", "toBlock": "0x3f7", "afterBlockHash": h });
+    let got = rpc.citrate_get_logs(f.clone());
+    assert!(
+        matches!(&got, Ok(s) if s.logs.len() == 1 && s.through == Some(BlockRef { number: 0x12, hash: h.clone() })),
+        "{got:?}"
+    );
+    let got = rpc.citrate_get_logs(f.clone());
+    assert!(matches!(&got, Ok(s) if s.logs.is_empty() && s.through.is_none()), "{got:?}");
+    let req = &rpc.transport().requests()[0];
+    assert_eq!(req["method"], "citrate_getLogs");
+    assert_eq!(req["params"][0], f, "the filter, afterBlockHash included, is sent as is");
+}
+
+// The error answers a scanner acts on, and the malformed answers it must refuse
+// (core/api/src/canonical_logs.rs:646-673 for -32002 / -32001; -32601 = the method is absent, as
+// on today's public RPC).
+#[test]
+fn citrate_get_logs_classifies_errors_and_refuses_malformed_answers() {
+    let err = |code: i64, data: Value| json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": code, "message": "m", "data": data } });
+    let res = |r: Value| json!({ "jsonrpc": "2.0", "id": 1, "result": r });
+    let h = format!("0x{}", "cd".repeat(32));
+    let answers = vec![
+        err(-32001, json!({ "reorged": true, "height": "0x1aa" })),
+        err(-32001, Value::Null),
+        err(-32601, Value::Null),
+        err(-32005, json!({ "maxBlockRange": 1000 })),
+        err(-32005, Value::Null),
+        err(-32002, json!({ "retryable": true, "blockNumber": "0x1194" })),
+        err(-32002, Value::Null),
+        res(json!({ "logs": [] })),
+        res(json!({ "logs": [], "through": { "number": "0x5", "hash": "0x12" } })),
+        res(json!({ "logs": [], "through": { "number": "five", "hash": h } })),
+        res(json!({ "logs": {}, "through": null })),
+        res(json!([])),
+    ];
+    let rpc = RpcClient::with_transport(MockTransport::new(answers));
+    let f = json!({ "fromBlock": "0x1ab", "toBlock": "0x592" });
+    let mut got = Vec::new();
+    for _ in 0..12 {
+        got.push(rpc.citrate_get_logs(f.clone()));
+    }
+    assert!(matches!(got[0], Err(GetLogsError::Reorged(_))), "-32001 reorged: {:?}", got[0]);
+    assert!(matches!(got[1], Err(GetLogsError::Rpc(_))), "-32001 without data.reorged: {:?}", got[1]);
+    assert!(matches!(got[2], Err(GetLogsError::MethodNotFound)), "-32601: {:?}", got[2]);
+    assert!(matches!(got[3], Err(GetLogsError::RangeTooLarge(_))), "-32005 range: {:?}", got[3]);
+    assert!(matches!(got[4], Err(GetLogsError::Rpc(_))), "-32005 budget: {:?}", got[4]);
+    assert!(matches!(got[5], Err(GetLogsError::Retry(_))), "-32002 retryable: {:?}", got[5]);
+    assert!(matches!(got[6], Err(GetLogsError::Rpc(_))), "-32002 not retryable: {:?}", got[6]);
+    for (i, g) in got.iter().enumerate().skip(7) {
+        assert!(matches!(g, Err(GetLogsError::Rpc(_))), "malformed answer {i}: {g:?}");
+    }
+}

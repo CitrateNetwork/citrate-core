@@ -705,6 +705,12 @@ pub struct WithdrawalScan {
 }
 
 impl WithdrawalScan {
+    /// RED STUB (C1-W, replaced in the fix commit): the last persisted `through`. Keeps the old
+    /// behaviour: this scan has no served-through cursor.
+    pub fn cursor(&self) -> Option<(u64, String)> {
+        None
+    }
+
     /// Rewind after a reorg: start again at the deployment block, forget the anchor and the
     /// session cursor, and bump the generation.
     fn rewind(&mut self) {
@@ -879,6 +885,12 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
                 window = (window / 2).max(1);
             }
             Err(crate::rpc::GetLogsError::Rpc(e)) => {
+                return Err(StakingError::Rpc(format!(
+                    "eth_getLogs blocks {from}-{to}: {e}"
+                )));
+            }
+            // RED STUB: never produced by get_logs_range.
+            Err(e) => {
                 return Err(StakingError::Rpc(format!(
                     "eth_getLogs blocks {from}-{to}: {e}"
                 )));

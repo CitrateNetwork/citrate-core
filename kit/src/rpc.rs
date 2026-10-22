@@ -313,6 +313,15 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_logs(&result).map_err(GetLogsError::Rpc)
     }
 
+    /// RED STUB (C1-W, replaced in the fix commit): `citrate_getLogs` keeps the old behaviour, a
+    /// plain `eth_getLogs` read with no served-through bound.
+    pub fn citrate_get_logs(&self, filter: Value) -> Result<ServedLogs, GetLogsError> {
+        self.get_logs_range(filter).map(|logs| ServedLogs {
+            logs,
+            through: None,
+        })
+    }
+
     /// `eth_blockNumber` → the node's current head height (real value from the
     /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
     /// a `0x`-prefixed hex quantity.
@@ -553,9 +562,27 @@ pub const RPC_RETRY: i64 = -32002;
 /// The JSON-RPC "method not found" code.
 pub const RPC_METHOD_NOT_FOUND: i64 = -32601;
 
+/// A block named by number and hash (`citrate_getLogs` `through`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockRef {
+    pub number: u64,
+    pub hash: String,
+}
+
+/// A `citrate_getLogs` answer: the logs, and the executed block the answer is complete through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedLogs {
+    pub logs: Vec<LogEntry>,
+    pub through: Option<BlockRef>,
+}
+
 /// An `eth_getLogs` failure, telling a too-wide range apart from every other error (C1-W).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GetLogsError {
+    /// RED STUB: never produced yet.
+    Reorged(String),
+    /// RED STUB: never produced yet.
+    MethodNotFound,
     /// The node refused the block range as too wide ([`RPC_LIMIT_EXCEEDED`]).
     RangeTooLarge(String),
     /// The node asked for the same range again later ([`RPC_RETRY`]).
@@ -570,6 +597,8 @@ impl std::fmt::Display for GetLogsError {
             GetLogsError::RangeTooLarge(m) => write!(f, "rpc block range too large: {m}"),
             GetLogsError::Retry(m) => write!(f, "rpc asked to retry: {m}"),
             GetLogsError::Rpc(e) => write!(f, "{e}"),
+            GetLogsError::Reorged(m) => write!(f, "{m}"),
+            GetLogsError::MethodNotFound => write!(f, "method not found"),
         }
     }
 }
