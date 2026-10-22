@@ -128,9 +128,16 @@ impl SubmittedTxLog {
     }
 
     /// The record used when no persistent location exists (the app data dir could not be
-    /// resolved). It lives only as long as the process.
+    /// resolved). It lives only as long as the process, so it can't show that bytes were never
+    /// sent in an earlier run: it is uncertain from the start, and every send is a re-submission
+    /// ("outcome unknown" on any error, never "not sent").
     pub fn unpersisted() -> Self {
-        Self::in_memory()
+        let log = Self::in_memory();
+        log.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .uncertain = true;
+        log
     }
 
     /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt
