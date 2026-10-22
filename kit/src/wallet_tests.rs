@@ -1745,6 +1745,21 @@ fn k6_ref_in_tree(file: &std::path::Path, lit: &str, root: &std::path::Path) -> 
     }
 }
 
+/// The source files a rustc dep-info (`.d`) file lists: the prerequisites of every rule, in
+/// order, with `\ ` read as a space. Comment lines (`# env-dep:…`) carry no sources.
+fn k6_dep_info_sources(text: &str) -> Vec<String> {
+    let _ = text;
+    Vec::new()
+}
+
+/// Whether a dep-info path (relative to the workspace root `ws`, or absolute) lies under one of
+/// `roots`. A path that exists is compared canonically, so a symlink counts as its target; a
+/// missing one (a stale entry for a deleted file) is compared lexically, with `..` applied.
+fn k6_dep_in(p: &str, ws: &std::path::Path, roots: &[std::path::PathBuf]) -> bool {
+    let _ = (p, ws, roots);
+    true
+}
+
 /// STRUCTURAL (K6, MAC round 4 on core#363): the key-access scan reads every .rs under kit/src
 /// and src-tauri/src, so no source may compile in a file from outside those trees: every
 /// `#[path = "…"]` and `include!("…")` must name a plain relative literal that resolves under its
@@ -1798,6 +1813,12 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
         "std::include! {\"../brace.rs\"}\n",
         "use std::include as inc;\n",
         "#[path = $p]\nmod m;\n",
+        // MAC round 6: an attribute built from a macro fragment names no literal the scan can
+        // read, so it is unresolvable wherever the fragment sits.
+        "macro_rules! m { ($a:meta) => { #[$a] mod x; } }\nm!(path = \"../outside.rs\");\n",
+        "macro_rules! n { ($($t:tt)*) => { #[$($t)*] mod y; } }\n",
+        "macro_rules! o { ($a:meta) => { #![$a] }; }\n",
+        "macro_rules! q { ($b:meta) => { #[cfg_attr(all(), $b)] mod z; } }\n",
         // Data, not code: read as text or bytes, never compiled.
         "let d = include_str ! (\"../data.txt\");\nlet b = include_bytes!(\"../blob.bin\");\n",
         // A conditional attribute with no path is not a reference.
@@ -1824,6 +1845,10 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
             s("../brace.rs"),
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         ],
         "literals, comments and look-alike attributes are not references; every path and \
          include form is, whatever its spacing, delimiter or literal kind"
@@ -1835,6 +1860,127 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
     assert!(!k6_ref_in_tree(&file, "../Cargo.toml", &root));
     assert!(!k6_ref_in_tree(&file, "./wallet_key.rs", &root));
     assert!(!k6_ref_in_tree(&file, "/etc/hosts", &root));
+}
+
+/// STRUCTURAL (K6, MAC round 6 on core#363): what rustc actually read. The token scans above
+/// look for every way a source can pull in another file; this asks the compiler instead. rustc
+/// writes the full source list of each build to a dep-info file beside the binary, and every
+/// macro, attribute and include form ends up there. So every source of this test binary must lie
+/// under kit/src. Any other kit or app build whose dep-info sits in the same directory (the kit
+/// lib, the app lib and binary, which `cargo test --workspace` builds first) is held to its own
+/// tree too: kit/src, or src-tauri/src plus the app build script's OUT_DIR.
+#[test]
+fn k6_compiled_sources_stay_in_the_scanned_trees() {
+    use std::path::{Path, PathBuf};
+    let kit = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ws = kit.parent().expect("workspace root");
+    let exe = std::env::current_exe().expect("test binary path");
+    let own = exe.with_extension("d");
+    let deps = exe.parent().expect("deps dir");
+    let mut app_roots = vec![ws.join("src-tauri/src")];
+    if let Ok(rd) = std::fs::read_dir(deps.join("../build")) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("citrate-core-") && e.path().join("out").is_dir() {
+                app_roots.push(e.path().join("out"));
+            }
+        }
+    }
+    let kit_roots = vec![kit.join("src")];
+    let mut files = vec![own.clone()];
+    for e in std::fs::read_dir(deps).expect("read deps dir").flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let crate_dep_info = name.ends_with(".d")
+            && ["citrate_core_kit-", "citrate_core_lib-", "citrate_core-"]
+                .iter()
+                .any(|pre| name.starts_with(pre));
+        if crate_dep_info && p != own {
+            files.push(p);
+        }
+    }
+    let mut bad = Vec::new();
+    let mut own_sources = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f)
+            .unwrap_or_else(|e| panic!("read dep-info {}: {e}", f.display()));
+        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let roots: &[PathBuf] = if name.starts_with("citrate_core_kit-") {
+            &kit_roots
+        } else {
+            &app_roots
+        };
+        let srcs = k6_dep_info_sources(&text);
+        for s in &srcs {
+            if !k6_dep_in(s, ws, roots) {
+                bad.push(format!("{}: {s}", f.display()));
+            }
+        }
+        if *f == own {
+            own_sources = srcs;
+        }
+    }
+    assert!(bad.is_empty(), "a build compiled a source outside its scanned tree: {bad:?}");
+    assert!(
+        own_sources.iter().any(|s| s.ends_with("wallet_tests.rs")) && own_sources.len() > 20,
+        "positive control: this binary's dep-info lists its own sources ({own_sources:?})"
+    );
+}
+
+/// The dep-info reader and path check used above, on an in-memory dep-info file.
+#[test]
+fn k6_dep_info_sources_reads_every_listed_file() {
+    let d = concat!(
+        "/t/deps/x-1: kit/src/lib.rs kit/src/a\\ b.rs kit/src/../zz.rs /abs/out.rs ",
+        "C:\\w\\kit\\src\\c.rs\n",
+        "\n",
+        "/t/deps/x-1.d: kit/src/lib.rs\n",
+        "\n",
+        "kit/src/lib.rs:\n",
+        "kit/src/a\\ b.rs:\n",
+        "\n",
+        "# env-dep:CARGO_MANIFEST_DIR=/t/kit: not/a/source.rs\n",
+    );
+    assert_eq!(
+        k6_dep_info_sources(d),
+        vec![
+            "kit/src/lib.rs",
+            "kit/src/a b.rs",
+            "kit/src/../zz.rs",
+            "/abs/out.rs",
+            "C:\\w\\kit\\src\\c.rs",
+            "kit/src/lib.rs",
+        ],
+        "every prerequisite of every rule, escaped spaces read, comment lines skipped"
+    );
+    let kit = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ws = kit.parent().expect("workspace root");
+    let roots = [kit.join("src")];
+    assert!(k6_dep_in("kit/src/wallet.rs", ws, &roots));
+    assert!(k6_dep_in("kit/src/ceremony/anchor.rs", ws, &roots));
+    assert!(k6_dep_in("kit/src/deleted_since.rs", ws, &roots), "a stale in-tree entry");
+    assert!(!k6_dep_in("kit/src/../zz_outside.rs", ws, &roots), "`..` out of the tree");
+    assert!(!k6_dep_in("kit/src/../Cargo.toml", ws, &roots), "an existing file outside");
+    assert!(!k6_dep_in("kit/Cargo.toml", ws, &roots));
+    assert!(!k6_dep_in("src-tauri/src/lib.rs", ws, &roots), "another crate's tree");
+    assert!(!k6_dep_in("/etc/hosts", ws, &roots));
+    let abs = kit.join("src/rpc.rs");
+    assert!(k6_dep_in(abs.to_str().expect("utf-8 path"), ws, &roots), "an absolute in-tree path");
+}
+
+/// K6, MAC round 6 on core#363: the scans read `#[cfg(test)]` as test-only, which holds only
+/// while nothing sets `cfg(test)` for a non-test build. A build script could (`cargo:rustc-cfg=
+/// test`); kit has none, and Cargo sets `OUT_DIR` for exactly the packages that do, so the
+/// compiler records the answer here. (The app's build script is pinned in src-tauri.)
+#[test]
+fn k6_kit_has_no_build_script() {
+    assert_eq!(
+        option_env!("OUT_DIR"),
+        None,
+        "kit gained a build script; the cfg(test) exemptions in these scans assume it has none"
+    );
+    let kit = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(!kit.join("build.rs").exists(), "kit/build.rs");
 }
 
 /// K6 scan exemption: a `*_tests.rs` file is skipped only when it is compiled under `cfg(test)`.
