@@ -678,7 +678,7 @@ fn the_record_carries_the_nonce_and_the_sender() {
 fn a_send_the_node_refused_and_does_not_hold_withdraws_the_record_and_keeps_the_card() {
     let kr = FakeKeyring::default();
     ensure_anchor_key(&kr).unwrap();
-    let c = AnchorCeremony::new();
+    let c = certain_anchor();
     let v = c
         .request(good_request(20_000, root(0x62)), REGISTRY)
         .unwrap();
@@ -686,7 +686,7 @@ fn a_send_the_node_refused_and_does_not_hold_withdraws_the_record_and_keeps_the_
         ok(json!("0x5")),
         ok(json!("0x3b9aca00")),
         ok(json!("0xb000")),
-        err("insufficient funds for gas * price + value"),
+        err("Insufficient funds: account balance 0 < required 21000"),
         ok(Value::Null),
     ]));
     let vault = unlocked_vault();
@@ -796,7 +796,7 @@ fn approve_logged(
 ) {
     let kr = FakeKeyring::default();
     ensure_anchor_key(&kr).unwrap();
-    let c = AnchorCeremony::new();
+    let c = certain_anchor();
     let v = c
         .request(good_request(20_000, root(0x61)), REGISTRY)
         .unwrap();
@@ -836,7 +836,7 @@ fn approve_logged(
 #[test]
 fn a_send_the_node_refuses_is_forgotten_and_the_card_stays() {
     let (r, recorded, forgotten, pending) = approve_logged(&[
-        node_error("insufficient funds for gas * price + value"),
+        node_error("Failed to submit transaction: Full"),
         ok(Value::Null),
     ]);
     assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
@@ -864,8 +864,22 @@ fn a_send_with_an_unknown_outcome_stays_in_flight() {
 
 #[test]
 fn only_a_node_error_proves_a_send_was_refused() {
-    assert!(send_refused(&RpcError::Node("nonce too low".into())));
-    assert!(send_refused(&RpcError::Node("insufficient funds".into())));
+    // Contract v1.1 §1: only the node's definitive messages (matched on the message, not the code).
+    assert!(send_refused(&RpcError::Node(
+        "Failed to submit transaction: NonceTooLow { expected: 6, got: 5 }".into()
+    )));
+    assert!(send_refused(&RpcError::Node(
+        "Insufficient funds: account balance 0 < required 21000".into()
+    )));
+    assert!(send_refused(&RpcError::RateLimited));
+    assert!(!send_refused(&RpcError::Node("nonce too low".into())));
+    assert!(!send_refused(&RpcError::Node("insufficient funds".into())));
+    assert!(!send_refused(&RpcError::Node(
+        "Failed to submit transaction: DuplicateTransaction(0xab)".into()
+    )));
+    assert!(!send_refused(&RpcError::Node(
+        "Failed to submit transaction: DuplicateNonce { nonce: 5 }".into()
+    )));
     assert!(!send_refused(&RpcError::Node("Already Known".into())));
     assert!(!send_refused(&RpcError::Node(
         "known transaction: 0xab".into()
@@ -873,4 +887,152 @@ fn only_a_node_error_proves_a_send_was_refused() {
     assert!(!send_refused(&RpcError::Transport("timeout".into())));
     assert!(!send_refused(&RpcError::BadResponse("html".into())));
     assert!(!send_refused(&RpcError::MissingField("hash".into())));
+}
+
+// ---------------------------------------------------------------------------------------------
+// C1-V6(a): the anchor send uses the same classifier as the signature ceremony (contract v1.1 §1):
+// only a definitive node message on the FIRST submission of those bytes can free the day.
+
+#[test]
+fn an_unlisted_or_ambiguous_send_error_keeps_the_day_held_even_if_the_lookup_says_no() {
+    for msg in [
+        "insufficient funds for gas * price + value",
+        "timeout",
+        "Failed to submit transaction: DuplicateTransaction(0xab)",
+        "Failed to submit transaction: DuplicateNonce { nonce: 5 }",
+        "Internal error",
+    ] {
+        let (r, recorded, forgotten, pending) = approve_logged(&[node_error(msg), ok(Value::Null)]);
+        assert!(matches!(r, Err(AnchorError::Rpc(_))), "{msg}: {r:?}");
+        assert_eq!(recorded.len(), 1, "{msg}");
+        assert!(
+            forgotten.is_empty(),
+            "{msg}: possibly sent, the day stays held"
+        );
+        assert_eq!(pending, 0, "{msg}: no second card");
+    }
+}
+
+#[test]
+fn a_definitive_refusal_on_a_resend_of_the_same_bytes_keeps_the_day_held() {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = certain_anchor();
+    let v = c
+        .request(good_request(20_000, root(0x64)), REGISTRY)
+        .unwrap();
+    let vault = unlocked_vault();
+    let run = |c: &AnchorCeremony| {
+        let rpc = RpcClient::with_transport(MockRpc::new(vec![
+            ok(json!("0x5")),
+            ok(json!("0x3b9aca00")),
+            ok(json!("0xb000")),
+            node_error("Failed to submit transaction: Full"),
+            ok(Value::Null),
+        ]));
+        let forgotten = RefCell::new(0usize);
+        let rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+        let gone = |_: &AnchorReceipt| *forgotten.borrow_mut() += 1;
+        let r = c.approve_and_broadcast(
+            &kr,
+            &rpc,
+            &v.id,
+            REGISTRY,
+            cfg(),
+            AnchorGuards {
+                vault: &vault,
+                before_send: &rec,
+                not_sent: &gone,
+            },
+        );
+        (r, forgotten.into_inner(), c.pending().len())
+    };
+    let (_, forgotten, pending) = run(&c);
+    assert_eq!(
+        (forgotten, pending),
+        (1, 1),
+        "first submission: refused, the card stays"
+    );
+    let (r, forgotten, pending) = run(&c);
+    assert!(matches!(r, Err(AnchorError::Rpc(_))));
+    assert_eq!(
+        (forgotten, pending),
+        (0, 0),
+        "same bytes again: the first may have been accepted"
+    );
+}
+
+#[test]
+fn the_anchor_shares_the_app_record_of_submitted_bytes() {
+    // Bytes the app submitted before (e.g. in an earlier run) are a re-submission here too.
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let probe = AnchorCeremony::new();
+    let v = probe
+        .request(good_request(20_000, root(0x65)), REGISTRY)
+        .unwrap();
+    let vault = unlocked_vault();
+    let hash = RefCell::new(String::new());
+    let rec = |r: &AnchorReceipt| -> std::result::Result<(), String> {
+        *hash.borrow_mut() = r.tx_hash.clone();
+        Err("stop before sending".into())
+    };
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+    ]));
+    let _ = probe.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &|_| {},
+        },
+    );
+    let log = std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::in_memory());
+    assert!(log.record(&hash.borrow()));
+    let c = AnchorCeremony::new();
+    c.use_submitted_log(log);
+    let v = c
+        .request(good_request(20_000, root(0x65)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+        node_error("Failed to submit transaction: Full"),
+        ok(Value::Null),
+    ]));
+    let forgotten = RefCell::new(0usize);
+    let ok_rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+    let gone = |_: &AnchorReceipt| *forgotten.borrow_mut() += 1;
+    let _ = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &ok_rec,
+            not_sent: &gone,
+        },
+    );
+    assert_eq!(*forgotten.borrow(), 0);
+    assert!(c.pending().is_empty());
+}
+
+/// An anchor ceremony over a CERTAIN in-memory record (test-only), for the cases that classify a
+/// first send. The app's anchor uses the shared persisted record; unwired it is uncertain (C1-V6).
+fn certain_anchor() -> AnchorCeremony {
+    let c = AnchorCeremony::new();
+    c.use_submitted_log(std::sync::Arc::new(
+        crate::submitted_log::SubmittedTxLog::in_memory(),
+    ));
+    c
 }

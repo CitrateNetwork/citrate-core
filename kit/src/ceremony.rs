@@ -1148,7 +1148,7 @@ fn err_str(e: CeremonyError) -> String {
 /// the `eth_sendRawTransaction` errors that prove the node did not accept the tx. Every handler
 /// error uses code -32602, so the MESSAGE decides, matched exactly or by its fixed prefix. Only
 /// meaningful on the first submission of the signed bytes; the caller checks that.
-fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
+pub(crate) fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
     const EXACT: &[&str] = &[
         "Rate limit exceeded. Try again later.",
         "Missing transaction data",
