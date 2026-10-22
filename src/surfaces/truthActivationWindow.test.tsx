@@ -156,3 +156,48 @@ describe("tripwire — every activation goes through canOfferActivation", () => 
     }
   });
 });
+
+// #366: an unread isUnlocked() (MemberBond.sol:219 window) keeps the activation gate closed, so it
+// is retried like the activated flag: while unread, at most every BOND_READ_MS, node up or not.
+describe("chain#331 — an unread isUnlocked() is retried", () => {
+  const poll = async (memberBond: MemberBondState | null, answer: GrantStatus) => {
+    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, memberBond });
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
+    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(answer);
+    await store.refreshNode();
+    return gs;
+  };
+
+  it("with the node stopped, an un-activated bond whose lock is unread is read again", async () => {
+    const gs = await poll(UNREAD, { ...grant, isUnlocked: false, bondUnlocked: false });
+    expect(gs).toHaveBeenCalled();
+    expect(store.state.memberBond?.unlocked).toBe(false);
+    expect(canOfferActivation(0, NONE, true, store.state.memberBond)).toBe(true);
+  });
+
+  it("an absent flag (older backend) is unread too, and is read again", async () => {
+    const gs = await poll(ABSENT, { ...grant, isUnlocked: true, bondUnlocked: true });
+    expect(gs).toHaveBeenCalled();
+    expect(activationClosedReason(store.state.memberBond)).toBe("activation window closed");
+  });
+
+  it("once the lock has read, it is not re-read every poll", async () => {
+    for (const b of [LOCKED, UNLOCKED]) {
+      const gs = await poll(b, grant);
+      expect(gs).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("the retry is throttled to BOND_READ_MS", async () => {
+    await poll(UNREAD, { ...grant, bondUnlocked: null });
+    vi.restoreAllMocks();
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
+    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+    const again = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant);
+    await store.refreshNode(); // immediately after: not due yet
+    expect(again).not.toHaveBeenCalled();
+  });
+});
