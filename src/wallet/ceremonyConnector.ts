@@ -29,9 +29,9 @@
 // ceremony UI; wiring the hook to that live UI is a small host-side step and is
 // intentionally left as a clear seam here (see `defaultApprovalHook`).
 // =====================================================================
-import { http, type Transport } from "viem";
+import type { Transport } from "viem";
 import { createConnector } from "wagmi";
-import { citrate } from "../chain";
+import { citrate, readTransport } from "../chain";
 import { bridge } from "../bridge";
 import type { SigningDomain } from "../bridge/domains";
 import type {
@@ -249,7 +249,8 @@ async function bridgeAddress(): Promise<string | null> {
 export interface CeremonyConnectorOptions {
   /** Wire this to the B1.2 ceremony UI. Defaults to fail-closed (no auto-approve). */
   approvalHook?: ApprovalHook;
-  /** Override the read transport (tests). Defaults to viem http() for 40204. */
+  /** Override the read transport (tests). Defaults to the target chain's read transport
+   *  (`readTransport()`: viem http() when the network profile is ready, else one that refuses). */
   transport?: Transport;
 }
 
@@ -265,7 +266,7 @@ export function ceremonyConnector(options: CeremonyConnectorOptions = {}) {
 
   return createConnector<Provider>((config) => {
     // Instantiate the read transport once, bound to the Citrate chain.
-    const transportFactory = options.transport ?? http();
+    const transportFactory = options.transport ?? readTransport();
     const transport = transportFactory({ chain: citrate });
 
     let provider: Provider | undefined;

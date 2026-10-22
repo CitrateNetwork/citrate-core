@@ -456,6 +456,18 @@ fn directory_revoke_statement(platform: &str, handle_key: &str, address: &str) -
     )
 }
 
+/// The `personal_sign` ceremony intent every social and directory signature uses. None of these
+/// texts names a chain, so they are not network-bound; the wallet's network gate still refuses
+/// them while no network is set (K6).
+fn wallet_sign_intent(origin: String, text: &str) -> SignatureIntent {
+    SignatureIntent {
+        origin,
+        kind: IntentKind::PersonalSign,
+        chain_id: CHAIN_ID,
+        raw: hex::encode(text.as_bytes()),
+    }
+}
+
 /// The EIP-191 message the human sees + signs — plain, verbatim at the ceremony.
 fn binding_message(network: &str, handle: &str, address: &str, nonce: &str) -> String {
     format!(
@@ -593,12 +605,9 @@ pub fn social_verify_request_sync(
     let info = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
     let nonce = random_state();
     let message = binding_message(&network, &handle, &info.address, &nonce);
-    let view = ceremony.0.request(SignatureIntent {
-        origin: format!("social:{network}"),
-        kind: IntentKind::PersonalSign,
-        chain_id: CHAIN_ID,
-        raw: hex::encode(message.as_bytes()),
-    });
+    let view = ceremony
+        .0
+        .request(wallet_sign_intent(format!("social:{network}"), &message));
     bind.0.lock().insert(
         view.id.clone(),
         PendingBind {
@@ -876,12 +885,10 @@ pub fn directory_publish_request_sync(
     let hk = handle_key(&handle);
     let bound_at = now_unix();
     let statement = directory_publish_statement(&network, &hk, &binding.address, bound_at);
-    let view = ceremony.0.request(SignatureIntent {
-        origin: format!("directory:publish:{network}"),
-        kind: IntentKind::PersonalSign,
-        chain_id: CHAIN_ID,
-        raw: hex::encode(statement.as_bytes()),
-    });
+    let view = ceremony.0.request(wallet_sign_intent(
+        format!("directory:publish:{network}"),
+        &statement,
+    ));
     dir.0.lock().insert(
         view.id.clone(),
         PendingDirectory {
@@ -1002,12 +1009,10 @@ pub fn directory_unpublish_request_sync(
     let (handle, binding) = verified_binding(&app, &network)?;
     let hk = handle_key(&handle);
     let statement = directory_revoke_statement(&network, &hk, &binding.address);
-    let view = ceremony.0.request(SignatureIntent {
-        origin: format!("directory:revoke:{network}"),
-        kind: IntentKind::PersonalSign,
-        chain_id: CHAIN_ID,
-        raw: hex::encode(statement.as_bytes()),
-    });
+    let view = ceremony.0.request(wallet_sign_intent(
+        format!("directory:revoke:{network}"),
+        &statement,
+    ));
     dir.0.lock().insert(
         view.id.clone(),
         PendingDirectory {
@@ -1244,5 +1249,99 @@ mod tests {
             directory_revoke_statement("discord", "dana", addr),
             "citrate-directory-revoke:v1:discord:dana:0xabcdef0000000000000000000000000000000001"
         );
+    }
+
+    // ---- K6: the network gate on the social and directory signatures ----
+
+    #[derive(Default)]
+    struct K6Keyring(std::sync::Mutex<HashMap<String, Vec<u8>>>);
+
+    impl citrate_core_kit::custody::Keyring for K6Keyring {
+        fn get(&self, a: &str) -> Result<Option<Vec<u8>>, citrate_core_kit::custody::CustodyError> {
+            Ok(self.0.lock().unwrap().get(a).cloned())
+        }
+        fn set(&self, a: &str, s: &[u8]) -> Result<(), citrate_core_kit::custody::CustodyError> {
+            self.0.lock().unwrap().insert(a.into(), s.to_vec());
+            Ok(())
+        }
+        fn delete(&self, a: &str) -> Result<(), citrate_core_kit::custody::CustodyError> {
+            self.0.lock().unwrap().remove(a);
+            Ok(())
+        }
+    }
+
+    fn k6_vault(tag: &str) -> (crate::custody::CustodyVault, std::path::PathBuf) {
+        let p = std::env::temp_dir().join(format!(
+            "citrate-core-social-k6-{tag}-{}.enc",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        let v = crate::custody::CustodyVault::new(Box::new(K6Keyring::default()), p.clone(), 0);
+        v.init(&mut b"correct horse battery staple".to_vec())
+            .expect("init");
+        v.unlock(&mut b"correct horse battery staple".to_vec())
+            .expect("unlock");
+        crate::wallet::import(
+            &v,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("import");
+        (v, p)
+    }
+
+    fn k6_gate(chain_id: Option<u64>) -> crate::rpc::ExpectedNetwork {
+        crate::rpc::ExpectedNetwork {
+            name: "k6-test".into(),
+            chain_id,
+            genesis_hash: chain_id.map(|_| {
+                "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1".to_string()
+            }),
+        }
+    }
+
+    /// The social binding and the directory publish/revoke statements go through the same
+    /// ceremony intent the commands build: refused with no network set, signed with one (they
+    /// name no chain, so they are not network-bound).
+    #[test]
+    fn k6_social_and_directory_signatures_need_a_set_network() {
+        let (v, p) = k6_vault("social");
+        let addr = crate::wallet::address(&v).expect("address").address;
+        let texts = [
+            (
+                "social:discord",
+                binding_message("discord", "dana", &addr, "n1"),
+            ),
+            (
+                "directory:publish:x",
+                directory_publish_statement("x", "dana", &addr, 1_700_000_000),
+            ),
+            (
+                "directory:revoke:x",
+                directory_revoke_statement("x", "dana", &addr),
+            ),
+        ];
+        let c = crate::ceremony::SignatureCeremony::new();
+        for (origin, text) in &texts {
+            let view = c.request(wallet_sign_intent(origin.to_string(), text));
+            let r = crate::rpc::with_added_network_gate(k6_gate(None), || {
+                c.approve(&v, &view.id, false)
+            });
+            match r {
+                Err(e) => assert!(e.to_string().contains("no network set"), "{origin}: {e}"),
+                Ok(_) => panic!("{origin}: signed with no network set"),
+            }
+            let view = c.request(wallet_sign_intent(origin.to_string(), text));
+            let sig = crate::rpc::with_added_network_gate(k6_gate(Some(40204)), || {
+                c.approve(&v, &view.id, false)
+            })
+            .expect("signed on a set network");
+            let signer = citrate_core_kit::wallet::recover_personal_hex(
+                text.as_bytes(),
+                &format!("0x{}", sig.sig_hex),
+            )
+            .expect("recovers");
+            assert!(signer.eq_ignore_ascii_case(&addr), "{origin}");
+        }
+        let _ = std::fs::remove_file(p);
     }
 }

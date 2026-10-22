@@ -370,6 +370,9 @@ pub enum CeremonyError {
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
     Broadcast(String),
+    /// K6: the network gate refused the signature before the wallet key was read: this build
+    /// has no network set, or the request commits to another chain id. Nothing was signed.
+    WrongNetwork(String),
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -397,6 +400,7 @@ impl std::fmt::Display for CeremonyError {
                 "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
+            CeremonyError::WrongNetwork(m) => write!(f, "ceremony: {m}; nothing was signed"),
         }
     }
 }
@@ -421,6 +425,7 @@ impl From<WalletError> for CeremonyError {
         match e {
             WalletError::Custody => CeremonyError::VaultLocked,
             WalletError::NotFound => CeremonyError::NoWallet,
+            WalletError::WrongNetwork(m) => CeremonyError::WrongNetwork(m),
             _ => CeremonyError::SignFailed,
         }
     }
@@ -659,6 +664,21 @@ impl SignatureCeremony {
         raw_ack: bool,
         cfg: BroadcastConfig,
     ) -> Result<BroadcastResult> {
+        self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, crate::rpc::network_gate())
+    }
+
+    /// [`Self::approve_and_broadcast`] against an explicit network gate (K6). With `Some`, the
+    /// RPC's chain id and block-0 hash are checked after the ceremony is consumed and BEFORE any
+    /// nonce read or signature: on a mismatch, or a gate with no values set, nothing is signed.
+    pub fn approve_and_broadcast_gated<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        cfg: BroadcastConfig,
+        gate: Option<&crate::rpc::ExpectedNetwork>,
+    ) -> Result<BroadcastResult> {
         let BroadcastConfig {
             chain_id,
             poll_attempts,
@@ -707,6 +727,14 @@ impl SignatureCeremony {
             }
         }
 
+        // K6: the endpoint must be the network this build targets before anything is read for
+        // or signed into the transaction. A same-chain-id network with another genesis would
+        // accept the signature, so the block-0 hash is what is checked.
+        if let Some(expected) = gate {
+            rpc.verify_network(expected)
+                .map_err(|e| CeremonyError::Broadcast(format!("{e}; nothing was signed")))?;
+        }
+
         // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
         // `from` the dApp names sources the pending nonce; absent a `from` we
         // cannot fetch a nonce, so the dApp must have supplied one.
@@ -735,7 +763,7 @@ impl SignatureCeremony {
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
         let tx_hash = rpc
-            .send_raw_transaction(&signed.raw)
+            .send_raw_transaction_gated(&signed.raw, gate)
             .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
         let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
         let mined = match receipt {
@@ -979,6 +1007,13 @@ impl SignatureCeremony {
         clock: &dyn Fn() -> u64,
     ) -> BudgetedOutcome {
         use crate::web_budget::{FallThrough, RecordStatus, SiweEvalInput};
+        // K6: the same network gate the signer applies, checked before the budget is evaluated so
+        // a refused sign-in reserves nothing and uses no budget. `sign_personal` checks it again.
+        if let Err(e) =
+            crate::rpc::check_wallet_signing(wallet::personal_message_scope(req.message.as_bytes()))
+        {
+            return self.siwe_fall_through(&req, FallThrough::Network(e.to_string()));
+        }
         let mut guard = gate.lock();
         let now = clock();
         let wallet_addr = wallet::address(vault).ok().map(|w| w.address);
@@ -1024,10 +1059,14 @@ impl SignatureCeremony {
                     origin: plan.origin,
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 guard.close(record_id, RecordStatus::NotSigned);
                 drop(guard);
-                self.siwe_fall_through(&req, FallThrough::SignerUnavailable)
+                let why = match e {
+                    WalletError::WrongNetwork(m) => FallThrough::Network(m),
+                    _ => FallThrough::SignerUnavailable,
+                };
+                self.siwe_fall_through(&req, why)
             }
         }
     }

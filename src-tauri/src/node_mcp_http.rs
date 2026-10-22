@@ -651,11 +651,12 @@ pub fn decode_header_value(v: &str) -> Option<String> {
 /// spaces and does not look like the sentinel, else the Base64 sentinel form.
 pub fn encode_header_value(v: &str) -> String {
     use base64::Engine as _;
+    let looks_like_sentinel = v.starts_with(B64_PREFIX) && v.ends_with(B64_SUFFIX);
     let plain = !v.is_empty()
         && v.chars().all(|c| c.is_ascii_graphic() || c == ' ')
         && !v.starts_with(' ')
         && !v.ends_with(' ')
-        && !(v.starts_with(B64_PREFIX) && v.ends_with(B64_SUFFIX));
+        && !looks_like_sentinel;
     if plain {
         v.to_string()
     } else {

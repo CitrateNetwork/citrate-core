@@ -1,0 +1,44 @@
+{
+  "_comment": "The network profiles this build knows (K6 network switch). ONE source for chain id, genesis, node network, RPC, explorer, faucet, bootnodes and address book, read by the Rust side (src-tauri/src/network_profile.rs) and the webview (src/network/profile.ts). `active` is the network this build targets. A value that is not known yet is null and named in `pending` with what sets it; it is never a placeholder. A profile with any null field is not ready, and the app refuses to start a node or sign against it.",
+  "active": "alpha-r1005",
+  "profiles": {
+    "alpha-r1005": {
+      "label": "Citrate alpha network (r1005 genesis)",
+      "chainId": 40204,
+      "genesisHash": "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1",
+      "nodeNetwork": "testnet",
+      "rpcUrl": "https://rpc.citrate.ai",
+      "explorerUrl": "https://explorer.citrate.ai",
+      "faucetUrl": "https://faucet.citrate.ai",
+      "bootnodes": [
+        "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
+        "noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303",
+        "noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303",
+        "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303"
+      ],
+      "addressBook": "addresses/40204.json",
+      "pending": {}
+    },
+    "genesis-2026-12": {
+      "label": "Citrate network (genesis 2026-12-01)",
+      "chainId": null,
+      "genesisHash": null,
+      "nodeNetwork": null,
+      "rpcUrl": null,
+      "explorerUrl": null,
+      "faucetUrl": null,
+      "bootnodes": null,
+      "addressBook": null,
+      "pending": {
+        "chainId": "owner decision D1 in the C2 genesis spec (recommended: keep 40204)",
+        "genesisHash": "recorded at the genesis cut",
+        "nodeNetwork": "the explicit genesis profile name from chain work item G1 (C2 decision D10)",
+        "rpcUrl": "chain team, with the fleet for the new genesis",
+        "explorerUrl": "chain team, with the explorer reindex for the new genesis",
+        "faucetUrl": "chain team, faucet policy D6",
+        "bootnodes": "chain team, from the bootnodes of the new genesis fleet (Join 7)",
+        "addressBook": "the address book generated after the genesis contract deploy (frozen at rehearsal 1)"
+      }
+    }
+  }
+}

@@ -883,6 +883,7 @@ fn append_crash_record(path: &std::path::Path, record: &CrashRecord) {
 /// in the dependency tree (via tauri/tokio), so this adds no new crate. A failure
 /// (e.g. the process already reaped) is ignored — the caller re-checks liveness.
 #[cfg(unix)]
+#[allow(unsafe_code)] // Reviewed (K6): FFI call only, see SAFETY below.
 fn signal_pid(pid: u32, signal: i32) {
     // SAFETY: `kill(2)` with a pid and a signal number is a well-defined libc
     // call with no memory effects. A stale pid returns ESRCH which we ignore.
@@ -894,6 +895,7 @@ fn signal_pid(pid: u32, signal: i32) {
 /// Whether `pid` is still alive on Unix (signal 0 = existence probe, sends no
 /// signal). Used to confirm SIGTERM took effect before the grace timeout.
 #[cfg(unix)]
+#[allow(unsafe_code)] // Reviewed (K6): FFI call only, see SAFETY below.
 fn pid_alive(pid: u32) -> bool {
     // SAFETY: `kill(pid, 0)` performs the permission/existence check without
     // delivering a signal. Returns 0 if the process exists and we may signal it.

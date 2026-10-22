@@ -297,3 +297,268 @@ fn redirect_case(status: &'static str) {
     assert_eq!(hits.load(Ordering::SeqCst), 0, "{status}: the redirect was followed");
     assert!(r.is_err(), "{status}: a redirect is an error, not an answer: {r:?}");
 }
+
+// ---------------------------------------------------------------------------
+// K6 network gate: chain id + block-0 hash before anything is signed or sent.
+// ---------------------------------------------------------------------------
+
+const GATE_GENESIS: &str = "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1";
+const OTHER_GENESIS: &str = "0x2222222222222222222222222222222222222222222222222222222222222222";
+
+fn expected(chain_id: Option<u64>, genesis: Option<&str>) -> ExpectedNetwork {
+    ExpectedNetwork {
+        name: "test-net".into(),
+        chain_id,
+        genesis_hash: genesis.map(str::to_string),
+    }
+}
+
+fn block0(hash: &str) -> Value {
+    ok_result(serde_json::json!({ "number": "0x0", "hash": hash }))
+}
+
+#[test]
+fn verify_network_passes_on_matching_chain_id_and_genesis() {
+    let mock = MockTransport::new(vec![
+        ok_result(Value::String("0x9d0c".into())), // 40204
+        block0(&GATE_GENESIS.to_ascii_uppercase().replace("0X", "0x")),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    client
+        .verify_network(&expected(Some(40204), Some(GATE_GENESIS)))
+        .expect("same chain id and block 0");
+    let reqs = client.transport.requests();
+    assert_eq!(reqs[0]["method"], "eth_chainId");
+    assert_eq!(reqs[1]["method"], "eth_getBlockByNumber");
+    assert_eq!(reqs[1]["params"][0], "0x0");
+    assert_eq!(reqs[1]["params"][1], false);
+}
+
+/// The genesis-day case: same chain id 40204, different block 0. EIP-155 alone would let the
+/// signature through; the gate refuses.
+#[test]
+fn verify_network_refuses_a_same_chain_id_network_with_another_genesis() {
+    let mock = MockTransport::new(vec![
+        ok_result(Value::String("0x9d0c".into())),
+        block0(OTHER_GENESIS),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let err = client
+        .verify_network(&expected(Some(40204), Some(GATE_GENESIS)))
+        .expect_err("another genesis");
+    match err {
+        RpcError::WrongNetwork(m) => {
+            assert!(m.contains(OTHER_GENESIS) && m.contains(GATE_GENESIS), "{m}")
+        }
+        other => panic!("expected WrongNetwork, got {other:?}"),
+    }
+}
+
+#[test]
+fn verify_network_refuses_another_chain_id_without_reading_block_0() {
+    let mock = MockTransport::new(vec![ok_result(Value::String("0x1".into()))]);
+    let client = RpcClient::with_transport(mock);
+    let err = client
+        .verify_network(&expected(Some(40204), Some(GATE_GENESIS)))
+        .expect_err("chain 1");
+    assert!(matches!(err, RpcError::WrongNetwork(_)), "{err:?}");
+    assert_eq!(client.transport.requests().len(), 1);
+}
+
+/// A build whose network values are not set refuses before touching the endpoint.
+#[test]
+fn verify_network_fails_closed_when_values_are_not_set() {
+    for (id, g) in [
+        (None, Some(GATE_GENESIS)),
+        (Some(40204), None),
+        (None, None),
+        // A zero or malformed hash is not a value; it is refused like an unset one.
+        (
+            Some(40204),
+            Some("0x0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+        (Some(40204), Some("0x1234")),
+    ] {
+        let mock = MockTransport::new(vec![
+            ok_result(Value::String("0x9d0c".into())),
+            block0(GATE_GENESIS),
+        ]);
+        let client = RpcClient::with_transport(mock);
+        let err = client
+            .verify_network(&expected(id, g))
+            .expect_err("not set must refuse");
+        assert!(matches!(err, RpcError::WrongNetwork(_)), "{err:?}");
+        assert!(
+            client.transport.requests().is_empty(),
+            "an unset gate refuses without any RPC call"
+        );
+    }
+}
+
+/// An endpoint that cannot be read is not verified: refuse (fail closed), never assume.
+#[test]
+fn verify_network_fails_closed_when_the_endpoint_cannot_be_read() {
+    let mock = MockTransport::new(vec![]);
+    let client = RpcClient::with_transport(mock);
+    assert!(client
+        .verify_network(&expected(Some(40204), Some(GATE_GENESIS)))
+        .is_err());
+    let mock = MockTransport::new(vec![
+        ok_result(Value::String("0x9d0c".into())),
+        ok_result(Value::Null),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    assert!(matches!(
+        client.verify_network(&expected(Some(40204), Some(GATE_GENESIS))),
+        Err(RpcError::MissingField(_))
+    ));
+}
+
+#[test]
+fn gated_send_sends_nothing_to_a_mismatched_network() {
+    let mock = MockTransport::new(vec![
+        ok_result(Value::String("0x9d0c".into())),
+        block0(OTHER_GENESIS),
+        ok_result(Value::String("0xhash".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = expected(Some(40204), Some(GATE_GENESIS));
+    assert!(client
+        .send_raw_transaction_gated(&[0xde, 0xad], Some(&gate))
+        .is_err());
+    assert!(
+        client
+            .transport
+            .requests()
+            .iter()
+            .all(|r| r["method"] != "eth_sendRawTransaction"),
+        "nothing may be sent to the wrong network"
+    );
+}
+
+#[test]
+fn gated_send_sends_after_the_network_matches() {
+    let mock = MockTransport::new(vec![
+        ok_result(Value::String("0x9d0c".into())),
+        block0(GATE_GENESIS),
+        ok_result(Value::String("0xhash".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = expected(Some(40204), Some(GATE_GENESIS));
+    let h = client
+        .send_raw_transaction_gated(&[0xde, 0xad], Some(&gate))
+        .expect("sent");
+    assert_eq!(h, "0xhash");
+    let reqs = client.transport.requests();
+    assert_eq!(reqs[2]["method"], "eth_sendRawTransaction");
+    assert_eq!(reqs[2]["params"][0], "0xdead");
+}
+
+/// No gate installed in this test process: the plain send is unchanged (other apps on this kit
+/// and every existing test keep their behaviour).
+#[test]
+fn ungated_send_is_unchanged_without_an_installed_gate() {
+    assert!(network_gate().is_none(), "tests never install the gate");
+    let mock = MockTransport::new(vec![ok_result(Value::String("0xhash".into()))]);
+    let client = RpcClient::with_transport(mock);
+    assert_eq!(
+        client.send_raw_transaction(&[0x01]).expect("sent"),
+        "0xhash"
+    );
+    assert_eq!(client.transport.requests().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// K6 invariant P3: no RPC request at all while the network is not set.
+// ---------------------------------------------------------------------------
+
+/// One loopback HTTP listener that answers a single JSON-RPC request; returns its URL and
+/// a probe that reports whether a connection ever arrived.
+fn one_shot_rpc() -> (String, impl FnOnce() -> bool) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", l.local_addr().unwrap());
+    l.set_nonblocking(true).unwrap();
+    let probe = move || {
+        // A connection made by the client is in the accept queue by the time call() returned.
+        for _ in 0..20 {
+            match l.accept() {
+                Ok((mut s, _)) => {
+                    s.set_nonblocking(false).unwrap();
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf);
+                    let body = r#"{"jsonrpc":"2.0","id":1,"result":"0x9d0c"}"#;
+                    let _ = s.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                    return true;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+        false
+    };
+    (url, probe)
+}
+
+#[test]
+fn p3_no_rpc_request_is_made_while_the_network_is_not_set() {
+    let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]});
+    for not_set in [
+        expected(None, None),
+        expected(Some(40204), None),
+        expected(None, Some(GATE_GENESIS)),
+        expected(Some(0), Some(GATE_GENESIS)),
+        expected(Some(40204), Some("0x00")),
+    ] {
+        let (url, connected) = one_shot_rpc();
+        let r = with_added_network_gate(not_set.clone(), || HttpTransport::new(url).call(req.clone()));
+        assert!(
+            matches!(&r, Err(RpcError::WrongNetwork(m)) if m.contains("no RPC request")),
+            "{not_set:?}: {r:?}"
+        );
+        assert!(!connected(), "{not_set:?}: no connection may be made");
+        // The client-level reads refuse the same way.
+        let (url, connected) = one_shot_rpc();
+        let client = RpcClient::with_transport(HttpTransport::new(url));
+        let r = with_added_network_gate(not_set.clone(), || client.block_number());
+        assert!(matches!(r, Err(RpcError::WrongNetwork(_))), "{r:?}");
+        assert!(!connected());
+    }
+}
+
+#[test]
+fn p3_rpc_is_made_when_the_network_is_set_and_without_any_gate() {
+    let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]});
+    for gate in [Some(expected(Some(40204), Some(GATE_GENESIS))), None] {
+        let (url, connected) = one_shot_rpc();
+        let server = std::thread::spawn(connected);
+        let t = HttpTransport::new(url);
+        let r = match &gate {
+            Some(g) => with_added_network_gate(g.clone(), || t.call(req.clone())),
+            None => t.call(req.clone()),
+        };
+        assert!(server.join().unwrap(), "{gate:?}: the request reached the endpoint");
+        assert_eq!(r.expect("answered")["result"], "0x9d0c", "{gate:?}");
+    }
+}
+
+#[test]
+fn p3_check_rpc_allowed_follows_the_gate() {
+    assert!(check_rpc_allowed().is_ok(), "no gate installed in tests");
+    assert!(with_added_network_gate(expected(None, None), check_rpc_allowed).is_err());
+    assert!(
+        with_added_network_gate(expected(Some(40204), Some(GATE_GENESIS)), check_rpc_allowed)
+            .is_ok()
+    );
+    // An added gate can only tighten: a set gate inside a not-set one still refuses.
+    let r = with_added_network_gate(expected(None, None), || {
+        with_added_network_gate(expected(Some(40204), Some(GATE_GENESIS)), check_rpc_allowed)
+    });
+    assert!(r.is_err());
+}
