@@ -1167,3 +1167,94 @@ fn tripwire_every_model_delete_goes_through_the_shared_operation() {
         }
     }
 }
+
+// ---- Codex P2 on #356 at 175c9ce: a model record owns only the bytes it installed ----------
+
+/// Put a different verified model at `file` the way the Models screen does (its own bytes, its
+/// own pinned hash, verified by `ModelManager`).
+fn replace_model_outside_the_store(fx: &Fx, file: &str, body: &[u8]) {
+    std::fs::write(fx.models.join(file), body).expect("bytes");
+    crate::model::ModelManager::new(
+        fx.models.clone(),
+        Box::new(MemTransport(Vec::new())),
+        sha(body),
+        body.len() as u64,
+    )
+    .with_file(file.to_string())
+    .verify()
+    .expect("the replacement verifies against its own hash");
+    assert!(crate::model::is_file_ready(&fx.models, file));
+}
+
+/// Store install A, delete it in Models, then a different model B lands under the same file name.
+fn replaced_model(tag: &str, b: &[u8]) -> Fx {
+    let fx = Fx::standard(tag);
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    fx.fx_install(&st.stage_id, 0).expect("install");
+    crate::model_delete::delete_and_forget(&fx.models, None, "tiny-model.gguf", &Usage(None), &fx.serve)
+        .expect("deleted in Models");
+    replace_model_outside_the_store(&fx, "tiny-model.gguf", b);
+    fx
+}
+
+#[test]
+fn a_replacement_model_under_the_same_name_is_not_reported_or_removed_as_the_store_install() {
+    // Same size, one byte different (a size check alone would not tell them apart), and a
+    // different size.
+    let mut same_size = model_bytes();
+    same_size[20] = 9;
+    let mut longer = model_bytes();
+    longer.extend_from_slice(b"more");
+    for (tag, b) in [("replaced-same-size", same_size), ("replaced-longer", longer)] {
+        let fx = replaced_model(tag, &b);
+        let listed = fx.fx_installed();
+        assert_eq!(listed.len(), 1, "{tag}");
+        assert_eq!(listed[0].state, "missing", "{tag}: B is not the Store's install");
+        fx.fx_remove("tiny-model", &Usage(None)).expect("the stale record is removable");
+        assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).expect("B kept"), b, "{tag}");
+        assert!(crate::model::is_file_ready(&fx.models, "tiny-model.gguf"), "{tag}: B still verified");
+        assert!(read_store_file(&fx.root).expect("state").installs.is_empty(), "{tag}: only the record went");
+    }
+}
+
+#[test]
+fn a_pending_record_never_removes_a_verified_replacement() {
+    let mut other = model_bytes();
+    other[30] = 3;
+    let fx = replaced_model("replaced-pending", &other);
+    update_installs(&fx.root, |i| {
+        for r in i.iter_mut() {
+            r.pending = true;
+        }
+    })
+    .expect("pending");
+    assert_eq!(fx.fx_installed()[0].state, "missing");
+    fx.fx_remove("tiny-model", &Usage(None)).expect("removable");
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).expect("kept"), other);
+}
+
+#[test]
+fn a_model_whose_verified_flag_names_no_hash_is_not_claimed_by_the_store() {
+    // A status file that records only `verified` (no hash) says nothing about which bytes were
+    // verified, so the Store does not claim the file: it shows missing and Remove keeps it.
+    let fx = Fx::standard("no-hash");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    fx.fx_install(&st.stage_id, 0).expect("install");
+    std::fs::write(fx.models.join("tiny-model.gguf.status.json"), br#"{"verified":true}"#).expect("status");
+    assert!(crate::model::is_file_ready(&fx.models, "tiny-model.gguf"));
+    assert_eq!(fx.fx_installed()[0].state, "missing");
+    fx.fx_remove("tiny-model", &Usage(None)).expect("removable");
+    assert!(fx.models.join("tiny-model.gguf").exists(), "an unclaimed file is never deleted");
+}
+
+#[test]
+fn the_store_install_itself_is_still_reported_and_removed() {
+    // The same bytes the listing pins, verified again (e.g. re-downloaded in Models): that is the
+    // content the Store installed, so it is reported and removable as before.
+    let fx = replaced_model("replaced-identical", &model_bytes());
+    assert_eq!(fx.fx_installed()[0].state, "not_selected");
+    fx.fx_remove("tiny-model", &Usage(None)).expect("remove");
+    assert!(!fx.models.join("tiny-model.gguf").exists());
+}
