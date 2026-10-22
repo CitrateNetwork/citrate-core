@@ -31,7 +31,7 @@
 //!
 //! Data sources (Rule 7): the citrate.ai join service (citrate-landing `src/app/api/join/*`, rows
 //! in the landing Postgres) for mint / attach / resolve / revoke / list; `GET /api/join/jwks` for the
-//! verify keys, accepted only under a pinned kid; the relay invite comes from the caller
+//! verify keys, accepted only when kid and key material equal a pin; the relay invite comes from the caller
 //! (`group_invite_create` in citrate-core).
 
 use std::collections::HashMap;
@@ -115,15 +115,15 @@ impl PinnedKey {
     /// Whether a fetched JWK is this pinned key: same kid, an Ed25519 OKP key, EdDSA if an alg is
     /// given, and the same public key bytes.
     pub fn matches(&self, jwk: &Jwk) -> bool {
-        // RED stub: the old behaviour, the key id alone.
         jwk.kid.as_deref() == Some(self.kid.as_str())
             && jwk.kty == "OKP"
             && jwk.crv.as_deref() == Some("Ed25519")
+            && jwk.alg.as_deref().is_none_or(|a| a == "EdDSA")
             && jwk
                 .x
                 .as_deref()
                 .and_then(|x| URL_SAFE_NO_PAD.decode(x).ok())
-                .is_some_and(|b| b.len() == 32)
+                .is_some_and(|b| b.as_slice() == self.x)
     }
 }
 
@@ -745,17 +745,19 @@ pub fn verify_resolve(
         .iter()
         .find(|p| p.kid == kid)
         .ok_or(JoinError::Signature)?;
-    // RED stub: the old behaviour, the first served key under the kid, its own material.
-    let jwk = jwks
+    // The served set must carry this kid, and every key it serves under the kid must be the pinned
+    // key: other material under a pinned name means the set can't be trusted.
+    let mut served = jwks
         .keys
         .iter()
-        .find(|k| k.kid.as_deref() == Some(kid))
-        .ok_or(JoinError::Signature)?;
-    if !pin.matches(jwk) || jwk.alg.as_deref().is_some_and(|a| a != "EdDSA") {
+        .filter(|k| k.kid.as_deref() == Some(kid))
+        .peekable();
+    if served.peek().is_none() || !served.all(|k| pin.matches(k)) {
         return Err(JoinError::Signature);
     }
-    let x = jwk.x.as_deref().ok_or(JoinError::Signature)?;
-    let dkey = DecodingKey::from_ed_components(x).map_err(|_| JoinError::Signature)?;
+    // Verify with the pinned bytes, never the fetched ones.
+    let dkey = DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(pin.x))
+        .map_err(|_| JoinError::Signature)?;
     let mut val = Validation::new(Algorithm::EdDSA);
     val.set_issuer(&[JOIN_ISSUER]);
     val.sub = Some(expected_code.to_string());
@@ -1285,6 +1287,17 @@ impl JoinClient {
         let url = format!("{}/jwks", self.cfg.api_base);
         let body = self.http.get(&url, None).map_err(map_http_error)?;
         let mut jwks: Jwks = serde_json::from_str(&body).map_err(|_| JoinError::BadResponse)?;
+        // Other material under a pinned kid (alone or next to the real key) makes the whole set
+        // untrustworthy: refuse it before a resolve is spent.
+        let conflicting = jwks.keys.iter().any(|k| {
+            self.cfg
+                .pinned
+                .iter()
+                .any(|p| k.kid.as_deref() == Some(p.kid.as_str()) && !p.matches(k))
+        });
+        if conflicting {
+            return Err(JoinError::Signature);
+        }
         jwks.keys
             .retain(|k| self.cfg.pinned.iter().any(|p| p.matches(k)));
         // No usable pinned key: nothing could verify a resolve, so don't spend one.
