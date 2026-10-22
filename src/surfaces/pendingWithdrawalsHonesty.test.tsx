@@ -196,6 +196,42 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     expect(read).toHaveBeenCalledTimes(3);
   });
 
+  // #371 Codex @31c065f: the store keeps ONE retry timer. A fresh read (a Wallet visit after the
+  // last read finished) replaces the pending timer instead of starting a second chain, and a
+  // confirmed read leaves no timer behind.
+  it("sequential refreshes keep one retry chain, and a confirmed read ends it", async () => {
+    vi.useFakeTimers();
+    const unconfirmed = { withdrawals: [], confirmed: false, complete: true, note: "the RPC does not serve citrate_getLogs" };
+    const read = vi.spyOn(bridge.wallet, "pendingWithdrawals").mockResolvedValue(unconfirmed as never);
+    await store.refreshPendingWithdrawals(); // t=0: a retry at 30 s
+    await vi.advanceTimersByTimeAsync(5_000);
+    await store.refreshPendingWithdrawals(); // t=5 s (Wallet opened again): the retry moves to 35 s
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(PENDING_CATCHUP_RETRY_MS + 1_000); // t=36 s
+    expect(read).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(PENDING_CATCHUP_RETRY_MS); // t=66 s
+    expect(read).toHaveBeenCalledTimes(4);
+    // A refresh that reads confirmed ends the chain: nothing is read on a timer after it.
+    read.mockResolvedValue({ withdrawals: [], confirmed: true, complete: true, note: null } as never);
+    await store.refreshPendingWithdrawals();
+    expect(read).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(5 * PENDING_CATCHUP_RETRY_MS);
+    expect(read).toHaveBeenCalledTimes(5);
+  });
+
+  it("a terminal failure after a scheduled retry leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .spyOn(bridge.wallet, "pendingWithdrawals")
+      .mockResolvedValueOnce({ withdrawals: [], confirmed: false, complete: false, note: "reading chain history" } as never)
+      .mockRejectedValue({ kind: "failed", message: "vault locked" });
+    await store.refreshPendingWithdrawals(); // a retry at 2 s
+    await store.refreshPendingWithdrawals(); // fails for good: no retry
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(5 * PENDING_CATCHUP_RETRY_MS);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
   // TRIPWIRE: the pending-withdrawals read in the store never decides on the text of an error.
   it("tripwire: the store's pending-withdrawals read does not match error text", () => {
     const src = readFileSync(join(__dirname, "../shell/store.ts"), "utf8");
@@ -208,6 +244,20 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     expect(textMatches('if (msg.includes("still reading chain history")) {}')).not.toEqual([]);
     expect(textMatches("if (/indexing/.test(msg)) {}")).not.toEqual([]);
   });
+
+  // TRIPWIRE (#371 Codex @31c065f): the read schedules its retry only through the one timer slot,
+  // which is cleared before it is set and when a fresh read starts.
+  it("tripwire: pending-withdrawal retries go through one timer slot", () => {
+    const src = readFileSync(join(__dirname, "../shell/store.ts"), "utf8");
+    expect(retryTimerViolations(src)).toEqual([]);
+    // Negative control: the 31c065f shape.
+    const old = "async refreshPendingWithdrawals() {\n  }\n  private async readPendingWithdrawals() {\n    setTimeout(() => void this.refreshPendingWithdrawals(), 2_000);\n  }\n";
+    expect(retryTimerViolations(old)).toEqual([
+      "readPendingWithdrawals sets its own timer",
+      "schedulePendingRetry does not replace the pending timer",
+      "a fresh read does not clear the pending timer",
+    ]);
+  });
 });
 
 /** Ways of deciding on the words of a message. */
@@ -215,4 +265,21 @@ function textMatches(code: string): string[] {
   return [/\.includes\(/, /\.startsWith\(/, /\.endsWith\(/, /\.match\(/, /\.test\(/, /\.indexOf\(/, /\.search\(/]
     .filter((re) => re.test(code))
     .map(String);
+}
+
+/** Where the store's pending-withdrawals retries escape the single timer slot. */
+function retryTimerViolations(src: string): string[] {
+  const body = (name: string) => {
+    const start = src.indexOf(name);
+    return start < 0 ? null : src.slice(start, src.indexOf("\n  }\n", start));
+  };
+  const bad: string[] = [];
+  const read = body("private async readPendingWithdrawals(");
+  if (read === null) bad.push("no readPendingWithdrawals");
+  else if (read.includes("setTimeout(")) bad.push("readPendingWithdrawals sets its own timer");
+  const schedule = body("private schedulePendingRetry(");
+  if (schedule === null || !schedule.includes("clearTimeout(")) bad.push("schedulePendingRetry does not replace the pending timer");
+  const refresh = body("async refreshPendingWithdrawals(");
+  if (refresh === null || !refresh.includes("clearPendingRetry()")) bad.push("a fresh read does not clear the pending timer");
+  return bad;
 }
