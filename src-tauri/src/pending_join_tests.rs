@@ -53,6 +53,8 @@ impl Keyring for Handle {
 struct Rig {
     kr: Arc<FakeKeyring>,
     clock: Arc<AtomicU64>,
+    /// Every code the store told the join client to forget, in order.
+    forgot: Arc<Mutex<Vec<String>>>,
     store: PendingJoinStore,
 }
 
@@ -60,11 +62,19 @@ fn rig_with(kr: FakeKeyring) -> Rig {
     let kr = Arc::new(kr);
     let clock = Arc::new(AtomicU64::new(T0));
     let c = clock.clone();
+    let forgot = Arc::new(Mutex::new(Vec::new()));
+    let f = forgot.clone();
     let store = PendingJoinStore::new(
         Box::new(Handle(kr.clone())),
         Box::new(move || c.load(Ordering::SeqCst)),
+        Box::new(move |code: &str| f.lock().expect("lock").push(code.to_string())),
     );
-    Rig { kr, clock, store }
+    Rig {
+        kr,
+        clock,
+        forgot,
+        store,
+    }
 }
 
 fn rig() -> Rig {
@@ -277,7 +287,14 @@ fn pending_join_commands_are_registered_and_allowed_for_the_main_window() {
             "{cmd} in main-window.toml"
         );
     }
-    assert!(lib.contains("app.manage(pending_join::build_pending_join_state());"));
+    assert!(lib.contains(
+        "app.manage(pending_join::build_pending_join_state(app.handle().clone()));"
+    ));
+    // The production hook drops the join client's opened invite for the code.
+    let src = include_str!("pending_join.rs");
+    let build = &src[src.find("pub fn build_pending_join_state").expect("fn")..];
+    let build = &build[..build.find("\n}\n").expect("end")];
+    assert!(build.contains("join.0.forget_opened(code)"), "{build}");
 }
 
 #[test]
@@ -479,4 +496,92 @@ fn a_well_formed_slot_with_a_bad_link_is_dropped() {
         assert!(r.store.link().is_none(), "{bad:?}");
         assert!(slot(&r).is_none(), "{bad:?}");
     }
+}
+
+fn forgot(r: &Rig) -> Vec<String> {
+    r.forgot.lock().expect("lock").clone()
+}
+
+/// Cancel after Review drops the opened relay invite for that code, so `join_redeem` can't use it.
+#[test]
+fn cancel_forgets_the_opened_invite_for_the_held_code() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    r.store
+        .resolve_held(|_| Ok(view_for(EXP_T0_PLUS_60)))
+        .expect("resolved");
+    assert!(forgot(&r).is_empty(), "a current answer forgets nothing");
+    r.store.clear().expect("clear");
+    assert_eq!(forgot(&r), vec![CODE.to_string()]);
+}
+
+/// Cancel during a keyring outage still drops the opened invite (the code is known in memory).
+#[test]
+fn cancel_during_a_keyring_outage_still_forgets_the_opened_invite() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    r.store
+        .resolve_held(|_| Ok(view_for(EXP_T0_PLUS_60)))
+        .expect("resolved");
+    r.kr.dead.store(true, Ordering::SeqCst);
+    assert!(r.store.clear().is_err());
+    assert_eq!(forgot(&r), vec![CODE.to_string()]);
+}
+
+/// A different invite replacing the held one drops the old code's opened invite; the same link
+/// again keeps it.
+#[test]
+fn replacing_the_invite_forgets_the_old_code_only_when_it_changes() {
+    let r = rig();
+    r.store.set(&link()).expect("set A");
+    r.store.set(&link()).expect("set A again");
+    assert!(forgot(&r).is_empty());
+    r.store.set("citrate://join/Zz9yX8wv").expect("set B");
+    assert_eq!(forgot(&r), vec![CODE.to_string()]);
+}
+
+/// Cancel while Review is in flight: the resolve opens the invite AFTER the cancel ran, so the
+/// stale answer must drop it again.
+#[test]
+fn a_stale_resolve_forgets_what_it_opened() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    let out = r.store.resolve_held(|_| {
+        r.store.clear().expect("clear");
+        // The join client opens the envelope after this point.
+        r.forgot.lock().expect("lock").push("<opened>".to_string());
+        Ok(view_for(EXP_T0_PLUS_60))
+    });
+    assert!(out.is_err());
+    let log = forgot(&r);
+    assert_eq!(log.last().map(String::as_str), Some(CODE), "{log:?}");
+}
+
+/// A stale answer for the code that is held again (the same link re-pasted meanwhile) keeps the
+/// opened invite: it is for the invite that is waiting.
+#[test]
+fn a_stale_resolve_for_the_same_code_keeps_it() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    let out = r.store.resolve_held(|_| {
+        r.store.set(&link()).expect("set again");
+        Ok(view_for(EXP_T0_PLUS_60))
+    });
+    assert!(out.is_err());
+    assert!(forgot(&r).is_empty());
+}
+
+/// NotFound and expiry wipe the hold, and drop the opened invite with it.
+#[test]
+fn not_found_and_expiry_forget_the_opened_invite() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    let _ = r.store.resolve_held(|_| Err(JoinError::NotFound));
+    assert_eq!(forgot(&r), vec![CODE.to_string()]);
+
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    r.clock.store(T0 + PENDING_JOIN_TTL_SECS, Ordering::SeqCst);
+    assert!(r.store.get().is_none());
+    assert_eq!(forgot(&r), vec![CODE.to_string()]);
 }

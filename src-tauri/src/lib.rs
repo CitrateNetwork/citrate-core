@@ -337,7 +337,7 @@ pub fn run() {
             // v2 invite links: the join client (pending attaches + opened invites, memory only).
             app.manage(join::build_join_state());
             // The pending invite (code + link key) waiting for the member's Join: keyring only.
-            app.manage(pending_join::build_pending_join_state());
+            app.manage(pending_join::build_pending_join_state(app.handle().clone()));
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated

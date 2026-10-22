@@ -78,6 +78,11 @@ pub struct PendingJoinView {
 pub struct PendingJoinStore {
     keyring: Box<dyn Keyring>,
     now: Box<dyn Fn() -> u64 + Send + Sync>,
+    /// Called with a code whose invite left the hold (cancelled, replaced by another code, expired,
+    /// reported gone, or answered after it changed), so the join client drops the relay invite it
+    /// opened for that code at Review and `join_redeem` can't use it.
+    #[allow(dead_code)] // RED stub: stored, not called yet.
+    forget_opened: Box<dyn Fn(&str) + Send + Sync>,
     /// Every read and write of the hold runs under this lock, so a set, a clear and the result of
     /// a resolve never interleave half-way. The resolve's network call runs outside it.
     inner: Mutex<Inner>,
@@ -109,10 +114,15 @@ const CHANGED: &str =
     "join: the waiting invite changed while it was being checked, review it again";
 
 impl PendingJoinStore {
-    pub fn new(keyring: Box<dyn Keyring>, now: Box<dyn Fn() -> u64 + Send + Sync>) -> Self {
+    pub fn new(
+        keyring: Box<dyn Keyring>,
+        now: Box<dyn Fn() -> u64 + Send + Sync>,
+        forget_opened: Box<dyn Fn(&str) + Send + Sync>,
+    ) -> Self {
         PendingJoinStore {
             keyring,
             now,
+            forget_opened,
             inner: Mutex::new(Inner::default()),
         }
     }
@@ -297,11 +307,17 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Production store: the OS keyring namespace the comms key lives in, and the wall clock.
-pub fn build_pending_join_state() -> PendingJoinState {
+/// Production store: the OS keyring namespace the comms key lives in, the wall clock, and the
+/// app's join client (managed as [`crate::join::JoinState`]) for dropping opened invites.
+pub fn build_pending_join_state(app: tauri::AppHandle) -> PendingJoinState {
     PendingJoinState(PendingJoinStore::new(
         Box::new(crate::custody::OsKeyring::legacy()),
         Box::new(now_secs),
+        Box::new(move |code: &str| {
+            if let Some(join) = app.try_state::<crate::join::JoinState>() {
+                join.0.forget_opened(code);
+            }
+        }),
     ))
 }
 

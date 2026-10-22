@@ -256,6 +256,47 @@ describe("v2 invite deep links (task 12)", () => {
     expect(store.state.pendingJoin).toMatchObject({ phase: "waiting" });
   });
 
+  it("a Cancel while the link is still being stored stays cancelled, and Rust clears after the store", async () => {
+    let stored!: (v: PendingJoinView) => void;
+    spies.set.mockImplementationOnce(() => new Promise<PendingJoinView>((res) => (stored = res)));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    const cancel = store.cancelPendingJoin();
+    await flush();
+    expect(spies.clear, "clear waits for the set in flight").not.toHaveBeenCalled();
+    stored(held);
+    await cancel;
+    expect(spies.clear).toHaveBeenCalledTimes(1);
+    expect(spies.set.mock.invocationCallOrder[0]).toBeLessThan(spies.clear.mock.invocationCallOrder[0]);
+    expect(store.state.pendingJoin).toBeNull();
+  });
+
+  it("two links arriving together are stored one after the other, and the later one is shown", async () => {
+    let first!: (v: PendingJoinView) => void;
+    spies.set.mockImplementationOnce(() => new Promise<PendingJoinView>((res) => (first = res)));
+    spies.set.mockResolvedValueOnce({ ...held, hasKey: false });
+    store.handleDeepLink(HTTPS);
+    store.handleDeepLink("citrate://join/Zz9yX8wv");
+    await flush();
+    expect(spies.set, "the second waits for the first").toHaveBeenCalledTimes(1);
+    first(held);
+    await flush();
+    await flush();
+    expect(spies.set).toHaveBeenCalledTimes(2);
+    expect(spies.set.mock.calls.map((c) => c[0])).toEqual([HTTPS, "citrate://join/Zz9yX8wv"]);
+    expect(store.state.pendingJoin).toMatchObject({ phase: "waiting", hasKey: false });
+  });
+
+  it("a malformed link arriving right after a good one leaves the good one shown", async () => {
+    spies.set.mockResolvedValueOnce(held);
+    spies.set.mockRejectedValueOnce(new Error("join: invalid invite request"));
+    store.handleDeepLink(HTTPS);
+    store.handleDeepLink(`citrate://join/${CODE}#short`);
+    await flush();
+    await flush();
+    expect(store.state.pendingJoin).toMatchObject({ phase: "waiting", hasKey: true });
+  });
+
   it("the start-up check doesn't clear an invite that arrived while it ran", async () => {
     let none!: (v: PendingJoinView | null) => void;
     spies.get.mockImplementationOnce(() => new Promise<PendingJoinView | null>((res) => (none = res)));

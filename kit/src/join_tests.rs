@@ -1163,6 +1163,31 @@ fn e2e_mint_attach_resolve_decrypt_equals_the_original_invite() {
     assert!(saw_put);
 }
 
+/// A cancelled (or replaced) pending invite can't be joined from the opened cache: after
+/// `forget_opened`, redeem fails NotFound and the self-admit is never called.
+#[test]
+fn e2e_a_forgotten_opened_invite_cannot_be_redeemed() {
+    let stub = StubJoinService::start();
+    let minted = stub
+        .client()
+        .mint(&FixedBearer(BEARER), &direct_req(), Some(&sample_invite()))
+        .expect("mint");
+    let url = minted.share_url.expect("share url");
+    let invitee = stub.client();
+    assert!(invitee.resolve(&url).expect("resolve").actionable);
+    invitee.forget_opened(&minted.code);
+    let mut called = false;
+    let out = invitee.redeem_opened(&minted.code, |_| {
+        called = true;
+        Ok(())
+    });
+    assert_eq!(out, Err(JoinError::NotFound.to_string()));
+    assert!(!called, "the self-admit never ran");
+    // Forgetting a code that isn't held, or twice, is a no-op.
+    invitee.forget_opened(&minted.code);
+    invitee.forget_opened("Zz9yX8wv");
+}
+
 #[test]
 fn e2e_resolve_limit_and_unknown_revoked_exhausted_are_one_not_found() {
     let stub = StubJoinService::start();
