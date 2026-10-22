@@ -7,7 +7,7 @@
 // pattern as askBeforeGateway.store.test.ts).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const route = { inference: "ask-gateway", gatewayConfigured: true, chatRoute: "ask_first" as "ask_first" | "local_only" };
+const route = { inference: "ask-gateway", gatewayConfigured: true, chatRoute: "ask_first" as "ask_first" | "local_only", statusFails: false };
 const inferToolsMock = vi.fn(async (..._a: unknown[]) => JSON.stringify({ role: "assistant", content: "answer from the gateway" }));
 const inferLocalMock = vi.fn(async (..._a: unknown[]) => "answer from the local model");
 const serveStartMock = vi.fn(async () => {
@@ -23,7 +23,11 @@ vi.mock("../bridge", () => ({
   bridge: {
     mode: "tauri",
     chat: {
-      providerStatus: async () => [{ id: "gateway", configured: route.gatewayConfigured }],
+      providerStatus: async () => {
+        // An unavailable OS keyring or an undecodable saved provider record.
+        if (route.statusFails) throw new Error("provider records unreadable");
+        return [{ id: "gateway", configured: route.gatewayConfigured }];
+      },
       inferenceState: async () => route.inference,
       inferTools: (...a: unknown[]) => inferToolsMock(...a),
       inferLocal: (...a: unknown[]) => inferLocalMock(...a),
@@ -110,6 +114,7 @@ describe("chat route: the store", () => {
     route.inference = "ask-gateway";
     route.gatewayConfigured = true;
     route.chatRoute = "ask_first";
+    route.statusFails = false;
     inferToolsMock.mockClear();
     inferLocalMock.mockClear();
     serveStartMock.mockClear();
@@ -184,6 +189,54 @@ describe("chat route: the store", () => {
       expect(inferLocalMock).not.toHaveBeenCalled();
     });
   }
+
+  // Codex P2 on #372 at 7143b4e: the route is read and kept even when the provider records cannot be read.
+  for (const inference of ["local-only", "demo", "no-model"]) {
+    it(`local_only, provider records unreadable, core reports "${inference}": not sent; no demo reply, no tool run`, async () => {
+      route.chatRoute = "local_only";
+      route.inference = inference;
+      route.statusFails = true;
+      const store = await freshStore();
+      expect(store.state.chatRoute).toBe("local_only");
+      expect(store.provider?.kind).not.toBe("demo");
+      void store.sendChat("what is my balance?");
+      await until(() => store.state.chatStatus === "ready" && agentReplies(store).length === 1);
+      const replies = agentReplies(store);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].error).toContain("Local only");
+      expect(replies[0].text).toBe("");
+      expect(store.state.chatRouteHold).toBeNull();
+      expect(inferToolsMock).not.toHaveBeenCalled();
+      expect(inferLocalMock).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const chatRoute of ["local_only", "ask_first"] as const) {
+    it(`${chatRoute}, provider records unreadable, healthy local model: chat uses the local model`, async () => {
+      route.chatRoute = chatRoute;
+      route.inference = "ready";
+      route.statusFails = true;
+      const store = await freshStore();
+      expect(store.provider?.kind).not.toBe("demo");
+      void store.sendChat("hello");
+      await until(() => store.state.chatStatus === "ready" && agentReplies(store).length === 1);
+      expect(inferLocalMock).toHaveBeenCalledTimes(1);
+      expect(inferToolsMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it("ask_first, provider records unreadable, no local model: nothing remote is offered", async () => {
+    route.chatRoute = "ask_first";
+    route.inference = "local-stopped";
+    route.statusFails = true;
+    const store = await freshStore();
+    void store.sendChat("hello");
+    await until(() => store.state.chatRouteHold?.phase === "ask");
+    expect(store.state.chatRouteHold?.options).toEqual({ restart: true, gateway: false });
+    store.answerLocalModelAsk("gateway");
+    await settle(100);
+    expect(inferToolsMock).not.toHaveBeenCalled();
+  });
 
   it("setChatRoute stores the choice through chat_route_set and re-routes at once", async () => {
     const store = await freshStore();
