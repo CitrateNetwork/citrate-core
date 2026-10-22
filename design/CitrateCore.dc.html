@@ -558,6 +558,9 @@
                 </sc-for>
               </div>
             </sc-if>
+            <sc-if value="{{ askBlockNote }}" hint-placeholder-val="{{ false }}">
+              <span style="font-size:11.5px;line-height:1.5;color:var(--warn);padding:8px 16px 0;border-top:1px solid var(--line-1);">{{ askBlockNote }}</span>
+            </sc-if>
             <div style="display:flex;gap:10px;padding:12px 16px;border-top:1px solid var(--line-1);">
               <input ref="{{ setChatInput }}" class="input" placeholder="Ask Hermes…" onKeyDown="{{ onChatKey }}" style="flex:1;">
               <button class="btn btn-primary" onClick="{{ onSend }}" disabled="{{ chatBusy }}">Send</button>
@@ -879,6 +882,9 @@
               </button>
               <input ref="{{ setJChatInput }}" class="input" placeholder="Speak or type a thought…" onKeyDown="{{ onJChatKey }}" style="flex:1;height:36px;">
             </div>
+            <sc-if value="{{ askBlockNote }}" hint-placeholder-val="{{ false }}">
+              <span style="font-size:11px;line-height:1.5;color:var(--warn);">{{ askBlockNote }}</span>
+            </sc-if>
             <div style="display:flex;gap:8px;">
               <button class="btn btn-primary btn-sm" onClick="{{ onJChatSend }}" disabled="{{ chatBusy }}" style="flex:1;">Send to Hermes</button>
               <button class="btn btn-ghost btn-sm" onClick="{{ onJSaveNote }}">Save note</button>
@@ -1009,6 +1015,13 @@
                   <span style="font-size:14px;font-weight:500;">{{ c.label }}</span>
                   <span style="font-size:12.5px;line-height:1.5;color:var(--tx-2);">{{ c.desc }}</span>
                   <span class="mono" style="font-size:10.5px;color:{{ c.stateColor }};">{{ c.stateText }}</span>
+                  <!-- core #341: saved is not effective. Hermes reads this setting when it starts. -->
+                  <sc-if value="{{ c.pending }}" hint-placeholder-val="{{ false }}">
+                    <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:2px;">
+                      <span style="font-size:12px;line-height:1.5;color:var(--warn);">Saved. Hermes reads this when it starts. {{ c.pending }}</span>
+                      <button class="btn btn-ghost btn-sm" onClick="{{ c.onRestart }}">{{ c.restartLabel }}</button>
+                    </span>
+                  </sc-if>
                 </span>
                 <sc-if value="{{ c.isSeg }}" hint-placeholder-val="{{ false }}">
                   <span style="display:inline-flex;gap:2px;border:1px solid var(--line-2);border-radius:var(--r-1);padding:2px;flex-shrink:0;">
@@ -1023,7 +1036,7 @@
                 <button onClick="{{ c.details }}" class="btn btn-ghost btn-sm" style="flex-shrink:0;">Details ›</button>
               </div>
             </sc-for>
-            <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:12px 18px;">Each switch writes the same setting the old Settings pages wrote. Nothing new is allowed by default: daemons stay off until created, spend stays at zero, terminal stays off.</p>
+            <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:12px 18px;">Each switch writes the setting core already has for it; the routing switch writes chat_route (core #372). Nothing new is allowed by default: daemons stay off until created, spend stays at zero, terminal stays off for new installs (core #372).</p>
           </div>
           </sc-if>
 
@@ -2115,6 +2128,17 @@
           </div>
           </sc-if>
 
+          <!-- Privacy & recovery: core ships it (HUP-S10.5, src/privacy/PrivacySection.tsx); slice 1 lists it unchanged -->
+          <sc-if value="{{ ssPrivacy }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings privacy">
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
+              <span class="eyebrow">Privacy &amp; recovery · unchanged in 0.5.2</span>
+              <span style="font-size:13px;line-height:1.6;color:var(--tx-2);">This section stays as it ships today. Slice 1 does not redraw it.</span>
+              <span style="font-size:12.5px;line-height:1.7;color:var(--tx-2);">· Recovery kit for this device's keys: a phrase sheet or a passphrase file, your choice<br>· Delete my local data: a dry run first, then a typed confirmation<br>· What works offline<br>· Default budget values (read only)</span>
+            </div>
+          </div>
+          </sc-if>
+
           <sc-if value="{{ ssApp }}" hint-placeholder-val="{{ false }}">
           <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings app">
             <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
@@ -2341,8 +2365,23 @@ class Component extends DCLogic {
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem('citrate-core-proto-v3') || 'null'); } catch (e) { saved = null; }
     const base = this.freshState((saved && saved.persona) || 'p1');
-    if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: 'ready' });
+    if (saved) {
+      Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: 'ready' });
+      this.recoverInterruptedRuns(base);
+    }
+    // A reload is an app launch: Hermes starts and reads the saved settings.
+    base.hermesRun = { web: !!base.webSearch, learn: !!base.learnSessions };
     this.state = base;
+  }
+
+  // A run's completion lives in a timer, which a reload loses. A daemon saved mid-run comes back
+  // paused (the state Start is offered from) with the run logged as stopped. Nothing was written.
+  recoverInterruptedRuns(s) {
+    const cut = (s.daemons || []).filter((d) => d.state === 'running');
+    if (!cut.length) return;
+    const now = Date.now();
+    s.daemons = s.daemons.map((d) => (d.state === 'running' ? Object.assign({}, d, { paused: true, state: 'paused', next: 'paused · its last run was stopped', note: 'Stopped: the app closed during a run, so the run did not finish and nothing was written. Start it again when you are ready.', noteColor: 'var(--warn)' }) : d));
+    s.runLog = cut.map((d) => ({ atMs: now, name: d.name, daemonId: d.id, outcome: 'stopped', tokens: 0, src: null })).concat(s.runLog || []);
   }
 
   addr(seed) {
@@ -2464,15 +2503,37 @@ class Component extends DCLogic {
     this.onHash();
   }
   // A location hash -> the state patch that opens it, or null for an unknown route.
+  // Follows the K0 route map (core src/shell/places.ts, docs/nav/FIVE_PLACE_ROUTE_MAP.md): every
+  // 0.5.1 route id and every settings/<id> section opens its new home. Node, Groups and Store are
+  // stubs in slice 1, so their tab and sub-tab segments open the place.
   resolveHash(hash) {
-    // K0 five-place map. 0.5.1 routes keep working as deep links and open their new home.
-    const parts = (hash || '').replace(/^#\//, '').split('/');
-    const LEGACY = { dashboard: ['hermes', 'chat'], agent: ['hermes', 'work'], journal: ['hermes', 'journal'], commissary: ['store'], models: ['store'], storage: ['node'], files: ['node'], comms: ['groups'], people: ['groups'], cluster: ['groups'], train: ['groups'], connections: ['settings'] };
+    const parts = (hash || '').replace(/^#\/?/, '').split('/').filter(Boolean);
+    const LEGACY = { dashboard: ['hermes', 'chat'], agent: ['hermes', 'work'], journal: ['hermes', 'journal'], comms: ['groups'], people: ['groups'], cluster: ['groups'], train: ['groups'], alf: ['groups'], community: ['groups'], files: ['node'], storage: ['node'], commissary: ['store'], models: ['store'], connections: ['settings', 'connections'] };
+    // Settings sections that moved to Hermes › Controls; `hermes` is the depth-1 panel itself.
+    const CONTROLS = { hermes: [1], ai: [2, 'providers'], escalation: [2, 'escalation'], mcp: [2, 'mcp'], web: [2, 'web'], budgets: [2, 'budgets'], terminal: [2, 'terminal'], personas: [2, 'personas'] };
+    const ACCOUNT = ['account', 'connections', 'api', 'keys', 'billing', 'privacy', 'app'];
+    // Controls depths as routes (core #364): details = depth 2, records = depth 3, and a depth-2 section by name.
+    const SECTIONS = { providers: 'providers', escalation: 'escalation', mcp: 'mcp', web: 'web', terminal: 'terminal', budgets: 'budgets', personas: 'personas' };
+    const AUD = ['records', 'spend', 'runs'];
     let [r, t] = parts;
     if (LEGACY[r]) [r, t] = [LEGACY[r][0], t || LEGACY[r][1]];
+    const ctl = (depth, extra) => Object.assign({ route: 'hermes', hTab: 'controls', cDepth: depth, legacy: null }, extra || {});
+    if (r === 'settings' && t) {
+      if (CONTROLS[t]) return ctl(CONTROLS[t][0], CONTROLS[t][1] ? { cSec: CONTROLS[t][1] } : {});
+      if (t === 'node') return { route: 'node', legacy: null }; // Node › Advanced (slice 2)
+      if (ACCOUNT.indexOf(t) >= 0) return { route: 'settings', sSec: t, legacy: null };
+      return null;
+    }
     if (['hermes', 'groups', 'wallet', 'node', 'store', 'settings'].indexOf(r) < 0) return null;
     const u = { route: r, legacy: null };
     if (r === 'hermes' && ['chat', 'journal', 'work', 'learn', 'controls'].indexOf(t) >= 0) u.hTab = t;
+    if (r === 'hermes' && t === 'controls') {
+      const sub = parts[2];
+      if (!sub) u.cDepth = 1;
+      else if (sub === 'details') u.cDepth = 2;
+      else if (SECTIONS[sub]) { u.cDepth = 2; u.cSec = SECTIONS[sub]; }
+      else if (AUD.indexOf(sub) >= 0) { u.cDepth = 3; u.cAud = sub; }
+    }
     return u;
   }
   componentWillUnmount() { clearInterval(this.timer); window.removeEventListener('hashchange', this.onHash); }
@@ -2619,22 +2680,43 @@ class Component extends DCLogic {
   }
 
   // ---------- chat ----------
-  async sendChat(text, opts) {
+  // Returns true when the message was taken (sent, or held for the ask-before-gateway card) and
+  // false when it was refused, so a caller only clears its input for a message that was taken.
+  sendChat(text, opts) {
     text = (text || '').trim();
-    if (!text || this.state.chatStatus !== 'ready' || !this.provider) return;
-    const resumed = !!(opts && opts.via);
-    this._via = resumed ? opts.via : (this.state.routing === 'local' ? 'local' : null);
+    const st = this.state;
+    if (!text || !this.provider) return false;
+    // One turn at a time. While a gateway decision is pending nothing else is sent: a new message
+    // would replace the pending request or change the conversation it resumes into.
+    if (st.askPending) { this.toast(Component.ASK_BLOCK); return false; }
+    if (st.chatStatus !== 'ready') return false;
+    const origin = (opts && opts.origin) || 'chat';
     const userMsg = { id: 'm' + (++this.mid), who: 'You', text, chips: [], streaming: false };
-    // Ask before gateway: a request the local model may not handle well waits for the member (HIC-1).
-    if (!resumed && this.state.routing === 'ask' && /\b(plan|draft|research|rewrite)\b/i.test(text)) {
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), askPending: text }));
-      if (this.chatInputEl) this.chatInputEl.value = '';
-      this.scrollChat();
-      return;
-    }
-    if (resumed) this.setState({ chatStatus: 'thinking' });
-    else this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: 'thinking' }));
+    // The conversation as the model receives it, captured now: the earlier turns, then this one, once.
+    const messages = st.chatMsgs.filter((m) => !m.streaming).map((m) => ({ role: m.who === 'You' ? 'user' : 'assistant', content: m.text })).concat([{ role: 'user', content: text }]);
     if (this.chatInputEl) this.chatInputEl.value = '';
+    // Ask before gateway: a request the local model may not handle well waits for the member (HIC-1).
+    // The pending turn keeps its own copy of the conversation, so the answer resumes exactly this request.
+    if (st.routing === 'ask' && /\b(plan|draft|research|rewrite)\b/i.test(text)) {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), askPending: { text, origin, messages } }));
+      this.scrollChat();
+      return true;
+    }
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]) }));
+    this.runTurn(messages, st.routing === 'local' ? 'local' : null);
+    return true;
+  }
+  // The member's answer to the ask-before-gateway card: resume the held turn, once.
+  resolveAsk(allow) {
+    const p = this.state.askPending;
+    if (!p) return;
+    this.setState({ askPending: null });
+    this.recordDecision('agent.tool_approval', allow ? 'approved' : 'denied', allow ? 'gateway · one reply via infer.citrate.ai' : 'gateway · kept the reply local', p.origin + ' · ask before gateway');
+    this.runTurn(p.messages, allow ? 'gateway' : 'local');
+  }
+  async runTurn(messages, via) {
+    this._via = via;
+    this.setState({ chatStatus: 'thinking' });
     const asstId = 'm' + (++this.mid);
     let started = false;
     const ensure = () => {
@@ -2644,7 +2726,7 @@ class Component extends DCLogic {
     const patch = (fn) => this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? fn(m) : m)) }));
     try {
       await this.provider.send({
-        messages: this.state.chatMsgs.filter((m) => !m.streaming).map((m) => ({ role: m.who === 'You' ? 'user' : 'assistant', content: m.text })).concat(resumed ? [] : [{ role: 'user', content: text }]),
+        messages,
         callbacks: {
           onStatus: (st) => { if (st === 'streaming') ensure(); this.setState({ chatStatus: st === 'done' || st === 'error' ? 'ready' : st }); },
           onToken: (tk) => { ensure(); patch((m) => Object.assign({}, m, { text: m.text + tk.replace(/\*\*/g, '') })); this.scrollChat(); },
@@ -2655,13 +2737,6 @@ class Component extends DCLogic {
     patch((m) => Object.assign({}, m, { streaming: false }));
     this.setState({ chatStatus: 'ready' });
     this.scrollChat(); this.save();
-  }
-  // The member's answer to the ask-before-gateway card.
-  resolveAsk(allow) {
-    const t = this.state.askPending;
-    this.setState({ askPending: null });
-    if (allow) { this.recordDecision('agent.tool_approval', 'approved', 'gateway · one reply via infer.citrate.ai', 'chat · ask before gateway'); this.sendChat(t, { via: 'gateway' }); }
-    else { this.recordDecision('agent.tool_approval', 'denied', 'gateway · kept the reply local', 'chat · ask before gateway'); this.sendChat(t, { via: 'local' }); }
   }
   scrollChat() {
     requestAnimationFrame(() => {
@@ -3043,8 +3118,8 @@ class Component extends DCLogic {
     }));
     V.chatThinking = s.chatStatus === 'thinking' || s.chatStatus === 'tool';
     V.chatThinkingLabel = s.chatStatus === 'tool' ? 'running tools' : 'reasoning';
-    V.chatBusy = s.chatStatus !== 'ready';
-    V.showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === 'ready';
+    V.chatBusy = s.chatStatus !== 'ready' || !!s.askPending;
+    V.showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === 'ready' && !s.askPending;
     V.suggestions = ['What is my staking position?', 'Break down my rewards', 'Journal: node held through the night', 'Network status'].map((t) => ({ label: t, use: () => this.sendChat(t) }));
     V.onSend = () => this.sendChat(this.chatInputEl ? this.chatInputEl.value : '');
     V.onChatKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendChat(e.target.value); } };
@@ -3307,7 +3382,8 @@ class Component extends DCLogic {
 
     // ----- settings -----
     // 0.5.2: only account-level things remain. AI providers moved to Hermes › Controls; node configuration to Node › Advanced (slice 2).
-    const secs = [['account', 'Account & RBAC'], ['connections', 'Connections'], ['api', 'API endpoints & keys'], ['keys', 'Keys & security'], ['billing', 'Memberships & billing'], ['app', 'App']];
+    // The account-level sections core ships after K0 (src/shell/places.ts ACCOUNT_SETTINGS), in its order.
+    const secs = [['account', 'Account & RBAC'], ['connections', 'Connections'], ['api', 'API endpoints & keys'], ['keys', 'Keys & security'], ['billing', 'Memberships & billing'], ['privacy', 'Privacy & recovery'], ['app', 'App']];
     if (s.sSec === 'ai' || s.sSec === 'node') s.sSec = 'account';
     V.setNav = secs.map(([id, label]) => ({
       label, go: () => { this.setState({ sSec: id }); this.save(); },
@@ -3317,7 +3393,7 @@ class Component extends DCLogic {
     }));
     V.ssAccount = s.sSec === 'account'; V.ssNode = s.sSec === 'node'; V.ssApi = s.sSec === 'api';
     V.ssConn = s.sSec === 'connections'; V.ssAi = s.sSec === 'ai';
-    V.ssKeys = s.sSec === 'keys'; V.ssBilling = s.sSec === 'billing'; V.ssApp = s.sSec === 'app';
+    V.ssKeys = s.sSec === 'keys'; V.ssBilling = s.sSec === 'billing'; V.ssPrivacy = s.sSec === 'privacy'; V.ssApp = s.sSec === 'app';
     const expTxt = s.entitlement === 'lapsed' ? '2026-06-28 · lapsed' : s.entitlement === 'expiring' ? '2026-07-25 · 14 days' : '2027-07-11';
     V.claimRows = [
       { k: 'sub', v: 'usr_2af4c19e…' + P.initials.toLowerCase(), color: 'var(--tx-1)' },
@@ -3498,7 +3574,7 @@ class Component extends DCLogic {
       const prompt = text.indexOf('@prompt ') === 0;
       if (prompt) text = text.slice(8);
       const ptext = text;
-      return { text, agent, prompt, pad: (0 + Math.min(3, Math.floor(lead / 2)) * 20) + 'px', run: () => { this.sendChat(ptext); this.toast('Prompt sent to your agent'); } };
+      return { text, agent, prompt, pad: (0 + Math.min(3, Math.floor(lead / 2)) * 20) + 'px', run: () => { if (this.sendChat(ptext, { origin: 'journal' })) this.toast('Prompt sent to your agent'); } };
     }) : [];
 
     // journal capture & chat panel
@@ -3521,8 +3597,8 @@ class Component extends DCLogic {
     V.jInterimShow = !!s.jInterim;
     V.setJChatInput = (el) => { this.jChatInputEl = el; };
     V.setJChatScroll = (el) => { this.jChatScrollEl = el; };
-    V.onJChatKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const v = e.target.value; e.target.value = ''; this.sendChat(v); } };
-    V.onJChatSend = () => { const v = this.jChatInputEl ? this.jChatInputEl.value : ''; if (this.jChatInputEl) this.jChatInputEl.value = ''; this.sendChat(v); };
+    V.onJChatKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (this.sendChat(e.target.value, { origin: 'journal' })) e.target.value = ''; } };
+    V.onJChatSend = () => { const el = this.jChatInputEl; if (this.sendChat(el ? el.value : '', { origin: 'journal' }) && el) el.value = ''; };
     V.onJSaveNote = () => this.appendCapture('');
     V.onJSavePrompt = () => this.appendCapture('@prompt ');
     V.jMsgs = V.msgs.slice(-6);
@@ -3712,6 +3788,7 @@ class Component extends DCLogic {
   // =====================================================================
   // Membership price (core src/data/membership.ts, #349): no number anywhere; surfaces link "See membership pricing".
 
+  static get ASK_BLOCK() { return 'Answer the gateway question first: use the gateway once, or keep it local. Nothing else is sent until you choose.'; }
   static FX() {
     return {
       label: 'FIXTURE — captured from 40204, not live',
@@ -3733,7 +3810,7 @@ class Component extends DCLogic {
       allPaused: false, learnSessions: false, voice: false,
       mcp: { mem: false, scan: false, node: false },
       folders: [], variants: {}, annot: true, theme: 'light', legacy: null,
-      askPending: null, teachBusy: false, kiState: 'idle', kiLines: [],
+      askPending: null, hermesRun: { web: false, learn: false }, hermesRestarting: false, teachBusy: false, kiState: 'idle', kiLines: [],
       escCap: 0, escEndpoints: [], escHistory: [],
       daemons: [], approvals: [], runLog: [], records: [], proposals: [], learned: [],
       recordedFiles: 0, cp2: { web: false, store: false, installed: false, started: false, approved: false },
@@ -3791,8 +3868,17 @@ class Component extends DCLogic {
   patchDaemon(id, fn) {
     this.setState((st) => ({ daemons: st.daemons.map((d) => (d.id === id ? Object.assign({}, d, fn(d)) : d)) }));
   }
-  // Restart Hermes so the saved Controls settings apply (core: restartHermesConfirmed).
-  restartHermes() {}
+  // Restart Hermes so the saved Controls settings apply (core #341: restartHermesConfirmed). Hermes
+  // reads web search and learning when it starts, so what it reads is the saved values at the start.
+  restartHermes() {
+    if (this.state.hermesRestarting) return;
+    const at = { web: !!this.state.webSearch, learn: !!this.state.learnSessions };
+    this.setState({ hermesRestarting: true });
+    setTimeout(() => {
+      this.setState({ hermesRestarting: false, hermesRun: at });
+      this.toast('Hermes restarted. It now uses the saved settings.');
+    }, 900);
+  }
   daemonStart(id) {
     const s = this.state;
     const d = s.daemons.find((x) => x.id === id);
@@ -3800,6 +3886,10 @@ class Component extends DCLogic {
     if (s.allPaused) return this.toast('All daemons are paused in Controls. Resume them first.');
     if (d.needsWeb && !s.webSearch) {
       this.patchDaemon(id, () => ({ note: 'Can’t start: this daemon needs web search, which is off in Controls.', noteColor: 'var(--warn)' }));
+      return;
+    }
+    if (d.needsWeb && !s.hermesRun.web) {
+      this.patchDaemon(id, () => ({ note: 'Can’t start yet: web search is saved, but the running Hermes started without it. Restart Hermes in Controls first.', noteColor: 'var(--warn)' }));
       return;
     }
     if (d.runsToday >= d.maxRuns) return this.toast('Budget used up today. It runs again after 00:00.');
@@ -3956,7 +4046,8 @@ class Component extends DCLogic {
     V.fxNote = FX.label + ' · ' + FX.file + ' (' + FX.source + ') · read at heads ' + fmtI(FX.block) + '–' + fmtI(FX.blockEnd) + ', ' + FX.capturedAt + ' · producing validators over blocks ' + fmtI(FX.producing.from) + '–' + fmtI(FX.producing.to) + '.';
     V.chatBackendLabel = s.routing === 'local' ? 'local model · llama-server on this machine' : 'local first · asks before infer.citrate.ai';
     V.askShow = !!s.askPending;
-    V.askText = s.askPending || '';
+    V.askText = s.askPending ? s.askPending.text : '';
+    V.askBlockNote = s.askPending ? Component.ASK_BLOCK : '';
     V.onAskAllow = () => this.resolveAsk(true);
     V.onAskLocal = () => this.resolveAsk(false);
     V.apprCount = String(apprList.length);
@@ -4069,7 +4160,8 @@ class Component extends DCLogic {
       { key: 'web', label: 'Web search', on: C.webSearch,
         desc: 'Let Hermes search the web and read pages to answer you.',
         stateText: C.webSearch ? 'On · private search through local SearXNG · pages read on this machine' : 'Off · Hermes answers from this machine only',
-        toggle: () => { const on = !s.webSearch; this.setState((st) => ({ webSearch: on, cp2: Object.assign({}, st.cp2, { web: on || st.cp2.web }), daemons: st.daemons.map((d) => (d.needsWeb ? Object.assign({}, d, { note: null }) : d)) })); this.toast(on ? 'Web search on. It applies to new conversations.' : 'Web search off.'); this.save(); },
+        pending: C.webSearch !== s.hermesRun.web ? (s.hermesRun.web ? 'Until then the running Hermes still has web search on.' : 'Until then the running Hermes does not have web search.') : null,
+        toggle: () => { const on = !s.webSearch; this.setState((st) => ({ webSearch: on, cp2: Object.assign({}, st.cp2, { web: on || st.cp2.web }), daemons: st.daemons.map((d) => (d.needsWeb ? Object.assign({}, d, { note: null }) : d)) })); this.toast(on ? 'Web search on. Saved; Hermes uses it after it restarts.' : 'Web search off. Saved; Hermes stops using it after it restarts.'); this.save(); },
         details: det('web') },
       { key: 'terminal', label: 'Terminal access', on: C.terminal,
         desc: 'Let Hermes run commands in folders you share. Every command asks you first.',
@@ -4082,17 +4174,19 @@ class Component extends DCLogic {
         toggle: () => { this.setState({ allPaused: !s.allPaused }); this.save(); },
         details: det('budgets') },
       { key: 'learn', label: 'Learn from my sessions', on: C.learnSessions,
-        desc: 'Record sessions on this machine so Hermes can propose what to learn. Every proposal still needs your yes.',
-        stateText: C.learnSessions ? 'On · recorded locally · group rounds not live yet' : 'Off · Hermes learns only what you teach it',
+        desc: 'Keep verified, redacted conversations on this device for training rounds you choose to join.',
+        stateText: C.learnSessions ? 'On · recorded locally · group rounds not live yet' : 'Off · nothing is recorded',
+        pending: C.learnSessions !== s.hermesRun.learn ? (s.hermesRun.learn ? 'Until then the running Hermes still records sessions.' : 'Until then the running Hermes does not record sessions.') : null,
         toggle: () => { this.setState({ learnSessions: !s.learnSessions }); this.save(); },
         details: () => this.hgo('learn') },
       { key: 'voice', label: 'Voice', on: C.voice,
-        desc: 'Read replies aloud and dictate with the system’s speech engine.',
+        desc: 'Read Hermes’s replies aloud with the system voice on this computer.',
         stateText: C.voice ? 'On · system voice · nothing leaves this machine' : 'Off',
         toggle: () => { this.setState({ voice: !s.voice }); this.save(); },
         details: det('personas') },
     ];
-    V.ctlRows = ctl.map((c) => Object.assign({ isSwitch: !c.isSeg, isSeg: !!c.isSeg, stateColor: c.on || c.isSeg ? 'var(--accent-text)' : 'var(--tx-3)', rowClass: c.key === 'web' && s.cp2.store === false && s.cp2.web && !s.cp2.installed ? 'cc-row-stroke' : '', toggle: () => {}, segs: [] }, c.isSeg ? {} : sw(c.on), c));
+    const restartLabel = s.hermesRestarting ? 'Restarting…' : 'Restart Hermes';
+    V.ctlRows = ctl.map((c) => Object.assign({ pending: null, restartLabel, onRestart: () => this.restartHermes(), isSwitch: !c.isSeg, isSeg: !!c.isSeg, stateColor: c.on || c.isSeg ? 'var(--accent-text)' : 'var(--tx-3)', rowClass: c.key === 'web' && s.cp2.store === false && s.cp2.web && !s.cp2.installed ? 'cc-row-stroke' : '', toggle: () => {}, segs: [] }, c.isSeg ? {} : sw(c.on), c));
 
     // depth 2
     const SECS = [['providers', 'Providers and keys'], ['escalation', 'Escalation and spend caps'], ['mcp', 'MCP servers'], ['web', 'Web search'], ['terminal', 'Terminal and folders'], ['budgets', 'Budgets'], ['personas', 'Personas and voice']];
@@ -4209,10 +4303,10 @@ class Component extends DCLogic {
 
     // ----- place stubs, Store stub, Settings -----
     const STUBS = {
-      groups: { t: 'Groups', slice: 'slice 2 or later', lead: 'Chat with round cards, Rounds, Members and Cluster. Training becomes round cards in the chat plus a Rounds tab (group rounds ADR).', tabs: [['Chat', 'Group chat with round cards (unverified, fixture round, accepted, rejected)'], ['Rounds', 'Group rounds not live yet: FederatedRoundLedger and PatronageLedger are not deployed on 40204'], ['Members', 'Roster, roles, invites'], ['Cluster', 'Co-pinning and linked devices']], legacy: 'comms' },
+      groups: { t: 'Groups', slice: 'slice 2 or later', lead: 'Chat with round cards, Rounds, Members, Cluster and ALF, the tabs core ships after K0. Training becomes round cards in the chat plus a Rounds tab (group rounds ADR).', tabs: [['Chat', 'Sub-tabs Groups and Alerts. Group chat with round cards (unverified, fixture round, accepted, rejected)'], ['Rounds', 'Group rounds not live yet: FederatedRoundLedger and PatronageLedger are not deployed on 40204'], ['Members', 'Roster, roles, invites'], ['Cluster', 'Co-pinning and linked devices'], ['ALF', 'ALF members only']], legacy: 'comms' },
       wallet: { t: 'Wallet', slice: 'slice 2', lead: 'Overview, Staking, Activity and Identity, redrawn against UI truth contract v1: one definition of “staked” (stakeOf), the bond state words, and the grant explained one way everywhere.', tabs: [['Overview', 'Balance (eth_getBalance, “latest”; unknown on error, never 0)'], ['Staking', 'Bond locked · not staked until MemberBond.activated()'], ['Activity', 'Pending, Included in block N, N confirmations'], ['Identity', 'Membership SBT, linked identities']], legacy: 'wallet' },
       node: { t: 'Node', slice: 'slice 2 · 2026-10-28', lead: 'Status, Services, Storage, Rewards and Advanced (core plan K3). Services follow the K1 services contract.', tabs: [['Status', 'One sentence in the contract’s words, start and stop, direct peers'], ['Services', 'Alive, Ready, Stopping, Quarantined; restart; bounded log'], ['Storage', 'Files, Memory and Pins (pin bonds not live yet)'], ['Rewards', 'Validator rewards from rewardsOf only; no projections'], ['Advanced', 'Configuration, full log, crash records, withdrawn-branch notice']], legacy: 'node' },
-      store: { t: 'Store', slice: 'slice 2 · 2026-10-28', lead: 'Catalog, listing, install sheet and installed, as a signed app and daemon store (core plan K5).', tabs: [['Catalog', 'Apps, Daemons, Widgets, Skills, Models, MCP servers'], ['Listing', 'Signature verified or failed, tier-locked'], ['Install sheet', 'Declared permissions and budget; installs paused'], ['Installed', 'Remove in one tap']], legacy: 'commissary' },
+      store: { t: 'Store', slice: 'slice 2 · 2026-10-28', lead: 'Catalog, listing, install sheet and installed, as a signed app and daemon store (core plan K5). Core ships Apps and Models tabs today (K0); the K5 catalog replaces them.', tabs: [['Catalog', 'Apps, Daemons, Widgets, Skills, Models, MCP servers'], ['Listing', 'Signature verified or failed, tier-locked'], ['Install sheet', 'Declared permissions and budget; installs paused'], ['Installed', 'Remove in one tap']], legacy: 'commissary' },
     };
     const stub = STUBS[s.route];
     const storeHop = s.route === 'store' && s.cp2.store && !s.legacy;
@@ -4241,13 +4335,13 @@ class Component extends DCLogic {
 
     // ----- annotations -----
     const A = {
-      chat: ['Hermes › Chat', 'hermes/chat   (Sidebar.tsx today: dashboard)', 'agentHarness.sessionOpen / sessionSend / sessionEvents (hermes_session_open, hermes_session_send, hermes_session_events) · chat.backend · ask before gateway: none yet (core plan K1, S7.5a ask-first routing) · rail: daemonsApi.list (daemons_list), agentHarness.pendingApprovals (hermes_pending_approvals) · network status only as a chat reply (chain-team ruling 6): C1 fixture in the prototype, live §2 reads none yet (core plan K3)', 'none'],
+      chat: ['Hermes › Chat', 'hermes/chat   (Sidebar.tsx today: dashboard)', 'agentHarness.sessionOpen / sessionSend / sessionEvents (hermes_session_open, hermes_session_send, hermes_session_events) · chat.backend · ask before gateway: chat_route_get / chat_route_set (local_only | ask_first; core #372, open; an unreadable route reads as local only) · one pending turn at a time: nothing else is sent until the member answers · rail: daemonsApi.list (daemons_list), agentHarness.pendingApprovals (hermes_pending_approvals) · network status only as a chat reply (chain-team ruling 6): C1 fixture in the prototype, live §2 reads none yet (core plan K3)', 'none'],
       journal: ['Hermes › Journal', 'hermes/journal   (today: journal)', 'none: local app state (store jPages, ensureDailyEntry); daemon bullets from the daemon run log; the journal chat uses the same Hermes session (hermes_session_send)', 'none'],
       work: ['Hermes › Work', 'hermes/work   (today: agent)', 'agentHarness.status (hermes_status) · pendingApprovals / resolve (hermes_pending_approvals, hermes_resolve) · shellPending / shellDecide (hermes_shell_pending, hermes_shell_decide) · mcpPending / mcpDecide · daemonsApi.list / setPaused / setAllPaused (daemons_list, daemon_set_paused, daemons_set_all_paused) · run log: daemonsApi.runsBetween (daemon_runs_between) · skills: agentSkills.list, agentHarness.registrySkills · daemon state “awaiting your review”: none yet (core plan K2)', 'none'],
       learn: ['Hermes › Learn', 'hermes/learn   (today: Agent and Settings)', 'agentHarness.learnStatus / learnProposals / learnAccept / learnReject / learnMemories (hermes_learn_status, hermes_learn_proposals, hermes_learn_accept, hermes_learn_reject, hermes_learn_memories) · Teach Hermes: agentHarness.workflowRun (hermes_workflow_run, learnLauncher.ts) · knowledge import: memory.importKnowledge (memory_import_knowledge) · training opt-in: flRounds.trajectoryStatus / setTrajectoryConsent (trajectories_settings_get, trajectories_settings_set)', 'none · rounds copy: “Group rounds not live yet” (contract §4)'],
-      ctl1: ['Hermes › Controls · depth 1', 'hermes/controls   (today: Settings › AI providers, Escalation, MCP, Web search, Budgets)', 'routing: none yet (core plan K1, S7.5a) · web search: hermes_web_settings_get / hermes_web_settings_set · terminal: hermes_terminal_get / hermes_terminal_set · daemons: daemons_set_all_paused · learn: trajectories_settings_set · voice: store hermesReadAloud (local, no bridge)', 'none'],
-      ctl2: ['Hermes › Controls · depth 2 · ' + (SECS.find((x) => x[0] === s.cSec) || [0, ''])[1], 'hermes/controls/' + s.cSec, {
-        providers: 'chat.providerStatus / setProvider / clearProvider (ai_provider_status, ai_set_provider, ai_clear_provider) · gateway mode: none yet (S7.5a)',
+      ctl1: ['Hermes › Controls · depth 1', 'hermes/controls   (K0 #343: settings/hermes, settings/ai, settings/escalation, settings/mcp, settings/web and settings/budgets redirect here)', 'routing: chat_route_get / chat_route_set (core #372, open) · web search and learn: saved is not effective; Hermes reads them when it starts, so the row says what the running Hermes has until a restart (core #341, restartHermesConfirmed) · web search: hermes_web_settings_get / hermes_web_settings_set · terminal: hermes_terminal_get / hermes_terminal_set · daemons: daemons_set_all_paused · learn: trajectories_settings_set · voice: store hermesReadAloud (local, no bridge)', 'none'],
+      ctl2: ['Hermes › Controls · depth 2 · ' + (SECS.find((x) => x[0] === s.cSec) || [0, ''])[1], 'hermes/controls/details · section ' + s.cSec + '   (core #364, open; hermes/controls/' + s.cSec + ' also opens it)', {
+        providers: 'chat.providerStatus / setProvider / clearProvider (ai_provider_status, ai_set_provider, ai_clear_provider) · gateway mode: chat_route (core #372, open)',
         escalation: 'escalation.endpoints / addEndpoint / removeEndpoint / budget / setBudget (escalation_endpoints, escalation_endpoint_add, escalation_endpoint_remove, escalation_budget, escalation_budget_set)',
         mcp: 'agentHarness.mcpSettings / mcpSet / mcpRuntime (hermes_mcp_settings, hermes_mcp_set, mcp_servers_runtime)',
         web: 'hermes_web_settings_get / hermes_web_settings_set (agent/webSearch.ts) · managed Chromium: components.status',
@@ -4255,14 +4349,14 @@ class Component extends DCLogic {
         budgets: 'daemonsApi.save (daemon_save, Budget) · web sign-in budgets: web_budget_status / web_budget_grant / web_budget_revoke',
         personas: 'agentHarness.personas / personaCheck (hermes_personas, hermes_persona_check) · read aloud: store hermesReadAloud (local)',
       }[s.cSec], s.cSec === 'web' ? 'none · the browser needs the signed component key from the ceremony (components.status.keyConfigured)' : 'none'],
-      ctl3: ['Hermes › Controls · depth 3 · ' + (AUD.find((x) => x[0] === s.cAud) || [0, ''])[1], 'hermes/controls/' + s.cAud, {
+      ctl3: ['Hermes › Controls · depth 3 · ' + (AUD.find((x) => x[0] === s.cAud) || [0, ''])[1], 'hermes/controls/' + (s.cAud === 'records' ? 'records   (core #364, open)' : s.cAud + '   (prototype tab; core #364 has Records only)'), {
         records: 'writes: agentHarness.recordDecision (hic_record_decision) · read: none yet (core plan K2; HicLog::records exists in hic_records.rs but no command serves it) · web sign-in records: web_budget_status.snapshot.records',
         spend: 'escalation.budget (escalation_budget → history, capMicros, usedMicros, confirmedMicros) · daemons_list (spendTodaySalt is always "0"; drawn as “Daemons can’t spend SALT”, ruling 5)',
         runs: 'daemonsApi.runsBetween (daemon_runs_between → DaemonRunLog)',
       }[s.cAud], 'none'],
-      groups: ['Groups (stub)', 'groups   (today: groups, people, cluster, train, comms)', 'groups.*, cluster.*, flRounds.* (drawn in slice 2 or later)', 'rounds: “Group rounds not live yet” (contract §4)'],
+      groups: ['Groups (stub)', 'groups   (K0 #343: groups, comms, people, cluster, train, alf and community redirect here)', 'groups.*, cluster.*, flRounds.* (drawn in slice 2 or later)', 'rounds: “Group rounds not live yet” (contract §4)'],
       wallet: ['Wallet (stub)', 'wallet', 'wallet.balances / activity, membership.grantStatus (redrawn in slice 2)', 'none'],
-      node: ['Node (stub)', 'node   (today: node, storage, files)', 'node.status, K1 services registry (none yet), storage.list (slice 2)', 'K6 network switch at genesis'],
+      node: ['Node (stub)', 'node   (K0 #343: node, storage, files and settings/node redirect here)', 'node.status, K1 services registry (none yet), storage.list (slice 2)', 'K6 network switch at genesis'],
       store: [storeHop ? 'Store stub · install sheet (click path 2 hop)' : 'Store (stub)', 'store   (today: commissary, models)', storeHop ? 'none yet (core plan K5): signed catalog, install path; installs via daemonsApi.save (daemon_save) with paused = true' : 'commissary.catalog today; signed catalog none yet (core plan K5)', 'catalog key from the key ceremony (K5)'],
       settings: ['Settings', 'settings   (today: settings, connections)', 'auth.status / userinfo, membership.entitlement, connections.status, custody.status, config.read / write', 'none'],
     };
@@ -4280,14 +4374,14 @@ class Component extends DCLogic {
     const cp = s.cp2;
     const inst2 = s.daemons.find((d) => d.id === 'd-brief');
     V.cpSteps = [
-      ['Turn on web search in Controls', cp.web || s.webSearch],
+      ['Turn on web search in Controls, then restart Hermes', (cp.web || s.webSearch) && s.hermesRun.web],
       ['Open the Store (slice 2 stub)', cp.store],
       ['Install the daemon; it arrives paused', !!inst2],
       ['Start it from Work', cp.started],
       ['Approve its first change', cp.approved],
     ].map(([t, done], i) => ({ t: (i + 1) + '. ' + t, c: done ? 'var(--ok)' : 'var(--tx-2)', mark: done ? '✓' : '·' }));
     V.onCpReset = () => {
-      this.setState((st) => ({ webSearch: false, cp2: { web: false, store: false, installed: false, started: false, approved: false }, daemons: st.daemons.filter((d) => d.id !== 'd-brief'), approvals: st.approvals.filter((x) => x.daemonId !== 'd-brief'), hl: null }));
+      this.setState((st) => ({ webSearch: false, hermesRun: Object.assign({}, st.hermesRun, { web: false }), cp2: { web: false, store: false, installed: false, started: false, approved: false }, daemons: st.daemons.filter((d) => d.id !== 'd-brief'), approvals: st.approvals.filter((x) => x.daemonId !== 'd-brief'), hl: null }));
       this.hgo('controls', { cDepth: 1 });
     };
     V.onCpStart = () => { this.setState({ demoOpen: false }); this.hgo('controls', { cDepth: 1 }); };

@@ -2,7 +2,7 @@
 created: 2026-10-18
 branch: beta/design-slice1-hermes
 author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
-status: review (design slice 1, due 2026-10-23); chain-team review of 04e7b43 addressed
+status: review (design slice 1, due 2026-10-23); chain-team review signed at 8fbc74b; Codex P2s at 8fbc74b and the K0/K2 alignment addressed 2026-10-22
 ---
 
 # Design slice 1: Hermes + Controls
@@ -23,7 +23,7 @@ Serve the folder (`python3 -m http.server` in `design/`) and open `CitrateCore.d
 
 The **annotation strip** at the top of every screen names the screen, its route id, its bridge calls and its genesis flag. On Hermes screens it also has the **state** switch (data, empty, error, unavailable). It is a design aid and is not part of the member build.
 
-Deep links follow the K0 map: `#/hermes/<chat|journal|work|learn|controls>`, `#/groups`, `#/wallet`, `#/node`, `#/store`, `#/settings`. The 0.5.1 routes still work and open their new home: `dashboard` → hermes/chat, `agent` → hermes/work, `journal` → hermes/journal, `commissary` and `models` → store, `storage` and `files` → node, `comms`, `people`, `cluster` and `train` → groups, `connections` → settings.
+Deep links follow the K0 route map that core ships (`src/shell/places.ts`, `docs/nav/FIVE_PLACE_ROUTE_MAP.md`, #343): `#/hermes/<chat|journal|work|learn|controls>`, `#/groups`, `#/wallet`, `#/node`, `#/store`, `#/settings`. The 0.5.1 routes still work and open their new home: `dashboard` → hermes/chat, `agent` → hermes/work, `journal` → hermes/journal, `commissary` and `models` → store, `storage` and `files` → node, `comms`, `people`, `cluster`, `train`, `alf` and `community` → groups, `connections` → Settings › Connections. Settings sections redirect the same way: `settings/hermes` → Controls depth 1; `settings/ai`, `escalation`, `mcp`, `web` and `budgets` → that Controls depth-2 section; `settings/node` → Node; the account sections (`account`, `connections`, `api`, `keys`, `billing`, `privacy`, `app`) stay in Settings. Controls depths also take core #364's routes: `hermes/controls/details`, `hermes/controls/records`, or a section name such as `hermes/controls/web`. Node, Groups and Store are stubs, so their tab segments (`node/storage/files`, `node/earnings`) open the place. `resolveHash` in the prototype holds the map, and `scripts/design-prototype.test.mjs` checks each redirect.
 
 ## Screens
 
@@ -32,16 +32,16 @@ The bridge names were checked against `src/bridge/domains.ts`, `src/bridge/tauri
 | Screen | Route (today in Sidebar.tsx) | Bridge | Flag at genesis |
 |---|---|---|---|
 | Shell: sidebar, five places + Settings | `hermes`, `groups`, `wallet`, `node`, `store`, `settings` (today 17 NAVI ids; see deep links above) | Node line: `node.status`. Approvals dot: `agentHarness.pendingApprovals` | none |
-| Hermes › Chat | `hermes/chat` (`dashboard`) | `agentHarness.sessionOpen / sessionSend / sessionEvents` (`hermes_session_open`, `hermes_session_send`, `hermes_session_events`), `chat.backend`. Ask before gateway: **none yet (K1, S7.5a)**. Rail: `daemons_list`, `hermes_pending_approvals`. Network status only as a chat reply (ruling 6): fixture in the prototype, live §2 reads **none yet (K3)** | none |
-| Ask before gateway card (in Chat) | `hermes/chat` | **none yet (K1, S7.5a)**. The decision is recorded with `hic_record_decision` | none |
+| Hermes › Chat | `hermes/chat` (`dashboard`) | `agentHarness.sessionOpen / sessionSend / sessionEvents` (`hermes_session_open`, `hermes_session_send`, `hermes_session_events`), `chat.backend`. Ask before gateway: `chat_route_get / chat_route_set` (`local_only` / `ask_first`, core #372, open). One pending turn at a time: while the card is up, nothing else is sent. Rail: `daemons_list`, `hermes_pending_approvals`. Network status only as a chat reply (ruling 6): fixture in the prototype, live §2 reads **none yet (K3)** | none |
+| Ask before gateway card (in Chat and Journal) | `hermes/chat`, `hermes/journal` | `chat_route` (core #372, open). The held turn keeps its own copy of the conversation, so the answer resumes exactly that request. The decision is recorded with `hic_record_decision`, with the place it was asked (chat or journal) | none |
 | Hermes › Journal | `hermes/journal` (`journal`) | none: local app state (`jPages`, `ensureDailyEntry`). Its chat uses the same Hermes session (`hermes_session_send`) | none |
 | Hermes › Work: Awaiting your review | `hermes/work` (`agent`) | `agentHarness.pendingApprovals / resolve` (`hermes_pending_approvals`, `hermes_resolve`), `shellPending / shellDecide`, `mcpPending / mcpDecide` | none |
 | Hermes › Work: Daemons | `hermes/work` | `daemonsApi.list / setPaused / setAllPaused / save` (`daemons_list`, `daemon_set_paused`, `daemons_set_all_paused`, `daemon_save`). The "awaiting your review" daemon state: **none yet (K2)** | none |
 | Hermes › Work: Run log | `hermes/work` | `daemonsApi.runsBetween` (`daemon_runs_between`) | none |
 | Hermes › Work: Agents, Skills | `hermes/work` | `agentHarness.status` (`hermes_status`), `agentSkills.list`, `agentHarness.registrySkills` (the SkillRegistry count was removed per ruling 6; it belongs in Store) | none |
 | Hermes › Learn | `hermes/learn` (Agent and Settings) | `hermes_learn_status / proposals / accept / reject / memories`. Teach Hermes: `hermes_workflow_run` (learnLauncher.ts). Knowledge import: `memory_import_knowledge`. Training opt-in: `trajectories_settings_get / set` | none. Copy: "Group rounds not live yet" |
-| Controls depth 1: six switches | `hermes/controls` (Settings › AI providers, Escalation, MCP, Web search, Budgets) | routing: **none yet (S7.5a)**; web search: `hermes_web_settings_get / set`; terminal: `hermes_terminal_get / set`; daemons: `daemons_set_all_paused`; learn: `trajectories_settings_set`; voice: store `hermesReadAloud` (local) | none |
-| Controls depth 2: Providers and keys | `hermes/controls/providers` | `ai_provider_status`, `ai_set_provider`, `ai_clear_provider` (the ModelRegistry count was removed per ruling 6) | none |
+| Controls depth 1: six switches | `hermes/controls` (K0: `settings/hermes` and the moved sections redirect here) | routing: `chat_route_get / chat_route_set` (core #372, open). Web search and learn: saved is not effective. Hermes reads them when it starts, so the row says what the running Hermes has, with Restart Hermes (core #341, `restartHermesConfirmed`); web search: `hermes_web_settings_get / set`; terminal: `hermes_terminal_get / set`; daemons: `daemons_set_all_paused`; learn: `trajectories_settings_set`; voice: store `hermesReadAloud` (local) | none |
+| Controls depth 2: Providers and keys | `hermes/controls/details` (core #364); `hermes/controls/providers` also opens it | `ai_provider_status`, `ai_set_provider`, `ai_clear_provider` (the ModelRegistry count was removed per ruling 6) | none |
 | Controls depth 2: Escalation and spend caps | `hermes/controls/escalation` | `escalation_endpoints`, `escalation_endpoint_add / remove`, `escalation_budget`, `escalation_budget_set` | none |
 | Controls depth 2: MCP servers | `hermes/controls/mcp` | `hermes_mcp_settings`, `hermes_mcp_set`, `mcp_servers_runtime` | none |
 | Controls depth 2: Web search | `hermes/controls/web` | `hermes_web_settings_get / set`; managed Chromium via `components.status` | the browser needs the component signing key from the ceremony (`keyConfigured`) |
@@ -55,7 +55,7 @@ The bridge names were checked against `src/bridge/domains.ts`, `src/bridge/tauri
 | Wallet (stub) | `wallet` | wallet.*, membership.grantStatus (slice 2) | none |
 | Node (stub) | `node` (node, storage, files) | node.status, K1 registry (slice 2) | K6 network switch |
 | Store (stub) and Store install sheet stub | `store` (commissary, models) | **none yet (K5)**: signed catalog and install path; install writes `daemon_save` with paused | catalog key from the ceremony |
-| Settings (trimmed) | `settings` (settings, connections) | `auth.status / userinfo`, `membership.entitlement`, `membership.grantStatus` (grant record), `connections.status`, `custody.status`, `config.read / write`. Price: one source, mirroring core `src/data/membership.ts` (#349) | none |
+| Settings (trimmed) | `settings` (settings, connections). Sections as core ships them after K0: Account & RBAC, Connections, API endpoints & keys, Keys & security, Memberships & billing, Privacy & recovery (unchanged, listed only), App | `auth.status / userinfo`, `membership.entitlement`, `membership.grantStatus` (grant record), `connections.status`, `custody.status`, `config.read / write`. Price: one source, mirroring core `src/data/membership.ts` (#349) | none |
 
 Each stub can open the 0.5.1 screen under a red "reference, not a port target" bar, so core can see what is being replaced.
 
@@ -93,6 +93,15 @@ Revised after the chain-team review of 04e7b43 (B1 to B4):
 - Reviewer notes also addressed: N1 (onboarding now sits under a red "0.5.1, not a port target" bar), N3 ("price" became "cost" in the escalation copy), N12 (moot, because the counts were removed).
 - Open for slice 2: N4, N5, N7, N8, N9, N10 and N11.
 
+## Revised 2026-10-22: Codex P2s at 8fbc74b and the shipped K0/K2
+
+- **Ask before gateway held one turn at a time.** Before, a message sent while the card was up was answered, and a second request replaced the first. Approving then resumed into whatever the conversation had become, so the reply could answer a different request. Now, while a decision is pending, the composer is disabled and says why, and a new message is refused (a refused Journal message stays in its input). The pending turn keeps its own copy of the conversation, and approving or keeping it local resumes exactly that turn, once. An ordinary message is now sent to the model once; before, the latest turn was sent twice.
+- **A daemon run cut off by a reload.** A run's completion lives in a timer, so a reload during a run left the daemon "running" forever. On load, a daemon saved mid-run now comes back paused, with "Stopped: the app closed during a run…" and a `stopped` run-log entry (the `RunOutcome` core has), and Start runs it again.
+- **Controls match the shipped panel (core #341).** Web search and Learn from my sessions say "Saved. Hermes reads this when it starts. Until then the running Hermes …" with Restart Hermes, as the app does. A daemon that needs web search starts only once the running Hermes has it, so click path 2's first step is now "turn on web search, then restart Hermes". The Learn and Voice descriptions use the shipped wording. The routing switch cites `chat_route` (core #372) instead of "none yet".
+- **Navigation matches K0 (core #343).** See Deep links above. Settings gained Privacy & recovery, listed as unchanged. The Groups stub lists the ALF tab and the Groups/Alerts sub-tabs; the Store stub notes the Apps and Models tabs core ships until K5.
+- **Approval origin (N-b).** An ask-first decision made from Journal is recorded as "journal · ask before gateway".
+- **Tests.** `scripts/design-prototype.test.mjs` loads the prototype's logic as the DC runtime does and runs these behaviours in vitest, with tripwires: no transient state is saved, only `sendChat` and `resolveAsk` start a model turn, and every Journal caller passes its origin and clears its input only for a message that was taken.
+
 ## Known debt outside slice 1
 
 These are left for the slices that own them and are not port targets:
@@ -112,8 +121,8 @@ These are left for the slices that own them and are not port targets:
 
 ## Open questions for core
 
-1. **Terminal default.** `src/agent/terminalAccess.ts` says terminal access is on by default (owner decision 2026-10-04). K2 says "terminal stays off". The prototype draws it off. Which is right?
-2. **Routing default and local only with no model.** The prototype defaults a fresh install to "Ask before gateway". With "Local model only" and no verified local model, ModelRouter INV-Router-2 falls back to the gateway, which contradicts the switch. S7.5a needs an unavailable state for that case.
+1. **Terminal default.** Answered by core #372 (open): terminal is off for new installs, and existing "on" values are kept. The prototype draws it off.
+2. **Routing default and local only with no model.** The prototype defaults a fresh install to "Ask before gateway", as core #372 does (an unreadable route file reads as local only). With "Local model only" and no verified local model, ModelRouter INV-Router-2 falls back to the gateway, which contradicts the switch. S7.5a needs an unavailable state for that case.
 3. **What triggers ask-first?** The prototype uses a keyword stand-in for "the local model wants the gateway". What signal does S7.5a use?
 4. **Approval origin.** `AgentApproval` has no daemon id or session origin, and `DaemonView.status` has no "awaiting review". Can core add `origin` / `daemonId` to approvals, so Work can link a daemon to its pending change?
 5. **Journal writes.** `AgentApproval.kind` is code, chain or shell. Which kind is a daemon's journal page? Should the enum add journal or file?

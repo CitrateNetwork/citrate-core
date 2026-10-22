@@ -152,16 +152,17 @@ describe("ask before gateway (HIC-1): one pending turn at a time", () => {
 });
 
 describe("daemon runs across a reload", () => {
-  function startWebDaemon(c) {
+  async function startWebDaemon(c) {
     c.setState({ webSearch: true });
     c.restartHermes();
+    await vi.advanceTimersByTimeAsync(1000);
     c.daemonStart("d-notes");
     expect(c.state.daemons.find((d) => d.id === "d-notes").state).toBe("running");
   }
 
   it("a run cut off by a reload comes back paused and logged as stopped, not running", async () => {
     const c = await mount("p2");
-    startWebDaemon(c);
+    await startWebDaemon(c);
     await vi.advanceTimersByTimeAsync(500); // the save lands; the run has not finished
     c.componentWillUnmount();
     vi.clearAllTimers();
@@ -177,7 +178,7 @@ describe("daemon runs across a reload", () => {
 
   it("after the reload, Start runs it to its approval and approving writes the journal", async () => {
     const c = await mount("p2");
-    startWebDaemon(c);
+    await startWebDaemon(c);
     await vi.advanceTimersByTimeAsync(500);
     vi.clearAllTimers();
 
@@ -193,7 +194,7 @@ describe("daemon runs across a reload", () => {
 
   it("a daemon awaiting review keeps its state and its approval across a reload", async () => {
     const c = await mount("p2");
-    startWebDaemon(c);
+    await startWebDaemon(c);
     await vi.advanceTimersByTimeAsync(3000);
     expect(c.state.daemons.find((d) => d.id === "d-notes").state).toBe("awaiting");
     await vi.advanceTimersByTimeAsync(500);
@@ -298,5 +299,36 @@ describe("deep links follow the K0 route map (src/shell/places.ts, core #343)", 
   it("Settings lists the shipped account-level sections, including Privacy & recovery", async () => {
     const c = await mount("p2");
     expect(c.renderVals().setNav.map((x) => x.label)).toEqual(["Account & RBAC", "Connections", "API endpoints & keys", "Keys & security", "Memberships & billing", "Privacy & recovery", "App"]);
+  });
+});
+
+describe("tripwires", () => {
+  const src = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+
+  it("state that only lives while the page runs is never saved", async () => {
+    // A saved transient state comes back on reload without the timer or turn that ends it.
+    const c = await mount("p2");
+    c.setState({ askPending: { text: "x", origin: "chat", messages: [] }, chatStatus: "thinking", hermesRestarting: true, teachBusy: true, kiState: "running", toast: "t" });
+    c.save();
+    await vi.advanceTimersByTimeAsync(500);
+    const saved = JSON.parse(localStorage.getItem(SAVE_KEY));
+    for (const k of ["askPending", "chatStatus", "hermesRestarting", "hermesRun", "teachBusy", "kiState", "toast", "queue"]) expect(saved).not.toHaveProperty(k);
+  });
+
+  it("only sendChat and resolveAsk start a model turn, so nothing bypasses the one-pending-turn rule", () => {
+    const calls = src.match(/this\.runTurn\(/g) || [];
+    expect(calls).toHaveLength(2);
+    const body = (name) => src.slice(src.indexOf("  " + name + "("), src.indexOf("\n  }\n", src.indexOf("  " + name + "(")));
+    expect(body("sendChat")).toContain("this.runTurn(");
+    expect(body("resolveAsk")).toContain("this.runTurn(");
+  });
+
+  it("every Journal caller of sendChat passes its origin and acts only on a message that was taken", () => {
+    const lines = src.split("\n").filter((l) => /this\.sendChat\(/.test(l) && /^\s+V\.onJ|run: \(\)/.test(l));
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    for (const l of lines) {
+      expect(l).toMatch(/origin: 'journal'/);
+      expect(l).toMatch(/if \(this\.sendChat\(/);
+    }
   });
 });
