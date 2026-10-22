@@ -45,7 +45,10 @@ export function redeemToast(r: JoinRedeemResult, groupListed: boolean): string {
   }
 }
 
-/** Whether the invite stays offered after a Join. */
-export function keepInviteAfter(_r: JoinRedeemResult): boolean {
-  return false;
+/** Whether the invite stays offered after a Join (the paste box stays open, the banner stays up).
+ *  The same rule as the Rust `decide_join` (forget = false): no definite answer yet (`requesting`),
+ *  or the relay couldn't be reached. Pressing Join again is then the retry; the daemon has the join
+ *  persisted either way. Any other answer is definite, and the Groups join rows (M5) carry it on. */
+export function keepInviteAfter(r: JoinRedeemResult): boolean {
+  return r.path === "rendezvous" && (r.join.state === "requesting" || r.join.state === "relay_unreachable");
 }

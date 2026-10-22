@@ -19,7 +19,7 @@ import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLi
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
 import { RelayStatusChip } from "./RelayStatusChip";
-import { redeemToast } from "./joinRedeemToast";
+import { keepInviteAfter, redeemToast } from "./joinRedeemToast";
 import {
   groupsSlice,
   refreshGroups,
@@ -421,8 +421,10 @@ export function Groups({ store, s }: SurfaceProps) {
     // Primary: one-click self-admit.
     try {
       const result = await bridge.invites.redeem(link);
-      if (redeemRef.current) redeemRef.current.value = "";
-      setRedeemOpen(false);
+      if (!keepInviteAfter(result)) {
+        if (redeemRef.current) redeemRef.current.value = "";
+        setRedeemOpen(false);
+      }
       await refreshGroups();
       store.toast(redeemToast(result, groupsSlice.get().groups.some((x) => x.id === g)));
       return;
@@ -570,7 +572,7 @@ export function Groups({ store, s }: SurfaceProps) {
                       await refreshGroups();
                       const gid = result.path === "rendezvous" ? result.join.group : "";
                       store.toast(redeemToast(result, !!gid && groupsSlice.get().groups.some((x) => x.id === gid)));
-                      store.clearPendingInvite();
+                      if (!keepInviteAfter(result)) store.clearPendingInvite();
                       return;
                     } catch (e) {
                       if (!hasClaimsKey) {
