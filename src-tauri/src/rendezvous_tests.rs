@@ -448,10 +448,28 @@ fn the_join_path_sends_the_hex_token_and_falls_back_only_through_decide_join() {
     let body = &src[src.find("pub(crate) fn join_opened").expect("fn")..];
     let body = &body[..body.find("\n}\n").expect("end")];
     assert!(body.contains("token_ipc_hex(token)"));
-    let decide = body.find("decide_join(&answer)").expect("decide");
-    let legacy = body.find("redeem_link(app, legacy_link)").expect("legacy");
-    assert!(decide < legacy);
-    assert_eq!(body.matches("redeem_link(").count(), 1);
+    assert_eq!(body.matches("redeem_link(app, legacy_link)").count(), 1);
+    // The legacy self-admit runs only when decide_join says so.
+    for (answer, legacy) in [
+        (Err(RvError::DaemonUnsupported), true),
+        (Ok(view(JoinState::RelayUnsupported, None)), true),
+        (Ok(view(JoinState::Unknown, Some("no_rendezvous"))), true),
+        (Ok(view(JoinState::Waiting, None)), false),
+        (Ok(view(JoinState::RelayUnreachable, None)), false),
+        (Err(RvError::Ipc("timed out".into())), false),
+    ] {
+        let ran = std::cell::Cell::new(false);
+        let _ = join_opened_at(
+            None,
+            "g",
+            || answer.clone(),
+            || {
+                ran.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(ran.get(), legacy, "{answer:?}");
+    }
 }
 
 // ---- Review of 56edc33: citrate://invite links (paste box, pending banner) join through the
@@ -539,4 +557,86 @@ fn an_unsupported_daemon_stops_the_scheduled_tick() {
     assert!(scheduled_tick_continues(&Err(RvError::Ipc("timed out".into()))));
     assert!(scheduled_tick_continues(&Err(RvError::Daemon("relay_unsupported".into()))));
     assert!(scheduled_tick_continues(&Ok(TickViews::default())));
+}
+
+// ---- review round 3: the restart marker is written before rendezvousJoin -------------------------
+
+fn marker(name: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "citrate-rv-marker-{name}-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    dir.join("rendezvous-active.json")
+}
+
+/// Codex round 3 (P2): the daemon persists the join before it answers, so a lost answer can leave a
+/// real join behind. The marker is written before the call and kept, so after a restart the device
+/// still has local work and the tick resumes the join.
+#[test]
+fn a_join_whose_answer_is_lost_still_resumes_after_a_restart() {
+    let m = marker("lost-answer");
+    let seen_before_send = std::cell::Cell::new(false);
+    let r = join_opened_at(
+        Some(&m),
+        "g1",
+        || {
+            seen_before_send.set(active_joins_at(&m).contains(&"g1".to_string()));
+            Err(RvError::Ipc("comms daemon did not respond within 15000 ms".into()))
+        },
+        || panic!("no legacy fallback on an ambiguous answer"),
+    );
+    assert!(r.is_err());
+    assert!(seen_before_send.get(), "the marker is written before rendezvousJoin is sent");
+    // The immediate tick failed too, and the app restarts: no minted invites on this device.
+    assert_eq!(active_joins_at(&m), vec!["g1".to_string()]);
+    assert!(local_work(&active_joins_at(&m), &[], 1_800_000_000));
+}
+
+/// A tick that rewrites the marker while the join is in flight (from views taken before the daemon
+/// had the join) doesn't lose it: the marker is written again after an answer that isn't definite.
+#[test]
+fn a_tick_that_rewrites_the_marker_mid_join_doesnt_lose_the_join() {
+    let m = marker("tick-race");
+    let r = join_opened_at(
+        Some(&m),
+        "g1",
+        || {
+            std::fs::write(&m, b"[]").expect("a stale tick rewrites the marker");
+            Err(RvError::Ipc("connection reset".into()))
+        },
+        || Ok(()),
+    );
+    assert!(r.is_err());
+    assert_eq!(active_joins_at(&m), vec!["g1".to_string()]);
+    let ok = join_opened_at(
+        Some(&m),
+        "g2",
+        || {
+            std::fs::write(&m, b"[]").expect("stale tick");
+            Ok(view(JoinState::Waiting, None))
+        },
+        || Ok(()),
+    );
+    assert!(ok.is_ok());
+    assert!(active_joins_at(&m).contains(&"g2".to_string()));
+}
+
+/// The legacy path leaves no rendezvous work behind: the marker for that group is removed.
+#[test]
+fn the_legacy_path_clears_the_marker_for_its_group() {
+    let m = marker("legacy");
+    note_active_join_at(&m, "other");
+    let r = join_opened_at(
+        Some(&m),
+        "g1",
+        || Err(RvError::DaemonUnsupported),
+        || Ok(()),
+    );
+    assert_eq!(r.map(|(v, forget)| (v, forget)), Ok((JoinRedeemView::Legacy, true)));
+    assert_eq!(active_joins_at(&m), vec!["other".to_string()]);
 }

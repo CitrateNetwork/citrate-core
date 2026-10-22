@@ -259,29 +259,34 @@ fn record_active_joins(app: &tauri::AppHandle, views: &TickViews) {
     }
 }
 
-/// Note that this device asked to join `group` (M3 calls this once the daemon has the join), so a
-/// restart resumes ticking even before the next tick wrote the marker.
-pub(crate) fn note_active_join(app: &tauri::AppHandle, group: &str) {
-    let Some(path) = active_joins_path(app) else {
-        return;
-    };
-    let mut groups: Vec<String> = std::fs::read(&path)
+/// The groups in the local-work marker at `path` (empty when missing or unreadable).
+pub(crate) fn active_joins_at(path: &std::path::Path) -> Vec<String> {
+    std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn write_active_joins_at(path: &std::path::Path, groups: &[String]) {
+    if let Ok(bytes) = serde_json::to_vec(groups) {
+        let _ = citrate_core_kit::fsutil::write_secret_file(path, &bytes);
+    }
+}
+
+/// Add `group` to the local-work marker at `path` (this device asked to join it), so a restart
+/// resumes ticking even before the next tick wrote the marker.
+pub(crate) fn note_active_join_at(path: &std::path::Path, group: &str) {
+    let mut groups = active_joins_at(path);
     if !groups.iter().any(|g| g == group) {
         groups.push(group.to_string());
         groups.sort();
-    }
-    if let Ok(bytes) = serde_json::to_vec(&groups) {
-        let _ = citrate_core_kit::fsutil::write_secret_file(&path, &bytes);
+        write_active_joins_at(path, &groups);
     }
 }
 
 fn has_local_work(app: &tauri::AppHandle) -> bool {
-    let joins: Vec<String> = active_joins_path(app)
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
+    let joins = active_joins_path(app)
+        .map(|p| active_joins_at(&p))
         .unwrap_or_default();
     local_work(
         &joins,
@@ -384,15 +389,34 @@ pub(crate) fn join_opened(
     legacy_link: &str,
 ) -> Result<(JoinRedeemView, bool), String> {
     let name = crate::invites::invite_display_name(name_hex);
-    let answer = crate::comms::rendezvous_join(app, group.to_string(), token_ipc_hex(token), name);
+    let marker = active_joins_path(app);
+    join_opened_at(
+        marker.as_deref(),
+        group,
+        || crate::comms::rendezvous_join(app, group.to_string(), token_ipc_hex(token), name),
+        || crate::invites::redeem_link(app, legacy_link),
+    )
+}
+
+/// [`join_opened`] over the local-work marker at `marker` and the two daemon calls (`join` sends
+/// `rendezvousJoin`, `legacy` runs the INVITE-S2 self-admit).
+pub(crate) fn join_opened_at(
+    marker: Option<&std::path::Path>,
+    group: &str,
+    join: impl FnOnce() -> Result<JoinView, RvError>,
+    legacy: impl FnOnce() -> Result<(), String>,
+) -> Result<(JoinRedeemView, bool), String> {
+    let answer = join();
     match decide_join(&answer) {
         Some(JoinNext::Legacy) => {
-            crate::invites::redeem_link(app, legacy_link)?;
+            legacy()?;
             Ok((JoinRedeemView::Legacy, true))
         }
         Some(JoinNext::Rendezvous { forget }) => {
             let join = answer.map_err(|e| e.to_string())?;
-            note_active_join(app, group);
+            if let Some(m) = marker {
+                note_active_join_at(m, group);
+            }
             Ok((JoinRedeemView::Rendezvous { join }, forget))
         }
         None => Err(answer.err().map(|e| e.to_string()).unwrap_or_default()),
