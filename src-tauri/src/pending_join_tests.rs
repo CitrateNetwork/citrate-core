@@ -8,7 +8,7 @@
 use super::*;
 use citrate_core_kit::custody::{CustodyError, Keyring};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const CODE: &str = "Ab3dE7gh";
@@ -18,20 +18,21 @@ const T0: u64 = 1_800_000_000;
 #[derive(Default)]
 struct FakeKeyring {
     slots: Mutex<HashMap<String, Vec<u8>>>,
-    dead: bool,
+    /// The keyring is unreachable while this is set (it can come back).
+    dead: AtomicBool,
 }
 
 struct Handle(Arc<FakeKeyring>);
 
 impl Keyring for Handle {
     fn get(&self, account: &str) -> std::result::Result<Option<Vec<u8>>, CustodyError> {
-        if self.0.dead {
+        if self.0.dead.load(Ordering::SeqCst) {
             return Err(CustodyError::KeyringUnavailable);
         }
         Ok(self.0.slots.lock().expect("lock").get(account).cloned())
     }
     fn set(&self, account: &str, secret: &[u8]) -> std::result::Result<(), CustodyError> {
-        if self.0.dead {
+        if self.0.dead.load(Ordering::SeqCst) {
             return Err(CustodyError::KeyringUnavailable);
         }
         self.0.slots
@@ -41,7 +42,7 @@ impl Keyring for Handle {
         Ok(())
     }
     fn delete(&self, account: &str) -> std::result::Result<(), CustodyError> {
-        if self.0.dead {
+        if self.0.dead.load(Ordering::SeqCst) {
             return Err(CustodyError::KeyringUnavailable);
         }
         self.0.slots.lock().expect("lock").remove(account);
@@ -217,7 +218,7 @@ fn forget_code_wipes_only_a_matching_invite() {
 #[test]
 fn an_unreachable_keyring_holds_the_invite_in_memory_and_says_so() {
     let r = rig_with(FakeKeyring {
-        dead: true,
+        dead: AtomicBool::new(true),
         ..Default::default()
     });
     let v = r.store.set(&link()).expect("set");
@@ -275,4 +276,199 @@ fn pending_join_commands_are_registered_and_allowed_for_the_main_window() {
 fn redeem_wipes_the_pending_invite_for_that_code() {
     let join_src = include_str!("join.rs");
     assert!(join_src.contains("crate::pending_join::forget_code(&app, &code)"));
+}
+
+fn view_for(exp: &str) -> ResolvedView {
+    ResolvedView {
+        code: CODE.to_string(),
+        kind: join::JoinKind::Direct,
+        cluster_name: Some("Garden club".to_string()),
+        goal: None,
+        inviter: Some("@dana".to_string()),
+        inviter_verified: true,
+        exp: exp.to_string(),
+        actionable: true,
+        key_missing: false,
+    }
+}
+
+/// `T0` is 2027-01-15T08:00:00Z, so this signed expiry is `T0 + 60`.
+const EXP_T0_PLUS_60: &str = "2027-01-15T08:01:00.000Z";
+
+#[test]
+fn the_exp_fixture_is_t0_plus_a_minute() {
+    assert_eq!(join::parse_iso_utc_secs(EXP_T0_PLUS_60), Some(T0 + 60));
+}
+
+/// The command path: Review resolves the held link (the resolver sees exactly the canonical
+/// `<code>#K`) and the signed expiry caps the hold.
+#[test]
+fn resolve_caps_the_hold_to_the_signed_expiry() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    let mut seen = String::new();
+    let v = r
+        .store
+        .resolve_held(|l| {
+            seen = l.to_string();
+            Ok(view_for(EXP_T0_PLUS_60))
+        })
+        .expect("resolved");
+    assert_eq!(seen, format!("{CODE}#{KEY}"));
+    assert_eq!(v.code, CODE);
+    assert_eq!(r.store.get().map(|g| g.expires_at), Some(T0 + 60));
+}
+
+/// The command path: a code the service reports gone is wiped (memory and keyring slot); any
+/// other failure keeps it so Review can be retried.
+#[test]
+fn resolve_not_found_wipes_the_hold_and_other_errors_keep_it() {
+    for (e, kept) in [
+        (JoinError::Unavailable, true),
+        (JoinError::Network, true),
+        (JoinError::RateLimited, true),
+        (JoinError::Signature, true),
+        (JoinError::NotFound, false),
+    ] {
+        let r = rig();
+        r.store.set(&link()).expect("set");
+        let err = r
+            .store
+            .resolve_held(|_| Err(e.clone()))
+            .expect_err("error passes through");
+        assert_eq!(err, e.to_string());
+        assert!(!err.contains(KEY) && !err.contains(CODE), "{err}");
+        assert_eq!(r.store.get().is_some(), kept, "{e:?}");
+        assert_eq!(slot(&r).is_some(), kept, "{e:?}");
+    }
+}
+
+#[test]
+fn resolve_with_nothing_held_never_calls_the_service() {
+    let r = rig();
+    let mut called = false;
+    let err = r
+        .store
+        .resolve_held(|_| {
+            called = true;
+            Ok(view_for(EXP_T0_PLUS_60))
+        })
+        .expect_err("nothing waiting");
+    assert!(err.contains("no invite is waiting"));
+    assert!(!called);
+}
+
+/// Interleaving: Review for invite A is in flight when a deep link replaces it with B. A's
+/// "not found" must not wipe B.
+#[test]
+fn a_not_found_for_a_replaced_invite_does_not_wipe_the_new_one() {
+    let r = rig();
+    r.store.set(&link()).expect("set A");
+    let _ = r.store.resolve_held(|_| {
+        r.store.set("citrate://join/Zz9yX8wv").expect("set B");
+        Err(JoinError::NotFound)
+    });
+    assert_eq!(
+        r.store.link().as_deref().map(|s| s.as_str()),
+        Some("Zz9yX8wv"),
+        "B is still held"
+    );
+    assert!(slot(&r).is_some());
+}
+
+/// Interleaving: A's signed expiry must not shorten B's hold, and A's details are not handed
+/// back as if they were B's.
+#[test]
+fn a_resolve_for_a_replaced_invite_neither_caps_nor_answers_for_the_new_one() {
+    let r = rig();
+    r.store.set(&link()).expect("set A");
+    r.clock.store(T0 + 5, Ordering::SeqCst);
+    let out = r.store.resolve_held(|_| {
+        r.store.set("citrate://join/Zz9yX8wv").expect("set B");
+        Ok(view_for(EXP_T0_PLUS_60))
+    });
+    assert_eq!(
+        r.store.get().map(|g| g.expires_at),
+        Some(T0 + 5 + PENDING_JOIN_TTL_SECS),
+        "B keeps its own hold"
+    );
+    let err = out.expect_err("a stale answer is not returned");
+    assert!(err.contains("changed"), "{err}");
+}
+
+/// Interleaving: a Cancel while Review is in flight stays cancelled.
+#[test]
+fn a_cancel_during_resolve_stays_cancelled() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    let out = r.store.resolve_held(|_| {
+        r.store.clear().expect("clear");
+        Ok(view_for(EXP_T0_PLUS_60))
+    });
+    assert!(out.is_err());
+    assert!(r.store.get().is_none());
+    assert!(slot(&r).is_none());
+}
+
+/// Cancel during a keyring outage: the persisted invite can't be deleted yet. It must not come
+/// back once the keyring does, and the delete is retried then.
+#[test]
+fn a_cancel_during_a_keyring_outage_does_not_come_back() {
+    let r = rig();
+    r.store.set(&link()).expect("set");
+    assert!(slot(&r).is_some());
+    r.kr.dead.store(true, Ordering::SeqCst);
+    assert!(r.store.clear().is_err(), "the outage is reported");
+    assert!(r.store.get().is_none());
+    r.kr.dead.store(false, Ordering::SeqCst);
+    assert!(r.store.get().is_none(), "not resurrected");
+    assert!(r.store.link().is_none());
+    assert!(slot(&r).is_none(), "the delete was retried");
+}
+
+/// A new invite after a failed cancel is a new invite: it is held, and the old slot stays dead.
+#[test]
+fn a_new_invite_after_a_failed_cancel_is_held() {
+    let r = rig();
+    r.store.set(&link()).expect("set A");
+    r.kr.dead.store(true, Ordering::SeqCst);
+    assert!(r.store.clear().is_err());
+    let v = r.store.set("citrate://join/Zz9yX8wv").expect("set B");
+    assert!(!v.persisted);
+    assert_eq!(
+        r.store.link().as_deref().map(|s| s.as_str()),
+        Some("Zz9yX8wv")
+    );
+    r.kr.dead.store(false, Ordering::SeqCst);
+    assert_eq!(
+        r.store.link().as_deref().map(|s| s.as_str()),
+        Some("Zz9yX8wv"),
+        "B, never A"
+    );
+    let v = r.store.set("citrate://join/Zz9yX8wv").expect("set B again");
+    assert!(v.persisted);
+    assert_eq!(
+        r.store.link().as_deref().map(|s| s.as_str()),
+        Some("Zz9yX8wv")
+    );
+}
+
+/// A slot that is valid JSON but whose link no longer parses is dropped, not trusted.
+#[test]
+fn a_well_formed_slot_with_a_bad_link_is_dropped() {
+    let r = rig();
+    for bad in ["https://evil.example/join/Ab3dE7gh", "Ab3dE7gh#short", ""] {
+        let json = serde_json::json!({
+            "link": bad,
+            "stored_at": T0,
+            "expires_at": T0 + 60,
+        });
+        r.kr.slots.lock().expect("lock").insert(
+            PENDING_JOIN_ACCOUNT.to_string(),
+            serde_json::to_vec(&json).expect("json"),
+        );
+        assert!(r.store.get().is_none(), "{bad:?}");
+        assert!(r.store.link().is_none(), "{bad:?}");
+        assert!(slot(&r).is_none(), "{bad:?}");
+    }
 }

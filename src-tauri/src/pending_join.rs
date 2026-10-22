@@ -207,6 +207,32 @@ impl PendingJoinStore {
             }
         }
     }
+
+    /// Resolve the held invite with `resolve` (the join service, injected so tests can drive it),
+    /// then apply the answer to the hold: a signed expiry caps it, and a code the service reports
+    /// gone is wiped. The network call runs without holding anything locked.
+    pub(crate) fn resolve_held(
+        &self,
+        resolve: impl FnOnce(&str) -> Result<ResolvedView, JoinError>,
+    ) -> Result<ResolvedView, String> {
+        let link = self
+            .link()
+            .ok_or_else(|| "join: no invite is waiting".to_string())?;
+        match resolve(&link) {
+            Ok(v) => {
+                if let Some(exp) = join::parse_iso_utc_secs(&v.exp) {
+                    self.cap_expiry(exp);
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                if e == JoinError::NotFound {
+                    let _ = self.clear();
+                }
+                Err(e.to_string())
+            }
+        }
+    }
 }
 
 /// Managed state: the process-wide pending-invite store.
@@ -274,30 +300,10 @@ pub async fn pending_join_clear(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn pending_join_resolve(app: tauri::AppHandle) -> Result<ResolvedView, String> {
     crate::blocking::off_main(move || {
-        let link = with_store(&app, |s| {
-            s.link()
-                .ok_or_else(|| "join: no invite is waiting".to_string())
-        })?;
         let join_state = app
             .try_state::<crate::join::JoinState>()
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        match join_state.0.resolve(&link) {
-            Ok(v) => {
-                if let Some(exp) = join::parse_iso_utc_secs(&v.exp) {
-                    let _ = with_store(&app, |s| {
-                        s.cap_expiry(exp);
-                        Ok(())
-                    });
-                }
-                Ok(v)
-            }
-            Err(e) => {
-                if e == JoinError::NotFound {
-                    let _ = with_store(&app, |s| s.clear());
-                }
-                Err(e.to_string())
-            }
-        }
+        with_store(&app, |s| s.resolve_held(|link| join_state.0.resolve(link)))
     })
     .await
 }
