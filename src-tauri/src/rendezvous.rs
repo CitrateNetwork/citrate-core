@@ -201,8 +201,8 @@ pub(crate) fn is_relay_unsupported(err: &RvError) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Whether a scheduled tick should run. A tick starts the comms daemon if it isn't running, so the
-/// scheduled tick only does that when this device has rendezvous work: invites it minted, or joins
-/// it asked for. Once the daemon is running (any comms use this session), every tick runs.
+/// scheduled tick only does that when this device has rendezvous work ([`local_work`]): live invites
+/// it minted, or joins it asked for. Once the daemon is running (any comms use this session), every tick runs.
 pub(crate) fn should_tick(daemon_running: bool, local_work: bool) -> bool {
     daemon_running || local_work
 }
@@ -279,12 +279,37 @@ pub(crate) fn note_active_join(app: &tauri::AppHandle, group: &str) {
 }
 
 fn has_local_work(app: &tauri::AppHandle) -> bool {
-    let joins = active_joins_path(app)
+    let joins: Vec<String> = active_joins_path(app)
         .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
-        .map(|g| !g.is_empty())
-        .unwrap_or(false);
-    joins || !crate::invites::load(app).is_empty()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    local_work(
+        &joins,
+        &crate::invites::load(app),
+        crate::invites::now_unix(),
+    )
+}
+
+/// Whether this device has rendezvous work: a join still in progress, or an invite it minted with a
+/// rendezvous that hasn't expired. Pre-S2 invites (no lookup) and invites past their TTL have nothing
+/// to tick, so they never start the daemon. `now_unix` is in seconds, like `created_at`.
+pub(crate) fn local_work(
+    active_joins: &[String],
+    invites: &[crate::invites::PendingInvite],
+    now_unix: u64,
+) -> bool {
+    let ttl_secs = crate::invites::INVITE_TTL_MS / 1000;
+    !active_joins.is_empty()
+        || invites
+            .iter()
+            .any(|i| !i.lookup.is_empty() && i.created_at.saturating_add(ttl_secs) > now_unix)
+}
+
+/// Whether the scheduled tick keeps running after this tick's result. A daemon without the
+/// rendezvous ops stops it for the session (the sidecar doesn't change while the app runs); the
+/// Groups screen's own tick still runs on demand.
+pub(crate) fn scheduled_tick_continues(tick: &Result<TickViews, RvError>) -> bool {
+    !matches!(tick, Err(RvError::DaemonUnsupported))
 }
 
 /// Start the background tick: once shortly after app start, then every [`TICK_INTERVAL`] while the
@@ -296,8 +321,10 @@ pub fn spawn_ticker(app: tauri::AppHandle) {
         .spawn(move || {
             std::thread::sleep(FIRST_TICK_DELAY);
             loop {
-                if should_tick(crate::comms::daemon_running(), has_local_work(&app)) {
-                    let _ = tick_and_emit(&app);
+                if should_tick(crate::comms::daemon_running(), has_local_work(&app))
+                    && !scheduled_tick_continues(&tick_and_emit(&app))
+                {
+                    return;
                 }
                 std::thread::sleep(TICK_INTERVAL);
             }

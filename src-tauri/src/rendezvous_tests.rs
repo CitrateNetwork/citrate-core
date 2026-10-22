@@ -478,3 +478,65 @@ fn the_legacy_fallback_sends_the_daemon_encoding() {
     let t = token();
     assert_eq!(crate::invites::redeem_token_wire(&t).as_deref(), Ok(token_ipc_hex(&t).as_str()));
 }
+
+// ---- review round 2: which devices tick ----------------------------------------------------------
+
+fn pending(lookup: &str, created_at: u64) -> crate::invites::PendingInvite {
+    crate::invites::minted_invite(
+        "g",
+        "t",
+        "@h",
+        created_at,
+        String::new(),
+        String::new(),
+        decision(lookup),
+    )
+}
+
+/// A mint that recorded `lookup` ("" = no rendezvous was opened).
+fn decision(lookup: &str) -> crate::invites::MintDecision {
+    let open = if lookup.is_empty() {
+        Err(RvError::DaemonUnsupported)
+    } else {
+        Ok(crate::comms::RendezvousOpened {
+            lookup: lookup.to_string(),
+            expires_at: 1,
+        })
+    };
+    crate::invites::decide_mint(Ok(()), open, lookup).expect("the legacy publish worked")
+}
+
+/// pysol-dev #3: only an unexpired invite with a rendezvous, or a join in progress, is local work.
+/// Pre-S2 invites (no lookup) and invites past their 14-day TTL never start the daemon.
+#[test]
+fn local_work_counts_only_live_rendezvous_invites_and_active_joins() {
+    let now = 1_800_000_000;
+    let day = 24 * 60 * 60;
+    let lookup = "ab".repeat(32);
+    assert!(!local_work(&[], &[], now));
+    assert!(local_work(&["g".to_string()], &[], now));
+    assert!(local_work(&[], &[pending(&lookup, now - day)], now));
+    assert!(local_work(&[], &[pending(&lookup, now - 14 * day + 60)], now));
+    assert!(
+        !local_work(&[], &[pending("", now - day)], now),
+        "a pre-S2 invite has no rendezvous to tick"
+    );
+    assert!(
+        !local_work(&[], &[pending(&lookup, now - 14 * day)], now),
+        "an invite past its TTL has nothing left at the relay"
+    );
+    assert!(
+        !local_work(&[], &[pending(&lookup, now - 30 * day), pending("", now)], now),
+        "a mix of expired and pre-S2 invites"
+    );
+}
+
+/// pysol-dev #3 (optional part): a daemon without the rendezvous ops stops the scheduled tick for
+/// the session (the sidecar doesn't change while the app runs); any other answer keeps it.
+#[test]
+fn an_unsupported_daemon_stops_the_scheduled_tick() {
+    assert!(!scheduled_tick_continues(&Err(RvError::DaemonUnsupported)));
+    assert!(scheduled_tick_continues(&Err(RvError::Ipc("timed out".into()))));
+    assert!(scheduled_tick_continues(&Err(RvError::Daemon("relay_unsupported".into()))));
+    assert!(scheduled_tick_continues(&Ok(TickViews::default())));
+}
