@@ -4601,6 +4601,12 @@ export class Store {
     onNotSent?: WalletReview["onNotSent"];
     onResolved?: WalletReview["onResolved"];
   }): Promise<boolean> {
+    // Defence in depth: the guarded entry (requestValidatorActivation) reconciles a recorded
+    // activation tx first; this one never builds a second ceremony while one is recorded.
+    if (this.state.s7TxHash) {
+      this.toast("Activation already sent — waiting for it to be included.");
+      return false;
+    }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
