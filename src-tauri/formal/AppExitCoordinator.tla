@@ -57,7 +57,7 @@ RestartLike == {"Restart", "InstallWin", "InstallUnix"}
 Triggers    == QuitLike \cup RestartLike
 Mutants     == {"none", "InstallWinNoClosing", "AdmitWhileClosing", "FinalAfterExpiry",
                 "HermesCompleteEarly", "ReconnectAfterReport", "OthersFirst",
-                "QuitWaitsForever", "TerminateNoDrain", "QuitNoActuation"}
+                "QuitWaitsForever", "TerminateNoDrain", "QuitNoActuation", "TickWaitsOnDispatch"}
 
 ASSUME Hermes \notin Owners
 ASSUME DeadlineTicks \in Nat \ {0} /\ HermesSubTicks \in 1..DeadlineTicks
@@ -490,6 +490,14 @@ X10_UnpreventableExitDrains ==
 X11_CompleteIsHonest ==
     reported = "Complete" => (AllComplete /\ hermesChildren = "Complete")
 
+\* X-13 (Codex review of core#345 at ebf978c): the absolute deadline runs on
+\* its own. While Closing with time left, a tick is always possible, whatever
+\* the coordinator has or has not dispatched (SPEC-001: the deadline is armed
+\* at admission and published by its own thread; it never waits on drain
+\* progress). Mutant "TickWaitsOnDispatch" gates the tick on drain dispatch.
+X13_DeadlineIndependentOfDispatch ==
+    (app = "Closing" /\ deadlineLeft > 0) => ENABLED Tick
+
 \* X-12 (D-15): an exit after an expired Quit-like close actuated every
 \* owner that was not Complete, and reports Incomplete.
 X12_QuitActuatesHeldScopes ==
@@ -563,5 +571,15 @@ W_TerminateExits == ~(app = "Exited" /\ trigger = "Terminate" /\ ~forced)
 
 \* QuitNoActuation: the final actuation fires.
 W_FinalActuationFires == actuated = {}
+
+\* TickWaitsOnDispatch: the app is Closing and Hermes has not yet been told
+\* to drain (where a dispatch-gated tick would stop the deadline).
+W_ClosingBeforeDispatch == ~(app = "Closing" /\ ownerState[Hermes] = "Running")
+
+\* The race itself (Codex, ebf978c): the deadline expires before the drain
+\* is dispatched. X-5 then refuses a restart or install, and X-11 / X-12
+\* still end a Quit with actuation and an Incomplete report.
+W_ExpiredBeforeDispatch ==
+    ~(app = "Closing" /\ expired /\ ownerState[Hermes] = "Running")
 
 =============================================================================
