@@ -593,12 +593,10 @@ pub fn load_scan(file: &std::path::Path, key: &str) -> WithdrawalScan {
 }
 
 /// C1-W (#371 review) — two scans of the same key, merged so progress never goes back. A newer
-/// generation (a rewind after a reorg) wins the position, the anchor and the claims; within one
-/// generation the larger position wins and claims are unioned (keeping the LATER seen-at height,
-/// which settles later). Ids are kept from both: each is confirmed on chain before it is listed. A
-/// claim is never final by itself: it settles only once the committed position passes the head it
-/// was seen at, so a merge can't hide a withdrawal whose claim was reorged out. The session-only
-/// state comes from `b`, the newer of the two.
+/// generation (a rewind after a reorg) wins the position and the anchor; within one generation the
+/// larger position wins. Ids are kept from both: each is read from contract state on every pass
+/// before it is listed, so no saved state can hide a withdrawal. The session-only state comes from
+/// `b`, the newer of the two.
 pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
     let lead = if a.generation != b.generation {
         if a.generation > b.generation {
@@ -611,22 +609,11 @@ pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
     } else {
         b
     };
-    let claimed = if a.generation != b.generation {
-        lead.claimed.clone()
-    } else {
-        let mut c = a.claimed.clone();
-        for (id, seen) in &b.claimed {
-            let e = c.entry(*id).or_insert(*seen);
-            *e = (*e).max(*seen);
-        }
-        c
-    };
     WithdrawalScan {
         next_block: lead.next_block,
         anchor: lead.anchor.clone(),
         generation: lead.generation,
         ids: a.ids.union(&b.ids).copied().collect(),
-        claimed,
         session: b.session.clone(),
         last_read_confirmed: false,
         last_read_complete: false,
@@ -635,7 +622,7 @@ pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
 }
 
 /// C1-W — save the scan for `key` into `file` (public chain facts only: a block, request ids and
-/// the heads claims were seen at), merged with what is saved ([`merge_scans`]), one save at a time,
+/// the anchor), merged with what is saved ([`merge_scans`]), one save at a time,
 /// written to a temp file and renamed over the old one so a reader never sees a partial file. The
 /// session-only state is never saved.
 pub fn save_scan(file: &std::path::Path, key: &str, scan: &WithdrawalScan) -> std::io::Result<()> {
@@ -684,8 +671,8 @@ pub struct ScanSession {
     pub last_details: std::collections::BTreeMap<u128, WithdrawalDetail>,
 }
 
-/// C1-W — what the paged scan has read for one staker. The saved part (position, ids, claims,
-/// anchor, generation) only advances on evidence of what the node executed; the session part
+/// C1-W — what the paged scan has read for one staker. The saved part (position, ids, anchor,
+/// generation) only advances on evidence of what the node executed; the session part
 /// carries reads forward within this app session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalScan {
@@ -694,11 +681,6 @@ pub struct WithdrawalScan {
     pub next_block: u64,
     /// Every `WithdrawalRequested` id seen for this staker.
     pub ids: std::collections::BTreeSet<u128>,
-    /// Ids read as claimed, with the executed head they were seen at. A claim read at `latest` can
-    /// be reorged out (Codex P1), so it is read again until it SETTLES: once the committed position
-    /// has passed the head it was seen at. A rewind clears every claim.
-    #[serde(default)]
-    pub claimed: std::collections::BTreeMap<u128, u64>,
     /// The executed head `(number, hash)` the position was committed against, checked on the next
     /// read with `citrate_isExecuted` (or, on a node without it, against the executed head).
     #[serde(default)]
@@ -723,21 +705,13 @@ pub struct WithdrawalScan {
 }
 
 impl WithdrawalScan {
-    /// Rewind after a reorg: start again at the deployment block, forget the anchor, the claims
-    /// (they are read again) and the session cursor, and bump the generation.
+    /// Rewind after a reorg: start again at the deployment block, forget the anchor and the
+    /// session cursor, and bump the generation.
     fn rewind(&mut self) {
         self.next_block = LIQUID_STAKING_POOL_DEPLOY_BLOCK;
         self.anchor = None;
-        self.claimed.clear();
         self.session = ScanSession::default();
         self.generation += 1;
-    }
-
-    /// A claim settles once the committed position has passed the head it was seen at.
-    fn claim_settled(&self, id: u128) -> bool {
-        self.claimed
-            .get(&id)
-            .is_some_and(|seen| *seen < self.next_block)
     }
 }
 
@@ -747,12 +721,14 @@ impl WithdrawalScan {
 ///    without it, -32601: a rewind when h1 is below the anchor, or at its height with another
 ///    hash). Any other answer that isn't evidence means no advance this read.
 /// 2. `eth_getLogs` in windows of at most [`LOG_WINDOW_BLOCKS`] up to min(eth_blockNumber, h1),
-///    from the committed position (or the session cursor less the margin); -32005 halves the
-///    window, a retryable -32002 retries it.
+///    from the committed position; -32005 halves the window, a retryable -32002 retries it. Only
+///    when nothing can be committed this read does the session cursor (less the margin) move the
+///    start on: its coverage was read without validated evidence, so it is never committed.
 /// 3. h2 = `citrate_executedHead` again; commit at most min(h1, h2) - EXECUTED_HEAD_MARGIN_BLOCKS
 ///    (nothing when h1 and h2 disagree at one height, or h2 can't be read).
-/// 4. Each listed withdrawal is confirmed from contract state with `withdrawals(id)`, in batches,
-///    resuming across calls.
+/// 4. Every id is read from contract state with `withdrawals(id)` on every pass, in batches,
+///    resuming across calls. A claim is never stored: an `eth_call` at `latest` is not bound to a
+///    validated block, so a claim it shows can be on a branch that is later replaced.
 ///
 /// Without `citrate_executedHead` (-32601, today's public RPC), or with an error, there is no
 /// evidence: nothing is committed (eth_syncing is NOT evidence, owner decision), the session cursor
@@ -830,21 +806,25 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         _ => None,
     };
 
-    // 2. The log paging, from the committed position or the session cursor (less the margin, so
-    // the newest blocks are read again), up to the executed head.
+    // 2. The log paging up to the executed head. With evidence it starts at the committed position:
+    // the session cursor may hold blocks read on a branch that was replaced, or read before there
+    // was evidence (#371 Codex P1), so it is never promoted into committed coverage. Without
+    // evidence nothing is committed, and the session cursor (less the margin, so the newest blocks
+    // are read again) carries the read forward.
     let page_deadline = if h1.is_some() {
         deadline.map(|d| d.checked_sub(H2_RESERVE).unwrap_or(d))
     } else {
         deadline
     };
-    let start = scan
-        .next_block
-        .max(
+    let start = match commit_cap {
+        Some(_) => scan.next_block,
+        None => scan.next_block.max(
             scan.session
                 .next_block
                 .saturating_sub(EXECUTED_HEAD_MARGIN_BLOCKS),
-        )
-        .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
+        ),
+    }
+    .max(LIQUID_STAKING_POOL_DEPLOY_BLOCK);
     let mut from = start;
     // The last block of the contiguous range read in this call; committed only at the end.
     let mut read_to: Option<u64> = None;
@@ -915,14 +895,9 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
         });
     }
 
-    // 4. The withdrawal reads, resuming across calls.
+    // 4. The withdrawal reads, every id on every pass, resuming across calls.
     let low_head = served.unwrap_or(current_block);
-    let wanted: Vec<u128> = scan
-        .ids
-        .iter()
-        .copied()
-        .filter(|id| !scan.claim_settled(*id))
-        .collect();
+    let wanted: Vec<u128> = scan.ids.iter().copied().collect();
     for id in &wanted {
         if !scan.session.pass_results.contains_key(id) && !scan.session.pass_remaining.contains(id)
         {
@@ -943,13 +918,6 @@ pub fn read_pending_withdrawals_with<T: crate::rpc::RpcTransport>(
             .map_err(|e| StakingError::Rpc(e.to_string()))?;
         for (&id, ret) in chunk.iter().zip(rets.iter()) {
             let (staker, salt_wei, request_block, claimed) = decode_withdrawal_tuple(ret)?;
-            if claimed {
-                let e = scan.claimed.entry(id).or_insert(low_head);
-                *e = (*e).max(low_head);
-            } else {
-                // The claim was reorged out (or never was): the withdrawal is pending again.
-                scan.claimed.remove(&id);
-            }
             scan.session.pass_results.insert(
                 id,
                 WithdrawalDetail {

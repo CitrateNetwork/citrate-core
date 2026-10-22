@@ -945,7 +945,6 @@ fn saved_scan_progress_survives_a_relaunch() {
     let scan = WithdrawalScan {
         next_block: 40_001,
         ids: [9u128].into_iter().collect(),
-        claimed: [(4u128, 39_000u64)].into_iter().collect(),
         anchor: Some((40_000, stub_hash(40_000))),
         generation: 2,
         ..Default::default()
@@ -953,6 +952,12 @@ fn saved_scan_progress_survives_a_relaunch() {
     save_scan(&file, "k", &scan).expect("save");
     assert_eq!(load_scan(&file, "k"), scan);
     assert_eq!(load_scan(&file, "other"), WithdrawalScan::default());
+    // A file saved by an earlier build carries stored claims: they are ignored (every id is read
+    // again), and the position, ids and anchor load.
+    std::fs::write(&file, serde_json::json!({ "k": {
+        "next_block": 40_001, "ids": [9], "claimed": { "4": 39_000 },
+        "anchor": [40_000, stub_hash(40_000)], "generation": 2 } }).to_string()).expect("write");
+    assert_eq!(load_scan(&file, "k"), scan, "an earlier file's claims are dropped");
     std::fs::write(&file, "not json").expect("write");
     assert_eq!(load_scan(&file, "k"), WithdrawalScan::default(), "a corrupt file starts over");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1070,17 +1075,16 @@ fn without_applied_tip_evidence_the_position_does_not_advance() {
     assert!(scan.next_block <= LIQUID_STAKING_POOL_DEPLOY_BLOCK, "{}", scan.next_block);
 }
 
-// Codex P2: a claimed id is a tombstone. Merging an older scan that still lists it, and reading
-// again, never brings it back, and it is not read from the chain again.
+// Codex P2: a claimed id is never listed while the chain says it is claimed, after a merge with an
+// older scan that still lists it too.
 #[test]
 fn a_claimed_id_is_never_listed_while_claimed() {
     let rpc = RpcClient::with_transport(ChainStub::new(3_000, vec![(30, 1_000, true), (31, 1_100, false)]));
     let mut scan = WithdrawalScan::default();
-    read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
-    assert!(scan.claimed.contains_key(&30));
+    let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, None).expect("read");
+    assert_eq!(ids_of(&got), vec!["31"], "claimed: not listed");
     let older = WithdrawalScan { next_block: 500, ids: [30u128, 31].into_iter().collect(), ..Default::default() };
     let mut merged = merge_scans(&older, &scan);
-    assert!(merged.claimed.contains_key(&30), "the claim survives a merge");
     let got = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut merged, None).expect("read");
     assert_eq!(ids_of(&got), vec!["31"], "still claimed: not listed");
 }
@@ -1347,33 +1351,30 @@ fn a_claim_reorged_out_is_listed_again_after_persistence_and_merge() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// A claim settles once the committed position (the margin below the executed head) has passed the
-// head it was seen at; until then it is read again every time. A rewind unsettles it.
+// A claim is never final: a claimed id is read from contract state on every pass, however far the
+// committed position has moved past it, and after a rewind.
 #[test]
-fn a_claim_is_reread_until_settled_and_again_after_a_rewind() {
+fn a_claimed_id_is_read_on_every_pass() {
     let at = |head: u64| {
         let rpc = RpcClient::with_transport(ChainStub::new(head, vec![(7, 1_000, true)]));
         *rpc.transport().executed_head.borrow_mut() = Some(head);
         rpc
     };
     let mut scan = WithdrawalScan::default();
-    let r = at(5_000);
+    for head in [5_000, 5_000, 5_300, 5_300, 9_000] {
+        let r = at(head);
+        let rows = read_pending_withdrawals_with(&r, STAKER_ADDR, &mut scan, None).unwrap_or_default();
+        assert!(r.transport().asked_ids(0).contains(&7), "head {head}: the claimed id is read");
+        assert!(rows.is_empty(), "head {head}: claimed, not listed");
+    }
+    assert!(scan.next_block > 5_000);
+    // A reorg at the anchor (citrate_isExecuted says false) rewinds; the id is read again.
+    let r = at(9_000);
+    let anchor = scan.anchor.clone().map(|a| a.0).unwrap_or(9_000);
+    r.transport().reorged.borrow_mut().insert(anchor, format!("0x{}", "ee".repeat(32)));
     read_pending_withdrawals_with(&r, STAKER_ADDR, &mut scan, None).unwrap_or_default();
-    let n = r.transport().requests.borrow().len();
-    read_pending_withdrawals_with(&r, STAKER_ADDR, &mut scan, None).unwrap_or_default();
-    assert!(r.transport().asked_ids(n).contains(&7), "an unsettled claim is read again");
-    // The executed head moves 300 blocks on: the claim seen at 5000 is now margin-deep.
-    let r2 = at(5_300);
-    read_pending_withdrawals_with(&r2, STAKER_ADDR, &mut scan, None).unwrap_or_default();
-    let n2 = r2.transport().requests.borrow().len();
-    read_pending_withdrawals_with(&r2, STAKER_ADDR, &mut scan, None).unwrap_or_default();
-    assert!(!r2.transport().asked_ids(n2).contains(&7), "a settled claim is not read again");
-    // A reorg at the anchor (citrate_isExecuted says false) rewinds and unsettles it.
-    let r3 = at(5_300);
-    let anchor = scan.anchor.clone().map(|a| a.0).unwrap_or(5_200);
-    r3.transport().reorged.borrow_mut().insert(anchor, format!("0x{}", "ee".repeat(32)));
-    read_pending_withdrawals_with(&r3, STAKER_ADDR, &mut scan, None).unwrap_or_default();
-    assert!(r3.transport().asked_ids(0).contains(&7), "a rewind makes the claim unsettled again");
+    assert_eq!(scan.generation, 1);
+    assert!(r.transport().asked_ids(0).contains(&7), "after a rewind: read again");
 }
 
 // Codex P1 (#371 @5b6445a): a session cursor read on a branch that was replaced, or read with no
