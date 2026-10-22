@@ -3,7 +3,7 @@ created: 2026-10-19T01:10:00Z
 branch: beta/k1a-gate0-tla
 author: "Larry Klosowski + Claude Opus 5.5 (MAC lane)"
 status: active
-updated: 2026-10-22 (review round 3: Codex P2 at 59cecef, Probed credit must span healthy_after in time; review round 2: pysol-dev changes requested at 8ea9d53, vacuous MemberStart fixed; review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
+updated: 2026-10-22 (review round 4: DGX changes requested at 5d1e255, INV-7 over an observer; review round 3: Codex P2 at 59cecef, Probed credit must span healthy_after in time; review round 2: pysol-dev changes requested at 8ea9d53, vacuous MemberStart fixed; review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
 sprint: SCL-S1
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -455,6 +455,75 @@ counter, so it accepted that trace.
 coverage check clean, `--self-test` passes. All 24 SidecarSupervisor configs match; the
 AppExitCoordinator configs are unchanged. Rule-2 record for round 3: TLC configs go from 40 to 43
 (7 green, 16 mutants, 20 witnesses). Still no Rust or TypeScript change.
+
+## Review round 4: DGX changes requested at `5d1e255` (S1.1)
+
+**B1. INV-7 restated the guard.** Round 3 wrote INV-7 over `okFirst`/`okLast`, the same values the
+`ResetCredit` guard reads, so a defect in that bookkeeping passed every invariant. DGX showed two
+one-line mutants that did.
+
+- **Observer.** New variable `okAges`, the set of ages of the successes in the current
+  uninterrupted window. `ProbeOk` adds the age. It is cleared wherever the window really ends:
+  `ResetWindow`, a current spawn, a stale tick, and a grace failure or timeout. No action's guard
+  reads it, and no mutant changes it.
+- **INV-7.** `credited => okAges # {} /\ ObservedSpan >= HealthyAfterTicks`, with
+  `ObservedSpan == Max(okAges) - Min(okAges)`.
+- **Mutant M1 `FirstNotRecorded`** (DGX's M1 as written): `ProbeOk` never stamps the first
+  success. TLC reports INV-7 violated (326 states). Witness `ReachFirstSuccessLate`: a first
+  success can arrive after age 0 (151).
+- **Mutant M2 `StaleKeepsWindow`** (DGX's M2, strengthened): a stale tick keeps `okWindow`,
+  `okFirst` and `okLast`. TLC reports INV-7 violated (1050). Witness `ReachStaleWithOpenWindow`
+  (295).
+  - Why strengthened: DGX's literal M2 keeps only `okFirst`/`okLast`. That is an equivalent
+    mutant. The stale tick still zeroes `okWindow`, `ProbeOk` re-stamps `okFirst` whenever
+    `okWindow = 0`, and `ResetCredit` needs `okWindow > 0`. So a kept `okFirst`/`okLast` is never
+    read before it is overwritten.
+  - Checked: the literal M2 on the head reports no error on `_Probed` (23037 states), as it must.
+    Keeping the whole window is the version that changes behaviour, and the observer catches it.
+- **Red first.** 6947b99 adds both mutants and witnesses against the round-3 INV-7. `tlc_expect`
+  reports MISMATCH for both (no error, 15269 and 18905 states).
+- **Revert check.** With INV-7 put back to the guard expression, both mutants report no error
+  (25069, 24919). With the fix, both are violated. DGX's literal M1 on the head: INV-7 violated on
+  `_Probed`.
+- **Non-blocking 1.** A success is stamped at the age its result is handled (completion), not at
+  `ProbeBegin`. The `ProbeOk` comment records this, and S3.2 must use the same instant.
+
+**B2. Committed bytecode.** `src-tauri/formal/__pycache__/tla_frame_lint.cpython-313.pyc` came in
+with 08f7c79. It is now untracked. `__pycache__/` and `*.pyc` are in `.gitignore`. `tlc_expect.py`
+sets `sys.dont_write_bytecode`, and a full run leaves no `__pycache__`. Rewriting history to drop
+it from 08f7c79 needs the owner's OK for a force-push (Rule 10), so it is not done here.
+
+### TLC results after round 4
+
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802), jar sha256
+936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88.
+`tlc_expect.py SidecarSupervisor AppExitCoordinator` exit 0. Frame lint, coverage check and
+`--self-test` are clean. All 47 configs match: 7 green, 18 mutants, 22 witnesses.
+
+Green distinct states:
+
+| Config | Round 3 | Round 4 |
+|---|---|---|
+| `SidecarSupervisor` | 1002 | 1002 |
+| `SidecarSupervisor_ForkBomb` | 24 | 24 |
+| `SidecarSupervisor_ForkBombAutoRestart` | 188 | 188 |
+| `SidecarSupervisor_Probed` | 18135 | 22729 |
+| `SidecarSupervisor_ProbedForkBomb` | 108 | 108 |
+| `SidecarSupervisor_ProbedForkBombAutoRestart` | 783 | 783 |
+| `AppExitCoordinator` | 64904 | 64904 |
+
+`_Probed` grew because of `okAges`.
+
+| Config | Expected | TLC result | Distinct states | Depth | Match |
+|---|---|---|---|---|---|
+| `SidecarSupervisor_MutFirstNotRecorded` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 326 | 13 | yes |
+| `SidecarSupervisor_MutStaleKeepsWindow` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 1050 | 15 | yes |
+| `SidecarSupervisor_ReachFirstSuccessLate` | violated W_FirstSuccessLate | violated W_FirstSuccessLate | 151 | 10 | yes |
+| `SidecarSupervisor_ReachStaleWithOpenWindow` | violated W_StaleWithOpenWindow | violated W_StaleWithOpenWindow | 295 | 11 | yes |
+| `SidecarSupervisor_MutSampleCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 385 | 13 | yes |
+| `SidecarSupervisor_MutElapsedCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 69 | 13 | yes |
+
+Rule-2 record for round 4: TLC configs go from 43 to 47. Still no Rust or TypeScript change.
 
 ### Not done here
 

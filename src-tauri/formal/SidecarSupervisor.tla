@@ -94,6 +94,9 @@ VARIABLES
     okWindow,      \* consecutive fresh successful samples of this incarnation
     okFirst,       \* age of the first success of the current window (0 if none)
     okLast,        \* age of the latest success of the current window (0 if none)
+    okAges,        \* OBSERVER (no action's guard reads it): the ages of the successes
+                   \*   of the current uninterrupted window, cleared where it ends.
+                   \*   INV-7 is stated over it, independently of okFirst/okLast.
     okSinceSpawn,  \* some sample of this incarnation succeeded
     credited,      \* retry credit granted for the current uninterrupted window
     age,           \* ticks since this incarnation became Alive
@@ -106,7 +109,7 @@ VARIABLES
 
 ctrl    == << phase, desired, intentSeq, gen, inc, tickets, child, replacing >>
 probing == << probe, workers >>
-health  == << okWindow, okFirst, okLast, okSinceSpawn, credited, age, sinceOk, readiness, lastOk >>
+health  == << okWindow, okFirst, okLast, okAges, okSinceSpawn, credited, age, sinceOk, readiness, lastOk >>
 vars    == << ctrl, probing, health, failures, crashes, sinceMember >>
 
 Min(a, b) == IF a < b THEN a ELSE b
@@ -116,6 +119,12 @@ Tag == [g |-> gen, i |-> inc]
 \* The ticks the successful samples of the current window span, first to
 \* latest (SPEC-001: "successful samples span healthy_after").
 OkSpan == okLast - okFirst
+
+SetMin(S) == CHOOSE x \in S : \A y \in S : x <= y
+SetMax(S) == CHOOSE x \in S : \A y \in S : x >= y
+
+\* The span the successes really cover, from the observer alone.
+ObservedSpan == IF okAges = {} THEN 0 ELSE SetMax(okAges) - SetMin(okAges)
 
 \* What a teardown still has to release (03 calls this `cleanup`). Derived
 \* from the owned resources so it cannot drift from them.
@@ -133,6 +142,7 @@ ResetWindow ==
     /\ okWindow' = 0
     /\ okFirst' = 0
     /\ okLast' = 0
+    /\ okAges' = {}
     /\ okSinceSpawn' = FALSE
     /\ credited' = FALSE
     /\ age' = 0
@@ -153,6 +163,7 @@ TypeOK ==
     /\ okWindow \in 0..HealthyAfterTicks
     /\ okFirst \in 0..MaxAge
     /\ okLast \in okFirst..MaxAge
+    /\ okAges \subseteq 0..MaxAge
     /\ okSinceSpawn \in BOOLEAN
     /\ credited \in BOOLEAN
     /\ age \in 0..MaxAge
@@ -178,6 +189,7 @@ Init ==
     /\ okWindow = 0
     /\ okFirst = 0
     /\ okLast = 0
+    /\ okAges = {}
     /\ okSinceSpawn = FALSE
     /\ credited = FALSE
     /\ age = 0
@@ -337,12 +349,13 @@ SpawnReturns(t) ==
             /\ okWindow' = 0
             /\ okFirst' = 0
             /\ okLast' = 0
+            /\ okAges' = {}
             /\ okSinceSpawn' = FALSE
             /\ credited' = FALSE
             /\ age' = 0
             /\ sinceOk' = 0
             /\ readiness' = SpawnReadiness
-       ELSE UNCHANGED << phase, okWindow, okFirst, okLast, okSinceSpawn, credited, age, sinceOk, readiness >>
+       ELSE UNCHANGED << phase, okWindow, okFirst, okLast, okAges, okSinceSpawn, credited, age, sinceOk, readiness >>
     /\ UNCHANGED << desired, intentSeq, gen, inc, replacing, probing, lastOk, failures, crashes, sinceMember >>
 
 \* The OS spawn fails (bad path, EACCES). Counted only for the current
@@ -399,7 +412,7 @@ ResetCredit ==
        ELSE CanHealthy /\ age >= HealthyAfterTicks
     /\ failures' = 0
     /\ credited' = TRUE
-    /\ UNCHANGED << ctrl, probing, okWindow, okFirst, okLast, okSinceSpawn, age, sinceOk, readiness,
+    /\ UNCHANGED << ctrl, probing, okWindow, okFirst, okLast, okAges, okSinceSpawn, age, sinceOk, readiness,
                     lastOk, crashes, sinceMember >>
 
 \* Backoff elapsed: back to Starting; admission still checks the intent.
@@ -434,6 +447,8 @@ TickStep ==
            /\ okWindow' = IF endWin THEN 0 ELSE okWindow
            /\ okFirst' = IF endWin THEN 0 ELSE okFirst
            /\ okLast' = IF endWin THEN 0 ELSE okLast
+           \* The observer ends with the real window (never mutated).
+           /\ okAges' = IF stale THEN {} ELSE okAges
            /\ credited' = IF mutCredit THEN TRUE ELSE IF stale THEN FALSE ELSE credited
            /\ failures' = IF mutCredit THEN 0 ELSE failures
     /\ UNCHANGED << ctrl, probing, okSinceSpawn, lastOk, crashes, sinceMember >>
@@ -465,6 +480,10 @@ ProbeBegin ==
 \* worker) is accepted, the stale-completion defect INV-12 is about.
 \* Mutant "FirstNotRecorded": the first success of a window is not stamped, so
 \* the span is measured from the window's reset value instead.
+\* A success is stamped with the age at which its result is handled (the
+\* worker's completion), not at ProbeBegin. A slow first probe shortens the
+\* measured span (conservative); a slow last one lengthens it by at most one
+\* probe's run time. SCL-S3.2 must use the same instant (result handled).
 ProbeOk(w) ==
     /\ CanHealthy
     /\ w \in workers
@@ -475,6 +494,7 @@ ProbeOk(w) ==
     /\ okWindow' = Min(okWindow + 1, HealthyAfterTicks)
     /\ okFirst' = IF okWindow = 0 /\ Mutant # "FirstNotRecorded" THEN age ELSE okFirst
     /\ okLast' = age
+    /\ okAges' = okAges \cup {age}
     /\ okSinceSpawn' = TRUE
     /\ readiness' = "Ready"
     /\ lastOk' = [g |-> w.g, i |-> w.i]
@@ -494,6 +514,7 @@ ProbeFail(w) ==
        THEN /\ okWindow' = 0
             /\ okFirst' = 0
             /\ okLast' = 0
+            /\ okAges' = {}
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
             /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
@@ -515,6 +536,7 @@ ProbeTimeout(w) ==
        THEN /\ okWindow' = 0
             /\ okFirst' = 0
             /\ okLast' = 0
+            /\ okAges' = {}
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
             /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
@@ -694,8 +716,11 @@ INV_StopNeverSpawns ==
 \* successful samples span healthy_after in time (SPEC-001 line 80), not
 \* from a number of samples taken without time passing (Codex review of
 \* core#345 at 59cecef).
+\* Stated over the observer okAges, which no guard reads (DGX review of
+\* core#345 at 5d1e255): a defect in the guard's own bookkeeping (okWindow,
+\* okFirst, okLast) cannot make the invariant agree with it.
 INV_CreditOnlyFromAttestedHealth ==
-    (Profile = "Probed" /\ credited) => (okWindow > 0 /\ OkSpan >= HealthyAfterTicks)
+    (Profile = "Probed" /\ credited) => (okAges # {} /\ ObservedSpan >= HealthyAfterTicks)
 
 \* INV-8 (defect (b)): no credit while every sample since the spawn failed
 \* or timed out.

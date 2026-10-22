@@ -27,6 +27,7 @@ import glob, hashlib, os, re, shutil, subprocess, sys, tempfile
 
 FORMAL = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, FORMAL)
+sys.dont_write_bytecode = True  # no __pycache__ next to the models (it was once committed)
 import tla_frame_lint  # noqa: E402
 
 JAVA = os.environ.get("JAVA") or next(
