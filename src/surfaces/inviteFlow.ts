@@ -8,7 +8,7 @@
 //
 // Data sources (Rule 7): the comms relay (`group_invite_create` / `group_invite_revoke`) and the
 // citrate.ai join service through the Rust join client (`join_mint` / `join_attach` / `join_revoke`).
-import type { InvitesDomain, JoinDomain, JoinMinted } from "../bridge/domains";
+import type { InvitesDomain, JoinCodeEntry, JoinDomain, JoinMinted } from "../bridge/domains";
 import { joinErrorKind, joinErrorMessage, type JoinGoalId } from "./referral";
 
 export interface InviteDeps {
@@ -82,6 +82,32 @@ export async function revokeDirectInvite(d: InviteDeps, groupId: string, code: s
   const results = await Promise.allSettled(jobs);
   const failed = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
   if (failed) throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
+}
+
+// --- The member's own codes, recovered from the service (`join.list`) ----------------------------
+// The inviter's panel keeps a fresh link only in component state, so after the view unmounts the
+// member's codes come back from `GET /api/join/mine`. A pending direct code can be finished while
+// this app run still holds its sealed envelope (Rust memory); any live code can be revoked.
+
+export type CodeAction = "finish" | "revoke";
+
+/** What the member can do with one of their codes. */
+export function codeActions(_e: JoinCodeEntry): CodeAction[] {
+  // RED stub: the old behaviour (no recovered actions).
+  return [];
+}
+
+export type FinishOutcome = { kind: "link"; minted: JoinMinted } | { kind: "pending"; minted: JoinMinted } | { kind: "error"; message: string };
+
+/** Finish a pending direct code (attach its sealed invite). */
+export async function finishPendingCode(_d: Pick<InviteDeps, "join">, _code: string): Promise<FinishOutcome> {
+  // RED stub.
+  return { kind: "error", message: "" };
+}
+
+/** Revoke one of the member's codes at the service. */
+export async function revokeCode(_d: Pick<InviteDeps, "join">, _code: string): Promise<void> {
+  // RED stub.
 }
 
 /** "Expires 1 Nov 2026" from the service's ISO expiry; "—" when it can't be read (never a guess). */

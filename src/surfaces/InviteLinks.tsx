@@ -169,6 +169,12 @@ export function copyLink(store: Pick<Store, "toast">, text: string): void {
   else store.toast("Couldn't copy. Select the link and copy it.");
 }
 
+/** The member's invite links, recovered from the join service (survives navigation). */
+export function YourInviteLinks(_p: { store: Pick<Store, "toast">; version?: number }) {
+  // RED stub: nothing is recovered.
+  return null;
+}
+
 export function InviteLinks({ store, groupId, groupName, onChanged }: { store: Store; groupId: string; groupName: string; onChanged?: () => void }) {
   const [direct, setDirect] = useState<DirectOutcome | null>(null);
   const [pub, setPub] = useState<PublicOutcome | null>(null);
