@@ -167,8 +167,13 @@ describe("V12 — no in-app price until core-membership serves one", () => {
     }
   });
 
-  it("the pricing link points at the membership site", () => {
-    expect(MEMBERSHIP_PRICING_URL).toBe("https://membership.citrate.ai");
+  // #349 review (pysol-dev): membership.citrate.ai describes the membership service and shows no
+  // price; the public page that states it is citrate.ai/membership. Not the checkout service either.
+  it("the pricing link points at the public page that states the price", () => {
+    expect(MEMBERSHIP_PRICING_URL).toBe("https://citrate.ai/membership");
+    const host = new URL(MEMBERSHIP_PRICING_URL).host;
+    expect(host).not.toBe("membership.citrate.ai");
+    expect(host).not.toBe(new URL(freshState("p1").coreMembershipUrl).host);
   });
 });
 
