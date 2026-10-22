@@ -1934,12 +1934,60 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
     assert!(!k6_ref_in_tree(&file, "/etc/hosts", &root));
 }
 
+/// The trees each kind of build may compile sources from (see
+/// [`k6_compiled_sources_stay_in_the_scanned_trees`]).
+struct K6DepRoots {
+    /// kit builds: kit/src only.
+    kit: Vec<std::path::PathBuf>,
+    /// `.rs` entries of an app build: src-tauri/src and the app build script's OUT_DIR.
+    app: Vec<std::path::PathBuf>,
+    /// Other entries of an app build (data read by `include_str!` / `include_bytes!`).
+    data: Vec<std::path::PathBuf>,
+    /// The workspace manifest, which clippy records for its lint settings.
+    manifest: Option<std::path::PathBuf>,
+}
+
+/// The entries of one dep-info file (`text`, of a kit build when `is_kit`) that lie outside the
+/// trees `roots` allows, for workspace root `ws`.
+fn k6_dep_info_violations(
+    text: &str,
+    is_kit: bool,
+    ws: &std::path::Path,
+    roots: &K6DepRoots,
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    for s in k6_dep_info_sources(text) {
+        let allowed: &[std::path::PathBuf] = if is_kit {
+            &roots.kit
+        } else if s.ends_with(".rs") {
+            &roots.app
+        } else {
+            &roots.data
+        };
+        // clippy records the workspace manifest it read for lint settings (`Cargo.toml`,
+        // relative to the workspace root). It is not Rust, so it cannot be compiled in.
+        if roots.manifest.is_some() && ws.join(&s).canonicalize().ok() == roots.manifest {
+            continue;
+        }
+        if !k6_dep_in(&s, ws, allowed) {
+            bad.push(s);
+        }
+    }
+    bad
+}
+
 /// STRUCTURAL (K6, MAC round 6 on core#363): what rustc actually read. The token scans above
 /// look for every way a source can pull in another file; this asks the compiler instead. rustc
 /// writes the full source list of each build to a dep-info file beside the binary, and every
 /// macro, attribute and include form ends up there. So every source of this test binary must lie
-/// under kit/src. Any other kit build whose dep-info sits in the same directory (the kit lib,
-/// which `cargo test --workspace` builds first) is held to kit/src too.
+/// under kit/src, and so must every source of the non-test kit build whose dep-info sits in the
+/// same directory (written by `cargo build`, `cargo clippy` or `cargo test --workspace`). That
+/// build must be present: without it, code gated on `cfg(not(test))` would go unchecked, so the
+/// test fails rather than pass on the test build alone (MAC round 7).
+///
+/// dep-info lists only what compiled for this target, so code gated on another `target_os` is
+/// checked where it compiles: the lifecycle-platforms workflow runs this test on macOS and
+/// Windows after a kit build, and ci.yml runs it on Linux.
 ///
 /// The app's dep-info is checked as far as it can be. It also lists the many data files the app
 /// reads with `include_str!` / `include_bytes!` (fixtures, JSON, TypeScript sources for parity
@@ -1949,25 +1997,29 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
 /// token scans above.
 #[test]
 fn k6_compiled_sources_stay_in_the_scanned_trees() {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     let kit = Path::new(env!("CARGO_MANIFEST_DIR"));
     let ws = kit.parent().expect("workspace root");
     let exe = std::env::current_exe().expect("test binary path");
     let own = exe.with_extension("d");
     let deps = exe.parent().expect("deps dir");
-    let mut app_roots = vec![ws.join("src-tauri/src")];
+    let mut app = vec![ws.join("src-tauri/src")];
     if let Ok(rd) = std::fs::read_dir(deps.join("../build")) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if name.starts_with("citrate-core-") && e.path().join("out").is_dir() {
-                app_roots.push(e.path().join("out"));
+                app.push(e.path().join("out"));
             }
         }
     }
-    let kit_roots = vec![kit.join("src")];
-    let manifest = ws.join("Cargo.toml").canonicalize().ok();
-    let mut data_roots = app_roots[1..].to_vec();
-    data_roots.push(ws.to_path_buf());
+    let mut data = app[1..].to_vec();
+    data.push(ws.to_path_buf());
+    let roots = K6DepRoots {
+        kit: vec![kit.join("src")],
+        app,
+        data,
+        manifest: ws.join("Cargo.toml").canonicalize().ok(),
+    };
     let mut files = vec![own.clone()];
     for e in std::fs::read_dir(deps).expect("read deps dir").flatten() {
         let p = e.path();
@@ -1980,33 +2032,27 @@ fn k6_compiled_sources_stay_in_the_scanned_trees() {
             files.push(p);
         }
     }
+    let is_kit = |f: &Path| {
+        f.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("citrate_core_kit-"))
+    };
+    assert!(
+        files.iter().any(|f| *f != own && is_kit(f)),
+        "no non-test kit build beside this test binary in {}, so code outside cfg(test) is \
+         unchecked: run `cargo build -p citrate-core-kit` (or clippy) first",
+        deps.display()
+    );
     let mut bad = Vec::new();
     let mut own_sources = Vec::new();
     for f in &files {
         let text = std::fs::read_to_string(f)
             .unwrap_or_else(|e| panic!("read dep-info {}: {e}", f.display()));
-        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let is_kit = name.starts_with("citrate_core_kit-");
-        let srcs = k6_dep_info_sources(&text);
-        for s in &srcs {
-            let roots: &[PathBuf] = if is_kit {
-                &kit_roots
-            } else if s.ends_with(".rs") {
-                &app_roots
-            } else {
-                &data_roots
-            };
-            // clippy records the workspace manifest it read for lint settings (`Cargo.toml`,
-            // relative to the workspace root). It is not Rust, so it cannot be compiled in.
-            if ws.join(s).canonicalize().ok() == manifest {
-                continue;
-            }
-            if !k6_dep_in(s, ws, roots) {
-                bad.push(format!("{}: {s}", f.display()));
-            }
+        for s in k6_dep_info_violations(&text, is_kit(f), ws, &roots) {
+            bad.push(format!("{}: {s}", f.display()));
         }
         if *f == own {
-            own_sources = srcs;
+            own_sources = k6_dep_info_sources(&text);
         }
     }
     assert!(bad.is_empty(), "a build compiled a source outside its scanned tree: {bad:?}");
@@ -2014,6 +2060,53 @@ fn k6_compiled_sources_stay_in_the_scanned_trees() {
         own_sources.iter().any(|s| s.ends_with("wallet_tests.rs")) && own_sources.len() > 20,
         "positive control: this binary's dep-info lists its own sources ({own_sources:?})"
     );
+}
+
+/// The per-file check above, on the dep-info a build writes when a block gated on its own target
+/// (`#[cfg(target_os = "macos")]` on a Mac, `#[cfg(windows)]` on Windows) compiles in a file
+/// from outside kit/src: the file is listed, so the check fires on that target. Also shows the
+/// workspace manifest is the only exempt non-tree entry.
+#[test]
+fn k6_dep_info_violations_flags_a_probe_the_target_compiled() {
+    let kit = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ws = kit.parent().expect("workspace root");
+    let roots = K6DepRoots {
+        kit: vec![kit.join("src")],
+        app: vec![ws.join("src-tauri/src")],
+        data: vec![ws.to_path_buf()],
+        manifest: ws.join("Cargo.toml").canonicalize().ok(),
+    };
+    assert!(roots.manifest.is_some(), "workspace manifest");
+    let abs = |rel: &str| ws.join(rel).to_string_lossy().replace(' ', "\\ ");
+    let clean = format!(
+        "{t}: kit/src/lib.rs kit/src/rpc.rs {w} Cargo.toml\n\nkit/src/lib.rs:\n",
+        t = "/w/target/debug/deps/citrate_core_kit-0a1b.d",
+        w = abs("kit/src/wallet.rs"),
+    );
+    assert_eq!(k6_dep_info_violations(&clean, true, ws, &roots), Vec::<String>::new());
+    let probe = format!("{clean}/w/x: kit/src/rpc.rs kit/src/../zz_outside_probe.rs\n");
+    assert_eq!(
+        k6_dep_info_violations(&probe, true, ws, &roots),
+        vec!["kit/src/../zz_outside_probe.rs".to_string()],
+        "a relative entry that leaves kit/src"
+    );
+    let outside = abs("zz_outside_probe.rs");
+    let probe_abs = format!("{clean}/w/x: {outside}\n");
+    assert_eq!(k6_dep_info_violations(&probe_abs, true, ws, &roots).len(), 1, "absolute");
+    let manifest_in_kit = "/w/x: kit/Cargo.toml\n";
+    assert_eq!(k6_dep_info_violations(manifest_in_kit, true, ws, &roots).len(), 1, "kit manifest");
+    // The same file in an app build: a `.rs` outside src-tauri/src.
+    assert_eq!(k6_dep_info_violations("/w/y: zz_outside_probe.rs\n", false, ws, &roots).len(), 1);
+    // On Windows rustc writes `\` separators; the check reads them as components there.
+    #[cfg(windows)]
+    {
+        let win = "D:\\w\\deps\\citrate_core_kit-0a1b.d: kit\\src\\lib.rs \
+                   kit\\src\\..\\zz_outside_probe.rs\n";
+        assert_eq!(
+            k6_dep_info_violations(win, true, ws, &roots),
+            vec!["kit\\src\\..\\zz_outside_probe.rs".to_string()]
+        );
+    }
 }
 
 /// The dep-info reader and path check used above, on an in-memory dep-info file.
