@@ -1,16 +1,19 @@
 // GROW-S1 task 11 — the inviter's links on a group: a one-time direct invite (short link + QR) and a
 // public link (referral code, display only). Every link here comes from Rust (`bridge.join`); none
 // carries a group id or a wallet address. See inviteFlow.ts for the steps and data sources.
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { bridge } from "../bridge";
-import type { JoinQr } from "../bridge/domains";
+import type { JoinCodeEntry, JoinQr } from "../bridge/domains";
 import { QrCode } from "../fleet/FleetWizard";
 import type { Store } from "../shell/store";
-import { JOIN_GOALS, type JoinGoalId } from "./referral";
+import { JOIN_GOALS, joinErrorMessage, type JoinGoalId } from "./referral";
 import {
+  codeActions,
   createDirectInvite,
   createPublicLink,
   expiryLabel,
+  finishPendingCode,
+  revokeCode,
   retryDirectInvite,
   revokeDirectInvite,
   type DirectOutcome,
@@ -169,10 +172,113 @@ export function copyLink(store: Pick<Store, "toast">, text: string): void {
   else store.toast("Couldn't copy. Select the link and copy it.");
 }
 
-/** The member's invite links, recovered from the join service (survives navigation). */
-export function YourInviteLinks(_p: { store: Pick<Store, "toast">; version?: number }) {
-  // RED stub: nothing is recovered.
-  return null;
+const STATUS_LABEL: Record<JoinCodeEntry["status"], string> = {
+  pending: "not ready to share",
+  valid: "active",
+  expired: "expired",
+  revoked: "revoked",
+  exhausted: "used up",
+};
+
+/** The member's invite links, recovered from the join service (`join.list`) every time this mounts,
+ *  so leaving a group or Community never loses Finish or Revoke. A finished link's share URL (with
+ *  its key) is shown from component state only, never stored. `version` reloads the list when the
+ *  parent made or revoked a link. Data source (Rule 7): `GET /api/join/mine` via the Rust client. */
+export function YourInviteLinks({ store, version = 0 }: { store: Pick<Store, "toast">; version?: number }) {
+  const [rows, setRows] = useState<JoinCodeEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [ready, setReady] = useState<Record<string, string>>({});
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let live = true;
+    bridge.join
+      .list()
+      .then((r) => {
+        if (!live) return;
+        setRows(r);
+        setError(null);
+      })
+      .catch((e) => {
+        if (!live) return;
+        setRows(null);
+        setError(joinErrorMessage(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [version, reload]);
+
+  const act = async (code: string, f: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(code);
+    try {
+      await f();
+    } finally {
+      setBusy(null);
+    }
+  };
+  const finish = (code: string) =>
+    act(code, async () => {
+      const out = await finishPendingCode(deps, code);
+      if (out.kind === "link" && out.minted.shareUrl) {
+        const url = out.minted.shareUrl;
+        setReady((m) => ({ ...m, [code]: url }));
+      } else if (out.kind === "pending") store.toast("That link still isn't ready. Try again in a moment.");
+      else if (out.kind === "error") store.toast(out.message);
+      setReload((n) => n + 1);
+    });
+  const revoke = (code: string) =>
+    act(code, async () => {
+      try {
+        await revokeCode(deps, code);
+        setReady((m) => {
+          const { [code]: _gone, ...rest } = m;
+          return rest;
+        });
+        store.toast("Link revoked. Nobody can open it now.");
+      } catch (e) {
+        store.toast("Couldn't revoke that link: " + joinErrorMessage(e));
+      }
+      setReload((n) => n + 1);
+    });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }} data-testid="your-links">
+      <span style={{ fontSize: 11.5, fontWeight: 500, color: "var(--tx-2)" }}>Your invite links</span>
+      {error ? (
+        <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span role="alert" style={{ fontSize: 11.5, color: "var(--tx-2)", lineHeight: 1.5 }}>{error}</span>
+          <button className="btn btn-ghost btn-sm" data-testid="your-links-reload" onClick={() => setReload((n) => n + 1)}>Try again</button>
+        </span>
+      ) : rows === null ? (
+        <span className="mono" style={note}>Loading…</span>
+      ) : rows.length === 0 ? (
+        <span className="mono" style={note}>No invite links yet.</span>
+      ) : (
+        rows.map((r) => {
+          const acts = codeActions(r);
+          return (
+            <div key={r.code} data-testid={`your-link-${r.code}`} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <span className="mono" style={{ fontSize: 11 }}>{r.code}</span>
+                <span className="mono" style={note}>
+                  {r.kind === "direct" ? "one-time" : "public"} · {STATUS_LABEL[r.status] ?? r.status} · {expiryLabel(r.exp)}
+                </span>
+                {acts.includes("finish") && (
+                  <button className="btn btn-secondary btn-sm" data-testid={`your-link-finish-${r.code}`} onClick={() => void finish(r.code)} disabled={busy !== null}>Finish link</button>
+                )}
+                {acts.includes("revoke") && (
+                  <button className="btn btn-ghost btn-sm" data-testid={`your-link-revoke-${r.code}`} onClick={() => void revoke(r.code)} disabled={busy !== null} style={{ color: "var(--tx-3)" }}>Revoke</button>
+                )}
+              </span>
+              {ready[r.code] && <LinkRow url={ready[r.code]} testId={`your-link-copy-${r.code}`} onCopy={(t) => copyLink(store, t)} />}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
 }
 
 export function InviteLinks({ store, groupId, groupName, onChanged }: { store: Store; groupId: string; groupName: string; onChanged?: () => void }) {
@@ -246,6 +352,7 @@ export function InviteLinks({ store, groupId, groupName, onChanged }: { store: S
           const out = await createPublicLink(deps, groupName, goal);
           setPub(out);
           if (out.kind === "link") loadQr(out.minted.shareUrl);
+          onChanged?.();
         })
       }
       onRevokePublic={() =>
@@ -255,6 +362,7 @@ export function InviteLinks({ store, groupId, groupName, onChanged }: { store: S
             await bridge.join.revoke(pub.minted.code);
             setPub(null);
             store.toast("Public link revoked.");
+            onChanged?.();
           } catch (e) {
             store.toast("Couldn't revoke that link: " + (e instanceof Error ? e.message : String(e)).replace(/^join:\s*/, ""));
           }

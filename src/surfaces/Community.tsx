@@ -16,7 +16,7 @@ import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import type { JoinQr } from "../bridge/domains";
 import { QrCode } from "../fleet/FleetWizard";
-import { copyLink } from "./InviteLinks";
+import { copyLink, YourInviteLinks } from "./InviteLinks";
 import { createPublicLink, expiryLabel, type PublicOutcome } from "./inviteFlow";
 
 /** The display name on a network-wide public link (there is no group behind it). */
@@ -41,12 +41,15 @@ export function Community({ store }: SurfaceProps) {
   const [pub, setPub] = useState<PublicOutcome | null>(null);
   const [busy, setBusy] = useState(false);
   const [qr, setQr] = useState<JoinQr | null>(null);
+  // Bumped after a mint so "Your invite links" (recovered from the service) reloads.
+  const [linksVersion, setLinksVersion] = useState(0);
   const mint = async () => {
     if (busy) return;
     setBusy(true);
     try {
       const out = await createPublicLink({ invites: bridge.invites, join: bridge.join }, NETWORK_LINK_NAME, "general");
       setPub(out);
+      setLinksVersion((n) => n + 1);
       if (out.kind === "link" && out.minted.shareUrl) {
         bridge.join.shareQr(out.minted.shareUrl).then(setQr).catch(() => setQr(null));
       }
@@ -131,6 +134,7 @@ export function Community({ store }: SurfaceProps) {
             <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
               a short link that shows your name and points people to Citrate · no group id or wallet address in it · to add someone to a group, send a one-time link from Groups
             </p>
+            <YourInviteLinks store={store} version={linksVersion} />
           </div>
         </div>
       </div>

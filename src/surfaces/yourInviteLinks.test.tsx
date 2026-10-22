@@ -118,7 +118,8 @@ describe("YourInviteLinks (mounted)", () => {
     expect(host.textContent).toContain(SHARE);
     await click(`your-link-revoke-${PUBLIC.code}`);
     expect(revoke).toHaveBeenCalledWith(PUBLIC.code);
-    expect(list).toHaveBeenCalledTimes(3);
+    // Two mounts, then a reload after Finish and one after Revoke (statuses come from the service).
+    expect(list).toHaveBeenCalledTimes(4);
     expect(toasts.join("\n")).not.toContain(FRAG);
     await unmount();
   });

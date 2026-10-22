@@ -17,7 +17,7 @@ import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
-import { InviteLinks } from "./InviteLinks";
+import { InviteLinks, YourInviteLinks } from "./InviteLinks";
 import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
 import { RelayStatusChip } from "./RelayStatusChip";
 import {
@@ -80,6 +80,8 @@ export function Groups({ store, s }: SurfaceProps) {
   const st = groupsSlice.use();
   const cl = clusterSlice.use();
   const [tab, setTab] = useState<Tab>("chat");
+  // Bumped when the inviter panel makes or revokes a link, so "Your invite links" reloads.
+  const [linksVersion, setLinksVersion] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [kind, setKind] = useState<Group["kind"]>("channel");
   const nameRef = useRef<HTMLInputElement>(null);
@@ -761,7 +763,9 @@ export function Groups({ store, s }: SurfaceProps) {
                   <p style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 }}>
                     Send someone a one-time invite link: they open it, install Citrate if they need to, and join in one click. This is how you build your cluster to work on the network together: storage, training, inference, or shipping Dapps.
                   </p>
-                  <InviteLinks key={selected.id} store={store} groupId={selected.id} groupName={groupLabel(st, selected)} onChanged={() => { if (canManage) void refreshInvites(); }} />
+                  <InviteLinks key={selected.id} store={store} groupId={selected.id} groupName={groupLabel(st, selected)} onChanged={() => { setLinksVersion((n) => n + 1); if (canManage) void refreshInvites(); }} />
+                  <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
+                  <YourInviteLinks store={store} version={linksVersion} />
                 </div>
               )}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>

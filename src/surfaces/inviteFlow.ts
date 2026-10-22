@@ -92,22 +92,33 @@ export async function revokeDirectInvite(d: InviteDeps, groupId: string, code: s
 export type CodeAction = "finish" | "revoke";
 
 /** What the member can do with one of their codes. */
-export function codeActions(_e: JoinCodeEntry): CodeAction[] {
-  // RED stub: the old behaviour (no recovered actions).
+export function codeActions(e: JoinCodeEntry): CodeAction[] {
+  if (e.status === "pending") return e.kind === "direct" ? ["finish", "revoke"] : ["revoke"];
+  if (e.status === "valid") return ["revoke"];
   return [];
 }
 
 export type FinishOutcome = { kind: "link"; minted: JoinMinted } | { kind: "pending"; minted: JoinMinted } | { kind: "error"; message: string };
 
 /** Finish a pending direct code (attach its sealed invite). */
-export async function finishPendingCode(_d: Pick<InviteDeps, "join">, _code: string): Promise<FinishOutcome> {
-  // RED stub.
-  return { kind: "error", message: "" };
+export async function finishPendingCode(d: Pick<InviteDeps, "join">, code: string): Promise<FinishOutcome> {
+  try {
+    const minted = await d.join.attach(code);
+    if (minted.status === "valid" && minted.shareUrl) return { kind: "link", minted };
+    return { kind: "pending", minted };
+  } catch (e) {
+    // The sealed invite lives only in this app run's memory: after a restart there is nothing to
+    // attach, and the service's uniform 404 reads the same. Either way the code can't be finished.
+    if (joinErrorKind(e) === "notFound") {
+      return { kind: "error", message: "This link can't be finished on this device anymore. Revoke it and create a new one." };
+    }
+    return { kind: "error", message: joinErrorMessage(e) };
+  }
 }
 
 /** Revoke one of the member's codes at the service. */
-export async function revokeCode(_d: Pick<InviteDeps, "join">, _code: string): Promise<void> {
-  // RED stub.
+export async function revokeCode(d: Pick<InviteDeps, "join">, code: string): Promise<void> {
+  await d.join.revoke(code);
 }
 
 /** "Expires 1 Nov 2026" from the service's ISO expiry; "—" when it can't be read (never a guess). */
