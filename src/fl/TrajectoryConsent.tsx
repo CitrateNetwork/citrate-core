@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import type { FlRoundsDomain, FlTrainingSet, FlTrajectoryStatus } from "../bridge/domains";
 import { DEFAULT_PROPOSAL } from "./flRounds";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
+import { writeStartSettingUnlessStarting } from "../agent/startSettingsWrite";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const label: React.CSSProperties = { fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" };
@@ -42,9 +43,15 @@ export function TrajectoryConsent({ fl, toast }: { fl: FlRoundsDomain; toast: (m
     setErr(null);
     setBuilt(null);
     try {
-      // Hermes reads this switch at start: remember what it runs with before changing it.
-      if (st) noteRunning("learn", st.settings.enabled);
-      const next = await fl.setTrajectoryConsent(!on, on ? deleteRecorded : false);
+      // Hermes reads this switch at start: remember what it runs with before changing it. Under the
+      // start-time settings lock, so a start that begins meanwhile waits for this write; a write
+      // asked for during a start is held (null).
+      const next = await writeStartSettingUnlessStarting(async () => {
+        const fresh = await fl.trajectoryStatus();
+        noteRunning("learn", fresh.settings.enabled);
+        return fl.setTrajectoryConsent(!on, on ? deleteRecorded : false);
+      });
+      if (!next) return;
       setSt(next);
       toast(
         next.settings.enabled

@@ -17,7 +17,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
 import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
-import { writeWebSettingsUnlessStarting } from "../agent/webSettingsWrite";
+import { writeStartSettingUnlessStarting } from "../agent/startSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
@@ -155,7 +155,7 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
       // fields changed here, write, announce, then let the next writer in.
       // Held (null) if a Hermes start began while this write waited: the draft stays unsaved and
       // the "Hermes is starting" line shows; Save works again once Hermes is up.
-      const st = await writeWebSettingsUnlessStarting(async () => {
+      const st = await writeStartSettingUnlessStarting(async () => {
         const fresh = await loadWebSettings(io);
         // Hermes reads search at start: remember what it runs with before changing the saved value.
         noteRunning("webSearch", fresh.settings.searchEnabled);
