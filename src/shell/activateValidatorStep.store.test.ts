@@ -48,6 +48,7 @@ const broadcastMock = vi.fn(async () => ({ txHash: "0xfeed" }));
 const prepareMock = vi.fn(async () => ({ txHash: "0xfeed" }));
 const sendPreparedMock = vi.fn(async (): Promise<{ txHash: string; blockNumber: number | null }> => ({ txHash: "0xfeed", blockNumber: 501 }));
 const approveMock = vi.fn(async () => ({}));
+const rejectMock = vi.fn(async (_id: string) => {});
 
 vi.mock("../bridge", () => ({
   bindSimHost: () => {},
@@ -65,7 +66,7 @@ vi.mock("../bridge", () => ({
       approve: () => approveMock(),
       prepare: () => prepareMock(),
       sendPrepared: () => sendPreparedMock(),
-      reject: async () => {},
+      reject: (id: string) => rejectMock(id),
     },
     membership: { grantStatus: async () => ({}) },
     auth: { status: async () => ({ signedIn: false }) },
@@ -288,6 +289,67 @@ describe("no silent signing", () => {
     await store.approveWalletReview(false);
     expect(resolved).toHaveBeenCalledWith(true, store.state.s7TxHash ?? "0xfeed");
     expect(resolved).toHaveBeenCalledWith(true, "0xfeed");
+  });
+
+  it("STORAGE FAILS: the hash can't be saved, so nothing is sent and the signed tx is discarded", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.requestValidatorActivation();
+    const resolved = vi.fn();
+    const r = store.state.walletReview;
+    if (r) store.setState({ walletReview: { ...r, onResolved: resolved } });
+    rejectMock.mockClear();
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    });
+    try {
+      await store.approveWalletReview(false);
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(prepareMock).toHaveBeenCalledTimes(1);
+    expect(sendPreparedMock).not.toHaveBeenCalled();
+    expect(rejectMock).toHaveBeenCalledWith("cer_1"); // the prepared (signed, unsent) tx is dropped
+    expect(store.state.s7TxHash).toBeNull(); // nothing was sent: the member is not blocked
+    expect(store.state.walletReview).toBeNull();
+    expect(resolved).toHaveBeenCalledWith(false);
+    expect(String(store.state.toast ?? "")).toMatch(/nothing was sent/i);
+  });
+
+  it("STORAGE SILENTLY DROPS THE WRITE: a save that can't be read back counts as failed", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.requestValidatorActivation();
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {});
+    try {
+      await store.approveWalletReview(false);
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(sendPreparedMock).not.toHaveBeenCalled();
+    expect(store.state.s7TxHash).toBeNull();
+  });
+
+  it("after a storage failure, activation can be offered again once storage works", async () => {
+    const store = memberStore();
+    await store.refreshActivation();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    await store.requestValidatorActivation();
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    try {
+      await store.approveWalletReview(false);
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(sendPreparedMock).not.toHaveBeenCalled();
+    expect(await store.requestValidatorActivation()).toBe(true);
+    await store.approveWalletReview(false);
+    expect(sendPreparedMock).toHaveBeenCalledTimes(1);
+    expect(persisted().s7TxHash).toBe("0xfeed");
   });
 
   it("a failed send keeps the recorded hash (the chain decides) and reports the failure", async () => {
@@ -576,5 +638,14 @@ describe("follow-up tripwires", () => {
   it("only the store writes s7TxHash (no surface resets it around the read generation)", () => {
     const offenders = files.filter((f) => !["shell/store.ts", "shell/state.ts"].includes(rel(f)) && /s7TxHash\s*:/.test(readFileSync(f, "utf8")));
     expect(offenders.map(rel)).toEqual([]);
+  });
+});
+
+describe("tripwire: a signed tx is sent only after its hash is durably saved", () => {
+  it("every onSigned call in the store gates the send on its result", () => {
+    const src = readFileSync(join(__dirname, "store.ts"), "utf8");
+    const calls = [...src.matchAll(/\bonSigned\s*\(/g)].map((m) => src.slice(Math.max(0, m.index - 12), m.index + 9));
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c).toMatch(/if \(!r\.onSigned\(/);
   });
 });
