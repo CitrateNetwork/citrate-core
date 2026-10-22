@@ -377,6 +377,7 @@ fn grant_status_serializes_camelcase_decimal_strings() {
         is_kyc_verified: false,
         bond_activated: Some(true),
         bond_pubkey: None,
+        bond_unlocked: Some(false),
     };
     let json = serde_json::to_value(&status).unwrap();
     assert!(json["bondPubkey"].is_null());
@@ -581,6 +582,7 @@ fn grant(bond_deployed: bool, has_validator: bool, bond_activated: Option<bool>)
         is_kyc_verified: true,
         bond_activated,
         bond_pubkey: None,
+        bond_unlocked: Some(true),
     }
 }
 
@@ -676,4 +678,58 @@ fn no_bond_means_no_bond_activation_reads() {
     assert_eq!(s.bond_activated, None);
     assert_eq!(s.bond_pubkey, None);
     assert_eq!(rpc.transport().requests().len(), 5);
+}
+
+// chain#331: `MemberBond.activate` reverts `ActivationWindowClosed` once `isUnlocked()` is true
+// (MemberBond.sol:219, either lock leg). The app needs the flag as READ: a value that does not
+// decode is unread, never "locked", so activation is not offered on it.
+#[test]
+fn the_bond_unlocked_flag_is_carried_as_read() {
+    for (word, want) in [(1u128, Some(true)), (0u128, Some(false))] {
+        let mut responses = vec![
+            ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedStake
+            ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedPrincipal
+            ok(JsonValue::String(uint256_hex(1))),               // SBT balanceOf
+            ok(JsonValue::String(BOND_WORD.to_string())),        // bondOf
+            ok(JsonValue::String(uint256_hex(300_000))),         // unlockBlock
+            ok(JsonValue::String(uint256_hex(word))),            // isUnlocked
+            ok(JsonValue::String(uint256_hex(1))),               // isKycVerified
+            ok(JsonValue::String(uint256_hex(0))),               // pubkeyOfStaker == 0
+        ];
+        responses.push(ok(JsonValue::String(uint256_hex(0)))); // activated() == false
+        let rpc = RpcClient::with_transport(MockRpc::new(responses));
+        let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
+        assert_eq!(status.bond_unlocked, want, "isUnlocked word {word}");
+    }
+}
+
+#[test]
+fn an_undecodable_unlocked_value_is_unread_not_locked() {
+    let responses = vec![
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))),
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))),
+        ok(JsonValue::String(uint256_hex(1))),
+        ok(JsonValue::String(BOND_WORD.to_string())),
+        ok(JsonValue::String(uint256_hex(300_000))),
+        ok(JsonValue::String("0x01".to_string())), // isUnlocked: short, does not decode
+        ok(JsonValue::String(uint256_hex(1))),
+        ok(JsonValue::String(uint256_hex(0))),
+    ];
+    let rpc = RpcClient::with_transport(MockRpc::new(responses));
+    let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
+    assert_eq!(status.bond_unlocked, None, "unread, never read as locked");
+}
+
+#[test]
+fn no_bond_has_no_unlocked_reading() {
+    let responses = vec![
+        ok(JsonValue::String(uint256_hex(0))),
+        ok(JsonValue::String(uint256_hex(0))),
+        ok(JsonValue::String(uint256_hex(0))),
+        ok(JsonValue::String(BOND_WORD.to_string())),
+        ok(JsonValue::String("0x".to_string())),
+    ];
+    let rpc = RpcClient::with_transport(MockRpc::new(responses));
+    let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
+    assert_eq!(status.bond_unlocked, None);
 }

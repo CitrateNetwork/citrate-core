@@ -286,6 +286,8 @@ export interface MemberBondState {
   deployed: boolean;
   activated: boolean | null;
   pubkey: string | null;
+  /** `MemberBond.isUnlocked()` (chain#331 activation window); null / absent = not read. */
+  unlocked?: boolean | null;
 }
 
 type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" };
@@ -338,6 +340,11 @@ export function validatorWord(stakeSalt: number, activation: ValidatorActivation
 export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond?: MemberBondState | null): string {
   const st = validatorState(stakeSalt, activation, hasGrant, bond);
   return "word" in st ? st.word : "— · " + st.reason;
+}
+
+/** Why activation is not offered for a bond that would otherwise be (chain#331), or null. */
+export function activationClosedReason(_bond?: MemberBondState | null): "activation window closed" | "bond lock not read yet" | null {
+  return null;
 }
 
 /**

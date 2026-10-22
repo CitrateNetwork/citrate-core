@@ -273,6 +273,11 @@ pub struct GrantStatus {
     /// bond, or the read failed.
     #[serde(rename = "bondPubkey")]
     pub bond_pubkey: Option<String>,
+    /// `MemberBond.isUnlocked()` as read, for the activation window (chain#331: `activate` reverts
+    /// `ActivationWindowClosed` once it is true, MemberBond.sol:219). None = no bond, or the value
+    /// did not decode: unread, never "locked".
+    #[serde(rename = "bondUnlocked")]
+    pub bond_unlocked: Option<bool>,
 }
 
 /// Whether the member's validator rewards are claimed through their bond
@@ -537,6 +542,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         is_kyc_verified,
         bond_activated,
         bond_pubkey,
+        bond_unlocked: None,
     })
 }
 

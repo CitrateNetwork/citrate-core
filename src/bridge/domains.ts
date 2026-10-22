@@ -614,6 +614,12 @@ export interface GrantStatus {
   bondActivated?: boolean | null;
   /** C1-V5 — `MemberBond.pubkey()` (kept after an exit); null = zero, no bond, or not read. */
   bondPubkey?: string | null;
+  /**
+   * `MemberBond.isUnlocked()` as read, for the activation window (chain#331: `activate` reverts
+   * `ActivationWindowClosed` once it is true, MemberBond.sol:219). null = no bond or not read.
+   * Optional for older backends (absent = not read).
+   */
+  bondUnlocked?: boolean | null;
   /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
   unlockBlock: number | null;
   /** `MemberBond.isUnlocked()` — either leg elapsed. Eligibility, not a payout. */
