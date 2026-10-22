@@ -418,12 +418,13 @@ launch_app() { # kind label
   if ! alive "$APP_PID"; then
     fail "$kind launch [$label]: the app exited during start-up (log: logs/${log##*/})"
     tail -n 20 "$log" | sed 's/^/    | /' | tee -a "$SUMMARY"
-    return 1
+    stop_strays; return 1
   fi
   if ! have_required "$APP_PID"; then
     fail "$kind launch [$label]: required sidecar(s) '$K1L_REQUIRED' not running after ${K1L_LAUNCH_TIMEOUT}s"
     sidecars_of "$APP_PID" | sed 's/^/    running: /' | tee -a "$SUMMARY"
-    return 1
+    tail -n 20 "$log" | sed 's/^/    | /' | tee -a "$SUMMARY"
+    stop_strays; return 1
   fi
   sleep "$K1L_SETTLE_SECS"
   local wins=""
@@ -488,6 +489,15 @@ infra_tree() {
   for p in "${INFRA_PIDS[@]}"; do
     for c in $(descendants "$p" | awk '{print $1}'); do INFRA_TREE+=("$c"); done
   done
+}
+
+# After a failed step: end every process that is not the session's (the app, its sidecars, any
+# orphans), so the next step starts clean. Only pids inside this namespace exist to be signalled.
+stop_strays() {
+  infra_tree
+  scan_strays 1 "${INFRA_TREE[@]}"
+  local l; for l in "${STRAYS[@]}"; do kill -KILL "${l%% *}" 2>/dev/null; done
+  sleep 1
 }
 
 force_stop() { local p; for p in "$@"; do kill -KILL "$p" 2>/dev/null; done; sleep 1; }
@@ -569,7 +579,7 @@ check_sidecars_are_new() { # kind
   while read -r name pid exe; do
     got="$(sha256sum <"/proc/$pid/exe" 2>/dev/null | cut -d' ' -f1)"
     if [ "$kind" = deb ]; then want="$(sha256sum <"$W/root-deb/usr/bin/$name" | cut -d' ' -f1)"
-    else want="$(sha256sum <"$W/ref-appimage-to/usr/bin/$name" 2>/dev/null | cut -d' ' -f1)"; fi
+    else want="$(sha256sum <"$W/ref-appimage-to/squashfs-root/usr/bin/$name" 2>/dev/null | cut -d' ' -f1)"; fi
     [ -n "$got" ] && [ -n "$want" ] && [ "$got" = "$want" ] || { bad=1; say "    $name pid $pid runs ${got:0:12}, new package has ${want:0:12}"; }
   done < <(sidecars_of "$APP_PID")
   [ "$bad" -eq 0 ]
@@ -585,8 +595,8 @@ run_kind() { # kind
     # (The staged package is a hard link and may not be executable; run a private copy.)
     ( mkdir -p "$W/ref-appimage-to" && cp "$W/pkgs/to.AppImage" "$W/ref-to.AppImage" && chmod +x "$W/ref-to.AppImage" &&
       cd "$W/ref-appimage-to" && "$W/ref-to.AppImage" --appimage-extract >>"$W/logs/ref-extract.log" 2>&1 &&
-      mv squashfs-root/* . && rmdir squashfs-root ) && rm -f -- "$W/ref-to.AppImage"
-    [ -x "$W/ref-appimage-to/usr/bin/citrate-core" ] ||
+      true ) && rm -f -- "$W/ref-to.AppImage"
+    [ -x "$W/ref-appimage-to/squashfs-root/usr/bin/citrate-core" ] ||
       say "     $kind: could not extract the new AppImage for reference (logs/ref-extract.log)"
   fi
   local from=0; [ -f "$W/pkgs/from.$( [ "$kind" = deb ] && echo deb || echo AppImage)" ] && from=1
@@ -634,16 +644,26 @@ os.execvp(sys.argv[1], sys.argv[1:])' dbus-daemon --session --nofork --nopidfile
   [ -S "$XRT/bus" ] || return 1
   SESSION_PIDS=("$out"); INFRA_PIDS+=("$out")
   if command -v gnome-keyring-daemon >/dev/null; then
-    local kr
-    kr="$(printf '\n' | env HOME="$HOME_DIR" XDG_DATA_HOME="$HOME_DIR/.local/share" XDG_RUNTIME_DIR="$XRT" \
-      DBUS_SESSION_BUS_ADDRESS="unix:path=$XRT/bus" gnome-keyring-daemon --unlock --components=secrets 2>>"$W/logs/session.log")"
-    say "     $1 session: private bus pid $out; keyring: $(echo "$kr" | tr '\n' ' ')"
-    local p; for p in /proc/[0-9]*; do
-      [ "$(readlink "$p/exe" 2>/dev/null)" = "$(command -v gnome-keyring-daemon)" ] && { SESSION_PIDS+=("${p#/proc/}"); INFRA_PIDS+=("${p#/proc/}"); }
+    # A throwaway login keyring in the run's HOME, created and unlocked up front, so the app's
+    # keyring calls never wait on an unlock prompt (there is no one to answer it).
+    printf 'k1l-throwaway-keyring' | env "${senv[@]}" gnome-keyring-daemon --foreground --unlock --components=secrets \
+      >>"$W/logs/session.log" 2>&1 &
+    local kr=$!
+    SESSION_PIDS+=("$kr"); INFRA_PIDS+=("$kr")
+    local locked=""
+    for i in $(seq 1 50); do
+      locked="$(env "${senv[@]}" dbus-send --session --print-reply --dest=org.freedesktop.secrets \
+        /org/freedesktop/secrets/aliases/default org.freedesktop.DBus.Properties.Get \
+        string:org.freedesktop.Secret.Collection string:Locked 2>/dev/null | awk '/boolean/ {print $3}')"
+      [ "$locked" = false ] && break
+      sleep 0.1
     done
+    [ "$locked" = false ] || { say "     $1 session: the private keyring's default collection is not unlocked"; return 1; }
+    say "     $1 session: private bus pid $out (subreaper), keyring pid $kr (default collection unlocked)"
   else
     say "     $1 session: private bus pid $out; no gnome-keyring-daemon (the app's keyring calls will fail)"
   fi
+  return 0
 }
 stop_session_services() {
   local p c
