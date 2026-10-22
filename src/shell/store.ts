@@ -1615,15 +1615,16 @@ export class Store {
    * is persisted so the step resumes to "Pending" after a quit.
    */
   async requestValidatorActivation(): Promise<boolean> {
-    if (this.state.s7TxHash) {
-      // An activation is already sent and not yet observed: never offer a second one.
-      this.toast("Activation already sent — waiting for it to be included.");
+    // Every request reads the chain again: a read cached on S7 or by an earlier click (Node has
+    // no poll) may be stale in either direction. No fresh read, no ceremony. The read is asked
+    // with any recorded activation tx, so it also reconciles that tx (Node has no poll or
+    // Retry/Forget controls, so this is where a recorded tx is resolved there).
+    const fresh = await this.refreshActivation();
+    if (this.state.s7TxHash && !(fresh && this.releaseRecordedActivationTx())) {
+      // An activation is already sent and not yet resolved: never offer a second one.
+      this.toast("Activation already sent — waiting for it to be included. If it stays unseen for 10 minutes, or reverts, you can activate again.");
       return false;
     }
-    // Every request reads the chain again: a read cached on S7 or by an earlier click (Node has
-    // no poll) may be stale in either direction. No fresh read, no ceremony.
-    const fresh = await this.refreshActivation();
-    if (this.state.s7TxHash) return false;
     if (!fresh) {
       this.toast("Activation not available yet — the chain could not be read just now" + (this.state.activationError ? ` (${this.state.activationError})` : "") + ".");
       return false;
@@ -1654,6 +1655,21 @@ export class Store {
         if (approved) await this.refreshActivation();
       },
     });
+  }
+
+  /**
+   * On a FRESH read, release a recorded activation tx that may safely be retried: its own receipt
+   * shows it reverted (nothing was staked), or it has gone unseen past the forget window
+   * (`canForgetActivationTx`, the same rule as S7's Forget). A pending tx, a mined successful one,
+   * or a revert reported for another hash keeps the guard. True when released.
+   */
+  private releaseRecordedActivationTx(): boolean {
+    const { s7TxHash, activation } = this.state;
+    const tx = activation?.tx;
+    const reverted = !!s7TxHash && tx?.hash === s7TxHash && tx.included === true && tx.success === false;
+    if (!reverted && !this.canForgetActivationTx(Date.now())) return false;
+    this.clearActivationTx();
+    return true;
   }
 
   /** S7 — "Try again" after a reverted activation: clears the reverted tx (and resets the read

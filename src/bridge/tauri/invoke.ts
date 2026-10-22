@@ -106,6 +106,8 @@ const LONG: Record<string, number> = {
   sign_and_broadcast: 75_000,
   // Join-8: the send half of sign_prepare + sign_send_prepared polls the same 60 s receipt budget.
   sign_send_prepared: 75_000,
+  // Join-8: the activation read is bounded Rust-side by READ_BUDGET (30 s) plus one RPC (6 s).
+  validator_activation_status: 45_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.
   node_stop: 20_000,
   memory_stop: 20_000,

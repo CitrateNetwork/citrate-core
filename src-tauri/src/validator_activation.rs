@@ -41,7 +41,6 @@ pub const READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 /// local transports of one read).
 pub struct Budgeted<'a, T: RpcTransport> {
     inner: &'a T,
-    #[allow(dead_code)]
     deadline: std::time::Instant,
 }
 
@@ -53,6 +52,11 @@ impl<'a, T: RpcTransport> Budgeted<'a, T> {
 
 impl<T: RpcTransport> RpcTransport for Budgeted<'_, T> {
     fn call(&self, body: Value) -> Result<Value, crate::rpc::RpcError> {
+        if std::time::Instant::now() >= self.deadline {
+            return Err(crate::rpc::RpcError::Transport(
+                "validator-activation: read budget spent".into(),
+            ));
+        }
         self.inner.call(body)
     }
 }
@@ -425,14 +429,18 @@ pub fn validator_activation_status_sync(
         .and_then(parse_pubkey);
     let local = crate::rpc::HttpTransport::new(node.0.local_rpc_url());
     let public = crate::rpc::HttpTransport::citrate();
+    // One shared deadline: reads not started inside READ_BUDGET are unknown (fail closed).
+    let deadline = std::time::Instant::now() + READ_BUDGET;
+    let local_budgeted = Budgeted::new(&local, deadline);
+    let public_budgeted = Budgeted::new(&public, deadline);
     let targets = Targets {
         vault: crate::addresses::membership_stake_vault(),
         sbt: crate::addresses::citrate_member_sbt(),
         registry: crate::addresses::validator_registry(),
     };
     read_activation_status(
-        &public,
-        Some(&local),
+        &public_budgeted,
+        Some(&local_budgeted),
         &targets,
         member_address,
         node_pubkey,
