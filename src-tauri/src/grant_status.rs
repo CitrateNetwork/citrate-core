@@ -255,6 +255,19 @@ pub struct GrantStatus {
     /// validator. NOTE the staker is the member's BOND CLONE, not the member.
     #[serde(rename = "hasValidator")]
     pub has_validator: bool,
+    /// `MemberBond.activated()`: the bond bonded its principal into the registry. It stays true
+    /// after a full exit or a slash, when the registry has cleared `pubkeyOfStaker` and
+    /// `has_validator` reads false, and the bond can still claim that key's matured rewards
+    /// (`MemberBond.claimRewards`). None = no bond, or the read failed.
+    #[serde(rename = "bondActivated")]
+    pub bond_activated: Option<bool>,
+}
+
+/// Whether the member's validator rewards are claimed through their bond
+/// (`MemberBond.claimRewards()`, which calls `ValidatorRegistry.claimRewards(bond.pubkey)`).
+/// The same signal the app uses to read and show those rewards.
+pub fn claims_through_bond(g: &GrantStatus) -> bool {
+    g.bond_deployed && g.has_validator
 }
 
 /// Validate a `0x`-prefixed 20-byte hex address; return the lowercased canonical
@@ -491,6 +504,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         unlock_block,
         is_unlocked,
         is_kyc_verified,
+        bond_activated: None,
     })
 }
 

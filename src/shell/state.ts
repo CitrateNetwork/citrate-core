@@ -423,6 +423,12 @@ export interface AppState {
    * null = not read (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActive: boolean | null;
+  /**
+   * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
+   * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
+   * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
+   */
+  bondActivated: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
@@ -796,6 +802,7 @@ export function freshState(pid: string): AppState {
     hasSbt: false,
     rewards: null,
     validatorActive: null,
+    bondActivated: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,

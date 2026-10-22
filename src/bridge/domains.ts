@@ -606,6 +606,12 @@ export interface GrantStatus {
    * NOTE the staker is the member's bond clone, not the member.
    */
   hasValidator: boolean;
+  /**
+   * `MemberBond.activated()`: the bond bonded its principal into the registry. It stays true after
+   * a full exit or a slash (when `hasValidator` reads false), and the bond can still claim that
+   * key's matured rewards. null = no bond, or the read failed. Optional for older backends.
+   */
+  bondActivated?: boolean | null;
   /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
   unlockBlock: number | null;
   /** `MemberBond.isUnlocked()` — either leg elapsed. Eligibility, not a payout. */
