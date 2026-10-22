@@ -604,6 +604,7 @@ pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
         rows: lead.rows.clone(),
         checkpoints: lead.checkpoints.clone(),
         generation: lead.generation,
+        recovering: lead.recovering,
         session: b.session.clone(),
         last_read_confirmed: false,
         last_read_complete: false,
@@ -674,8 +675,26 @@ pub struct ScanSession {
     /// The detail pass in progress: ids still to read, and the results read so far.
     pub pass_remaining: Vec<u128>,
     pub pass_results: std::collections::BTreeMap<u128, WithdrawalDetail>,
+    /// The scan generation the pass in progress began at. A -32001 recovery since then (in this
+    /// read, or in a read merged into it) starts the pass again: a claim read before the reorg
+    /// may have been reorged out.
+    pub pass_generation: u64,
+    /// The log window the node accepts (halved on -32005 `maxBlockRange`, kept across calls so a
+    /// call that runs out of time while halving still makes progress); 0 = [`LOG_WINDOW_BLOCKS`].
+    pub log_window: u64,
     /// The last COMPLETE detail pass, shown for ids not yet re-read in the current pass.
     pub last_details: std::collections::BTreeMap<u128, WithdrawalDetail>,
+}
+
+impl ScanSession {
+    /// The log window to ask for: the reduced one, or [`LOG_WINDOW_BLOCKS`].
+    fn log_window(&self) -> u64 {
+        if self.log_window == 0 {
+            LOG_WINDOW_BLOCKS
+        } else {
+            self.log_window
+        }
+    }
 }
 
 /// C1-W — what the paged scan has read for one staker, following the citrate-chain#337 scanner
@@ -697,6 +716,10 @@ pub struct WithdrawalScan {
     /// Bumped by every -32001 recovery, so a merge never undoes it with older, further progress.
     #[serde(default)]
     pub generation: u64,
+    /// A -32001 recovery ran out of time: the cursor is gone, `checkpoints` holds the ones not
+    /// tried yet, and `rows` are not cut yet. The next read continues the recovery first.
+    #[serde(default)]
+    pub recovering: bool,
     /// Session-only (never saved).
     #[serde(skip)]
     pub session: ScanSession,
@@ -734,26 +757,41 @@ impl WithdrawalScan {
         self.cursor = Some(through);
     }
 
-    /// After a -32001 (the chain the cursor was read on was replaced): drop the cursor, and resume
-    /// from the newest checkpoint `citrate_isExecuted` still reports executed at its own height,
-    /// keeping only the rows found up to it. Every checkpoint is on the cursor's chain, so one that
-    /// is still executed has the same history below it. A checkpoint that isn't is dropped; an
-    /// error or a node without the method ends the search, and the scan starts over at the
-    /// deployment block.
-    fn recover<T: crate::rpc::RpcTransport>(&mut self, rpc: &crate::rpc::RpcClient<T>) {
+    /// After a -32001 (the chain the cursor was read on was replaced): drop the cursor (and the
+    /// checkpoint that is the cursor), and start a recovery ([`Self::recover`]).
+    fn begin_recovery(&mut self) {
         self.generation += 1;
         let replaced = self.cursor.take();
-        while let Some(cp) = self.checkpoints.pop() {
-            if replaced.as_ref() == Some(&cp) {
-                continue;
-            }
-            match rpc.is_executed(&cp.hash) {
+        if replaced.is_some() && self.checkpoints.last() == replaced.as_ref() {
+            self.checkpoints.pop();
+        }
+        self.recovering = true;
+    }
+
+    /// The recovery: resume from the newest checkpoint `citrate_isExecuted` still reports executed
+    /// at its own height, keeping only the rows found up to it. Every checkpoint is on the
+    /// cursor's chain, so one that is still executed has the same history below it. A checkpoint
+    /// that isn't is dropped; an error or a node without the method ends the search, and the scan
+    /// starts over at the deployment block. false = out of time: the checkpoints not tried yet
+    /// are kept and the next read continues.
+    fn recover<T: crate::rpc::RpcTransport>(
+        &mut self,
+        rpc: &crate::rpc::RpcClient<T>,
+        budget: &Budget<'_>,
+    ) -> bool {
+        while let Some(cp) = self.checkpoints.last().cloned() {
+            let Some(answer) = budget.run(|| rpc.is_executed(&cp.hash)) else {
+                return false;
+            };
+            self.checkpoints.pop();
+            match answer {
                 Ok(Some((true, Some(n)))) if n == cp.number => {
                     let verified = cp;
                     self.rows.retain(|_, block| *block <= verified.number);
                     self.checkpoints.push(verified.clone());
                     self.cursor = Some(verified);
-                    return;
+                    self.recovering = false;
+                    return true;
                 }
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => break,
@@ -762,6 +800,8 @@ impl WithdrawalScan {
         self.checkpoints.clear();
         self.rows.clear();
         self.cursor = None;
+        self.recovering = false;
+        true
     }
 }
 
@@ -823,6 +863,41 @@ impl ScanClock for SystemClock {
     }
 }
 
+/// C1-W — one call's time budget. Every RPC request of the scan goes through [`Budget::run`] and
+/// every wait through [`Budget::wait`], so nothing starts after the deadline: the call answers by
+/// the deadline plus one request (at most the RPC timeout), under the webview's IPC deadline.
+struct Budget<'a> {
+    deadline: Option<std::time::Instant>,
+    clock: &'a dyn ScanClock,
+}
+
+impl Budget<'_> {
+    fn spent(&self) -> bool {
+        self.deadline.is_some_and(|d| self.clock.now() >= d)
+    }
+
+    /// Send one request, unless the budget is spent (None: nothing was sent).
+    fn run<R>(&self, request: impl FnOnce() -> R) -> Option<R> {
+        if self.spent() {
+            None
+        } else {
+            Some(request())
+        }
+    }
+
+    /// Wait `d` before a retry, unless the wait would reach the deadline (false: stop now).
+    fn wait(&self, d: std::time::Duration) -> bool {
+        if self
+            .deadline
+            .is_some_and(|deadline| self.clock.now() + d >= deadline)
+        {
+            return false;
+        }
+        self.clock.sleep(d);
+        true
+    }
+}
+
 /// [`read_pending_withdrawals_with`] against an explicit clock.
 pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
     rpc: &crate::rpc::RpcClient<T>,
@@ -836,21 +911,28 @@ pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
     scan.last_read_confirmed = false;
     scan.last_read_complete = false;
     scan.last_read_note = None;
-    let spent = || deadline.is_some_and(|d| clock.now() >= d);
+    let budget = Budget { deadline, clock };
+    // The log pass (and a -32001 recovery) gets the first two thirds of the time, so withdrawals
+    // found in this call are read from contract state in this call too.
+    let logs_budget = Budget {
+        deadline: deadline.map(|d| {
+            let now = clock.now();
+            now + d.saturating_duration_since(now) * 2 / 3
+        }),
+        clock,
+    };
 
     // The head, read once: the claimable gate and the confirmation, never scan progress.
-    if spent() {
-        return Err(StakingError::OutOfBudget);
-    }
-    let current_block = rpc
-        .block_number()
+    let current_block = budget
+        .run(|| rpc.block_number())
+        .ok_or(StakingError::OutOfBudget)?
         .map_err(|e| StakingError::Rpc(e.to_string()))?;
 
     let first = scan
         .cursor
         .as_ref()
         .map_or(LIQUID_STAKING_POOL_DEPLOY_BLOCK, |c| c.number + 1);
-    let pass = read_served(rpc, &staker_topic, scan, deadline, clock)?;
+    let pass = read_served(rpc, &staker_topic, scan, &logs_budget)?;
     let pass = match pass {
         Some(p) => p,
         None => {
@@ -869,8 +951,7 @@ pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
                 start,
                 current_block,
                 &mut scan.session,
-                deadline,
-                clock,
+                &logs_budget,
             )?;
             LogPass::Unbounded { reached }
         }
@@ -881,7 +962,13 @@ pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
         scan.session.rows.clear();
     }
 
-    // The withdrawal reads, every id on every pass, resuming across calls.
+    // The withdrawal reads, every id on every pass, resuming across calls. A -32001 recovery
+    // since the pass in progress began (here, or in a read merged into this one) starts it again.
+    if scan.session.pass_generation != scan.generation {
+        scan.session.pass_remaining.clear();
+        scan.session.pass_results.clear();
+        scan.session.pass_generation = scan.generation;
+    }
     let wanted: Vec<u128> = scan
         .rows
         .keys()
@@ -897,18 +984,14 @@ pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
             scan.session.pass_remaining.push(*id);
         }
     }
-    let mut batches = 0usize;
     while !scan.session.pass_remaining.is_empty() {
-        // At least one batch per call, so a long list finishes in a bounded number of calls.
-        if batches > 0 && spent() {
-            break;
-        }
         let n = scan.session.pass_remaining.len().min(WITHDRAWAL_READ_BATCH);
         let chunk: Vec<u128> = scan.session.pass_remaining[..n].to_vec();
         let calls: Vec<serde_json::Value> = chunk.iter().map(|id| withdrawals_call(*id)).collect();
-        let rets = rpc
-            .eth_call_batch(&calls)
-            .map_err(|e| StakingError::Rpc(e.to_string()))?;
+        let Some(rets) = budget.run(|| rpc.eth_call_batch(&calls)) else {
+            break; // out of time: the pass resumes on the next call
+        };
+        let rets = rets.map_err(|e| StakingError::Rpc(e.to_string()))?;
         for (&id, ret) in chunk.iter().zip(rets.iter()) {
             let (staker, salt_wei, request_block, claimed) = decode_withdrawal_tuple(ret)?;
             scan.session.pass_results.insert(
@@ -922,7 +1005,6 @@ pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
             );
         }
         scan.session.pass_remaining.drain(..n);
-        batches += 1;
     }
     let details_done = scan.session.pass_remaining.is_empty();
     if details_done {
@@ -968,10 +1050,9 @@ pub fn read_pending_withdrawals_timed<T: crate::rpc::RpcTransport>(
     // cursor is confirmed only if the node still reports it executed. Display only, never saved.
     let cursor_live = advanced
         || (at_head
-            && !spent()
-            && scan.cursor.as_ref().is_some_and(
-                |c| matches!(rpc.is_executed(&c.hash), Ok(Some((true, Some(n)))) if n == c.number),
-            ));
+            && scan.cursor.as_ref().is_some_and(|c| {
+                matches!(budget.run(|| rpc.is_executed(&c.hash)), Some(Ok(Some((true, Some(n))))) if n == c.number)
+            }));
     scan.last_read_confirmed = at_head && cursor_live;
     scan.last_read_note = if scan.last_read_confirmed {
         None
@@ -1031,27 +1112,28 @@ fn withdrawal_ids(logs: &[crate::rpc::LogEntry]) -> Result<Vec<(u128, u64)>, Sta
 }
 
 /// The `citrate_getLogs` pass: windows chained on the cursor, each served window committed with
-/// its rows. `None` when the node has no `citrate_getLogs` (-32601).
+/// its rows. `None` when the node has no `citrate_getLogs` (-32601). Out of time, it stops with
+/// `caught_up: false`; the cursor, the window size and an unfinished recovery are kept.
 fn read_served<T: crate::rpc::RpcTransport>(
     rpc: &crate::rpc::RpcClient<T>,
     staker_topic: &str,
     scan: &mut WithdrawalScan,
-    deadline: Option<std::time::Instant>,
-    clock: &dyn ScanClock,
+    budget: &Budget<'_>,
 ) -> Result<Option<LogPass>, StakingError> {
     use crate::rpc::GetLogsError;
-    let mut window = LOG_WINDOW_BLOCKS;
     let mut retries = 0u32;
-    let mut served = 0usize;
     let mut advanced = false;
+    let out_of_time = |advanced| {
+        Ok(Some(LogPass::Served {
+            caught_up: false,
+            advanced,
+        }))
+    };
     loop {
-        // At least one window per call, so every call makes progress.
-        if served > 0 && deadline.is_some_and(|d| clock.now() >= d) {
-            return Ok(Some(LogPass::Served {
-                caught_up: false,
-                advanced,
-            }));
+        if scan.recovering && !scan.recover(rpc, budget) {
+            return out_of_time(advanced);
         }
+        let window = scan.session.log_window();
         let from = scan
             .cursor
             .as_ref()
@@ -1061,9 +1143,11 @@ fn read_served<T: crate::rpc::RpcTransport>(
         if let Some(c) = &scan.cursor {
             filter["afterBlockHash"] = serde_json::Value::String(c.hash.clone());
         }
-        match rpc.citrate_get_logs(filter) {
+        let Some(answer) = budget.run(|| rpc.citrate_get_logs(filter)) else {
+            return out_of_time(advanced);
+        };
+        match answer {
             Ok(answer) => {
-                served += 1;
                 retries = 0;
                 let Some(through) = answer.through else {
                     // Nothing in the window has executed: the executed head is at the cursor, or
@@ -1086,7 +1170,7 @@ fn read_served<T: crate::rpc::RpcTransport>(
             }
             Err(GetLogsError::MethodNotFound) => return Ok(None),
             Err(GetLogsError::Reorged(_)) => {
-                scan.recover(rpc);
+                scan.begin_recovery();
                 retries = 0;
             }
             Err(GetLogsError::Retry(m)) => {
@@ -1094,7 +1178,9 @@ fn read_served<T: crate::rpc::RpcTransport>(
                 if retries >= LOGS_RETRY_ATTEMPTS {
                     return Err(StakingError::Indexing(format!("blocks {from}-{to}: {m}")));
                 }
-                clock.sleep(logs_retry_backoff(retries - 1));
+                if !budget.wait(logs_retry_backoff(retries - 1)) {
+                    return out_of_time(advanced);
+                }
             }
             Err(GetLogsError::RangeTooLarge(m)) => {
                 if window == 1 {
@@ -1102,7 +1188,7 @@ fn read_served<T: crate::rpc::RpcTransport>(
                         "citrate_getLogs blocks {from}-{to}: {m}"
                     )));
                 }
-                window = (window / 2).max(1);
+                scan.session.log_window = (window / 2).max(1);
             }
             Err(GetLogsError::Rpc(e)) => {
                 return Err(StakingError::Rpc(format!(
@@ -1115,32 +1201,31 @@ fn read_served<T: crate::rpc::RpcTransport>(
 
 /// The plain `eth_getLogs` read for a node without `citrate_getLogs`: windows from `start` up to
 /// `end` (`eth_blockNumber`). It has no served-through bound, so it touches no saved state: the
-/// rows and the position go to the session only. Returns whether it reached `end`.
+/// rows and the position go to the session only. Returns whether it reached `end` (false when out
+/// of time).
 fn read_unbounded<T: crate::rpc::RpcTransport>(
     rpc: &crate::rpc::RpcClient<T>,
     staker_topic: &str,
     start: u64,
     end: u64,
     session: &mut ScanSession,
-    deadline: Option<std::time::Instant>,
-    clock: &dyn ScanClock,
+    budget: &Budget<'_>,
 ) -> Result<bool, StakingError> {
     use crate::rpc::GetLogsError;
     let mut from = start;
-    let mut window = LOG_WINDOW_BLOCKS;
     let mut retries = 0u32;
-    let mut read = 0usize;
     while from <= end {
-        if read > 0 && deadline.is_some_and(|d| clock.now() >= d) {
-            return Ok(false);
-        }
+        let window = session.log_window();
         let to = from.saturating_add(window - 1).min(end);
-        match rpc.get_logs_range(withdrawal_log_filter(staker_topic, from, to)) {
+        let filter = withdrawal_log_filter(staker_topic, from, to);
+        let Some(answer) = budget.run(|| rpc.get_logs_range(filter)) else {
+            return Ok(false);
+        };
+        match answer {
             Ok(logs) => {
                 session.rows.extend(withdrawal_ids(&logs)?);
                 session.next_block = session.next_block.max(to + 1);
                 from = to + 1;
-                read += 1;
                 retries = 0;
             }
             Err(GetLogsError::Retry(m)) => {
@@ -1148,14 +1233,16 @@ fn read_unbounded<T: crate::rpc::RpcTransport>(
                 if retries >= LOGS_RETRY_ATTEMPTS {
                     return Err(StakingError::Indexing(format!("blocks {from}-{to}: {m}")));
                 }
-                clock.sleep(logs_retry_backoff(retries - 1));
+                if !budget.wait(logs_retry_backoff(retries - 1)) {
+                    return Ok(false);
+                }
             }
             Err(GetLogsError::RangeTooLarge(m)) if window == 1 => {
                 return Err(StakingError::Rpc(format!(
                     "eth_getLogs blocks {from}-{to}: {m}"
                 )));
             }
-            Err(GetLogsError::RangeTooLarge(_)) => window = (window / 2).max(1),
+            Err(GetLogsError::RangeTooLarge(_)) => session.log_window = (window / 2).max(1),
             Err(e) => {
                 return Err(StakingError::Rpc(format!(
                     "eth_getLogs blocks {from}-{to}: {e}"
@@ -1407,10 +1494,12 @@ pub struct PendingWithdrawalsRead {
     pub note: Option<String>,
 }
 
-/// C1-W — how long one `wallet_pending_withdrawals` call may scan. It overruns by at most one log
-/// window and one withdrawal batch (6 s each at the RPC timeout): 15 + 12 s, under the webview's
-/// 30 s deadline for this command. A -32001 recovery adds one `citrate_isExecuted` read per saved
-/// checkpoint it tries (usually one or two).
+/// C1-W — how long one `wallet_pending_withdrawals` call may scan. No request or retry wait starts
+/// after it (every one goes through the call's budget), so the call answers by this plus one
+/// request (the 6 s RPC timeout): 21 s, under the webview's 30 s deadline for this command
+/// (`the_scan_budget_plus_one_request_fits_the_ipc_deadline`). The log pass gets the first two
+/// thirds; the withdrawal reads may use the rest. What a call could not finish (log
+/// windows, a -32001 recovery, withdrawal reads) continues on the next call.
 pub const SCAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The per-staker scans of this app session (pool address + staker -> progress).

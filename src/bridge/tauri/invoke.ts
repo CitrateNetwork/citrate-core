@@ -58,7 +58,8 @@ const LONG: Record<string, number> = {
   hermes_pending_approvals: 45_000,
   hermes_bridge_pending: 45_000,
   hermes_resolve: 45_000,
-  // C1-W: the paged withdrawal scan answers within SCAN_BUDGET (20 s) plus one 6 s RPC call.
+  // C1-W: the paged withdrawal scan starts no request after SCAN_BUDGET (15 s), so it answers by
+  // 15 s plus one 6 s RPC request (staking.rs the_scan_budget_plus_one_request_fits_the_ipc_deadline).
   wallet_pending_withdrawals: 30_000,
   hermes_stop: 45_000,
   // The terminal-commands switch restarts a running Hermes: a stop (~10 s grace) plus a start.

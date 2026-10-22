@@ -629,7 +629,10 @@ fn an_unfinished_scan_is_reported_as_still_reading() {
             done = Some(rows);
             break;
         }
-        assert!(scan.last_read_note.clone().unwrap_or_default().contains("reading chain history"));
+        // #371 @66b6fd4: nothing starts after the deadline, so the call that catches up with the
+        // logs may leave the withdrawal read for the next call: still incomplete, and says so.
+        let note = scan.last_read_note.clone().unwrap_or_default();
+        assert!(note.contains("reading chain history") || note.contains("reading withdrawal details"), "{note}");
     }
     assert_eq!(ids_of(&done.expect("finishes")), vec!["2"]);
     assert!(scan.last_read_confirmed);
@@ -2053,9 +2056,8 @@ fn timed_call(rpc: &RpcClient<Node>, clock: &TestClock, scan: &mut WithdrawalSca
 
 /// Calls until a read is complete (at most `max`), each under [`timed_call`]'s contract.
 fn timed_until_complete(rpc: &RpcClient<Node>, clock: &TestClock, scan: &mut WithdrawalScan, max: usize) -> Vec<PendingWithdrawal> {
-    let mut rows = Vec::new();
     for _ in 0..max {
-        rows = timed_call(rpc, clock, scan).expect("an incomplete read is an answer, not an error");
+        let rows = timed_call(rpc, clock, scan).expect("an incomplete read is an answer, not an error");
         if scan.last_read_complete {
             return rows;
         }
@@ -2236,7 +2238,8 @@ fn unbudgeted_scan_calls(prod: &str) -> Vec<String> {
             bad.push(format!("no fn {name}"));
             continue;
         };
-        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        // rustfmt may break a call chain before `.`: `budget\n.run(|| rpc.x())`.
+        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ").replace(" .", ".");
         let mut rest = flat.as_str();
         let mut seen = 0usize;
         while let Some(i) = rest.find("rpc.") {

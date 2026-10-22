@@ -4566,6 +4566,10 @@ export class Store {
       } else if (msg.includes("still indexing chain history")) {
         // The node asked for a retry (-32002) past the bounded back-off: try again later.
         setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_INDEXING_RETRY_MS);
+      } else if ((err as Error)?.name === "InvokeTimeout") {
+        // The command missed the IPC deadline: shown as "—" plus the reason (above), and read
+        // again; the Rust scan keeps what it read, so the next read resumes.
+        setTimeout(() => void this.refreshPendingWithdrawals(), PENDING_TIMEOUT_RETRY_MS);
       }
     }
   }
