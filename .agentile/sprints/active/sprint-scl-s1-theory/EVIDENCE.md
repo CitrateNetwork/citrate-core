@@ -3,7 +3,7 @@ created: 2026-10-19T01:10:00Z
 branch: beta/k1a-gate0-tla
 author: "Larry Klosowski + Claude Opus 5.5 (MAC lane)"
 status: active
-updated: 2026-10-19 (review round 2: pysol-dev changes requested at 8ea9d53, vacuous MemberStart fixed; review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
+updated: 2026-10-22 (review round 3: Codex P2 at 59cecef, Probed credit must span healthy_after in time; review round 2: pysol-dev changes requested at 8ea9d53, vacuous MemberStart fixed; review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
 sprint: SCL-S1
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -420,6 +420,41 @@ green, 15 mutants, 18 witnesses.
 
 Rule-2 record for round 2: TLC configs go from 38 to 40. There are 16 self-tests for the scripts
 (new). There is still no Rust or TypeScript change.
+
+## Review round 3: Codex P2 at `59cecef` (S1.1)
+
+Finding: `ProbeOk` added one to `okWindow` per result and left `age` unchanged, so with the Probed
+constants `SpawnReturns` then two `ProbeBegin`/`ProbeOk` pairs enabled `ResetCredit` at age 0.
+SPEC-001 line 80 asks for successful samples that span healthy_after. INV-7 checked the same sample
+counter, so it accepted that trace.
+
+- **Model.** New variables `okFirst` and `okLast` (age of the first and latest success of the
+  current uninterrupted window, reset wherever the window ends). `OkSpan == okLast - okFirst`.
+  Probed `ResetCredit` needs `okWindow > 0 /\ OkSpan >= HealthyAfterTicks`. `HealthyAfterTicks`
+  now means ticks for both profiles.
+- **INV-7 restated.** `credited => okWindow > 0 /\ OkSpan >= HealthyAfterTicks`: the invariant
+  checks the time span, not the guard's sample count.
+- **Negative control.** Mutant `SampleCredit` (the 59cecef rule) on the Probed constants: TLC
+  reports `INV_CreditOnlyFromAttestedHealth` violated. Witness `W_SamplesWithoutSpan`: an
+  uncredited window holds healthy_after samples spanning less than healthy_after ticks.
+- **Positive control.** `W_CreditFromSpan` on the green Probed config: credit is reached, so the
+  span rule can be met within `MaxAge` and INV-7 is not vacuous.
+- **Red first.** 08f7c79 adds the tracking, the restated INV-7 and both witnesses with the old
+  guard. TLC then reports `INV_CreditOnlyFromAttestedHealth` violated on `SidecarSupervisor_Probed`.
+  The fix commit changes the guard. Revert check: with the old guard put back, `_Probed` fails on
+  INV-7 again and passes once the fix is restored.
+
+| Config | Expected | TLC result | Distinct states | Depth | Match |
+|---|---|---|---|---|---|
+| `SidecarSupervisor_Probed` | no error | no error | 18135 | - | yes |
+| `SidecarSupervisor_MutSampleCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 387 | 14 | yes |
+| `SidecarSupervisor_ReachSamplesWithoutSpan` | violated W_SamplesWithoutSpan | violated W_SamplesWithoutSpan | 217 | 11 | yes |
+| `SidecarSupervisor_ReachCreditFromSpan` | violated W_CreditFromSpan | violated W_CreditFromSpan | 694 | 15 | yes |
+
+`tlc_expect.py SidecarSupervisor` exit 0 (TLC 2.19, same jar digest as round 2), frame lint clean,
+coverage check clean, `--self-test` passes. All 24 SidecarSupervisor configs match; the
+AppExitCoordinator configs are unchanged. Rule-2 record for round 3: TLC configs go from 40 to 43
+(7 green, 16 mutants, 20 witnesses). Still no Rust or TypeScript change.
 
 ### Not done here
 

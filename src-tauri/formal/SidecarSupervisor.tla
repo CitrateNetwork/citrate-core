@@ -383,12 +383,16 @@ Crash ==
 \* today's elapsed Running rule, unchanged (INV-9). Granted once per window.
 \* Today: `refresh_health!` plus `if report.sustained_healthy` (elapsed time
 \* for every profile: defect (b) for Probed). Target: SCL-S3.2.
+\* Mutant "SampleCredit": credit after HealthyAfterTicks samples, however
+\* little time they span (the rule this model had at 59cecef).
 ResetCredit ==
     /\ phase = "Alive"
     /\ child
     /\ ~credited
     /\ IF Profile = "Probed"
-       THEN okWindow >= HealthyAfterTicks
+       THEN IF Mutant = "SampleCredit"
+            THEN okWindow >= HealthyAfterTicks
+            ELSE okWindow > 0 /\ OkSpan >= HealthyAfterTicks
        ELSE CanHealthy /\ age >= HealthyAfterTicks
     /\ failures' = 0
     /\ credited' = TRUE
