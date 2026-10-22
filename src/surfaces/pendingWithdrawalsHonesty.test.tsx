@@ -12,9 +12,11 @@ vi.mock("../bridge/mode", () => ({
 
 import { Wallet } from "./Wallet";
 import { freshState, type AppState } from "../shell/state";
-import { store, PENDING_SCAN_RETRY_MS, PENDING_CATCHUP_RETRY_MS, PENDING_TIMEOUT_RETRY_MS, type Store } from "../shell/store";
+import { store, PENDING_SCAN_RETRY_MS, PENDING_CATCHUP_RETRY_MS, PENDING_INDEXING_RETRY_MS, PENDING_TIMEOUT_RETRY_MS, type Store } from "../shell/store";
 import { bridge } from "../bridge";
 import { InvokeTimeout } from "../bridge/tauri/invoke";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const stubStore = {
   identity: () => ({ name: "Member", initials: "M", email: "m@example.com", sub: "sub-1", wallet: "0x" + "0".repeat(40), tier: "pilot", role: "member", org: null, real: true }),
@@ -59,7 +61,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     vi.useFakeTimers();
     const read = vi
       .spyOn(bridge.wallet, "pendingWithdrawals")
-      .mockRejectedValueOnce("still reading chain history: blocks 427-200000 of 524862 scanned")
+      .mockRejectedValueOnce({ kind: "scanning", message: "still reading chain history: the time budget ran out before the node was read" })
       .mockResolvedValueOnce({ withdrawals: [{ id: "7", saltWei: "1000000000000000000", requestBlock: 5000, claimableAtBlock: 55400, claimable: true }], confirmed: true, complete: true, note: null });
     await store.refreshPendingWithdrawals();
     expect(store.state.pendingWithdrawalsError).toContain("still reading chain history");
@@ -73,7 +75,7 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     vi.useFakeTimers();
     const read = vi
       .spyOn(bridge.wallet, "pendingWithdrawals")
-      .mockRejectedValueOnce("still indexing chain history (blocks 427-1426): log index warming, retry")
+      .mockRejectedValueOnce({ kind: "indexing", message: "still indexing chain history (blocks 427-1426): log index warming, retry" })
       .mockResolvedValueOnce({ withdrawals: [], confirmed: true, complete: true, note: null });
     await store.refreshPendingWithdrawals();
     const html = renderToStaticMarkup(<Wallet store={stubStore} s={staking({ pendingWithdrawals: [], pendingWithdrawalsError: store.state.pendingWithdrawalsError })} />);
@@ -168,4 +170,49 @@ describe("C1-W — pending withdrawals are never an empty list on a failed read"
     expect(read).toHaveBeenCalledTimes(2);
     expect(store.state.pendingWithdrawalsError).toBeNull();
   });
+
+  // #371 DGX review @ff96e43: the retry timer follows the structured error kind from Rust, never
+  // the words of the message (which may change, or be translated).
+  it("the retry follows the error kind, not the message text", async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .spyOn(bridge.wallet, "pendingWithdrawals")
+      .mockRejectedValueOnce({ kind: "scanning", message: "blocks 427-1426 of 5000 read" })
+      .mockRejectedValueOnce({ kind: "indexing", message: "blocks 427-1426: warming" })
+      .mockRejectedValueOnce({ kind: "failed", message: "still reading chain history" })
+      .mockResolvedValue({ withdrawals: [], confirmed: true, complete: true, note: null });
+    await store.refreshPendingWithdrawals();
+    expect(store.state.pendingWithdrawalsError).toBe("blocks 427-1426 of 5000 read");
+    await vi.advanceTimersByTimeAsync(PENDING_SCAN_RETRY_MS + 10);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(store.state.pendingWithdrawalsError).toBe("blocks 427-1426: warming");
+    await vi.advanceTimersByTimeAsync(PENDING_SCAN_RETRY_MS + 10);
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(PENDING_INDEXING_RETRY_MS);
+    expect(read).toHaveBeenCalledTimes(3);
+    // `failed`, even with words that look like a budget stop: shown, not retried on a timer.
+    expect(store.state.pendingWithdrawalsError).toBe("still reading chain history");
+    await vi.advanceTimersByTimeAsync(PENDING_CATCHUP_RETRY_MS + PENDING_TIMEOUT_RETRY_MS);
+    expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  // TRIPWIRE: the pending-withdrawals read in the store never decides on the text of an error.
+  it("tripwire: the store's pending-withdrawals read does not match error text", () => {
+    const src = readFileSync(join(__dirname, "../shell/store.ts"), "utf8");
+    const start = src.indexOf("private async readPendingWithdrawals(");
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf("\n  }\n", start);
+    const body = src.slice(start, end);
+    expect(textMatches(body)).toEqual([]);
+    // Negative control: the ff96e43 shape is caught.
+    expect(textMatches('if (msg.includes("still reading chain history")) {}')).not.toEqual([]);
+    expect(textMatches("if (/indexing/.test(msg)) {}")).not.toEqual([]);
+  });
 });
+
+/** Ways of deciding on the words of a message. */
+function textMatches(code: string): string[] {
+  return [/\.includes\(/, /\.startsWith\(/, /\.endsWith\(/, /\.match\(/, /\.test\(/, /\.indexOf\(/, /\.search\(/]
+    .filter((re) => re.test(code))
+    .map(String);
+}

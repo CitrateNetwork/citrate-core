@@ -1428,9 +1428,10 @@ pub fn wallet_claim_withdrawal_sync(
 pub async fn wallet_pending_withdrawals(
     app: tauri::AppHandle,
     custody: tauri::State<'_, crate::custody::CustodyState>,
-) -> std::result::Result<PendingWithdrawalsRead, String> {
+) -> std::result::Result<PendingWithdrawalsRead, PendingWithdrawalsError> {
     use tauri::Manager as _;
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0)
+        .map_err(|e| PendingWithdrawalsError::failed(e.to_string()))?;
     // Kept on disk too (the last served `through` and the rows found up to it), so a relaunch
     // resumes instead of rescanning from the deployment block. Session-only state stays in memory.
     let file = app
@@ -1438,6 +1439,7 @@ pub async fn wallet_pending_withdrawals(
         .app_local_data_dir()
         .ok()
         .map(|d| d.join("withdrawal-scans.json"));
+    // The body's own error keeps its kind; only a failed background task is `failed`.
     crate::blocking::off_main(move || {
         let key = format!(
             "{}:{}:{}",
@@ -1476,9 +1478,45 @@ pub async fn wallet_pending_withdrawals(
             // Best effort: a failed save only means the next launch rescans.
             let _ = save_scan(f, &key, &scan);
         }
-        out.map_err(|e| e.to_string())
+        Ok(out.map_err(|e| pending_read_error(&e)))
     })
     .await
+    .map_err(PendingWithdrawalsError::failed)?
+}
+
+/// C1-W (#371 review) — why a `wallet_pending_withdrawals` read failed, as a kind the Wallet acts
+/// on (when to read again) plus words to show. The kind is the contract; the message is display
+/// only and never matched.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PendingWithdrawalsError {
+    pub kind: PendingReadErrorKind,
+    pub message: String,
+}
+
+/// The kind of a failed pending-withdrawals read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingReadErrorKind {
+    /// The time budget ran out before the node was read: read again soon.
+    Scanning,
+    /// The node kept answering -32002 ("retry"): read again later.
+    Indexing,
+    /// Anything else (an RPC or decode error, a locked vault): shown, not retried on a timer.
+    Failed,
+}
+
+impl PendingWithdrawalsError {
+    fn failed(message: String) -> Self {
+        PendingWithdrawalsError {
+            kind: PendingReadErrorKind::Failed,
+            message,
+        }
+    }
+}
+
+/// The structured error for a failed scan.
+pub fn pending_read_error(e: &StakingError) -> PendingWithdrawalsError {
+    PendingWithdrawalsError::failed(e.to_string())
 }
 
 /// C1-W — what `wallet_pending_withdrawals` returns: the pending withdrawals found (each confirmed

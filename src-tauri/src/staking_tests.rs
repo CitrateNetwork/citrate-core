@@ -2298,3 +2298,21 @@ fn tripwire_catches_an_unbudgeted_request_or_wait() {
 fn the_scan_budget_plus_one_request_fits_the_ipc_deadline() {
     assert!(SCAN_BUDGET + rpc_timeout() < ipc_deadline(), "{SCAN_BUDGET:?} + {:?} >= {:?}", rpc_timeout(), ipc_deadline());
 }
+
+// #371 DGX review @ff96e43: the Wallet picks its retry from a structured error kind, never from
+// the message text. The kind follows the StakingError variant; the message is display only.
+#[test]
+fn a_failed_read_carries_a_structured_kind() {
+    let kind = |e: StakingError| pending_read_error(&e).kind;
+    assert_eq!(kind(StakingError::OutOfBudget), PendingReadErrorKind::Scanning);
+    assert_eq!(kind(StakingError::Indexing("blocks 427-1426: warming".into())), PendingReadErrorKind::Indexing);
+    assert_eq!(kind(StakingError::Rpc("citrate_getLogs blocks 427-1426: timed out".into())), PendingReadErrorKind::Failed);
+    assert_eq!(kind(StakingError::Decode("short".into())), PendingReadErrorKind::Failed);
+    assert_eq!(kind(StakingError::BadAddress("0x1".into())), PendingReadErrorKind::Failed);
+    // An RPC error whose words look like a budget stop is still `failed`: the kind is not text.
+    assert_eq!(kind(StakingError::Rpc("still reading chain history".into())), PendingReadErrorKind::Failed);
+    let wire = serde_json::to_value(pending_read_error(&StakingError::OutOfBudget)).expect("serializes");
+    assert_eq!(wire["kind"], "scanning");
+    assert_eq!(wire["message"], StakingError::OutOfBudget.to_string());
+    assert_eq!(serde_json::to_value(pending_read_error(&StakingError::Indexing("x".into()))).expect("serializes")["kind"], "indexing");
+}

@@ -225,6 +225,14 @@ export interface PendingWithdrawalsRead {
   note: string | null;
 }
 
+/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
+ * when the Wallet reads again; `message` is display only and is never matched. */
+export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
+export interface PendingWithdrawalsError {
+  kind: PendingReadErrorKind;
+  message: string;
+}
+
 export interface PendingWithdrawal {
   id: string;
   saltWei: string;
