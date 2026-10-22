@@ -254,6 +254,11 @@ fn read_pending(path: &std::path::Path) -> Vec<PendingInvite> {
     }
 }
 
+/// Read `pending.json`.
+fn view_pending_at(path: &std::path::Path) -> Result<Vec<PendingInvite>, String> {
+    Ok(read_pending(path))
+}
+
 /// Serializes every `pending.json` read-change-write in this process (Tauri commands and the MCP
 /// tools both mint and revoke).
 static PENDING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -843,7 +848,8 @@ mod tests {
     }
 
     fn tokens(path: &std::path::Path) -> Vec<String> {
-        super::read_pending(path)
+        super::view_pending_at(path)
+            .expect("pending.json reads")
             .into_iter()
             .map(|i| i.token)
             .collect()
@@ -1025,6 +1031,110 @@ mod tests {
             h.join().expect("writer thread");
         }
         assert_eq!(tokens(&path).len(), 16 * 8);
+    }
+
+    /// Codex round 3 (P1): a writer truncates `pending.json` before it writes. A revoke whose lookup
+    /// read lands in that window must wait for the write, not read "no invites" and skip the close.
+    #[test]
+    fn a_revoke_whose_lookup_read_overlaps_a_write_still_closes_the_rendezvous() {
+        let path = scratch("overlap");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let full = serde_json::to_vec_pretty(&[minted("g", T, d)]).expect("json");
+        // A create holds the lock and has written half the file.
+        let guard = super::PENDING_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::fs::write(&path, &full[..full.len() / 2]).expect("partial");
+        let closed = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let (p2, c2) = (path.clone(), closed.clone());
+        let revoke = std::thread::spawn(move || {
+            super::revoke_at(
+                &p2,
+                "g",
+                T,
+                |l| {
+                    *c2.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(l);
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        std::fs::write(&path, &full).expect("the write completes");
+        drop(guard);
+        let r = revoke.join().expect("revoke thread");
+        assert_eq!(r, Ok(()));
+        assert_eq!(
+            closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref(),
+            Some(LOOKUP),
+            "the rendezvous is closed"
+        );
+        assert!(tokens(&path).is_empty());
+    }
+
+    /// Codex round 3 (P1): an unreadable `pending.json` is not "no invites". Revoke fails before
+    /// either relay call, and the file is left as it is.
+    #[test]
+    fn a_revoke_over_an_unreadable_pending_file_fails_without_calling_the_relay() {
+        let path = scratch("corrupt-revoke");
+        std::fs::write(&path, b"[{\"group\":\"g\",\"tok").expect("corrupt");
+        let calls = std::cell::Cell::new(0);
+        let r = super::revoke_at(
+            &path,
+            "g",
+            T,
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(r.is_err(), "an unreadable file fails the revoke: {r:?}");
+        assert_eq!(calls.get(), 0, "no relay call on an unreadable file");
+        assert_eq!(
+            std::fs::read(&path).expect("still there"),
+            b"[{\"group\":\"g\",\"tok"
+        );
+    }
+
+    /// An unreadable `pending.json` is never overwritten by a writer (it holds invite private keys).
+    #[test]
+    fn a_writer_never_overwrites_an_unreadable_pending_file() {
+        let path = scratch("corrupt-write");
+        std::fs::write(&path, b"not json").expect("corrupt");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let r = super::update_pending_at(&path, |v| v.push(minted("g", T, d)));
+        assert!(r.is_err(), "a writer refuses an unreadable file");
+        assert_eq!(std::fs::read(&path).expect("still there"), b"not json");
+        assert!(super::view_pending_at(&path).is_err());
+        // A missing file is an empty list, not an error.
+        let fresh = scratch("missing");
+        assert_eq!(super::view_pending_at(&fresh).map(|v| v.len()), Ok(0));
+    }
+
+    /// Tripwire: `pending.json` is only read under `PENDING_LOCK` (inside `update_pending_at` and
+    /// `view_pending_at`).
+    #[test]
+    fn pending_json_is_only_read_under_the_lock() {
+        let src = include_str!("invites.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("tests")];
+        assert_eq!(
+            prod.matches("read_pending(").count(),
+            3,
+            "read_pending is defined once and called only in update_pending_at and view_pending_at"
+        );
+        for f in ["fn update_pending_at", "fn view_pending_at"] {
+            let body = &prod[prod.find(f).expect(f)..];
+            let body = &body[..body.find("\n}\n").expect("end")];
+            assert!(body.contains("PENDING_LOCK"), "{f} takes the lock");
+            assert!(body.contains("read_pending("), "{f} reads");
+        }
     }
 
     /// Tripwire: `pending.json` is only written through `update_pending_at` (one lock, read and write
