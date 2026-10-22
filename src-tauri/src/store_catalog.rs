@@ -911,9 +911,7 @@ fn installed_view(
         .flatten()
         .map(|v| if v.paused { "paused" } else { "active" })
         .unwrap_or("missing"),
-        ListingKind::Model if crate::model::is_file_ready(&t.models_dir, &r.target) => {
-            "not_selected"
-        }
+        ListingKind::Model if store_owns_model(&t.models_dir, r) => "not_selected",
         _ if r.pending && installing == Some(r.listing_id.as_str()) => "installing",
         _ => "missing",
     };
@@ -926,6 +924,20 @@ fn installed_view(
         installed_at: r.installed_at,
         state: state.to_string(),
     }
+}
+
+/// Whether the model file a Store record names still holds the bytes that record installed: the
+/// file is verified-Ready, its verify matched the record's pinned SHA-256, and its size is the
+/// record's. A file of the same name with other bytes (a replacement made in Models after the
+/// Store's copy was deleted there) or with no recorded hash is never the Store's: it is not
+/// reported as installed and Remove never deletes it.
+fn store_owns_model(models_dir: &Path, r: &InstallRecord) -> bool {
+    if r.sha256.is_empty() || r.size == 0 {
+        return false;
+    }
+    let hash_ok = crate::model::verified_sha256(models_dir, &r.target)
+        .is_some_and(|h| h.eq_ignore_ascii_case(&r.sha256));
+    hash_ok && std::fs::metadata(models_dir.join(&r.target)).is_ok_and(|m| m.len() == r.size)
 }
 
 /// Every install the Store made, with its live state. Needs no key.
@@ -1312,7 +1324,7 @@ pub(crate) fn remove_sync(
                 }
             })?
         }
-        ListingKind::Model => {
+        ListingKind::Model if store_owns_model(&t.models_dir, &rec) => {
             match crate::model_delete::delete_and_forget(
                 &t.models_dir,
                 t.bundled_models.as_deref(),
@@ -1320,19 +1332,22 @@ pub(crate) fn remove_sync(
                 t.usage,
                 t.selection,
             ) {
-                Ok(_) => {}
-                // Not a verified model on disk: for the Store's own unfinished install (a pending
-                // record), its unverified file and side files go with the record.
-                Err(crate::model_delete::DeleteRefusal::Unknown(_)) => {
-                    if rec.pending {
-                        remove_unverified_model(&t.models_dir, &rec.target)?;
-                    }
-                }
+                // Gone between the check and the delete: nothing left to remove.
+                Ok(_) | Err(crate::model_delete::DeleteRefusal::Unknown(_)) => {}
                 Err(e @ crate::model_delete::DeleteRefusal::InUse(_))
                 | Err(e @ crate::model_delete::DeleteRefusal::Downloading) => {
                     return Err(refuse("in_use", e.to_string()))
                 }
                 Err(e) => return Err(refuse("install_failed", e.to_string())),
+            }
+        }
+        // Not the Store's bytes on disk. For the Store's own unfinished install (a pending
+        // record) its unverified file and side files go with the record; a verified file is
+        // never removed here. Otherwise the target is gone or belongs to a replacement, and only
+        // the stale record goes.
+        ListingKind::Model => {
+            if rec.pending {
+                remove_unverified_model(&t.models_dir, &rec.target)?;
             }
         }
         _ => {}

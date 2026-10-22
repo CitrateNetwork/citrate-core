@@ -1258,3 +1258,37 @@ fn the_store_install_itself_is_still_reported_and_removed() {
     fx.fx_remove("tiny-model", &Usage(None)).expect("remove");
     assert!(!fx.models.join("tiny-model.gguf").exists());
 }
+
+#[test]
+fn verify_records_the_hash_it_matched_and_unverify_drops_it() {
+    let fx = Fx::standard("verified-hash");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    fx.fx_install(&st.stage_id, 0).expect("install");
+    assert_eq!(crate::model::verified_sha256(&fx.models, "tiny-model.gguf"), Some(sha(&model_bytes())));
+    // A failed verify (other bytes) leaves no hash behind.
+    let mut other = model_bytes();
+    other[5] = 0;
+    std::fs::write(fx.models.join("tiny-model.gguf"), &other).expect("bytes");
+    let mgr = crate::model::ModelManager::new(fx.models.clone(), Box::new(MemTransport(Vec::new())), sha(&model_bytes()), other.len() as u64)
+        .with_file("tiny-model.gguf".to_string());
+    assert!(mgr.verify().is_err());
+    assert_eq!(crate::model::verified_sha256(&fx.models, "tiny-model.gguf"), None);
+}
+
+#[test]
+fn tripwire_store_model_state_and_removal_go_through_the_ownership_check() {
+    let src = include_str!("store_catalog.rs");
+    let body = |sig: &str| -> &str {
+        let start = src.find(sig).unwrap_or_else(|| panic!("{sig} exists"));
+        let rest = &src[start..];
+        &rest[..rest.find("\n}\n").expect("fn ends")]
+    };
+    for f in ["fn installed_view(", "pub(crate) fn remove_sync("] {
+        let b = body(f);
+        assert!(b.contains("store_owns_model("), "{f}: a model record is checked against its bytes");
+        assert!(!b.contains("is_file_ready("), "{f}: a ready file of the same name is not proof of ownership");
+    }
+    let owns = body("fn store_owns_model(");
+    assert!(owns.contains("verified_sha256(") && owns.contains("r.size"), "hash and size are both checked");
+}
