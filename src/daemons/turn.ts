@@ -124,6 +124,8 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   const opened: string[] = [];
   // An open core refused (an open-time check) means the run never started (DGX R5).
   let openRefused: string | null = null;
+  const baseChars = system.length + toolsJson.length + (allowed != null ? 0 : JSON.stringify(deps.context()).length);
+  let metered = false;
   let provider: ChatProvider;
   if (deps.providerKind === "sidecar" && deps.sidecar) {
     const sc = deps.sidecar;
@@ -137,7 +139,19 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
             openRefused = e instanceof Error ? e.message : String(e);
             throw e;
           }
+          // Stopped or paused while the open was pending: the run already ended, so nothing is
+          // sent in this session and it is closed.
+          if (signal.aborted) {
+            sc.close(id).catch(() => undefined);
+            throwIfStopped(signal);
+          }
           opened.push(id);
+          // The meter starts at the first open: a run that never got a session charges nothing,
+          // whatever ended it (a refusal, a stop, a pause).
+          if (!metered) {
+            metered = true;
+            meter.begin(baseChars, task.length);
+          }
           return id;
         },
         send: sc.send,
@@ -153,7 +167,6 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   } else {
     throw new Error("daemons run only on the local model, which is not serving right now");
   }
-  meter.begin(system.length + toolsJson.length + (allowed != null ? 0 : JSON.stringify(deps.context()).length), task.length);
   const messages = [{ role: "user", content: task }];
   try {
     const reply = await provider.send({

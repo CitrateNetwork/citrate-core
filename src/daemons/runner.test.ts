@@ -507,3 +507,20 @@ describe("a stop while the session open is still pending (Codex P2, #376 at 796f
     expect(api.finished[0].tokens).toBeGreaterThan(0);
   });
 });
+
+describe("tripwire: the daemon meter starts only at a session open", () => {
+  it("runDaemonTurn begins its meter once, inside the open callback, after openUnattended resolves", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(__dirname, "turn.ts"), "utf8");
+    const begins = src.match(/meter\.begin\(/g) ?? [];
+    expect(begins).toHaveLength(1);
+    const open = src.indexOf("await sc.openUnattended(");
+    const aborted = src.indexOf("if (signal.aborted)", open);
+    const begin = src.indexOf("meter.begin(");
+    expect(open).toBeGreaterThan(0);
+    expect(aborted).toBeGreaterThan(open);
+    expect(begin).toBeGreaterThan(aborted);
+    expect(begin).toBeLessThan(src.indexOf("provider.send("));
+  });
+});
