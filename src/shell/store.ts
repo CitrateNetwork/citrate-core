@@ -1314,12 +1314,14 @@ export class Store {
 
   /**
    * C1-V (contract v1.1 §1) — this node's key in the registry: isActive, validatorInfo (status,
-   * actEpoch) and currentEpoch, the only source of the validator words. No registered stake ⇒ null
-   * without a read. Re-read at most every 60 s; between reads the last reading stands. A failed
+   * actEpoch) and currentEpoch, the only source of the validator words. Read for this node's key
+   * whether or not it has registered stake (C1-V2). Re-read at most every 60 s; between reads the last reading stands. A failed
    * read is null (unknown), which is never shown as active.
    */
-  private async readValidatorActivation(bondedSalt: number, nodeRunning: boolean): Promise<ValidatorActivation | null> {
-    if (!(bondedSalt > 0)) return null;
+  private async readValidatorActivation(nodeRunning: boolean): Promise<ValidatorActivation | null> {
+    // C1-V2: read whenever this node's key is known, whatever the registry stake. A full exit sets
+    // `stakeOf` to 0 while `validatorInfo.status` is Exiting (2) or Slashed (3), so gating the read
+    // on stake > 0 would make those words unreachable. A key the registry never saw reads status 0.
     const ACTIVE_READ_MS = 60_000;
     if (!nodeRunning || Date.now() - this.lastActiveReadAt < ACTIVE_READ_MS) return this.state.validatorActivation;
     this.lastActiveReadAt = Date.now();
@@ -1439,9 +1441,8 @@ export class Store {
         }
       }
       // C1-V (contract v1.1 §1) — the validator words come ONLY from the registry: isActive,
-      // validatorInfo.actEpoch and currentEpoch. With no registered stake there is nothing to ask:
-      // not a validator. Otherwise read at most every ACTIVE_READ_MS.
-      const validatorActivation = await this.readValidatorActivation(bonded, st.state === "running");
+      // validatorInfo (status, actEpoch) and currentEpoch, read at most every ACTIVE_READ_MS.
+      const validatorActivation = await this.readValidatorActivation(st.state === "running");
       void this.refreshProducers();
       // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
       // respawns the node with `--mine --coinbase`. So an ALREADY-BONDED validator
@@ -1563,6 +1564,9 @@ export class Store {
     if (s.bondedStake >= 32000) return; // already a bonded validator — nothing to do
     if (!this.walletIsLinked()) return; // S4: the EOA must be the member's wallet_address
     if (!s.hasGrant) return; // the grant must have deployed + funded the bond clone (settled S5)
+    // #348/#349 review: a bond that already activated (then exited or was slashed) never re-opens
+    // activation, and neither does an Exiting / Slashed key.
+    if (s.bondActivated === true || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) return;
 
     // STEP 1 — ARM the producer so the node mints `proposer.key` (the validator
     // identity activation needs). The node runs as a plain follower and NEVER mints
@@ -3379,7 +3383,7 @@ export class Store {
         const a = this.state.validatorActivation;
         result = JSON.stringify({
           ...(await bridge.node.status()),
-          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant),
+          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated),
           validatorActivation: a,
         });
       } catch (e) {
