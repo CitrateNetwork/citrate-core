@@ -56,10 +56,12 @@ export function Node({ store, s }: SurfaceProps) {
   useEffect(() => {
     void store.refreshProducers();
   }, [store]);
+  // Read again when the reward eligibility changes while the tab is open (the stake or the bond's
+  // activated flag reconciles after mount; #348 review).
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.nTab]);
+  }, [store, s.nTab, readsRewards]);
 
   // ----- header / tabs -----
   const ntabs: [string, string][] = [

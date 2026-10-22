@@ -1299,6 +1299,10 @@ export class Store {
       this.setState(guard);
       this.save();
     }
+    // #348 review: the bond's activated flag is observed, never persisted. Fold it from this
+    // node-independent read on every launch, settled or not, so an exited validator's rewards load
+    // even with the node stopped. A failed read stays null (unread).
+    this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
     // Onboarding-step reconcile: only needed while the flow is not already settled.
     if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
     const patch = reconciledGrantPatch(grant);
@@ -1414,7 +1418,11 @@ export class Store {
       let bondActivated = this.state.bondActivated;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
-      if ((needBond || needGrant) && dueForBondRead) {
+      // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
+      // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
+      // own read (whatever the node is doing) until it lands.
+      const needActivation = this.state.hasGrant && bondActivated === null;
+      if ((needBond || needGrant || needActivation) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
