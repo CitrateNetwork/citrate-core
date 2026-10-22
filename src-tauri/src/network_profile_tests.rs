@@ -319,3 +319,51 @@ fn a_partly_set_profile_gives_a_gate_that_refuses() {
     assert!(p.chain_id.is_some() && p.genesis_hash.is_some());
     assert!(!p.expected_network().is_set());
 }
+
+/// The `cfg` names a build script's output sets (`cargo:rustc-cfg=…` or `cargo::rustc-cfg=…`),
+/// value included (`name` or `name="value"`).
+fn k6_emitted_cfgs(output: &str) -> Vec<String> {
+    let _ = output;
+    Vec::new()
+}
+
+/// K6 (MAC round 6 on core#363): the key-access scans in kit read `#[cfg(test)]` as test-only.
+/// That holds only while no build script sets `cfg(test)` for a non-test build. kit has no build
+/// script (pinned in kit). This reads what the app's build script actually emitted (Cargo keeps
+/// its stdout beside OUT_DIR, so the answer comes from the build, not from reading the script),
+/// and pins the script's source so a conditional emission cannot be added unnoticed.
+#[test]
+fn k6_app_build_script_sets_no_test_cfg() {
+    let sample = concat!(
+        "cargo:rerun-if-changed=x\n",
+        "cargo:rustc-cfg=desktop\n",
+        "cargo::rustc-cfg=test\n",
+        "cargo:rustc-cfg=feature=\"x\"\n",
+        "cargo:rustc-check-cfg=cfg(test)\n",
+        "cargo:rustc-env=A=cargo:rustc-cfg=test\n",
+    );
+    assert_eq!(
+        k6_emitted_cfgs(sample),
+        vec!["desktop", "test", "feature=\"x\""],
+        "both directive spellings; check-cfg and env lines set no cfg"
+    );
+    let out = std::path::Path::new(env!("OUT_DIR")).join("../output");
+    let emitted = std::fs::read_to_string(&out)
+        .unwrap_or_else(|e| panic!("read build script output {}: {e}", out.display()));
+    let cfgs = k6_emitted_cfgs(&emitted);
+    assert!(
+        cfgs.iter().any(|c| c == "desktop"),
+        "positive control: tauri_build's `desktop` cfg is seen ({cfgs:?})"
+    );
+    assert!(
+        !cfgs.iter().any(|c| c == "test"),
+        "the app build script set cfg(test) for every build: {cfgs:?}"
+    );
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs");
+    let src = std::fs::read_to_string(&script).expect("read src-tauri/build.rs");
+    let squashed: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(
+        squashed, "fnmain(){tauri_build::build()}",
+        "src-tauri/build.rs changed; re-check that it sets no cfg(test), then update this pin"
+    );
+}
