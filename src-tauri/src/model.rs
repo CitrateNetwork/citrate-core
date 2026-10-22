@@ -305,6 +305,10 @@ pub enum ModelStatus {
 struct StatusFile {
     /// True iff a real `verify()` matched the pinned hash for the current file.
     verified: bool,
+    /// The SHA-256 that `verify()` matched (lowercase hex). Absent when not verified, and in a
+    /// status file written before the hash was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
 }
 
 /// Whether `<dir>/<file>` is a verified-Ready model, WITHOUT needing a transport or the pinned
@@ -321,6 +325,20 @@ pub fn is_file_ready(dir: &std::path::Path, file: &str) -> bool {
         .and_then(|s| serde_json::from_str::<StatusFile>(&s).ok())
         .map(|s| s.verified)
         .unwrap_or(false)
+}
+
+/// The SHA-256 a verified-Ready `<dir>/<file>` was verified against, or `None` when the file is
+/// not verified-Ready or its status names no hash. Tells which bytes a ready file holds without
+/// hashing it again (the Store uses it to recognise its own install).
+pub fn verified_sha256(dir: &std::path::Path, file: &str) -> Option<String> {
+    if !dir.join(file).exists() {
+        return None;
+    }
+    std::fs::read_to_string(dir.join(format!("{file}.status.json")))
+        .ok()
+        .and_then(|s| serde_json::from_str::<StatusFile>(&s).ok())
+        .filter(|s| s.verified)
+        .and_then(|s| s.sha256)
 }
 
 // ---------------------------------------------------------------------------
@@ -660,8 +678,11 @@ impl ModelManager {
 
     /// Write the verified flag (the ONLY writer sets it true from `verify`).
     fn write_verified(&self, verified: bool) -> Result<()> {
-        let blob = serde_json::to_vec(&StatusFile { verified })
-            .map_err(|e| ModelError::Io(e.to_string()))?;
+        let blob = serde_json::to_vec(&StatusFile {
+            verified,
+            sha256: verified.then(|| self.expected_hash.clone()),
+        })
+        .map_err(|e| ModelError::Io(e.to_string()))?;
         std::fs::write(self.status_path(), blob).map_err(|e| ModelError::Io(e.to_string()))
     }
 

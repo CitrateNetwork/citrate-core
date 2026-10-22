@@ -79,7 +79,11 @@ Verify → stage → review → approve (HIC) → install paused.
   removed together. Removing a pending model record also removes its unverified file. Daemons are created paused in one write of the
   daemon book; models are downloaded and verified and not selected.
 - **Remove.** One call, no key. A target removed elsewhere counts as removed (a daemon already
-  deleted from the Daemons screen included: there is no run left to stop). For a started
+  deleted from the Daemons screen included: there is no run left to stop). A model counts as
+  the Store's only while its file is verified against the listing's pinned SHA-256 (recorded by
+  the verify in the model's status file) and has the listing's size; a different model saved
+  under the same file name (for example in Models, after the Store's copy was deleted there)
+  shows as missing, and Remove clears only the Store's record and leaves that file alone. For a started
   daemon the app first pauses it, stops its run and any queued claim of it, and waits until
   each has ended and been recorded; core refuses to delete a daemon with a run in flight
   (`daemon_running`) unless that run is past the stale-run release. A run that ends after its
