@@ -1519,7 +1519,11 @@ export class Store {
       const mb = this.state.memberBond;
       // #366 Codex P2: an unread activated() flag is retried on its own, whether or not the key read.
       const needBondKey = !mb || (mb.deployed && (mb.activated === null || (mb.activated !== false && !mb.pubkey)));
-      if ((needBond || needGrant || needBondKey) && dueForBondRead) {
+      // chain#331: an un-activated bond's lock (isUnlocked(), MemberBond.sol:219) decides whether
+      // activation is offered; while it is unread (or absent from an older backend) the gate stays
+      // closed, so read it again on the next due poll, node up or not.
+      const needBondLock = !!mb && mb.deployed && mb.activated === false && (mb.unlocked === null || mb.unlocked === undefined);
+      if ((needBond || needGrant || needBondKey || needBondLock) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
