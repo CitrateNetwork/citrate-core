@@ -3,7 +3,7 @@ created: 2026-10-19T01:10:00Z
 branch: beta/k1a-gate0-tla
 author: "Larry Klosowski + Claude Opus 5.5 (MAC lane)"
 status: active
-updated: 2026-10-22 (review round 4: DGX changes requested at 5d1e255, INV-7 over an observer; review round 3: Codex P2 at 59cecef, Probed credit must span healthy_after in time; review round 2: pysol-dev changes requested at 8ea9d53, vacuous MemberStart fixed; review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
+updated: 2026-10-22 (review round 5: Codex P2 at ebf978c, the exit deadline ticks independently of drain dispatch; review round 4: DGX changes requested at 5d1e255, INV-7 over an observer; review round 3: Codex P2 at 59cecef, Probed credit must span healthy_after in time; review round 2: pysol-dev changes requested at 8ea9d53, vacuous MemberStart fixed; review round 1: DGX changes requested at 94d6384; B1, B2 and the (b), (c) conditions recorded below)
 sprint: SCL-S1
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -524,6 +524,56 @@ Green distinct states:
 | `SidecarSupervisor_MutElapsedCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 69 | 13 | yes |
 
 Rule-2 record for round 4: TLC configs go from 43 to 47. Still no Rust or TypeScript change.
+
+## Review round 5: Codex P2 at `ebf978c` (S1.2)
+
+**Finding.** In `AppExitCoordinator.tla`, `Tick` was enabled only after Hermes had been told to
+drain, and stopped again at the sub-deadline until the other owners had been. So the absolute
+deadline depended on coordinator progress. A drain dispatch delayed past the real deadline froze
+`deadlineLeft`. Owners could then complete, and `FinalRestart` could authorize a restart or
+installer with time apparently left. Weak fairness makes the dispatch happen eventually, but sets
+no bound on the delay, so the green checks never explored this race. SPEC-001 arms the deadline at
+admission and has its own publisher thread, which never waits on drain progress.
+
+- **Model.** `Tick` needs only `app = "Closing" /\ deadlineLeft > 0`. The old dispatch gate is
+  kept as mutant `TickWaitsOnDispatch`.
+- **X-13 `X13_DeadlineIndependentOfDispatch`.** While Closing with time left, `Tick` is enabled.
+  It is in the green config.
+- **Mutant.** `MutTickWaitsOnDispatch` reports X-13 violated (62 states). Witness
+  `ReachClosingBeforeDispatch`: Closing while Hermes is not yet draining (42).
+- **The race.** Witness `ReachExpiredBeforeDispatch`: the deadline expires before Hermes is told
+  to drain (848). On the green config the race is reachable, and every other property holds
+  through it, unchanged:
+  - X-5: no restart or install after expiry;
+  - X-9: drain order, since the sub-deadline has passed;
+  - X-11 and X-12: Quit ends with actuation and an Incomplete report;
+  - L-1.
+  The drain-order and termination properties needed no restatement.
+- **Red first.** 56d22ed adds X-13, the mutant and both witnesses on the old `Tick`. TLC reports
+  X-13 violated on the green `AppExitCoordinator` (43 states), and `ReachExpiredBeforeDispatch`
+  reports no error, which is a mismatch.
+- **Revert check.** The fixed model was copied aside and the red-commit model restored. The green
+  config again fails on X-13, and the race witness again reports no error. With the fix put back,
+  both match.
+
+### TLC results after round 5
+
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802), jar sha256
+936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88.
+`tlc_expect.py SidecarSupervisor AppExitCoordinator` exit 0. Frame lint, coverage check and
+`--self-test` are clean. All 50 configs match: 7 green, 19 mutants, 24 witnesses.
+
+Green `AppExitCoordinator` goes from 64904 to 104896 distinct states: ticks now interleave with
+dispatch. The SidecarSupervisor green counts are unchanged from round 4.
+
+| Config | Expected | TLC result | Distinct states | Depth | Match |
+|---|---|---|---|---|---|
+| `AppExitCoordinator` | no error | no error | 104896 | 26 | yes |
+| `AppExitCoordinator_MutTickWaitsOnDispatch` | violated X13_DeadlineIndependentOfDispatch | violated X13_DeadlineIndependentOfDispatch | 62 | 4 | yes |
+| `AppExitCoordinator_ReachClosingBeforeDispatch` | violated W_ClosingBeforeDispatch | violated W_ClosingBeforeDispatch | 42 | 4 | yes |
+| `AppExitCoordinator_ReachExpiredBeforeDispatch` | violated W_ExpiredBeforeDispatch | violated W_ExpiredBeforeDispatch | 848 | 7 | yes |
+
+Rule-2 record for round 5: TLC configs go from 47 to 50. Still no Rust or TypeScript change.
 
 ### Not done here
 

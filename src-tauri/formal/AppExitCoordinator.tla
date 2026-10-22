@@ -276,15 +276,20 @@ OwnerComplete(o) ==
                     actuated, retries >>
 
 (***************************************************************************)
-(* The deadline. Ticks run only once every owner whose turn has come was   *)
-(* told to drain: Hermes at once, the rest by the sub-deadline.            *)
+(* The deadline. Armed at BeginClosing, it ticks on its own for the whole  *)
+(* close, whatever the coordinator has dispatched: a drain dispatch delayed *)
+(* past the deadline does not stop it (X-13). The drain order (X-9) and the *)
+(* final actions then handle an expiry that comes before any dispatch.     *)
+(* Mutant "TickWaitsOnDispatch": ticks only once every owner whose turn has *)
+(* come was told to drain (the model before the Codex review at ebf978c).   *)
 (* Target: SCL-S2.4 (independent deadline publisher), S12.1.               *)
 (***************************************************************************)
 Tick ==
     /\ app = "Closing"
     /\ deadlineLeft > 0
-    /\ ownerState[Hermes] # "Running"
-    /\ ~(SubPassed /\ \E o \in Owners : ownerState[o] = "Running")
+    /\ Mutant = "TickWaitsOnDispatch" =>
+         /\ ownerState[Hermes] # "Running"
+         /\ ~(SubPassed /\ \E o \in Owners : ownerState[o] = "Running")
     /\ deadlineLeft' = deadlineLeft - 1
     /\ UNCHANGED << app, ownerState, tickets, expired, trigger, final, finalLeft, reported,
                     hermesChildren, runtimeAdmission, passedClosing, forced, actuated,
