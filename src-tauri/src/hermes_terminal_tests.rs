@@ -18,13 +18,42 @@ fn shell_run_value(env: &[(String, String)]) -> Option<String> {
 }
 
 #[test]
-fn the_default_is_on_and_on_sets_the_variable_to_one() {
+fn a_new_install_has_terminal_commands_off() {
+    // Owner decision 2026-10-19 (supersedes 2026-10-04): off by default for new installs.
     let d = tmp("default");
     assert_eq!(load(&d).expect("load"), TerminalSettings::default());
-    assert!(TerminalSettings::default().enabled, "owner default: on");
-    assert!(enabled(&d));
+    assert!(!TerminalSettings::default().enabled, "owner default: off");
+    assert!(!enabled(&d));
+    let env = (file_env_source(d.clone()))();
+    assert_eq!(shell_run_value(&env).as_deref(), Some(""));
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn on_sets_the_variable_to_one() {
+    let d = tmp("on");
+    apply(&d, true, 1, || Ok(false)).expect("on");
     let env = (file_env_source(d.clone()))();
     assert_eq!(env, vec![(SHELL_RUN_ENV.to_string(), "1".to_string())]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn an_existing_install_keeps_its_stored_on() {
+    let d = tmp("existing-on");
+    save(
+        &d,
+        &TerminalSettings {
+            enabled: true,
+            changed_at_ms: Some(7),
+        },
+    )
+    .expect("save");
+    assert!(enabled(&d), "a stored on is kept");
+    // The launch sync sends the member's stored choice back: nothing changes, nothing restarts.
+    let st = apply(&d, true, 8, || Ok(true)).expect("sync");
+    assert_eq!((st.enabled, st.restarted), (true, false));
+    assert_eq!(load(&d).expect("load").changed_at_ms, Some(7));
     let _ = std::fs::remove_dir_all(d);
 }
 
@@ -62,7 +91,9 @@ fn a_corrupt_or_unreadable_setting_counts_as_off() {
 fn the_env_carries_only_the_switch_never_a_path_or_secret() {
     for on in [true, false] {
         let env = sidecar_env(on);
-        assert!(env.iter().all(|(k, _)| SIDECAR_ENV_KEYS.contains(&k.as_str())));
+        assert!(env
+            .iter()
+            .all(|(k, _)| SIDECAR_ENV_KEYS.contains(&k.as_str())));
         assert!(env.iter().all(|(_, v)| v.is_empty() || v == "1"));
     }
 }
@@ -75,9 +106,9 @@ fn a_change_restarts_hermes_once_and_the_same_value_restarts_nothing() {
         restarts.set(restarts.get() + 1);
         Ok(true)
     };
-    // Fresh install: the default is on, so sending "on" only records it (no restart needed).
+    // Fresh install: the default is off, so sending "on" is a change (a running Hermes restarts).
     let st = apply(&d, true, 10, restart).expect("apply on");
-    assert_eq!((st.enabled, st.restarted, restarts.get()), (true, false, 0));
+    assert_eq!((st.enabled, st.restarted, restarts.get()), (true, true, 1));
     assert!(d.join(SETTINGS_FILE).exists());
     // Off: a real change, so a running Hermes is restarted.
     let st = apply(&d, false, 11, || {
@@ -85,7 +116,7 @@ fn a_change_restarts_hermes_once_and_the_same_value_restarts_nothing() {
         Ok(true)
     })
     .expect("apply off");
-    assert_eq!((st.enabled, st.restarted, restarts.get()), (false, true, 1));
+    assert_eq!((st.enabled, st.restarted, restarts.get()), (false, true, 2));
     assert!(!enabled(&d));
     // The same value again (the launch sync): nothing written, nothing restarted.
     let st = apply(&d, false, 12, || {
@@ -93,7 +124,10 @@ fn a_change_restarts_hermes_once_and_the_same_value_restarts_nothing() {
         Ok(true)
     })
     .expect("apply off again");
-    assert_eq!((st.enabled, st.restarted, restarts.get()), (false, false, 1));
+    assert_eq!(
+        (st.enabled, st.restarted, restarts.get()),
+        (false, false, 2)
+    );
     assert_eq!(load(&d).expect("load").changed_at_ms, Some(11));
     // On again, with Hermes stopped: stored, and the restart hook reports nothing restarted.
     let st = apply(&d, true, 13, || Ok(false)).expect("apply on");
@@ -116,9 +150,13 @@ fn a_corrupt_setting_is_replaced_by_the_members_choice_and_applied() {
 #[test]
 fn a_failed_restart_is_reported_after_the_choice_is_stored() {
     let d = tmp("restart-fail");
-    let e = apply(&d, false, 5, || Err("the port is held".into())).expect_err("reported");
+    // Off is the new default, so turning it on is the change that restarts Hermes.
+    let e = apply(&d, true, 5, || Err("the port is held".into())).expect_err("reported");
     assert!(e.contains("port"), "{e}");
-    assert!(!enabled(&d), "the member's choice is kept even when the restart failed");
+    assert!(
+        enabled(&d),
+        "the member's choice is kept even when the restart failed"
+    );
     let _ = std::fs::remove_dir_all(d);
 }
 
@@ -135,9 +173,9 @@ fn the_hermes_spawn_env_follows_the_switch() {
         )
         .with_env_source(file_env_source(dir.to_path_buf()))
     };
-    // Default (no file): on.
+    // Default (no file): off.
     let env = mgr(&d).spec_env_for_test();
-    assert_eq!(shell_run_value(&env).as_deref(), Some("1"), "{env:?}");
+    assert_eq!(shell_run_value(&env).as_deref(), Some(""), "{env:?}");
     // Off.
     apply(&d, false, 1, || Ok(false)).expect("off");
     let env = mgr(&d).spec_env_for_test();
@@ -154,7 +192,10 @@ fn the_hermes_spawn_env_follows_the_switch() {
     let sneaky: crate::hermes_web::EnvSource = std::sync::Arc::new(|| {
         vec![
             (SHELL_RUN_ENV.to_string(), "1".to_string()),
-            ("CITRATE_HERMES_TOKEN_FILE".to_string(), "/tmp/evil".to_string()),
+            (
+                "CITRATE_HERMES_TOKEN_FILE".to_string(),
+                "/tmp/evil".to_string(),
+            ),
         ]
     });
     let env = crate::hermes::HermesManager::new(
