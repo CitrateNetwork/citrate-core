@@ -372,8 +372,11 @@ pub struct VerifyReport {
 
 /// Stop/start control over the memory daemon (production: [`crate::memory::MemoryManager`]).
 pub trait DaemonControl {
+    /// A hint for the progress text only; never used to decide anything.
     fn is_running(&self) -> bool;
-    fn stop(&self);
+    /// Stop the daemon and wait until it has exited, also when another stop is already under
+    /// way. Returns whether this call stopped a running daemon (the caller then restarts it).
+    fn stop(&self) -> bool;
     fn start(&self) -> Result<(), String>;
 }
 
@@ -381,8 +384,8 @@ impl DaemonControl for crate::memory::MemoryManager {
     fn is_running(&self) -> bool {
         self.is_running_now()
     }
-    fn stop(&self) {
-        crate::memory::MemoryManager::stop(self);
+    fn stop(&self) -> bool {
+        crate::memory::MemoryManager::stop(self)
     }
     fn start(&self) -> Result<(), String> {
         crate::memory::MemoryManager::start(self).map_err(|e| e.to_string())
@@ -803,8 +806,7 @@ fn with_memory_paused<T>(
             "another memory backup or restore is running; try again when it finishes".to_string(),
         ));
     };
-    let was_running = m.daemon.is_running();
-    if was_running {
+    if m.daemon.is_running() {
         on_progress(&Progress {
             op,
             phase: "daemon",
@@ -812,8 +814,10 @@ fn with_memory_paused<T>(
             total: 0,
             item: "stopping the memory daemon".to_string(),
         });
-        m.daemon.stop();
     }
+    // Always through `stop`: it also waits for a stop someone else began (the supervisor is
+    // already gone then, but the child may still hold the store). Its answer decides the restart.
+    let was_running = m.daemon.stop();
     let out = f(on_progress);
     // Release the store before our own restart (which would otherwise be refused).
     drop(store_lock);

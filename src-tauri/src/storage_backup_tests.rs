@@ -103,9 +103,14 @@ impl DaemonControl for FakeDaemon {
     fn is_running(&self) -> bool {
         *self.running.lock().unwrap()
     }
-    fn stop(&self) {
-        self.stops.fetch_add(1, Ordering::SeqCst);
-        *self.running.lock().unwrap() = false;
+    fn stop(&self) -> bool {
+        let mut running = self.running.lock().unwrap();
+        let was = *running;
+        if was {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+        }
+        *running = false;
+        was
     }
     fn start(&self) -> std::result::Result<(), String> {
         // Mirrors MemoryManager::start: no start while a backup/restore holds the store lock.
@@ -1601,4 +1606,27 @@ fn a_missing_data_root_is_a_fresh_install() {
     assert_eq!(recover_interrupted_restore(&mem), Ok(None));
     ensure_memory_dir(&mem).expect("a fresh install gets an empty memory dir");
     assert!(mem.is_dir());
+}
+
+/// Tripwire: every pause of the memory daemon decides its restart from `stop()`'s answer (which
+/// waits for a stop already under way), never from a presence check, and `MemoryManager::stop`
+/// holds its lifecycle lock across the child's termination.
+#[test]
+fn every_memory_pause_waits_for_the_whole_stop() {
+    let non_test = |src: &'static str| -> &'static str { src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src) };
+    let backup = non_test(include_str!("storage_backup.rs"));
+    let import = non_test(include_str!("knowledge_import.rs"));
+    let memory = non_test(include_str!("memory.rs"));
+    assert!(backup.contains("let was_running = m.daemon.stop();"), "backup pause");
+    assert!(import.contains("let was_running = mgr.stop();"), "import pause");
+    for (name, src) in [("storage_backup.rs", backup), ("knowledge_import.rs", import)] {
+        for banned in ["was_running = m.daemon.is_running()", "was_running = mgr.is_running_now()", "was_running = mgr.is_running()"] {
+            assert!(!src.contains(banned), "{name}: a presence check decides a pause ({banned})");
+        }
+    }
+    let stop = &memory[memory.find("pub fn stop(&self) -> bool {").expect("stop")..];
+    let stop = &stop[..stop.find("\n    }\n").expect("stop ends")];
+    let held = stop.find("self.lifecycle.lock()").expect("stop holds the lifecycle lock");
+    assert!(held < stop.find("guard.take()").expect("take"), "lock before taking the supervisor");
+    assert!(stop.find("sup.stop()").expect("terminate") > held, "and across the termination");
 }

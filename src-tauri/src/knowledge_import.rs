@@ -745,10 +745,9 @@ fn import_plan_with_manager(
     if plan.registry.is_closed() {
         return KnowledgeImportReport::failed(INTERRUPTED_ERROR.into(), None);
     }
-    let was_running = mgr.is_running_now();
-    if was_running {
-        mgr.stop();
-    }
+    // `stop` also waits for a stop already under way, so the importer never opens the store
+    // while a daemon still holds it; its answer decides the restart.
+    let was_running = mgr.stop();
     let mut report = run_plan_locked(plan, on_line);
     if was_running {
         // Never restart the daemon once app quit began (it would outlive the quit).

@@ -538,6 +538,9 @@ pub struct MemoryManager {
     transport: Box<dyn MemoryTransport>,
     /// The live supervisor, present only while the daemon is running.
     sup: Mutex<Option<Supervisor>>,
+    /// Held by [`MemoryManager::stop`] from taking the supervisor until the child has exited, so
+    /// a second stop (a backup's or an import's pause) returns only once the store is free.
+    lifecycle: Mutex<()>,
     /// W3.2/BGE — the bundled BGE model dir (`config.json` + `tokenizer.json` +
     /// `model.safetensors`). When present, the daemon is spawned with
     /// `CITRATE_BGE_MODEL_DIR` (load offline, pinned) + `CITRATE_MEM_EMBED=bge`
@@ -600,6 +603,7 @@ impl MemoryManager {
             crash_record_path,
             transport,
             sup: Mutex::new(None),
+            lifecycle: Mutex::new(()),
             model_dir: None,
             learned_ledger: None,
             #[cfg(test)]
@@ -788,8 +792,13 @@ impl MemoryManager {
     /// Stop the daemon: graceful supervisor release (SIGTERM → grace → SIGKILL,
     /// no orphan). The daemon removes its own socket on a clean exit; a killed
     /// daemon's stale socket is reclaimed on the next start (it holds the DB
-    /// lock, which proves the socket stale). Idempotent. Returns whether a daemon was running.
+    /// lock, which proves the socket stale). Idempotent. Returns whether this call stopped a
+    /// daemon; when it returns, no daemon this manager started is still running (a concurrent
+    /// stop is waited for).
     pub fn stop(&self) -> bool {
+        // A stop already in progress has taken the supervisor but its child may still be running:
+        // wait for it, so no caller sees "not running" while the store is still open.
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let sup = {
             let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
