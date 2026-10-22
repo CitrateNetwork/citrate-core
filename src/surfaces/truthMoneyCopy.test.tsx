@@ -26,6 +26,7 @@ import { GRANT_DISCLAIMER, BETANET_CARRYOVER, grantExplanation } from "../data/g
 import { describeBond, store, type Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
+import { bridge } from "../bridge";
 
 const WEI = 10n ** 18n;
 const wei = (salt: number) => (BigInt(salt) * WEI).toString();
@@ -229,5 +230,43 @@ describe("V13 — referrals describe only what is recorded", () => {
     expect(html.toLowerCase()).not.toMatch(/reward|settle/);
     expect(html).not.toContain("SALT grant to the whole group");
     expect(html).toContain("recorded");
+  });
+});
+
+// #349 review (Codex round 2): the bond's unlock block is a chain read, never persisted. A member
+// whose onboarding is settled must still get it on launch, or every grant explanation says
+// "until block — (not read yet)" for good.
+describe("#349 round 2 — the unlock block loads on every launch", () => {
+  const settledGrant = {
+    attributedStakeWei: wei(32000),
+    attributedPrincipalWei: wei(32000),
+    hasSbt: true,
+    bondAddress: "0x" + "b".repeat(40),
+    bondDeployed: true,
+    bondedStakeWei: wei(32000),
+    hasValidator: true,
+    bondActivated: true,
+    unlockBlock: 16_000_000,
+    isUnlocked: false,
+    isKycVerified: true,
+  };
+
+  it("the startup reconcile folds unlockBlock for a settled, fully bonded member", async () => {
+    vi.spyOn(store, "identity").mockReturnValue({ wallet: "0x" + "1".repeat(40) } as never);
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(settledGrant as never);
+    store.setState({ hasGrant: true, s3: "settled", s5: "settled", bondedStake: 32_000, s5UnlockBlock: null });
+    await (store as unknown as { reconcileOnboardingFromChain(): Promise<void> }).reconcileOnboardingFromChain();
+    expect(store.state.s5UnlockBlock).toBe(16_000_000);
+    const text = grantExplanation({ amountSalt: "32,000", unlockBlock: store.state.s5UnlockBlock, staked: true, granted: true });
+    expect(text).toContain("16,000,000");
+    expect(text).not.toContain("not read yet");
+  });
+
+  it("a grant that isn't on chain leaves the unlock block as it was", async () => {
+    vi.spyOn(store, "identity").mockReturnValue({ wallet: "0x" + "1".repeat(40) } as never);
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue({ ...settledGrant, attributedStakeWei: "0", hasSbt: false, bondDeployed: false, unlockBlock: null } as never);
+    store.setState({ hasGrant: true, s3: "settled", s5: "settled", s5UnlockBlock: null });
+    await (store as unknown as { reconcileOnboardingFromChain(): Promise<void> }).reconcileOnboardingFromChain();
+    expect(store.state.s5UnlockBlock).toBeNull();
   });
 });
