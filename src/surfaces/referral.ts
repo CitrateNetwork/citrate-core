@@ -103,7 +103,7 @@ export function classifyInviteInput(raw: string): InviteInput {
   return { kind: "none" };
 }
 
-export type JoinErrorKind = "unavailable" | "nameNotAllowed" | "notSignedIn" | "notFound" | "rateLimited" | "other";
+export type JoinErrorKind = "unavailable" | "nameNotAllowed" | "notSignedIn" | "notFound" | "rateLimited" | "changed" | "other";
 
 /** Classify an error from the Rust join commands by its safe Display text. */
 export function joinErrorKind(e: unknown): JoinErrorKind {
@@ -113,7 +113,15 @@ export function joinErrorKind(e: unknown): JoinErrorKind {
   if (/sign in to create invite links|session expired or not authorized/i.test(m)) return "notSignedIn";
   if (/invite not found/i.test(m)) return "notFound";
   if (/too many invite requests/i.test(m)) return "rateLimited";
+  if (/changed while it was being checked/i.test(m)) return "changed";
   return "other";
+}
+
+/** A failure that may pass on its own (service down or busy, or the waiting invite changed under a
+ *  Review). Rust keeps the invite for these, so Review can simply run again. */
+export function joinErrorRetryable(e: unknown): boolean {
+  const k = joinErrorKind(e);
+  return k === "unavailable" || k === "rateLimited" || k === "changed";
 }
 
 /** The member-facing sentence for a join error. */
@@ -133,6 +141,8 @@ export function joinErrorMessage(e: unknown): string {
       return "That invite has expired or was revoked. Ask for a new one.";
     case "rateLimited":
       return "Too many invite requests just now. Try again in a little while.";
+    case "changed":
+      return "That invite changed while it was being checked. Review it again.";
     default: {
       const m = e instanceof Error ? e.message : String(e ?? "");
       return m.replace(/^join:\s*/, "") || "Something went wrong with that invite.";

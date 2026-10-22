@@ -60,7 +60,7 @@ import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAcce
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
-import { classifyInviteInput, joinErrorMessage, parseClaimLink } from "../surfaces/referral";
+import { classifyInviteInput, joinErrorMessage, joinErrorRetryable, parseClaimLink } from "../surfaces/referral";
 import { groupsSlice, refreshGroups } from "./slices/groups";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
@@ -608,6 +608,10 @@ export class Store {
   /** GROW-S1 task 12 — the resolved code awaiting the member's Join. Kept off AppState (and so off
    *  every snapshot and save); the link key never reaches the webview at all. */
   private pendingJoinCode: string | null = null;
+  /** Bumped whenever the waiting invite is replaced or cancelled. A Review, Join or start-up check
+   *  that started on an older value is about an invite that is no longer waiting, so its answer is
+   *  dropped (Rust applies the same rule to the hold itself). */
+  private pendingJoinGen = 0;
   private snap: AppState;
   private cid = 0;
   private mid = 0;
@@ -2221,6 +2225,7 @@ export class Store {
   private async holdInvite(link: string): Promise<boolean> {
     try {
       const v = await bridge.join.pendingSet(link);
+      this.pendingJoinGen++;
       this.pendingJoinCode = null;
       this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
       return true;
@@ -2233,8 +2238,10 @@ export class Store {
 
   /** On start-up: pick up an invite Rust is still holding (status only; not resolved). */
   async refreshPendingJoin(): Promise<void> {
+    const gen = this.pendingJoinGen;
     try {
       const v = await bridge.join.pendingGet();
+      if (gen !== this.pendingJoinGen) return;
       if (v && !this.state.pendingJoin) this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
       if (!v && this.state.pendingJoin?.phase === "waiting") this.setState({ pendingJoin: null });
     } catch {
@@ -2266,15 +2273,18 @@ export class Store {
   async reviewPendingJoin(): Promise<void> {
     const pj = this.state.pendingJoin;
     if (!pj || pj.phase === "resolving" || pj.phase === "joining") return;
-    this.setState({ pendingJoin: { ...pj, phase: "resolving", error: undefined } });
+    const gen = this.pendingJoinGen;
+    this.setState({ pendingJoin: { ...pj, phase: "resolving", error: undefined, retryable: undefined } });
     try {
       const r = await bridge.join.pendingResolve();
+      if (gen !== this.pendingJoinGen) return;
       this.pendingJoinCode = r.actionable ? r.code : null;
       this.setState({
         pendingJoin: {
           ...pj,
           phase: "ready",
           error: undefined,
+          retryable: undefined,
           resolved: {
             kind: r.kind,
             clusterName: r.clusterName,
@@ -2288,8 +2298,9 @@ export class Store {
         },
       });
     } catch (e) {
+      if (gen !== this.pendingJoinGen) return;
       this.pendingJoinCode = null;
-      this.setState({ pendingJoin: { ...pj, phase: "error", error: joinErrorMessage(e) } });
+      this.setState({ pendingJoin: { ...pj, phase: "error", error: joinErrorMessage(e), retryable: joinErrorRetryable(e) || undefined } });
     }
   }
 
@@ -2299,14 +2310,18 @@ export class Store {
     const pj = this.state.pendingJoin;
     const code = this.pendingJoinCode;
     if (!pj || pj.phase !== "ready" || !pj.resolved?.actionable || !code) return;
+    const gen = this.pendingJoinGen;
     this.setState({ pendingJoin: { ...pj, phase: "joining" } });
     try {
       await bridge.join.redeem(code);
-      this.pendingJoinCode = null;
-      this.setState({ pendingJoin: null });
+      if (gen === this.pendingJoinGen) {
+        this.pendingJoinCode = null;
+        this.setState({ pendingJoin: null });
+      }
       void refreshGroups().catch(() => {});
       this.toast(`You're in. Welcome to ${pj.resolved.clusterName || "the group"}.`);
     } catch (e) {
+      if (gen !== this.pendingJoinGen) return;
       // Rust keeps the opened invite after a failed redeem (until it expires), so Join can be retried.
       this.setState({ pendingJoin: { ...pj, phase: "ready", error: `Couldn't join yet (${joinErrorMessage(e).replace(/\.$/, "")}). You can try again.` } });
     }
@@ -2314,12 +2329,14 @@ export class Store {
 
   /** Cancel / dismiss: wipe the waiting invite in Rust. */
   async cancelPendingJoin(): Promise<void> {
+    this.pendingJoinGen++;
     this.pendingJoinCode = null;
     this.setState({ pendingJoin: null });
     try {
       await bridge.join.pendingClear();
     } catch {
-      /* nothing held (web preview) */
+      // Rust has dropped it for this session, but the device keychain couldn't delete its copy.
+      this.toast("Cancelled, but this device's keychain couldn't be reached, so the invite may come back after a restart. Cancel it again if it does.");
     }
   }
 

@@ -50,7 +50,14 @@ export function PendingJoinCardView({ pj, canJoin, onReview, onJoin, onCancel }:
     return (
       <div className="cc-fade-up" style={card("warn")} data-testid="pending-join">
         <span style={{ fontSize: 13, lineHeight: 1.5 }}>{pj.error || "That invite couldn't be used."}</span>
-        <span style={{ display: "flex", gap: 8 }}>{cancel("Dismiss")}</span>
+        <span style={{ display: "flex", gap: 8 }}>
+          {pj.retryable && (
+            <button className="btn btn-secondary btn-sm" data-testid="pending-join-retry" onClick={onReview}>
+              Try again
+            </button>
+          )}
+          {cancel("Dismiss")}
+        </span>
       </div>
     );
   }
