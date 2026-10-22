@@ -1557,6 +1557,7 @@ fn sidecar_facts(app: &tauri::AppHandle) -> SidecarFactsOwned {
 pub(crate) fn open_target(
     book: &DaemonBook,
     daemon_id: Option<&str>,
+    _run_id: Option<&str>,
 ) -> Result<Option<Vec<String>>, String> {
     let id = daemon_id.ok_or_else(|| {
         "Not started: the daemon run did not say which daemon it is for.".to_string()
@@ -1585,7 +1586,7 @@ pub(crate) fn check_store_daemon_open(
     id: Option<&str>,
 ) -> Result<Option<StoreOpen>, String> {
     let (allowed, claimed) = with_book(app, false, |b| {
-        let allowed = open_target(b, id)?;
+        let allowed = open_target(b, id, None)?;
         Ok((allowed, id.and_then(|id| b.claimed_host_sets(id))))
     })?;
     let Some(allowed) = allowed else {

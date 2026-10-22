@@ -1224,10 +1224,11 @@ fn r3_a_missing_or_unknown_daemon_id_is_refused_at_open() {
             NOW_MS,
             0,
         )?;
-        assert!(open_target(b, None).is_err(), "no daemon id: refused");
-        assert!(open_target(b, Some("d00000000000000ff")).is_err(), "unknown id: refused");
-        assert_eq!(open_target(b, Some(&mine.id)).expect("member"), None);
-        assert!(open_target(b, Some(&store_id)).expect("store").is_some());
+        assert!(open_target(b, None, None).is_err(), "no daemon id: refused");
+        assert!(open_target(b, Some("d00000000000000ff"), None).is_err(), "unknown id: refused");
+        // Bound to a run in flight (below); without one, both are refused.
+        assert!(open_target(b, Some(&mine.id), None).is_err());
+        assert!(open_target(b, Some(&store_id), None).is_err());
         Ok(())
     })
     .expect("book");
@@ -1486,4 +1487,46 @@ fn tripwire_store_model_state_and_removal_go_through_the_ownership_check() {
     }
     let owns = body("fn store_owns_model(");
     assert!(owns.contains("verified_sha256(") && owns.contains("r.size"), "hash and size are both checked");
+}
+
+/// DGX (non-blocking, fed#331): the daemon id the webview names at open is bound, in core, to
+/// the run core claimed for it. A session opens only for a daemon with that run in flight; any
+/// other pairing is refused.
+#[test]
+fn a_session_open_is_bound_to_the_daemons_claimed_run() {
+    use crate::daemons::open_target;
+    let fx = Fx::standard("open-bound");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let store_id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    let at = NOW_MS + 18 * 3_600_000;
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        let mine = b.save(
+            crate::daemons::DaemonInput { id: None, name: "Mine".into(), prompt: "Do it.".into(), schedule: "0 8 * * *".into(), budget: None },
+            NOW_MS,
+            0,
+        )?;
+        // Before any claim: no run is in flight for either daemon.
+        assert!(open_target(b, Some(&store_id), Some("r0000000000000000")).is_err(), "no run in flight");
+        b.set_paused(&store_id, false, NOW_MS)?;
+        let claims = b.claim_due_with(at, 0, Some(&[]))?;
+        let store_run = claims.iter().find(|c| c.daemon_id == store_id).expect("store claim").run_id.clone();
+        let mine_run = claims.iter().find(|c| c.daemon_id == mine.id).map(|c| c.run_id.clone());
+        // The claimed pair opens.
+        assert!(open_target(b, Some(&store_id), Some(&store_run)).expect("bound").is_some());
+        // A missing run id, another run id, or another daemon's id with this run: refused.
+        assert!(open_target(b, Some(&store_id), None).is_err(), "no run id");
+        assert!(open_target(b, Some(&store_id), Some("r0000000000000000")).is_err(), "unknown run");
+        let err = open_target(b, Some(&mine.id), Some(&store_run)).expect_err("another daemon's run");
+        assert!(err.contains("Not started"), "{err}");
+        if let Some(mr) = mine_run {
+            assert!(open_target(b, Some(&store_id), Some(&mr)).is_err(), "the member daemon's run");
+            assert_eq!(open_target(b, Some(&mine.id), Some(&mr)).expect("member bound"), None);
+        }
+        // Once the run has finished, its id no longer opens anything.
+        b.finish_run(&store_id, &store_run, 0, crate::daemons::RunOutcome::Answered, "done", at + 1)?;
+        assert!(open_target(b, Some(&store_id), Some(&store_run)).is_err(), "a finished run");
+        Ok(())
+    })
+    .expect("book");
 }
