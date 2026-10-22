@@ -23,6 +23,8 @@
 (*   "AutoStartResets" an automated restart resets the budget   -> INV-17  *)
 (*   "StaleSuccess"   ProbeOk accepts an older incarnation      -> INV-13  *)
 (*   "SampleCredit"   credit from a sample count, no time span  -> INV-7   *)
+(*   "FirstNotRecorded" ProbeOk never stamps the first success  -> INV-7   *)
+(*   "StaleKeepsWindow" a stale tick does not end the window    -> INV-7   *)
 (*                                                                         *)
 (* Refinement notes. Every action names the Rust arm it models today, and  *)
 (* the SCL work package that changes it. A WP that changes one of those    *)
@@ -64,7 +66,8 @@ CONSTANTS
 
 Profiles == {"LivenessOnly", "Probed"}
 Mutants  == {"none", "StopOff", "ElapsedCredit", "TimeoutFrees", "StopIgnoresWorkers",
-             "AutoStartResets", "StaleSuccess", "SampleCredit"}
+             "AutoStartResets", "StaleSuccess", "SampleCredit", "FirstNotRecorded",
+             "StaleKeepsWindow"}
 
 ASSUME MaxRetries \in Nat /\ MaxCrashes \in Nat /\ MaxInc \in Nat
 ASSUME MaxIntents \in Nat \ {0} /\ MaxGen \in Nat
@@ -422,12 +425,15 @@ TickStep ==
     /\ age' = age + 1
     /\ sinceOk' = Min(sinceOk + 1, FreshTicks + 1)
     /\ LET stale     == readiness = "Ready" /\ sinceOk + 1 > FreshTicks
+           \* Mutant "StaleKeepsWindow": readiness goes Stale but the window
+           \* bookkeeping the credit guard reads survives the interruption.
+           endWin    == stale /\ Mutant # "StaleKeepsWindow"
            mutCredit == Mutant = "ElapsedCredit" /\ Profile = "Probed"
                         /\ age + 1 >= HealthyAfterTicks /\ ~credited
        IN  /\ readiness' = IF stale THEN "Stale" ELSE readiness
-           /\ okWindow' = IF stale THEN 0 ELSE okWindow
-           /\ okFirst' = IF stale THEN 0 ELSE okFirst
-           /\ okLast' = IF stale THEN 0 ELSE okLast
+           /\ okWindow' = IF endWin THEN 0 ELSE okWindow
+           /\ okFirst' = IF endWin THEN 0 ELSE okFirst
+           /\ okLast' = IF endWin THEN 0 ELSE okLast
            /\ credited' = IF mutCredit THEN TRUE ELSE IF stale THEN FALSE ELSE credited
            /\ failures' = IF mutCredit THEN 0 ELSE failures
     /\ UNCHANGED << ctrl, probing, okSinceSpawn, lastOk, crashes, sinceMember >>
@@ -457,6 +463,8 @@ ProbeBegin ==
 \* itself (credit is ResetCredit). Today: `runner.poll()` returns true.
 \* Mutant "StaleSuccess": a success of an older incarnation (or a timed-out
 \* worker) is accepted, the stale-completion defect INV-12 is about.
+\* Mutant "FirstNotRecorded": the first success of a window is not stamped, so
+\* the span is measured from the window's reset value instead.
 ProbeOk(w) ==
     /\ CanHealthy
     /\ w \in workers
@@ -465,7 +473,7 @@ ProbeOk(w) ==
     /\ workers' = workers \ {w}
     /\ probe' = "Free"
     /\ okWindow' = Min(okWindow + 1, HealthyAfterTicks)
-    /\ okFirst' = IF okWindow = 0 THEN age ELSE okFirst
+    /\ okFirst' = IF okWindow = 0 /\ Mutant # "FirstNotRecorded" THEN age ELSE okFirst
     /\ okLast' = age
     /\ okSinceSpawn' = TRUE
     /\ readiness' = "Ready"
@@ -815,6 +823,28 @@ W_SamplesWithoutSpan ==
       /\ ~credited
       /\ okWindow >= HealthyAfterTicks
       /\ OkSpan < HealthyAfterTicks)
+
+\* FirstNotRecorded (on the green Probed base): a current probe worker can
+\* report the first success of a window after age 0 (where an unstamped
+\* first success would make the span look longer than it is).
+W_FirstSuccessLate ==
+    ~(/\ Profile = "Probed"
+      /\ phase = "Alive"
+      /\ child
+      /\ okWindow = 0
+      /\ age > 0
+      /\ \E w \in workers : CurrentWorker(w))
+
+\* StaleKeepsWindow (on the green Probed base): a tick is about to make Ready
+\* stale while the window holds successes (where keeping the window would let
+\* a later success extend a span across the interruption).
+W_StaleWithOpenWindow ==
+    ~(/\ Profile = "Probed"
+      /\ phase = "Alive"
+      /\ age < MaxAge
+      /\ readiness = "Ready"
+      /\ sinceOk + 1 > FreshTicks
+      /\ okWindow > 0)
 
 \* Positive control for INV-7 (on the green Probed base): credit is reached,
 \* so the span rule is satisfiable and INV-7 is not vacuous there.
