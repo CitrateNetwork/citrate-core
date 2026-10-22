@@ -85,7 +85,9 @@ Verify → stage → review → approve (HIC) → install paused.
   under the same file name (for example in Models, after the Store's copy was deleted there)
   shows as missing, and Remove clears only the Store's record and leaves that file alone. For a started
   daemon the app first pauses it, stops its run and any queued claim of it, and waits until
-  each has ended and been recorded; core refuses to delete a daemon with a run in flight
+  each has ended and been recorded. A run in Hermes has ended only when the sidecar confirms
+  it: the stop is acknowledged, the session reports idle (within 30 s) and is closed. If any of
+  that fails, the run is not recorded as ended and Remove is refused ("Could not stop its run"); core refuses to delete a daemon with a run in flight
   (`daemon_running`) unless that run is past the stale-run release. A run that ends after its
   daemon is gone is refused and is not written to the journal. A listing whose
   install is still running cannot be removed (K5-F): core refuses it with `install_running`

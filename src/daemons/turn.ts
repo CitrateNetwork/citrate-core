@@ -28,7 +28,7 @@ import {
   type ToolCall,
   type ToolCallMeta,
 } from "../agent/harness";
-import { createSidecarProvider, type SidecarSessionApi } from "../agent/sidecarProvider";
+import { createSidecarProvider, isSessionGone, type SidecarSessionApi } from "../agent/sidecarProvider";
 import { AGENT_TOOL_ANNOTATIONS, annotationFor } from "../agent/toolAnnotations";
 import type { TokenMeter } from "./tokenMeter";
 import type { Claim } from "./api";
@@ -67,6 +67,53 @@ export interface DaemonTurnDeps {
   /** The store's gated tool handler (the same approval gates as chat). */
   /** `signal` is the run's: approval cards it raises close when the run ends. */
   handleTool(call: ToolCall, meta?: ToolCallMeta, signal?: AbortSignal): Promise<string>;
+  /** How long a stopped run waits for the sidecar to confirm its turn ended, and how often it
+   *  asks (defaults: [`DAEMON_STOP_CONFIRM`]). */
+  stopConfirm?: { deadlineMs: number; pollMs: number };
+}
+
+/** A stopped or failed run waits up to 30 s for the sidecar to report its session idle. */
+export const DAEMON_STOP_CONFIRM = { deadlineMs: 30_000, pollMs: 250 };
+
+/** A run whose sidecar session did not confirm it stopped (its stop or close failed, or its turn
+ *  was still running at the deadline). The run is not over: it is not recorded as ended, and a
+ *  Store Remove waiting on it is refused. */
+export class DaemonNotTerminated extends Error {
+  constructor(why: string) {
+    super(`the daemon run's Hermes session did not confirm it stopped (${why}); it is kept until it does`);
+    this.name = "DaemonNotTerminated";
+  }
+}
+
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Stop the session's turn, wait until the sidecar reports it idle, then close it. A session the
+ *  sidecar no longer has (404) has nothing left to run. Throws [`DaemonNotTerminated`] otherwise. */
+async function terminateSession(sc: SidecarDaemonApi, id: string, cfg: { deadlineMs: number; pollMs: number }): Promise<void> {
+  try {
+    await sc.stop(id);
+  } catch (e) {
+    if (isSessionGone(e)) return;
+    throw new DaemonNotTerminated(`stop: ${errText(e)}`);
+  }
+  const end = Date.now() + cfg.deadlineMs;
+  for (;;) {
+    let busy: boolean;
+    try {
+      busy = (await sc.events(id, Number.MAX_SAFE_INTEGER, 0)).busy;
+    } catch (e) {
+      if (isSessionGone(e)) return;
+      throw new DaemonNotTerminated(`status: ${errText(e)}`);
+    }
+    if (!busy) break;
+    if (Date.now() >= end) throw new DaemonNotTerminated("its turn was still running");
+    await new Promise((res) => setTimeout(res, cfg.pollMs));
+  }
+  try {
+    await sc.close(id);
+  } catch (e) {
+    if (!isSessionGone(e)) throw new DaemonNotTerminated(`close: ${errText(e)}`);
+  }
 }
 
 /** A daemon run core refused to open (an open-time check): recorded as `not_started`. */
@@ -126,6 +173,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   let openRefused: string | null = null;
   const baseChars = system.length + toolsJson.length + (allowed != null ? 0 : JSON.stringify(deps.context()).length);
   let metered = false;
+  let pendingOpen: Promise<string> | null = null;
   let provider: ChatProvider;
   if (deps.providerKind === "sidecar" && deps.sidecar) {
     const sc = deps.sidecar;
@@ -134,18 +182,16 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         open: async (p, t) => {
           let id: string;
           try {
-            id = await sc.openUnattended(p, t, claim.daemonId);
+            pendingOpen = sc.openUnattended(p, t, claim.daemonId);
+            id = await pendingOpen;
           } catch (e) {
             openRefused = e instanceof Error ? e.message : String(e);
             throw e;
           }
-          // Stopped or paused while the open was pending: the run already ended, so nothing is
-          // sent in this session and it is closed.
-          if (signal.aborted) {
-            sc.close(id).catch(() => undefined);
-            throwIfStopped(signal);
-          }
           opened.push(id);
+          // Stopped or paused while the open was pending: nothing is sent in this session (the
+          // run's end below stops and closes it, with confirmation).
+          throwIfStopped(signal);
           // The meter starts at the first open: a run that never got a session charges nothing,
           // whatever ended it (a refusal, a stop, a pause).
           if (!metered) {
@@ -168,6 +214,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
     throw new Error("daemons run only on the local model, which is not serving right now");
   }
   const messages = [{ role: "user", content: task }];
+  let answered = false;
   try {
     const reply = await provider.send({
       messages,
@@ -189,12 +236,24 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         },
       },
     });
+    answered = true;
     return reply.content;
   } catch (e) {
     if (openRefused !== null) throw new DaemonNotStarted(openRefused);
     throw e;
   } finally {
-    for (const id of opened) deps.sidecar?.close(id).catch(() => undefined);
+    const sc = deps.sidecar;
+    if (answered) {
+      // The turn reported done: the session is idle, closing it is housekeeping.
+      for (const id of opened) sc?.close(id).catch(() => undefined);
+    } else if (sc) {
+      // Stopped or failed: the provider gives up at once while the sidecar may still be running
+      // the turn. The run ends only once each session confirms it stopped (an open still in
+      // flight is waited for first); otherwise DaemonNotTerminated replaces the error.
+      const late = await (pendingOpen as Promise<string> | null)?.catch(() => null);
+      if (late && !opened.includes(late)) opened.push(late);
+      for (const id of opened) await terminateSession(sc, id, deps.stopConfirm ?? DAEMON_STOP_CONFIRM);
+    }
   }
 }
 

@@ -16,7 +16,7 @@
 // `runDaemonTurn`; this file is kept free of the store so its paths are testable.
 // =====================================================================
 import { TurnStopped } from "../agent/harness";
-import { DaemonNotStarted } from "./turn";
+import { DaemonNotStarted, DaemonNotTerminated } from "./turn";
 import { TokenMeter } from "./tokenMeter";
 import type { Claim, DaemonRunEntry, DaemonsApi, RunOutcome } from "./api";
 
@@ -82,6 +82,9 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
   let holdAll = false;
   // Claims of the current tick that have not ended yet (daemon id -> count), and who waits on them.
   const unsettled = new Map<string, number>();
+  // Runs of this tick whose sidecar session did not confirm it stopped (daemon id -> why): a
+  // cancel waiting on one is refused, so the Store does not remove a daemon that may still run.
+  const unconfirmed = new Map<string, string>();
   const waiters = new Map<string, (() => void)[]>();
   const settle = (id: string) => {
     const n = (unsettled.get(id) ?? 1) - 1;
@@ -119,6 +122,7 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
     const timer = setTimeout(() => stop("timeout"), deps.runTimeoutMs);
     let outcome: RunOutcome = "answered";
     let note = "";
+    let notTerminated: string | null = null;
     try {
       const reply = await deps.runTurn(claim, ac.signal, meter);
       if (current?.reason) {
@@ -128,6 +132,7 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
         note = firstLine(reply);
       }
     } catch (e) {
+      if (e instanceof DaemonNotTerminated) notTerminated = e.message;
       const reason = current?.reason ?? null;
       if (reason) ({ outcome, note } = NOTES[reason]);
       else if (e instanceof TurnStopped) ({ outcome, note } = NOTES.stopped);
@@ -142,6 +147,16 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
       }
     } finally {
       clearTimeout(timer);
+    }
+    if (notTerminated !== null) {
+      // Not over: no end is recorded (core keeps the run in flight, so the daemon is not deleted
+      // under it), and the member sees why.
+      unconfirmed.set(claim.daemonId, notTerminated);
+      st.error = notTerminated;
+      current = null;
+      st.running = null;
+      deps.onChange();
+      return;
     }
     // A run that never started (core refused its session open) ran no inference: it charges
     // nothing, whatever the meter estimated before the open.
@@ -180,6 +195,8 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
           return;
         }
         st.blockedReason = null;
+        // A refusal is reported to the cancel of the tick it happened in; a later tick starts over.
+        unconfirmed.clear();
         let claims: Claim[];
         try {
           claims = await deps.api.claimDue(deps.now(), deps.offsetMinutes());
@@ -216,6 +233,11 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
       if (current?.claim.daemonId === id) stop("paused");
       deps.onChange();
       if (done) await done;
+      const why = unconfirmed.get(id);
+      if (why !== undefined) {
+        unconfirmed.delete(id);
+        throw new Error(why);
+      }
     },
     stopRunning() {
       stop("stopped");

@@ -463,7 +463,9 @@ describe("a stop while the session open is still pending (Codex P2, #376 at 796f
     await vi.waitFor(() => expect(sidecar.openUnattended).toHaveBeenCalledTimes(1));
     if (how === "stop") r.stopRunning();
     else await r.pause("d1");
-    await vi.waitFor(() => expect(api.finished).toHaveLength(1));
+    // The run waits for its pending open (a session it opens late is stopped and closed first).
+    await new Promise((res) => setTimeout(res, 20));
+    expect(api.finished).toHaveLength(0);
     end(settle());
     await ticked;
     // Let a late open's continuation run.
@@ -509,18 +511,129 @@ describe("a stop while the session open is still pending (Codex P2, #376 at 796f
 });
 
 describe("tripwire: the daemon meter starts only at a session open", () => {
-  it("runDaemonTurn begins its meter once, inside the open callback, after openUnattended resolves", async () => {
+  it("runDaemonTurn begins its meter once, inside the open callback, after openUnattended resolves and the stop check", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const src = readFileSync(join(__dirname, "turn.ts"), "utf8");
     const begins = src.match(/meter\.begin\(/g) ?? [];
     expect(begins).toHaveLength(1);
-    const open = src.indexOf("await sc.openUnattended(");
-    const aborted = src.indexOf("if (signal.aborted)", open);
+    const open = src.indexOf("pendingOpen = sc.openUnattended(");
+    const aborted = src.indexOf("throwIfStopped(signal);", open);
     const begin = src.indexOf("meter.begin(");
     expect(open).toBeGreaterThan(0);
     expect(aborted).toBeGreaterThan(open);
     expect(begin).toBeGreaterThan(aborted);
     expect(begin).toBeLessThan(src.indexOf("provider.send("));
+  });
+});
+
+describe("cancel waits for the sidecar to confirm the run stopped (Codex P2, #356 at 81d3da7)", () => {
+  const ctx = () => ({ height: 1, peers: 0, finalityAge: 0, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" });
+  const tick = () => new Promise((res) => setTimeout(res, 2));
+  type Knobs = { stop?: () => Promise<void>; close?: () => Promise<void>; stopsTurn?: boolean };
+  /** A sidecar that behaves like the real one: a sent turn keeps running (busy) until a stop is
+   *  acknowledged; events long-poll briefly. */
+  function liveSidecar(k: Knobs = {}) {
+    const log: string[] = [];
+    let busy = false;
+    let closed = false;
+    const sidecar = {
+      openUnattended: vi.fn(async () => "s1"),
+      send: vi.fn(async () => {
+        busy = true;
+        log.push("send");
+      }),
+      events: vi.fn(async () => {
+        await tick();
+        if (closed) throw new Error("sidecar returned 404 Not Found");
+        return { events: [], lastSeq: 0, busy };
+      }),
+      toolResult: vi.fn(async () => undefined),
+      stop: vi.fn(async () => {
+        log.push("stop");
+        await (k.stop ?? (async () => undefined))();
+        if (k.stopsTurn !== false) busy = false;
+        log.push("stopped");
+      }),
+      close: vi.fn(async () => {
+        log.push("close");
+        await (k.close ?? (async () => undefined))();
+        closed = true;
+        log.push("closed");
+      }),
+    };
+    return { sidecar, log };
+  }
+  async function cancelDuringRun(k: Knobs, stopConfirm = { deadlineMs: 300, pollMs: 2 }) {
+    const { runDaemonTurn } = await import("./turn");
+    const api = fakeApi([[claim({ allowedTools: [] })]]);
+    const { sidecar, log } = liveSidecar(k);
+    const turnDeps = { providerKind: "sidecar", systemPrompt: () => "You are Hermes.", context: ctx, sidecar, handleTool: async () => "ok", stopConfirm };
+    const r = createDaemonRunner(deps(api, (c, signal, meter) => runDaemonTurn(c, signal, meter, turnDeps), { runTimeoutMs: 60_000 }));
+    const ticked = r.tick();
+    await vi.waitFor(() => expect(sidecar.send).toHaveBeenCalledTimes(1));
+    let cancelError: unknown = null;
+    await r.cancel("d1").then(() => log.push("cancelled"), (e) => {
+      cancelError = e;
+      log.push("cancel-refused");
+    });
+    await ticked;
+    return { api, log, cancelError, sidecar };
+  }
+
+  it("a delayed stop: cancel resolves only after the turn is idle and the session closed", async () => {
+    const { api, log, cancelError } = await cancelDuringRun({ stop: () => new Promise((res) => setTimeout(res, 40)) });
+    expect(cancelError).toBeNull();
+    expect(log.indexOf("stopped")).toBeGreaterThan(-1);
+    expect(log.indexOf("closed")).toBeGreaterThan(log.indexOf("stopped"));
+    expect(log.indexOf("cancelled")).toBeGreaterThan(log.indexOf("closed"));
+    expect(api.finished).toHaveLength(1);
+    expect(api.finished[0].outcome).toBe("stopped");
+  });
+
+  it("a rejected stop: cancel is refused and the run is not recorded as ended", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stop: async () => Promise.reject(new Error("sidecar returned 500")) });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a rejected close: cancel is refused", async () => {
+    const { api, cancelError } = await cancelDuringRun({ close: async () => Promise.reject(new Error("sidecar returned 500")) });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a turn still busy at the deadline: cancel is refused", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stopsTurn: false }, { deadlineMs: 30, pollMs: 2 });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a session the sidecar no longer has counts as stopped", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stop: async () => Promise.reject(new Error("sidecar returned 404 Not Found")) });
+    expect(cancelError).toBeNull();
+    expect(api.finished[0].outcome).toBe("stopped");
+  });
+
+});
+
+describe("tripwire: a run that did not answer ends only through confirmed termination", () => {
+  it("runDaemonTurn closes sessions without confirmation only after an answered turn", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(__dirname, "turn.ts"), "utf8");
+    const fn = src.slice(src.indexOf("export async function runDaemonTurn("));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    const fin = body.slice(body.lastIndexOf("} finally {"));
+    const answered = fin.indexOf("if (answered)");
+    const otherwise = fin.indexOf("} else if (sc)");
+    expect(answered).toBeGreaterThan(0);
+    expect(otherwise).toBeGreaterThan(answered);
+    // The only unconfirmed close is in the answered branch.
+    const unconfirmedClose = [...fin.matchAll(/\.close\(id\)\.catch\(/g)].map((m) => m.index ?? -1);
+    expect(unconfirmedClose.length).toBe(1);
+    expect(unconfirmedClose[0]).toBeGreaterThan(answered);
+    expect(unconfirmedClose[0]).toBeLessThan(otherwise);
+    expect(fin.slice(otherwise)).toContain("await terminateSession(");
   });
 });
