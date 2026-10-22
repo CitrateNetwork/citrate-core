@@ -259,6 +259,25 @@ describe("#348 round 2 — MemberBond.activated() loads after a restart, and Rew
     await store.refreshEarnings();
   });
 
+  // #366 Codex P2: activated() failed but pubkey() read, so the bond state has a key and an unread
+  // flag. That flag is still unread: the poll must retry it (node stopped too), and once it reads
+  // true the exited member's rewards are read again.
+  it("an unread activated() flag is retried even when the bond key read", async () => {
+    const KEY = "0x" + "33".repeat(32);
+    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, rewards: null, memberBond: { deployed: true, activated: null, pubkey: KEY } });
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
+    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue({ ...exitedGrant, bondPubkey: KEY });
+    await store.refreshNode();
+    expect(gs).toHaveBeenCalled();
+    expect(store.state.memberBond?.activated).toBe(true);
+    const read = vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: wei(30), claimableWei: wei(20), proposerPubkey: KEY });
+    await store.refreshEarnings();
+    expect(read).toHaveBeenCalled();
+    expect(store.state.rewards).toEqual({ totalWei: wei(30), claimableWei: wei(20) });
+  });
+
   it("once activated() has read, a stopped node with a settled grant does not re-read it every poll", async () => {
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
     store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, memberBond: bond(false) });
