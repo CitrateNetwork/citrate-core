@@ -511,3 +511,19 @@ fn join8_a_file_from_before_call_metadata_still_loads() {
     assert_eq!(log.latest_call(MEMBER, &activate_call()), None);
     assert_eq!(log.try_record_for(&h(1), MEMBER, 5), Ok(false));
 }
+
+/// Tripwire (#347 DGX review): the temp file is fsynced BEFORE it is renamed over the record. Only
+/// the directory sync has a runtime seam, so this pins the file sync in `write_atomic`'s source: a
+/// change that drops it, ignores its error, or moves it after the rename fails here. (#354 reuses
+/// this writer.)
+#[test]
+fn write_atomic_fsyncs_the_temp_file_before_the_rename() {
+    let src = include_str!("submitted_log.rs");
+    let start = src.find("fn write_atomic(").expect("write_atomic exists");
+    let body = &src[start..start + src[start..].find("\n}\n").expect("end of write_atomic")];
+    let sync = body.find(".sync_all()?").expect("the temp file is fsynced and its error propagated");
+    let rename = body.find("std::fs::rename(").expect("the temp file is renamed over the record");
+    let create = body.find("create_secret_file(&tmp)").expect("the temp file is created");
+    assert!(create < sync && sync < rename, "order must be create temp -> fsync temp -> rename");
+    assert!(body[rename..].contains("sync_dir(&dir)"), "the directory is synced after the rename");
+}
