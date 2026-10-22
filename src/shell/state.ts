@@ -251,6 +251,8 @@ export interface PendingJoinUi {
   hasKey: boolean;
   /** false = held in Rust memory only (keyring unreachable), so it won't survive a restart. */
   persisted: boolean;
+  /** On a failed Review: the failure is temporary and Rust still holds the invite, so Review can run again. */
+  retryable?: boolean;
   /** Signed display data, after the member's Review. */
   resolved?: {
     kind: "direct" | "referral";

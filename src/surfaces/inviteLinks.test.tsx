@@ -4,7 +4,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createDirectInvite, createPublicLink, revokeDirectInvite, type InviteDeps } from "./inviteFlow";
-import { InviteLinksView, type InviteLinksViewProps } from "./InviteLinks";
+import { InviteLinksView, copyLink, type InviteLinksViewProps } from "./InviteLinks";
 import type { JoinMinted } from "../bridge/domains";
 
 const SHARE = "https://citrate.ai/join/Ab3dE7gh#AAECAwQFBgcICQoLDA0ODw";
@@ -154,5 +154,31 @@ describe("InviteLinksView", () => {
     expect(html).toContain(pubUrl);
     expect(html).toContain('data-testid="invite-public-revoke"');
     expect(html).not.toMatch(/[?&](by|ref|c|g)=/);
+  });
+});
+
+describe("copyLink", () => {
+  it("never repeats the link (code or key) in a toast, whether the copy works or not", async () => {
+    const toasts: string[] = [];
+    const s = { toast: (t: string) => void toasts.push(t) };
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    try {
+      vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn(async () => undefined) } });
+      copyLink(s, SHARE);
+      await tick();
+      vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn(async () => { throw new Error("denied"); }) } });
+      copyLink(s, SHARE);
+      await tick();
+      vi.stubGlobal("navigator", {});
+      copyLink(s, SHARE);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(toasts).toEqual(["Link copied.", "Couldn't copy. Select the link and copy it.", "Couldn't copy. Select the link and copy it."]);
+    const fragment = SHARE.split("#")[1];
+    for (const t of toasts) {
+      expect(t).not.toContain("Ab3dE7gh");
+      expect(t).not.toContain(fragment);
+    }
   });
 });

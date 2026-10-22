@@ -40,6 +40,7 @@ function assertNoSecretAnywhere() {
   const state = JSON.stringify(store.state);
   expect(state).not.toContain(KEY);
   expect(state).not.toContain(`#${KEY}`);
+  expect(state).not.toContain(CODE);
   const saved = localStorage.getItem(STORAGE_KEY) ?? "";
   expect(saved).not.toContain(KEY);
   expect(saved).not.toContain(CODE);
@@ -192,6 +193,101 @@ describe("v2 invite deep links (task 12)", () => {
     }
     store.setState({ stage: "s7" as never, signedIn: false });
     expect(store.canJoinNow()).toBe(false);
+  });
+
+  it("a Review answer for an invite that was replaced meanwhile is dropped", async () => {
+    let answer!: (r: JoinResolved) => void;
+    spies.resolve.mockImplementationOnce(() => new Promise<JoinResolved>((res) => (answer = res)));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    const review = store.reviewPendingJoin();
+    expect(store.state.pendingJoin?.phase).toBe("resolving");
+    spies.set.mockResolvedValueOnce({ ...held, hasKey: false });
+    store.handleDeepLink("citrate://join/Zz9yX8wv");
+    await flush();
+    answer(resolved);
+    await review;
+    expect(store.state.pendingJoin).toMatchObject({ phase: "waiting", hasKey: false });
+    expect(store.state.pendingJoin?.resolved).toBeUndefined();
+    await store.redeemPendingJoin();
+    expect(spies.redeem).not.toHaveBeenCalled();
+  });
+
+  it("a Review failure for an invite that was replaced meanwhile doesn't mark the new one", async () => {
+    let fail!: (e: Error) => void;
+    spies.resolve.mockImplementationOnce(() => new Promise<JoinResolved>((_, rej) => (fail = rej)));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    const review = store.reviewPendingJoin();
+    store.handleDeepLink("citrate://join/Zz9yX8wv");
+    await flush();
+    fail(new Error("join: invite not found"));
+    await review;
+    expect(store.state.pendingJoin).toMatchObject({ phase: "waiting" });
+    expect(store.state.pendingJoin?.error).toBeUndefined();
+  });
+
+  it("a Cancel while Review is in flight stays cancelled", async () => {
+    let answer!: (r: JoinResolved) => void;
+    spies.resolve.mockImplementationOnce(() => new Promise<JoinResolved>((res) => (answer = res)));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    const review = store.reviewPendingJoin();
+    await store.cancelPendingJoin();
+    answer(resolved);
+    await review;
+    expect(store.state.pendingJoin).toBeNull();
+  });
+
+  it("the start-up check doesn't clear an invite that arrived while it ran", async () => {
+    let none!: (v: PendingJoinView | null) => void;
+    spies.get.mockImplementationOnce(() => new Promise<PendingJoinView | null>((res) => (none = res)));
+    const refresh = store.refreshPendingJoin();
+    store.handleDeepLink(SCHEME);
+    await flush();
+    expect(store.state.pendingJoin?.phase).toBe("waiting");
+    none(null);
+    await refresh;
+    expect(store.state.pendingJoin).toMatchObject({ phase: "waiting", hasKey: true });
+  });
+
+  it.each([
+    "join: invite links are temporarily unavailable",
+    "join: could not reach the invite service",
+    "join: too many invite requests, try again later",
+    "join: the waiting invite changed while it was being checked, review it again",
+  ])("a temporary Review failure (%s) keeps the invite and Review can be retried", async (msg) => {
+    spies.resolve.mockRejectedValueOnce(new Error(msg));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    await store.reviewPendingJoin();
+    expect(store.state.pendingJoin).toMatchObject({ phase: "error", retryable: true });
+    expect(spies.clear).not.toHaveBeenCalled();
+    await store.reviewPendingJoin();
+    expect(spies.resolve).toHaveBeenCalledTimes(2);
+    expect(spies.set).toHaveBeenCalledTimes(1);
+    expect(store.state.pendingJoin).toMatchObject({ phase: "ready", resolved: { clusterName: "Garden club" } });
+    expect(store.state.pendingJoin?.retryable).toBeFalsy();
+  });
+
+  it.each(["join: invite not found", "join: the invite could not be verified"])("a final Review failure (%s) is not offered as a retry", async (msg) => {
+    spies.resolve.mockRejectedValueOnce(new Error(msg));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    await store.reviewPendingJoin();
+    expect(store.state.pendingJoin).toMatchObject({ phase: "error" });
+    expect(store.state.pendingJoin?.retryable).toBeFalsy();
+  });
+
+  it("a Cancel the device keychain couldn't finish says the invite may come back", async () => {
+    spies.clear.mockRejectedValueOnce(new Error("keyring unavailable"));
+    store.handleDeepLink(HTTPS);
+    await flush();
+    await store.cancelPendingJoin();
+    expect(store.state.pendingJoin).toBeNull();
+    expect(store.state.toast).toMatch(/keychain/i);
+    expect(store.state.toast).toMatch(/restart/i);
+    assertNoSecretAnywhere();
   });
 
   it("pendingJoin is not a persisted key", async () => {

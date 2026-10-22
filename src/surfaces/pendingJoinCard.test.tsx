@@ -82,6 +82,22 @@ describe("PendingJoinCardView", () => {
   });
 });
 
+describe("PendingJoinCardView: a Review that failed", () => {
+  const failed: PendingJoinUi = { ...waiting, phase: "error", error: "Short invite links are not available right now. Try again later." };
+
+  it("offers Try again (and Dismiss) when the failure is temporary", () => {
+    const html = render({ ...failed, retryable: true });
+    expect(html).toContain('data-testid="pending-join-retry"');
+    expect(html).toContain('data-testid="pending-join-cancel"');
+  });
+
+  it("offers only Dismiss when the invite can't be used", () => {
+    const html = render({ ...failed, error: "That invite has expired or was revoked. Ask for a new one." });
+    expect(html).not.toContain('data-testid="pending-join-retry"');
+    expect(html).toContain('data-testid="pending-join-cancel"');
+  });
+});
+
 describe("InvitePasteField", () => {
   it("is labelled for a link or a code", () => {
     const html = renderToStaticMarkup(<InvitePasteField onSubmit={noop} />);
