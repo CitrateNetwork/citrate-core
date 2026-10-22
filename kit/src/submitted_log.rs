@@ -127,6 +127,12 @@ impl SubmittedTxLog {
         }
     }
 
+    /// The record used when no persistent location exists (the app data dir could not be
+    /// resolved). It lives only as long as the process.
+    pub fn unpersisted() -> Self {
+        Self::in_memory()
+    }
+
     /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt
     /// one is empty and uncertain.
     pub fn open(path: PathBuf) -> Self {

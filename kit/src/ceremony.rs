@@ -1129,9 +1129,12 @@ pub fn build_ceremony_state_at(path: std::path::PathBuf) -> CeremonyState {
     ))
 }
 
-/// Build the managed ceremony state (empty, ready to accept intents).
-pub fn build_ceremony_state() -> CeremonyState {
-    CeremonyState(SignatureCeremony::new())
+/// Build the managed ceremony state when the app data dir can't be resolved, so the
+/// first-submission record has nowhere to persist.
+pub fn build_ceremony_state_unpersisted() -> CeremonyState {
+    CeremonyState(SignatureCeremony::with_submitted_log(
+        crate::submitted_log::SubmittedTxLog::unpersisted(),
+    ))
 }
 
 use tauri::State;

@@ -387,3 +387,25 @@ fn a_directory_sync_on_a_missing_directory_fails_closed() {
     let t = Tmp::new("dirsync-missing");
     assert!(sync_dir(&t.0.join("not-there")).is_err());
 }
+
+// #347 review (Codex round 2): when the app data dir can't be resolved, the record can't survive a
+// restart, so it must never prove a first submission. Every send is then a re-submission, and a
+// definitive-looking node error is reported as "outcome unknown", never "not sent".
+#[test]
+fn an_unpersisted_record_never_proves_a_first_send() {
+    let log = SubmittedTxLog::unpersisted();
+    assert!(log.is_uncertain(), "a record that can't survive a restart is uncertain from the start");
+    assert_eq!(log.try_record_for(&h(60_001), A, 0), Ok(false));
+    assert_eq!(log.try_record(&h(60_002)), Ok(false));
+    assert!(!log.record(&h(60_003)));
+    assert_eq!(log.try_record_for(&h(60_001), A, 0), Ok(false), "a repeat is still a re-submission");
+}
+
+#[test]
+fn an_unpersisted_record_stays_uncertain_through_eviction() {
+    let log = SubmittedTxLog::unpersisted();
+    for n in 0..(CAPACITY as u32 + 3) {
+        assert_eq!(log.try_record_for(&h(70_000 + n), A, 1_000 + u64::from(n)), Ok(false));
+    }
+    assert!(log.is_uncertain());
+}

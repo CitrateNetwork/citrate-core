@@ -2342,6 +2342,32 @@ fn a_resend_after_a_restart_is_not_a_first_submission() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// #347 review (Codex round 2): with no app data dir the record is in memory only. A send through
+// that ceremony is never a provable first submission: a definitive-looking node error is
+// "submitted, outcome unknown" with the tx hash, never "not sent", before and after a restart.
+#[test]
+fn without_an_app_data_dir_a_node_error_is_never_not_sent() {
+    let (v, _p) = vault_with_wallet();
+    let c = build_ceremony_state_unpersisted().0;
+    assert!(c.submitted_log().is_uncertain());
+    let (first, hash) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&first), Some(hash));
+    drop(c);
+    let restarted = build_ceremony_state_unpersisted().0;
+    let (again, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&again), Some(hash), "a fresh fallback record proves nothing");
+}
+
+// Tripwire: the production fallback (no app data dir) builds the unpersisted ceremony, and nothing
+// in the app builds a ceremony over a certain in-memory record.
+#[test]
+fn the_app_fallback_uses_the_unpersisted_record() {
+    let lib = include_str!("../../src-tauri/src/lib.rs");
+    assert!(lib.contains("ceremony::build_ceremony_state_unpersisted()"));
+    assert!(!lib.contains("ceremony::build_ceremony_state()"));
+    assert!(!lib.contains("SignatureCeremony::new()"));
+}
+
 // ---- STD audit parity: adversarial node messages and interleaving ----
 
 #[test]

@@ -342,7 +342,7 @@ pub fn run() {
                 Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
                 Err(e) => {
                     eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
-                    ceremony::build_ceremony_state()
+                    ceremony::build_ceremony_state_unpersisted()
                 }
             });
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
