@@ -273,6 +273,16 @@ fn write_active_joins_at(path: &std::path::Path, groups: &[String]) {
     }
 }
 
+/// Remove `group` from the local-work marker at `path`.
+pub(crate) fn drop_active_join_at(path: &std::path::Path, group: &str) {
+    let mut groups = active_joins_at(path);
+    let before = groups.len();
+    groups.retain(|g| g != group);
+    if groups.len() != before {
+        write_active_joins_at(path, &groups);
+    }
+}
+
 /// Add `group` to the local-work marker at `path` (this device asked to join it), so a restart
 /// resumes ticking even before the next tick wrote the marker.
 pub(crate) fn note_active_join_at(path: &std::path::Path, group: &str) {
@@ -406,20 +416,35 @@ pub(crate) fn join_opened_at(
     join: impl FnOnce() -> Result<JoinView, RvError>,
     legacy: impl FnOnce() -> Result<(), String>,
 ) -> Result<(JoinRedeemView, bool), String> {
+    // The daemon persists the join before it answers (§9), so a lost answer can leave a real join.
+    // Mark the work first, and again after any answer that isn't the legacy path (a tick that ran
+    // during the call may have rewritten the marker from older views). The next good tick
+    // reconciles it with the daemon's views.
+    let note = || {
+        if let Some(m) = marker {
+            note_active_join_at(m, group);
+        }
+    };
+    note();
     let answer = join();
     match decide_join(&answer) {
         Some(JoinNext::Legacy) => {
+            // No rendezvous join exists for this invite: nothing for the tick to resume.
+            if let Some(m) = marker {
+                drop_active_join_at(m, group);
+            }
             legacy()?;
             Ok((JoinRedeemView::Legacy, true))
         }
         Some(JoinNext::Rendezvous { forget }) => {
+            note();
             let join = answer.map_err(|e| e.to_string())?;
-            if let Some(m) = marker {
-                note_active_join_at(m, group);
-            }
             Ok((JoinRedeemView::Rendezvous { join }, forget))
         }
-        None => Err(answer.err().map(|e| e.to_string()).unwrap_or_default()),
+        None => {
+            note();
+            Err(answer.err().map(|e| e.to_string()).unwrap_or_default())
+        }
     }
 }
 

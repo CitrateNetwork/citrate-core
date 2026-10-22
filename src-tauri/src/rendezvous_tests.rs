@@ -637,6 +637,6 @@ fn the_legacy_path_clears_the_marker_for_its_group() {
         || Err(RvError::DaemonUnsupported),
         || Ok(()),
     );
-    assert_eq!(r.map(|(v, forget)| (v, forget)), Ok((JoinRedeemView::Legacy, true)));
+    assert_eq!(r, Ok((JoinRedeemView::Legacy, true)));
     assert_eq!(active_joins_at(&m), vec!["other".to_string()]);
 }
