@@ -245,6 +245,12 @@ pub enum BackupError {
     Io(String),
     /// The local IPFS (kubo) store failed.
     Kubo(String),
+    /// A restore failed after it had already restored Files (`done` says what). Memory is
+    /// restored last, so a failure never follows a memory swap.
+    Partial {
+        cause: Box<BackupError>,
+        done: String,
+    },
 }
 
 impl std::fmt::Display for BackupError {
@@ -275,6 +281,7 @@ impl std::fmt::Display for BackupError {
             BackupError::Busy(m) => write!(f, "{m}"),
             BackupError::Io(m) => write!(f, "storage backup file error: {m}"),
             BackupError::Kubo(m) => write!(f, "the local file store failed: {m}"),
+            BackupError::Partial { cause, done } => write!(f, "{cause}. Already done: {done}"),
         }
     }
 }
@@ -1340,6 +1347,25 @@ thread_local! {
     pub(crate) static FILES_ENTRY_CAP: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
+/// The largest Files object a restore reads: the same bound the export's IPFS read has
+/// ([`crate::storage::MAX_CAT_BYTES`]), so no backup this app wrote is over it.
+fn files_entry_cap() -> u64 {
+    #[cfg(test)]
+    if let Some(cap) = FILES_ENTRY_CAP.with(|c| c.get()) {
+        return cap;
+    }
+    crate::storage::MAX_CAT_BYTES
+}
+
+/// Read a verified Files entry, never more than `size` (+1 to see growth) bytes.
+fn read_files_entry(path: &Path, size: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let f = std::fs::File::open(path)?;
+    let mut buf = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+    f.take(size.saturating_add(1)).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 /// Restore `parts` from a backup folder. Verifies the whole folder FIRST and refuses on any
 /// mismatch before touching a daemon or a store. Files are re-added and pinned locally (no bond);
 /// the memory store is swapped in from a re-checked staging copy, keeping the replaced store.
@@ -1409,6 +1435,29 @@ pub fn restore(
         ));
     }
 
+    let file_entries: Vec<&ManifestEntry> = if parts.contains(&Part::Files) {
+        m.entries
+            .iter()
+            .filter(|e| e.path.starts_with("files/"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Preflight, before anything changes: every Files object is within the read limit and the
+    // local file store answers.
+    if let (true, Some(mgr)) = (parts.contains(&Part::Files), files) {
+        let cap = files_entry_cap();
+        if let Some(big) = file_entries.iter().find(|e| e.size > cap) {
+            return Err(BackupError::InvalidFolder(format!(
+                "{} is {} bytes, over the {cap}-byte limit for one restored file; nothing was \
+                 restored",
+                big.path, big.size
+            )));
+        }
+        mgr.list()
+            .map_err(|err| BackupError::Kubo(format!("{err}; nothing was restored")))?;
+    }
+
     let mut report = RestoreReport {
         folder: folder.to_string_lossy().to_string(),
         parts: parts.to_vec(),
@@ -1420,58 +1469,32 @@ pub fn restore(
         daemon_restarted: false,
         notes: Vec::new(),
     };
+    let wants_memory = parts.contains(&Part::Memory);
+    let total = file_entries.len() as u64;
+    // A failure after some Files were re-added says so (re-adding and pinning is additive; the
+    // memory store, restored last, is unchanged on every error).
+    let partial = |cause: BackupError, files_restored: u64| -> BackupError {
+        if files_restored == 0 {
+            return cause;
+        }
+        let memory = if wants_memory {
+            "; the memory store was not changed"
+        } else {
+            ""
+        };
+        BackupError::Partial {
+            cause: Box::new(cause),
+            done: format!(
+                "{files_restored} of {total} files were restored and pinned locally{memory}"
+            ),
+        }
+    };
 
-    if let (true, Some(m_target)) = (parts.contains(&Part::Memory), memory) {
-        let mem_entries: Vec<&ManifestEntry> = m
-            .entries
-            .iter()
-            .filter(|e| e.path.starts_with("memory/"))
-            .collect();
-        let mut notes = Vec::new();
-        let ((n, kept), restarted) =
-            with_memory_paused(m_target, &mut notes, on_progress, "restore", |on| {
-                swap_in_memory(folder, &mem_entries, &m.dirs, &m_target.dir, now, on)
-            })?;
-        report.notes.extend(notes);
-        report.memory_files_restored = n;
-        report.previous_memory_kept_at = kept.map(|p| p.to_string_lossy().to_string());
-        report.daemon_restarted = restarted;
-    }
-
+    // Files first: adding and pinning never replaces anything.
     if let (true, Some(mgr)) = (parts.contains(&Part::Files), files) {
-        let file_entries: Vec<&ManifestEntry> = m
-            .entries
-            .iter()
-            .filter(|e| e.path.starts_with("files/"))
-            .collect();
-        let total = file_entries.len() as u64;
         for (i, e) in file_entries.iter().enumerate() {
-            let rel = safe_rel_path(&e.path).ok_or_else(|| {
-                BackupError::Mismatch(vec![Mismatch::UnsafePath {
-                    path: e.path.clone(),
-                }])
-            })?;
-            let bytes =
-                std::fs::read(folder.join(rel)).map_err(|err| io_err("read a file", err))?;
-            // The file could have changed since the folder check: hash the bytes we add.
-            if bytes.len() as u64 != e.size || sha256_hex(&bytes) != e.sha256 {
-                return Err(BackupError::Mismatch(vec![Mismatch::HashDiffers {
-                    path: e.path.clone(),
-                }]));
-            }
-            let expected = e.cid.clone().unwrap_or_default();
-            let out = mgr
-                .add_bytes(&expected, &bytes)
-                .map_err(|err| BackupError::Kubo(err.to_string()))?;
-            mgr.pin_local(&out.cid)
-                .map_err(|err| BackupError::Kubo(err.to_string()))?;
-            if out.cid != expected {
-                report.cids_changed.push(CidChange {
-                    expected,
-                    actual: out.cid,
-                });
-            }
-            report.files_restored += 1;
+            restore_files_entry(folder, e, mgr, &mut report)
+                .map_err(|err| partial(err, report.files_restored))?;
             on_progress(&Progress {
                 op: "restore",
                 phase: "files",
@@ -1482,6 +1505,25 @@ pub fn restore(
         }
     }
 
+    // Memory last: the swap is the one step that replaces live data, so nothing can fail after it.
+    if let (true, Some(m_target)) = (wants_memory, memory) {
+        let mem_entries: Vec<&ManifestEntry> = m
+            .entries
+            .iter()
+            .filter(|e| e.path.starts_with("memory/"))
+            .collect();
+        let mut notes = Vec::new();
+        let ((n, kept), restarted) =
+            with_memory_paused(m_target, &mut notes, on_progress, "restore", |on| {
+                swap_in_memory(folder, &mem_entries, &m.dirs, &m_target.dir, now, on)
+            })
+            .map_err(|err| partial(err, report.files_restored))?;
+        report.notes.extend(notes);
+        report.memory_files_restored = n;
+        report.previous_memory_kept_at = kept.map(|p| p.to_string_lossy().to_string());
+        report.daemon_restarted = restarted;
+    }
+
     on_progress(&Progress {
         op: "restore",
         phase: "done",
@@ -1490,6 +1532,42 @@ pub fn restore(
         item: report.folder.clone(),
     });
     Ok(report)
+}
+
+/// Re-add and pin one Files entry, re-checking the bytes it reads (bounded by the entry's size).
+fn restore_files_entry(
+    folder: &Path,
+    e: &ManifestEntry,
+    mgr: &StorageManager,
+    report: &mut RestoreReport,
+) -> Result<(), BackupError> {
+    let rel = safe_rel_path(&e.path).ok_or_else(|| {
+        BackupError::Mismatch(vec![Mismatch::UnsafePath {
+            path: e.path.clone(),
+        }])
+    })?;
+    let bytes =
+        read_files_entry(&folder.join(rel), e.size).map_err(|err| io_err("read a file", err))?;
+    // The file could have changed since the folder check: hash the bytes we add.
+    if bytes.len() as u64 != e.size || sha256_hex(&bytes) != e.sha256 {
+        return Err(BackupError::Mismatch(vec![Mismatch::HashDiffers {
+            path: e.path.clone(),
+        }]));
+    }
+    let expected = e.cid.clone().unwrap_or_default();
+    let out = mgr
+        .add_bytes(&expected, &bytes)
+        .map_err(|err| BackupError::Kubo(err.to_string()))?;
+    mgr.pin_local(&out.cid)
+        .map_err(|err| BackupError::Kubo(err.to_string()))?;
+    if out.cid != expected {
+        report.cids_changed.push(CidChange {
+            expected,
+            actual: out.cid,
+        });
+    }
+    report.files_restored += 1;
+    Ok(())
 }
 
 /// Stage the memory entries beside the live dir, re-check every hash there, then swap: the live

@@ -84,6 +84,12 @@ and SHA-256; and nothing in the folder is unlisted.
 - Only the requested parts the backup actually holds are restored. The report lists those in
   `parts` and names every other requested part in `skipped` with the reason; a skipped Memory
   part never stops the daemon or touches the live store. Nothing to restore is an error.
+- Order: before anything changes, every Files object is checked against the 1 GiB per-file
+  limit (the same bound the export's IPFS read has) and the local file store must answer; a
+  failure there restores nothing. Files are restored first (re-adding and pinning only adds),
+  Memory last, so no step can fail after the memory swap. A failure after some Files were
+  restored says how many, and that the memory store was not changed. Each Files object is read
+  bounded by its manifest size.
 - Memory: the importer slot and the memory store lock are held (while the lock is held,
   `MemoryManager::start` refuses, so nothing can start the daemon mid-restore), a running daemon
   is stopped (the stop returns only once the daemon process has exited, and it also waits for a

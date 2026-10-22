@@ -1754,3 +1754,24 @@ fn an_oversized_files_entry_is_refused_before_anything_changes() {
     assert_memory_untouched(&mem, &daemon);
     assert!(inner.blobs.lock().unwrap().is_empty(), "nothing was added to kubo");
 }
+
+/// Tripwire: in `restore`, the preflight (size limit, kubo reachable) comes before any change,
+/// Files (additive) come before the memory swap, and no restore read is unbounded.
+#[test]
+fn restore_preflights_then_files_then_memory_last() {
+    let src = include_str!("storage_backup.rs");
+    let start = src.find("pub fn restore(").expect("restore");
+    let body = &src[start..start + src[start..].find("\n}\n").expect("ends")];
+    let cap = body.find("files_entry_cap()").expect("size preflight");
+    let ping = body.find("mgr.list()").expect("kubo preflight");
+    let files = body.find("restore_files_entry(").expect("files");
+    let swap = body.find("swap_in_memory(").expect("memory");
+    assert!(cap < files && ping < files, "preflight before the first change");
+    assert!(files < swap, "Files before the memory swap");
+    let entry = &src[src.find("fn restore_files_entry(").expect("entry fn")..];
+    let entry = &entry[..entry.find("\n}\n").expect("ends")];
+    for (name, b) in [("restore", body), ("restore_files_entry", entry)] {
+        assert!(!b.contains("std::fs::read("), "{name}: an unbounded read");
+    }
+    assert!(entry.contains("read_files_entry("), "the bounded read");
+}
