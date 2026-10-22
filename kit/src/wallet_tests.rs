@@ -1880,6 +1880,12 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
         "macro_rules! n { ($($t:tt)*) => { #[$($t)*] mod y; } }\n",
         "macro_rules! o { ($a:meta) => { #![$a] }; }\n",
         "macro_rules! q { ($b:meta) => { #[cfg_attr(all(), $b)] mod z; } }\n",
+        // MAC round 7: a macro whose name is a metavariable, and `include` passed as an
+        // identifier, name a file the scan cannot read, whatever cfg gates the call.
+        "macro_rules! zz_m { ($i:ident) => { #[cfg(target_os = \"macos\")] $i!(\"../p.rs\"); } }\n",
+        "zz_m!(include);\n",
+        "macro_rules! w { ($m:ident) => { $m ! [\"../q.rs\"] }; }\n",
+        "#[cfg(windows)]\nw!(r#include);\n",
         // Data, not code: read as text or bytes, never compiled.
         "let d = include_str ! (\"../data.txt\");\nlet b = include_bytes!(\"../blob.bin\");\n",
         // A conditional attribute with no path is not a reference.
@@ -1904,6 +1910,10 @@ fn k6_module_refs_flags_out_of_tree_and_unresolvable_forms() {
             s("../spaced.rs"),
             s("../bracket.rs"),
             s("../brace.rs"),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,
