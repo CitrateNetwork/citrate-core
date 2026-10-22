@@ -11,6 +11,7 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
+import { groupsSlice, refreshGroups } from "./groups";
 import type { InviteViewDto, JoinViewDto, RendezvousViews } from "../../bridge/domains";
 
 export interface RendezvousState {
@@ -57,8 +58,26 @@ export function onJoinCompleted(fn: () => void): () => void {
   };
 }
 
+/** Whether these views mean the group list is out of date (pure; exported for tests): a join newly
+ *  reached `joined` or `taken`, or a `joined` group still isn't in `listed`. The row only says
+ *  Joined once the group is listed (§11), so the list has to be reloaded for it to get there. */
+export function needsMembershipRefresh(prev: JoinViewDto[], next: JoinViewDto[], listed: string[]): boolean {
+  return next.some((j) => {
+    if (j.state !== "joined" && j.state !== "taken") return false;
+    const before = prev.find((p) => p.group === j.group);
+    if (before?.state !== j.state) return true;
+    return j.state === "joined" && !listed.includes(j.group);
+  });
+}
+
 export function ingest(v: RendezvousViews): void {
+  const prev = rendezvousSlice.get().joins;
   rendezvousSlice.set((s) => applyViews(s, v));
+  const listed = groupsSlice.get().groups.map((g) => g.id);
+  if (needsMembershipRefresh(prev, v.joins, listed)) {
+    void refreshGroups();
+    for (const fn of membershipListeners) fn();
+  }
 }
 
 let unlisten: (() => void) | null = null;
