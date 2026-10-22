@@ -612,6 +612,12 @@ export class Store {
    *  that started on an older value is about an invite that is no longer waiting, so its answer is
    *  dropped (Rust applies the same rule to the hold itself). */
   private pendingJoinGen = 0;
+  /** Bumped on every Cancel. A hold (pending_join_set) that was in flight when the member cancelled
+   *  doesn't bring the card back. */
+  private pendingJoinCancels = 0;
+  /** pending_join_set and pending_join_clear run one at a time, in the order they were asked for, so
+   *  Rust never sees a Cancel overtake the store it cancels, or two stores race. */
+  private pendingJoinOps: Promise<unknown> = Promise.resolve();
   private snap: AppState;
   private cid = 0;
   private mid = 0;
@@ -2221,10 +2227,20 @@ export class Store {
     }
   }
 
+  /** Run a pending-invite set/clear after the ones already asked for. */
+  private pendingJoinSerial<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.pendingJoinOps.then(f, f);
+    this.pendingJoinOps = run.catch(() => undefined);
+    return run;
+  }
+
   /** Hand a v2 invite link to Rust (pending_join_set) and record only its status. */
   private async holdInvite(link: string): Promise<boolean> {
+    const cancels = this.pendingJoinCancels;
     try {
-      const v = await bridge.join.pendingSet(link);
+      const v = await this.pendingJoinSerial(() => bridge.join.pendingSet(link));
+      // Cancelled while it was being stored: the queued clear wipes it in Rust; don't show it.
+      if (cancels !== this.pendingJoinCancels) return false;
       this.pendingJoinGen++;
       this.pendingJoinCode = null;
       this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
@@ -2330,10 +2346,11 @@ export class Store {
   /** Cancel / dismiss: wipe the waiting invite in Rust. */
   async cancelPendingJoin(): Promise<void> {
     this.pendingJoinGen++;
+    this.pendingJoinCancels++;
     this.pendingJoinCode = null;
     this.setState({ pendingJoin: null });
     try {
-      await bridge.join.pendingClear();
+      await this.pendingJoinSerial(() => bridge.join.pendingClear());
     } catch {
       // Rust has dropped it for this session, but the device keychain couldn't delete its copy.
       this.toast("Cancelled, but this device's keychain couldn't be reached, so the invite may come back after a restart. Cancel it again if it does.");

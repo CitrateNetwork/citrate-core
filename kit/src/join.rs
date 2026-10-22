@@ -1296,8 +1296,8 @@ impl JoinClient {
     /// Drop the opened relay invite for `code` without handing it over: the member cancelled the
     /// invite, or it was replaced or expired. A later `redeem_opened(code)` then fails NotFound
     /// until the link is resolved again (which needs its key).
-    pub fn forget_opened(&self, _code: &str) {
-        // RED stub: keeps the old behaviour (nothing is dropped).
+    pub fn forget_opened(&self, code: &str) {
+        self.opened().remove(code);
     }
 
     /// Redeem the opened relay invite for `code` with `redeem` (the self-admit call). The invite is

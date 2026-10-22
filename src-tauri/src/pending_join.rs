@@ -81,7 +81,6 @@ pub struct PendingJoinStore {
     /// Called with a code whose invite left the hold (cancelled, replaced by another code, expired,
     /// reported gone, or answered after it changed), so the join client drops the relay invite it
     /// opened for that code at Review and `join_redeem` can't use it.
-    #[allow(dead_code)] // RED stub: stored, not called yet.
     forget_opened: Box<dyn Fn(&str) + Send + Sync>,
     /// Every read and write of the hold runs under this lock, so a set, a clear and the result of
     /// a resolve never interleave half-way. The resolve's network call runs outside it.
@@ -98,6 +97,10 @@ struct Inner {
     /// The member cancelled but the keyring slot could not be deleted (keyring unreachable). Reads
     /// ignore the slot and retry the delete until it succeeds, so the invite does not come back.
     unwiped_slot: bool,
+    /// The code of the invite this process last held (set or read). It is what the join client may
+    /// have opened at Review, so a wipe or a replacement tells the client to forget it, even while
+    /// the keyring is unreachable.
+    held_code: Option<String>,
 }
 
 fn view(s: &Stored, persisted: bool) -> PendingJoinView {
@@ -157,6 +160,9 @@ impl PendingJoinStore {
     fn wipe(&self, g: &mut Inner) -> Result<(), String> {
         g.memory = None;
         g.generation = g.generation.wrapping_add(1);
+        if let Some(code) = g.held_code.take() {
+            (self.forget_opened)(&code);
+        }
         match self.keyring.delete(PENDING_JOIN_ACCOUNT) {
             Ok(()) => {
                 g.unwiped_slot = false;
@@ -188,6 +194,12 @@ impl PendingJoinStore {
         };
         let mut g = self.lock();
         g.generation = g.generation.wrapping_add(1);
+        let code = s.code().to_string();
+        if let Some(prev) = g.held_code.replace(code.clone()) {
+            if prev != code {
+                (self.forget_opened)(&prev);
+            }
+        }
         let persisted = self.write(&mut g, s.clone());
         Ok(view(&s, persisted))
     }
@@ -216,6 +228,7 @@ impl PendingJoinStore {
                 Ok(None) | Err(_) => return None,
             },
         };
+        g.held_code = Some(s.code().to_string());
         if (self.now)() >= s.expires_at {
             let _ = self.wipe(g);
             return None;
@@ -273,6 +286,12 @@ impl PendingJoinStore {
         let out = resolve(&link);
         let mut g = self.lock();
         if g.generation != started {
+            // The client may have opened this code's envelope after a cancel or replacement already
+            // told it to forget; drop it again unless the same code is what is held now.
+            let code = link.split('#').next().unwrap_or("");
+            if g.held_code.as_deref() != Some(code) {
+                (self.forget_opened)(code);
+            }
             return Err(CHANGED.to_string());
         }
         match out {
