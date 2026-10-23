@@ -371,6 +371,13 @@ pub fn pid_alive(pid: u32) -> bool {
     exists && !is_zombie(pid)
 }
 
+/// Whether a supervised child is fully gone after a Stop, a Drop or a crash: the supervisor has
+/// reaped it, so it no longer exists even as a zombie. Use this, not `!pid_alive`, to assert
+/// reaping: an exited child that nobody waited for is not alive, but it is not reaped either.
+pub fn pid_reaped(pid: u32) -> bool {
+    !pid_alive(pid)
+}
+
 fn is_zombie(pid: u32) -> bool {
     ps_field(pid, "stat=").is_some_and(|s| s.trim_start().starts_with('Z'))
 }
