@@ -6,9 +6,13 @@
 //   - node word: nodeWords.ts (node_status via Store.refreshNode, public eth_blockNumber, genesis check);
 //   - registered validators: ValidatorRegistry.activeCount() (contract v1.1 §2: it includes
 //     registrations still pending activation, so it is "Registered", never "Active");
-//   - eligible validators, producing blocks and the validator word: read by C1-V's chainTruth
-//     (core PR #358, not on this branch yet). Until it lands they show "—" with the reason, and the
-//     validator word is left out of the sentence. `validatorWord` is the seam that takes it.
+//   - validator word and eligible validators: C1-V's chainTruth reads folded by the store
+//     (`s.validatorActivation`, `s.memberBond`, `s.bondedStake`, `s.validatorCounts`); "—" with the
+//     reason until read, and the validator word is left out of the sentence until then;
+//   - Activate validator: offered only through #366's one gate, canOfferActivation (activationOffer
+//     in nodeWords.ts), on a page that reads Synced; otherwise the card says the gate's reason;
+//   - freshness: `s.nodeStatusAt`, the node_status answer the store's poll committed. The 10 s
+//     probe only reports that node_status fails; its answers never make the store's values current.
 //   - consensus validator set: no RPC exposes the epoch snapshot, so no number (contract v1.1 §2).
 // No sync percentage, no finality, no local height that ticks on its own.
 // =====================================================================
@@ -21,12 +25,13 @@ import { BRIDGE_MODE } from "../../bridge/mode";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
 import { useNetworkCompat, type NetworkCompat } from "../../shell/networkCompat";
-import { FRESH_MS, activateGate, headFresh, directPeers, heightLine, nodeWord, statusSentence, TONE_COLOR } from "./nodeWords";
+import { validatorDash, validatorWord } from "../../shell/chainTruth";
+import { FRESH_MS, activationOffer, headFresh, directPeers, heightLine, nodeWord, statusSentence, TONE_COLOR } from "./nodeWords";
 import { PAGE, Panel, Row, StateCard, errText } from "./parts";
 
 const VALIDATOR_REGISTRY = book.addresses.ValidatorRegistry as `0x${string}`;
 const ACTIVE_COUNT_ABI = [{ type: "function", name: "activeCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] }] as const;
-/** How often the tab checks that node_status still answers (its values come from the store's 2 s poll). */
+/** How often the tab checks that node_status still answers (its values and their age come from the store's 2 s poll). */
 const STATUS_PROBE_MS = 10_000;
 /** How often read ages are re-evaluated, so a read going stale shows without another poll. */
 const AGE_TICK_MS = 5_000;
@@ -42,7 +47,7 @@ export interface NodeStatusViewProps {
   publicHeadAgeMs: number | null;
   /** The latest public head poll failed. */
   publicHeadError: boolean;
-  /** Age of the last node_status answer (ms); null = none yet (the store's values stand). */
+  /** Age of the node_status answer behind the store's values (`s.nodeStatusAt`, ms); null = none yet. */
   statusAgeMs: number | null;
   compat: NetworkCompat;
   mode: "tauri" | "sim";
@@ -50,12 +55,6 @@ export interface NodeStatusViewProps {
   statusError: string | null;
   /** ValidatorRegistry.activeCount(); null until read. */
   registered?: number | null;
-  /** The contract §1 validator word, once something reads it (C1-V); null = not read. */
-  validatorWord?: string | null;
-  /** `ValidatorRegistry.validatorInfo(pubkey).status` for this node's key (C1-V); null = not read. */
-  registryStatus?: number | null;
-  /** `MemberBond.activated()` (C1-V); null = not read. */
-  bondActivated?: boolean | null;
 }
 
 /** Node › Status with its live reads. */
@@ -71,18 +70,15 @@ export function NodeStatus({ store, s }: { store: Store; s: AppState }) {
     query: { refetchInterval: 60_000 },
   });
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [statusOkAt, setStatusOkAt] = useState<number | null>(null);
   useEffect(() => {
     if (BRIDGE_MODE !== "tauri") return;
     let live = true;
+    // Only failure is taken from the probe. Its answer is not what the page shows, so a success here
+    // must not make the store's values look current (Codex on #362): their age is s.nodeStatusAt.
     const probe = () =>
       bridge.node
         .status()
-        .then(() => {
-          if (!live) return;
-          setStatusError(null);
-          setStatusOkAt(Date.now());
-        })
+        .then(() => live && setStatusError(null))
         .catch((e) => live && setStatusError(errText(e)));
     void probe();
     const t = setInterval(probe, STATUS_PROBE_MS);
@@ -98,7 +94,7 @@ export function NodeStatus({ store, s }: { store: Store; s: AppState }) {
       publicHead={head != null ? Number(head) : null}
       publicHeadAgeMs={head != null && dataUpdatedAt > 0 ? Math.max(0, now - dataUpdatedAt) : null}
       publicHeadError={headError}
-      statusAgeMs={statusOkAt == null ? null : Math.max(0, now - statusOkAt)}
+      statusAgeMs={s.nodeStatusAt == null ? null : Math.max(0, now - s.nodeStatusAt)}
       compat={compat}
       mode={BRIDGE_MODE}
       statusError={statusError}
@@ -157,9 +153,6 @@ export function NodeStatusView({
   mode,
   statusError,
   registered = null,
-  validatorWord = null,
-  registryStatus = null,
-  bondActivated = null,
 }: NodeStatusViewProps) {
   const answering = s.height > 0 && s.node !== "off" && s.node !== "error";
   const peersZeroForMs = usePeersZeroFor(answering && s.peers === 0);
@@ -189,7 +182,8 @@ export function NodeStatusView({
       </div>
     );
   }
-  if (statusAgeMs != null && statusAgeMs > FRESH_MS) {
+  // A paused node is not polled on purpose (Store.refreshNode), so its age says nothing; it reads Off.
+  if (s.node !== "paused" && statusAgeMs != null && statusAgeMs > FRESH_MS) {
     return (
       <div data-node-tab="status" style={PAGE}>
         <StateCard
@@ -215,7 +209,10 @@ export function NodeStatusView({
     localStillForMs,
   });
   const headOk = headFresh({ publicHead, publicHeadAgeMs, publicHeadError });
-  const sentence = statusSentence(w, validatorWord);
+  // C1-V (contract v1.1 §1): the validator word from the registry and bond reads only.
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  const vDash = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  const sentence = statusSentence(w, vWord);
   const canStart = s.node === "off" || s.node === "error" || s.node === "paused";
   const notice = noticeFor(w.word, store);
 
@@ -271,9 +268,9 @@ export function NodeStatusView({
           <Row
             k="Validator"
             testid="validator-word"
-            v={validatorWord ?? "— · not read on this page yet"}
-            vColor={validatorWord ? undefined : "var(--tx-3)"}
-            src="ValidatorRegistry.isActive(pubkey) and validatorInfo(pubkey).actEpoch against currentEpoch() (contract v1.1 §1). Stake amounts never decide this word"
+            v={vDash}
+            vColor={vWord ? undefined : "var(--tx-3)"}
+            src="ValidatorRegistry.validatorInfo(pubkey) status and actEpoch against currentEpoch(), isActive(pubkey), and MemberBond.activated() / isUnlocked() (contract v1.1 §1). Stake amounts never decide this word"
           />
           <Row k="Producing blocks" v="— · not read" vColor="var(--tx-3)" src="a recent block with proposerPubkey = this node's key. Validator active does not imply this" />
         </Panel>
@@ -296,13 +293,19 @@ export function NodeStatusView({
             v={registered != null ? fmtI(registered) : "—"}
             src="ValidatorRegistry.activeCount(). Includes registrations still pending activation, so it is not “active”"
           />
-          <Row k="Eligible validators" v="— · not read on this page yet" vColor="var(--tx-3)" src="activeSet() members with actEpoch ≤ currentEpoch(): the live registry, not consensus membership" />
+          <Row
+            k="Eligible validators"
+            testid="eligible-validators"
+            v={s.validatorCounts ? fmtI(s.validatorCounts.eligible) : "— · not read yet"}
+            vColor={s.validatorCounts ? undefined : "var(--tx-3)"}
+            src="activeSet() members with actEpoch ≤ currentEpoch(): the live registry, not consensus membership"
+          />
           <Row k="Consensus validator set" v="unavailable until a snapshot RPC exists" vColor="var(--tx-3)" src="the governing epoch snapshot; no RPC exposes it yet, so no number is shown" />
         </Panel>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <ActivateCard store={store} s={s} registryStatus={registryStatus} bondActivated={bondActivated} />
+        <ActivateCard store={store} s={s} pageWord={w.word} />
         <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
           <span className="eyebrow">Words on this page</span>
           <span style={{ fontSize: 12, lineHeight: 1.6, color: "var(--tx-2)" }}>
@@ -359,20 +362,19 @@ function noticeFor(word: string, store: Store): { title: string; body: string; r
 
 /**
  * Activate validator (moved from the 0.5.1 Node screen): on a synced node, link this device's wallet
- * first, then register the membership bond through the signature ceremony (store.activateValidator).
- * Offered only when activateGate allows it: never for Exiting, Slashed, an activated bond, or while
- * those reads are unread (MemberBond.activate reverts AlreadyActivated). No amount is shown: the
- * minimum stake is read by C1-V, never hard-coded here.
+ * first, then register the membership bond through the signature ceremony (store.activateValidator,
+ * which checks canOfferActivation again before arming). Offered only when activationOffer allows it,
+ * that is #366's canOfferActivation on a page that reads Synced; otherwise the card says why. No
+ * amount is shown: the minimum stake is read by C1-V, never hard-coded here.
  */
-function ActivateCard({ store, s, registryStatus, bondActivated }: { store: Store; s: AppState; registryStatus: number | null; bondActivated: boolean | null }) {
-  if (s.node !== "synced") return null;
-  const gate = activateGate(registryStatus, bondActivated);
-  if (!gate.show) {
+function ActivateCard({ store, s, pageWord }: { store: Store; s: AppState; pageWord: string }) {
+  const offer = activationOffer(pageWord, s);
+  if (!offer.offer) {
     return (
       <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
         <span className="eyebrow">Validator</span>
-        <span data-testid="activate-gate" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)" }}>
-          {gate.word} · {gate.why}
+        <span data-testid="activate-gate" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
+          {offer.why}
         </span>
       </div>
     );

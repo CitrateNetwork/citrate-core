@@ -210,11 +210,30 @@ describe("tripwire — the Node page has one activation gate", () => {
   const prod = readdirSync(dir).filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
   const src = (f: string) => readFileSync(join(dir, f), "utf8");
 
-  it("every Node page file that calls activateValidator also decides with canOfferActivation", () => {
+  it("every Node page file that calls activateValidator decides first with activationOffer", () => {
     for (const f of prod) {
-      if (!src(f).includes("activateValidator(")) continue;
-      expect(src(f), f).toContain("canOfferActivation(");
+      const body = src(f);
+      if (!body.includes("activateValidator(")) continue;
+      expect(body, f).toContain("activationOffer(");
+      expect(body.indexOf("activationOffer("), f).toBeLessThan(body.indexOf("activateValidator("));
+      // One call site, behind the offer's early return.
+      expect(body.split("activateValidator(").length - 1, f).toBe(1);
+      expect(body.indexOf("if (!offer.offer)"), f).toBeGreaterThan(-1);
+      expect(body.indexOf("activateValidator("), f).toBeGreaterThan(body.indexOf("if (!offer.offer)"));
     }
+  });
+
+  it("activationOffer offers only inside canOfferActivation", () => {
+    const words = src("nodeWords.ts");
+    const start = words.indexOf("export function activationOffer(");
+    expect(start).toBeGreaterThan(-1);
+    const body = words.slice(start, words.indexOf("\n}\n", start));
+    const gate = body.indexOf("if (canOfferActivation(");
+    const after = body.indexOf("const word = validatorWord(");
+    expect(gate).toBeGreaterThan(-1);
+    expect(body.match(/offer: true/g)?.length).toBe(1);
+    expect(body.indexOf("offer: true")).toBeGreaterThan(gate);
+    expect(body.indexOf("offer: true")).toBeLessThan(after);
   });
 
   it("no Node page file arms mining, registers or activates a validator directly", () => {

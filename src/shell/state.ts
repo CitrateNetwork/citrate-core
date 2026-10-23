@@ -1062,7 +1062,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
 ];
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
-export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
+export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height", "nodeStatusAt"];
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;

@@ -60,12 +60,23 @@ export function liveServiceReads(): ServiceReads {
   };
 }
 
-/** The live stop/start pairs. The node goes through the store so its run intent stays right. */
+/**
+ * The live stop/start pairs. The node and memory go through the store so its state stays right.
+ * Each start resolves only once its command answered and rejects on failure, so Restart never
+ * reports a failed start as "Started." (Codex on #362). The node's start runs after Restart's own
+ * status read reported it stopped, so it doesn't consult the store's last-polled state.
+ */
 export function liveServiceControls(store: Store): ServiceControls {
   return {
-    node: { stop: async () => store.stopNode(), start: async () => store.startNode() },
+    node: { stop: async () => store.stopNode(), start: () => store.startNodeAfterStop() },
     agent: { stop: () => bridge.agent.stop(), start: () => bridge.agent.start() },
-    memory: { stop: () => bridge.memory.stop(), start: () => store.startMemoryDaemon() },
+    memory: {
+      stop: () => bridge.memory.stop(),
+      start: async () => {
+        const failure = await store.startMemoryDaemon();
+        if (failure != null) throw new Error(failure);
+      },
+    },
     llama: { stop: () => bridge.model.serveStop(), start: () => bridge.model.serveStart() },
     ipfs: { stop: () => tauriServiceCommands.ipfsStop(), start: () => bridge.node.startIpfs() },
     hermes: { stop: () => bridge.agentHarness.stop(), start: () => bridge.agentHarness.start() },

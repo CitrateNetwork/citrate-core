@@ -105,7 +105,9 @@ describe("Node › Status", () => {
     const unread = await mount(<NodeStatusView store={stubStore()} s={s} {...live} />);
     expect(unread.querySelector('[data-testid="validator-word"]')?.textContent).toMatch(/^—/);
     act(() => root?.unmount());
-    const read = await mount(<NodeStatusView store={stubStore()} s={s} {...live} validatorWord="Validator active" />);
+    const read = await mount(
+      <NodeStatusView store={stubStore()} s={{ ...s, bondedStake: 32_000, validatorActivation: { isActive: true, status: 1, actEpoch: 38, currentEpoch: 40 } }} {...live} />,
+    );
     expect(read.querySelector('[data-testid="node-sentence"]')?.textContent).toBe("Synced · Validator active");
   });
 
@@ -139,9 +141,11 @@ describe("Node › Status", () => {
     expect(h.textContent).not.toContain("23 direct peers");
   });
 
-  it("activation is offered only for registry status None and a bond not activated, without an amount", async () => {
+  // Activation through #366's canOfferActivation: nodeActivation.test.tsx covers every read.
+  const bondLocked = { hasGrant: true, bondedStake: 0, validatorActivation: { isActive: false, status: 0, actEpoch: 0, currentEpoch: 40 }, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } };
+  it("activation is offered for a bond the gate allows, without an amount", async () => {
     const store = stubStore();
-    const h = await mount(<NodeStatusView store={store} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} registryStatus={0} bondActivated={false} />);
+    const h = await mount(<NodeStatusView store={store} s={at({ node: "synced", height: 510_030, peers: 4, ...bondLocked })} {...live} />);
     const b = button(h, /Activate validator/);
     expect(b?.textContent).not.toMatch(/32,000|SALT/);
     await click(b);
@@ -151,8 +155,7 @@ describe("Node › Status", () => {
   it("no Activate while the registry status or the bond state is unread: '—' and the reason", async () => {
     const h = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} />);
     expect(button(h, /Activate validator/)).toBeUndefined();
-    expect(h.querySelector('[data-testid="activate-gate"]')?.textContent).toMatch(/^—/);
-    expect(h.querySelector('[data-testid="activate-gate"]')?.textContent).toMatch(/validatorInfo/);
+    expect(h.querySelector('[data-testid="activate-gate"]')?.textContent).toMatch(/^— · /);
   });
 
   it("Exiting, Slashed or an activated bond: no Activate, and the word is shown", async () => {
@@ -161,7 +164,8 @@ describe("Node › Status", () => {
       [3, false, "Slashed"],
       [0, true, "—"],
     ] as const) {
-      const h = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4 })} {...live} registryStatus={status} bondActivated={activated} />);
+      const s = at({ node: "synced", height: 510_030, peers: 4, ...bondLocked, validatorActivation: { ...bondLocked.validatorActivation, status }, memberBond: { ...bondLocked.memberBond, activated } });
+      const h = await mount(<NodeStatusView store={stubStore()} s={s} {...live} />);
       expect(button(h, /Activate validator/), word).toBeUndefined();
       expect(h.querySelector('[data-testid="activate-gate"]')?.textContent?.startsWith(word), word).toBe(true);
       act(() => root?.unmount());

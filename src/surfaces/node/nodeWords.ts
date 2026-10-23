@@ -16,6 +16,7 @@
 // answering yet" (the call returns 0x0 on error), never block 0.
 // =====================================================================
 import type { AppState } from "../../shell/state";
+import { activationClosedReason, canOfferActivation, validatorDash, validatorWord } from "../../shell/chainTruth";
 import type { NetworkCompat } from "../../shell/networkCompat";
 
 /** Contract §1: Synced means within this many blocks of the public RPC head. */
@@ -154,28 +155,41 @@ export function heightLine(localHeight: number, publicHead: number | null): stri
 }
 
 /**
- * Whether Activate validator may be offered (contract §1 Validators). `MemberBond.activate` is
- * one-shot (it reverts AlreadyActivated) and a slashed key may not register again, so Activate is
- * offered only when the registry reads status None for this node's key AND the bond reads not
- * activated. Anything unread offers nothing and says why.
- *  - registryStatus: `ValidatorRegistry.validatorInfo(pubkey).status` (0 None, 1 Active, 2 Exiting,
- *    3 Slashed); null = not read.
- *  - bondActivated: `MemberBond.activated()`; null = not read.
+ * Whether Node › Status offers Activate validator, and why not (contract §1 Validators). The
+ * decision is #366's one activation gate, `canOfferActivation` (registry status and actEpoch,
+ * registered stake, MemberBond.activated() and the activation window MemberBond.isUnlocked(), all
+ * read by the store), and nothing page-local. On top of it the page must read "Synced" against a
+ * fresh public head (block production stays unarmed under Sync unknown) and the supervisor must
+ * report synced, because arming re-checks the tip in Rust. The reason is the gate's own: the
+ * validator word, or "— · <reason>" while a read is missing.
  */
-export function activateGate(registryStatus: number | null, bondActivated: boolean | null): { show: boolean; word: string; why: string } {
-  if (registryStatus === 2) return { show: false, word: "Exiting", why: "This node's key is exiting the validator registry (validatorInfo.status = 2)." };
-  if (registryStatus === 3) return { show: false, word: "Slashed", why: "This node's key was slashed (validatorInfo.status = 3). A slashed key can't register again." };
-  if (registryStatus == null || bondActivated == null) {
-    return {
-      show: false,
-      word: "—",
-      why: "Activate opens once ValidatorRegistry.validatorInfo(pubkey).status and MemberBond.activated() have been read for this node; they aren't read on this page yet.",
-    };
+export function activationOffer(
+  pageWord: string,
+  s: Pick<AppState, "node" | "bondedStake" | "validatorActivation" | "hasGrant" | "memberBond">,
+): { offer: boolean; why: string } {
+  if (canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)) {
+    if (pageWord !== "Synced") return { offer: false, why: "Activation opens once this node reads Synced. It reads " + pageWord + " now." };
+    if (s.node !== "synced") return { offer: false, why: "Activation opens once node_status reports this node synced, so block production can be armed." };
+    return { offer: true, why: "" };
   }
-  if (bondActivated || registryStatus !== 0) {
-    return { show: false, word: "—", why: "Your bond is already activated, so there is nothing to activate. The validator word comes from the registry." };
+  const word = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  switch (word) {
+    case "Bond locked · not staked":
+      // The only way this word is not offered: the lock (chain#331, MemberBond.sol:219).
+      return activationClosedReason(s.memberBond) === "activation window closed"
+        ? { offer: false, why: "Activation unavailable · activation window closed: the bond is unlocked, so it can no longer be staked (MemberBond.isUnlocked())." }
+        : { offer: false, why: "Activation unavailable · bond lock not read yet (MemberBond.isUnlocked())." };
+    case "Not a validator":
+      return { offer: false, why: "Not a validator · activation needs the membership grant's bond on chain." };
+    case "Exiting":
+      return { offer: false, why: "Exiting · this key is leaving the validator registry (validatorInfo.status = 2), and a bond activates only once." };
+    case "Slashed":
+      return { offer: false, why: "Slashed · a slashed key can't register again (validatorInfo.status = 3)." };
+    case null:
+      return { offer: false, why: validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond) + ". Activation is offered only once the registry and bond reads say it can be." };
+    default:
+      return { offer: false, why: word + " · this key is already registered (validatorInfo.status = 1), so there is nothing to activate." };
   }
-  return { show: true, word: "", why: "" };
 }
 
 /** Dot colour for a tone (the 0.5.1 node palette). */

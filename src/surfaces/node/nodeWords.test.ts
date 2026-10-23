@@ -1,7 +1,7 @@
 // K3 — Node › Status words (UI truth contract §1 "Network and node"). Unknown is never zero, nothing
 // not-live is shown as running, and the words are exactly the contract's.
 import { describe, expect, it } from "vitest";
-import { activateGate, directPeers, heightLine, nodeWord, statusSentence, type NodeWordInput } from "./nodeWords";
+import { activationOffer, directPeers, heightLine, nodeWord, statusSentence, type NodeWordInput } from "./nodeWords";
 
 const base: NodeWordInput = {
   node: "synced",
@@ -120,25 +120,47 @@ describe("status sentence and rows", () => {
   });
 });
 
-describe("Activate validator gate (contract §1 Validators; MemberBond.activate is one-shot)", () => {
+describe("Activate validator offer (#366 canOfferActivation, contract §1 Validators)", () => {
+  const NONE = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 40 };
+  const LOCKED = { deployed: true, activated: false, pubkey: null, unlocked: false };
+  const member = (over: Partial<Parameters<typeof activationOffer>[1]> = {}): Parameters<typeof activationOffer>[1] => ({
+    node: "synced",
+    bondedStake: 0,
+    validatorActivation: NONE,
+    hasGrant: true,
+    memberBond: LOCKED,
+    ...over,
+  });
+  it("offers only a locked, not activated, not staked bond on a Synced page", () => {
+    expect(activationOffer("Synced", member())).toEqual({ offer: true, why: "" });
+  });
   it("unread registry status or bond state: no Activate, '—' and the reason", () => {
-    for (const g of [activateGate(null, null), activateGate(0, null), activateGate(null, false)]) {
-      expect(g.show).toBe(false);
-      expect(g.word).toBe("—");
-      expect(g.why.length).toBeGreaterThan(0);
+    for (const s of [member({ validatorActivation: null, bondedStake: 32_000 }), member({ memberBond: null }), member({ memberBond: { deployed: true, activated: null, pubkey: null } })]) {
+      const o = activationOffer("Synced", s);
+      expect(o.offer).toBe(false);
+      expect(o.why).toMatch(/^— · /);
     }
   });
-  it("Exiting and Slashed show the word and no Activate", () => {
-    expect(activateGate(2, false)).toMatchObject({ show: false, word: "Exiting" });
-    expect(activateGate(3, false)).toMatchObject({ show: false, word: "Slashed" });
-    expect(activateGate(3, null)).toMatchObject({ show: false, word: "Slashed" });
+  it("Exiting and Slashed say the word whatever the bond reads, and offer nothing", () => {
+    for (const memberBond of [null, LOCKED, { deployed: true, activated: true, pubkey: "0x" + "ab".repeat(48) }]) {
+      expect(activationOffer("Synced", member({ validatorActivation: { ...NONE, status: 2 }, memberBond })).why).toMatch(/^Exiting · /);
+      expect(activationOffer("Synced", member({ validatorActivation: { ...NONE, status: 3 }, memberBond })).why).toMatch(/^Slashed · /);
+    }
   });
-  it("an activated bond, or a registered key, never offers Activate (it would revert AlreadyActivated)", () => {
-    expect(activateGate(0, true).show).toBe(false);
-    expect(activateGate(1, false).show).toBe(false);
-    expect(activateGate(1, true).show).toBe(false);
+  it("an activated bond or a registered key never offers Activate (it would revert AlreadyActivated)", () => {
+    const activated = { deployed: true, activated: true, pubkey: "0x" + "ab".repeat(48), unlocked: false };
+    expect(activationOffer("Synced", member({ memberBond: activated })).offer).toBe(false);
+    const registered = activationOffer("Synced", member({ validatorActivation: { isActive: true, status: 1, actEpoch: 42, currentEpoch: 40 }, bondedStake: 32_000, memberBond: activated }));
+    expect(registered).toMatchObject({ offer: false });
+    expect(registered.why).toContain("already registered");
   });
-  it("offers Activate only for status None with a bond not activated", () => {
-    expect(activateGate(0, false).show).toBe(true);
+  it("the activation window: unlocked is closed, unread fails closed", () => {
+    expect(activationOffer("Synced", member({ memberBond: { ...LOCKED, unlocked: true } })).why).toContain("activation window closed");
+    expect(activationOffer("Synced", member({ memberBond: { ...LOCKED, unlocked: null } })).why).toContain("bond lock not read yet");
+  });
+  it("Sync unknown, Syncing or a supervisor not reporting synced: not offered, and says so", () => {
+    expect(activationOffer("Sync unknown · network head unavailable", member()).why).toContain("Activation opens once this node reads Synced");
+    expect(activationOffer("Syncing · 70 blocks behind", member()).offer).toBe(false);
+    expect(activationOffer("Synced", member({ node: "syncing" })).offer).toBe(false);
   });
 });

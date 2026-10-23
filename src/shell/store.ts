@@ -898,10 +898,10 @@ export class Store {
    * `bridge.memory.start()`, so the graph is otherwise permanently offline. On a
    * fresh dev machine the mem-mcp binary isn't bundled yet (WO-2), so this
    * HONESTLY errors `BinaryNotFound` — that's a real error, not a fabrication, and
-   * it is surfaced (memDaemon "error" + the coarse message). On success it re-reads
-   * the status and re-runs the constellation fetch so the graph loads.
+   * it is surfaced (memDaemon "error" + the coarse message) and returned. On success it re-reads
+   * the status and re-runs the constellation fetch so the graph loads, and returns null.
    */
-  async startMemoryDaemon(): Promise<void> {
+  async startMemoryDaemon(): Promise<string | null> {
     this.setState({ memDaemon: "idle", memDaemonError: null });
     // HUP-S3.1: import the bundled knowledge corpus BEFORE the daemon takes the store lock. Idempotent
     // and gated in Rust; a failure is shown and never blocks the daemon from starting.
@@ -910,14 +910,17 @@ export class Store {
       await bridge.memory.start();
     } catch (err) {
       // Honest failure (e.g. BinaryNotFound — the binary isn't bundled yet).
-      this.setState({ memDaemon: "error", memDaemonError: String((err as Error).message ?? err) });
-      return;
+      const reason = String((err as Error).message ?? err);
+      this.setState({ memDaemon: "error", memDaemonError: reason });
+      // K3 (Codex on #362): returned too, so Node › Services never reports a failed start as started.
+      return reason;
     }
     const state = await this.refreshMemoryStatus();
     if (state === "running") {
       await this.refreshConstellation();
       void this.seedMemoryGraph();
     }
+    return null;
   }
 
   /**
@@ -1493,6 +1496,9 @@ export class Store {
     this.nodeRefreshing = true;
     try {
       const st = await bridge.node.status();
+      // K3 (Codex on #362): when this answer was read. It is committed with the values below, so a
+      // poll that stalls on a later read (grant status, logs) leaves the page's freshness to age.
+      const statusReadAt = Date.now();
       // 40204 reroll: the node's start deleted another genesis's chain data. Say so once.
       if (st.notice && !this.nodeChainResetNotified) {
         this.nodeChainResetNotified = true;
@@ -1584,6 +1590,7 @@ export class Store {
         syncPct: st.syncPct,
         bondedStake: bonded,
         validatorActivation,
+        nodeStatusAt: statusReadAt,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
@@ -4140,50 +4147,69 @@ export class Store {
       void this.refreshNode();
       return;
     }
-    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
-      // Spawn the REAL supervised node (bridge.node.start → node.rs). The 2s
-      // poller (refreshNode) then folds live state/height/peers as it boots +
-      // syncs. `nodeStarting` guards the poller from demoting the optimistic
-      // "prov" to "off" during the spawn window. On failure (e.g. the node
-      // binary is not bundled) show an HONEST error, never a faked sync (Rule 1).
-      this.nodeStarting = true;
-      // Start the bundled IPFS daemon alongside the node (fire-and-forget; the node
-      // reaches it on :5001 for artifact/model ops — block production does not need
-      // it, so a failure here never blocks the node).
-      void bridge.node.startIpfs().catch(() => {
-        /* honest no-op: IPFS unavailable (dev/web) — the node still produces */
-      });
-      void bridge.node
-        .start()
-        .then(() => {
-          this.nodeStarting = false;
-          return this.refreshNode();
-        })
-        .catch((e) => {
-          this.nodeStarting = false;
-          // Surface the REAL failure. Tauri rejects a Rust `Err(String)` as a
-          // plain string (not an Error), so an `instanceof Error` gate would
-          // swallow the actual cause (e.g. "No space left on device", RocksDB
-          // LOCK held) behind a generic line — a Rule-1 lie about why it failed.
-          const reason =
-            e instanceof Error ? e.message : typeof e === "string" && e.trim() ? e : "supervisor unavailable";
-          // AlreadyRunning is NOT a failure — the node is already up (a race past the
-          // idempotent guard above). Fold the live state and proceed; never scare the
-          // user with "could not start" when the node is in fact running.
-          if (/already running/i.test(reason)) {
-            void this.refreshNode();
-            return;
-          }
-          this.setState({ node: "error" });
-          this.toast("Could not start the node: " + reason);
-        });
+      // The failure is shown (state "error" + toast) by spawnNode; nothing else to do here.
+      void this.spawnNode(true).catch(() => {});
       return;
     }
+    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
     setTimeout(() => {
       this.setState({ node: "syncing", syncPct: 2, peerRows: this.makePeers(8) });
       this.save();
     }, 1500);
+  }
+
+  /**
+   * K3 Node › Services Restart (Codex on #362): start the node once Restart's own node_status read
+   * reported it stopped. Unlike startNode it does not consult the store's last-polled state: a poll
+   * that began before the stop can still fold "running" afterwards, which made the start a no-op.
+   * It resolves once node_start answered and rejects with the supervisor's reason, so Services
+   * never reports a failed start as started.
+   */
+  async startNodeAfterStop(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") throw new Error("node_start needs the desktop app");
+    if (this.nodeStarting) throw new Error("a node start is already in progress");
+    await this.spawnNode(false);
+  }
+
+  /**
+   * Spawn the REAL supervised node (bridge.node.start → node.rs). The 2s poller (refreshNode) then
+   * folds live state/height/peers as it boots + syncs. `nodeStarting` guards the poller from
+   * demoting the optimistic "prov" to "off" during the spawn window. On failure (e.g. the node
+   * binary is not bundled) the state is an HONEST error, never a faked sync (Rule 1), and the
+   * promise rejects with the reason.
+   */
+  private async spawnNode(toastOnFailure: boolean): Promise<void> {
+    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
+    this.nodeStarting = true;
+    // Start the bundled IPFS daemon alongside the node (fire-and-forget; the node
+    // reaches it on :5001 for artifact/model ops — block production does not need
+    // it, so a failure here never blocks the node).
+    void bridge.node.startIpfs().catch(() => {
+      /* honest no-op: IPFS unavailable (dev/web) — the node still produces */
+    });
+    try {
+      await bridge.node.start();
+    } catch (e) {
+      this.nodeStarting = false;
+      // Surface the REAL failure. Tauri rejects a Rust `Err(String)` as a
+      // plain string (not an Error), so an `instanceof Error` gate would
+      // swallow the actual cause (e.g. "No space left on device", RocksDB
+      // LOCK held) behind a generic line — a Rule-1 lie about why it failed.
+      const reason = e instanceof Error ? e.message : typeof e === "string" && e.trim() ? e : "supervisor unavailable";
+      // AlreadyRunning is NOT a failure — the node is already up (a race past the
+      // idempotent guard above). Fold the live state and proceed; never scare the
+      // user with "could not start" when the node is in fact running.
+      if (/already running/i.test(reason)) {
+        void this.refreshNode();
+        return;
+      }
+      this.setState({ node: "error" });
+      if (toastOnFailure) this.toast("Could not start the node: " + reason);
+      throw new Error(reason);
+    }
+    this.nodeStarting = false;
+    await this.refreshNode();
   }
 
   /** Stop the node. Tauri: release the real supervisor (bridge.node.stop). */
