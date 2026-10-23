@@ -33,6 +33,9 @@ const OLD_ROUTES: Record<string, [string, string, string | null, string | null]>
   node: ["node/status", "node", "Status", null],
   files: ["node/storage/files", "node", "Storage", "Files"],
   storage: ["node/storage/memory", "node", "Storage", "Memory"],
+  // K4 (#368): the Files hub tabs it added on main before the five places landed.
+  pins: ["node/storage/pins", "node", "Storage", "Pins"],
+  backup: ["node/storage/backup", "node", "Storage", "Backup"],
   commissary: ["store/apps", "store", "Apps", null],
   models: ["store/models", "store", "Models", null],
   settings: ["settings", "settings", "Settings", null],
@@ -83,7 +86,7 @@ describe("five places", () => {
   it("Node has Status, Services, Storage, Rewards, Advanced, and Storage holds Files, Memory, Pins", () => {
     const n = placeOf("node");
     expect(n?.tabs.map((t) => t.label)).toEqual(["Status", "Services", "Storage", "Rewards", "Advanced"]);
-    expect(n?.tabs.find((t) => t.label === "Storage")?.sub?.map((x) => x.label)).toEqual(["Files", "Memory", "Pins"]);
+    expect(n?.tabs.find((t) => t.label === "Storage")?.sub?.map((x) => x.label)).toEqual(["Files", "Memory", "Pins", "Backup"]);
   });
 
   it("Store holds Apps (the Commissary) and Models", () => {
