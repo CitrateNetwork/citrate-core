@@ -60,6 +60,16 @@ async function mount(persona, opts = {}) {
 const lastHermes = (c) => [...c.state.chatMsgs].reverse().find((x) => x.who === "Hermes");
 const userTurns = (msgs, text) => msgs.filter((x) => x.role === "user" && x.content === text).length;
 const settle = () => vi.runAllTimersAsync();
+/** Applies `re` → `by` until the text stops changing, so removing one match can't leave a new one behind. */
+const replaceToFixpoint = (text, re, by) => {
+  let prev;
+  let out = text;
+  do {
+    prev = out;
+    out = out.replace(re, by);
+  } while (out !== prev);
+  return out;
+};
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -913,7 +923,8 @@ describe("slice 3: copy follows the UI truth contract on every Wallet, Groups an
     const b = html.indexOf("<!-- slice3:end -->");
     expect(a).toBeGreaterThan(0);
     expect(b).toBeGreaterThan(a);
-    const text = html.slice(a, b).replace(/<!--[\s\S]*?-->/g, " ").replace(/\{\{[^}]*\}\}/g, " ").replace(/<[^>]+>/g, " ");
+    const noComments = replaceToFixpoint(html.slice(a, b), /<!--[\s\S]*?-->/g, " ");
+    const text = replaceToFixpoint(replaceToFixpoint(noComments, /\{\{[^}]*\}\}/g, " "), /<[^>]+>/g, " ");
     expect(text).not.toMatch(BANNED);
     expect(text).not.toMatch(/\$\s?\d/);
   });
@@ -1117,7 +1128,7 @@ describe("slice 3 review (DGX, UI truth contract v1.2)", () => {
   });
 
   it("tripwire: “Deployed · dormant” and “dormant” never appear on screen", () => {
-    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8").replace(/<!--[\s\S]*?-->/g, "");
+    const html = replaceToFixpoint(readFileSync(DESIGN + "CitrateCore.dc.html", "utf8"), /<!--[\s\S]*?-->/g, "");
     const code = html.replace(/\/\/[^\n]*/g, "");
     expect(code).not.toMatch(/Deployed · dormant/i);
     for (const m of code.matchAll(/'[^'\n]*dormant[^'\n]*'/gi)) expect(m[0], m[0]).toMatch(/^'dormant'$/);
