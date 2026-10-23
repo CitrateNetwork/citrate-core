@@ -57,12 +57,21 @@ fn default_core_membership_url() -> String {
 /// PERSISTENTLY. We require:
 ///   * the `https` scheme (never `http`/`file`/`javascript:` — mirrors
 ///     `shell::open_external` and `ai::validate_https_base_url`), and
-///   * a host on the core-membership allowlist: exactly `core-membership.vercel.app`
-///     (prod) OR a `core-membership-*.vercel.app` Vercel preview deploy.
+///   * a host in [`CORE_MEMBERSHIP_HOSTS`], compared exactly. A `core-membership-*` pattern
+///     would also match hosts anyone can register on Vercel (a project named
+///     `core-membership-…` gets `<name>.vercel.app`), so previews are pinned by name too.
 ///
 /// Any other value is rejected so `apply` keeps the previous (trusted) value
 /// rather than persisting a hostile one. The OIDC authority uses the same
 /// pin-don't-trust discipline (`oidc::AuthorityConfig::production`).
+/// The membership hosts the app may open: production (the custom domain and the project's own
+/// Vercel domain) and the preview alias of the project's `main` branch.
+pub(crate) const CORE_MEMBERSHIP_HOSTS: &[&str] = &[
+    "membership.citrate.ai",
+    "core-membership.vercel.app",
+    "core-membership-git-main-saulbuilds-projects.vercel.app",
+];
+
 pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
     let Ok(parsed) = url::Url::parse(candidate) else {
         return false;
@@ -71,11 +80,7 @@ pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
         return false;
     }
     match parsed.host_str() {
-        Some(host) => {
-            host == "membership.citrate.ai"
-                || host == "core-membership.vercel.app"
-                || (host.starts_with("core-membership-") && host.ends_with(".vercel.app"))
-        }
+        Some(host) => CORE_MEMBERSHIP_HOSTS.contains(&host),
         None => false,
     }
 }
