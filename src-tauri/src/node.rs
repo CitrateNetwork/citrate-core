@@ -1439,7 +1439,21 @@ pub struct ValidatorEarnings {
 pub async fn node_validator_earnings(
     state: State<'_, NodeState>,
 ) -> std::result::Result<ValidatorEarnings, String> {
-    let pubkey_hex = state.0.proposer_pubkey()?;
+    let rpc = crate::rpc::RpcClient::citrate();
+    validator_earnings_for(&rpc, node_validator_registry_value(), None, || {
+        state.0.proposer_pubkey()
+    })
+}
+
+/// #391 — `ValidatorRegistry.rewardsOf(key)` for the validator key to read. (Stub: always the
+/// node's own proposer key, as before.)
+pub fn validator_earnings_for<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    registry: &str,
+    _requested: Option<&str>,
+    node_key: impl FnOnce() -> std::result::Result<String, String>,
+) -> std::result::Result<ValidatorEarnings, String> {
+    let pubkey_hex = node_key()?;
     let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
     let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
     if bytes.len() != 32 {
@@ -1450,9 +1464,7 @@ pub async fn node_validator_earnings(
     }
     let mut pubkey = [0u8; 32];
     pubkey.copy_from_slice(&bytes);
-    let rpc = crate::rpc::RpcClient::citrate();
-    let (total, claimable) =
-        crate::validator::read_validator_rewards(&rpc, node_validator_registry_value(), &pubkey)?;
+    let (total, claimable) = crate::validator::read_validator_rewards(rpc, registry, &pubkey)?;
     Ok(ValidatorEarnings {
         total_wei: total.to_string(),
         claimable_wei: claimable.to_string(),

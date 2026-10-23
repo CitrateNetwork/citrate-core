@@ -8,9 +8,16 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const validatorEarnings = vi.fn();
+const grantStatus = vi.fn();
+const agentClaim = vi.fn();
 vi.mock("../../bridge", () => ({
   bindSimHost: () => {},
-  bridge: { mode: "tauri", node: { validatorEarnings: () => validatorEarnings() } },
+  bridge: {
+    mode: "tauri",
+    node: { validatorEarnings: (...a: unknown[]) => validatorEarnings(...a) },
+    membership: { grantStatus: () => grantStatus() },
+    agent: { claim: (...a: unknown[]) => agentClaim(...a) },
+  },
 }));
 vi.mock("../../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
 
@@ -33,7 +40,12 @@ async function read(memberBond: MemberBondState | null, proposerPubkey: unknown,
   return store;
 }
 
-beforeEach(() => validatorEarnings.mockReset());
+beforeEach(() => {
+  validatorEarnings.mockReset();
+  grantStatus.mockReset();
+  agentClaim.mockReset();
+  agentClaim.mockResolvedValue({ kind: "nothing", claimableWei: "0" });
+});
 
 describe("#391 — rewards are accepted only for the member's validator key", () => {
   it("a read for another key than MemberBond.pubkey() shows no figures, and says why", async () => {
@@ -109,17 +121,76 @@ describe("#391 — Node › Rewards shows the mismatch as unknown, with the reas
   });
 });
 
+describe("#394 — the rewards read names the member's validator key", () => {
+  // The registry answers rewardsOf for whichever key is asked; with no key, the node's own key.
+  const keyed = () => validatorEarnings.mockImplementation(async (k?: string) => ({ ...FIGURES, proposerPubkey: k ?? NODE_KEY }));
+
+  it("reads rewardsOf(MemberBond.pubkey()) for a deployed bond, so a node with another key still shows the bond's rewards", async () => {
+    keyed();
+    const store = new Store();
+    store.setState({ bondedStake: 0, memberBond: bond(BOND_KEY), rewards: null, rewardsError: null });
+    await store.refreshEarnings();
+    expect(validatorEarnings).toHaveBeenCalledWith(BOND_KEY);
+    expect(store.state.rewards).toEqual(FIGURES);
+    expect(store.state.rewardsError).toBeNull();
+  });
+
+  it("a deployed bond whose key isn't read yet reads nothing and says why", async () => {
+    keyed();
+    const store = new Store();
+    store.setState({ bondedStake: 32_000, memberBond: bond(null, null), rewards: null, rewardsError: null });
+    await store.refreshEarnings();
+    expect(validatorEarnings).not.toHaveBeenCalled();
+    expect(store.state.rewards).toBeNull();
+    expect(store.state.rewardsError).toContain("bond's validator key isn't read yet");
+  });
+
+  it("with no bond deployed it reads the node's own key (no key sent)", async () => {
+    keyed();
+    const store = new Store();
+    store.setState({ bondedStake: 32_000, memberBond: { deployed: false, activated: null, pubkey: null }, rewards: null, rewardsError: null });
+    await store.refreshEarnings();
+    expect(validatorEarnings).toHaveBeenCalledTimes(1);
+    expect(validatorEarnings.mock.calls[0][0]).toBeUndefined();
+    expect(store.state.rewards).toEqual(FIGURES);
+  });
+
+  const K32 = "0x" + "55".repeat(32);
+  const grant = { bondDeployed: true, bondActivated: true, hasValidator: false, bondPubkey: K32 };
+  const claimStore = () => {
+    const store = new Store();
+    (store as unknown as { assertPayoutKyc: () => Promise<boolean> }).assertPayoutKyc = async () => true;
+    (store as unknown as { openWalletReview: () => void }).openWalletReview = () => {};
+    return store;
+  };
+
+  it("Claim's pre-check reads rewardsOf for the bond's key, the key the bond claims for", async () => {
+    grantStatus.mockResolvedValue(grant);
+    agentClaim.mockResolvedValue({ kind: "nothing", claimableWei: "0" });
+    await claimStore().claimRewards();
+    expect(agentClaim).toHaveBeenCalledWith({ validator: true, pubkey: K32 });
+  });
+
+  it("Claim stops with the reason when the bond claims but its key isn't read", async () => {
+    grantStatus.mockResolvedValue({ ...grant, bondPubkey: null });
+    const store = claimStore();
+    await store.claimRewards();
+    expect(agentClaim).not.toHaveBeenCalled();
+    expect(String(store.state.toast)).toContain("validator key isn't read yet");
+  });
+});
+
 // Tripwire (STD): every non-test read of node_validator_earnings that uses its figures checks the key
 // first, and the figures land in state only through refreshEarnings.
 describe("tripwire — every earnings read path checks the key", () => {
   const files = ["src/shell/store.ts", "src/surfaces/node/NodeRewards.tsx", "src/surfaces/Wallet.tsx", "src/surfaces/Dashboard.tsx"];
   const src = (f: string) => readFileSync(join(process.cwd(), f), "utf8");
 
-  it("each validatorEarnings() call either ignores the figures or runs earningsKeyCheck before using them", () => {
+  it("each bridge.node.validatorEarnings( call either ignores the figures or runs earningsKeyCheck before using them", () => {
     let calls = 0;
     for (const f of files) {
       const s = src(f);
-      let at = s.indexOf("validatorEarnings()");
+      let at = s.indexOf("bridge.node.validatorEarnings(");
       while (at !== -1) {
         calls++;
         // The enclosing method: from the previous method header to the next one.
@@ -131,10 +202,29 @@ describe("tripwire — every earnings read path checks the key", () => {
           expect(check, f + "@" + at).toBeGreaterThan(-1);
           expect(check, f + "@" + at).toBeLessThan(body.indexOf("rewards: { totalWei"));
         }
-        at = s.indexOf("validatorEarnings()", at + 1);
+        at = s.indexOf("bridge.node.validatorEarnings(", at + 1);
       }
     }
     expect(calls).toBeGreaterThan(0);
+  });
+
+  it("every node_validator_earnings invoke in the bridge forwards the requested key", () => {
+    const b = src("src/bridge/tauri/index.ts");
+    const sites = b.split('"node_validator_earnings"').length - 1;
+    expect(sites).toBeGreaterThan(0);
+    let at = b.indexOf('"node_validator_earnings"');
+    while (at !== -1) {
+      const call = b.slice(at, b.indexOf(")", at) + 1);
+      expect(call, "bridge@" + at).toMatch(/pubkey/);
+      at = b.indexOf('"node_validator_earnings"', at + 1);
+    }
+  });
+
+  it("refreshEarnings passes the bond's key to the read", () => {
+    const s = src("src/shell/store.ts");
+    const start = s.indexOf("async refreshEarnings(");
+    const body = s.slice(start, s.indexOf("\n  }\n", start));
+    expect(body).toMatch(/validatorEarnings\(\s*key/);
   });
 
   it("only refreshEarnings writes reward figures into state", () => {
