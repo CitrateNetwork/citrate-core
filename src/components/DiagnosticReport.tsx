@@ -8,9 +8,13 @@ import { useState } from "react";
 import { bridge } from "../bridge";
 import type { DiagnosticBundle } from "../bridge/domains";
 import { getUiErrors, clearUiErrors } from "../shell/errorRing";
+import { pendingJoinSteps, markJoinStepsSent, joinFunnelGeneration } from "../privacy/joinFunnel";
 
 export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?: (m: string) => void }) {
-  const [bundle, setBundle] = useState<DiagnosticBundle | null>(null);
+  // A prepared report remembers the opt-out generation it was assembled under. After an opt-out
+  // (even one followed by an opt-in without leaving the screen) it is stale and never shown or sent.
+  const [prepared, setPrepared] = useState<{ bundle: DiagnosticBundle; gen: number } | null>(null);
+  const bundle = prepared && prepared.gen === joinFunnelGeneration() ? prepared.bundle : null;
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const say = toast ?? ((m: string) => console.log("[diagnostics]", m));
@@ -35,7 +39,10 @@ export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?:
   const prepare = async () => {
     setBusy(true);
     try {
-      setBundle(await bridge.telemetry.bundle(getUiErrors()));
+      const gen = joinFunnelGeneration();
+      const b = await bridge.telemetry.bundle(getUiErrors(), pendingJoinSteps());
+      // Landed after an opt-out: drop it (the member can prepare a new one).
+      setPrepared(gen === joinFunnelGeneration() ? { bundle: b, gen } : null);
     } catch (e) {
       say("Couldn’t prepare a report — " + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -44,12 +51,13 @@ export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?:
   };
 
   const send = async () => {
-    if (!bundle) return;
+    if (!bundle || !prepared || prepared.gen !== joinFunnelGeneration()) return;
     setBusy(true);
     try {
       await bridge.telemetry.send(JSON.stringify(bundle)); // sends exactly what was reviewed
       clearUiErrors();
-      setBundle(null);
+      markJoinStepsSent(bundle.joinSteps ?? []); // each join step is sent once per install
+      setPrepared(null);
       setSent(true);
     } catch (e) {
       say("Couldn’t send the report — " + (e instanceof Error ? e.message : String(e)));
@@ -86,7 +94,7 @@ export function DiagnosticReport({ enabled, toast }: { enabled: boolean; toast?:
         <button className="btn btn-primary btn-sm" onClick={send} disabled={busy}>
           {busy ? "Sending…" : "Send this report"}
         </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => setBundle(null)} disabled={busy}>
+        <button className="btn btn-ghost btn-sm" onClick={() => setPrepared(null)} disabled={busy}>
           Discard
         </button>
       </div>

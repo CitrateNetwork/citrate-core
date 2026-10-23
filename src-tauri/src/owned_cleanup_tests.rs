@@ -228,9 +228,22 @@ mod native {
             d
         }
 
-        /// Copy the fixture binary to `path`.
+        /// Copy the fixture binary to `path`, in a separate `cp` process.
+        ///
+        /// Not `std::fs::copy`: that holds the destination open for writing in this test
+        /// process, and the tests run on many threads that spawn children. On Linux a child
+        /// forked during the copy inherits that write descriptor until it execs, and executing
+        /// the copy while any writer is open fails with ETXTBSY ("text file busy"). The launcher
+        /// then prints no pid and the test fails. With the copy made by a child that has exited,
+        /// no process holds a writer when the copy is executed.
         fn install(&self, path: &Path) {
-            std::fs::copy(fixture_bin(), path).expect("copy fixture binary");
+            let status = Command::new("cp")
+                .arg(fixture_bin())
+                .arg(path)
+                .stdin(Stdio::null())
+                .status()
+                .expect("run cp for the fixture binary");
+            assert!(status.success(), "copy fixture binary to {}", path.display());
         }
 
         /// Start `exe` with `arg0` and `args`, left without its parent (the launcher exits at

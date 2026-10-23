@@ -52,6 +52,7 @@ import { WebSearchSettings } from "./WebSearchSettings";
 import { TERMINAL_ACCESS_HINT, TERMINAL_ACCESS_LABEL } from "../agent/terminalAccess";
 import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
+import { setTelemetryConsent } from "../privacy/joinFunnel";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
@@ -1249,7 +1250,12 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <TelemetryConsent
                 enabled={s.telemetry}
                 onChange={(on) => {
-                  writeConfig(store, { telemetry: on });
+                  // The consent screen lists joinSteps, so an opt-in records the current disclosure
+                  // version (no one-time note). An opt-out forgets unsent join steps and drops any
+                  // prepared or in-flight report (setTelemetryConsent is the only toggle writer).
+                  const c = setTelemetryConsent(on);
+                  writeConfig(store, { telemetry: c.telemetry });
+                  store.setState({ telemetryConsentVersion: c.telemetryConsentVersion });
                   store.save();
                 }}
               />
@@ -1260,7 +1266,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                   Assembled + scrubbed locally; sent only on explicit review + click. */}
               <DiagnosticReport enabled={s.telemetry} toast={(m) => store.toast(m)} />
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                bundles app version + OS + crash/log tail + recent UI errors · scrubbed of paths, keys, addresses, and tokens · nothing is sent without your review
+                bundles app version + OS + crash/log tail + recent UI errors + join steps reached · scrubbed of paths, keys, addresses, and tokens · nothing is sent without your review
               </span>
             </div>
           </div>

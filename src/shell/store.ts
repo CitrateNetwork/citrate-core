@@ -88,6 +88,7 @@ import {
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
+import { reachedStep } from "../privacy/joinFunnel";
 
 /** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
@@ -1623,6 +1624,8 @@ export class Store {
         /* honest no-op: keep the last real log tail, never a fabricated one */
       }
       this.setState(patch);
+      // 0.5.2 Join funnel: the node reached sync (real poll only; the step id only, no height).
+      if (patch.node === "synced" || patch.node === "validating") reachedStep("node_synced");
       // Re-seed the memory graph's personal/stake facts the moment the grant first surfaces (the
       // launch-time seed ran before the grant reconciled, so the personal tenant was skipped then).
       if (grantJustSurfaced && this.state.memDaemon === "running") void this.seedMemoryGraph();
@@ -2365,6 +2368,7 @@ export class Store {
     // GROW-S1b — an opaque short code: resolve + VERIFY the EdDSA signature before trusting anything,
     // then show the invite. Land on Groups immediately with a "resolving…" banner so it's responsive.
     if (parts.code) {
+      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the code
       this.setState({ pendingInvite: { url, resolving: true } });
       this.go("groups");
       void resolveJoinCode(parts.code)
@@ -2378,6 +2382,7 @@ export class Store {
     }
     // Self-contained link — act only if it's join-shaped (has a cluster or referrer); else ignore.
     if (!parts.clusterId && !parts.inviter && !parts.inviterHandle) return;
+    reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link's contents
     this.setState({
       pendingInvite: {
         url,
