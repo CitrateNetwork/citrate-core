@@ -1360,3 +1360,56 @@ fn tripwire_model_downloads_verify_under_the_shared_lock() {
     assert!(guard < f.find("self.final_path().exists()").expect("exists check"), "the lock covers the check");
     assert!(guard < f.find("self.verify()").expect("verify"), "and the verify");
 }
+
+// ---- #392: reconcile verifies an interrupted Store model only under the download lock ---------
+
+/// The Store's interrupted install A (pending, unverified file) while a Models download of a
+/// different model B under the same file name is in flight: it holds the download lock and
+/// renames B into place. The rename lands while reconcile runs (the transport factory is called
+/// right before reconcile's verify); without the lock, reconcile verifies B against A's hash and
+/// quarantines it.
+#[test]
+fn reconcile_never_verifies_a_file_a_models_download_is_writing() {
+    let fx = interrupted_model("reconcile-race", &model_bytes());
+    let mut b = model_bytes();
+    b[33] = 8;
+    // The Models download holds the file's download lock for its whole download and verify.
+    let lock = crate::model::DownloadGuard::acquire(&fx.models.join("tiny-model.gguf.part")).expect("lock");
+    let models = fx.models.clone();
+    let b2 = b.clone();
+    let renamed = std::sync::atomic::AtomicBool::new(false);
+    let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> {
+        // The Models download's rename, mid-reconcile.
+        std::fs::write(models.join("tiny-model.gguf"), &b2).unwrap();
+        renamed.store(true, std::sync::atomic::Ordering::SeqCst);
+        Box::new(MemTransport(Vec::new()))
+    };
+    let usage = Usage(None);
+    let listed = installed_sync(&fx.root, &fx.fx_targets(&usage, &transport), NOW_MS);
+    if !renamed.load(std::sync::atomic::Ordering::SeqCst) {
+        // Reconcile stayed off the file; the rename happens now, as the download continues.
+        std::fs::write(fx.models.join("tiny-model.gguf"), &b).unwrap();
+    }
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b.clone()), "the Models download's file is intact");
+    let listed = listed.expect("the installed list reads while a download runs");
+    assert_eq!(listed.len(), 1, "the Store record is kept for a later reconcile");
+    assert!(read_store_file(&fx.root).expect("state").installs[0].pending, "still pending, not confirmed");
+    // The Models download verifies B against its own hash and ends.
+    crate::model::ModelManager::new(fx.models.clone(), Box::new(MemTransport(Vec::new())), sha(&b), b.len() as u64)
+        .with_file("tiny-model.gguf".to_string())
+        .verify()
+        .expect("B verifies");
+    drop(lock);
+    // Later reads never claim or remove B.
+    assert_eq!(fx.fx_installed()[0].state, "missing");
+    assert!(crate::model::is_file_ready(&fx.models, "tiny-model.gguf"));
+}
+
+/// Without a download in flight, reconcile still confirms or cleans up as before (under the lock).
+#[test]
+fn reconcile_takes_and_releases_the_download_lock() {
+    let fx = interrupted_model("reconcile-lock", &model_bytes());
+    assert_eq!(fx.fx_installed()[0].state, "not_selected");
+    // The lock is free again afterwards.
+    assert!(crate::model::DownloadGuard::acquire(&fx.models.join("tiny-model.gguf.part")).is_ok());
+}
