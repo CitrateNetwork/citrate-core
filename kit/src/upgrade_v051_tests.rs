@@ -68,10 +68,7 @@ fn keyring_v051() -> MapKeyring {
 }
 
 fn data_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "citrate-upgrade-v051-{tag}-{}",
-        std::process::id()
-    ));
+    let d = std::env::temp_dir().join(format!("citrate-upgrade-v051-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap_or_else(|e| panic!("mkdir: {e}"));
     std::fs::write(d.join("custody.enc"), ENVELOPE).unwrap_or_else(|e| panic!("write: {e}"));
@@ -87,7 +84,10 @@ fn a_v051_vault_opens_and_derives_the_same_wallet() {
         .ensure_auto_unlocked()
         .unwrap_or_else(|e| panic!("the 0.5.1 vault must open with its device passphrase: {e}"));
     let info = crate::wallet::address(&vault).unwrap_or_else(|e| panic!("address: {e}"));
-    assert_eq!(Some(info.address.as_str()), meta()["walletAddress"].as_str());
+    assert_eq!(
+        Some(info.address.as_str()),
+        meta()["walletAddress"].as_str()
+    );
     assert_eq!(
         Some(info.public_key_hex.as_str()),
         meta()["walletPublicKeyHex"].as_str()

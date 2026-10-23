@@ -147,7 +147,11 @@ fn a_damaged_pin_index_is_kept_not_overwritten_by_the_next_pin() {
                 .is_some_and(|n| n.starts_with("pins.json.damaged-"))
         })
         .collect();
-    assert_eq!(kept.len(), 1, "the damaged index is set aside, not overwritten");
+    assert_eq!(
+        kept.len(),
+        1,
+        "the damaged index is set aside, not overwritten"
+    );
     assert_eq!(read(&kept[0]), cut, "byte for byte");
     let now: serde_json::Value =
         serde_json::from_slice(&read(&path)).unwrap_or_else(|e| panic!("new index: {e}"));
@@ -170,14 +174,26 @@ fn v051_invites_load_with_their_keys_and_links() {
     let back = serde_json::to_value(&v).unwrap_or_else(|e| panic!("serialize: {e}"));
     let orig: serde_json::Value = serde_json::from_slice(&read(&dir.join("invites/pending.json")))
         .unwrap_or_else(|e| panic!("{e}"));
-    for (i, rec) in orig.as_array().unwrap_or_else(|| panic!("not a list")).iter().enumerate() {
+    for (i, rec) in orig
+        .as_array()
+        .unwrap_or_else(|| panic!("not a list"))
+        .iter()
+        .enumerate()
+    {
         for (k, val) in rec.as_object().unwrap_or_else(|| panic!("not an object")) {
             assert_eq!(&back[i][k], val, "invite {i} field {k}");
         }
     }
     assert_eq!(back[0]["forHandle"], "@alice");
-    assert_eq!(back[0]["privKey"].as_str().map(str::len), Some(64), "the invite key is kept");
-    assert!(back[1].get("privKey").is_none(), "the pre-S1 record has no key");
+    assert_eq!(
+        back[0]["privKey"].as_str().map(str::len),
+        Some(64),
+        "the invite key is kept"
+    );
+    assert!(
+        back[1].get("privKey").is_none(),
+        "the pre-S1 record has no key"
+    );
     let referrals: Vec<crate::invites::ReferralEvent> =
         serde_json::from_slice(&read(&dir.join("invites/referral-log.json")))
             .unwrap_or_else(|e| panic!("a 0.5.1 referral-log.json must load: {e}"));
@@ -265,10 +281,11 @@ fn a_v051_node_data_dir_on_the_same_genesis_is_kept() {
         v.sort();
         v
     };
-    let out = crate::node_genesis::reconcile_genesis(&node, crate::addresses::genesis_hash(), || {
-        panic!("a kept data dir never needs the running-node probe")
-    })
-    .unwrap_or_else(|e| panic!("reconcile: {e:?}"));
+    let out =
+        crate::node_genesis::reconcile_genesis(&node, crate::addresses::genesis_hash(), || {
+            panic!("a kept data dir never needs the running-node probe")
+        })
+        .unwrap_or_else(|e| panic!("reconcile: {e:?}"));
     assert_eq!(out, crate::node_genesis::GenesisOutcome::Kept);
     let mut after: Vec<String> = std::fs::read_dir(&node)
         .unwrap_or_else(|e| panic!("{e}"))
@@ -298,14 +315,18 @@ fn pin_index_writers_never_load_the_index_leniently() {
     // file again, and an index written in place could be cut by a crash.
     let src = include_str!("storage.rs");
     let body = src
-        .split("#[cfg(test)]")
+        .split("#[cfg(test)]\nmod tests")
         .next()
         .unwrap_or_else(|| panic!("storage.rs has no body"));
     let lenient: Vec<&str> = body
         .lines()
         .filter(|l| l.contains("PinIndex::load_for_display("))
         .collect();
-    assert_eq!(lenient.len(), 1, "only list reads the index leniently: {lenient:?}");
+    assert_eq!(
+        lenient.len(),
+        1,
+        "only list reads the index leniently: {lenient:?}"
+    );
     let list_at = body
         .find("pub fn list(&self)")
         .unwrap_or_else(|| panic!("no list"));
@@ -324,6 +345,9 @@ fn pin_index_writers_never_load_the_index_leniently() {
         .map(|i| impl_at + i)
         .unwrap_or(body.len());
     let imp = &body[impl_at..impl_end];
-    assert!(!imp.contains("std::fs::write("), "the index is saved through a temp file");
+    assert!(
+        !imp.contains("std::fs::write("),
+        "the index is saved through a temp file"
+    );
     assert!(imp.contains("sync_all()") && imp.contains("std::fs::rename("));
 }

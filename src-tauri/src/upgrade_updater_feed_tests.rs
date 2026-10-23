@@ -34,8 +34,14 @@ const ENDPOINTS_V051: [&str; 2] = [
 /// which the app reads as "no update", src/shell/updater.ts isNoPlatformInFeed).
 const LOOKUPS_V051: [(&str, [&str; 2]); 5] = [
     ("macOS arm64 .app", ["darwin-aarch64-app", "darwin-aarch64"]),
-    ("Linux x86_64 AppImage", ["linux-x86_64-appimage", "linux-x86_64"]),
-    ("Linux aarch64 AppImage", ["linux-aarch64-appimage", "linux-aarch64"]),
+    (
+        "Linux x86_64 AppImage",
+        ["linux-x86_64-appimage", "linux-x86_64"],
+    ),
+    (
+        "Linux aarch64 AppImage",
+        ["linux-aarch64-appimage", "linux-aarch64"],
+    ),
     ("Linux x86_64 .deb", ["linux-x86_64-deb", "linux-x86_64"]),
     ("Linux aarch64 .deb", ["linux-aarch64-deb", "linux-aarch64"]),
 ];
@@ -80,7 +86,10 @@ fn feed_v052() -> String {
     v["notes"] = "Citrate Core 0.5.2".into();
     if let Some(p) = v["platforms"].as_object_mut() {
         for (_, entry) in p.iter_mut() {
-            let url = entry["url"].as_str().unwrap_or_default().replace("/v0.5.1/", "/v0.5.2/");
+            let url = entry["url"]
+                .as_str()
+                .unwrap_or_default()
+                .replace("/v0.5.1/", "/v0.5.2/");
             entry["url"] = url.into();
         }
     }
@@ -102,8 +111,15 @@ fn this_build_pins_the_v051_updater_key_and_endpoints() {
         .iter()
         .filter_map(|e| e.as_str())
         .collect();
-    assert_eq!(eps, ENDPOINTS_V051, "0.5.1 installs poll exactly these endpoints");
-    assert_eq!(c["identifier"].as_str(), Some("ai.citrate.core"), "bundle id (keychain ACL)");
+    assert_eq!(
+        eps, ENDPOINTS_V051,
+        "0.5.1 installs poll exactly these endpoints"
+    );
+    assert_eq!(
+        c["identifier"].as_str(),
+        Some("ai.citrate.core"),
+        "bundle id (keychain ACL)"
+    );
     assert_eq!(c["bundle"]["createUpdaterArtifacts"].as_bool(), Some(true));
     let (alg, id) = key_id(&b64(PUBKEY_V051));
     assert_eq!((alg.as_str(), id.as_str()), ("Ed", "8EC382DD107F08C5"));
@@ -120,10 +136,22 @@ fn the_published_v051_feed_parses_and_every_signature_names_the_pinned_key() {
             .unwrap_or_else(|| panic!("{label}: none of {keys:?} in the 0.5.1 feed"));
         let sig = r.signature(hit).unwrap_or_else(|e| panic!("{label}: {e}"));
         let (alg, id) = key_id(&b64(sig));
-        assert_eq!(id, pinned, "{label}: signed by key {id}, not the pinned {pinned}");
-        assert!(alg == "ED" || alg == "Ed", "{label}: minisign algorithm {alg}");
-        let url = r.download_url(hit).unwrap_or_else(|e| panic!("{label}: {e}"));
-        assert_eq!(url.scheme(), "https", "{label}: the plugin refuses a non-https download");
+        assert_eq!(
+            id, pinned,
+            "{label}: signed by key {id}, not the pinned {pinned}"
+        );
+        assert!(
+            alg == "ED" || alg == "Ed",
+            "{label}: minisign algorithm {alg}"
+        );
+        let url = r
+            .download_url(hit)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert_eq!(
+            url.scheme(),
+            "https",
+            "{label}: the plugin refuses a non-https download"
+        );
     }
 }
 
@@ -131,14 +159,22 @@ fn the_published_v051_feed_parses_and_every_signature_names_the_pinned_key() {
 fn a_v052_feed_in_the_same_format_is_offered_to_every_v051_platform() {
     let old = release(FEED_V051);
     let new = release(&feed_v052());
-    assert!(new.version > old.version, "0.5.2 must compare newer than 0.5.1");
-    assert!(new.pub_date.is_some(), "pub_date must be RFC 3339 or the plugin refuses the feed");
+    assert!(
+        new.version > old.version,
+        "0.5.2 must compare newer than 0.5.1"
+    );
+    assert!(
+        new.pub_date.is_some(),
+        "pub_date must be RFC 3339 or the plugin refuses the feed"
+    );
     for (label, keys) in LOOKUPS_V051 {
         let hit = keys
             .iter()
             .find(|k| new.download_url(k).is_ok() && new.signature(k).is_ok())
             .unwrap_or_else(|| panic!("{label}: none of {keys:?} in the 0.5.2 feed"));
-        let url = new.download_url(hit).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let url = new
+            .download_url(hit)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
         assert!(url.as_str().contains("/v0.5.2/"), "{label}: {url}");
     }
 }
