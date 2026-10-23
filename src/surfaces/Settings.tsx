@@ -426,10 +426,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       store.save();
     },
   }));
-  const polNote =
-    s.sigPolicy === "hitl"
-      ? "every signature stops at the ceremony — the default"
-      : "allowlisted intents skip the ceremony; everything else still stops";
+  // The wallet is this device's EVM signing key in the custody vault (custodyAddr). It is linked when
+  // the identity's wallet_address claim is that same address. An unread key address is "—".
+  const deviceKey = s.custodyAddr || "";
+  const deviceKeyLinked = deviceKey !== "" && (s.walletAddr || "").toLowerCase() === deviceKey.toLowerCase();
+  const deviceKeyNote =
+    deviceKey === ""
+      ? "device key not read yet"
+      : deviceKeyLinked
+        ? "linked to your identity"
+        : "not linked to your identity yet";
 
   // ---------- memberships & billing ----------
   const memPlanLabel =
@@ -946,16 +952,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <span className="eyebrow">Keystore</span>
               <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 10 }}>
                 <span style={{ flex: 1 }}>
-                  <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Smart wallet · passkey validator</span>
+                  <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Wallet key on this device</span>
                   <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
-                    WebAuthn P-256 · address derived from identity · deploys lazily on first tx
+                    EVM signing key · sealed in the custody vault · signs only through the signature ceremony · {deviceKeyNote}
                   </span>
                 </span>
-                {/* Q-A.1 (Rule 1) — show the REAL derived smart-wallet address
-                    (s.walletAddr, truncated) or an honest "—", never a fabricated
-                    "ADDRESS SET" pill that asserts a set address unconditionally. */}
-                <span className="mono" style={{ fontSize: 11, color: s.walletAddr ? "var(--accent-text)" : "var(--tx-3)" }}>
-                  {short(s.walletAddr)}
+                {/* The device key's own address (custodyAddr), or "—" while unread. The identity
+                    claim address is not shown here: until the wallet is linked it is a different
+                    address that this key cannot sign for. */}
+                <span className="mono" style={{ fontSize: 11, color: deviceKey ? "var(--accent-text)" : "var(--tx-3)" }}>
+                  {short(deviceKey)}
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 10 }}>
@@ -998,33 +1004,18 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               </span>
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
-              <span className="eyebrow">Signature approval policy</span>
-              <span style={{ display: "flex", gap: 8 }}>
-                <button
-                  className={btnCls(s.sigPolicy === "hitl")}
-                  onClick={() => {
-                    writeConfig(store, { sigPolicy: "hitl" });
-                    store.save();
-                  }}
-                >
-                  Approve every signature
-                </button>
-                <button
-                  className={btnCls(s.sigPolicy === "allow")}
-                  onClick={() => {
-                    writeConfig(store, { sigPolicy: "allow" });
-                    store.save();
-                  }}
-                >
-                  Allowlisted intents skip the ceremony
-                </button>
+              <span className="eyebrow">Signatures</span>
+              {/* CLAUDE.md Rule 3 and ADR-2026-09-30: there is no signature-policy setting. Every
+                  signature goes through the ceremony; the one exception is the budgeted web
+                  sign-in, which the member grants, caps and revokes in Budgets. */}
+              <span style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)" }}>
+                Every signature stops at the signature ceremony: one approval, one signature. The one exception is a web sign-in (SIWE) inside a budget you grant, cap
+                and can revoke in Budgets.
               </span>
-              {/* The policy toggle above is a REAL config write. The per-origin
-                  allowlist RULE EDITOR has no backend yet — honest DISABLED state
-                  (Q-A.1), not a toast excuse. */}
-              {s.sigPolicy === "allow" && <DisabledControl label="Edit allowlist rules…" note="rule editor not available in this build" />}
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                {polNote}
+              <span>
+                <button className="btn btn-ghost btn-sm" onClick={() => store.setState({ sSec: "budgets" })}>
+                  Open Budgets
+                </button>
               </span>
             </div>
           </div>
