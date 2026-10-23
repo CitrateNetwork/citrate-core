@@ -133,10 +133,11 @@ describe("V5 — one grant-custody explanation everywhere", () => {
   });
 
   it("the bond status uses the §1 membership words and says 'staked' only after activation", () => {
-    const base = { bondDeployed: true, unlockBlock: 300_000, isUnlocked: false, isKycVerified: false, hasValidator: false };
+    const base = { bondDeployed: true, unlockBlock: 300_000, isUnlocked: false, isKycVerified: false, hasValidator: false, bondActivated: false as boolean | null };
     expect(describeBond(base)).toBe("Bond locked · not staked · until block 300,000");
     expect(describeBond({ ...base, hasValidator: true })).toBe("Staked · locked until block 300,000");
-    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · verify identity to withdraw");
+    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · not activated");
+    expect(describeBond({ ...base, isUnlocked: true, bondActivated: true })).toBe("Unlocked · verify identity to withdraw");
     expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true })).toBe("Unlocked");
   });
 });
@@ -217,8 +218,8 @@ describe("#349 review — remaining grant mentions use the one explanation", () 
   });
 
   it("the Hermes context carries the grant facts", () => {
-    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0 });
-    expect(store.snapshot().grant).toEqual({ amountSalt: 32000, unlockBlock: 16_000_000, staked: false });
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0, bondActivated: false });
+    expect(store.snapshot().grant).toEqual({ amountSalt: 32000, unlockBlock: 16_000_000, staked: false, activated: false });
     store.setState({ hasGrant: false });
     expect(store.snapshot().grant).toBeNull();
   });

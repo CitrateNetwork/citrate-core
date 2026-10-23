@@ -240,11 +240,21 @@ export function describeBond(g: {
   // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
   // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
   if (!g.bondDeployed) return "No bond yet";
+  // #349 review: the bond's activation state is MemberBond.activated(); a registry binding
+  // (hasValidator) implies it. After an exit or a slash hasValidator reads false while the bond
+  // stays activated, and an unread flag is not evidence either way.
+  const activated = g.hasValidator ? true : (g.bondActivated ?? null);
   if (!g.isUnlocked) {
     const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
-    return g.hasValidator ? `Staked · locked until block ${at}` : `Bond locked · not staked · until block ${at}`;
+    if (g.hasValidator) return `Staked · locked until block ${at}`;
+    // "not staked" needs activated() = false (#411's fix); otherwise the plain §1 lock word.
+    return activated === false ? `Bond locked · not staked · until block ${at}` : `Locked until block ${at}`;
   }
-  // Unlocked. Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
+  // Unlocked. A never-activated bond can't be released or withdrawn (requestRelease /
+  // withdrawToMember revert NotActivated()), so it gets no identity / withdraw wording (v1.2).
+  if (activated === false) return "Unlocked · not activated";
+  if (activated === null) return "Unlocked · bond state not read yet";
+  // Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
   // unverified member is NOT told their funds are available.
   if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
   return "Unlocked";
@@ -2117,7 +2127,7 @@ export class Store {
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
       // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
-      grant: s.hasGrant && grantStakedSalt > 0 ? { amountSalt: grantStakedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 } : null,
+      grant: s.hasGrant && grantStakedSalt > 0 ? { amountSalt: grantStakedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
       membership: {
@@ -2127,7 +2137,7 @@ export class Store {
         locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
         note:
-          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant }) +
+          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
           " Locked SALT is not spendable and is separate from the liquid balance.",
       },
     };

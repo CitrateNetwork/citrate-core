@@ -35,12 +35,16 @@ export interface GrantFacts {
 }
 
 /** The custody sentence (§5.4): where the grant is and whether it is staked. */
-export function grantCustody({ amountSalt, unlockBlock, staked, granted }: GrantFacts): string {
+export function grantCustody({ amountSalt, unlockBlock, staked, granted, activated }: GrantFacts): string {
   const grant = amountSalt && amountSalt !== "—" ? `a ${amountSalt} SALT grant` : "a SALT grant";
   const until = unlockBlock != null ? `until block ${unlockBlock.toLocaleString("en-US")}` : granted ? "until block — (not read yet)" : "for about a year";
-  return staked
-    ? `Your membership comes with ${grant}, locked in your bond ${until}. Your bond is activated, so the grant is staked in the ValidatorRegistry.`
-    : `Your membership comes with ${grant}, locked in your bond ${until}. It is not staked until you activate the bond.`;
+  const where = `Your membership comes with ${grant}, locked in your bond ${until}.`;
+  if (staked) return `${where} Your bond is activated, so the grant is staked in the ValidatorRegistry.`;
+  // #349 review: an activated bond with no stake has exited (or was slashed); it can't be activated
+  // again, so it is never told to. An unread flag on a granted bond says so instead of guessing.
+  if (activated === true) return `${where} Your bond was activated and is no longer staked in the ValidatorRegistry.`;
+  if (activated === null && granted) return `${where} Whether your bond has been activated has not been read yet.`;
+  return `${where} It is not staked until you activate the bond.`;
 }
 
 /** The full explanation: custody, the disclaimer, and the betanet line. */
