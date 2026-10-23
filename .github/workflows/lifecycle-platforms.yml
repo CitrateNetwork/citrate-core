@@ -63,24 +63,3 @@ jobs:
             exit "$cargo_status"
           fi
           grep -Fq "test result: ok. ${EXPECTED} passed; 0 failed; 0 ignored" supervisor-tests.log
-
-      # TEMPORARY (fix/windows-child-console-test): repeat the Windows console test to
-      # measure its pass rate. Removed before the PR is ready for review.
-      - name: "TEMP: repeat windows_child_has_no_console_and_logs_remain_piped 20x"
-        if: ${{ !cancelled() && matrix.os == 'windows-latest' }}
-        shell: bash
-        run: |
-          failed=0
-          for i in $(seq 1 20); do
-            if cargo test --locked -p citrate-core-kit --lib -- --exact \
-                supervisor::tests::windows_child_has_no_console_and_logs_remain_piped \
-                > "stress-$i.log" 2>&1; then
-              echo "RUN $i: ok ($(grep -oE 'finished in [0-9.]+s' "stress-$i.log"))"
-            else
-              failed=$((failed + 1))
-              echo "RUN $i: FAILED ($(grep -oE 'finished in [0-9.]+s' "stress-$i.log"))"
-              grep -E "panicked|inherited|not captured|left:|right:" "stress-$i.log" || true
-            fi
-          done
-          echo "STRESS: ${failed}/20 failed"
-          [ "$failed" -eq 0 ]
