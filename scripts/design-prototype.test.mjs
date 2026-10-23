@@ -968,6 +968,22 @@ describe("slice 3 review (#387 Codex round 2)", () => {
     expect(copied[0]).toMatch(new RegExp("^https://citrate\\.ai/join/" + inv.code + "#[A-Za-z0-9_-]{22}$"));
   });
 
+  it("tripwire: an invite's key and link are never saved", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "members", gSel: "g-night" });
+    for (const svc of ["live", "down"]) {
+      c.setState({ gxSvc: svc });
+      c.gxInvite();
+    }
+    c.save();
+    await vi.advanceTimersByTimeAsync(500);
+    const saved = localStorage.getItem(SAVE_KEY);
+    for (const link of Object.values(c.inviteLinks)) {
+      const key = /[#&]k?=?([A-Za-z0-9_-]{22})$/.exec(link)[1];
+      expect(saved).not.toContain(key);
+    }
+  });
+
   it.each(["data", "empty", "error", "unavailable"])("without the ALF claim, the %s variant never shows ALF content", async (variant) => {
     const c = await mount("p2"); // P2 has no ALF claim
     c.setState({ route: "groups", gTab: "alf", alfClaim: false, variants: { "gx-alf": variant } });

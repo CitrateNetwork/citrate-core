@@ -2,7 +2,7 @@
 created: 2026-10-22
 branch: beta/design-slice3
 author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
-status: review (design slice 3, closes prototype v1 due 2026-10-30); chain-team review not yet requested
+status: review (design slice 3, closes prototype v1 due 2026-10-30); Codex round 2 P2s addressed 2026-10-22; chain-team review not yet requested
 ---
 
 # Design slice 3: Wallet, Groups, Settings
@@ -64,6 +64,11 @@ All three run end to end; slice 3 changes only path 1's landing.
 ## Tests
 
 `scripts/design-prototype.test.mjs` adds 105 tests (64 → 169): the Groups and Wallet deep links, the validator word table, Wallet unknown-not-zero and the fail-closed Send, the ceremony for sends, activation and roles, the price label, the Groups join and invite flows, rounds behind the flag, ALF gating, an annotation check over every screen of the five places and Settings, and two copy tripwires (view values in every state and persona, and the slice-3 template text) for banned words and price numbers.
+
+## Revised 2026-10-22: Codex round 2 (880e2b5)
+
+- **App-only invites copy their own link.** With the join service down, the row showed a `citrate://invite` link but Copy link copied a citrate.ai/join link. Each invite now gets its own key and link (citrate.ai short link, or the app-only `citrate://invite?g&t&k` fallback), and Copy copies exactly that. The link lives in memory only, never in saved state (core #355: no key in the webview's storage); after a reload the row says to revoke and create a new one.
+- **ALF needs the claim in every variant.** The empty variant used to show ALF content without the claim. Without it, every variant except error shows "ALF members only"; error says the claim couldn't be checked.
 
 ## Open questions
 

@@ -2485,7 +2485,7 @@
                 </span>
                 <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                   <span class="mono" style="font-size:10px;color:var(--tx-3);flex:1;">{{ iv.note }}</span>
-                  <sc-if value="{{ iv.canRevoke }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ iv.copy }}">Copy link</button><button class="btn btn-ghost btn-sm" onClick="{{ iv.revoke }}">Revoke</button></sc-if>
+                  <sc-if value="{{ iv.canCopy }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ iv.copy }}">Copy link</button></sc-if><sc-if value="{{ iv.canRevoke }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ iv.revoke }}">Revoke</button></sc-if>
                 </span>
               </div>
             </sc-for>
@@ -6876,6 +6876,14 @@ class Component extends DCLogic {
     for (let i = 0; i < 8; i++) code += A[(Math.random() * A.length) | 0];
     const exp = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
     const app = s.gxSvc !== 'live';
+    // Each invite has its own key and its own link: the citrate.ai short link, or the app-only
+    // citrate://invite link when the join service is down. The link (with its key) lives only in
+    // memory, never in saved state (core #355: no key in the webview's storage).
+    const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    let key = '';
+    for (let i = 0; i < 22; i++) key += B64[(Math.random() * 64) | 0];
+    this.inviteLinks = this.inviteLinks || {};
+    this.inviteLinks[code] = app ? 'citrate://invite?g=' + encodeURIComponent(g.id) + '&t=' + code + '&k=' + key : 'https://citrate.ai/join/' + code + '#' + key;
     this.patchGroup(g.id, (x) => ({ invites: [{ code, state: 'open', who: null, at: new Date().toISOString().slice(0, 10), exp, app }].concat(x.invites) }));
     this.toast(app ? 'The join service isn’t reachable, so this is an app-only link. It opens only for people who already have Citrate.' : 'Invite link created. It works once and expires ' + exp + '.');
     this.save();
@@ -7145,7 +7153,8 @@ class Component extends DCLogic {
       community: { error: ['Couldn’t read the community board', 'The relay didn’t answer.', 'groups_list(open network) → error: relay unreachable', 'Try again'], unavailable: ['Community needs the desktop app', 'The community board runs through the comms daemon.', 'BRIDGE_MODE = sim'] },
     };
     const gc = isG && gVar !== 'data' && gVar !== 'empty' ? (GCOPY[gt] || {})[gVar] : null;
-    const alfLocked = isG && gt === 'alf' && !s.alfClaim && gVar === 'data';
+    // No ALF claim: the members-only card in every variant except error, which says the claim couldn't be checked.
+    const alfLocked = isG && gt === 'alf' && !s.alfClaim && gVar !== 'error';
     stateCard('gx', alfLocked ? 'unavailable' : gVar, 'Groups ' + gt, alfLocked ? GCOPY.alf.unavailable : gc);
     V.onGxCardCta = () => { if (gc && /Services/.test(gc[3] || '')) this.ngo('services'); this.setVariant(gKey, 'data'); };
     const gOn = (t) => isG && !V.gxCard && gt === t;
@@ -7210,7 +7219,8 @@ class Component extends DCLogic {
     };
     V.gxInvites = sel ? sel.invites.map((i) => {
       const w = (IW[i.state] || IW.open)(i); const t = pill(w[1]);
-      return { code: (i.app ? 'citrate://invite?…' : 'citrate.ai/join/' + i.code + '#••••'), word: w[0], bd: t[0], fg: t[1], bg: t[2], note: i.app ? 'app-only link: opens only for people who already have Citrate' : 'works once · the key after # is copied only by the copy button', canRevoke: i.state === 'open', revoke: () => this.gxRevoke(i.code), copy: () => this.copy('https://citrate.ai/join/' + i.code + '#' + J.key, 'Invite link copied') };
+      const link = (this.inviteLinks || {})[i.code] || null;
+      return { code: (i.app ? 'citrate://invite?…' : 'citrate.ai/join/' + i.code + '#••••'), word: w[0], bd: t[0], fg: t[1], bg: t[2], note: (i.app ? 'app-only link: opens only for people who already have Citrate' : 'works once · the key after # is copied only by the copy button') + (link ? '' : ' · the link was shown once; revoke it and create a new one to share again'), canRevoke: i.state === 'open', canCopy: i.state === 'open' && !!link, revoke: () => this.gxRevoke(i.code), copy: () => { if (link) this.copy(link, i.app ? 'App-only invite link copied' : 'Invite link copied'); } };
     }) : [];
     V.gxInvitesEmpty = V.gxInvites.length === 0;
     V.gxCanInvite = canManage;
