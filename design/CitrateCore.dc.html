@@ -470,12 +470,10 @@
       <div class="surface" data-screen-label="{{ wbCtaLabel }}" style="padding:20px;display:flex;flex-direction:column;gap:14px;">
         <sc-if value="{{ wbPreDl }}" hint-placeholder-val="{{ true }}">
           <div style="display:flex;flex-direction:column;gap:12px;">
-            <sc-if value="{{ wbPrimary }}" hint-placeholder-val="{{ true }}">
-              <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-                <button class="btn btn-primary btn-lg" onClick="{{ onWbPrimary }}">{{ wbPrimary }}</button>
-                <sc-if value="{{ wbSecondary }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost" onClick="{{ onWbSecondary }}">{{ wbSecondary }}</button></sc-if>
-              </div>
-            </sc-if>
+            <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+              <sc-if value="{{ wbPrimary }}" hint-placeholder-val="{{ true }}"><button class="btn btn-primary btn-lg" onClick="{{ onWbPrimary }}">{{ wbPrimary }}</button></sc-if>
+              <sc-if value="{{ wbSecondary }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost" onClick="{{ onWbSecondary }}">{{ wbSecondary }}</button></sc-if>
+            </div>
             <sc-if value="{{ wbOneLiner }}" hint-placeholder-val="{{ false }}">
               <div style="display:flex;flex-direction:column;gap:6px;">
                 <span class="lbl">{{ wbOneLinerLabel }}</span>
@@ -6445,7 +6443,14 @@ class Component extends DCLogic {
     V.wbPostBody = { mac: 'After installing, open Citrate once, then click Open invite. Citrate keeps the invite until setup finishes.', linux: 'When the installer finishes, it opens Citrate with your invite. If it doesn’t, click Open invite.', windows: 'Windows will warn you because this build isn’t signed yet. After installing, open Citrate and paste your invite: Have an invite? Paste link or code.' }[os] || '';
     V.wbOpenLabel = os === 'windows' ? 'Copy invite, then open Citrate' : 'Open invite in Citrate';
     V.wbDeepLink = 'citrate://join/' + J.code + '#' + keyMasked;
-    const startDl = () => { this.setState((st) => ({ wbDl: true, cp1: Object.assign({}, st.cp1, { dl: true }) })); this.toast(os === 'linux' ? 'Command copied. Prototype: nothing runs.' : 'Download started. Prototype: nothing is downloaded.'); this.save(); };
+    const installCmd = 'curl -fsSL https://citrate.ai/install.sh | CITRATE_JOIN=\'' + J.code + '#' + J.key + '\' sh';
+    // Linux: the primary action copies the install command (with the invite key); elsewhere it starts the download.
+    const startDl = () => {
+      this.setState((st) => ({ wbDl: true, cp1: Object.assign({}, st.cp1, { dl: true }) }));
+      if (os === 'linux') this.copy(installCmd, 'Command copied, with your invite. Prototype: nothing runs.');
+      else this.toast('Download started. Prototype: nothing is downloaded.');
+      this.save();
+    };
     V.onWbPrimary = startDl;
     V.onWbSecondary = () => {
       if (os === 'mac') this.setState({ wbCmd: !s.wbCmd });
@@ -6453,7 +6458,7 @@ class Component extends DCLogic {
       else if (os === 'windows') this.toast('Optional: the page asks for an email only if you want one message when Windows is ready.');
       else this.toast('Opens the membership checkout. Setup finishes on a computer.');
     };
-    V.onWbCopyCmd = () => this.copy('curl -fsSL https://citrate.ai/install.sh | CITRATE_JOIN=\'' + J.code + '#' + J.key + '\' sh', 'Command copied, with your invite');
+    V.onWbCopyCmd = () => this.copy(installCmd, 'Command copied, with your invite');
     V.onWbOpenInvite = () => {
       const invite = { code: J.code, cluster: J.cluster, inviter: ver ? J.inviter : 'an unverified inviter', goal: J.goal, verified: ver };
       if (os === 'windows') this.copy('https://citrate.ai/join/' + J.code + '#' + J.key, 'Invite copied');
