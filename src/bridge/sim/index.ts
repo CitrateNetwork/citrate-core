@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawalsRead, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawalsRead, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo, ChatRouteStatus } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import book from "../../../src-tauri/addresses/40204.json";
@@ -701,6 +701,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("chat.inferenceState");
         // The web preview has no local model + no keyring → the honest demo route.
         return "demo";
+      },
+      async route(): Promise<ChatRouteStatus> {
+        assertSimAllowed("chat.route");
+        // The preview has no core to store it: it reports the default and cannot change it.
+        return { route: "ask_first", loadError: null };
+      },
+      async setRoute(): Promise<ChatRouteStatus> {
+        assertSimAllowed("chat.setRoute");
+        throw new Unavailable("chat", "setRoute");
       },
     },
 

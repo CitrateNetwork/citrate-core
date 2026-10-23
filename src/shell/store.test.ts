@@ -224,13 +224,15 @@ describe("ALF-ND — alfMember gating flag clears on sign-out", () => {
 // honest built-in demo agent (Rule 1). The provider key lives in the OS keyring —
 // AppState/PERSIST_KEYS must NOT carry an `aiKeys` map (invariant 2).
 describe("AI1 — provider selection + key-never-in-state", () => {
-  it("pickChatProviderKind picks 'real' only in tauri AND when the default is configured", () => {
+  // K2 (owner decision 2026-10-19): a configured remote route is never used silently; with no
+  // local model running the message is held and the member is asked ("ask"), never "real".
+  it("pickChatProviderKind asks (never a silent 'real') in tauri when the default is configured", () => {
     const configured = [
       { id: "openai", configured: true },
       { id: "gateway", configured: false },
     ];
-    // Tauri + default is configured → real.
-    expect(pickChatProviderKind(configured, "openai", "tauri")).toBe("real");
+    // Tauri + default is configured, no local model → ask first.
+    expect(pickChatProviderKind(configured, "openai", "tauri")).toBe("ask");
     // Tauri + default NOT configured → demo (honest fallback).
     expect(pickChatProviderKind(configured, "gateway", "tauri")).toBe("demo");
     // Web preview (sim) never selects a real provider (no keyring) → demo.
@@ -253,9 +255,9 @@ describe("AI1 — provider selection + key-never-in-state", () => {
     expect(pickChatProviderKind(configured, "gateway", "tauri", "local-stopped")).toBe("ask");
     // The old wire value no longer exists; were it ever seen it must not route to the gateway either.
     expect(pickChatProviderKind(configured, "gateway", "tauri", "local-fallback")).toBe("ask");
-    expect(pickChatProviderKind(configured, "gateway", "tauri", "gateway-only")).toBe("real");
-    // downloading with a gateway key → gateway (not local, not demo).
-    expect(pickChatProviderKind(configured, "gateway", "tauri", "downloading")).toBe("real");
+    // K2: gateway-only and downloading with a gateway key ask first (the silent route is closed).
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "gateway-only")).toBe("ask");
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "downloading")).toBe("ask");
     // "ready" is honored ONLY in tauri — the web preview has no local server.
     expect(pickChatProviderKind(configured, "gateway", "sim", "ready")).toBe("demo");
     // no local, no gateway key, demo inference state → demo.
