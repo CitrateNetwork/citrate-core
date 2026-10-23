@@ -12,6 +12,7 @@ const nodeStart = vi.fn<() => Promise<void>>();
 const nodeStatus = vi.fn();
 const grantStatus = vi.fn();
 const memoryStart = vi.fn<() => Promise<void>>();
+const validatorEarnings = vi.fn();
 
 vi.mock("../../bridge", () => ({
   bindSimHost: () => {},
@@ -24,9 +25,7 @@ vi.mock("../../bridge", () => ({
       status: () => nodeStatus(),
       logs: async () => [],
       armMining: async () => false,
-      validatorEarnings: async () => {
-        throw new Error("proposer key not minted yet");
-      },
+      validatorEarnings: () => validatorEarnings(),
     },
     membership: { grantStatus: () => grantStatus() },
     memory: { start: () => memoryStart(), stop: async () => {}, status: async () => ({ state: "stopped" }) },
@@ -58,6 +57,8 @@ beforeEach(() => {
   nodeStatus.mockReset();
   grantStatus.mockReset();
   memoryStart.mockReset();
+  validatorEarnings.mockReset();
+  validatorEarnings.mockRejectedValue(new Error("proposer key not minted yet"));
   grantStatus.mockRejectedValue(new Error("no rpc in tests"));
   nodeStatus.mockResolvedValue(RUNNING);
 });
@@ -158,5 +159,53 @@ describe("Status › freshness is the committed store snapshot", () => {
     expect(PERSIST_KEYS).not.toContain("nodeStatusAt");
     expect(OBSERVED_NOT_PERSISTED).toContain("nodeStatusAt");
     expect(freshState("p1").nodeStatusAt).toBeNull();
+  });
+});
+
+describe("Rewards › the store's rewardsOf read (contract rule 2: unknown is not zero)", () => {
+  const validator = { bondedStake: 32_000, memberBond: { deployed: true, activated: true, pubkey: "0x" + "aa".repeat(48), unlocked: false } };
+
+  it("a well-formed read lands in state and clears the error", async () => {
+    const store = newStore();
+    store.setState({ ...validator, rewardsError: "earlier failure" });
+    validatorEarnings.mockResolvedValue({ totalWei: "30000000000000000000", claimableWei: "20000000000000000000", proposerPubkey: "0x" + "aa".repeat(48) });
+    await store.refreshEarnings();
+    expect(store.state.rewards).toEqual({ totalWei: "30000000000000000000", claimableWei: "20000000000000000000" });
+    expect(store.state.rewardsError).toBeNull();
+  });
+
+  it("an empty or malformed figure is unknown, never 0, and says why", async () => {
+    for (const bad of [{ totalWei: "", claimableWei: "0" }, { totalWei: "0", claimableWei: "-1" }, { totalWei: "0x10", claimableWei: "0" }, { totalWei: "1.5", claimableWei: "0" }]) {
+      const store = newStore();
+      store.setState(validator);
+      validatorEarnings.mockResolvedValue({ ...bad, proposerPubkey: "0x" + "aa".repeat(48) });
+      await store.refreshEarnings();
+      expect(store.state.rewards, JSON.stringify(bad)).toBeNull();
+      expect(store.state.rewardsError, JSON.stringify(bad)).toMatch(/unreadable/);
+    }
+  });
+
+  it("a failed read keeps its reason in state for Node › Rewards", async () => {
+    const store = newStore();
+    store.setState(validator);
+    validatorEarnings.mockRejectedValue("rpc 503");
+    await store.refreshEarnings();
+    expect(store.state.rewards).toBeNull();
+    expect(store.state.rewardsError).toBe("rpc 503");
+  });
+
+  it("not read at all for a member whose rewards aren't read through the bond; no stale error", async () => {
+    const store = newStore();
+    store.setState({ bondedStake: 0, memberBond: null, rewardsError: "earlier failure", rewards: { totalWei: "1", claimableWei: "1" } });
+    await store.refreshEarnings();
+    expect(validatorEarnings).not.toHaveBeenCalled();
+    expect(store.state.rewards).toBeNull();
+    expect(store.state.rewardsError).toBeNull();
+  });
+
+  it("rewardsError is observed, never persisted", async () => {
+    const { PERSIST_KEYS, freshState } = await import("../../shell/state");
+    expect(PERSIST_KEYS).not.toContain("rewardsError");
+    expect(freshState("p1").rewardsError).toBeNull();
   });
 });

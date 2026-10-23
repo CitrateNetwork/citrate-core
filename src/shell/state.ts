@@ -437,6 +437,8 @@ export interface AppState {
    * per-day or per-source split: no contract exposes one, so none is shown.
    */
   rewards: { totalWei: string; claimableWei: string } | null;
+  /** K3 — why the last `rewards` read failed (or was unreadable); null = no failure. Observed, never persisted. */
+  rewardsError: string | null;
   /**
    * C1-V (contract v1.1 §1) — this node's key in the registry: `isActive(pubkey)`,
    * `validatorInfo(pubkey)` status + actEpoch, and `currentEpoch()`. The ONLY input to the
@@ -839,6 +841,7 @@ export function freshState(pid: string): AppState {
     hasGrant: false,
     hasSbt: false,
     rewards: null,
+    rewardsError: null,
     validatorActivation: null,
     nodeStatusAt: null,
     memberBond: null,
