@@ -102,6 +102,13 @@ const LONG: Record<string, number> = {
   agent_grants_reset: 270_000,
   // HUP-S10.1: one image generation; Rust bounds it at 600 s (local server) / 300 s (provider).
   media_generate_image: 630_000,
+  // GROW-S1 task 10: v2 invite links. Each HTTP call is bounded at 15 s Rust-side; mint is
+  // reserve + attach and resolve is resolve + JWKS (two calls each).
+  join_mint: 35_000,
+  join_attach: 20_000,
+  join_resolve: 35_000,
+  join_revoke: 20_000,
+  join_list: 20_000,
   // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.
   gsheets_read: 20_000,
   gsheets_append: 20_000,

@@ -136,6 +136,28 @@ describe("HUP-S10.1 MediaPanel", () => {
     expect(calls).toEqual([]);
   });
 
+  // K2 (owner 2026-10-19): image generation through a provider is a remote service. Local model
+  // only does not block it (it covers chat and escalation), so the panel says both.
+  it("a provider route says it uses a remote service and names the provider; the local route does not", async () => {
+    const remote = { id: "remote", kind: "image" as const, available: true, reason: null, destination: "OpenAI (api.openai.com)", cost: "Billed by the provider to your key", model: "gpt-image-1" };
+    const { io } = makeIo(() => options({ image: [options().image[0], remote] }));
+    const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} />);
+    expect(q(host, "media-remote-image-remote")?.textContent).toBe("Uses a remote service (OpenAI (api.openai.com)).");
+    expect(q(host, "media-remote-image-local")).toBeNull();
+    expect(q(host, "media-local-only-note")).toBeNull();
+  });
+
+  it("with Local model only on, a provider route notes that Local only does not apply to it", async () => {
+    const remote = { id: "remote", kind: "image" as const, available: true, reason: null, destination: "Citrate gateway (infer.citrate.ai)", cost: "Billed by the provider to your key", model: "x" };
+    const { io } = makeIo(() => options({ image: [options().image[0], remote] }));
+    const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} localOnly />);
+    expect(q(host, "media-local-only-note")?.textContent).toContain("Local model only does not apply to image generation");
+    // Nothing to note when no provider route exists.
+    const local = makeIo(() => options({ image: [options().image[0]] }));
+    const m = await mount(<MediaPanel io={async () => local.io} openPlayer={() => undefined} localOnly />);
+    expect(q(m.host, "media-local-only-note")).toBeNull();
+  });
+
   it("lists every route with its availability, reason and cost", async () => {
     const { io } = makeIo(() => options());
     const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} />);

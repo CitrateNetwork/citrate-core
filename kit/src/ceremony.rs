@@ -419,6 +419,11 @@ pub enum CeremonyError {
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
     Broadcast(String),
+    /// The signed transaction was handed to the node and may have been accepted, but the outcome
+    /// is not known: the node accepted it and the receipt poll then failed, or the send itself
+    /// failed in transport (the node may have received it). Carries the tx hash so the member
+    /// can look it up before trying again; never reported as "not sent".
+    SubmittedOutcomeUnknown { tx_hash: String, reason: String },
     /// The request was not approved within [`PENDING_TTL`]. It has been removed. Nothing was
     /// signed.
     Expired,
@@ -457,6 +462,9 @@ impl std::fmt::Display for CeremonyError {
                 "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
+            CeremonyError::SubmittedOutcomeUnknown { tx_hash, reason } => {
+                write!(f, "ceremony: submitted, outcome unknown (tx {tx_hash}): {reason}")
+            }
             CeremonyError::Expired => write!(
                 f,
                 "ceremony: this request expired before it was approved, so nothing was signed; ask again for a fresh request"
@@ -535,6 +543,11 @@ impl Book {
 /// gated `wallet::sign_message`.
 pub struct SignatureCeremony {
     book: Mutex<Book>,
+    /// keccak256 hashes of the signed transactions this app has handed to
+    /// `eth_sendRawTransaction`, persisted across restarts ([`crate::submitted_log`]). A node error
+    /// on a RE-submission of the same bytes never proves the tx was refused (the first may have
+    /// been accepted and mined), so only a first submission can be "not sent" (contract v1.1 §1).
+    submitted: std::sync::Arc<crate::submitted_log::SubmittedTxLog>,
     next_id: AtomicU64,
     /// The first id this ceremony hands out (random per process).
     first_id: u64,
@@ -562,6 +575,8 @@ impl SignatureCeremony {
         let first_id = random_first_id();
         SignatureCeremony {
             book: Mutex::new(Book::default()),
+            // No record location: uncertain, so no send through it is ever "not sent" (C1-V6).
+            submitted: std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::unpersisted()),
             next_id: AtomicU64::new(first_id),
             first_id,
             abis: crate::abi_book::AbiBook::default(),
@@ -644,6 +659,19 @@ impl SignatureCeremony {
             });
         }
         Ok(shown)
+    }
+
+    /// A ceremony whose first-submission record is `log` (production passes one persisted under
+    /// the app data dir, so the record survives a restart).
+    pub fn with_submitted_log(log: crate::submitted_log::SubmittedTxLog) -> Self {
+        let mut c = Self::new();
+        c.submitted = std::sync::Arc::new(log);
+        c
+    }
+
+    /// The shared first-submission record, for other signers of this app (e.g. the anchor).
+    pub fn submitted_log(&self) -> std::sync::Arc<crate::submitted_log::SubmittedTxLog> {
+        self.submitted.clone()
     }
 
     /// HUP-S6: let calls to `address` be decoded from `abi`. Only for a contract whose on-chain
@@ -921,18 +949,56 @@ impl SignatureCeremony {
 
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
-        let tx_hash = rpc
-            .send_raw_transaction(&signed.raw)
-            .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
+        //
+        // UI truth contract v1.1 §1: a send error proves the node refused the tx ONLY when it is
+        // on the definitive list AND this is the first submission of these signed bytes. Anything
+        // else (a transport failure, an unlisted or ambiguous message, any error on a re-send) is
+        // an unknown outcome carrying keccak256 of the signed raw tx, which is the tx hash.
+        let local_hash = {
+            use sha3::{Digest, Keccak256};
+            format!("0x{}", hex::encode(Keccak256::digest(&signed.raw)))
+        };
+        let sender = wallet::address(vault)?.address;
+        let first_submission = self
+            .submitted
+            .try_record_for(&local_hash, &sender, fields.nonce)
+            .map_err(|e| {
+                CeremonyError::Broadcast(format!(
+                    "the submission could not be recorded durably, so nothing was sent: {e}"
+                ))
+            })?;
+        let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
+            Ok(h) => h,
+            // Definitive only for a first submission that no other attempt overlapped (#347 P1).
+            Err(e)
+                if first_submission
+                    && self.submitted.sole_attempt(&local_hash)
+                    && is_definitive_send_error(&e) =>
+            {
+                return Err(CeremonyError::Broadcast(e.to_string()))
+            }
+            Err(e) => {
+                return Err(CeremonyError::SubmittedOutcomeUnknown {
+                    tx_hash: local_hash,
+                    reason: e.to_string(),
+                })
+            }
+        };
         let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
         let mined = match receipt {
             Ok(r) => Some(r),
             // The tx WAS accepted (we have a hash); the receipt just did not land
             // within the poll budget. Return the hash honestly with no block yet
-            // rather than failing (the caller can re-poll). A hard RPC error on
-            // the poll surfaces as a broadcast error.
+            // rather than failing (the caller can re-poll).
             Err(crate::rpc::RpcError::ReceiptTimeout) => None,
-            Err(e) => return Err(CeremonyError::Broadcast(e.to_string())),
+            // A hard RPC error on the poll comes AFTER the node accepted the tx: the outcome is
+            // unknown, never "not sent" (C1-V #347 review).
+            Err(e) => {
+                return Err(CeremonyError::SubmittedOutcomeUnknown {
+                    tx_hash,
+                    reason: e.to_string(),
+                })
+            }
         };
 
         Ok(BroadcastResult {
@@ -1338,15 +1404,66 @@ impl SignatureCeremony {
 /// Managed Tauri state: the process-wide SignatureCeremony.
 pub struct CeremonyState(pub SignatureCeremony);
 
-/// Build the managed ceremony state (empty, ready to accept intents).
-pub fn build_ceremony_state() -> CeremonyState {
-    CeremonyState(SignatureCeremony::new())
+/// Build the managed ceremony state with its first-submission record persisted at `path`.
+pub fn build_ceremony_state_at(path: std::path::PathBuf) -> CeremonyState {
+    CeremonyState(SignatureCeremony::with_submitted_log(
+        crate::submitted_log::SubmittedTxLog::open(path),
+    ))
+}
+
+/// Build the managed ceremony state when the app data dir can't be resolved, so the
+/// first-submission record has nowhere to persist.
+pub fn build_ceremony_state_unpersisted() -> CeremonyState {
+    CeremonyState(SignatureCeremony::with_submitted_log(
+        crate::submitted_log::SubmittedTxLog::unpersisted(),
+    ))
 }
 
 use tauri::State;
 
 fn err_str(e: CeremonyError) -> String {
     e.to_string()
+}
+
+/// UI truth contract v1.1 §1 (chain#326, verified against the node's send handler and mempool):
+/// the `eth_sendRawTransaction` errors that prove the node did not accept the tx. Every handler
+/// error uses code -32602, so the MESSAGE decides, matched exactly or by its fixed prefix. Only
+/// meaningful on the first submission of the signed bytes; the caller checks that.
+fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
+    const EXACT: &[&str] = &[
+        "Rate limit exceeded. Try again later.",
+        "Missing transaction data",
+        "Invalid tx hex",
+        "Invalid hex",
+        "Failed to submit transaction: Full",
+        "Failed to submit transaction: SenderLimitExceeded",
+        "Failed to submit transaction: InvalidSignature",
+    ];
+    const PREFIX: &[&str] = &[
+        "Failed to parse transaction: ",
+        "Insufficient funds: account balance ",
+        "Failed to submit transaction: GasPriceTooLow {",
+        "Failed to submit transaction: InsufficientBalance {",
+        "Failed to submit transaction: InvalidTransaction(",
+        "Failed to submit transaction: NonceTooLow {",
+    ];
+    match e {
+        crate::rpc::RpcError::RateLimited => true,
+        crate::rpc::RpcError::Node(m) => {
+            EXACT.contains(&m.as_str()) || PREFIX.iter().any(|p| m.starts_with(p))
+        }
+        _ => false,
+    }
+}
+
+/// The error string `sign_and_broadcast` returns. Every failure established BEFORE the node could
+/// have received the tx is prefixed "not submitted: " so the app may say "not sent"; an unknown
+/// outcome after submission carries "submitted, outcome unknown (tx <hash>)" instead (C1-V #347).
+fn broadcast_err_str(e: CeremonyError) -> String {
+    match e {
+        CeremonyError::SubmittedOutcomeUnknown { .. } => err_str(e),
+        other => format!("not submitted: {}", err_str(other)),
+    }
 }
 
 /// **Command — sign_request.** Submit a [`SignatureIntent`]; returns a PENDING
@@ -1478,7 +1595,7 @@ pub fn sign_and_broadcast_sync(
             poll_interval: std::time::Duration::from_secs(2),
         },
     )
-    .map_err(err_str)
+    .map_err(broadcast_err_str)
 }
 
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.

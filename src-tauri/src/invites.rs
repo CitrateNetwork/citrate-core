@@ -450,16 +450,22 @@ pub async fn group_invite_create(
 /// or the invite was revoked (Rule 1 — never a fabricated "joined"). Records the joiner's audit copy (#73).
 #[tauri::command]
 pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<(), String> {
-    let group = link_param(&link, "g").ok_or("invite link missing group")?;
-    let token = link_param(&link, "t").ok_or("invite link missing token")?;
-    let name = link_param(&link, "n")
+    redeem_link(&app, &link)
+}
+
+/// The self-admit body shared by [`group_invite_redeem`] and the v2 invite-link redeem
+/// (`join::join_redeem`, which rebuilds this link from an opened envelope in Rust).
+pub(crate) fn redeem_link(app: &tauri::AppHandle, link: &str) -> Result<(), String> {
+    let group = link_param(link, "g").ok_or("invite link missing group")?;
+    let token = link_param(link, "t").ok_or("invite link missing token")?;
+    let name = link_param(link, "n")
         .and_then(|h| hex::decode(h).ok())
         .and_then(|b| String::from_utf8(b).ok())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Invited group".to_string());
-    crate::comms::redeem_invite(&app, group.clone(), token.clone(), name.clone())?;
+    crate::comms::redeem_invite(app, group.clone(), token.clone(), name.clone())?;
     append_referral(
-        &app,
+        app,
         ReferralEvent {
             role: "joiner".into(),
             event: "joined".into(),
@@ -642,7 +648,7 @@ pub async fn group_invite_poll_claims(
 }
 
 /// Extract a query param from a `citrate://invite?...` link.
-fn link_param(link: &str, key: &str) -> Option<String> {
+pub(crate) fn link_param(link: &str, key: &str) -> Option<String> {
     let q = link.split('?').nth(1)?;
     for pair in q.split('&') {
         let mut it = pair.splitn(2, '=');
