@@ -26,6 +26,8 @@ explicit_start_after_stop_creates_exactly_one_incarnation | positive-control | S
 stop_with_a_held_reader_is_incomplete_and_quarantined | regression | SCL-S2.2 | a reader held open makes Stop Incomplete and the service Quarantined until it really ends
 start_during_held_reader_teardown_waits_for_cleanup | regression | SCL-S2.2 | a Start that supersedes a Stop mid-teardown spawns nothing until the old incarnation's readers are reconciled
 stop_without_a_monitor_is_observation_unknown | regression | SCL-S2.2 | with the monitor gone, every Stop and Start (repeated or joining) is ObservationUnknown, never Accepted; legacy stop() returns at once; the ended monitor still terminates and reaps its child
+start_after_the_monitor_ends_is_never_already_satisfied | regression | SCL-S2.2 | core#398: after a hook panic ends the monitor while the child runs, the cell stops reporting Alive and a direct Start is ObservationUnknown, never AlreadySatisfied
+start_after_the_monitor_ends_past_an_exited_child_is_never_already_satisfied | regression | SCL-S2.2 | core#398: the same when the child had already exited and been reaped; nothing respawns
 start_after_a_crash_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after a crash leaves its output held and the budget is spent, a Start spawns nothing until cleanup
 start_after_health_failures_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after health failures exhaust the budget with output held, a Start spawns nothing until cleanup
 crash_retry_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | core#397: an automatic retry after a crash spawns nothing while the old output is held (Quarantined meanwhile), then proceeds
