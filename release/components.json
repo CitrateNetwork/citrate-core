@@ -93,12 +93,19 @@
       "source": {
         "repo": "CitrateNetwork/citrate-memories",
         "checkout": "citrate-memories",
-        "rev": "0e9d48822054f6c9d644e691909569d0bc19be02"
+        "rev": "5aeda31723693edf577f0bad238f691586ccde39"
       },
+      "requires": [
+        {
+          "rev": "5aeda31723693edf577f0bad238f691586ccde39",
+          "marker": "CITRATE_MEM_STORE_KEY_FILE",
+          "why": "citrate-core passes the store key in an owner-only file named by CITRATE_MEM_STORE_KEY_FILE (citrate-memories#25); an older mem-mcp ignores the file and runs under a different daemon identity"
+        }
+      ],
       "federation": {
-        "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
+        "rev": "0e9d48822054f6c9d644e691909569d0bc19be02",
         "status": "drift",
-        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-memories commit. Shipped in 0.5.0 and 0.5.1: 0e9d4882 (implements import-corpus; the pinned knowledge corpus was built with it)."
+        "note": "manifest.toml pins 0e9d4882, the mem-mcp 0.5.0 and 0.5.1 shipped; its [[drift]] row moves to 5aeda317 in citrate-federation#372 (Rule 12); set status match once that merges. 5aeda317 is citrate-memories main with #25 (store key file); it still implements import-corpus, and the pinned knowledge corpus imports with it."
       },
       "build": {
         "kind": "cargo",
@@ -114,16 +121,8 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "mem-mcp-aarch64-apple-darwin-0e9d48822054",
-          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
-        },
-        "x86_64-unknown-linux-gnu": {
-          "sha256": "1b3898733e676237b6fd038d887d7c82db4132c83521511de4c1f2eca58e7b8e",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
-        },
-        "aarch64-unknown-linux-gnu": {
-          "sha256": "b872672d962298874556f4a1db167120e520d18cab2e5d36094bc014801a3cb9",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "runtime_deps_asset": "mem-mcp-aarch64-apple-darwin-5aeda3172369",
+          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components, where the 0e9d4882 build reproduces its pin c298e369); not yet uploaded to runtime-deps"
         }
       }
     },

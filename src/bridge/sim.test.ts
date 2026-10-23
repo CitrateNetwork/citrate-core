@@ -254,7 +254,7 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
       (e: unknown) => isUnavailable(e),
     );
     await expect(bridge.chat.clearProvider("openai")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
-    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    await expect(bridge.chat.infer("openai", "[]", "{}", "cc_x")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("inferLocal is honestly Unavailable and inferenceState is 'demo' in sim (no llama-server, no local model)", async () => {
