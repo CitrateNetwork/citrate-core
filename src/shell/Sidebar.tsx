@@ -19,6 +19,9 @@ export const NAVI: [string, string, string, string][] = [
   ["settings", "Settings", "M4 7 H20 M4 12 H20 M4 17 H20", "M9 5 V9 M15 10 V14 M8 15 V19"],
   ["models", "Models", "M4 7 L12 3 L20 7 L12 11 Z", "M4 12 L12 16 L20 12 M4 17 L12 21 L20 17"],
   ["files", "Files", "M6 3 H14 L18 7 V21 H6 Z", "M14 3 V7 H18 M9 12 H15 M9 16 H15"],
+  // K4: storage components, routed as tabs under Files (Node › Storage in the five-place IA).
+  ["pins", "Pins", "M12 3 V14 M8 10 L12 14 L16 10", "M5 21 H19"],
+  ["backup", "Backup", "M4 14 V19 H20 V14", "M12 4 V14 M8 10 L12 14 L16 10"],
   ["people", "People", "M12 12 A4 4 0 1 0 12 4 A4 4 0 0 0 12 12 Z M4 21 A8 8 0 0 1 20 21", "M0 0"],
   ["groups", "Groups", "M8 11 A3 3 0 1 0 8 5 A3 3 0 0 0 8 11 Z M2 20 A6 6 0 0 1 14 20", "M16 11 A3 3 0 0 0 16 5 M18 20 A6 6 0 0 0 15 15"],
   ["cluster", "Cluster", "M12 5 A2 2 0 1 0 12 4.99 M5 18 A2 2 0 1 0 5 17.99 M19 18 A2 2 0 1 0 19 17.99", "M12 7 L6 16 M12 7 L18 16"],
@@ -44,6 +47,8 @@ export const SECTIONS: { title: string; ids: string[] }[] = [
 /** HUP-S0.8 — surfaces that live as a tab under a top-level parent (child → parent). */
 export const NESTED: Record<string, string> = {
   storage: "files",
+  pins: "files",
+  backup: "files",
   people: "groups",
   cluster: "groups",
   train: "groups",
@@ -56,6 +61,8 @@ export const HUBS: Record<string, { id: string; label: string }[]> = {
   files: [
     { id: "files", label: "Files" },
     { id: "storage", label: "Memory" },
+    { id: "pins", label: "Pins" },
+    { id: "backup", label: "Backup" },
   ],
   groups: [
     { id: "groups", label: "Chat" },
