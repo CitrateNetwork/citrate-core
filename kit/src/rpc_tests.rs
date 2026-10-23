@@ -305,3 +305,160 @@ fn http_429_maps_to_rate_limited_and_other_statuses_stay_transport() {
     assert_eq!(map_ureq_error(ureq::Error::StatusCode(429)), RpcError::RateLimited);
     assert!(matches!(map_ureq_error(ureq::Error::StatusCode(502)), RpcError::Transport(_)));
 }
+
+
+// C1-W — citrate-chain#334 answers an eth_getLogs range over 1000 blocks with -32005; a paging
+// caller must be able to tell that from any other failure, to halve its window.
+#[test]
+fn get_logs_range_tells_a_too_wide_range_from_other_errors() {
+    let too_wide = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32005, "message": "block range too large", "data": { "maxBlockRange": 1000 } } });
+    let other = json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": "boom" } });
+    let fine = json!({ "jsonrpc": "2.0", "id": 1, "result": [
+        { "topics": ["0x01"], "data": "0x", "blockNumber": "0x10" } ] });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![too_wide, other, fine]));
+    let f = json!({ "fromBlock": "0x0", "toBlock": "0x7d0" });
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::RangeTooLarge(m)) if m.contains("too large")));
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "boom"));
+    let logs = rpc.get_logs_range(f).expect("logs");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].block_number, 16);
+}
+
+// C1-W (#334 review) — -32002 means "retry this range later": a paging caller retries it.
+#[test]
+fn get_logs_range_reports_a_retry_answer() {
+    let retry = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32002, "message": "retry", "data": { "retryable": true } } });
+    // #371 review: only an error that says it is retryable is retried.
+    let not_marked = json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32002, "message": "busy" } });
+    let marked_false = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32002, "message": "busy", "data": { "retryable": false } } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![retry, not_marked, marked_false]));
+    let f = json!({ "fromBlock": "0x1ab", "toBlock": "0x592" });
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::Retry(m)) if m == "retry"));
+    assert!(matches!(rpc.get_logs_range(f.clone()), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "busy"));
+    assert!(matches!(rpc.get_logs_range(f), Err(GetLogsError::Rpc(RpcError::Node(m))) if m == "busy"));
+}
+
+// C1-W — eth_call_batch answers in call order whatever order the batch reply comes back in.
+#[test]
+fn eth_call_batch_answers_in_call_order() {
+    // build_request ids 1 and 2 are taken below, so the batch uses 3 and 4: answer them out of order.
+    let reply = json!([
+        { "jsonrpc": "2.0", "id": 4, "result": "0x02" },
+        { "jsonrpc": "2.0", "id": 3, "result": "0x01" },
+    ]);
+    let rpc2 = RpcClient::with_transport(MockTransport::new(vec![reply]));
+    let _ = rpc2.build_request("x", json!([]));
+    let _ = rpc2.build_request("x", json!([]));
+    let got = rpc2
+        .eth_call_batch(&[json!({"to": "0x01"}), json!({"to": "0x02"})])
+        .expect("batch");
+    assert_eq!(got, vec![vec![1u8], vec![2u8]]);
+    let failed = json!([
+        { "jsonrpc": "2.0", "id": 1, "result": "0x01" },
+        { "jsonrpc": "2.0", "id": 2, "error": { "code": -32000, "message": "boom" } },
+    ]);
+    let rpc3 = RpcClient::with_transport(MockTransport::new(vec![failed]));
+    assert!(rpc3.eth_call_batch(&[json!({}), json!({})]).is_err(), "no partial list");
+}
+
+// chain#337 citrate_isExecuted(hash) -> {executed, number|null}. -32601 = an older node (None);
+// -32603 (no tip), -32602 (malformed hash) and a malformed result are errors.
+#[test]
+fn is_executed_answers() {
+    let h = format!("0x{}", "ab".repeat(32));
+    let yes = json!({ "jsonrpc": "2.0", "id": 1, "result": { "executed": true, "number": "0x1770" } });
+    let no = json!({ "jsonrpc": "2.0", "id": 2, "result": { "executed": false, "number": null } });
+    let absent = json!({ "jsonrpc": "2.0", "id": 3, "error": { "code": -32601, "message": "Method not found" } });
+    let no_tip = json!({ "jsonrpc": "2.0", "id": 4, "error": { "code": -32603, "message": "no applied tip" } });
+    let bad_hash = json!({ "jsonrpc": "2.0", "id": 5, "error": { "code": -32602, "message": "malformed hash" } });
+    let malformed = json!({ "jsonrpc": "2.0", "id": 6, "result": { "executed": "yes" } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![yes, no, absent, no_tip, bad_hash, malformed]));
+    assert_eq!(rpc.is_executed(&h), Ok(Some((true, Some(6000)))));
+    assert_eq!(rpc.is_executed(&h), Ok(Some((false, None))));
+    assert_eq!(rpc.is_executed(&h), Ok(None));
+    assert!(rpc.is_executed(&h).is_err(), "-32603");
+    assert!(rpc.is_executed(&h).is_err(), "-32602");
+    assert!(rpc.is_executed(&h).is_err(), "malformed");
+    assert_eq!(rpc.transport().requests()[0]["method"], "citrate_isExecuted");
+    assert_eq!(rpc.transport().requests()[0]["params"][0], json!(h));
+}
+
+// C1-W (citrate-chain#337 @ 600d2984) — -32005 has two sources on the chain: a log range over
+// MAX_LOG_BLOCK_RANGE carries `data.maxBlockRange` (core/api/src/canonical_logs.rs:127-146), while
+// the per-method budget answers -32005 with no data (core/api/src/rate_limit.rs:96-101). Only the
+// first is a reason to halve the window.
+#[test]
+fn get_logs_range_halves_only_on_a_range_limit() {
+    let budget = json!({ "jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32005, "message": "Method budget exceeded. Reduce call frequency for expensive methods." } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![budget]));
+    let got = rpc.get_logs_range(json!({ "fromBlock": "0x1ab", "toBlock": "0x592" }));
+    assert!(matches!(got, Err(GetLogsError::Rpc(RpcError::Node(ref m))) if m.contains("budget")), "{got:?}");
+}
+
+// citrate_getLogs([filter]) -> {"logs": [...], "through": {number, hash} | null}
+// (core/api/src/eth_rpc.rs:1946-2026; core/api/tests/executed_head.rs:910
+// get_logs_answers_logs_and_the_block_it_is_complete_through).
+#[test]
+fn citrate_get_logs_answers_logs_and_through() {
+    let h = format!("0x{}", "ab".repeat(32));
+    let served = json!({ "jsonrpc": "2.0", "id": 1, "result": {
+        "logs": [ { "topics": ["0x01"], "data": "0x", "blockNumber": "0x10" } ],
+        "through": { "number": "0x12", "hash": h } } });
+    let nothing = json!({ "jsonrpc": "2.0", "id": 2, "result": { "logs": [], "through": null } });
+    let rpc = RpcClient::with_transport(MockTransport::new(vec![served, nothing]));
+    let f = json!({ "fromBlock": "0x10", "toBlock": "0x3f7", "afterBlockHash": h });
+    let got = rpc.citrate_get_logs(f.clone());
+    assert!(
+        matches!(&got, Ok(s) if s.logs.len() == 1 && s.through == Some(BlockRef { number: 0x12, hash: h.clone() })),
+        "{got:?}"
+    );
+    let got = rpc.citrate_get_logs(f.clone());
+    assert!(matches!(&got, Ok(s) if s.logs.is_empty() && s.through.is_none()), "{got:?}");
+    let req = &rpc.transport().requests()[0];
+    assert_eq!(req["method"], "citrate_getLogs");
+    assert_eq!(req["params"][0], f, "the filter, afterBlockHash included, is sent as is");
+}
+
+// The error answers a scanner acts on, and the malformed answers it must refuse
+// (core/api/src/canonical_logs.rs:646-673 for -32002 / -32001; -32601 = the method is absent, as
+// on today's public RPC).
+#[test]
+fn citrate_get_logs_classifies_errors_and_refuses_malformed_answers() {
+    let err = |code: i64, data: Value| json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": code, "message": "m", "data": data } });
+    let res = |r: Value| json!({ "jsonrpc": "2.0", "id": 1, "result": r });
+    let h = format!("0x{}", "cd".repeat(32));
+    let answers = vec![
+        err(-32001, json!({ "reorged": true, "height": "0x1aa" })),
+        err(-32001, Value::Null),
+        err(-32601, Value::Null),
+        err(-32005, json!({ "maxBlockRange": 1000 })),
+        err(-32005, Value::Null),
+        err(-32002, json!({ "retryable": true, "blockNumber": "0x1194" })),
+        err(-32002, Value::Null),
+        res(json!({ "logs": [] })),
+        res(json!({ "logs": [], "through": { "number": "0x5", "hash": "0x12" } })),
+        res(json!({ "logs": [], "through": { "number": "five", "hash": h } })),
+        res(json!({ "logs": {}, "through": null })),
+        res(json!([])),
+    ];
+    let rpc = RpcClient::with_transport(MockTransport::new(answers));
+    let f = json!({ "fromBlock": "0x1ab", "toBlock": "0x592" });
+    let mut got = Vec::new();
+    for _ in 0..12 {
+        got.push(rpc.citrate_get_logs(f.clone()));
+    }
+    assert!(matches!(got[0], Err(GetLogsError::Reorged(_))), "-32001 reorged: {:?}", got[0]);
+    assert!(matches!(got[1], Err(GetLogsError::Rpc(_))), "-32001 without data.reorged: {:?}", got[1]);
+    assert!(matches!(got[2], Err(GetLogsError::MethodNotFound)), "-32601: {:?}", got[2]);
+    assert!(matches!(got[3], Err(GetLogsError::RangeTooLarge(_))), "-32005 range: {:?}", got[3]);
+    assert!(matches!(got[4], Err(GetLogsError::Rpc(_))), "-32005 budget: {:?}", got[4]);
+    assert!(matches!(got[5], Err(GetLogsError::Retry(_))), "-32002 retryable: {:?}", got[5]);
+    assert!(matches!(got[6], Err(GetLogsError::Rpc(_))), "-32002 not retryable: {:?}", got[6]);
+    for (i, g) in got.iter().enumerate().skip(7) {
+        assert!(matches!(g, Err(GetLogsError::Rpc(_))), "malformed answer {i}: {g:?}");
+    }
+}
