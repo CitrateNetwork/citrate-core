@@ -37,3 +37,6 @@ pub mod txdecode;
 pub mod wallet;
 pub mod wallet_link;
 pub mod web_budget;
+
+#[cfg(test)]
+mod upgrade_v051_tests;

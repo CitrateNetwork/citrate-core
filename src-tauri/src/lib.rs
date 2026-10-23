@@ -176,6 +176,11 @@ mod shutdown_coverage_tests;
 // SCL-S0.7: the Windows installer's pre-install hook (inputs checked on every OS).
 #[cfg(test)]
 mod windows_installer_hook_tests;
+// 0.5.1 -> 0.5.2: the app data a 0.5.1 install holds, and the updater feed it trusts.
+#[cfg(test)]
+mod upgrade_updater_feed_tests;
+#[cfg(test)]
+mod upgrade_v051_tests;
 
 use tauri::Manager;
 

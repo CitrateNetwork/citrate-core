@@ -1,0 +1,4 @@
+# design/CitrateCore.dc.html in 89bddc8 (design slice 2, #357) carried a made-up sample invite key for the
+# prototype's join page. It was never a real key; it was replaced by the placeholder "SAMPLE-not-a-real-key0".
+# The history commit is still in the PR range, so its one finding is listed here.
+89bddc814e4cafa9c7605a0364c55b46077cfc9f:design/CitrateCore.dc.html:generic-api-key:5527
