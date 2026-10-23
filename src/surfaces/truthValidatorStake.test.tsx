@@ -77,7 +77,9 @@ describe("chainTruth helpers", () => {
 
   it("derives the §1 validator word from the registry only (V4)", () => {
     expect(validatorWord(0, null, false)).toBe("Not a validator");
-    expect(validatorWord(0, null, true)).toBe("Bond locked · not staked");
+    // #348 review: the bond-locked word needs MemberBond.activated() = false; unread is null ("—").
+    expect(validatorWord(0, null, true, false)).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, true)).toBeNull();
     expect(validatorWord(32_000, ACT_PENDING, true)).toBe("Registered · active from epoch 501");
     expect(validatorWord(32_000, ACT_ON, true)).toBe("Validator active");
     expect(validatorWord(32_000, null, true)).toBeNull();
@@ -188,6 +190,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: 2,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks (~28 h)");
@@ -201,6 +205,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: null,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks left");
@@ -210,7 +216,7 @@ describe("V6 — durations use the measured block time", () => {
 
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   it("Wallet: the grant in a locked bond and LSP self-stake are not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500 })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500, bondActivated: false })} />);
     expect(html).not.toContain("32,500");
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
@@ -230,11 +236,11 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   });
 
   it("Dashboard: Staked is stakeOf, never grant + self-stake, and never 'LiquidStakingPool shares'", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500 })} />);
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500, bondActivated: false })} />);
     expect(html).not.toContain("LiquidStakingPool shares");
     expect(html).not.toContain("34,500");
     expect(html).not.toContain(">2,500<");
-    expect(html).toContain("bond locked · not staked");
+    expect(html).toMatch(/bond locked · not staked/i);
   });
 
   it("the model context's staked is the registry stake only", () => {

@@ -175,12 +175,13 @@ describe("#348 review — S6 never offers 'Stake my bond' for a registered stake
       const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 32_000, validatorActivation })} />);
       expect(html).not.toContain("Activate validator");
     }
-    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null })} />);
+    // A bond that reads not activated (MemberBond.activated() = false) is offered activation.
+    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false })} />);
     expect(html).toContain("Activate validator");
   });
 
   it("a granted bond with no registered stake still gets 'Stake my bond'", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null })} />);
+    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false })} />);
     expect(html).toContain("Bond locked · not staked");
     expect(html).toContain("Stake my bond");
   });

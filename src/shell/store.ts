@@ -40,6 +40,7 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
+import type { PendingReadErrorKind, PendingWithdrawalsError } from "../bridge/domains";
 import type { FlRoundPlan } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
@@ -59,7 +60,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
@@ -136,6 +137,37 @@ type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
  * and NEVER expired. Disambiguate by magnitude: a value already in ms range
  * (>= 1e12, i.e. any time after 2001) is used as-is; a smaller value is seconds.
  */
+/** C1-W — how soon an unfinished pending-withdrawal scan is read again. */
+export const PENDING_SCAN_RETRY_MS = 2_000;
+/** C1-W — how soon a read the node answered "still indexing" (-32002) is tried again. */
+export const PENDING_INDEXING_RETRY_MS = 10_000;
+/** C1-W — how soon a complete but unconfirmed read (the node is behind, or gives no evidence) is
+ *  read again. */
+export const PENDING_CATCHUP_RETRY_MS = 30_000;
+/** C1-W — how soon a read that missed the IPC deadline (InvokeTimeout) is tried again. */
+export const PENDING_TIMEOUT_RETRY_MS = 10_000;
+
+/** C1-W — when a failed pending-withdrawals read is read again, by kind: an unfinished scan soon,
+ *  a node still indexing (-32002) later, an IPC timeout later; any other failure is shown only. */
+const PENDING_RETRY_MS: Record<PendingReadErrorKind | "timeout", number | null> = {
+  scanning: PENDING_SCAN_RETRY_MS,
+  indexing: PENDING_INDEXING_RETRY_MS,
+  timeout: PENDING_TIMEOUT_RETRY_MS,
+  failed: null,
+};
+
+/** C1-W — the kind and the words of a failed pending-withdrawals read. A rejection that is not a
+ *  structured PendingWithdrawalsError (or an InvokeTimeout) is `failed`: fail closed. */
+function pendingReadFailure(err: unknown): { kind: PendingReadErrorKind | "timeout"; message: string } {
+  // InvokeTimeout (bridge/tauri/invoke.ts) by its type name: that module is loaded lazily here.
+  if (err instanceof Error && err.name === "InvokeTimeout") return { kind: "timeout", message: err.message };
+  const e = err as Partial<PendingWithdrawalsError> | null;
+  if (e && typeof e === "object" && typeof e.message === "string" && (e.kind === "scanning" || e.kind === "indexing" || e.kind === "failed")) {
+    return { kind: e.kind, message: e.message };
+  }
+  return { kind: "failed", message: String((err as Error)?.message ?? err) };
+}
+
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
   let ms: number;
@@ -233,17 +265,28 @@ export function describeBond(g: {
   isUnlocked: boolean;
   isKycVerified: boolean;
   hasValidator: boolean;
+  bondActivated?: boolean | null;
 }): string {
   // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
   // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from
   // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
   // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
   if (!g.bondDeployed) return "No bond yet";
+  // #349 review: the bond's activation state is MemberBond.activated(); a registry binding
+  // (hasValidator) implies it. After an exit or a slash hasValidator reads false while the bond
+  // stays activated, and an unread flag is not evidence either way.
+  const activated = g.hasValidator ? true : (g.bondActivated ?? null);
   if (!g.isUnlocked) {
     const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
-    return g.hasValidator ? `Staked · locked until block ${at}` : `Bond locked · not staked · until block ${at}`;
+    if (g.hasValidator) return `Staked · locked until block ${at}`;
+    // "not staked" needs activated() = false (#411's fix); otherwise the plain §1 lock word.
+    return activated === false ? `Bond locked · not staked · until block ${at}` : `Locked until block ${at}`;
   }
-  // Unlocked. Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
+  // Unlocked. A never-activated bond can't be released or withdrawn (requestRelease /
+  // withdrawToMember revert NotActivated()), so it gets no identity / withdraw wording (v1.2).
+  if (activated === false) return "Unlocked · not activated";
+  if (activated === null) return "Unlocked · bond state not read yet";
+  // Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
   // unverified member is NOT told their funds are available.
   if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
   return "Unlocked";
@@ -1584,7 +1627,8 @@ export class Store {
     if (!s.hasGrant) return; // the grant must have deployed + funded the bond clone (settled S5)
     // #348/#349 review: a bond that already activated (then exited or was slashed) never re-opens
     // activation, and neither does an Exiting / Slashed key.
-    if (s.bondActivated === true || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) return;
+    // #348 review: only a bond that reads not activated (activated() = false); unread never opens it.
+    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated)) return;
 
     // STEP 1 — ARM the producer so the node mints `proposer.key` (the validator
     // identity activation needs). The node runs as a plain follower and NEVER mints
@@ -2121,7 +2165,7 @@ export class Store {
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
       // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
-      grant: s.hasGrant && grantStakedSalt > 0 ? { amountSalt: grantStakedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0 } : null,
+      grant: s.hasGrant && grantStakedSalt > 0 ? { amountSalt: grantStakedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
       membership: {
@@ -2131,7 +2175,7 @@ export class Store {
         locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
         note:
-          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant }) +
+          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
           " Locked SALT is not spendable and is separate from the liquid balance.",
       },
     };
@@ -4612,11 +4656,60 @@ export class Store {
    * reads []. Failure leaves the last honest list untouched — no fabricated rows.
    */
   async refreshPendingWithdrawals(): Promise<void> {
+    // C1-W (#371 review): one read at a time. Overlapping callers (launch, Wallet mount, after a
+    // ceremony, the retry timers) share the read in flight, so the retry chains never multiply.
+    if (this.pendingWithdrawalsRead) return this.pendingWithdrawalsRead;
+    // A fresh read replaces any scheduled retry: it schedules its own if it needs one, so one
+    // retry chain exists per Store (#371 review @31c065f).
+    this.clearPendingRetry();
+    this.pendingWithdrawalsRead = this.readPendingWithdrawals().finally(() => {
+      this.pendingWithdrawalsRead = null;
+    });
+    return this.pendingWithdrawalsRead;
+  }
+
+  private pendingWithdrawalsRead: Promise<void> | null = null;
+
+  /** C1-W — the one scheduled pending-withdrawals retry, if any. */
+  private pendingWithdrawalsRetry: ReturnType<typeof setTimeout> | null = null;
+
+  private clearPendingRetry(): void {
+    if (this.pendingWithdrawalsRetry !== null) clearTimeout(this.pendingWithdrawalsRetry);
+    this.pendingWithdrawalsRetry = null;
+  }
+
+  /** Read again in `ms`, replacing any retry already scheduled. */
+  private schedulePendingRetry(ms: number): void {
+    this.clearPendingRetry();
+    this.pendingWithdrawalsRetry = setTimeout(() => {
+      this.pendingWithdrawalsRetry = null;
+      void this.refreshPendingWithdrawals();
+    }, ms);
+  }
+
+  private async readPendingWithdrawals(): Promise<void> {
     try {
-      const list = await bridge.wallet.pendingWithdrawals();
-      this.setState({ pendingWithdrawals: list });
-    } catch {
-      /* honest no-op: keep the last real list, never a fabricated one */
+      const read = await bridge.wallet.pendingWithdrawals();
+      this.setState({
+        pendingWithdrawals: read.withdrawals,
+        pendingWithdrawalsError: null,
+        pendingWithdrawalsUnconfirmed: !read.confirmed,
+        pendingWithdrawalsNote: read.confirmed ? null : read.note,
+      });
+      // C1-W: an incomplete read (the scan or the withdrawal reads ran out of budget) continues
+      // soon; a complete but unconfirmed one (the node is behind, or has no citrate_getLogs) is
+      // read again later, so the list catches up without a refresh.
+      if (!read.complete) this.schedulePendingRetry(PENDING_SCAN_RETRY_MS);
+      else if (!read.confirmed) this.schedulePendingRetry(PENDING_CATCHUP_RETRY_MS);
+    } catch (err) {
+      // C1-W: a failed log window (or an unfinished first scan) is shown as "—" plus the
+      // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read
+      // resumes. When to read again follows the error's kind (Rust PendingWithdrawalsError, or an
+      // IPC timeout), never the words of its message.
+      const failure = pendingReadFailure(err);
+      this.setState({ pendingWithdrawalsError: failure.message });
+      const retryMs = PENDING_RETRY_MS[failure.kind];
+      if (retryMs !== null) this.schedulePendingRetry(retryMs);
     }
   }
 
