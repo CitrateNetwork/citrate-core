@@ -177,9 +177,8 @@ impl NodeBackend for LiveBackend {
     fn invites(&self, group: &str) -> Result<Value, String> {
         let all = crate::invites::load(&self.app);
         Ok(json!({
-            "invites": all
-                .iter()
-                .filter(|i| i.group == group)
+            "invites": crate::invites::outstanding_invites(&all, group)
+                .into_iter()
                 .map(|i| json!({
                     "inviteId": invite_id_for(&i.token),
                     "forHandle": i.for_handle,

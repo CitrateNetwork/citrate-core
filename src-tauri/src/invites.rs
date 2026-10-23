@@ -51,6 +51,9 @@ pub struct PendingInvite {
     /// yet confirmed by the relay. Not claimable; kept until a tick reports the rendezvous revoked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub revoking: bool,
+    /// GROW-S2 — the invite was used (a claim approved), not revoked; set together with `revoking`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub consumed: bool,
 }
 
 /// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
@@ -68,6 +71,8 @@ pub struct PendingInviteView {
     pub lookup: String,
     /// GROW-S2 — revoke sent, waiting for the relay to confirm the rendezvous is closed.
     pub revoking: bool,
+    /// GROW-S2 — it was used (a claim approved) rather than revoked.
+    pub consumed: bool,
 }
 
 impl From<&PendingInvite> for PendingInviteView {
@@ -80,8 +85,21 @@ impl From<&PendingInvite> for PendingInviteView {
             link: i.link.clone(),
             lookup: i.lookup.clone(),
             revoking: i.revoking,
+            consumed: i.consumed,
         }
     }
+}
+
+/// The invites for `group` that are still outstanding: claimable, and listed as open to agents.
+/// A revoking invite (revoked or used here, waiting for the relay) is neither: its claims aren't
+/// polled, so a member just let in doesn't show up again under Requests.
+pub(crate) fn outstanding_invites<'a>(
+    all: &'a [PendingInvite],
+    group: &str,
+) -> Vec<&'a PendingInvite> {
+    all.iter()
+        .filter(|i| i.group == group && !i.revoking)
+        .collect()
 }
 
 /// The owner's outstanding invites for `group`, as key-free views (PBA-L4-008).
@@ -204,6 +222,7 @@ pub(crate) fn minted_invite(
         link,
         lookup: decision.lookup,
         revoking: false,
+        consumed: false,
     }
 }
 
@@ -218,6 +237,14 @@ pub(crate) fn revoke_outcome(
 ) -> Result<(), String> {
     match close {
         None | Some(Ok(())) => {}
+        Some(Err(crate::rendezvous::RvError::DaemonUnsupported)) => {
+            return Err(
+                "couldn't revoke the invite: this device's comms daemon can't close its relay \
+                 rendezvous (it lacks the rendezvous ops, for example after a downgrade). Update \
+                 Citrate Core, then try again."
+                    .to_string(),
+            )
+        }
         Some(Err(e)) => return Err(format!("couldn't revoke the invite: {e}")),
     }
     match legacy {
@@ -306,8 +333,35 @@ fn update_pending_at<T>(
 /// [`citrate_core_kit::fsutil`] writer, which creates the file `0600` in the
 /// `open(2)` call itself.
 fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), String> {
+    let staged = stage_pending(path, v)?;
+    commit_pending(&staged, path)
+}
+
+/// #431 — write the new contents to a 0600 sibling and fsync it; [`commit_pending`] renames it over
+/// `pending.json`. A crash before the rename leaves the previous file whole.
+fn stage_pending(
+    path: &std::path::Path,
+    v: &[PendingInvite],
+) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
     let bytes = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
-    citrate_core_kit::fsutil::write_secret_file(path, &bytes).map_err(|e| e.to_string())
+    let tmp = path.with_extension("json.tmp");
+    let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp).map_err(|e| e.to_string())?;
+    f.write_all(&bytes).map_err(|e| e.to_string())?;
+    f.sync_all().map_err(|e| e.to_string())?;
+    Ok(tmp)
+}
+
+/// Rename the staged file over `path` and fsync the directory, so the rename itself is durable.
+fn commit_pending(staged: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    std::fs::rename(staged, path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// `group_invite_create` — mint a single-use, group-bound invite + share link. No address resolution.
@@ -540,10 +594,8 @@ pub async fn group_invite_poll_claims(
     app: tauri::AppHandle,
     group: String,
 ) -> Result<Vec<ClaimView>, String> {
-    let invites: Vec<PendingInvite> = load(&app)
-        .into_iter()
-        .filter(|i| i.group == group)
-        .collect();
+    let all = load(&app);
+    let invites = outstanding_invites(&all, &group);
     let mut out: Vec<ClaimView> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for inv in invites {
@@ -644,7 +696,7 @@ pub(crate) fn consume_at(
     if !exists {
         return Ok(false);
     }
-    revoke_and_remove_at(path, group, token, close, legacy)
+    revoke_and_remove_at(path, group, token, true, close, legacy)
 }
 
 /// `group_invite_revoke` — drop an outstanding invite the owner no longer wants redeemable. Revokes
@@ -676,7 +728,7 @@ pub(crate) fn revoke_at(
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<(), String> {
-    revoke_and_remove_at(path, group, token, close, legacy).map(|_| ())
+    revoke_and_remove_at(path, group, token, false, close, legacy).map(|_| ())
 }
 
 /// [`revoke_at`], returning whether this call removed the record.
@@ -684,6 +736,7 @@ fn revoke_and_remove_at(
     path: &std::path::Path,
     group: &str,
     token: &str,
+    consumed: bool,
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<bool, String> {
@@ -713,7 +766,10 @@ fn revoke_and_remove_at(
         if v[pos].lookup.is_empty() {
             v.retain(|i| !(i.group == group && i.token == token));
         } else {
+            // Nothing is opened with the key again: drop it with the claimability.
             v[pos].revoking = true;
+            v[pos].consumed = consumed;
+            v[pos].priv_key.clear();
         }
         true
     })
@@ -730,7 +786,11 @@ pub(crate) fn settle_revocations(
     records.retain(|r| {
         let confirmed = invites.iter().any(|v| {
             v.lookup.eq_ignore_ascii_case(&r.lookup)
-                && v.state == crate::rendezvous::InviteState::Revoked
+                && matches!(
+                    v.state,
+                    crate::rendezvous::InviteState::Revoked
+                        | crate::rendezvous::InviteState::Expired
+                )
         });
         let expired = r.created_at.saturating_add(ttl_secs) <= now_unix;
         !(r.revoking && (confirmed || expired))
@@ -1507,6 +1567,106 @@ mod tests {
         assert!(body.contains("crate::invites::settle_revocations_after_tick(app, &views)"));
     }
 
+    // ---- independent review (#373 @6d00011): a revoking invite is no longer outstanding ----------
+
+    /// An approved or revoked invite (kept as revoking until the relay confirms) is not claimable and
+    /// not listed as outstanding: its claims aren't polled, so the person just let in doesn't show up
+    /// again under Requests, and agents don't see it as open.
+    #[test]
+    fn a_revoking_invite_is_not_outstanding() {
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let mut used = minted("g", T, d.clone());
+        used.revoking = true;
+        let open = minted("g", "open", d.clone());
+        let other = minted("h", "other", d);
+        let all = vec![used, open, other];
+        let out: Vec<&str> = super::outstanding_invites(&all, "g")
+            .into_iter()
+            .map(|i| i.token.as_str())
+            .collect();
+        assert_eq!(out, vec!["open"]);
+    }
+
+    /// The claims poll and the agent-facing list both go through `outstanding_invites`.
+    #[test]
+    fn claims_and_the_agent_list_read_only_outstanding_invites() {
+        let src = include_str!("invites.rs");
+        let body = &src[src
+            .find("pub async fn group_invite_poll_claims")
+            .expect("fn")..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        assert!(body.contains("outstanding_invites(&all, &group)"));
+        let mcp = include_str!("node_mcp_live.rs");
+        let body = &mcp[mcp.find("fn invites(&self, group: &str)").expect("fn")..];
+        let body = &body[..body.find("\n    }\n").expect("end")];
+        assert!(body.contains("crate::invites::outstanding_invites(&all, group)"));
+    }
+
+    /// Once retired, an invite's private key is dropped: nothing will be opened with it again.
+    #[test]
+    fn a_retired_invite_drops_its_private_key() {
+        let path = scratch("drop-key");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        super::revoke_at(&path, "g", T, |_| Ok(()), |_| Ok(())).expect("revoke");
+        let after = super::view_pending_at(&path).expect("reads");
+        assert!(after[0].revoking);
+        assert!(after[0].priv_key.is_empty(), "the key is gone");
+    }
+
+    /// #433: a used invite says it was used, a revoked one doesn't.
+    #[test]
+    fn a_consumed_invite_is_marked_consumed() {
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let path = scratch("consumed");
+        super::write_pending(&path, &[minted("g", T, d.clone()), minted("g", "b", d)])
+            .expect("write");
+        assert_eq!(
+            super::consume_at(&path, "g", T, |_| Ok(()), |_| Ok(())),
+            Ok(true)
+        );
+        super::revoke_at(&path, "g", "b", |_| Ok(()), |_| Ok(())).expect("revoke");
+        let after = super::view_pending_at(&path).expect("reads");
+        let by = |t: &str| after.iter().find(|i| i.token == t).cloned().expect("kept");
+        assert!(by(T).consumed && super::PendingInviteView::from(&by(T)).consumed);
+        assert!(!by("b").consumed);
+    }
+
+    /// #433: the daemon's `expired` for the lookup also settles a revoking record.
+    #[test]
+    fn a_revoking_record_settles_on_expired_too() {
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let mut rec = minted("g", T, d);
+        rec.revoking = true;
+        let now = rec.created_at + 60;
+        let kept = super::settle_revocations(
+            vec![rec],
+            &[invite_view(LOOKUP, crate::rendezvous::InviteState::Expired)],
+            now,
+        );
+        assert!(kept.is_empty());
+    }
+
+    /// #433: a downgraded daemon's refusal says what to do.
+    #[test]
+    fn an_unsupported_close_says_to_update() {
+        let e = super::revoke_outcome(Some(Err(RvError::DaemonUnsupported)), Ok(()))
+            .expect_err("fails closed");
+        assert!(e.contains("Update Citrate Core"), "{e}");
+    }
+
+    /// #431: a write that stops after staging (a crash before the rename) leaves the previous file
+    /// readable and unchanged.
+    #[test]
+    fn an_interrupted_write_leaves_the_previous_file() {
+        let path = scratch("atomic");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d.clone())]).expect("v1");
+        let _staged = super::stage_pending(&path, &[minted("g", "v2", d)]).expect("staged");
+        // No commit: the process died here.
+        assert_eq!(tokens(&path), vec![T.to_string()]);
+    }
+
     /// Tripwire: `pending.json` is only written through `update_pending_at` (one lock, read and write
     /// together), never from a copy loaded before a network call.
     #[test]
@@ -1588,6 +1748,7 @@ mod tests {
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
             lookup: String::new(),
             revoking: false,
+            consumed: false,
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
         assert_eq!(views.len(), 1);
@@ -1623,6 +1784,7 @@ mod tests {
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
             lookup: String::new(),
             revoking: false,
+            consumed: false,
         }];
         super::write_pending(&path, &invites).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
