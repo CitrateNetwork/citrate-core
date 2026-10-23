@@ -254,7 +254,7 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
       (e: unknown) => isUnavailable(e),
     );
     await expect(bridge.chat.clearProvider("openai")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
-    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    await expect(bridge.chat.infer("openai", "[]", "{}", "cc_x")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("inferLocal is honestly Unavailable and inferenceState is 'demo' in sim (no llama-server, no local model)", async () => {
@@ -266,6 +266,14 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
     await expect(bridge.chat.inferLocal("[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
     expect(await bridge.chat.inferenceState(true)).toBe("demo");
     expect(await bridge.chat.inferenceState(false)).toBe("demo");
+  });
+
+  it("chat route: the preview reports the default (ask first) and cannot change it", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const { isUnavailable } = await import("./types");
+    expect(await bridge.chat.route()).toEqual({ route: "ask_first", loadError: null });
+    await expect(bridge.chat.setRoute("local_only")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("backend is the honest built-in demo agent (Rule 1 — no gateway label)", async () => {

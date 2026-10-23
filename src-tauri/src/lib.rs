@@ -62,6 +62,8 @@ mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod chat_consent;
+mod chat_route;
 mod device_link;
 mod device_link_share;
 mod docs_ingest;
@@ -151,12 +153,15 @@ mod hermes_terminal;
 // Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
+// GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
+mod join;
 mod model_catalog;
 mod model_delete;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
 mod storage_backup;
+mod store_catalog;
 mod training;
 
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
@@ -337,13 +342,23 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // v2 invite links: the join client (pending attaches + opened invites, memory only).
+            app.manage(join::build_join_state());
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
             // `wallet::sign_message` is reachable ONLY from `approve`. @rule8:
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
-            app.manage(ceremony::build_ceremony_state());
+            // Contract v1.1 §1: the first-submission record persists under the app data dir, so
+            // a re-send after a restart is never mistaken for a first submission.
+            app.manage(match app.path().app_data_dir() {
+                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
+                Err(e) => {
+                    eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+            });
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
             app.manage(popout_contract::ContractInbox::default());
@@ -402,6 +417,8 @@ pub fn run() {
             // https baseURL at set-time and ai_chat calls the STORED baseURL only —
             // the webview picks WHICH provider id, never the URL (exfil-binding).
             app.manage(ai::build_ai_state());
+            // K2: the one-time consents remote chat sends need (in memory only).
+            app.manage(chat_consent::ChatConsentState::default());
             // CORE-BC-3.1 — the ModelManager: the local Gemma GGUF download +
             // SHA-256 verify. model_status is honest (Ready ONLY after a real
             // verify — never mere presence, Rule 1); model_download is STREAMED +
@@ -508,6 +525,13 @@ pub fn run() {
             invites::group_invite_revoke,
             invites::group_referral_log,
             invites::group_referral_export,
+            // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
+            join::join_mint,
+            join::join_attach,
+            join::join_resolve,
+            join::join_redeem,
+            join::join_revoke,
+            join::join_list,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
@@ -734,6 +758,10 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            chat_consent::chat_consent_prepare,
+            chat_consent::media_consent_prepare,
+            chat_route::chat_route_get,
+            chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
             model_delete::model_delete_states,
@@ -918,6 +946,13 @@ pub fn run() {
             components::components_status,
             components::components_update,
             components::components_rollback,
+            // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
+            // removal. Every catalog command refuses until the catalog key is issued.
+            store_catalog::store_catalog,
+            store_catalog::store_stage,
+            store_catalog::store_install,
+            store_catalog::store_installed,
+            store_catalog::store_remove,
             // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
             // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
             mcp_servers::mcp_servers_list,

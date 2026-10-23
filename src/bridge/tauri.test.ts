@@ -49,6 +49,7 @@ const connMock: Record<string, { connected: boolean; scope: string | null; conne
   notion: { connected: false, scope: null, connectedAt: null },
 };
 
+const routeMock = { route: "ask_first" };
 const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   switch (cmd) {
     case "config_read":
@@ -329,6 +330,10 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       if (aiMock.default === pid) aiMock.default = null;
       return undefined;
     }
+    case "chat_consent_prepare": {
+      const a = (args ?? {}) as { providerId: string; message: string };
+      return { consentId: "cc_minted", providerId: a.providerId, expiresAtMs: 1 };
+    }
     case "ai_chat": {
       const a = (args ?? {}) as { providerId: string; messagesJson: string; contextJson: string };
       if (!aiMock.map.has(a.providerId)) throw "ai: no provider configured for that id";
@@ -341,6 +346,12 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       // BC-3.2 — REAL LOCAL inference: the webview supplies ONLY messages + context.
       // Rust derives the loopback endpoint from the serve manager (no url arg here).
       return "local-completion from the bundled llama-server";
+    }
+    case "chat_route_get":
+      return { route: routeMock.route, loadError: null };
+    case "chat_route_set": {
+      routeMock.route = String((args ?? {}).route);
+      return { route: routeMock.route, loadError: null };
     }
     case "model_inference_state": {
       // BC-3.2 — the honest routing state, computed in Rust. The mock echoes the
@@ -880,17 +891,18 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
     expect(statuses.find((p) => p.id === "gateway")!.configured).toBe(false);
   });
 
-  it("infer invokes ai_chat with {providerId,messagesJson,contextJson} and returns the completion (no url arg)", async () => {
+  it("infer invokes ai_chat with {providerId,messagesJson,contextJson,consentId} and returns the completion (no url arg)", async () => {
     const bridge = createTauriBridge();
     await bridge.chat.setProvider("gateway", "https://infer.citrate.ai/v1", "gemma", "cgk_key");
     const messagesJson = JSON.stringify([{ role: "user", content: "hi" }]);
     const contextJson = JSON.stringify({ height: 1 });
-    const out = await bridge.chat.infer("gateway", messagesJson, contextJson);
+    const out = await bridge.chat.infer("gateway", messagesJson, contextJson, "cc_minted");
     // The command args have NO url field — the webview cannot supply an endpoint
-    // (exfil-binding). The completion reflects the STORED baseURL.
-    expect(invokeMock).toHaveBeenCalledWith("ai_chat", { providerId: "gateway", messagesJson, contextJson });
+    // (exfil-binding). The completion reflects the STORED baseURL. K2: the core-minted consent rides
+    // along; core refuses a remote send without it.
+    expect(invokeMock).toHaveBeenCalledWith("ai_chat", { providerId: "gateway", messagesJson, contextJson, consentId: "cc_minted" });
     const callArgs = invokeMock.mock.calls.find((c) => c[0] === "ai_chat")![1] as Record<string, unknown>;
-    expect(Object.keys(callArgs).sort()).toEqual(["contextJson", "messagesJson", "providerId"]);
+    expect(Object.keys(callArgs).sort()).toEqual(["consentId", "contextJson", "messagesJson", "providerId"]);
     expect(out).toContain("https://infer.citrate.ai/v1");
   });
 
@@ -899,7 +911,14 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
     await bridge.chat.setProvider("openai", "https://api.openai.com/v1", "gpt-4o", "sk-abc12345");
     await bridge.chat.clearProvider("openai");
     expect(invokeMock).toHaveBeenCalledWith("ai_clear_provider", { providerId: "openai" });
-    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toBeTruthy();
+    await expect(bridge.chat.infer("openai", "[]", "{}", "cc_x")).rejects.toBeTruthy();
+  });
+
+  it("consentPrepare invokes chat_consent_prepare with only the provider id and the message", async () => {
+    const bridge = createTauriBridge();
+    const c = await bridge.chat.consentPrepare("gateway", "hello");
+    expect(invokeMock).toHaveBeenCalledWith("chat_consent_prepare", { providerId: "gateway", message: "hello" });
+    expect(c.consentId).toBe("cc_minted");
   });
 
   it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {
@@ -926,6 +945,17 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
   // Q-A.4a item 6 — the honest routing state passes the gateway-key presence to
   // Rust (model_inference_state), which decides local/gateway/demo. The webview
   // never fabricates "ready"; only Rust returns it (from real serve health).
+  // K2 (0.5.2): the member's chat route is stored in Rust (chat_route.rs) and read back.
+  it("chat.route / chat.setRoute invoke chat_route_get / chat_route_set {route}", async () => {
+    const bridge = createTauriBridge();
+    expect(await bridge.chat.route()).toEqual({ route: "ask_first", loadError: null });
+    expect(invokeMock.mock.calls.some((c) => c[0] === "chat_route_get")).toBe(true);
+    expect(await bridge.chat.setRoute("local_only")).toEqual({ route: "local_only", loadError: null });
+    expect(invokeMock).toHaveBeenCalledWith("chat_route_set", { route: "local_only" });
+    expect(await bridge.chat.route()).toEqual({ route: "local_only", loadError: null });
+    routeMock.route = "ask_first";
+  });
+
   it("chat.inferenceState invokes model_inference_state with {gatewayConfigured}", async () => {
     const bridge = createTauriBridge();
     expect(await bridge.chat.inferenceState(true)).toBe("gateway-only");

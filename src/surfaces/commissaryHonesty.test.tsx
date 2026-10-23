@@ -27,6 +27,10 @@
 // download time, so none of these is an auth bypass. They are honesty and UX defects:
 // the surface tells a member they hold access they do not hold, then the server
 // refuses them.
+//
+// K5a (2026-10-19): the seed tabs are retired from under the Store heading; the Store renders
+// only the signed catalog. These tripwires now pin that NONE of the four defects can come back
+// through the Store surface, whatever download state or tier is in the app state.
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Commissary } from "./Commissary";
@@ -85,20 +89,20 @@ describe("Commissary honesty — no fabricated verification claim (Rule 1)", () 
   });
 });
 
-describe("Commissary gating — fail CLOSED on a tier it does not recognise", () => {
-  it("does NOT unlock gated cards for a tier absent from the rank map", () => {
-    // The authority can mint tiers this client has never heard of. An unrecognised
-    // tier must collapse to the LEAST access, never the most.
+describe("Store gating — no seed card can render unlocked for any tier", () => {
+  it("renders no seed card for a tier absent from the rank map", () => {
+    // Gating is enforced in core now (store_catalog.rs member_rank, fail-closed). The surface
+    // must not fall back to the client-side seed and its own rank copy for any tier.
     const unknown = html({ tier: "some-tier-minted-later" as AppState["tier"] });
-    const free = html({ tier: "free" });
-    // Whatever the free tier is refused, an unknown tier must also be refused.
-    const lockedMarkers = (s: string) => (s.match(/Requires /g) ?? []).length;
-    expect(lockedMarkers(unknown)).toBeGreaterThanOrEqual(lockedMarkers(free));
+    expect(unknown).not.toContain("Requires ");
+    expect(unknown).not.toContain("Download");
+    expect(unknown).not.toContain("listed · not yet downloadable");
   });
 
-  it("does NOT unlock gated cards when the tier is missing entirely", () => {
+  it("renders no seed card when the tier is missing entirely", () => {
     const missing = html({ tier: undefined as unknown as AppState["tier"] });
-    expect((missing.match(/Requires /g) ?? []).length).toBeGreaterThan(0);
+    expect(missing).not.toContain("Requires ");
+    expect(missing).not.toContain("Download");
   });
 });
 
