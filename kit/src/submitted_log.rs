@@ -304,6 +304,30 @@ impl SubmittedTxLog {
         let origin = origin.map(|(s, n)| (s.to_ascii_lowercase(), n));
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.contains(&hash) {
+            // A re-send of recorded bytes. If they were forgotten (Forget, or taken out of recovery
+            // after a refusal), they are in flight again: bring the entry back into recovery as the
+            // latest send, durably, BEFORE the send. Otherwise a restart finds nothing and offers a
+            // second activation while this one is in flight. No durable write, no send.
+            if g.entries.iter().any(|e| e.hash == hash && e.forgotten) {
+                let mut next = g.clone();
+                if let Some(pos) = next.entries.iter().position(|e| e.hash == hash) {
+                    if let Some(mut e) = next.entries.remove(pos) {
+                        e.forgotten = false;
+                        if let Some(c) = call {
+                            e.to = Some(c.to.to_ascii_lowercase());
+                            e.selector = Some(c.selector.to_ascii_lowercase());
+                        }
+                        e.at_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_millis() as u64)
+                            .or(e.at_ms);
+                        next.entries.push_back(e);
+                    }
+                }
+                self.persist(&next)?;
+                *g = next;
+            }
             self.count_attempt(&hash);
             return Ok(false);
         }

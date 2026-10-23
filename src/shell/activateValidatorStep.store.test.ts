@@ -143,7 +143,8 @@ describe("S6 → S7 hand-off", () => {
 describe("resume after quit", () => {
   it("persists the step; the sent activation's record is not in localStorage", () => {
     expect(PERSIST_KEYS).toContain("stage");
-    expect(PERSIST_KEYS).toContain("validatorSkipped");
+    // validatorSkipped had a writer and no reader (#442): it is gone, not persisted.
+    expect(PERSIST_KEYS as string[]).not.toContain("validatorSkipped");
     // The activation record is #347's fsync'd submitted-tx record in Rust, never localStorage.
     expect(PERSIST_KEYS).not.toContain("s7TxHash");
     expect(PERSIST_KEYS).not.toContain("s7TxAt");
@@ -190,7 +191,7 @@ describe("skip path: Explore free", () => {
     const tier = store.state.tier;
     store.onS7Skip();
     expect(store.state.stage).toBe("done");
-    expect(store.state.validatorSkipped).toBe(true);
+    expect("validatorSkipped" in store.state).toBe(false); // no write-only state
     expect(store.state.tier).toBe(tier);
     expect(registerValidatorMock).not.toHaveBeenCalled();
     expect(store.state.walletReview).toBeNull();
@@ -599,7 +600,7 @@ describe("Try again after a revert", () => {
 describe("Node's Activate reconciles the durable record on every entry (Codex P2 at f98f8ae)", () => {
   function exploredFree(): Store {
     const store = new Store();
-    store.setState({ stage: "done", validatorSkipped: true, hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true });
+    store.setState({ stage: "done", hasGrant: true, walletAddr: WALLET, custodyAddr: WALLET, signedIn: true, walletFromClaim: true });
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     return store;
   }

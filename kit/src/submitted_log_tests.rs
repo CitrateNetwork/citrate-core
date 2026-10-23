@@ -557,3 +557,44 @@ fn a_fresh_profile_starts_certain_and_writes_its_record_at_once() {
     std::fs::write(t.0.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault");
     assert!(!SubmittedTxLog::open(t.file()).is_uncertain(), "a wallet created after the record is not an upgrade");
 }
+
+// Reviewer CR at d737f33 (money path): a re-send of forgotten bytes must bring the send back into
+// recovery, durably, or a restart offers a second activation while the re-sent one is in flight.
+#[test]
+fn join8_a_resend_of_forgotten_bytes_is_found_again_after_a_restart() {
+    let t = Tmp::new("resend-forgotten");
+    {
+        let log = SubmittedTxLog::open(t.file());
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+        assert_eq!(log.forget(&h(1)), Ok(true));
+        assert_eq!(log.latest_call(MEMBER, &activate_call()), None);
+        // The member re-signs at the same nonce (same bytes) and sends again.
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(false), "still not a first submission");
+        assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)), "recovered in this run");
+    }
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)), "recovered after a restart");
+}
+
+#[test]
+fn join8_a_resend_of_forgotten_bytes_is_the_latest_call_even_after_a_newer_forgotten_one() {
+    let t = Tmp::new("resend-order");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+    assert_eq!(log.forget(&h(1)), Ok(true));
+    assert_eq!(log.try_record_call(&h(2), MEMBER, 6, Some(&activate_call())), Ok(true));
+    assert_eq!(log.forget(&h(2)), Ok(true));
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(false));
+    assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)));
+}
+
+#[test]
+fn join8_a_resend_of_forgotten_bytes_that_cannot_be_written_is_refused() {
+    let t = Tmp::new("resend-fail");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+    assert_eq!(log.forget(&h(1)), Ok(true));
+    std::fs::create_dir(t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    assert!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())).is_err(), "no durable record, so the caller must not send");
+    assert_eq!(log.latest_call(MEMBER, &activate_call()), None, "unchanged");
+}
