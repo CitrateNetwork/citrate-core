@@ -1,0 +1,17 @@
+[
+  {
+    "group": "abababababababababababababababab",
+    "token": "_WMmXGgqOhccY2YmQuQHMKglU9pQ8qEqwoMd1LpJlog",
+    "forHandle": "@alice",
+    "createdAt": 1792300000,
+    "privKey": "39a8f9bdefa10d15320d43468a99a261d6a6b93e195a0a23e3e204b313baaa5b",
+    "link": "citrate://invite?g=abababababababababababababababab&t=_WMmXGgqOhccY2YmQuQHMKglU9pQ8qEqwoMd1LpJlog&k=03eb4c197761a08ddecb42860d56ba2527afe17bd4de0ee774bab2c27ff7b55595&n=47617264656e20636c7562"
+  },
+  {
+    "group": "abababababababababababababababab",
+    "token": "Q9Vv0Mb7cwQ_chZ9BjOUL8adrEF6zkKyng-GT-7oFpY",
+    "forHandle": "",
+    "createdAt": 1792200000,
+    "link": ""
+  }
+]

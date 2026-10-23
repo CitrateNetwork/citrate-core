@@ -11,6 +11,7 @@
 // =====================================================================
 
 import type { ValidatorActivation } from "./chainTruth";
+import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -475,7 +476,10 @@ export interface AppState {
    *  its server is not running. `waiting`: the app's own startup start is pending (bounded wait);
    *  `ask`: the member chooses, for this message only, to restart the local model or send it to
    *  the gateway; `restarting`: the member chose restart. Null when nothing is held. */
-  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting" } | null;
+  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting"; options?: RouteAskOptions } | null;
+  /** K2: the member's chat route, read from core (chat_route.rs) and never stored in the browser.
+   *  `ask_first` (default): ask before each message goes to the gateway. `local_only`: never. */
+  chatRoute: ChatRoute;
   chatBackend: "gateway" | "local";
   /** Honest live label for the CURRENT chat provider (set by rebuildProvider from provider.label).
    *  Reflects what actually answers — local llama-server, the gateway, or the built-in demo. */
@@ -580,12 +584,13 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
-  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). On by default (owner
-   * decision 2026-10-04). Every command still needs the member's approval, runs in the OS sandbox,
-   * and only in folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
+  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). Off by default for new
+   * installs (owner decision 2026-10-19, superseding 2026-10-04); an install that stored a value
+   * keeps it. Every command still needs the member's approval, runs in the OS sandbox, and only in
+   * folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
   hermesTerminal: boolean;
-  /** One-time migration marker: the 2026-10-04 default (terminal commands on) has been applied to
-   * this install. After that, the member's own choice is kept. */
+  /** Marker of the retired 2026-10-04 migration (terminal commands switched on once). Kept so
+   * stored states still read; nothing acts on it any more. */
   hermesTerminalDefaultApplied: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
@@ -838,6 +843,7 @@ export function freshState(pid: string): AppState {
     chatMsgs: [],
     chatStatus: "ready",
     chatRouteHold: null,
+    chatRoute: "ask_first",
     chatBackend: "gateway",
     chatProviderLabel: "starting…",
     chatProviderKind: "demo",
@@ -891,7 +897,7 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: true,
     hermesSidecarLoopDefaultApplied: true,
-    hermesTerminal: true,
+    hermesTerminal: false,
     hermesTerminalDefaultApplied: true,
     hermesBrief: null,
     hermesPersona: null,
@@ -1072,12 +1078,8 @@ export function loadState(): AppState {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
   }
-  // Owner decision 2026-10-04: Hermes may run terminal commands (each one approved by the member,
-  // sandboxed, in shared folders only). Existing installs are switched on once; a member who turns
-  // it off afterwards stays off.
-  if (saved && saved.hermesTerminalDefaultApplied !== true) {
-    base.hermesTerminal = true;
-    base.hermesTerminalDefaultApplied = true;
-  }
+  // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
+  // installs. A stored value is kept as it is (on or off); only an install with no stored value
+  // takes the default from freshState. The old switch-on-once migration is retired.
   return base;
 }

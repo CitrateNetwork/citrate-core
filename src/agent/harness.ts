@@ -956,10 +956,13 @@ export const SIDECAR_DOWN_NOTICE =
  * the gateway and never fabricates a local reply.
  */
 export const LOCAL_STOPPED_LABEL = "local model · not running";
-export function createLocalStoppedProvider(): ChatProvider {
+/** K2: the held-route labels when the reason is not "the local model is stopped". */
+export const ASK_FIRST_NO_LOCAL_LABEL = "no local model · asks before the gateway";
+export const LOCAL_ONLY_LABEL = "local only · local model not running";
+export function createLocalStoppedProvider(label: string = LOCAL_STOPPED_LABEL): ChatProvider {
   return {
     kind: "local-stopped",
-    label: LOCAL_STOPPED_LABEL,
+    label,
     async send({ callbacks }) {
       callbacks.onStatus("error");
       throw new Error("the local model is not running; nothing was sent to the gateway");

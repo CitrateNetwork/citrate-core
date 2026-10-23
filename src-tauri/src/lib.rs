@@ -62,6 +62,7 @@ mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod chat_route;
 mod device_link;
 mod device_link_share;
 mod docs_ingest;
@@ -151,6 +152,8 @@ mod hermes_terminal;
 // Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
+// GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
+mod join;
 mod model_catalog;
 mod model_delete;
 mod social;
@@ -176,6 +179,11 @@ mod shutdown_coverage_tests;
 // SCL-S0.7: the Windows installer's pre-install hook (inputs checked on every OS).
 #[cfg(test)]
 mod windows_installer_hook_tests;
+// 0.5.1 -> 0.5.2: the app data a 0.5.1 install holds, and the updater feed it trusts.
+#[cfg(test)]
+mod upgrade_updater_feed_tests;
+#[cfg(test)]
+mod upgrade_v051_tests;
 
 use tauri::Manager;
 
@@ -332,6 +340,8 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // v2 invite links: the join client (pending attaches + opened invites, memory only).
+            app.manage(join::build_join_state());
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -511,6 +521,13 @@ pub fn run() {
             invites::group_invite_revoke,
             invites::group_referral_log,
             invites::group_referral_export,
+            // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
+            join::join_mint,
+            join::join_attach,
+            join::join_resolve,
+            join::join_redeem,
+            join::join_revoke,
+            join::join_list,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
@@ -737,6 +754,8 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            chat_route::chat_route_get,
+            chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
             model_delete::model_delete_states,
