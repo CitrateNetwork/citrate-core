@@ -26,7 +26,9 @@
 //! or unreadable file no send is reported as "not sent" again (every error is "outcome unknown").
 //! That fails closed by design.
 //!
-//! A missing file is an empty, certain record. A hash whose record can't be made durable is
+//! A missing file is an empty, certain record only for a profile with no wallet yet; next to an
+//! existing custody envelope (an upgrade from a build that never wrote this record) it is
+//! uncertain. Either way it is written at once. A hash whose record can't be made durable is
 //! refused ([`SubmittedTxLog::try_record`] returns `Err`) and not kept: the caller must not send.
 //! Hashes are public transaction ids, not key material.
 
@@ -174,6 +176,7 @@ impl SubmittedTxLog {
                 })
                 .collect()
         };
+        let mut missing = false;
         let (entries, evicted, uncertain) = match std::fs::read(&path) {
             Ok(bytes) => {
                 if let Ok(d) = serde_json::from_slice::<OnDisk>(&bytes) {
@@ -189,7 +192,16 @@ impl SubmittedTxLog {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                (Vec::new(), Default::default(), false)
+                // #347 Codex P1: builds before this record never wrote it. A profile that
+                // already holds a wallet (the custody envelope in the same app data dir) may
+                // have submitted txs with an unknown outcome, so its missing record is NOT a
+                // certain empty history. Only a profile with no wallet yet starts certain.
+                missing = true;
+                let wallet_exists = path
+                    .parent()
+                    .map(|d| d.join(crate::custody::ENVELOPE_FILE))
+                    .is_some_and(|p| p.exists());
+                (Vec::new(), Default::default(), wallet_exists)
             }
             Err(_) => (Vec::new(), Default::default(), true),
         };
@@ -209,6 +221,19 @@ impl SubmittedTxLog {
             uncertain,
         };
         inner.evict_to_capacity();
+        // A missing record is written at once (certain for a new profile, uncertain for an
+        // upgraded one), so a wallet created later in this run never makes the next launch look
+        // like an upgrade. If it can't be written, nothing proves the history: uncertain.
+        if missing {
+            let disk = OnDisk {
+                entries: Vec::new(),
+                evicted: Default::default(),
+                uncertain: inner.uncertain,
+            };
+            if write_atomic(&path, &disk, sync_dir).is_err() {
+                inner.uncertain = true;
+            }
+        }
         SubmittedTxLog {
             path: Some(path),
             inner: Mutex::new(inner),
