@@ -11,6 +11,7 @@
 // =====================================================================
 
 import type { MemberBondState, ValidatorActivation, ValidatorCounts } from "./chainTruth";
+import type { MembershipPrice } from "../data/membership";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -461,6 +462,8 @@ export interface AppState {
    * (#348 review).
    */
   memberBond: MemberBondState | null;
+  /** C1-P — the membership price read from core-membership; null = not read or unavailable. */
+  membershipPrice: MembershipPrice | null;
   /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
   validatorCounts: ValidatorCounts | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
@@ -843,6 +846,7 @@ export function freshState(pid: string): AppState {
     rewards: null,
     validatorActivation: null,
     memberBond: null,
+    membershipPrice: null,
     validatorCounts: null,
     blockSecs: null,
     minStakeWei: null,

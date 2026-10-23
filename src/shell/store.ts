@@ -673,6 +673,14 @@ export class Store {
   private validatorPubkey: `0x${string}` | null = null;
   /** C1-V3 — agent payments submitted with an unknown outcome this session: effect key → tx hash. */
   private unknownAgentPayments = new Map<string, string | null>();
+  /** C1-P — when the membership price was last read (at most once per lifetime). */
+  private lastPriceReadAt = 0;
+  /** C1-P — how long a read price stays on screen before it is re-read or cleared. */
+  static readonly PRICE_LIFETIME_MS = 10 * 60_000;
+  /** C1-P — the price surfaces on screen now (S3, Settings billing, the Commissary). */
+  private priceWatchers = 0;
+  /** C1-P — the timer that expires the read price. */
+  private priceExpiry: ReturnType<typeof setTimeout> | null = null;
   /** C1-V — when the producer set was last sampled (refreshed at most every 5 minutes). */
   private lastProducersAt = 0;
   /** C1-V — the catalogued public-RPC reads (UI truth contract §2). Replaced in tests. */
@@ -1448,6 +1456,45 @@ export class Store {
     } catch {
       this.setState({ validatorCounts: null });
     }
+  }
+
+  /**
+   * C1-P — read the membership price from core-membership (bridge.membership.price → Rust
+   * `membership_price`), at most every 10 minutes. A failed read clears it, so no surface shows a
+   * number that was not just read; they show the "See membership pricing" link instead.
+   */
+  async refreshMembershipPrice(): Promise<void> {
+    if (this.lastPriceReadAt && Date.now() - this.lastPriceReadAt < Store.PRICE_LIFETIME_MS) return;
+    this.lastPriceReadAt = Date.now();
+    if (this.priceExpiry) clearTimeout(this.priceExpiry);
+    try {
+      this.setState({ membershipPrice: await bridge.membership.price() });
+    } catch {
+      this.setState({ membershipPrice: null });
+    }
+    // The read price has a lifetime. When it runs out it is cleared, and re-read if a price
+    // surface is still on screen, so an open screen never shows a price older than the lifetime.
+    this.priceExpiry = setTimeout(() => {
+      this.priceExpiry = null;
+      this.lastPriceReadAt = 0;
+      this.setState({ membershipPrice: null });
+      if (this.priceWatchers > 0) void this.refreshMembershipPrice();
+    }, Store.PRICE_LIFETIME_MS);
+  }
+
+  /**
+   * C1-P — a price surface (S3, Settings billing, the Commissary) is on screen: read the price
+   * now. Returns the unsubscribe the surface calls when it unmounts.
+   */
+  watchMembershipPrice(): () => void {
+    this.priceWatchers += 1;
+    void this.refreshMembershipPrice();
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.priceWatchers = Math.max(0, this.priceWatchers - 1);
+    };
   }
 
   async refreshChainParams(): Promise<void> {
