@@ -6,6 +6,9 @@
 //! fabricated data (Rule 1). Chain reads happen in the webview via viem/wagmi
 //! (D-13); signing routes through the Rust SignatureCeremony once it exists
 //! (CORE-S2).
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 // WP-S1.2: the safety-critical spine (ceremony, custody, oidc, supervisor,
 // wallet, rpc, txdecode, config) now lives in `citrate-core-kit`, shared with
@@ -167,8 +170,11 @@ mod training;
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
 #[cfg(test)]
 mod invoke_secret_scan_tests;
+// Every in-process vault write targets a slot the webview's custody_put cannot address.
 #[cfg(test)]
 mod main_thread_tripwire;
+#[cfg(test)]
+mod vault_slot_reservation_tests;
 // HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
 #[cfg(test)]
 mod privacy_contract_tests;
@@ -403,9 +409,9 @@ pub fn run() {
             // CORE-C3 — the MemoryManager: the citrate-memories `mcp_serve`
             // daemon under the SidecarSupervisor, serving the per-user encrypted
             // memory graph over a Unix socket. @rule8: a per-user store wrapping
-            // key lives in the OS keyring (never on disk clear) and is handed to
-            // the daemon via the CITRATE_MEM_STORE_KEY env (forward-compat seam —
-            // see memory.rs / sprint Concern 1). recall/search/neighbors speak the
+            // key lives in the OS keyring and is handed to the daemon in an
+            // owner-only key file named by CITRATE_MEM_STORE_KEY_FILE (see
+            // memory.rs). recall/search/neighbors speak the
             // daemon's JSON-RPC over the socket; the Storage constellation renders
             // the real graph (no fabricated nodes — Rule 1).
             app.manage(memory::build_memory_state(&app.handle().clone())?);
@@ -1110,26 +1116,45 @@ mod tests {
         assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
     }
 
-    /// ADV-8 boundary, asserted structurally against the real source: the
-    /// invoke_handler registers exactly the seven metadata/status custody
-    /// commands and NEVER `custody_get` (the in-process secret-reading pub fn).
-    /// No invoke command returns secret bytes.
+    /// ADV-8 boundary, asserted structurally against the real sources: the invoke_handler
+    /// registers exactly the `#[tauri::command]`s defined in kit's custody.rs (whose return types
+    /// the kit ADV-8 test pins), and NEVER `custody_get` (the in-process secret-reading pub fn).
     #[test]
     fn no_custody_invoke_command_returns_secret_bytes() {
         let src = include_str!("lib.rs");
-        // The registered custody commands (all return status / () / metadata).
-        for cmd in [
-            "custody::custody_status",
-            "custody::custody_init",
-            "custody::custody_unlock",
-            "custody::custody_ensure_unlocked",
-            "custody::custody_lock",
-            "custody::custody_put",
-            "custody::custody_list",
-            "custody::custody_keyring_status",
-        ] {
-            assert!(src.contains(cmd), "custody command not registered: {cmd}");
+        let handler_start = src
+            .find("tauri::generate_handler![")
+            .expect("the invoke handler list");
+        let handler = &src[handler_start..];
+        let handler = &handler[..handler.find("])").expect("end of the handler list")];
+        let registered: std::collections::BTreeSet<String> = handler
+            .lines()
+            .map(str::trim)
+            .filter_map(|l| l.strip_prefix("custody::"))
+            .map(|l| l.trim_end_matches(',').to_string())
+            .collect();
+        let kit = include_str!("../../kit/src/custody.rs");
+        let mut defined = std::collections::BTreeSet::new();
+        let mut lines = kit.lines();
+        while let Some(line) = lines.next() {
+            if line.trim() != "#[tauri::command]" {
+                continue;
+            }
+            let sig = lines.find(|l| l.contains("fn ")).expect("command fn");
+            let name: String = sig[sig.find("fn ").expect("fn") + 3..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            defined.insert(name);
         }
+        assert!(
+            defined.len() >= 7,
+            "the scan must see the custody commands: {defined:?}"
+        );
+        assert_eq!(
+            registered, defined,
+            "the registered custody commands differ from those defined in kit custody.rs"
+        );
         // The secret-reading API must NEVER be registered as an invoke command.
         // Registration would take the form `<mod>::<fn>,` inside the
         // generate_handler![...] list. The needle is assembled from parts so
