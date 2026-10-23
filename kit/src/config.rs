@@ -156,19 +156,18 @@ impl AppConfig {
     /// the popup navigates to. Trims a trailing slash on the base so we never
     /// emit a doubled `//checkout`.
     pub fn checkout_url(&self) -> String {
-        format!(
-            "{}/checkout",
-            self.core_membership_url.trim_end_matches('/')
-        )
+        format!("{}/checkout", self.membership_base())
     }
 
     /// The enterprise-lead capture endpoint (`{core_membership_url}/api/enterprise/lead`) — where the
     /// step-3 "Enterprise · Contact us" form POSTs a qualified sales lead. Same base as checkout.
     pub fn enterprise_lead_url(&self) -> String {
-        format!(
-            "{}/api/enterprise/lead",
-            self.core_membership_url.trim_end_matches('/')
-        )
+        format!("{}/api/enterprise/lead", self.membership_base())
+    }
+
+    /// The membership base every membership URL is built from (trailing slash trimmed).
+    fn membership_base(&self) -> &str {
+        self.core_membership_url.trim_end_matches('/')
     }
 }
 
@@ -422,6 +421,99 @@ mod tests {
                 merged.checkout_url().starts_with("https://"),
                 "checkout url must always be https"
             );
+        }
+    }
+
+    /// A membership URL already in config.json (stored by an earlier build, or edited on disk) goes
+    /// through the same host pin when it is loaded and when it is used: an unpinned host reads back
+    /// as the default, and no membership URL is ever built from it.
+    #[test]
+    fn a_stored_unpinned_membership_url_is_never_used() {
+        let stored = serde_json::json!({
+            "net": "testnet",
+            "rpc": "local",
+            "dataDir": "~/.citrate/core",
+            "cpuCap": 50,
+            "autolock": 30,
+            "channel": "stable",
+            "telemetry": false,
+            "coreMembershipUrl": "https://core-membership-evil.vercel.app"
+        });
+        let cfg: AppConfig = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            cfg.core_membership_url, "https://membership.citrate.ai",
+            "loaded value"
+        );
+        assert_eq!(cfg.checkout_url(), "https://membership.citrate.ai/checkout");
+        assert_eq!(
+            cfg.enterprise_lead_url(),
+            "https://membership.citrate.ai/api/enterprise/lead"
+        );
+        // A value set in code without `apply` is pinned at use too.
+        let direct = AppConfig {
+            core_membership_url: "http://core-membership.vercel.app".into(),
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            direct.checkout_url(),
+            "https://membership.citrate.ai/checkout"
+        );
+        assert_eq!(
+            direct.enterprise_lead_url(),
+            "https://membership.citrate.ai/api/enterprise/lead"
+        );
+        // A pinned stored value is kept.
+        let ok: AppConfig = serde_json::from_value(serde_json::json!({
+            "coreMembershipUrl": "https://core-membership.vercel.app/"
+        }))
+        .unwrap();
+        assert_eq!(
+            ok.checkout_url(),
+            "https://core-membership.vercel.app/checkout"
+        );
+    }
+
+    /// Tripwire: every membership URL is built through `membership_base` (which pins the host), and
+    /// no code outside `config.rs` reads the stored field directly.
+    #[test]
+    fn every_membership_url_goes_through_the_host_pin() {
+        let src = include_str!("config.rs");
+        let prod = &src[..src.find("#[cfg(test)]").expect("tests")];
+        let reads: Vec<&str> = prod
+            .lines()
+            .filter(|l| l.contains("self.core_membership_url"))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            reads.len(),
+            2,
+            "only apply's write and membership_base may touch the field: {reads:?}"
+        );
+        let base = &prod[prod.find("fn membership_base(").expect("membership_base")..];
+        let base = &base[..base.find("\n    }\n").expect("end")];
+        assert!(
+            base.contains("is_valid_core_membership_url("),
+            "the base must pin the host"
+        );
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for dir in [manifest.join("src"), manifest.join("../src-tauri/src")] {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "config.rs" {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap_or_default();
+                let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+                assert!(
+                    !prod.contains(".core_membership_url"),
+                    "{name} reads the stored membership URL directly; use checkout_url / enterprise_lead_url"
+                );
+            }
         }
     }
 
