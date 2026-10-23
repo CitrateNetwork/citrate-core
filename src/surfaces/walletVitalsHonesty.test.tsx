@@ -83,4 +83,16 @@ describe("Wallet — Q-A.4b tauri display honesty", () => {
     // (32,000 + 500 = 32,500) staked total must NOT appear.
     expect(html).not.toContain("32,500");
   });
+
+  // Truth contract rule 2 (unknown is not zero) and rule 1 (every number names its source): the
+  // number catalog has no wSALT entry and nothing reads a wSALT balance, so the tile shows the
+  // unavailable state, never a hard-coded 0.00.
+  it("wSALT tile shows — with a reason, never a hard-coded 0.00", () => {
+    const html = renderToStaticMarkup(<Wallet store={stubStore} s={walletState("overview", { liquid: 12.5 })} />);
+    const tile = /<span class="eyebrow">wSALT<\/span><span[^>]*>([^<]*)<\/span><span[^>]*>([^<]*)<\/span>/.exec(html);
+    expect(tile).not.toBeNull();
+    expect(tile?.[1]).toBe("—");
+    expect(tile?.[2]).toContain("not available yet");
+    expect(tile?.[2]).not.toContain("none held");
+  });
 });

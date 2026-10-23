@@ -396,4 +396,50 @@ mod tests {
             );
         }
     }
+
+    /// Rule 3: every signature goes through the ceremony; the one exception is a budgeted web
+    /// sign-in (`request_siwe_budgeted`). There is no signature-policy setting, so a value an older
+    /// build stored in config.json (`"sigPolicy": "allow"`, or anything else) is dropped on read
+    /// and never written back, and a patch that carries one changes nothing.
+    #[test]
+    fn stored_signature_policy_is_dropped_and_never_written_back() {
+        for v in [
+            serde_json::json!("allow"),
+            serde_json::json!("hitl"),
+            serde_json::json!("ALLOW"),
+            serde_json::json!(""),
+            serde_json::json!(true),
+            serde_json::json!({"allow": ["*"]}),
+        ] {
+            let legacy = serde_json::json!({
+                "net": "testnet",
+                "rpc": "local",
+                "dataDir": "~/.citrate/core",
+                "cpuCap": 50,
+                "autolock": 15,
+                "channel": "stable",
+                "telemetry": false,
+                "sigPolicy": v,
+                "coreMembershipUrl": "https://membership.citrate.ai"
+            });
+            let cfg: AppConfig = serde_json::from_value(legacy)
+                .unwrap_or_else(|e| panic!("a stored sigPolicy {v} must not break config_read: {e}"));
+            // The rest of the stored config still loads.
+            assert_eq!(cfg.autolock, 15);
+            let out = serde_json::to_value(&cfg).unwrap_or_else(|e| panic!("serialize: {e}"));
+            assert!(
+                out.get("sigPolicy").is_none(),
+                "a stored sigPolicy {v} must not be written back: {out}"
+            );
+        }
+        let patch: AppConfigPatch =
+            serde_json::from_value(serde_json::json!({ "sigPolicy": "allow" }))
+                .unwrap_or_else(|e| panic!("a patch with sigPolicy must still parse: {e}"));
+        let merged = AppConfig::default().apply(patch);
+        let out = serde_json::to_value(&merged).unwrap_or_else(|e| panic!("serialize: {e}"));
+        assert!(
+            out.get("sigPolicy").is_none(),
+            "a sigPolicy patch must change nothing: {out}"
+        );
+    }
 }
