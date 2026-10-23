@@ -20,7 +20,7 @@ function deps(over: Partial<{ mint: InviteDeps["join"]["mint"]; create: InviteDe
     join: {
       mint: over.mint ?? vi.fn(async () => minted),
       attach: vi.fn(async () => minted),
-      revoke: vi.fn(async () => undefined),
+      revoke: vi.fn(async () => ({ relayInviteClosed: true })),
     },
   };
   return d as unknown as InviteDeps & { invites: { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> }; join: { mint: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } };
@@ -89,10 +89,30 @@ describe("createPublicLink / revokeDirectInvite", () => {
     if (out.kind === "error") expect(out.message).toMatch(/not available right now/i);
   });
 
-  it("revoking a direct invite revokes the short code and the relay invite inside it", async () => {
+  it("revoking a direct invite revokes the short code, which also closes the relay invite inside it", async () => {
     const d = deps();
     await revokeDirectInvite(d, "grp_1", "Ab3dE7gh", "tok");
     expect(d.join.revoke).toHaveBeenCalledWith("Ab3dE7gh");
+    expect(d.invites.revoke, "Rust already closed it").not.toHaveBeenCalled();
+  });
+
+  it("when Rust has no record of the relay invite, it is closed here with the token in hand", async () => {
+    const d = deps();
+    d.join.revoke.mockResolvedValueOnce({ relayInviteClosed: false });
+    await revokeDirectInvite(d, "grp_1", "Ab3dE7gh", "tok");
+    expect(d.invites.revoke).toHaveBeenCalledWith("grp_1", "tok");
+  });
+
+  it("a failed code revoke is reported and nothing else is claimed", async () => {
+    const d = deps();
+    d.join.revoke.mockRejectedValueOnce(new Error("comms: relay unreachable"));
+    await expect(revokeDirectInvite(d, "grp_1", "Ab3dE7gh", "tok")).rejects.toThrow(/relay unreachable/);
+  });
+
+  it("the app-only fallback (no code) revokes the relay invite directly", async () => {
+    const d = deps();
+    await revokeDirectInvite(d, "grp_1", null, "tok");
+    expect(d.join.revoke).not.toHaveBeenCalled();
     expect(d.invites.revoke).toHaveBeenCalledWith("grp_1", "tok");
   });
 });

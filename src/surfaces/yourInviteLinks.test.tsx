@@ -93,7 +93,7 @@ describe("YourInviteLinks (mounted)", () => {
     toasts = [];
     list = vi.spyOn(bridge.join, "list").mockResolvedValue([PENDING, PUBLIC, SPENT]);
     attach = vi.spyOn(bridge.join, "attach").mockResolvedValue(finished);
-    revoke = vi.spyOn(bridge.join, "revoke").mockResolvedValue(undefined);
+    revoke = vi.spyOn(bridge.join, "revoke").mockResolvedValue({ relayInviteClosed: false });
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -121,6 +121,38 @@ describe("YourInviteLinks (mounted)", () => {
     // Two mounts, then a reload after Finish and one after Revoke (statuses come from the service).
     expect(list).toHaveBeenCalledTimes(4);
     expect(toasts.join("\n")).not.toContain(FRAG);
+    await unmount();
+  });
+
+  it("revoking a one-time link says the group invite inside it is closed only when it was", async () => {
+    revoke.mockResolvedValueOnce({ relayInviteClosed: true });
+    await mount();
+    await click(`your-link-revoke-${PENDING.code}`);
+    expect(revoke).toHaveBeenCalledWith(PENDING.code);
+    expect(toasts.at(-1)).toMatch(/group invite inside it is closed/i);
+
+    revoke.mockResolvedValueOnce({ relayInviteClosed: false });
+    await click(`your-link-revoke-${PENDING.code}`);
+    const said = toasts.at(-1) ?? "";
+    expect(said).not.toMatch(/nobody can open it/i);
+    expect(said).not.toMatch(/closed/i);
+    expect(said).toMatch(/group's invites/i);
+    await unmount();
+  });
+
+  it("a revoke that fails claims nothing", async () => {
+    revoke.mockRejectedValueOnce(new Error("comms: relay unreachable"));
+    await mount();
+    await click(`your-link-revoke-${PENDING.code}`);
+    expect(toasts.at(-1)).toMatch(/couldn't revoke/i);
+    expect(toasts.join("\n")).not.toMatch(/revoked\.|closed/i);
+    await unmount();
+  });
+
+  it("a public link's revoke says just that", async () => {
+    await mount();
+    await click(`your-link-revoke-${PUBLIC.code}`);
+    expect(toasts.at(-1)).toBe("Public link revoked.");
     await unmount();
   });
 

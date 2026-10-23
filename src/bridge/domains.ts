@@ -1872,6 +1872,12 @@ export interface JoinCodeEntry {
   exp: string;
   resolveCount: number;
 }
+/** What `join.revoke` closed. `relayInviteClosed`: the relay invite sealed inside a direct code
+ *  this device minted was closed at the relay; false when there is no such record (a public link,
+ *  or a code minted elsewhere). */
+export interface JoinRevoked {
+  relayInviteClosed: boolean;
+}
 export interface JoinDomain {
   /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
   mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
@@ -1881,7 +1887,7 @@ export interface JoinDomain {
    *  stays held (until it expires), so calling it again retries. */
   redeem(code: string): Promise<void>;
   /** Revoke one of the member's codes. */
-  revoke(code: string): Promise<void>;
+  revoke(code: string): Promise<JoinRevoked>;
   /** The member's codes, newest first. */
   list(): Promise<JoinCodeEntry[]>;
   /** Task 12: hand an arrived/pasted invite link to Rust to hold (keyring). Not resolved. */

@@ -1,6 +1,6 @@
 // CX bridge impl — v2 invite links (GROW-S1), SIM. The web preview has no join client, keyring or
 // relay, so every action says so (Rule 1) and nothing is ever waiting.
-import type { JoinCodeEntry, JoinDomain, JoinMinted, JoinQr, JoinResolved, PendingJoinView } from "../domains";
+import type { JoinCodeEntry, JoinDomain, JoinMinted, JoinQr, JoinResolved, JoinRevoked, PendingJoinView } from "../domains";
 import type { SimHost } from "./index";
 
 const DESKTOP = "invite links need the desktop app";
@@ -16,7 +16,7 @@ export function simJoin(_host: SimHost): JoinDomain {
     async redeem(): Promise<void> {
       throw new Error(DESKTOP);
     },
-    async revoke(): Promise<void> {
+    async revoke(): Promise<JoinRevoked> {
       throw new Error(DESKTOP);
     },
     async list(): Promise<JoinCodeEntry[]> {

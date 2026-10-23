@@ -73,9 +73,16 @@ pub async fn join_mint(
             .map(InvitePayload::from_invite_link)
             .transpose()
             .map_err(err)?;
-        with_states(&app, |join, auth| {
+        let view = with_states(&app, |join, auth| {
             join.mint(&auth.0, &request, invite.as_ref())
-        })
+        })?;
+        // Remember which relay invite this code seals, so revoking the code closes it too.
+        if let Some(invite) = &invite {
+            let _ = crate::invites::update_pending(&app, |v| {
+                crate::invites::tag_join_code(v, &invite.t, &view.code)
+            });
+        }
+        Ok(view)
     })
     .await
 }
@@ -108,12 +115,36 @@ pub async fn join_redeem(app: tauri::AppHandle, code: String) -> Result<(), Stri
     .await
 }
 
-/// `join_revoke` — revoke one of the member's codes at the service (the relay invite inside a
-/// direct envelope is revoked separately with `group_invite_revoke`).
+/// What a revoke closed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRevoked {
+    /// The relay invite sealed inside a direct code was closed at the relay (now or by an earlier
+    /// attempt). `false`: this device has no record of one (a public link, or a code minted
+    /// elsewhere), so nothing at the relay was changed.
+    pub relay_invite_closed: bool,
+}
+
+/// `join_revoke` — revoke one of the member's codes. For a direct code this device minted, the
+/// relay invite sealed inside it is closed FIRST (someone who already opened the link holds that
+/// invite and could still redeem it), then the code is revoked at the service. A relay failure
+/// stops before the code is touched; a service failure after the relay closed is retried without
+/// the relay step.
 #[tauri::command]
-pub async fn join_revoke(app: tauri::AppHandle, code: String) -> Result<(), String> {
-    crate::blocking::off_main(move || with_states(&app, |join, auth| join.revoke(&auth.0, &code)))
-        .await
+pub async fn join_revoke(app: tauri::AppHandle, code: String) -> Result<JoinRevoked, String> {
+    crate::blocking::off_main(move || {
+        let closed = crate::invites::update_pending(&app, |v| {
+            crate::invites::close_relay_for_code(v, &code, |hash| {
+                crate::comms::revoke_invite(&app, hash)
+            })
+        })??;
+        with_states(&app, |join, auth| join.revoke(&auth.0, &code))?;
+        crate::invites::update_pending(&app, |v| crate::invites::forget_join_code(v, &code))?;
+        Ok(JoinRevoked {
+            relay_invite_closed: closed,
+        })
+    })
+    .await
 }
 
 /// `join_list` — the member's codes at the service, newest first.

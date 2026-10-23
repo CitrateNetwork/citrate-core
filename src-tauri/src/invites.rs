@@ -42,6 +42,14 @@ pub struct PendingInvite {
     /// "Copy link" hands out a one-click link. Public; safe to serialize. `default` for pre-S1 records.
     #[serde(default)]
     pub link: String,
+    /// The short invite code (v2 link) this relay invite is sealed inside, when this device minted
+    /// one for it. Revoking that code also closes this relay invite. Not a secret.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub join_code: String,
+    /// The relay invite is already closed (revoked) but its short code isn't revoked yet; a retry of
+    /// the code's revoke skips the relay step.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relay_closed: bool,
 }
 
 /// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
@@ -135,6 +143,17 @@ pub(crate) fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
     }
 }
 
+/// Load the pending invites, change them with `f`, and write them back (owner-only).
+pub(crate) fn update_pending<T>(
+    app: &tauri::AppHandle,
+    f: impl FnOnce(&mut Vec<PendingInvite>) -> T,
+) -> Result<T, String> {
+    let mut v = load(app);
+    let out = f(&mut v);
+    save(app, &v)?;
+    Ok(out)
+}
+
 fn save(app: &tauri::AppHandle, v: &[PendingInvite]) -> Result<(), String> {
     let p = store_path(app)?;
     write_pending(&p, v)
@@ -192,6 +211,8 @@ pub async fn group_invite_create(
         created_at: now_unix(),
         priv_key,
         link: link.clone(),
+        join_code: String::new(),
+        relay_closed: false,
     });
     save(&app, &invites)?;
     // #73 — the inviter's audit copy (provable intent; the relay tally is authoritative for scoring).
@@ -313,6 +334,30 @@ pub(crate) fn redeem_request(link: &str) -> Result<RedeemRequest, String> {
         name,
         token_hash,
     })
+}
+
+/// Remember which short code (v2 link) seals the relay invite `token`. Returns whether an invite
+/// was found. Called after a direct `join_mint` on this device.
+pub(crate) fn tag_join_code(_invites: &mut [PendingInvite], _token: &str, _code: &str) -> bool {
+    // RED stub: the old behaviour (nothing is linked).
+    false
+}
+
+/// Close (revoke at the relay) the relay invite sealed inside the short code `code`, if this
+/// device minted that code. `Ok(true)` = closed now or earlier; `Ok(false)` = this device has no
+/// record of it; `Err` = the relay refused or was unreachable, and nothing changed.
+pub(crate) fn close_relay_for_code(
+    _invites: &mut [PendingInvite],
+    _code: &str,
+    _revoke_relay: impl FnOnce(String) -> Result<(), String>,
+) -> Result<bool, String> {
+    // RED stub: the old behaviour (the relay invite is left open).
+    Ok(false)
+}
+
+/// Drop the records of relay invites closed for `code` (after the code itself is revoked).
+pub(crate) fn forget_join_code(_invites: &mut Vec<PendingInvite>, _code: &str) {
+    // RED stub.
 }
 
 /// Decode a hex-encoded group name back to a display string (empty on any failure).
@@ -747,6 +792,115 @@ mod tests {
         assert!(f.contains("token: token.into_hex()"), "sends its hex");
     }
 
+    fn pending(group: &str, token: &str) -> super::PendingInvite {
+        super::PendingInvite {
+            group: group.into(),
+            token: token.into(),
+            for_handle: String::new(),
+            created_at: 1,
+            priv_key: String::new(),
+            link: format!("citrate://invite?g={group}&t={token}&k=02ab"),
+            join_code: String::new(),
+            relay_closed: false,
+        }
+    }
+
+    #[test]
+    fn a_minted_code_is_linked_to_the_relay_invite_it_seals() {
+        let t1 = crate::connections::random_state();
+        let t2 = crate::connections::random_state();
+        let mut v = vec![pending("grp_a", &t1), pending("grp_a", &t2)];
+        assert!(super::tag_join_code(&mut v, &t2, "Ab3dE7gh"));
+        assert_eq!(v[1].join_code, "Ab3dE7gh");
+        assert!(v[0].join_code.is_empty());
+        assert!(!super::tag_join_code(&mut v, "not-a-token", "Zz9yX8wv"));
+    }
+
+    #[test]
+    fn revoking_a_code_closes_its_relay_invite_once_and_only_its_own() {
+        let t1 = crate::connections::random_state();
+        let t2 = crate::connections::random_state();
+        let mut v = vec![pending("grp_a", &t1), pending("grp_a", &t2)];
+        super::tag_join_code(&mut v, &t2, "Ab3dE7gh");
+        let mut sent = Vec::new();
+        let closed = super::close_relay_for_code(&mut v, "Ab3dE7gh", |h| {
+            sent.push(h);
+            Ok(())
+        });
+        assert_eq!(closed, Ok(true));
+        assert_eq!(
+            sent,
+            vec![super::blake3_token_hash(&t2)],
+            "the sealed invite's hash"
+        );
+        assert!(v[1].relay_closed && !v[0].relay_closed);
+        // A retry (the service revoke failed) doesn't call the relay again.
+        let again = super::close_relay_for_code(&mut v, "Ab3dE7gh", |_| {
+            panic!("the relay was called twice")
+        });
+        assert_eq!(again, Ok(true));
+        // A code this device has no record of changes nothing at the relay.
+        let none = super::close_relay_for_code(&mut v, "Zz9yX8wv", |_| panic!("no record"));
+        assert_eq!(none, Ok(false));
+        super::forget_join_code(&mut v, "Ab3dE7gh");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].token, t1);
+    }
+
+    #[test]
+    fn a_relay_failure_stops_the_revoke_and_keeps_the_record_open() {
+        let t = crate::connections::random_state();
+        let mut v = vec![pending("grp_a", &t)];
+        super::tag_join_code(&mut v, &t, "Ab3dE7gh");
+        let out = super::close_relay_for_code(&mut v, "Ab3dE7gh", |_| {
+            Err("comms: relay unreachable".to_string())
+        });
+        assert_eq!(out, Err("comms: relay unreachable".to_string()));
+        assert!(!v[0].relay_closed);
+        super::forget_join_code(&mut v, "Ab3dE7gh");
+        assert_eq!(v.len(), 1, "an open relay invite is never forgotten");
+    }
+
+    /// The scenario: an invitee resolved the direct link (Review) and holds the opened relay
+    /// invite; the inviter then revokes the link; the invitee presses Join. The relay (modelled as
+    /// the set of live invite hashes) must refuse it.
+    #[test]
+    fn review_then_revoke_then_join_is_refused_by_the_relay() {
+        let t = crate::connections::random_state();
+        let group = "ab".repeat(16);
+        let mut relay: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Inviter: create the relay invite (published by hash) and mint a short code for it.
+        relay.insert(super::blake3_token_hash(&t));
+        let mut v = vec![pending(&group, &t)];
+        super::tag_join_code(&mut v, &t, "Ab3dE7gh");
+        // Invitee: Review opened the envelope; it now holds the relay invite link.
+        let opened = format!("citrate://invite?g={group}&t={t}&k={}", "02".repeat(33));
+        // Inviter: Revoke from "Your invite links".
+        let closed = super::close_relay_for_code(&mut v, "Ab3dE7gh", |h| {
+            relay.remove(&h);
+            Ok(())
+        });
+        // Invitee: Join sends hex of the token's bytes; the relay hashes them and looks it up.
+        let req = super::redeem_request(&opened).expect("request");
+        let bytes = hex::decode(req.token.as_hex()).expect("hex");
+        let hash = hex::encode(blake3::hash(&bytes).as_bytes());
+        assert!(!relay.contains(&hash), "the revoked invite still redeems");
+        assert_eq!(closed, Ok(true), "the inviter is told it was closed");
+    }
+
+    /// Tripwire: `join_revoke` closes the relay invite before it revokes the code, and tags a
+    /// minted code with the invite it seals.
+    #[test]
+    fn join_revoke_closes_the_relay_invite_first() {
+        let src = include_str!("join.rs");
+        let f = &src[src.find("pub async fn join_revoke").expect("fn")..];
+        let f = &f[..f.find("\n}\n").expect("end")];
+        let relay = f.find("close_relay_for_code").expect("relay step");
+        let service = f.find("join.revoke(").expect("service step");
+        assert!(relay < service, "relay first");
+        assert!(src.contains("crate::invites::tag_join_code(v, &invite.t, &view.code)"));
+    }
+
     // Pure helper: the invite link format the invitee's app parses.
     #[test]
     fn invite_link_shape() {
@@ -807,6 +961,8 @@ mod tests {
             created_at: 1000,
             priv_key: "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+            join_code: String::new(),
+            relay_closed: false,
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
         assert_eq!(views.len(), 1);
@@ -840,6 +996,8 @@ mod tests {
             created_at: 1000,
             priv_key: "deadbeef".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+            join_code: String::new(),
+            relay_closed: false,
         }];
         super::write_pending(&path, &invites).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
