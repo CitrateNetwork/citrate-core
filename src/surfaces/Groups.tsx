@@ -19,9 +19,11 @@ import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLi
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
 import { reachedStep } from "../privacy/joinFunnel";
+import { approvalStep } from "./claimApproval";
 import { RelayStatusChip } from "./RelayStatusChip";
 import { keepInviteAfter, redeemJoined, redeemToast } from "./joinRedeemToast";
 import { JoinRequests, InviteStateLine, pendingInviteStatus } from "./JoinRequests";
+import { loadOwnerInvites } from "./ownerInvites";
 import { rendezvousSlice, startRendezvousFeed, refreshRendezvous, cancelJoin, forgetJoin } from "../shell/slices/rendezvous";
 import {
   groupsSlice,
@@ -279,8 +281,9 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast("To invite by @handle, use “Invite by @handle” below — Citrate never looks up an address from a handle.");
       return;
     }
+    if (!selected) return;
     if (addrRef.current) addrRef.current.value = "";
-    void addMemberToGroup(v);
+    void addMemberToGroup(selected.id, v);
   };
 
   // #61 find-via-X — resolve a social handle to its published address via the opt-in directory. Only
@@ -302,41 +305,29 @@ export function Groups({ store, s }: SurfaceProps) {
   // D4 claimable invites (owner side)
   const refreshInvites = async () => {
     if (!selected || !canManage) return;
-    try {
-      setPendingInvites(await bridge.invites.list(selected.id));
-    } catch {
-      /* honest: none / relay unavailable */
-    }
-    // CONNECT-S1 — poll the server-blind claims-inbox for incoming requests (no DM-back). Honest-empty
-    // if the relay/daemon can't be reached; never a fabricated request (Rule 1).
-    try {
-      setRequests(await bridge.invites.pollClaims(selected.id));
-    } catch {
-      setRequests([]);
-    }
+    // An answer for a group that is no longer selected is dropped (#389).
+    await loadOwnerInvites(selected.id, (id) => groupsSlice.get().selectedId === id, { invites: setPendingInvites, requests: setRequests });
   };
   // CONNECT-S1 — approve an incoming request: consume the one-time token, then add via the normal path.
   const approveRequest = async (req: { group: string; token: string; address: string }) => {
     if (!selected) return;
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, req.token);
-      if (!ok) {
-        store.toast("That request's invite is invalid or already used.");
-        await refreshInvites();
-        return;
-      }
-      void addMemberToGroup(req.address);
-      store.toast("Request approved — adding them to the group.");
+      const step = approvalStep(await bridge.invites.verifyConsume(req.group, req.token, req.address));
+      if (step.add) void addMemberToGroup(req.group, req.address);
+      store.toast(step.toast);
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
     }
   };
   useEffect(() => {
+    // A group switch never shows the previous group's invites or requests while the new ones load.
+    setPendingInvites([]);
+    setRequests([]);
     if (tab === "roster" && selected && canManage) {
       void refreshInvites();
       void store.refreshPeople(); // CONNECT-S2 — keep the add-member picker's people fresh
-    } else setPendingInvites([]);
+    }
   }, [tab, selected?.id, canManage]);
 
   // #57 — mint a one-time SEALABLE invite link (citrate://invite?g=&t=&k=) that isn't tied to a
@@ -399,14 +390,10 @@ export function Groups({ store, s }: SurfaceProps) {
       return;
     }
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, claim.token);
-      if (!ok) {
-        store.toast("That invite token is invalid or already used.");
-        return;
-      }
+      const step = approvalStep(await bridge.invites.verifyConsume(claim.group, claim.token, claim.address));
+      if (step.add) void addMemberToGroup(claim.group, claim.address);
+      store.toast(step.toast);
       if (claimRef.current) claimRef.current.value = "";
-      void addMemberToGroup(claim.address);
-      store.toast("Invite accepted — adding them to the group.");
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
@@ -459,13 +446,19 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast("Couldn't join or request — " + (e instanceof Error ? e.message : String(e)));
     }
   };
-  const doRole = (address: string, role: GroupRole) => {
+  /** The name shown for a group in an approval (so the approval says which group it acts on). */
+  const groupNameFor = (groupId: string): string => {
+    const g = st.groups.find((x) => x.id === groupId);
+    return g ? groupLabel(st, g) : groupId;
+  };
+  const doRole = (groupId: string, address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
     void store.requestSig({
       origin: "user wallet action",
       requester: "you · group admin",
       title: next === "admin" ? "Make this member an admin" : "Return this admin to member",
       rows: [
+        { k: "Group", v: groupNameFor(groupId) },
         { k: "Member", v: shortAddr(address) },
         { k: "New role", v: next },
         { k: "Effect", v: "a signed RoleAssertion, enforced at the relay" },
@@ -474,15 +467,16 @@ export function Groups({ store, s }: SurfaceProps) {
       sponsor: "you approve · one assertion",
       sponsorColor: "var(--ok)",
       chainless: true,
-      apply: () => void assignRole(address, next),
+      apply: () => void assignRole(groupId, address, next),
     });
   };
-  const doOffboard = (address: string) => {
+  const doOffboard = (groupId: string, address: string) => {
     void store.requestSig({
       origin: "user wallet action",
       requester: "you · group admin",
       title: "Offboard this member",
       rows: [
+        { k: "Group", v: groupNameFor(groupId) },
         { k: "Member", v: shortAddr(address) },
         { k: "Effect", v: "removed from messaging, roster, cluster, and roles" },
       ],
@@ -492,7 +486,7 @@ export function Groups({ store, s }: SurfaceProps) {
       chainless: true,
       warning: "This removes them across all planes in one epoch and rotates the group secret — they lose access everywhere at once. This cannot be undone.",
       apply: () => {
-        void offboardMember(address);
+        void offboardMember(groupId, address);
         store.toast("Offboarding — the group secret rotates.");
       },
     });
@@ -800,7 +794,7 @@ export function Groups({ store, s }: SurfaceProps) {
                                 <span style={{ fontSize: 12.5, fontWeight: 500 }}>{face ? `@${face.handle}` : shortAddr(p.address)}</span>
                                 {p.groups.length > 0 && <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)" }}>{p.groups.map((g) => g.name).slice(0, 2).join(", ")}</span>}
                               </span>
-                              <button className="btn btn-secondary btn-sm" onClick={() => { void addMemberToGroup(p.address); store.toast(`Adding ${face ? "@" + face.handle : shortAddr(p.address)} to the group…`); }}>Add</button>
+                              <button className="btn btn-secondary btn-sm" onClick={() => { if (!selected) return; void addMemberToGroup(selected.id, p.address); store.toast(`Adding ${face ? "@" + face.handle : shortAddr(p.address)} to the group…`); }}>Add</button>
                             </div>
                           );
                         })}
@@ -889,10 +883,10 @@ export function Groups({ store, s }: SurfaceProps) {
                         <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + tone.bd, color: tone.fg, background: tone.bg }}>{r.role}</span>
                         {canManage && r.role !== "owner" && !you && !isAgent && (
                           <>
-                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doRole(r.address, r.role)} title="Signed RoleAssertion — stops at the ceremony">
+                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => selected && doRole(selected.id, r.address, r.role)} title="Signed RoleAssertion — stops at the ceremony">
                               {r.role === "admin" ? "Make member" : "Make admin"}
                             </button>
-                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doOffboard(r.address)} style={{ color: "var(--danger)" }}>Offboard</button>
+                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => selected && doOffboard(selected.id, r.address)} style={{ color: "var(--danger)" }}>Offboard</button>
                           </>
                         )}
                       </div>
@@ -921,7 +915,7 @@ export function Groups({ store, s }: SurfaceProps) {
                           <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{h.handle}{h.displayName ? <span style={{ color: "var(--tx-3)", fontWeight: 400 }}> · {h.displayName}</span> : null}</span>
                           <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>{shortAddr(h.address)} · self-published</span>
                         </span>
-                        <button className="btn btn-primary btn-sm" onClick={() => { void addMemberToGroup(h.address); store.toast(`Adding @${h.handle} to the group.`); }}>Add</button>
+                        <button className="btn btn-primary btn-sm" onClick={() => { if (!selected) return; void addMemberToGroup(selected.id, h.address); store.toast(`Adding @${h.handle} to the group.`); }}>Add</button>
                       </div>
                     ))}
                     <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "4px 16px 12px", lineHeight: 1.5 }}>
@@ -967,7 +961,7 @@ export function Groups({ store, s }: SurfaceProps) {
                             lastKnown={rv.lastKnownInvite[pi.lookup]}
                             receivedAt={rv.receivedAt}
                             onRetry={() => void refreshRendezvous()}
-                            onRemove={doOffboard}
+                            onRemove={(joiner) => doOffboard(pi.group, joiner)}
                           />
                         )}
                       </span>

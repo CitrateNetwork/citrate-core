@@ -180,3 +180,26 @@ describe("join funnel", () => {
     expect(steps).toEqual(["join_group"]);
   });
 });
+
+// #390: rendezvous_cancel runs a tick before it answers, so a join://state event during the call is
+// at least as new as the cancel answer. The answer never overwrites it.
+describe("cancel answers and newer events", () => {
+  it("a newer event that arrives before the cancel resolves wins", async () => {
+    vi.spyOn(bridge.groups, "list").mockResolvedValue([group("g1")]);
+    ingest({ joins: [join("waiting")], invites: [] });
+    vi.spyOn(bridge.rendezvous, "cancel").mockImplementation(async () => {
+      ingest({ joins: [join("joined")], invites: [] }); // the command's own tick confirmed the join
+      return join("waiting"); // the cancel's earlier answer
+    });
+    await cancelJoin("g1");
+    expect(rendezvousSlice.get().joins.map((j) => j.state)).toEqual(["joined"]);
+  });
+
+  it("with no event in between, the cancel answer is applied", async () => {
+    vi.spyOn(bridge.groups, "list").mockResolvedValue([]);
+    ingest({ joins: [join("waiting")], invites: [] });
+    vi.spyOn(bridge.rendezvous, "cancel").mockResolvedValue(join("withdrawn"));
+    await cancelJoin("g1");
+    expect(rendezvousSlice.get().joins.map((j) => j.state)).toEqual(["withdrawn"]);
+  });
+});

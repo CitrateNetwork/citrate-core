@@ -201,44 +201,49 @@ export async function reloadMessages(groupId: string): Promise<void> {
   }
 }
 
-/** Grant/change a member's role (owner-signed RoleAssertion, enforced at the relay). */
-export async function assignRole(address: string, role: GroupRole): Promise<void> {
-  const groupId = groupsSlice.get().selectedId;
+/** #389 — reload the shown roster after a member action, only if the acted-on group is still the
+ *  selected one (the member may have switched groups while an approval or the call was pending). */
+async function reloadRosterIfSelected(groupId: string): Promise<void> {
+  const roster = await bridge.groups.roster(groupId);
+  if (groupsSlice.get().selectedId === groupId) groupsSlice.set({ roster });
+}
+
+/** Grant/change a member's role in `groupId` (owner-signed RoleAssertion, enforced at the relay).
+ *  The member actions take the group they were started for, never the selected group (#389). */
+export async function assignRole(groupId: string, address: string, role: GroupRole): Promise<void> {
   if (!groupId) return;
   groupsSlice.set({ busyMember: address, error: null });
   try {
     await bridge.groups.assignRole(groupId, address, role);
     groupsSlice.set({ busyMember: null });
-    groupsSlice.set({ roster: await bridge.groups.roster(groupId) });
+    await reloadRosterIfSelected(groupId);
   } catch (e) {
     groupsSlice.set({ busyMember: null, error: message(e) });
   }
 }
 
 /** Remove a member (atomic offboard — drops all four planes in one epoch, ADR-001). */
-export async function offboardMember(address: string): Promise<void> {
-  const groupId = groupsSlice.get().selectedId;
+export async function offboardMember(groupId: string, address: string): Promise<void> {
   if (!groupId) return;
   groupsSlice.set({ busyMember: address, error: null });
   try {
     await bridge.groups.offboard(groupId, address);
     groupsSlice.set({ busyMember: null });
-    groupsSlice.set({ roster: await bridge.groups.roster(groupId) });
+    await reloadRosterIfSelected(groupId);
   } catch (e) {
     groupsSlice.set({ busyMember: null, error: message(e) });
   }
 }
 
 /** Owner-invite a member (who has published a key package to the relay), then reload the roster. */
-export async function addMemberToGroup(address: string): Promise<void> {
-  const groupId = groupsSlice.get().selectedId;
+export async function addMemberToGroup(groupId: string, address: string): Promise<void> {
   const addr = address.trim();
   if (!groupId || !addr) return;
   groupsSlice.set({ busyMember: addr, error: null });
   try {
     await bridge.groups.addMember(groupId, addr);
     groupsSlice.set({ busyMember: null });
-    groupsSlice.set({ roster: await bridge.groups.roster(groupId) });
+    await reloadRosterIfSelected(groupId);
   } catch (e) {
     groupsSlice.set({ busyMember: null, error: message(e) });
   }
