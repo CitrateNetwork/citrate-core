@@ -101,6 +101,7 @@ Each Store daemon declares what it writes (`writes`: a new page, today's journal
   - N-c: the Store resets to the fail-closed default on load;
   - N-d: "No pin is in these states yet";
   - N-e: the Settings comment says grantCopy.ts is planned.
+- Join 3 copy review V-03 (citrate-federation JOIN3_COPY_REVIEW.md): the Verify step said “Membership needs a verified identity”, which contradicts the app and ADR-2026-07-25. It now says verification is optional for membership and unlocks features that need a verified identity, including withdrawing an unlocked bond (“Unlocked · verify identity to withdraw”), and the step offers Skip for now. Tests in `scripts/design-prototype.test.mjs`, with a tripwire on the old line.
 
 ## UI truth contract decisions
 
