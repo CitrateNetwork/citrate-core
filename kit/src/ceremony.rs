@@ -885,7 +885,13 @@ impl SignatureCeremony {
             })?;
         let tx_hash = match rpc.send_raw_transaction(&prepared.raw) {
             Ok(h) => h,
-            Err(e) if first_submission && is_definitive_send_error(&e) => {
+            // Definitive only for a first submission that no other attempt overlapped (#347 P1):
+            // once another attempt recorded the same bytes, it may have sent them.
+            Err(e)
+                if first_submission
+                    && self.submitted.sole_attempt(&local_hash)
+                    && is_definitive_send_error(&e) =>
+            {
                 // Not sent: the node refused the first submission of these bytes. Take the send
                 // out of recovery (latest_call) durably, so a restart or the next read does not
                 // show it as Pending; the hash stays in the history, so the same bytes are never
