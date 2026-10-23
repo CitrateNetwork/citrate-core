@@ -1220,7 +1220,10 @@ impl RpcTransport for ForkNode {
     fn call(&self, body: Value) -> std::result::Result<Value, RpcError> {
         match body.get("method").and_then(Value::as_str) {
             Some("eth_blockNumber") => Ok(json!({ "result": format!("0x{:x}", self.head) })),
-            Some("eth_getBlockByNumber") => Ok(json!({ "result": { "hash": self.hash } })),
+            // The block at the height asked for, as a node returns it (number + hash).
+            Some("eth_getBlockByNumber") => {
+                Ok(json!({ "result": { "number": body["params"][0].clone(), "hash": self.hash } }))
+            }
             _ => Err(RpcError::Transport("unexpected".into())),
         }
     }

@@ -1412,6 +1412,12 @@ export class Store {
     } catch (err) {
       this.setState({ producers: null, producersError: String((err as Error).message ?? err) });
     }
+    // Contract v1.1 §2: registered / eligible counts on the same cadence. A failed read is null ("—").
+    try {
+      this.setState({ validatorCounts: await this.chainReads.validatorCounts() });
+    } catch {
+      this.setState({ validatorCounts: null });
+    }
   }
 
   async refreshChainParams(): Promise<void> {

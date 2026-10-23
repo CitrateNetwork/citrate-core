@@ -102,6 +102,7 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
   it("the poll folds MemberBond.activated() from the grant read", async () => {
     const reads = {
       validatorActivation: vi.fn(async () => ({ isActive: false, status: 0, actEpoch: 0, currentEpoch: 546 })),
+      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
       minStakeWei: async () => 32_000n * WEI,
       blockSeconds: async () => 2,
       producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
