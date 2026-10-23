@@ -339,6 +339,85 @@ fn joining_a_deadline_only_ever_tightens_it() {
     assert_eq!(p.armed_records(), 1);
 }
 
+/// A hook that reports when a writer reached its pause point and holds it there until released.
+fn pause_hook() -> (
+    Box<dyn FnOnce() + Send>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (at_tx, at_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let hook = Box::new(move || {
+        let _ = at_tx.send(());
+        let _ = go_rx.recv();
+    });
+    (hook, at_rx, go_tx)
+}
+
+/// One owner's release is suspended right after it frees a record; another owner claims and
+/// fully arms that record meanwhile. The new record must read as armed (with its own deadline)
+/// while the first release is still returning, never as torn.
+#[test]
+fn a_record_rearmed_while_its_release_is_still_returning_reads_armed() {
+    let p = idle_publisher();
+    assert!(p.arm(1, 1, 1, Duration::from_secs(60)));
+    let (hook, at, go) = pause_hook();
+    p.pause_once(PausePoint::ReleaseFreed, hook);
+    let releaser = {
+        let p = p.clone();
+        std::thread::spawn(move || p.release(1, 1, 1))
+    };
+    if at.recv_timeout(Duration::from_secs(10)).is_err() {
+        panic!("INCONCLUSIVE: the release never reached its pause point");
+    }
+    // The only free record is the one being released: owner 2 claims and arms it.
+    let armed = p.arm(2, 1, 7, Duration::from_secs(60));
+    let b = ControlToken {
+        app_epoch: 1,
+        instance: 2,
+        intent_sequence: 7,
+    };
+    let state = p.record_state(2, b);
+    let expired = p.expired(2, 1, 7);
+    let _ = go.send(());
+    let _ = releaser.join();
+    assert!(armed, "the freed record was claimed");
+    assert_eq!(
+        state,
+        Some(DeadlineState::Armed),
+        "a fully armed record reads as armed while the previous release returns"
+    );
+    assert_eq!(expired, Some(false), "and its expiry is determinate");
+    assert_eq!(p.record_state(2, b), Some(DeadlineState::Armed));
+    assert_eq!(p.armed_records(), 1);
+}
+
+/// A settlement whose expiry read stays indeterminate (a record mid-write through every bounded
+/// retry) counts the control as expired: a late completion is never stored as Complete.
+#[test]
+fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
+    let p = idle_publisher();
+    let (hook, at, go) = pause_hook();
+    p.pause_once(PausePoint::ArmWriting, hook);
+    let armer = {
+        let p = p.clone();
+        std::thread::spawn(move || p.arm(3, 1, 1, Duration::from_secs(60)))
+    };
+    if at.recv_timeout(Duration::from_secs(10)).is_err() {
+        panic!("INCONCLUSIVE: the arm never reached its pause point");
+    }
+    let read = p.expired(4, 1, 2);
+    let at_settle = p.expired_at_settle(4, 1, 2);
+    let _ = go.send(());
+    let _ = armer.join();
+    assert_eq!(read, None, "INCONCLUSIVE: the paused write did not make the read torn");
+    assert!(at_settle, "an indeterminate expiry at settlement counts as expired");
+    assert!(
+        !p.expired_at_settle(4, 1, 2),
+        "once readable, a control without a record has not expired"
+    );
+}
+
 #[test]
 fn releasing_an_owner_frees_only_its_records() {
     let p = idle_publisher();

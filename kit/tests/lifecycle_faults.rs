@@ -1358,6 +1358,86 @@ fn held_publication_ticket_makes_stop_incomplete_until_released() {
     fx.assert_clean();
 }
 
+/// A stale ticket dropped without `cleaned()` (an ignored error, or an unwind) keeps its
+/// publication owned: what it wrote may still be on disk, so the Stop is never Complete and the
+/// service stays Quarantined.
+#[test]
+fn a_dropped_stale_ticket_keeps_the_stop_open() {
+    let fx = OwnedFixture::new("pub-dropped");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-dropped"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("admission while running: {e:?}"));
+    let file = fx.path("bearer");
+    if let Err(e) = std::fs::write(&file, b"credential") {
+        panic!("INCONCLUSIVE: cannot write the credential file: {e}");
+    }
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    let stale = match ticket.commit() {
+        Err(stale) => stale,
+        Ok(()) => panic!("a ticket admitted before Stop must not become active after it"),
+    };
+    drop(stale); // never cleaned: the file is still there
+    let receipt = settle(&sup, stop, ACQUIRE);
+    assert!(file.exists(), "the stale file was left behind");
+    match &receipt {
+        Receipt::Incomplete { remaining, .. } => assert!(
+            remaining.iter().any(|r| r == "publication:bearer"),
+            "{remaining:?}"
+        ),
+        other => panic!("a Stop with an uncleaned stale publication is not Complete: {other:?}"),
+    }
+    assert_eq!(sup.lifecycle().map(|l| l.phase), Some(Phase::Quarantined));
+    assert!(matches!(sup.request_start(), ControlResult::Quarantined(_)));
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A ticket admitted under an intent that a Stop and then a Start replaced never becomes the
+/// active reference, although the service is meant to be running again.
+#[test]
+fn a_ticket_from_a_replaced_intent_never_becomes_active() {
+    let fx = OwnedFixture::new("pub-replaced");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-replaced"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("admission while running: {e:?}"));
+    assert!(matches!(sup.request_stop(), ControlResult::Accepted(_)));
+    let start = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start after Stop: {other:?}"),
+    };
+    assert_eq!(
+        sup.lifecycle().map(|l| l.desired),
+        Some(Desired::Running),
+        "the service is meant to run again"
+    );
+    match ticket.commit() {
+        Err(stale) => {
+            assert_eq!(stale.name(), "bearer");
+            stale.cleaned();
+        }
+        Ok(()) => panic!("a ticket from a replaced intent must not become the active reference"),
+    }
+    assert!(matches!(
+        settle(&sup, start, ACQUIRE),
+        Receipt::Started { .. }
+    ));
+    drop(sup);
+    fx.assert_clean();
+}
+
 /// A Start that supersedes a Stop while a publication admitted under the old intent is still
 /// held spawns nothing until that ticket is released.
 #[test]
@@ -1791,6 +1871,52 @@ fn deadline_overlay_is_fixed_and_full_admission_commits_nothing() {
     fx.assert_clean();
 }
 
+/// A Stop whose deadline passed while its teardown is still held stays DeadlineExpired when a
+/// Start supersedes it before it settles: DeadlineExpired is final.
+#[test]
+fn an_expired_stop_superseded_before_it_settles_stays_deadline_expired() {
+    let fx = OwnedFixture::new("deadline-superseded");
+    let publisher = DeadlinePublisher::start(Duration::from_millis(20));
+    let mut cfg = stubborn_config(&fx, "lcf-deadline-superseded", Duration::from_secs(4));
+    cfg.deadlines = Some(publisher.clone());
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let a = match sup.request_stop_within(Duration::from_millis(100)) {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    let expired = wait_for(Duration::from_secs(3), Duration::from_millis(5), || {
+        (receipt_of(&sup, a) == Receipt::DeadlineExpired).then_some(())
+    });
+    assert!(
+        expired.is_ok(),
+        "INCONCLUSIVE: the Stop never read DeadlineExpired"
+    );
+    if sup.lifecycle().map(|l| l.phase) != Some(Phase::Stopping) {
+        panic!("INCONCLUSIVE: the teardown was not held long enough to supersede the Stop");
+    }
+    let b = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start during the held teardown: {other:?}"),
+    };
+    assert_eq!(
+        receipt_of(&sup, a),
+        Receipt::DeadlineExpired,
+        "superseding an expired Stop keeps it DeadlineExpired"
+    );
+    assert!(matches!(
+        settle(&sup, b, Duration::from_secs(15)),
+        Receipt::Started { .. }
+    ));
+    assert!(matches!(
+        receipt_of(&sup, a),
+        Receipt::DeadlineExpired | Receipt::Expired
+    ));
+    drop(sup);
+    fx.assert_clean();
+}
+
 /// An expired Stop followed by later controls never reads Complete: it stays DeadlineExpired
 /// while retained, then Expired, inside the fixed receipt storage.
 #[test]
@@ -1894,9 +2020,17 @@ fn a_deadline_stop_without_a_monitor_holds_no_record() {
     let fx = OwnedFixture::new("deadline-nomon");
     let publisher = DeadlinePublisher::start(Duration::from_millis(20));
     let mut spec = fx.leaf_spec("lcf-deadline-nomon");
+    // The hook ends the monitor once the child has recorded itself (the ended monitor still
+    // terminates and reaps its child, so a panic before that would leave nothing to observe).
+    let pidfile = fx.path("pids");
     spec.child_watch = Some(ChildWatch {
         interval: Duration::from_millis(20),
-        observe: std::sync::Arc::new(|_| panic!("deliberate: end the monitor thread")),
+        observe: std::sync::Arc::new(move |_| {
+            let recorded = std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty());
+            if recorded {
+                panic!("deliberate: end the monitor thread");
+            }
+        }),
         ended: std::sync::Arc::new(|| {}),
     });
     let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));

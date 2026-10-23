@@ -854,8 +854,7 @@ impl Cell {
                 // observed: the caller was promised an answer by then and did not get one.
                 let expired = self
                     .deadlines
-                    .expired(self.owner, token.app_epoch, seq)
-                    .unwrap_or(false);
+                    .expired_at_settle(self.owner, token.app_epoch, seq);
                 self.deadlines.release(self.owner, token.app_epoch, seq);
                 let receipt = if expired {
                     Receipt::DeadlineExpired

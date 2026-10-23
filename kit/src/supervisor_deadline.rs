@@ -61,6 +61,17 @@ enum Lookup {
     Torn,
 }
 
+/// A point inside a record write where a test can suspend the writing thread, to reproduce an
+/// interleaving deterministically.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PausePoint {
+    /// In `release`, right after the record is published free.
+    ReleaseFreed,
+    /// In `arm`, after the record's version went odd and before its fields are written.
+    ArmWriting,
+}
+
 /// The body a spawner must run on the reserved thread.
 pub type PublisherBody = Box<dyn FnOnce() + Send + 'static>;
 
@@ -72,6 +83,8 @@ pub struct DeadlinePublisher {
     cadence: Duration,
     thread: Mutex<Option<JoinHandle<()>>>,
     init_error: std::sync::OnceLock<String>,
+    #[cfg(test)]
+    pause: Mutex<Option<(PausePoint, Box<dyn FnOnce() + Send>)>>,
 }
 
 impl std::fmt::Debug for DeadlinePublisher {
@@ -115,6 +128,8 @@ impl DeadlinePublisher {
             cadence: cadence.max(Duration::from_millis(1)),
             thread: Mutex::new(None),
             init_error: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            pause: Mutex::new(None),
         });
         let weak = Arc::downgrade(&publisher);
         match spawn(Box::new(move || publisher_loop(weak))) {
@@ -196,6 +211,8 @@ impl DeadlinePublisher {
                 .is_ok()
             {
                 r.version.fetch_add(1, Ordering::AcqRel); // odd: writing
+                #[cfg(test)]
+                self.pause_at(PausePoint::ArmWriting);
                 r.owner.store(owner, Ordering::Release);
                 r.epoch.store(epoch, Ordering::Release);
                 r.seq.store(seq, Ordering::Release);
@@ -261,6 +278,8 @@ impl DeadlinePublisher {
                 r.seq.store(0, Ordering::Release);
                 r.deadline_ns.store(0, Ordering::Release);
                 r.state.store(REC_FREE, Ordering::Release);
+                #[cfg(test)]
+                self.pause_at(PausePoint::ReleaseFreed);
                 r.version.fetch_add(1, Ordering::AcqRel);
             }
         }
@@ -315,6 +334,35 @@ impl DeadlinePublisher {
                 deadline_ns,
             } => Some(expired_mark || self.now_ns() >= deadline_ns),
             Lookup::Torn => None,
+        }
+    }
+
+    /// Whether control (owner, epoch, seq) has expired, for a settlement that is about to make
+    /// its receipt final.
+    fn expired_at_settle(&self, owner: u64, epoch: u64, seq: u64) -> bool {
+        self.expired(owner, epoch, seq).unwrap_or(false)
+    }
+
+    /// Suspend the next writer that reaches `point` in `hook` (once).
+    #[cfg(test)]
+    fn pause_once(&self, point: PausePoint, hook: Box<dyn FnOnce() + Send>) {
+        *self.pause.lock().unwrap_or_else(|e| e.into_inner()) = Some((point, hook));
+    }
+
+    #[cfg(test)]
+    fn pause_at(&self, point: PausePoint) {
+        let hook = {
+            let mut g = self.pause.lock().unwrap_or_else(|e| e.into_inner());
+            match g.take() {
+                Some((p, hook)) if p == point => Some(hook),
+                other => {
+                    *g = other;
+                    None
+                }
+            }
+        };
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
