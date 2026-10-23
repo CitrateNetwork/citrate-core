@@ -2,7 +2,8 @@
 // citrate-core — Files (CX-S2.3 + Pass-2 polish, lane s2)
 //
 // A drag-drop file store on IPFS over the S2.1 kubo seam: drop files to add them, pin them to
-// your node (ceremony-gated SALT bond), retrieve by CID, unpin. Real data via bridge.storage
+// your node, retrieve by CID, unpin. K4: every pin is a "Local pin · no bond" (pin bonds are not
+// live: IPFSIncentivesV3 is deployed but dormant, UI truth contract §1); no pin opens a bond. Real data via bridge.storage
 // through the storage slice. Honest states throughout (Rule 1): empty when nothing, and — when the
 // kubo daemon is unreachable — an honest "your file store isn't reachable · Retry" card instead of
 // a raw 500/transport dump. Add/pin/retrieve/unpin are disabled while it's down; your files stay
@@ -18,33 +19,17 @@ import {
   localPin,
   unpinCid,
   retrieveCid,
-  LOCAL_PIN_MARKER,
+  startFileStore,
 } from "../shell/slices/storage";
+import { humanBytes, pinStateLabel, PIN_BONDS_NOT_LIVE } from "./storageTruth";
 import { MediaPanel } from "../agent/media/MediaPanel";
 import { desktopMediaIo } from "../agent/media/media";
 import { openPopout } from "../popout/appHost";
 import { startMediaHost } from "../popout/mediaHost";
-import type { PinRow } from "../bridge/domains";
-
-function humanBytes(n: number): string {
-  if (!n || n < 0) return "—";
-  const gb = n / 1e9;
-  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`;
-  const mb = n / 1e6;
-  if (mb >= 1) return `${Math.round(mb)} MB`;
-  return `${Math.max(1, Math.round(n / 1e3))} KB`;
-}
 
 function shortCid(cid: string): string {
   return cid.length > 22 ? `${cid.slice(0, 12)}…${cid.slice(-6)}` : cid;
 }
-
-const STATE_COLOR: Record<PinRow["pinState"], string> = {
-  pinned: "var(--ok)",
-  pinning: "var(--tx-3)",
-  challenged: "var(--danger)",
-  unpinned: "var(--tx-3)",
-};
 
 export function StorageFiles({ store, s }: SurfaceProps) {
   const st = storageSlice.use();
@@ -120,7 +105,12 @@ export function StorageFiles({ store, s }: SurfaceProps) {
             </span>
             <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 6 }}>{st.error || "kubo · 127.0.0.1:5001 · connection refused"}</span>
           </span>
-          <button className="btn btn-primary btn-sm" onClick={() => void refreshPins()}>Retry connection</button>
+          <span style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <button className="btn btn-primary btn-sm" onClick={() => void refreshPins()}>Retry connection</button>
+            {/* K4: start the supervised kubo daemon without starting the node (it is otherwise
+                started alongside the node). */}
+            <button className="btn btn-secondary btn-sm" onClick={() => void startFileStore()}>Start file store</button>
+          </span>
         </div>
       )}
 
@@ -150,7 +140,7 @@ export function StorageFiles({ store, s }: SurfaceProps) {
           <button className="btn btn-secondary btn-sm" onClick={() => void browse()} disabled={down}>Browse…</button>
         </span>
         <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6, maxWidth: 420 }}>
-          each file gets a CID in your local IPFS store — nothing leaves this machine until you pin or share it
+          each file gets a CID in your local IPFS store, a node on the public IPFS network: files are not encrypted, and anyone with its CID can fetch it from this node while the store is running, so do not add files you need to keep private. Pinning keeps it on this node
         </span>
       </div>
 
@@ -175,20 +165,16 @@ export function StorageFiles({ store, s }: SurfaceProps) {
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{shortCid(p.cid)}</span>
                   <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 1 }}>
-                    <span style={{ color: STATE_COLOR[p.pinState] }}>{p.pinState}</span>
+                    <span style={{ color: isPinned ? "var(--ok)" : "var(--tx-3)" }}>{pinStateLabel(p)}</span>
                     {" · "}
                     {humanBytes(p.sizeBytes)}
-                    {p.bondSalt === LOCAL_PIN_MARKER ? " · local" : p.bondSalt ? " · bonded" : ""}
                   </span>
                 </span>
-                {p.bondSalt && p.bondSalt !== LOCAL_PIN_MARKER && (
-                  <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".06em", padding: "2px 8px", borderRadius: 999, border: "1px solid var(--ok)", color: "var(--ok)", background: "var(--ok-bg)" }}>bonded</span>
-                )}
                 <button className="btn btn-ghost btn-sm" onClick={() => { void retrieveCid(p.cid); store.toast("Retrieving to your files…"); }} disabled={busy || down}>Retrieve</button>
                 {isPinned ? (
                   <button className="btn btn-ghost btn-sm" onClick={() => void unpinCid(p.cid)} disabled={busy || down} style={{ color: "var(--tx-3)" }}>{busy ? "…" : "Remove"}</button>
                 ) : (
-                  <button className="btn btn-ghost btn-sm" onClick={() => { void localPin(p.cid); store.toast("Bond submitted — approve the transaction in the signing screen."); }} disabled={busy || down}>{busy ? "…" : "Pin · bond"}</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => void localPin(p.cid)} disabled={busy || down}>{busy ? "…" : "Pin locally"}</button>
                 )}
               </div>
             );
@@ -197,7 +183,7 @@ export function StorageFiles({ store, s }: SurfaceProps) {
       </div>
 
       <p style={{ fontSize: 11, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
-        Pinning keeps a file on <em>your</em> node and places a staked SALT bond you approve, so the network rewards pinners for keeping your data available. You approve the bond transaction in the Signature Ceremony; nothing is signed for you. Unpinning a bonded file forfeits the remaining bond — you're told before it happens.
+        Pinning keeps a file on <em>your</em> node only: a local pin, with no bond and no transaction. {PIN_BONDS_NOT_LIVE}: the pin-bond contract is deployed but not funded, so no file is bonded, challenged or released on chain. Pins shows the bond parameters.
       </p>
 
       {st.lastRetrievedPath && (

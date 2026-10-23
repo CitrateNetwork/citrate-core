@@ -479,6 +479,47 @@ pub fn parse_neighbors(text: &str) -> Vec<MemoryNeighbor> {
 // The memory manager: keyring + supervisor + socket transport.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// K4: the memory store lock (backup / restore)
+// ---------------------------------------------------------------------------
+
+/// Stores a backup or restore is working on (keyed by the store path).
+static STORE_LOCKS: Mutex<std::collections::BTreeSet<PathBuf>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+/// Held by a storage backup or restore (`storage_backup.rs`) from before it stops the daemon until
+/// its copy or swap is done. While held, [`MemoryManager::start`] refuses, so no start path (the
+/// Start control, a seed, a knowledge-import restart) can open the store mid-restore. The
+/// supervisor itself never restarts a daemon it no longer owns: the backup stops (and drops) the
+/// supervisor before it takes the store.
+pub(crate) struct MemoryStoreLock(PathBuf);
+
+impl MemoryStoreLock {
+    /// Take the lock for `store_path`; `None` if another backup/restore holds it.
+    pub(crate) fn acquire(store_path: &std::path::Path) -> Option<Self> {
+        let mut set = STORE_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(store_path.to_path_buf())
+            .then(|| MemoryStoreLock(store_path.to_path_buf()))
+    }
+}
+
+impl Drop for MemoryStoreLock {
+    fn drop(&mut self) {
+        STORE_LOCKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Whether a backup or restore holds `store_path`.
+pub(crate) fn memory_store_locked(store_path: &std::path::Path) -> bool {
+    STORE_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(store_path)
+}
+
 /// The memory manager. Owns the keyring seam, the resolved daemon binary + store
 /// dir + socket path, the injectable socket transport, and (while running) a
 /// live [`Supervisor`]. Managed as Tauri state; `start`/`status`/`stop` drive
@@ -497,6 +538,10 @@ pub struct MemoryManager {
     transport: Box<dyn MemoryTransport>,
     /// The live supervisor, present only while the daemon is running.
     sup: Mutex<Option<Supervisor>>,
+    /// Held by [`MemoryManager::stop`] from taking the supervisor until the child has exited, and
+    /// by [`MemoryManager::start`], so a second stop (a backup's or an import's pause) returns only
+    /// once the store is free and a start never overlaps a stop.
+    lifecycle: Mutex<()>,
     /// W3.2/BGE — the bundled BGE model dir (`config.json` + `tokenizer.json` +
     /// `model.safetensors`). When present, the daemon is spawned with
     /// `CITRATE_BGE_MODEL_DIR` (load offline, pinned) + `CITRATE_MEM_EMBED=bge`
@@ -506,6 +551,10 @@ pub struct MemoryManager {
     /// HUP-S3.4 (fan-out 7): the learned-memory ledger. Recall and search leave out learned
     /// memories with an unresolved contradiction (`hermes_learn::RecallHide`).
     learned_ledger: Option<PathBuf>,
+    /// Tests only: runs inside [`MemoryManager::stop`] after the supervisor is taken and before
+    /// the child is terminated (holds a stop in that window).
+    #[cfg(test)]
+    stop_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// The bridge status shape surfaced to the MemoryDomain seam. PUBLIC facts only —
@@ -547,7 +596,7 @@ impl MemoryManager {
         crash_record_path: PathBuf,
         transport: Box<dyn MemoryTransport>,
     ) -> Self {
-        MemoryManager {
+        let mgr = MemoryManager {
             keyring,
             bin,
             store_path,
@@ -555,9 +604,29 @@ impl MemoryManager {
             crash_record_path,
             transport,
             sup: Mutex::new(None),
+            lifecycle: Mutex::new(()),
             model_dir: None,
             learned_ledger: None,
+            #[cfg(test)]
+            stop_hook: Mutex::new(None),
+        };
+        // K4 (N2): roll back an interrupted restore at init. A failure here is reported by
+        // `start`, which runs the same check and refuses (fail closed, no empty store).
+        if let Err(e) = mgr.recover_interrupted_restore() {
+            eprintln!("[memory] {e}");
         }
+        mgr
+    }
+
+    /// K4 (N2): roll back a restore that was interrupted between its two renames (see
+    /// [`crate::storage_backup::recover_interrupted_restore`]). Run at init and before every start.
+    fn recover_interrupted_restore(&self) -> Result<()> {
+        let Some(mem_dir) = self.store_path.parent() else {
+            return Ok(());
+        };
+        crate::storage_backup::recover_interrupted_restore(mem_dir)
+            .map(|_| ())
+            .map_err(MemoryError::Spawn)
     }
 
     /// HUP-S3.4 (fan-out 7): the learned-memory ledger recall and search read to leave out
@@ -683,6 +752,9 @@ impl MemoryManager {
     /// minted/loaded from the keyring and handed to the child via env. Fails
     /// CLOSED if the binary is missing or the keyring is unreachable.
     pub fn start(&self) -> Result<()> {
+        // A stop in progress has taken the supervisor but its child may still hold the store:
+        // wait for it (same lock order as `stop`: lifecycle, then supervisor).
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(MemoryError::AlreadyRunning);
@@ -695,13 +767,22 @@ impl MemoryManager {
                 "the knowledge import is still writing the memory store; the memory daemon starts when it finishes".into(),
             ));
         }
+        // K4: a storage backup or restore is copying or swapping the store.
+        if memory_store_locked(&self.store_path) {
+            return Err(MemoryError::Spawn(
+                "a memory backup or restore is in progress; the memory daemon starts when it finishes".into(),
+            ));
+        }
+        // K4 (N2): a restore interrupted between its two renames left no live memory dir. Put the
+        // previous store back before anything can create an empty one; fail closed if that fails.
+        self.recover_interrupted_restore()?;
         if !self.bin.exists() {
             return Err(MemoryError::BinaryNotFound(self.bin.display().to_string()));
         }
-        // Ensure the store parent dir exists before the daemon opens RocksDB.
+        // Ensure the store parent dir exists before the daemon opens RocksDB, through the shared
+        // guard (rolls back an interrupted restore first; never an empty dir in its place).
         if let Some(parent) = self.store_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| MemoryError::Spawn(format!("mkdir store parent: {e}")))?;
+            crate::storage_backup::ensure_memory_dir(parent).map_err(MemoryError::Spawn)?;
         }
         let key_hex = self.store_key_hex()?;
         let spec = self.build_spec(&key_hex);
@@ -715,16 +796,39 @@ impl MemoryManager {
     /// Stop the daemon: graceful supervisor release (SIGTERM → grace → SIGKILL,
     /// no orphan). The daemon removes its own socket on a clean exit; a killed
     /// daemon's stale socket is reclaimed on the next start (it holds the DB
-    /// lock, which proves the socket stale). Idempotent.
-    pub fn stop(&self) {
+    /// lock, which proves the socket stale). Idempotent. Returns whether this call stopped a
+    /// daemon; when it returns, no daemon this manager started is still running (a concurrent
+    /// stop is waited for).
+    pub fn stop(&self) -> bool {
+        // A stop already in progress has taken the supervisor but its child may still be running:
+        // wait for it, so no caller sees "not running" while the store is still open.
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let sup = {
             let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
         };
+        #[cfg(test)]
+        if let Some(hook) = self
+            .stop_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            hook();
+        }
+        let was_running = sup.is_some();
         if let Some(sup) = sup {
             sup.stop();
             drop(sup);
         }
+        was_running
+    }
+
+    /// Tests only: hold every later [`MemoryManager::stop`] in `hook` between taking the
+    /// supervisor and terminating the child.
+    #[cfg(test)]
+    pub(crate) fn set_stop_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self.stop_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
     /// The current supervisor state + socket path + semantic-model presence.
