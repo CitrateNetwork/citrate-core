@@ -23,6 +23,7 @@
 #   scripts/build-sidecar.sh                       # host target, ../citrate-chain
 #   scripts/build-sidecar.sh --chain ~/src/citrate-chain
 #   scripts/build-sidecar.sh --target aarch64-apple-darwin
+#   scripts/build-sidecar.sh --output /path/to/citrate-<target-triple>
 #   scripts/build-sidecar.sh --skip-build          # re-verify + install an existing build
 #
 # On a Mac the target is aarch64-apple-darwin (Apple Silicon) or
@@ -32,19 +33,29 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHAIN_DIR="${CHAIN_DIR:-$(cd "$REPO_ROOT/.." && pwd)/citrate-chain}"
 TARGET=""
+OUTPUT_PATH=""
 SKIP_BUILD=0
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+require_option_value() {
+  [ "$#" -ge 2 ] || die "$1 requires a value"
+  [ -n "$2" ] || die "$1 requires a non-empty value"
+  case "$2" in
+    --*) die "$1 requires a value before $2" ;;
+  esac
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --chain) CHAIN_DIR="$2"; shift 2 ;;
-    --target) TARGET="$2"; shift 2 ;;
+    --chain) require_option_value "$@"; CHAIN_DIR="$2"; shift 2 ;;
+    --target) require_option_value "$@"; TARGET="$2"; shift 2 ;;
+    --output) require_option_value "$@"; OUTPUT_PATH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
-
-die() { echo "ERROR: $*" >&2; exit 1; }
 
 [ -d "$CHAIN_DIR" ] || die "citrate-chain not found at $CHAIN_DIR (use --chain <path>)"
 command -v cargo >/dev/null || die "cargo not found"
@@ -54,7 +65,11 @@ if [ -z "$TARGET" ]; then
 fi
 [ -n "$TARGET" ] || die "could not determine the target triple; pass --target"
 
-OUT="$REPO_ROOT/src-tauri/binaries/citrate-${TARGET}"
+EXE_SUFFIX=""
+case "$TARGET" in
+  *-windows-*) EXE_SUFFIX=".exe" ;;
+esac
+OUT="${OUTPUT_PATH:-$REPO_ROOT/src-tauri/binaries/citrate-${TARGET}${EXE_SUFFIX}}"
 
 echo "citrate-chain : $CHAIN_DIR"
 echo "target        : $TARGET"
@@ -118,7 +133,12 @@ echo "    OK — contains $MIN_CHAIN_REV"
 echo
 
 # ── build ───────────────────────────────────────────────────────────────────
-BUILT="$CHAIN_DIR/target/release/citrate"
+HOST="$(rustc -vV | awk '/^host:/{print $2}')"
+if [ "$TARGET" = "$HOST" ]; then
+  BUILT="$CHAIN_DIR/target/release/citrate${EXE_SUFFIX}"
+else
+  BUILT="$CHAIN_DIR/target/$TARGET/release/citrate${EXE_SUFFIX}"
+fi
 if [ "$SKIP_BUILD" -eq 0 ]; then
   echo "▶ building citrate (release) — first build takes several minutes"
   # LZMA_API_STATIC: lzma-sys (via xz2 -> zip -> citrate-storage) probes pkg-config
@@ -129,23 +149,16 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
   # host. Setting this makes lzma-sys compile and statically link its vendored
   # liblzma instead. Verified 2026-09-09: the resulting binary has zero non-system
   # dylib deps. See the portability gate below, which enforces it.
-  ( cd "$CHAIN_DIR" && LZMA_API_STATIC=1 cargo build --release --bin citrate )
+  build_args=(--release --locked --bin citrate)
+  if [ "$TARGET" != "$HOST" ]; then
+    build_args+=(--target "$TARGET")
+  fi
+  ( cd "$CHAIN_DIR" && LZMA_API_STATIC=1 cargo build "${build_args[@]}" )
   echo
 else
   echo "▶ --skip-build: using the existing $BUILT"
 fi
 [ -f "$BUILT" ] || die "expected binary not found: $BUILT"
-
-# Cross-compiling to a different triple needs an explicit toolchain; cargo puts
-# the artefact under target/<triple>/release. Prefer that when it exists.
-HOST="$(rustc -vV | awk '/^host:/{print $2}')"
-if [ "$TARGET" != "$HOST" ] && [ -f "$CHAIN_DIR/target/$TARGET/release/citrate" ]; then
-  BUILT="$CHAIN_DIR/target/$TARGET/release/citrate"
-elif [ "$TARGET" != "$HOST" ]; then
-  die "target $TARGET != host $HOST but no $CHAIN_DIR/target/$TARGET/release/citrate.
-Build it on a $TARGET machine (binaries do NOT cross), or set up a cross toolchain
-and re-run with --skip-build."
-fi
 
 # ── portability gate ────────────────────────────────────────────────────────
 # A sidecar that links anything outside /System and /usr/lib runs ONLY on the

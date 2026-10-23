@@ -28,7 +28,9 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
+      - "!v*-windows"
   workflow_dispatch:
     inputs:
       tag:
@@ -57,7 +59,22 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
     steps:
+      - name: Reject Windows companion tags from manual macOS release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *-windows)
+              echo "::error::Windows companion tags must use the dedicated Windows release workflow"
+              exit 1
+              ;;
+          esac
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Authenticate to private federation repos (citrate-chain)
         run: |
