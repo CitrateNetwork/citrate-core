@@ -13,5 +13,8 @@ describe("rendezvous invoke deadlines", () => {
     // rendezvousJoin, then (on the §12 fallback only) the legacy redeem.
     expect(deadlineFor("join_redeem")).toBeGreaterThan(26_000);
     expect(deadlineFor("group_invite_redeem")).toBeGreaterThan(26_000);
+    // Codex round 5 (P1): approving a claim now closes and revokes before it answers, like revoke.
+    // The webview must outwait both, or a slow success reads as a failed approval.
+    expect(deadlineFor("group_invite_verify_consume")).toBeGreaterThan(26_000);
   });
 });

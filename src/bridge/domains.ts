@@ -1769,6 +1769,8 @@ export interface PendingInvite {
   link?: string;
   /** GROW-S2 — the relay rendezvous lookup (hex) when one was opened; matches `InviteViewDto.lookup`. */
   lookup?: string;
+  /** GROW-S2 — revoked or used here; the relay hasn't confirmed the rendezvous closed yet. */
+  revoking?: boolean;
 }
 export interface InviteMinted {
   token: string;

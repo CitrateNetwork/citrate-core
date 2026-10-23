@@ -230,6 +230,7 @@ pub(crate) fn tick_and_emit(app: &tauri::AppHandle) -> Result<TickViews, RvError
     if let (Some(m), Some(seen)) = (marker.as_deref(), seen) {
         reconcile_active_joins_at(m, &active_join_groups(&views), seen);
     }
+    crate::invites::settle_revocations_after_tick(app, &views);
     let _ = app.emit(JOIN_STATE_EVENT, &views);
     Ok(views)
 }

@@ -1,7 +1,9 @@
 // GROW-S2 (Join 9, M5) — the join rows and invite state line render the §11 words and actions.
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { JoinRequests, InviteStateLine } from "./JoinRequests";
+import { JoinRequests, InviteStateLine, pendingInviteStatus } from "./JoinRequests";
+import { readFileSync } from "node:fs";
+import { join as joinPath } from "node:path";
 import type { InviteViewDto, JoinViewDto } from "../bridge/domains";
 
 const noop = () => {};
@@ -65,5 +67,20 @@ describe("InviteStateLine", () => {
   });
   it("renders nothing before the daemon reports the rendezvous", () => {
     expect(renderToStaticMarkup(<InviteStateLine view={undefined} lastKnown={undefined} onRetry={noop} onRemove={noop} />)).toBe("");
+  });
+});
+
+// Codex round 5 (P1, #375): a revoke with the close persisted but not relay-confirmed shows as
+// pending, and the row no longer hands out the link.
+describe("revoking invites", () => {
+  it("say the revoke is waiting for the relay", () => {
+    expect(pendingInviteStatus({ revoking: true })).toBe("Revoking… · waiting for the relay to confirm");
+    expect(pendingInviteStatus({})).toBe("invite pending · self-admit · one use");
+  });
+
+  it("Groups uses the status line and offers no Copy link for a revoking invite", () => {
+    const src = readFileSync(joinPath(__dirname, "Groups.tsx"), "utf8");
+    expect(src).toContain("{pendingInviteStatus(pi)}");
+    expect(src).toContain("{!pi.revoking && (\n                        <button className=\"btn btn-ghost btn-sm\" onClick={() => { void navigator.clipboard?.writeText(pi.link");
   });
 });
