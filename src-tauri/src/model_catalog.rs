@@ -336,7 +336,7 @@ struct DownloadMarker {
     size_bytes: u64,
 }
 
-fn marker_path(dir: &std::path::Path, file: &str) -> std::path::PathBuf {
+pub(crate) fn marker_path(dir: &std::path::Path, file: &str) -> std::path::PathBuf {
     dir.join(format!("{file}.download.json"))
 }
 
