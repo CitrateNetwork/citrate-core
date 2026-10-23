@@ -638,6 +638,14 @@ export function tickPatch(
   return u;
 }
 
+/**
+ * #391 — whether a node_validator_earnings read belongs to this member's validator key; null = it
+ * does, otherwise why not. (Stub: accepts every read, as before.)
+ */
+export function earningsKeyCheck(_bond: MemberBondState | null | undefined, _proposerPubkey: unknown): string | null {
+  return null;
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
