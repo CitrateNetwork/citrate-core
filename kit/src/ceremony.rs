@@ -97,6 +97,40 @@ use crate::wallet::{self, WalletError};
 /// no-funds key (Rule-3 ADR D5). It never touches the wallet key.
 pub mod anchor;
 
+/// How long a pending signature request stays approvable: 15 minutes.
+///
+/// Nonce and gas are read live at approval, so this bounds only how long a card can wait for the
+/// member. It equals the approval window of the external MCP inbox
+/// (`node_mcp_approvals::REQUEST_TTL_MS` is defined from it), so a request and its card expire
+/// together.
+pub const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// [`PENDING_TTL`] in milliseconds.
+pub const PENDING_TTL_MS: u64 = 15 * 60 * 1000;
+
+/// One reading of the ceremony clock: monotonic time plus wall-clock epoch ms.
+#[derive(Debug, Clone, Copy)]
+pub struct ClockReading {
+    /// Monotonic time. Never goes back, but may not advance while the machine sleeps.
+    pub mono: std::time::Instant,
+    /// Wall-clock epoch ms. Advances across sleep, but can be set back.
+    pub wall_ms: u64,
+}
+
+/// The ceremony's clock (injected so tests can move time).
+pub type CeremonyClock = Box<dyn Fn() -> ClockReading + Send + Sync>;
+
+/// The system clock: `Instant::now()` and the wall clock (0 if it reads before the epoch).
+pub fn system_clock() -> ClockReading {
+    ClockReading {
+        mono: std::time::Instant::now(),
+        wall_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0),
+    }
+}
+
 /// The action string surfaced when calldata cannot be decoded to a human action.
 /// A ceremony carrying this action is `requires_raw_ack` and cannot be approved
 /// without an explicit raw-mode acknowledgement (B1.2-ADV-5).
@@ -370,6 +404,17 @@ pub enum CeremonyError {
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
     Broadcast(String),
+    /// The request was not approved within [`PENDING_TTL`]. It has been removed. Nothing was
+    /// signed.
+    Expired,
+    /// The chain id shown on the approval card is not the chain id the signature would commit
+    /// to. Nothing was signed.
+    ChainMismatch {
+        /// The chain id the card showed.
+        shown: u64,
+        /// The chain id the bytes to be signed name (or why it could not be read).
+        signed: String,
+    },
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -397,6 +442,14 @@ impl std::fmt::Display for CeremonyError {
                 "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
+            CeremonyError::Expired => write!(
+                f,
+                "ceremony: this request expired before it was approved, so nothing was signed; ask again for a fresh request"
+            ),
+            CeremonyError::ChainMismatch { shown, signed } => write!(
+                f,
+                "ceremony: the approval showed chain {shown} but the signature would be for chain {signed}, so nothing was signed"
+            ),
         }
     }
 }
@@ -447,6 +500,10 @@ pub struct SignatureCeremony {
     next_id: AtomicU64,
     /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
     abis: crate::abi_book::AbiBook,
+    /// How long a pending request stays approvable.
+    ttl: std::time::Duration,
+    /// The clock the TTL is measured with.
+    clock: CeremonyClock,
 }
 
 impl Default for SignatureCeremony {
@@ -457,11 +514,28 @@ impl Default for SignatureCeremony {
 
 impl SignatureCeremony {
     pub fn new() -> Self {
+        Self::with_clock(PENDING_TTL, Box::new(system_clock))
+    }
+
+    /// A ceremony whose pending requests expire after `ttl`, measured with `clock`.
+    pub fn with_clock(ttl: std::time::Duration, clock: CeremonyClock) -> Self {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
             abis: crate::abi_book::AbiBook::default(),
+            ttl,
+            clock,
         }
+    }
+
+    /// Whether `id` named a request that expired unapproved.
+    pub fn is_expired(&self, _id: &str) -> bool {
+        false
+    }
+
+    /// How many requests this ceremony has opened.
+    pub fn opened(&self) -> u64 {
+        self.next_id.load(Ordering::SeqCst) - 1
     }
 
     /// HUP-S6: let calls to `address` be decoded from `abi`. Only for a contract whose on-chain
@@ -1230,4 +1304,5 @@ pub fn sign_reject_sync(
 mod tests {
     include!("ceremony_tests.rs");
     include!("ceremony_budget_tests.rs");
+    include!("ceremony_expiry_tests.rs");
 }
