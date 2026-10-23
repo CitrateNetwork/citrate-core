@@ -316,9 +316,8 @@ fn ttl_approve_racing_expiry_yields_exactly_one_outcome() {
         }
         assert!(swept.is_none() || approved.is_err(), "round {round}");
         assert_eq!(c.pending_count(), 0, "round {round}");
-        assert_eq!(
-            c.approve(&v, &view.id, false).is_ok(),
-            false,
+        assert!(
+            c.approve(&v, &view.id, false).is_err(),
             "round {round}: a second approval never signs"
         );
     }
@@ -597,6 +596,7 @@ fn tripwire_every_signer_call_is_preceded_by_the_expiry_and_chain_checks() {
     let rts_body = &src[rts..rts + src[rts..].find("\n    }\n").expect("end of fn")];
     assert!(rts_body.contains("self.expired(") && rts_body.contains("committed_chain("));
     // The pending map is only drained through the TTL-aware paths.
-    let removes = src.matches("pending.remove(").count();
+    let flat: String = src.split_whitespace().collect();
+    let removes = flat.matches("pending.remove(").count();
     assert_eq!(removes, 2, "the pending map is drained only by take_live and the sweep");
 }
