@@ -1093,6 +1093,11 @@ pub struct SupervisorConfig {
     /// the retry-budget rule. A fault-injection seam: the lifecycle fixtures hold the monitor
     /// there while a member Start joins an automated one. `None` in production.
     pub budget_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor at the top of a supervision turn in which a finished probe worker is
+    /// waiting to be collected, before the turn reads the clock. A fault-injection seam: the
+    /// lifecycle fixtures hold the monitor there to delay collection past the freshness limit.
+    /// `None` in production.
+    pub collect_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SupervisorConfig {
@@ -1110,6 +1115,7 @@ impl SupervisorConfig {
             spawn_barrier: None,
             failed_barrier: None,
             budget_barrier: None,
+            collect_barrier: None,
         }
     }
 }
@@ -2216,6 +2222,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         spawn_barrier,
         failed_barrier: _failed_barrier,
         budget_barrier,
+        collect_barrier,
     } = config;
 
     // The CONSECUTIVE-failure counter lives in the cell (`counters.consecutive_failures`) and
@@ -2416,6 +2423,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 health: spec.health_check.as_ref(),
                 watch: watch.as_ref(),
                 healthy_after,
+                collect_barrier: collect_barrier.as_ref(),
             },
             &mut probe_slot,
         );
@@ -2891,6 +2899,7 @@ struct Running<'a> {
     health: Option<&'a HealthCheck>,
     watch: Option<&'a ChildWatch>,
     healthy_after: Duration,
+    collect_barrier: Option<&'a Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// The success window of a probed incarnation (SPEC-001 "Process state, readiness and
@@ -2984,6 +2993,11 @@ fn supervise_running(
     };
 
     loop {
+        if let Some(barrier) = run.collect_barrier {
+            if slot.as_ref().is_some_and(|r| r.handle.is_finished()) {
+                barrier();
+            }
+        }
         let now = Instant::now();
         // 1) a newer intent (Stop, restart) or shutdown, read from the cell at this bounded point.
         if shared.intent_changed(seq) {

@@ -325,3 +325,17 @@ fixture flakes in CI, the fix belongs in the fixture (a longer probe interval), 
 - **Counts:** kit lib 373 -> 377; `supervisor::tests` 50 -> 54 Unix (lifecycle-platforms
   expects 54 and 32); `lifecycle_faults` 59 -> 62. 16 concurrent copies of the suite (two rounds
   of 8): 16/16 green, no `citrate-lcf-` process left.
+
+### SCL-S3 review round 4 (2026-10-23)
+
+- **Call-site pin (independent review 1).** `a_success_collected_late_by_the_monitor_never_reads_ready`
+  holds the monitor at the new `collect_barrier` seam (before the turn reads the clock) while an
+  on-time probe result waits, past the freshness limit. It fails when the call site passes the
+  monitor's `now` instead of `done.finished_at` (Ready, age 0, one credit).
+- **Flapping fixture (review 2).** It now alternates globally and counts spawns by the
+  supervisor's incarnation counter instead of pid files. It still fails the "credit on the
+  first success" mutant (incarnation 5, four credits).
+- **#352 merged up** at `e4684e6` (an uncommitted ticket stays owned until commit or withdraw).
+- **Counts:** kit lib 378; `supervisor::tests` 55 Unix / 33 Windows; `lifecycle_faults` 65.
+  Load: 32 runs (4 rounds of 8 concurrent copies) at a load average of about 77: 32/32 green, no
+  `citrate-lcf-` process left.

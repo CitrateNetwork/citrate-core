@@ -2899,30 +2899,100 @@ fn a_member_start_joining_an_automated_start_gives_a_fresh_budget() {
     fx.assert_clean();
 }
 
-/// A probe that flaps (each incarnation answers success, then failure) never earns credit:
-/// credit needs fresh successes spanning `healthy_after`, so the budget runs out and the
-/// service reaches Failed.
+/// End to end through the monitor: a probe worker that finished on time, but is collected only
+/// after the freshness limit (the monitor was held past it), is not fresh evidence. The service
+/// never reads Ready from it and earns no credit, even with `healthy_after` zero.
+#[test]
+fn a_success_collected_late_by_the_monitor_never_reads_ready() {
+    let fx = OwnedFixture::new("late-collect");
+    let gate = Arc::new(ArmedGate::default());
+    // Probe 1 answers at once; every later probe waits until the test is done, so the delayed
+    // sample is the only evidence the monitor can act on.
+    let calls = Arc::new((
+        std::sync::Mutex::new((0u32, false)),
+        std::sync::Condvar::new(),
+    ));
+    let probe_calls = calls.clone();
+    let mut spec = fx.leaf_spec("lcf-late-collect");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(50),
+        grace: Duration::from_secs(60),
+        probe: Arc::new(move || {
+            let (lock, cv) = &*probe_calls;
+            let mut s = lock.lock().unwrap_or_else(|p| p.into_inner());
+            s.0 += 1;
+            cv.notify_all();
+            if s.0 == 1 {
+                return true;
+            }
+            while !s.1 {
+                s = cv.wait(s).unwrap_or_else(|p| p.into_inner());
+            }
+            true
+        }),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.healthy_after = Duration::ZERO;
+    cfg.collect_barrier = Some(ArmedGate::hook(&gate));
+    gate.arm();
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    // The monitor sees probe 1 finished and is held before it collects it.
+    gate.wait_held();
+    // Hold it well past the freshness limit (2 x 50 ms). Load only makes the delay longer.
+    hold_for(Duration::from_millis(300));
+    gate.release();
+    // Probe 2 starts in the same turn that handled probe 1's result.
+    let second = {
+        let (lock, cv) = &*calls;
+        let deadline = Deadline::after(ACQUIRE);
+        let mut s = lock.lock().unwrap_or_else(|p| p.into_inner());
+        while s.0 < 2 && !deadline.expired() {
+            s = cv
+                .wait_timeout(s, deadline.remaining())
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+        s.0 >= 2
+    };
+    let snap = sup.lifecycle();
+    {
+        let (lock, cv) = &*calls;
+        lock.lock().unwrap_or_else(|p| p.into_inner()).1 = true;
+        cv.notify_all();
+    }
+    assert!(second, "INCONCLUSIVE: the monitor never started probe 2");
+    let snap = snap.unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_ne!(
+        snap.readiness,
+        Readiness::Ready,
+        "a success collected after the freshness limit is not fresh: {snap:?}"
+    );
+    assert_eq!(
+        snap.counters.health_credits, 0,
+        "an old success earns no credit"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A probe that flaps (success, then failure, globally alternating) never earns credit: credit
+/// needs fresh successes spanning `healthy_after`, and with no grace every failure ends the
+/// incarnation, so no window ever holds two successes. The budget runs out and the service
+/// reaches Failed after the first run plus one retry. Spawns are counted by the supervisor's
+/// own incarnation counter, not by the children's pid files, so a child that has not run its
+/// first line yet cannot skew the count.
 #[test]
 fn a_flapping_probe_never_earns_credit() {
     let fx = OwnedFixture::new("flapping");
     let mut spec = fx.leaf_spec("lcf-flapping");
-    let pidfile = fx.path("pids");
-    // (pids seen, samples of the current incarnation)
-    let seen = Arc::new(std::sync::Mutex::new((0usize, 0u32)));
+    let calls = Arc::new(AtomicU64::new(0));
+    let probe_calls = calls.clone();
     spec.health_check = Some(HealthCheck {
-        interval: Duration::from_millis(30),
+        interval: Duration::from_millis(50),
         grace: Duration::ZERO,
-        probe: Arc::new(move || {
-            let pids = std::fs::read_to_string(&pidfile)
-                .map(|s| s.lines().count())
-                .unwrap_or(0);
-            let mut s = seen.lock().unwrap_or_else(|p| p.into_inner());
-            if s.0 != pids {
-                *s = (pids, 0);
-            }
-            s.1 += 1;
-            s.1 % 2 == 1
-        }),
+        probe: Arc::new(move || probe_calls.fetch_add(1, Ordering::SeqCst).is_multiple_of(2)),
     });
     let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
     cfg.healthy_after = Duration::from_millis(500);
@@ -2930,13 +3000,22 @@ fn a_flapping_probe_never_earns_credit() {
     cfg.stop_grace = Duration::from_millis(300);
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
+    // Failed, or clearly past the budget (a credit would keep resetting it).
+    let ended = wait_for(SLOW_FAILED, Duration::from_millis(10), || {
+        let l = sup.lifecycle()?;
+        (l.phase == Phase::Failed || l.incarnation > 4).then_some(l)
+    });
+    let snap = match ended {
+        Ok((l, _)) => l,
+        Err(_) => panic!("INCONCLUSIVE: neither Failed nor past the budget"),
+    };
     assert_eq!(
-        st.state,
-        SupervisorState::Failed,
-        "a flapping probe must not keep resetting the budget: {st:?}"
+        snap.phase,
+        Phase::Failed,
+        "a flapping probe must not keep resetting the budget: {snap:?}"
     );
-    assert_eq!(fx.pidfile_pids().len(), 2, "first run plus one retry");
+    assert_eq!(snap.incarnation, 2, "first run plus one retry: {snap:?}");
+    assert_eq!(snap.counters.health_credits, 0, "no credit: {snap:?}");
     drop(sup);
     fx.assert_clean();
 }
