@@ -60,7 +60,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { activationClosedReason, canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorDash, type ChainReads, type MemberBondState, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorDash, type ChainReads, type MemberBondState, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
@@ -315,7 +315,7 @@ export function memberBondFromGrant(g: GrantStatus): MemberBondState {
     deployed: g.bondDeployed,
     activated: g.bondDeployed ? (g.bondActivated ?? null) : null,
     pubkey,
-    // chain#331 activation window; absent (older backend) or failed = unread.
+    // MemberBond.isUnlocked(); absent (older backend) or failed = unread.
     unlocked: g.bondDeployed ? (g.bondUnlocked ?? null) : null,
   };
 }
@@ -1516,7 +1516,8 @@ export class Store {
       const mb = this.state.memberBond;
       // #366 Codex P2: an unread activated() flag is retried on its own, whether or not the key read.
       const needBondKey = !mb || (mb.deployed && (mb.activated === null || (mb.activated !== false && !mb.pubkey)));
-      // chain#331: an un-activated bond's lock (isUnlocked(), MemberBond.sol:219) decides whether
+      // An un-activated bond's lock (isUnlocked()) decides between "Bond locked · not staked" and
+      // "Unlocked · not activated", and whether
       // activation is offered; while it is unread (or absent from an older backend) the gate stays
       // closed, so read it again on the next due poll, node up or not.
       const needBondLock = !!mb && mb.deployed && mb.activated === false && (mb.unlocked === null || mb.unlocked === undefined);
@@ -4590,12 +4591,12 @@ export class Store {
    * honestly — never a fabricated activation.
    */
   async activateValidator(): Promise<boolean> {
-    // chain#331: the one activation gate, checked before anything else (arming included), so no
-    // entry point can open an activation the chain refuses (MemberBond.sol:219).
+    // The one activation gate, checked before anything else (arming included), so no entry point
+    // can open an activation outside the lock (owner decision 2026-10-19).
     {
       const s = this.state;
       if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)) {
-        const why = activationClosedReason(s.memberBond) ?? validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+        const why = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
         this.toast("Validator activation not available — " + why + ".");
         return false;
       }

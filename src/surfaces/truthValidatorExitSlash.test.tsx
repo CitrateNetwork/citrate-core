@@ -67,7 +67,7 @@ describe("C1-V2(a) — the word follows validatorInfo.status before any stake ch
   });
 
   it("stake 0 with status None keeps the bond / not-a-validator words; unread is unread (C1-V4)", () => {
-    expect(validatorWord(0, none, true, { deployed: true, activated: false, pubkey: null })).toBe("Bond locked · not staked");
+    expect(validatorWord(0, none, true, { deployed: true, activated: false, pubkey: null, unlocked: false })).toBe("Bond locked · not staked");
     expect(validatorWord(0, none, false, { deployed: false, activated: null, pubkey: null })).toBe("Not a validator");
     expect(validatorWord(0, null, true)).toBeNull();
     expect(validatorWord(0, null, false)).toBeNull();
