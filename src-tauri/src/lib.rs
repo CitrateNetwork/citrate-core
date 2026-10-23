@@ -132,6 +132,7 @@ mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
+mod validator_activation;
 mod verified_source;
 mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
@@ -558,6 +559,9 @@ pub fn run() {
             ceremony::sign_request,
             ceremony::sign_approve,
             ceremony::sign_and_broadcast,
+            // Join-8 — sign without sending (returns the tx hash), then send.
+            ceremony::sign_prepare,
+            ceremony::sign_send_prepared,
             ceremony::sign_reject,
             wallet_link::wallet_link_request,
             wallet_link::wallet_link_approve,
@@ -778,6 +782,10 @@ pub fn run() {
             // ceremony sends MemberBond.activate to the funded clone; the clone (=
             // staker) forwards its principal to registerValidator.
             node::node_register_validator,
+            // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
+            validator_activation::validator_activation_status,
+            // Join-8 — Forget an unseen activation send in the durable submitted-tx record.
+            validator_activation::validator_activation_forget,
             // W1.x — arm the producer once synced (consensus-gated); the respawn
             // mints proposer.key, the validator identity the bond activation needs.
             node::node_arm_mining,
@@ -1284,6 +1292,8 @@ mod tests {
             "sign_request",
             "sign_approve",
             "sign_and_broadcast",
+            "sign_prepare",
+            "sign_send_prepared",
             "sign_reject",
         ] {
             assert!(

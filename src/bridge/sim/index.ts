@@ -321,6 +321,21 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           "signing.broadcast: the web shim cannot sign or broadcast a real 40204 transaction (no key, no chain). Use the packaged Tauri app.",
         );
       },
+      // No key and no chain in the web preview: it cannot sign or send (Rule 1).
+      async prepare(id: string, rawAck: boolean): Promise<{ txHash: string }> {
+        assertSimAllowed("signing.prepare");
+        const view = simCeremonies.get(id);
+        if (!view) throw new Error("ceremony: unknown or already-consumed id");
+        if (view.requiresRawAck && !rawAck) {
+          throw new Error("ceremony: undecodable calldata requires an explicit raw-mode ack");
+        }
+        simCeremonies.delete(id);
+        throw new Error("signing.prepare: the web shim cannot sign a real 40204 transaction (no key). Use the packaged Tauri app.");
+      },
+      async sendPrepared(): Promise<BroadcastResult> {
+        assertSimAllowed("signing.sendPrepared");
+        throw new Error("signing.sendPrepared: the web shim cannot send a real 40204 transaction (no chain). Use the packaged Tauri app.");
+      },
       async reject(id: string): Promise<void> {
         assertSimAllowed("signing.reject");
         if (!simCeremonies.delete(id)) throw new Error("ceremony: unknown or already-consumed id");
@@ -428,6 +443,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async registerValidator() {
         assertSimAllowed("node.registerValidator");
         throw new Unavailable("node", "registerValidator");
+      },
+      // No chain and no node in the web preview: the step shows its unavailable state (Rule 1).
+      async activationStatus(): Promise<never> {
+        assertSimAllowed("node.activationStatus");
+        throw new Unavailable("node", "activationStatus");
+      },
+      async activationForget(): Promise<never> {
+        assertSimAllowed("node.activationForget");
+        throw new Unavailable("node", "activationForget");
       },
       // No real node to arm in the web preview → honest no-op (never a fabricated arm).
       async armMining() {
@@ -802,7 +826,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
  */
 function simAuthStatus(st: AppState): AuthStatus {
   const p = PERSONAS[st.persona] || PERSONAS.p1;
-  const signedIn = st.stage === "done" || ["s2", "s3", "s4", "s5", "s6"].includes(st.stage) || st.s1 === "done";
+  const signedIn = st.stage === "done" || ["s2", "s3", "s4", "s5", "s6", "s7"].includes(st.stage) || st.s1 === "done";
   if (!signedIn) return SIGNED_OUT_AUTH;
   const effTier = st.entitlement === "lapsed" ? "free" : st.tier;
   const kyc = st.hasSbt || st.s2 === "verified" ? "verified" : st.s2 === "none" ? "none" : st.s2;

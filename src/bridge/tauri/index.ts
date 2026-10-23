@@ -32,6 +32,7 @@ import type {
   PendingWithdrawalsRead,
   AiProviderStatus,
   GrantStatus,
+  ActivationStatusView,
   ModelStatus,
   NodeLogLine,
   NodeStatusView,
@@ -135,6 +136,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         // CORE-B1.4 — sign the real EIP-155 tx with the vault key + broadcast to
         // 40204, returning the real tx hash + block. Never returns key material.
         return invoke<BroadcastResult>("sign_and_broadcast", { id, rawAck });
+      },
+      // Join-8 — sign without sending (returns the tx hash), then send the signed tx.
+      async prepare(id: string, rawAck: boolean): Promise<{ txHash: string }> {
+        return invoke<{ txHash: string }>("sign_prepare", { id, rawAck });
+      },
+      async sendPrepared(id: string): Promise<BroadcastResult> {
+        return invoke<BroadcastResult>("sign_send_prepared", { id });
       },
       async reject(id: string): Promise<void> {
         await invoke("sign_reject", { id });
@@ -241,6 +249,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // as a pending ceremony; returns the decoded view for human approval.
       async registerValidator() {
         return invoke<CeremonyView>("node_register_validator");
+      },
+      // Join-8 — the Activate-validator step's read (bond, membership, registry, sync, block time).
+      async activationStatus(memberAddress: string, txHash?: string | null) {
+        return invoke<ActivationStatusView>("validator_activation_status", { memberAddress, txHash: txHash ?? null });
+      },
+      async activationForget(txHash: string) {
+        return invoke<boolean>("validator_activation_forget", { txHash });
       },
       async lastCrash() {
         return invoke<{ reason: string; atUnixMs: number } | null>("node_last_crash");
