@@ -279,7 +279,12 @@ fn read_grant_status_granted_member_reads_real_stake_and_sbt() {
     // the staker, so asking about the member reads zero forever and would report a
     // fully-activated validator as having none.
     let reqs = rpc.transport().requests();
-    assert_eq!(reqs.len(), 8, "stake, principal, sbt, bondOf, 3 bond getters, pubkeyOfStaker");
+    assert_eq!(
+        reqs.len(),
+        9,
+        "stake, principal, sbt, bondOf, 3 bond getters, pubkeyOfStaker, then MemberBond.activated()"
+    );
+    assert_eq!(status.bond_activated, None, "no scripted activated() answer: unread, not false");
     let staker_calldata = reqs[7]["params"][0]["data"].as_str().unwrap().to_ascii_lowercase();
     assert!(
         staker_calldata.ends_with(&BOND_ADDR[2..].to_ascii_lowercase()),
@@ -374,6 +379,7 @@ fn grant_status_serializes_camelcase_decimal_strings() {
         unlock_block: Some(300_000),
         is_unlocked: false,
         is_kyc_verified: false,
+        bond_activated: Some(true),
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -388,6 +394,7 @@ fn grant_status_serializes_camelcase_decimal_strings() {
     assert_eq!(json["unlockBlock"], 300_000, "the lock crosses the bridge as a number");
     assert_eq!(json["isUnlocked"], false);
     assert_eq!(json["isKycVerified"], false);
+    assert_eq!(json["bondActivated"], true);
 }
 
 /// The pinned `pubkeyOfStaker(address)` selector is the REAL keccak of the
@@ -511,4 +518,118 @@ fn granted_but_unactivated_member_settles_on_attribution() {
         REQUIREMENT_WEI.to_string(),
         "attribution is the settle signal across this window"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #348 review: a member whose validator fully exited (or was slashed). The registry has zeroed the
+// stake and cleared `pubkeyOfStaker` (ValidatorRegistry.sol initiateUnbond / _beginExit / slash), so
+// `has_validator` reads false. `MemberBond.activated()` stays true, and the bond can still claim
+// that key's matured rewards: `MemberBond.claimRewards` checks only `activated`, and
+// `ValidatorRegistry.claimRewards` has no status check.
+// ---------------------------------------------------------------------------
+
+/// The scripted reads for a granted member whose bond exists, up to and including the
+/// `pubkeyOfStaker` read (which returns `pubkey_word`).
+fn bond_member_reads(pubkey_word: &str) -> Vec<JsonValue> {
+    vec![
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedStake
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedPrincipal
+        ok(JsonValue::String(uint256_hex(1))),               // SBT balanceOf == 1
+        ok(JsonValue::String(BOND_WORD.to_string())),        // bondOf
+        ok(JsonValue::String(uint256_hex(300_000))),         // unlockBlock
+        ok(JsonValue::String(uint256_hex(1))),               // isUnlocked
+        ok(JsonValue::String(uint256_hex(1))),               // isKycVerified
+        ok(JsonValue::String(pubkey_word.to_string())),      // pubkeyOfStaker(BOND)
+    ]
+}
+
+#[test]
+fn an_exited_member_reads_bond_activated_with_no_registry_binding() {
+    let mut responses = bond_member_reads(&uint256_hex(0)); // pubkeyOfStaker cleared by the exit
+    responses.push(ok(JsonValue::String(uint256_hex(1)))); // MemberBond.activated() == true
+    let rpc = RpcClient::with_transport(MockRpc::new(responses));
+    let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
+    assert!(!status.has_validator, "the registry cleared pubkeyOfStaker");
+    assert_eq!(status.bonded_stake_wei, "0");
+    assert_eq!(status.bond_activated, Some(true), "the bond stays activated after the exit");
+    let last = rpc.transport().requests().last().cloned().expect("a request");
+    let data = last["params"][0]["data"].as_str().unwrap_or_default().to_string();
+    assert_eq!(last["params"][0]["to"], BOND_ADDR);
+    assert!(data.starts_with(&format!("0x{}", hex::encode(activated_selector()))));
+}
+
+#[test]
+fn a_granted_but_unactivated_bond_reads_bond_activated_false() {
+    let mut responses = bond_member_reads(&uint256_hex(0));
+    responses.push(ok(JsonValue::String(uint256_hex(0)))); // activated() == false
+    let rpc = RpcClient::with_transport(MockRpc::new(responses));
+    let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
+    assert_eq!(status.bond_activated, Some(false));
+}
+
+#[test]
+fn a_failed_activated_read_is_unread_and_the_other_reads_stand() {
+    // No scripted response for activated(): the transport errors.
+    let rpc = RpcClient::with_transport(MockRpc::new(bond_member_reads(&uint256_hex(0))));
+    let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
+    assert_eq!(status.bond_activated, None, "a failed read is unread, never false");
+    assert!(status.bond_deployed && status.has_sbt);
+}
+
+#[test]
+fn no_bond_has_no_activated_read() {
+    let responses = vec![
+        ok(JsonValue::String(uint256_hex(0))),
+        ok(JsonValue::String(uint256_hex(0))),
+        ok(JsonValue::String(uint256_hex(0))),
+        ok(JsonValue::String(BOND_WORD.to_string())),
+        ok(JsonValue::String("0x".to_string())), // unlockBlock: NO CODE
+    ];
+    let rpc = RpcClient::with_transport(MockRpc::new(responses));
+    let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
+    assert_eq!(status.bond_activated, None);
+}
+
+fn grant(bond_deployed: bool, has_validator: bool, bond_activated: Option<bool>) -> GrantStatus {
+    GrantStatus {
+        attributed_stake_wei: REQUIREMENT_WEI.to_string(),
+        attributed_principal_wei: REQUIREMENT_WEI.to_string(),
+        has_sbt: true,
+        bond_address: BOND_ADDR.to_string(),
+        bond_deployed,
+        bonded_stake_wei: "0".to_string(),
+        has_validator,
+        unlock_block: Some(300_000),
+        is_unlocked: true,
+        is_kyc_verified: true,
+        bond_activated,
+    }
+}
+
+#[test]
+fn an_exited_validator_claims_through_its_bond() {
+    assert!(claims_through_bond(&grant(true, false, Some(true))));
+}
+
+#[test]
+fn the_claim_goes_through_the_bond_only_for_an_activated_or_bound_bond() {
+    assert!(claims_through_bond(&grant(true, true, Some(true))));
+    assert!(claims_through_bond(&grant(true, true, None)));
+    assert!(!claims_through_bond(&grant(true, false, Some(false))));
+    assert!(!claims_through_bond(&grant(true, false, None)), "unread is not activated");
+    assert!(!claims_through_bond(&grant(false, false, Some(true))), "no bond, no bond claim");
+}
+
+/// Tripwire: `user_claim` picks its claim target from `claims_through_bond`, so the UI and the
+/// Rust claim can't disagree again on which contract holds a validator's rewards.
+#[test]
+fn user_claim_routes_through_claims_through_bond() {
+    let src = include_str!("agent.rs");
+    let body = src
+        .split("pub async fn user_claim(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .unwrap_or_default();
+    assert!(body.contains("claims_through_bond"), "user_claim must route with claims_through_bond");
+    assert!(!body.contains("g.bond_deployed && g.has_validator"));
 }

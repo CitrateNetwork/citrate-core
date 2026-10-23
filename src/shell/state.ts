@@ -10,6 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
+import type { ValidatorActivation } from "./chainTruth";
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
@@ -116,7 +117,7 @@ export function fmtSaltFromWei(wei: string | null | undefined): string {
 }
 export function nodeLabel(n: string): string {
   return (
-    { off: "off", prov: "provisioning", syncing: "syncing", synced: "synced", paused: "paused", validating: "validating", stalled: "sync stalled", error: "error" } as Record<string, string>
+    { off: "off", prov: "provisioning", syncing: "syncing", synced: "synced", paused: "paused", validating: "validator active", stalled: "sync stalled", error: "error" } as Record<string, string>
   )[n] || n;
 }
 
@@ -422,10 +423,36 @@ export interface AppState {
   pendingWithdrawalsNote: string | null;
   hasGrant: boolean;
   hasSbt: boolean;
-  earnVal: number;
-  earnPin: number;
-  earnComp: number;
-  earnToday: number;
+  /**
+   * C1-V V8 — the member's validator rewards, from `ValidatorRegistry.rewardsOf(pubkey)` only
+   * (UI truth contract §1 Rewards): `totalWei` is the total, `claimableWei` is `claimableNow`, and
+   * the difference is maturing. null = not a registered validator, or not read yet. There is no
+   * per-day or per-source split: no contract exposes one, so none is shown.
+   */
+  rewards: { totalWei: string; claimableWei: string } | null;
+  /**
+   * C1-V (contract v1.1 §1) — this node's key in the registry: `isActive(pubkey)`,
+   * `validatorInfo(pubkey)` status + actEpoch, and `currentEpoch()`. The ONLY input to the
+   * validator words; stake amounts and LiquidStakingPool self-stake never are. null = not read
+   * (no registered stake yet, or the read failed). Observed, never persisted.
+   */
+  validatorActivation: ValidatorActivation | null;
+  /**
+   * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
+   * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
+   * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
+   */
+  bondActivated: boolean | null;
+  /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
+  blockSecs: number | null;
+  /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
+  minStakeWei: string | null;
+  /** C1-V — this node's validator key (`proposer.key`), once read. Observed, never persisted. */
+  validatorPubkey: string | null;
+  /** C1-V — distinct proposer keys sampled over the last 100 blocks (chainTruth); null = not sampled. */
+  producers: { head: number; window: number; proposers: string[] } | null;
+  /** Why the last producer sample failed, shown with "—". */
+  producersError: string | null;
   claimable: number;
   /**
    * CORE-C2 — where `claimable` currently comes from. "chain" once the real
@@ -717,7 +744,7 @@ function greeting(P: Persona): ChatMsg {
     who: "Agent",
     text:
       hello +
-      "I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, earnings, or the network.",
+      "I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, validator rewards, or the network.",
     chips: [],
     streaming: false,
   };
@@ -796,10 +823,14 @@ export function freshState(pid: string): AppState {
     pendingWithdrawalsNote: null,
     hasGrant: false,
     hasSbt: false,
-    earnVal: 0,
-    earnPin: 0,
-    earnComp: 0,
-    earnToday: 0,
+    rewards: null,
+    validatorActivation: null,
+    bondActivated: null,
+    blockSecs: null,
+    minStakeWei: null,
+    validatorPubkey: null,
+    producers: null,
+    producersError: null,
     claimable: 0,
     earnSource: "sim",
     activity: [],
@@ -971,10 +1002,6 @@ export function freshState(pid: string): AppState {
       s.peers = 23;
       s.liquid = 142.63;
       s.claimable = 9.41;
-      s.earnVal = 96.42;
-      s.earnPin = 21.7;
-      s.earnComp = 9.31;
-      s.earnToday = 3.86;
       s.selfStake = 2500;
       s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
       s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Add stake|−2,500.00 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
@@ -982,9 +1009,6 @@ export function freshState(pid: string): AppState {
       s.node = "off";
       s.liquid = 58.02;
       s.claimable = 2.14;
-      s.earnVal = 30.11;
-      s.earnPin = 4.02;
-      s.earnComp = 6.4;
       s.gwKey = "cgk_9f31•••••••••••••7f2a";
       s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
@@ -992,10 +1016,6 @@ export function freshState(pid: string): AppState {
       s.peers = 26;
       s.liquid = 301.44;
       s.claimable = 18.92;
-      s.earnVal = 240.5;
-      s.earnPin = 51.2;
-      s.earnComp = 22.8;
-      s.earnToday = 5.12;
       s.selfStake = 8000;
       s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Add stake|−8,000.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     }
@@ -1014,7 +1034,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // Every launch starts signed-out; identity is re-derived only from a live
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
-  "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
+  "liquid", "selfStake", "bondedStake", "claimable", "activity",
   "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "channel",
   "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
@@ -1025,6 +1045,9 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
+
+/** Keys earlier builds persisted that are retired (C1-V V8): dropped from a save when it loads. */
+export const RETIRED_PERSISTED_KEYS = ["earnVal", "earnPin", "earnComp", "earnToday"] as const;
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1037,6 +1060,9 @@ export function loadState(): AppState {
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
+  // Upgrade review: keys older builds persisted that no longer exist (V8 retired the off-chain
+  // earnings estimates). A 0.5.1 save still carries them; never fold them into state.
+  if (saved) for (const k of RETIRED_PERSISTED_KEYS) delete (saved as Record<string, unknown>)[k];
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // CLAUDE.md Rule 3: there is no signature-policy setting (every signature goes through the
   // ceremony; the one exception is a budgeted web sign-in). An older build persisted one, so drop
