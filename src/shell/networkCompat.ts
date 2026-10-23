@@ -37,3 +37,8 @@ export function useNetworkCompat(): { status: NetworkCompat; live: string | null
   const live = data?.hash ?? null;
   return { status: networkCompat(EXPECTED_GENESIS, live), live };
 }
+
+/** The network's display name for a compat status (UI truth contract §2 "Network", §6). */
+export function networkLabel(_status: NetworkCompat): string {
+  return "Chain 40204 · testnet-beta";
+}
