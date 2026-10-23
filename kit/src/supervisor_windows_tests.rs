@@ -63,10 +63,11 @@ fn sidecar_candidates_try_exe_suffix_first_on_windows() {
 
 /// How long the console probe may take to report. The probe runs in Windows
 /// PowerShell 5.1, whose `Add-Type` compiles the P/Invoke shim by launching
-/// `csc.exe` out of process. On hosted runners that start-up plus compile has
-/// been measured at 2-9 s when it succeeds, and a 10 s budget timed out in
-/// roughly one run in eight with no output at all. The budget only bounds a
-/// wait for lines that are already expected; it does not relax what is checked.
+/// `csc.exe` out of process. On a fresh hosted runner that cold start was
+/// measured at 2.5-18.5 s across 12 runners (two over 10 s), and the earlier
+/// 10 s budget timed out on about one runner in eight with no output captured.
+/// Warm runs in the same VM take under 2 s. The budget only bounds a wait for
+/// lines that are already expected; it does not relax what is checked.
 const CONSOLE_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[test]
