@@ -36,6 +36,8 @@ import type {
   NodeLogLine,
   NodeStatusView,
   ConnectionInfo,
+  ChatRoute,
+  ChatRouteStatus,
 } from "../domains";
 import { Unavailable } from "../types";
 import { tauriImportKnowledge } from "./knowledge";
@@ -418,6 +420,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // real model status + serve health + the gateway-key presence.
       async inferenceState(gatewayConfigured: boolean): Promise<string> {
         return invoke<string>("model_inference_state", { gatewayConfigured });
+      },
+      // K2 — the member's chat route, stored in Rust (chat_route.rs).
+      async route(): Promise<ChatRouteStatus> {
+        return invoke<ChatRouteStatus>("chat_route_get");
+      },
+      async setRoute(route: ChatRoute): Promise<ChatRouteStatus> {
+        return invoke<ChatRouteStatus>("chat_route_set", { route });
       },
     },
     membership: {

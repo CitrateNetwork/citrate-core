@@ -147,6 +147,22 @@ impl OwnedFixture {
         ))
     }
 
+    /// argv for a long-lived leaf that ignores SIGTERM (the ignore survives `exec`, and it is set
+    /// before the pid is recorded, so a recorded child always ignores it), so a stop
+    /// has to wait out its grace and escalate to SIGKILL. Keeps a teardown in progress long
+    /// enough to race controls against it.
+    pub fn stubborn_leaf_args(&self) -> Vec<String> {
+        self.sh_args(&format!(
+            "trap '' TERM; echo $$ >>\"$1\"; exec {} -f \"$2\"",
+            tail_bin().display()
+        ))
+    }
+
+    /// A supervised long-lived leaf that ignores SIGTERM.
+    pub fn stubborn_leaf_spec(&self, name: &str) -> SidecarSpec {
+        SidecarSpec::new(name, sh_bin(), self.stubborn_leaf_args())
+    }
+
     /// A supervised long-lived leaf.
     pub fn leaf_spec(&self, name: &str) -> SidecarSpec {
         SidecarSpec::new(name, sh_bin(), self.leaf_args())
@@ -158,6 +174,19 @@ impl OwnedFixture {
             name,
             sh_bin(),
             self.sh_args(&format!("echo $$ >>\"$1\"; exit {code}")),
+        )
+    }
+
+    /// A supervised child that starts one long-lived descendant (which inherits its output
+    /// pipes), records both pids, then exits with code 3: a crash that leaves its output open.
+    pub fn crash_with_descendant_spec(&self, name: &str) -> SidecarSpec {
+        SidecarSpec::new(
+            name,
+            sh_bin(),
+            self.sh_args(&format!(
+                "echo $$ >>\"$1\"; {} -f \"$2\" & echo $! >>\"$1\"; exit 3",
+                tail_bin().display()
+            )),
         )
     }
 
@@ -296,13 +325,25 @@ impl OwnedFixture {
         }
         // Final sweep: anything still carrying the marker (a recorded pid that raced the pid
         // file, or a process that never got to write it). Repeat until none or the deadline.
+        // A forked shell can be mid-exec (briefly invisible to pgrep) when the sweep looks, so
+        // the sweep ends only after the marker has been absent for several looks in a row.
         let deadline = Deadline::after(Duration::from_secs(5));
+        let mut quiet = 0;
         loop {
             let live: Vec<u32> = pgrep(&self.marker)
                 .into_iter()
                 .filter(|p| pid_alive(*p))
                 .collect();
-            if live.is_empty() || deadline.expired() {
+            if live.is_empty() {
+                quiet += 1;
+                if quiet >= 10 || deadline.expired() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            quiet = 0;
+            if deadline.expired() {
                 break;
             }
             for pid in live {
@@ -329,7 +370,20 @@ impl OwnedFixture {
             let unreaped = report.recorded.iter().any(|p| unreaped_child(*p));
             (!running && !unreaped).then_some(())
         });
-        report.leftover = targets.into_iter().filter(|p| pid_alive(*p)).collect();
+        // A last sweep for anything that became visible only now (a shell that was mid-exec
+        // during the sweep above); it is killed and counted as swept, not left over.
+        let late: Vec<u32> = self.live_marked();
+        for &pid in &late {
+            if !report.recorded.contains(&pid) && !report.swept.contains(&pid) {
+                report.swept.push(pid);
+            }
+            kill(pid, libc::SIGKILL);
+        }
+        let all: Vec<u32> = targets.into_iter().chain(late).collect();
+        let _ = wait_for(Duration::from_secs(5), Duration::from_millis(20), || {
+            all.iter().all(|p| !pid_alive(*p)).then_some(())
+        });
+        report.leftover = all.into_iter().filter(|p| pid_alive(*p)).collect();
         for &p in &report.recorded {
             if unreaped_child(p) && !report.leftover.contains(&p) {
                 report.leftover.push(p);
@@ -385,11 +439,12 @@ pub fn pid_reaped(pid: u32) -> bool {
 
 /// Whether `pid` exists in any state, a zombie (exited, not yet reaped) included.
 pub fn pid_exists(pid: u32) -> bool {
-    if pid == 0 {
+    let Some(target) = positive_pid(pid) else {
         return false;
-    }
-    // SAFETY: kill(pid, 0) checks existence and permission without delivering a signal.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    };
+    // SAFETY: kill(target, 0) on a positive pid checks existence and permission without
+    // delivering a signal.
+    let rc = unsafe { libc::kill(target, 0) };
     rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
@@ -399,6 +454,12 @@ pub fn unreaped_child(pid: u32) -> bool {
     is_zombie(pid)
         && ps_field(pid, "ppid=").and_then(|s| s.trim().parse::<u32>().ok())
             == Some(std::process::id())
+}
+
+/// `pid` as a positive `pid_t`, or `None` for 0 (the caller's process group) and values above
+/// `i32::MAX` (which would wrap to a negative pid: a group, or every process for -1).
+pub fn positive_pid(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)
 }
 
 fn is_zombie(pid: u32) -> bool {
@@ -443,10 +504,11 @@ pub fn pgrep(pattern: &str) -> Vec<u32> {
         .collect()
 }
 
-pub fn kill(pid: u32, signal: i32) {
-    // SAFETY: kill(2) with a pid and a signal number has no memory effects. Callers check the
-    // marker first, so only fixture processes are signalled.
-    unsafe {
-        libc::kill(pid as libc::pid_t, signal);
-    }
+pub fn kill(pid: u32, signal: i32) -> bool {
+    let Some(target) = positive_pid(pid) else {
+        return false;
+    };
+    // SAFETY: kill(2) with a positive pid and a signal number has no memory effects. Callers
+    // check the marker first, so only fixture processes are signalled.
+    unsafe { libc::kill(target, signal) == 0 }
 }

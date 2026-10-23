@@ -1335,10 +1335,16 @@ impl HermesManager {
         //     Return None ("decided, awaiting resolve"); the entry is cleared only by `resolve_head`,
         //     when the sidecar head actually moves off this effect. THIS is what makes "at most one
         //     broadcast per effect" a structural property, not a UI-ordering hope (fixes H-1).
+        //   - EXPIRED unapproved → it signed nothing, so a fresh ceremony cannot double-broadcast:
+        //     drop the entry and mint a fresh request below.
         {
-            let map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
+            let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = map.get(&key) {
-                return Ok(ceremony.status(existing)); // Some(pending view) or None (decided → no re-mint)
+                if ceremony.is_expired(existing) {
+                    map.remove(&key);
+                } else {
+                    return Ok(ceremony.status(existing)); // Some(pending view) or None (decided → no re-mint)
+                }
             }
         }
 
@@ -1355,7 +1361,10 @@ impl HermesManager {
         // `ceremony.request`/`status` lock only the ceremony's own mutex (disjoint), so no deadlock.
         let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = map.get(&key) {
-            return Ok(ceremony.status(existing)); // reuse pending, or None if decided (never re-mint)
+            if !ceremony.is_expired(existing) {
+                return Ok(ceremony.status(existing)); // reuse pending, or None if decided (never re-mint)
+            }
+            map.remove(&key);
         }
         let view = ceremony.request(hermes_intent(&to, &data, &from, gas));
         map.insert(key.clone(), view.id.clone());
