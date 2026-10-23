@@ -2838,8 +2838,10 @@ fn mutates_map(body: &str) -> bool {
 ///
 /// Returns one message per violation (empty = clean).
 fn prepared_map_violations(src: &str) -> Vec<String> {
-    const ALLOWED: [&str; 8] = [
+    // `with_clock` is main's constructor (#436); `new` delegates to it. Both only build the store.
+    const ALLOWED: [&str; 9] = [
         "new",
+        "with_clock",
         "lock_prepared",
         "approve_and_sign",
         "send_prepared",

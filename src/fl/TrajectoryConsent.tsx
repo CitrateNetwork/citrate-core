@@ -9,6 +9,8 @@
 import { useEffect, useState } from "react";
 import type { FlRoundsDomain, FlTrainingSet, FlTrajectoryStatus } from "../bridge/domains";
 import { DEFAULT_PROPOSAL } from "./flRounds";
+import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
+import { writeStartSettingUnlessStarting } from "../agent/startSettingsWrite";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const label: React.CSSProperties = { fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" };
@@ -32,13 +34,24 @@ export function TrajectoryConsent({ fl, toast }: { fl: FlRoundsDomain; toast: (m
   }, []);
 
   const on = st?.settings.enabled === true;
+  // Hermes reads this switch at start: while a start or restart is in flight, it waits.
+  const held = hermesRunningSlice.use().starting > 0;
 
   const toggle = async () => {
+    if (hermesStarting()) return;
     setBusy(true);
     setErr(null);
     setBuilt(null);
     try {
-      const next = await fl.setTrajectoryConsent(!on, on ? deleteRecorded : false);
+      // Hermes reads this switch at start: remember what it runs with before changing it. Under the
+      // start-time settings lock, so a start that begins meanwhile waits for this write; a write
+      // asked for during a start is held (null).
+      const next = await writeStartSettingUnlessStarting(async () => {
+        const fresh = await fl.trajectoryStatus();
+        noteRunning("learn", fresh.settings.enabled);
+        return fl.setTrajectoryConsent(!on, on ? deleteRecorded : false);
+      });
+      if (!next) return;
       setSt(next);
       toast(
         next.settings.enabled
@@ -73,7 +86,7 @@ export function TrajectoryConsent({ fl, toast }: { fl: FlRoundsDomain; toast: (m
           type="checkbox"
           data-testid="fl-traj-toggle"
           checked={on}
-          disabled={busy || st === null}
+          disabled={busy || st === null || held}
           onChange={() => void toggle()}
         />
         Train on my verified conversations
@@ -84,6 +97,11 @@ export function TrajectoryConsent({ fl, toast }: { fl: FlRoundsDomain; toast: (m
           : "Off (the default). Hermes records nothing for training, and no training set can be built. Turning it on lets verified, redacted conversations feed a round you join; each round still asks for its own consent."}
         {st?.appliesOnRestart ? " Changes to recording apply the next time Hermes starts." : ""}
       </p>
+      {held && (
+        <p className="mono" style={{ ...para, fontSize: 11 }} data-testid="fl-traj-held">
+          {HELD_DURING_START}
+        </p>
+      )}
       {st && (
         <p className="mono" style={{ ...para, fontSize: 11 }} data-testid="fl-traj-counts">
           {st.recordedFiles} recorded session file{st.recordedFiles === 1 ? "" : "s"} · {st.datasets} training set{st.datasets === 1 ? "" : "s"}
