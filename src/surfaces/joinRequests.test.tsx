@@ -78,6 +78,11 @@ describe("revoking invites", () => {
     expect(pendingInviteStatus({})).toBe("invite pending · self-admit · one use");
   });
 
+  // #433: a used invite says it was used, not revoked.
+  it("say a used invite was used", () => {
+    expect(pendingInviteStatus({ revoking: true, consumed: true })).toBe("Used · closing the invite at the relay");
+  });
+
   it("Groups uses the status line and offers no Copy link for a revoking invite", () => {
     const src = readFileSync(joinPath(__dirname, "Groups.tsx"), "utf8");
     expect(src).toContain("{pendingInviteStatus(pi)}");

@@ -1771,6 +1771,8 @@ export interface PendingInvite {
   lookup?: string;
   /** GROW-S2 — revoked or used here; the relay hasn't confirmed the rendezvous closed yet. */
   revoking?: boolean;
+  /** GROW-S2 — it was used (a claim approved) rather than revoked; set with `revoking`. */
+  consumed?: boolean;
 }
 export interface InviteMinted {
   token: string;

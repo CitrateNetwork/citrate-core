@@ -114,6 +114,6 @@ export function InviteStateLine({ view, lastKnown, receivedAt, now, onRetry, onR
 /** The status line under an outstanding invite in the inviter's list. A revoke whose rendezvous
  *  close is persisted but not yet relay-confirmed is pending, never shown as done (the tick drops
  *  the row once the relay confirms). */
-export function pendingInviteStatus(pi: Pick<PendingInvite, "revoking">): string {
+export function pendingInviteStatus(pi: Pick<PendingInvite, "revoking" | "consumed">): string {
   return pi.revoking ? "Revoking… · waiting for the relay to confirm" : "invite pending · self-admit · one use";
 }
