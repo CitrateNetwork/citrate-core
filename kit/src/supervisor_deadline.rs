@@ -22,6 +22,9 @@ pub const DEADLINE_RECORDS: usize = 10;
 /// The publisher's longest wait between observations (SPEC-001: initial maximum 50 ms).
 pub const DEADLINE_CADENCE: Duration = Duration::from_millis(50);
 
+/// Bounded re-reads of a torn record before a settlement treats its expiry as passed.
+const SETTLE_READ_ATTEMPTS: u32 = 64;
+
 const REC_FREE: u8 = 0;
 const REC_CLAIMED: u8 = 1;
 const REC_ARMED: u8 = 2;
@@ -72,6 +75,10 @@ enum PausePoint {
     ArmWriting,
 }
 
+/// What a suspended writer runs at its pause point.
+#[cfg(test)]
+type PauseHook = Box<dyn FnOnce() + Send>;
+
 /// The body a spawner must run on the reserved thread.
 pub type PublisherBody = Box<dyn FnOnce() + Send + 'static>;
 
@@ -84,7 +91,7 @@ pub struct DeadlinePublisher {
     thread: Mutex<Option<JoinHandle<()>>>,
     init_error: std::sync::OnceLock<String>,
     #[cfg(test)]
-    pause: Mutex<Option<(PausePoint, Box<dyn FnOnce() + Send>)>>,
+    pause: Mutex<Option<(PausePoint, PauseHook)>>,
 }
 
 impl std::fmt::Debug for DeadlinePublisher {
@@ -273,14 +280,17 @@ impl DeadlinePublisher {
                 && r.epoch.load(Ordering::Acquire) == epoch
                 && r.seq.load(Ordering::Acquire) == seq
             {
-                r.version.fetch_add(1, Ordering::AcqRel);
+                // The whole rewrite finishes, version even again, before the record is published
+                // free: from then on the next owner's `arm` is its only writer.
+                r.version.fetch_add(1, Ordering::AcqRel); // odd: writing
                 r.owner.store(0, Ordering::Release);
                 r.seq.store(0, Ordering::Release);
                 r.deadline_ns.store(0, Ordering::Release);
+                r.state.store(REC_CLAIMED, Ordering::Release);
+                r.version.fetch_add(1, Ordering::AcqRel); // even: stable, not armed
                 r.state.store(REC_FREE, Ordering::Release);
                 #[cfg(test)]
                 self.pause_at(PausePoint::ReleaseFreed);
-                r.version.fetch_add(1, Ordering::AcqRel);
             }
         }
     }
@@ -337,15 +347,23 @@ impl DeadlinePublisher {
         }
     }
 
-    /// Whether control (owner, epoch, seq) has expired, for a settlement that is about to make
-    /// its receipt final.
+    /// Whether control (owner, epoch, seq) has expired, for a settlement (or a supersession)
+    /// that is about to make its receipt final. A torn read is retried a bounded number of
+    /// times; if it stays indeterminate the control counts as expired, so a late completion is
+    /// never stored as `Complete`.
     fn expired_at_settle(&self, owner: u64, epoch: u64, seq: u64) -> bool {
-        self.expired(owner, epoch, seq).unwrap_or(false)
+        for _ in 0..SETTLE_READ_ATTEMPTS {
+            if let Some(expired) = self.expired(owner, epoch, seq) {
+                return expired;
+            }
+            std::thread::yield_now();
+        }
+        true
     }
 
     /// Suspend the next writer that reaches `point` in `hook` (once).
     #[cfg(test)]
-    fn pause_once(&self, point: PausePoint, hook: Box<dyn FnOnce() + Send>) {
+    fn pause_once(&self, point: PausePoint, hook: PauseHook) {
         *self.pause.lock().unwrap_or_else(|e| e.into_inner()) = Some((point, hook));
     }
 

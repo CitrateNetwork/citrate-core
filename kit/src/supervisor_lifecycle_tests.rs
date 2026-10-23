@@ -418,6 +418,26 @@ fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
     );
 }
 
+/// Tripwire: a deadline record is published free only after its writer has finished its
+/// version update, so the next owner's `arm` is always the record's only writer. Fails on any
+/// `REC_FREE` store that is followed by a version bump in the same block.
+#[test]
+fn deadline_records_are_published_free_only_after_their_last_version_bump() {
+    let source = include_str!("supervisor_deadline.rs");
+    let mut stores = 0;
+    for (at, _) in source.match_indices("state.store(REC_FREE") {
+        stores += 1;
+        let rest = &source[at..];
+        let block_end = rest.find("\n            }").unwrap_or(rest.len());
+        assert!(
+            !rest[..block_end].contains("version.fetch_add"),
+            "a record is published free before its version update finished: {}",
+            &rest[..block_end.min(200)]
+        );
+    }
+    assert!(stores >= 1, "the release path publishes REC_FREE");
+}
+
 #[test]
 fn releasing_an_owner_frees_only_its_records() {
     let p = idle_publisher();
