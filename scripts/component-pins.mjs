@@ -92,6 +92,26 @@ export function pinnedDigest(manifest, pins, id, target) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// requires (red: interface only, keeps the old behaviour of checking nothing)
+// ---------------------------------------------------------------------------------------------
+
+export function requirementShapeErrors(_c) {
+  return [];
+}
+export function revContains(_dir, _ancestor, _rev) {
+  return null;
+}
+export function requirementRevErrors(_c, _dir, _opts = {}) {
+  return [];
+}
+export function requirementByteErrors(_c, _file) {
+  return [];
+}
+export function stagedRequirementErrors(_manifest, _dir, _target) {
+  return [];
+}
+
+// ---------------------------------------------------------------------------------------------
 // check
 // ---------------------------------------------------------------------------------------------
 

@@ -95,6 +95,13 @@
         "checkout": "citrate-memories",
         "rev": "0e9d48822054f6c9d644e691909569d0bc19be02"
       },
+      "requires": [
+        {
+          "rev": "5aeda31723693edf577f0bad238f691586ccde39",
+          "marker": "CITRATE_MEM_STORE_KEY_FILE",
+          "why": "citrate-core passes the store key in an owner-only file named by CITRATE_MEM_STORE_KEY_FILE (citrate-memories#25); an older mem-mcp ignores the file and runs under a different daemon identity"
+        }
+      ],
       "federation": {
         "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
         "status": "drift",

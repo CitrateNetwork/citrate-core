@@ -9,7 +9,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { check } from "./component-pins.mjs";
+import { execFileSync } from "node:child_process";
+import {
+  check,
+  requirementByteErrors,
+  requirementRevErrors,
+  revContains,
+  stagedRequirementErrors,
+} from "./component-pins.mjs";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = [
@@ -28,8 +35,11 @@ afterEach(() => {
 });
 
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "component-pins-"));
-  tmpDirs.push(root);
+  // <tmp>/core, so the check's sibling checkouts (<root>/../<checkout>) are only what a test puts there.
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "component-pins-"));
+  tmpDirs.push(parent);
+  const root = path.join(parent, "core");
+  fs.mkdirSync(root);
   const copy = (rel) => {
     fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
     fs.copyFileSync(path.join(repo, rel), path.join(root, rel));
@@ -220,5 +230,138 @@ describe("component-pins check", () => {
     m.toolchain.rust = "stable";
     setManifest(r, m);
     expect(errorsOf(r)).toMatch(/toolchain.rust must be an exact x.y.z version/);
+  });
+});
+
+// citrate-core hands mem-mcp its store key in an owner-only file named by
+// CITRATE_MEM_STORE_KEY_FILE; mem-mcp reads it from citrate-memories 5aeda317 (#25) on. An older
+// mem-mcp ignores the file and runs under a different daemon identity.
+const KEY_FILE_REV = "5aeda31723693edf577f0bad238f691586ccde39";
+const KEY_FILE_MARKER = "CITRATE_MEM_STORE_KEY_FILE";
+const PRE_KEY_FILE_REV = "0e9d48822054f6c9d644e691909569d0bc19be02";
+
+/** A git repo with a linear history a <- b <- c, beside a fixture root; returns its shas. */
+function sourceRepo(root, name) {
+  const dir = path.join(path.dirname(root), name);
+  fs.mkdirSync(dir);
+  const git = (...a) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...a], { encoding: "utf8" }).trim();
+  git("init", "-q");
+  const shas = [];
+  for (const n of ["a", "b", "c"]) {
+    fs.writeFileSync(path.join(dir, n), n);
+    git("add", n);
+    git("commit", "-q", "-m", n);
+    shas.push(git("rev-parse", "HEAD"));
+  }
+  return { dir, a: shas[0], b: shas[1], c: shas[2] };
+}
+
+describe("component requires (mem-mcp store key file)", () => {
+  const memories = path.join(repo, "..", "citrate-memories");
+  // The sibling citrate-memories checkout (the release Mac's layout), with both revs; CI has none.
+  const hasCommit = (sha) => {
+    try {
+      execFileSync("git", ["-C", memories, "cat-file", "-e", `${sha}^{commit}`], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const haveMemories = fs.existsSync(memories) && hasCommit(KEY_FILE_REV) && hasCommit(PRE_KEY_FILE_REV);
+
+  it("mem-mcp declares the store-key-file intake it must be built with", () => {
+    const req = comp(manifest(repo), "mem-mcp").requires || [];
+    expect(req).toEqual(expect.arrayContaining([expect.objectContaining({ rev: KEY_FILE_REV, marker: KEY_FILE_MARKER })]));
+  });
+
+  it.skipIf(!haveMemories)("the pinned mem-mcp contains citrate-memories#25 (key file)", () => {
+    const rev = comp(manifest(repo), "mem-mcp").source.rev;
+    expect(revContains(memories, KEY_FILE_REV, rev)).toBe(true);
+  });
+
+  it.skipIf(!haveMemories)("the 0.5.1 mem-mcp rev predates the key file (the pin this replaces)", () => {
+    const c = { id: "mem-mcp", source: { rev: PRE_KEY_FILE_REV }, requires: [{ rev: KEY_FILE_REV, marker: KEY_FILE_MARKER, why: "key file" }] };
+    expect(requirementRevErrors(c, memories).join("\n")).toMatch(/'mem-mcp': pinned rev 0e9d4882\S+ predates 5aeda317/);
+  });
+
+  it("refuses a pinned rev older than a required rev", () => {
+    const r = fixture();
+    const src = sourceRepo(r, "citrate-memories");
+    const m = manifest(r);
+    const c = comp(m, "mem-mcp");
+    c.source.rev = src.a;
+    c.requires = [{ rev: src.b, marker: KEY_FILE_MARKER, why: "store key file" }];
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(new RegExp(`'mem-mcp': pinned rev ${src.a} predates ${src.b}`));
+  });
+
+  it("accepts a pinned rev at or after the required rev, and is strict only on request", () => {
+    const r = fixture();
+    const src = sourceRepo(r, "citrate-memories");
+    const at = (rev, need) => ({ id: "x", source: { rev }, requires: [{ rev: need, marker: KEY_FILE_MARKER, why: "w" }] });
+    expect(requirementRevErrors(at(src.b, src.b), src.dir)).toEqual([]);
+    expect(requirementRevErrors(at(src.c, src.b), src.dir)).toEqual([]);
+    expect(requirementRevErrors(at(src.b, src.c), src.dir).join()).toMatch(/predates/);
+    // A commit the checkout does not have: unknown. Lenient in CI's check, an error for a build.
+    const missing = "1".repeat(40);
+    expect(requirementRevErrors(at(missing, src.b), src.dir)).toEqual([]);
+    expect(requirementRevErrors(at(missing, src.b), src.dir, { strict: true }).join()).toMatch(/cannot tell whether 1{40} contains/);
+    expect(requirementRevErrors(at(src.c, src.b), path.join(src.dir, "nope"), { strict: true }).join()).toMatch(/cannot tell/);
+  });
+
+  it("refuses bytes without the required marker", () => {
+    const r = fixture();
+    const c = comp(manifest(r), "mem-mcp");
+    c.requires = [{ rev: KEY_FILE_REV, marker: KEY_FILE_MARKER, why: "store key file" }];
+    const old = path.join(r, "mem-mcp-old");
+    const now = path.join(r, "mem-mcp-new");
+    // 0.5.1's mem-mcp names only the inline env var, which is a prefix of the file one.
+    fs.writeFileSync(old, Buffer.concat([Buffer.alloc(32), Buffer.from("CITRATE_MEM_STORE_KEY unset"), Buffer.alloc(8)]));
+    fs.writeFileSync(now, Buffer.concat([Buffer.alloc(32), Buffer.from("CITRATE_MEM_STORE_KEY_FILECITRATE_MEM_STORE_KEY"), Buffer.alloc(8)]));
+    expect(requirementByteErrors(c, old).join()).toMatch(/does not carry CITRATE_MEM_STORE_KEY_FILE, so it predates 5aeda317/);
+    expect(requirementByteErrors(c, now)).toEqual([]);
+    expect(requirementByteErrors(c, path.join(r, "absent")).join()).toMatch(/does not exist/);
+  });
+
+  it("checks every staged sidecar that has requirements", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "mem-mcp").requires = [{ rev: KEY_FILE_REV, marker: KEY_FILE_MARKER, why: "store key file" }];
+    const dir = path.join(r, "bins");
+    fs.mkdirSync(dir);
+    expect(stagedRequirementErrors(m, dir, "aarch64-apple-darwin").join()).toMatch(/mem-mcp-aarch64-apple-darwin does not exist/);
+    fs.writeFileSync(path.join(dir, "mem-mcp-aarch64-apple-darwin"), "usage: mem-mcp <store-path> <sock-path>");
+    expect(stagedRequirementErrors(m, dir, "aarch64-apple-darwin").join()).toMatch(/does not carry CITRATE_MEM_STORE_KEY_FILE/);
+    fs.writeFileSync(path.join(dir, "mem-mcp-aarch64-apple-darwin"), "CITRATE_MEM_STORE_KEY_FILE");
+    expect(stagedRequirementErrors(m, dir, "aarch64-apple-darwin")).toEqual([]);
+  });
+
+  it("refuses a malformed requirement", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "mem-mcp").requires = [{ rev: "5aeda31", marker: "KEY", why: "" }];
+    setManifest(r, m);
+    const e = errorsOf(r);
+    expect(e).toMatch(/'mem-mcp' requires\[0\]: rev must be a full 40-hex commit/);
+    expect(e).toMatch(/'mem-mcp' requires\[0\]: marker must be a string of at least 8 characters/);
+    expect(e).toMatch(/'mem-mcp' requires\[0\]: why missing/);
+  });
+
+  it("refuses a rev bump that keeps the old build's runtime-deps asset", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "node-agent").source.rev = "2".repeat(40);
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(/'node-agent' aarch64-apple-darwin: runtime-deps asset node-agent-aarch64-apple-darwin-1d8cb8e4e24a is not the build of the pinned rev \(expected node-agent-aarch64-apple-darwin-222222222222\)/);
+  });
+
+  it("refuses release.yml that does not verify the staged sidecars' requirements", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "mem-mcp").requires = [{ rev: KEY_FILE_REV, marker: KEY_FILE_MARKER, why: "store key file" }];
+    setManifest(r, m);
+    const wf = read(r, ".github/workflows/release.yml");
+    write(r, ".github/workflows/release.yml", wf.split("\n").filter((l) => !l.includes("verify-staged")).join("\n"));
+    expect(errorsOf(r)).toMatch(/release.yml does not run `component-pins.mjs verify-staged src-tauri\/binaries aarch64-apple-darwin`/);
   });
 });
