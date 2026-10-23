@@ -570,6 +570,26 @@ export interface ChatDomain {
    * Tauri impl invokes `model_inference_state`; the sim impl returns `demo`.
    */
   inferenceState(gatewayConfigured: boolean): Promise<string>;
+  /** K2: the member's chat route, stored in core (chat_route.rs). An unreadable setting reads as
+   *  `local_only` with `loadError` set (a read error never widens what may leave the device).
+   *  Tauri invokes `chat_route_get`; sim reports the default. */
+  route(): Promise<ChatRouteStatus>;
+  /** K2: store the chat route. Tauri invokes `chat_route_set`; sim is Unavailable. */
+  setRoute(route: ChatRoute): Promise<ChatRouteStatus>;
+}
+
+/** K2: where chat may go. `ask_first` (default): ask before each message goes to the gateway.
+ *  `local_only`: never to the gateway. Mirrors Rust `chat_route::ChatRoute` (snake_case). */
+export type ChatRoute = "local_only" | "ask_first";
+export interface ChatRouteStatus {
+  route: ChatRoute;
+  loadError: string | null;
+}
+/** K2: what the held-message card may offer: start the local model, and/or send this message to
+ *  the gateway this time. */
+export interface RouteAskOptions {
+  restart: boolean;
+  gateway: boolean;
 }
 
 /**
@@ -1955,12 +1975,16 @@ export interface DiagnosticBundle {
   crashTail: string;
   nodeLogTail: string;
   uiErrors: string[];
+  /** 0.5.2 Join: the join step ids reached since the last sent report (bare ids, allowlisted in
+   *  Rust; see src/privacy/joinFunnel.ts). Empty when telemetry is off. */
+  joinSteps: string[];
 }
 
 export interface TelemetryDomain {
   /** WP-T.2/T.3 — assemble the SCRUBBED bundle locally for review. No network. `uiErrors` is
-   *  the frontend error ring. Returns already-scrubbed content the member can inspect. */
-  bundle(uiErrors: string[]): Promise<DiagnosticBundle>;
+   *  the frontend error ring; `joinSteps` the pending join step ids (joinFunnel). Returns
+   *  already-scrubbed content the member can inspect. */
+  bundle(uiErrors: string[], joinSteps?: string[]): Promise<DiagnosticBundle>;
   /** WP-T.4 — the ONE pinned HTTPS POST. Call ONLY after the member reviewed + consented
    *  (ConsentGate, WP-T.1). Sends exactly the reviewed bundle JSON. Honest error if the
    *  ingest service (WP-T.5) isn't live. */
@@ -2073,6 +2097,9 @@ export interface EscalationQuote {
   costMicros: number;
   costLabel: string;
   withinBudget: boolean;
+  /** K2: core will ask before this escalation runs whatever the budget (the member's route is
+   *  ask first). Absent from an older core. */
+  asksFirst?: boolean;
   remainingMicros: number;
   capMicros: number;
   maxTokens: number;

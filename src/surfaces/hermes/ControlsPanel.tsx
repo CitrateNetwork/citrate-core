@@ -6,7 +6,8 @@
 // control names its data source in CONTROL_ROWS). The panel never turns anything on by itself:
 // mounting only reads. A switch with no backing setting is shown disabled with the reason.
 //
-//   Local model only        no setting exists yet (disabled); spend line read from escalation_budget
+//   Local model only        chat_route_get / chat_route_set via store.setChatRoute (chat_route.rs:
+//                           local_only or ask_first, the default); spend line read from escalation_budget
 //   Web search              hermes_web_settings_get / _set (Settings › Web search & decisions); each write
 //                           re-reads the saved settings first and changes only searchEnabled
 //   Terminal access         store.setHermesTerminal → hermes_terminal_set (Settings › App)
@@ -53,8 +54,8 @@ export const CONTROL_ROWS: readonly ControlRow[] = [
   {
     id: "local-model",
     label: "Local model only, or ask before using the gateway",
-    description: "Keep chat on the model on this computer, and ask before anything goes to the Citrate gateway.",
-    source: "none yet (no stored setting); spend line: escalation_budget (read only)",
+    description: "On: chat stays on the model on this computer and never uses the gateway. Off: Hermes asks before each message goes to the gateway.",
+    source: "AppState.chatRoute via store.setChatRoute / chat_route_get / chat_route_set; spend line: escalation_budget (read only)",
   },
   {
     id: "web-search",
@@ -97,6 +98,8 @@ export interface ControlsIo {
   /** Restart Hermes so saved sidecar settings apply, confirmed against the harness status. Optional:
    *  without it no restart button shows. */
   restartHermes?: () => Promise<HermesRestartResult>;
+  /** True in the desktop app (the settings live in core). Defaults to the web settings' mode. */
+  desktop?: boolean;
 }
 
 /** The app's real calls: the same ones the Settings, Train and Daemons cards use. */
@@ -112,8 +115,8 @@ export function appControlsIo(): ControlsIo {
   };
 }
 
-export type ControlsStore = Pick<Store, "setHermesTerminal" | "setHermesReadAloud">;
-export type ControlsState = Pick<AppState, "hermesTerminal" | "hermesReadAloud">;
+export type ControlsStore = Pick<Store, "setHermesTerminal" | "setHermesReadAloud" | "setChatRoute">;
+export type ControlsState = Pick<AppState, "hermesTerminal" | "hermesReadAloud"> & Partial<Pick<AppState, "chatRoute">>;
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const desc = { fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.45 } as const;
@@ -206,6 +209,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
   const [io] = useState<ControlsIo>(() => ioProp ?? appControlsIo());
   const rows = Object.fromEntries(CONTROL_ROWS.map((r) => [r.id, r])) as Record<ControlId, ControlRow>;
   const webDesktop = io.web.mode === "tauri";
+  const desktop = io.desktop ?? webDesktop;
 
   const [web, setWeb] = useState<HermesWebStatus | null>(null);
   const [webErr, setWebErr] = useState<string | null>(null);
@@ -398,9 +402,10 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
 
       <Row
         row={rows["local-model"]}
-        checked={false}
-        disabled
-        reason="This switch is not available yet: there is no saved setting for this. Today a stopped local model already makes Hermes ask before a message goes to the gateway."
+        checked={s.chatRoute === "local_only"}
+        disabled={!desktop || busy === "local-model"}
+        onChange={(on) => void run("local-model", () => store.setChatRoute(on ? "local_only" : "ask_first"))}
+        reason={desktop ? null : "This setting lives in the desktop app. The preview always asks before the gateway (and has none)."}
         extra={
           <span className="mono" data-testid="local-model-spend" style={note}>
             {budget
