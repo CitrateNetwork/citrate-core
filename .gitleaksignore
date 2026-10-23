@@ -1,0 +1,5 @@
+# Test fixtures in earlier commits that the generic rule matches; none is a credential. Each entry
+# is a fingerprint (commit:file:rule:line), so it covers that one line of that one commit only.
+# The value at connections.rs:1258 in 236c7a76 was a made-up token string in a Debug-redaction
+# test; later commits use FIXTURE-* values instead.
+236c7a7680cfd898ca322e000055e15a2c8b0587:src-tauri/src/connections.rs:generic-api-key:1258
