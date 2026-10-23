@@ -33,6 +33,7 @@ pub mod join;
 pub mod oidc;
 pub mod rpc;
 pub mod siwe;
+pub mod submitted_log;
 pub mod supervisor;
 pub mod txdecode;
 pub mod wallet;
