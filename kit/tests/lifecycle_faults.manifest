@@ -39,6 +39,8 @@ publication_ticket_released_before_stop_settles_is_in_the_complete_scope | regre
 publication_released_after_the_readers_end_is_in_the_complete_scope | regression | SCL-S2.3 | a ticket released at the settle gate, after the readers end, is waited for: Complete naming publication:<name>
 held_publication_ticket_makes_stop_incomplete_until_released | regression | SCL-S2.3 | a held publication ticket makes Stop Incomplete and Quarantined until released
 a_dropped_stale_ticket_keeps_the_stop_open | regression | SCL-S2.3 | a stale ticket dropped without cleaned() keeps its publication owned: the Stop is Incomplete naming it and the service stays Quarantined
+a_ticket_dropped_by_an_unwinding_caller_keeps_the_stop_open | regression | SCL-S2.3 | an uncommitted ticket dropped by an unwinding caller stays owned: the Stop is Incomplete naming it and the service stays Quarantined
+a_withdrawn_ticket_lets_the_stop_complete | positive-control | SCL-S2.3 | a ticket withdrawn before the Stop is resolved and the Stop settles Complete
 a_ticket_from_a_replaced_intent_never_becomes_active | regression | SCL-S2.3 | a ticket whose intent a Stop and then a Start replaced is refused as stale, though the service is meant to run again
 start_during_teardown_waits_for_an_old_publication_ticket | regression | SCL-S2.3 | a Start superseding a Stop spawns nothing while an old-intent publication ticket is held
 shutdown_with_an_open_publication_ticket_is_incomplete | regression | SCL-S2.3 | Stop plus immediate shutdown with an open ticket is Incomplete and stays Quarantined; a late release reconciles

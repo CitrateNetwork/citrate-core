@@ -1533,7 +1533,7 @@ fn held_publication_ticket_makes_stop_incomplete_until_released() {
     }
     assert_eq!(sup.lifecycle().map(|l| l.phase), Some(Phase::Quarantined));
     assert!(matches!(sup.request_start(), ControlResult::Quarantined(_)));
-    drop(ticket);
+    ticket.withdraw();
     let released = wait_for(ACQUIRE, Duration::from_millis(10), || {
         (sup.lifecycle().map(|l| l.phase) == Some(Phase::Stopped)).then_some(())
     });
@@ -1580,6 +1580,79 @@ fn a_dropped_stale_ticket_keeps_the_stop_open() {
     }
     assert_eq!(sup.lifecycle().map(|l| l.phase), Some(Phase::Quarantined));
     assert!(matches!(sup.request_start(), ControlResult::Quarantined(_)));
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A caller that unwinds while it holds an uncommitted ticket (here, after writing the file and
+/// before `commit`) drops the ticket without saying that nothing it wrote remains. The ticket
+/// stays owned: the Stop is never Complete while the file may be on disk, and the service stays
+/// Quarantined.
+#[test]
+fn a_ticket_dropped_by_an_unwinding_caller_keeps_the_stop_open() {
+    let fx = OwnedFixture::new("pub-unwind");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-unwind"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let file = fx.path("bearer");
+    let mut stop = None;
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ticket = sup
+            .admit_publication("bearer")
+            .unwrap_or_else(|e| panic!("INCONCLUSIVE: admission while running: {e:?}"));
+        if let Err(e) = std::fs::write(&file, b"credential") {
+            panic!("INCONCLUSIVE: cannot write the credential file: {e}");
+        }
+        stop = match sup.request_stop() {
+            ControlResult::Accepted(t) => Some(t),
+            other => panic!("INCONCLUSIVE: Stop: {other:?}"),
+        };
+        let _owned = ticket;
+        panic!("deliberate: the publishing caller fails before commit");
+    }));
+    assert!(unwound.is_err(), "the caller unwound as intended");
+    let stop = stop.unwrap_or_else(|| panic!("INCONCLUSIVE: no Stop was committed"));
+    let receipt = settle(&sup, stop, ACQUIRE);
+    assert!(file.exists(), "the written file is still on disk");
+    match &receipt {
+        Receipt::Incomplete { remaining, .. } => assert!(
+            remaining.iter().any(|r| r == "publication:bearer"),
+            "{remaining:?}"
+        ),
+        other => panic!("a Stop with an unresolved publication is not Complete: {other:?}"),
+    }
+    assert_eq!(sup.lifecycle().map(|l| l.phase), Some(Phase::Quarantined));
+    assert!(matches!(sup.request_start(), ControlResult::Quarantined(_)));
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// Positive control: a ticket withdrawn before the Stop (nothing it wrote remains) is resolved,
+/// and the Stop settles Complete.
+#[test]
+fn a_withdrawn_ticket_lets_the_stop_complete() {
+    let fx = OwnedFixture::new("pub-withdraw");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-withdraw"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: admission while running: {e:?}"));
+    assert_eq!(sup.lifecycle().map(|l| l.open_tickets), Some(1));
+    ticket.withdraw();
+    assert_eq!(sup.lifecycle().map(|l| l.open_tickets), Some(0));
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    assert!(
+        matches!(settle(&sup, stop, ACQUIRE), Receipt::Complete { .. }),
+        "a withdrawn ticket leaves nothing for the Stop to wait on"
+    );
     drop(sup);
     fx.assert_clean();
 }
@@ -1659,7 +1732,7 @@ fn start_during_teardown_waits_for_an_old_publication_ticket() {
         ControlResult::Accepted(t) => assert_eq!(t, start),
         other => panic!("a repeated Start while held: {other:?}"),
     }
-    drop(ticket);
+    ticket.withdraw();
     fx.expect_pids(2, ACQUIRE);
     drop(sup);
     fx.assert_clean();
@@ -1697,7 +1770,7 @@ fn shutdown_with_an_open_publication_ticket_is_incomplete() {
     assert_eq!(snap.phase, Phase::Quarantined);
     assert_eq!(snap.open_tickets, 1);
     assert!(snap.quarantine.is_some());
-    drop(ticket);
+    ticket.withdraw();
     assert_eq!(sup.lifecycle().map(|l| l.open_tickets), Some(0));
     // The release re-checks the readers; one that ends a moment later is seen by the next read.
     let reconciled = wait_for(ACQUIRE, Duration::from_millis(20), || {
@@ -1752,7 +1825,7 @@ fn after_shutdown_quarantine_clears_once_readers_and_tickets_are_done() {
     // The descendant ends: the old readers reach end of file. Then the ticket is released.
     lifecycle::fixture::kill(descendant, libc::SIGKILL);
     hold_for(Duration::from_millis(300));
-    drop(ticket);
+    ticket.withdraw();
     assert_eq!(sup.lifecycle().map(|l| l.open_tickets), Some(0));
     // The release re-checks the readers; a reader that reaches end of file a moment later is
     // observed by the next read. Either way the quarantine clears without a monitor.
@@ -1833,7 +1906,7 @@ fn shutdown_keeps_a_held_ticket_quarantine() {
         "shutdown does not clear the quarantine"
     );
     assert_eq!(snap.open_tickets, 1);
-    drop(ticket);
+    ticket.withdraw();
     drop(sup);
     fx.assert_clean();
 }
