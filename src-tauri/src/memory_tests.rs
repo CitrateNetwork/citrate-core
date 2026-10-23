@@ -883,3 +883,210 @@ fn recall_and_search_leave_out_an_unresolved_learned_memory_until_it_is_resolved
     assert_eq!(r.hits.len(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// K4 review follow-up — no memory start while a backup/restore holds the store
+// ---------------------------------------------------------------------------
+
+#[test]
+fn memory_start_is_refused_while_a_restore_holds_the_store() {
+    let (mgr, _fake, _dir) = stub_manager("restore-lock");
+    let lock = MemoryStoreLock::acquire(mgr.store_path()).expect("lock is free");
+    assert!(MemoryStoreLock::acquire(mgr.store_path()).is_none(), "one holder at a time");
+    let err = mgr.start().expect_err("start must be refused mid-restore");
+    assert!(err.to_string().contains("restore"), "{err}");
+    assert_eq!(mgr.status().state, "stopped", "nothing was spawned");
+    drop(lock);
+    assert!(!memory_store_locked(mgr.store_path()));
+    mgr.start().expect("starts once the restore is done");
+    mgr.stop();
+}
+
+// ---------------------------------------------------------------------------
+// K4 (N2) — an interrupted restore is rolled back at init; start fails closed if it can't be
+// ---------------------------------------------------------------------------
+
+fn manager_at(root: &std::path::Path) -> MemoryManager {
+    let mem = root.join("memory");
+    MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        mem.join("store.bge.memdag"),
+        mem.join("memdag.sock"),
+        mem.join("crash-records.jsonl"),
+        Box::new(StubTransport {
+            recall_text: fixture_recall_text(),
+            search_text: fixture_recall_text(),
+            neighbors_text: fixture_neighbors_text(),
+            error: None,
+        }),
+    )
+}
+
+#[test]
+fn memory_init_rolls_back_an_interrupted_restore() {
+    let root = tmp_dir("n2-init");
+    let kept = root.join("memory.before-restore-20261019-120000");
+    std::fs::create_dir_all(kept.join("store.bge.memdag")).unwrap();
+    std::fs::write(kept.join("store.bge.memdag/CURRENT"), b"previous").unwrap();
+    let _mgr = manager_at(&root);
+    assert_eq!(
+        std::fs::read(root.join("memory/store.bge.memdag/CURRENT")).unwrap(),
+        b"previous",
+        "the previous store is live again"
+    );
+    assert!(!kept.exists());
+}
+
+#[test]
+fn memory_start_fails_closed_when_the_rollback_cannot_run() {
+    let root = tmp_dir("n2-ro");
+    std::fs::create_dir_all(&root).unwrap();
+    let kept = root.join("memory.before-restore-20261019-120000");
+    std::fs::create_dir_all(kept.join("store.bge.memdag")).unwrap();
+    // Injected rename failure (works as root too); both the init and the start rollback fail.
+    let (mgr, started) = crate::storage_backup::tests::with_failing_rollback_rename(|| {
+        let mgr = manager_at(&root);
+        let started = mgr.start();
+        (mgr, started)
+    });
+    if started.is_ok() {
+        mgr.stop();
+    }
+    let err = started.expect_err("start refuses");
+    assert!(err.to_string().contains("interrupted"), "{err}");
+    assert_eq!(mgr.status().state, "stopped", "nothing was spawned");
+    assert!(!root.join("memory").exists(), "no empty store was created");
+    assert!(kept.join("store.bge.memdag").exists());
+}
+
+// ---------------------------------------------------------------------------
+// K4 — a backup waits for a stop already in progress
+// ---------------------------------------------------------------------------
+
+/// A memory stop takes the supervisor before the child has exited. A backup that starts in that
+/// window must not copy (or swap) the store until the child is gone: it waits for the whole stop.
+#[test]
+fn a_backup_waits_for_a_memory_stop_in_progress() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    let root = tmp_dir("stop-window");
+    let mgr = manager_at(&root);
+    mgr.start().expect("start");
+    let store = mgr.store_path().to_path_buf();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.join("data.enc").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(store.join("data.enc").exists(), "the stub daemon wrote its store");
+    let dest = root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let (taken_tx, taken_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let taken_tx = StdMutex::new(taken_tx);
+    let release_rx = StdMutex::new(release_rx);
+    mgr.set_stop_hook(Box::new(move || {
+        let _ = taken_tx.lock().unwrap().send(());
+        let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(20));
+    }));
+    let copy_started = AtomicBool::new(false);
+    let (copied_early, export_result) = std::thread::scope(|s| {
+        let stopper = s.spawn(|| mgr.stop());
+        taken_rx.recv_timeout(Duration::from_secs(10)).expect("the stop took the supervisor");
+        let backup = s.spawn(|| {
+            let src = crate::storage_backup::MemorySource {
+                dir: store.parent().unwrap().to_path_buf(),
+                store_path: store.clone(),
+                daemon: &mgr,
+                registry: Arc::new(crate::knowledge_import::ImportRegistry::default()),
+            };
+            let mut on = |p: &crate::storage_backup::Progress| {
+                if p.phase == "memory" {
+                    copy_started.store(true, Ordering::SeqCst);
+                }
+            };
+            crate::storage_backup::export(
+                &dest,
+                &[crate::storage_backup::Part::Memory],
+                None,
+                Some(&src),
+                1,
+                &mut on,
+            )
+        });
+        std::thread::sleep(Duration::from_millis(800));
+        let early = copy_started.load(Ordering::SeqCst);
+        let _ = release_tx.send(());
+        stopper.join().unwrap();
+        (early, backup.join().unwrap())
+    });
+    assert!(!copied_early, "the backup copied the store while the stop was still in progress");
+    let report = export_result.expect("export");
+    assert!(copy_started.load(Ordering::SeqCst), "the copy ran once the stop finished");
+    assert!(!report.daemon_restarted, "a daemon stopped by someone else stays stopped");
+    assert_eq!(mgr.status().state, "stopped");
+}
+
+#[test]
+fn memory_start_fails_closed_when_the_data_root_scan_fails() {
+    use crate::storage_backup::ScanFailure;
+    for stage in [ScanFailure::Open, ScanFailure::Entry] {
+        let root = tmp_dir("scan-start");
+        std::fs::create_dir_all(&root).unwrap();
+        let kept = root.join("memory.before-restore-20261019-120000");
+        std::fs::create_dir_all(kept.join("store.bge.memdag")).unwrap();
+        let (mgr, started) = crate::storage_backup::tests::with_failing_data_root_scan(stage, || {
+            let mgr = manager_at(&root);
+            let started = mgr.start();
+            (mgr, started)
+        });
+        if started.is_ok() {
+            mgr.stop();
+        }
+        let err = started.expect_err("start refuses");
+        assert!(err.to_string().contains("will not start"), "{stage:?}: {err}");
+        assert_eq!(mgr.status().state, "stopped", "{stage:?}: nothing was spawned");
+        assert!(!root.join("memory").exists(), "{stage:?}: no empty store was created");
+        assert!(kept.join("store.bge.memdag").exists());
+    }
+}
+
+/// DGX (non-blocking, fed#331): a Start must not overlap a Stop in progress. While a stop has
+/// taken the supervisor but its child is still running, a start would spawn a second daemon on
+/// the same store; it waits for the stop to finish instead.
+#[test]
+fn a_start_waits_for_a_memory_stop_in_progress() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    let root = tmp_dir("start-window");
+    let mgr = manager_at(&root);
+    mgr.start().expect("start");
+    let (taken_tx, taken_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let taken_tx = StdMutex::new(taken_tx);
+    let release_rx = StdMutex::new(release_rx);
+    mgr.set_stop_hook(Box::new(move || {
+        let _ = taken_tx.lock().unwrap().send(());
+        let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(20));
+    }));
+    let started = AtomicBool::new(false);
+    let (started_early, result) = std::thread::scope(|s| {
+        let stopper = s.spawn(|| mgr.stop());
+        taken_rx.recv_timeout(Duration::from_secs(10)).expect("the stop took the supervisor");
+        let starter = s.spawn(|| {
+            let r = mgr.start();
+            started.store(true, Ordering::SeqCst);
+            r
+        });
+        std::thread::sleep(Duration::from_millis(800));
+        let early = started.load(Ordering::SeqCst);
+        let _ = release_tx.send(());
+        stopper.join().unwrap();
+        (early, starter.join().unwrap())
+    });
+    assert!(!started_early, "a start ran while the stop was still in progress");
+    result.expect("the start runs once the stop is done");
+    assert!(mgr.is_running_now());
+    mgr.stop();
+}

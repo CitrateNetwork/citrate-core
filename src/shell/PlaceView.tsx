@@ -11,6 +11,7 @@ import { ACCOUNT_SETTINGS, MOVED_CONTROLS_SETTINGS, NODE_SETTINGS, PLACES, locat
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "../surfaces";
 import { ControlsPanel } from "../surfaces/hermes/ControlsPanel";
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "../surfaces";
+import { StoragePins, StorageBackup } from "../surfaces";
 
 function TabStrip({ id, items, active, store, sub }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean }) {
   return (
@@ -139,14 +140,9 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "node/storage/memory":
       return <Storage store={store} s={s} />;
     case "node/storage/pins":
-      return (
-        <NotAvailableYet
-          route={route}
-          title="Pins"
-          body="Pins with their bonds and on-chain state are not available in this build. The pins this build tracks are in the Pinning view on Node › Status."
-          action={{ label: "Open the Pinning view", go: openNodeTab(store, "pin") }}
-        />
-      );
+      return <StoragePins store={store} s={s} />;
+    case "node/storage/backup":
+      return <StorageBackup store={store} s={s} />;
     case "node/rewards":
       return (
         <NotAvailableYet

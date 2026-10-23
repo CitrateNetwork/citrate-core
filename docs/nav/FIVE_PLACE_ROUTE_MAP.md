@@ -29,7 +29,7 @@ written out by hand) and
 | Hermes | Chat `hermes/chat` · Journal `hermes/journal` · Work `hermes/work` · Learn `hermes/learn` · Controls `hermes/controls` |
 | Groups | Chat `groups/chat` (sub-tabs Groups `groups/chat`, Alerts `groups/chat/alerts`) · Rounds `groups/rounds` · Members `groups/members` · Cluster `groups/cluster` · ALF `groups/alf` (ALF members only) |
 | Wallet | `wallet` (no tabs) |
-| Node | Status `node/status` · Services `node/services` · Storage (sub-tabs Files `node/storage/files`, Memory `node/storage/memory`, Pins `node/storage/pins`) · Rewards `node/rewards` · Advanced `node/advanced` |
+| Node | Status `node/status` · Services `node/services` · Storage (sub-tabs Files `node/storage/files`, Memory `node/storage/memory`, Pins `node/storage/pins`, Backup `node/storage/backup`) · Rewards `node/rewards` · Advanced `node/advanced` |
 | Store | Apps `store/apps` · Models `store/models` |
 | Settings | Settings `settings` · Connections `settings/connections` |
 
@@ -58,6 +58,8 @@ Community was hidden from the old sidebar (its data is not wired).
 | `node` | `node/status` | Node › Status |
 | `files` | `node/storage/files` | Node › Storage › Files |
 | `storage` | `node/storage/memory` | Node › Storage › Memory |
+| `pins` | `node/storage/pins` | Node › Storage › Pins (K4) |
+| `backup` | `node/storage/backup` | Node › Storage › Backup (K4) |
 | `commissary` | `store/apps` | Store › Apps |
 | `models` | `store/models` | Store › Models |
 | `settings` | `settings` | Settings (keeps the last account-level section) |

@@ -130,12 +130,16 @@ describe("Node", () => {
     expect(h).not.toContain(">Earnings<");
   });
 
-  it("Storage holds Files, Memory and Pins; the old files and storage routes open them", () => {
+  it("Storage holds Files, Memory, Pins and Backup (K4); the old files, storage, pins and backup routes open them", () => {
     const f = html("files");
-    expect(tabs(f, "place-subtabs")).toEqual(["Files", "Memory", "Pins"]);
+    expect(tabs(f, "place-subtabs")).toEqual(["Files", "Memory", "Pins", "Backup"]);
     expect(selected(f)).toEqual(["Storage", "Files"]);
     expect(selected(html("storage"))).toEqual(["Storage", "Memory"]);
-    expect(html("node/storage/pins")).toContain('data-not-available="node/storage/pins"');
+    // K4 shipped real Pins and Backup surfaces: no "not available" card any more.
+    expect(html("node/storage/pins")).not.toContain("data-not-available");
+    expect(selected(html("pins"))).toEqual(["Storage", "Pins"]);
+    expect(html("node/storage/backup")).not.toContain("data-not-available");
+    expect(selected(html("backup"))).toEqual(["Storage", "Backup"]);
   });
 
   it("Advanced hosts Node configuration from Settings, and only that", () => {

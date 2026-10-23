@@ -377,3 +377,90 @@ fn pba_l7b_010_cat_is_read_with_a_hard_cap() {
     assert!(read_capped(std::io::repeat(0u8), 4096).is_err());
     assert_eq!(MAX_CAT_BYTES, 1 << 30);
 }
+
+// ---------------------------------------------------------------- K4: local pins + V3 parameters
+
+#[test]
+fn local_pin_records_the_local_marker_and_never_a_bond() {
+    let fake = FakeKubo::new();
+    let (mgr, dir) = manager("local-pin", fake);
+    let file = temp_file(&dir, "a.txt", b"kept on this node");
+    let out = mgr.add_file(&file).unwrap();
+    mgr.pin_local(&out.cid).expect("local pin");
+    let row = &mgr.list().unwrap()[0];
+    assert_eq!(row.pin_state, PinState::Pinned);
+    assert_eq!(row.bond_salt, LOCAL_PIN_MARKER);
+    // An invalid CID is refused before kubo is asked.
+    assert!(mgr.pin_local("x&recursive=false").is_err());
+}
+
+#[test]
+fn add_bytes_adds_and_indexes_without_a_path() {
+    let fake = FakeKubo::new();
+    let (mgr, _dir) = manager("add-bytes", fake);
+    let out = mgr.add_bytes("restored", b"from a backup").expect("add bytes");
+    assert_eq!(out.size_bytes, 13);
+    let rows = mgr.list().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].cid, out.cid);
+    assert_eq!(rows[0].size_bytes, 13);
+}
+
+/// The three V3 getter selectors, pinned (keccak256 of the signature, first four bytes).
+#[test]
+fn pin_param_selectors_match_the_contract_getters() {
+    assert_eq!(BOND_SELECTOR, keccak256(b"BOND()")[..4]);
+    assert_eq!(REWARD_SELECTOR, keccak256(b"REWARD()")[..4]);
+    assert_eq!(ROUNDS_SELECTOR, keccak256(b"ROUNDS()")[..4]);
+    assert_eq!(hex::encode(BOND_SELECTOR), "c1c1d218");
+    assert_eq!(hex::encode(REWARD_SELECTOR), "cab34c08");
+    assert_eq!(hex::encode(ROUNDS_SELECTOR), "c7abf755");
+}
+
+fn word(n: u128) -> String {
+    format!("0x{n:064x}")
+}
+
+#[test]
+fn pin_params_decode_the_three_reads_and_are_never_live() {
+    let p = read_pin_params("0xf5c1", |sel| {
+        Ok(match sel {
+            s if s == BOND_SELECTOR => word(10_000_000_000_000_000_000),
+            s if s == REWARD_SELECTOR => word(4_000_000_000_000_000_000),
+            _ => word(4),
+        })
+    });
+    assert_eq!(p.bond_wei.as_deref(), Some("10000000000000000000"));
+    assert_eq!(p.reward_wei.as_deref(), Some("4000000000000000000"));
+    assert_eq!(p.rounds, Some(4));
+    assert!(p.errors.is_empty());
+    assert!(!p.bonds_live, "pin bonds are not live until the contract is funded at genesis");
+    assert_eq!(p.contract, "0xf5c1");
+}
+
+#[test]
+fn pin_params_unknown_is_not_zero() {
+    // A failed read and an empty (no code) answer both leave the value unknown, never 0.
+    let p = read_pin_params("0xf5c1", |sel| {
+        if sel == BOND_SELECTOR {
+            Err("the RPC could not be reached: timeout".into())
+        } else if sel == REWARD_SELECTOR {
+            Ok("0x".into())
+        } else {
+            Ok("0x1234".into()) // short word
+        }
+    });
+    assert_eq!(p.bond_wei, None);
+    assert_eq!(p.reward_wei, None);
+    assert_eq!(p.rounds, None);
+    assert_eq!(p.errors.len(), 3);
+    assert!(p.errors[0].starts_with("BOND()"), "{:?}", p.errors);
+}
+
+#[test]
+fn pin_params_refuse_an_out_of_range_word() {
+    let p = read_pin_params("0xf5c1", |_| Ok(format!("0x{}", "f".repeat(64))));
+    assert_eq!(p.bond_wei, None);
+    assert_eq!(p.rounds, None);
+    assert_eq!(p.errors.len(), 3);
+}
