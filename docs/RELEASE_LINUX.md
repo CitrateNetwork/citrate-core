@@ -72,9 +72,12 @@ closed — fetch the exact object, do not `git pull` a pin forward).
 
 ## 2. Build the eight sidecars for `x86_64-unknown-linux-gnu`
 
-Four have wrapper scripts (they run the correct build + provenance stamp). They
-default to the sibling source dir, so with the layout above you only pass
-`--target`. Run each on the Linux host so it produces the Linux triple natively:
+Every one is pinned in `release/components.json` (source rev, toolchain, build command, sha256
+per target). The scripts build that rev, never the checkout's HEAD, and install only bytes whose
+sha256 matches the pin. They default to the sibling source dir, so with the layout above you only
+pass `--target`. Run each on the Linux host so it produces the Linux triple natively. The Linux pins
+are the 0.5.1 builds: if a rebuild on this host does not reproduce them, the script stops; record
+the new digests with `--print-digest` and pin them in a reviewed PR before building with them.
 
 ```bash
 cd citrate-core
@@ -83,11 +86,13 @@ scripts/build-sidecar.sh        --target "$TRIPLE"   # citrate node (gated; --ch
 scripts/build-comms-daemon.sh   --target "$TRIPLE"   # comms-member-daemon (--comms to override)
 scripts/build-cluster-daemon.sh --target "$TRIPLE"   # cluster-daemon      (--cluster to override)
 scripts/build-hermes.sh         --target "$TRIPLE"   # hermes/agent-sidecar (--agent-runtime to override)
+scripts/build-component.sh node-agent --target "$TRIPLE"
+scripts/build-component.sh mem-mcp    --target "$TRIPLE"   # --features rocksdb,transformer (from the manifest)
+scripts/build-component.sh kubo       --target "$TRIPLE"   # upstream Kubo, archive + binary digests checked
 ```
 
-Note `build-sidecar.sh` refuses a host≠target mismatch unless the artefact for
-`$TRIPLE` already exists — which is exactly why you run this ON the Linux box
-(host == target), not cross from a Mac.
+Run these ON the Linux box (host == target): Hermes is pinned stripped, and only a host of the
+target's OS can strip it.
 
 The remaining four are plain `cargo build` / third-party binaries. Copy each with
 the target-triple suffix into `src-tauri/binaries/` (provenance in

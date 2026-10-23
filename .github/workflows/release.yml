@@ -325,12 +325,12 @@ jobs:
             (cd "$B/macos"/*.app/Contents/MacOS && shasum -a 256 ./*)
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          node scripts/size-budget.mjs --bundle-dir "$B" --arch aarch64 --markdown "$GITHUB_STEP_SUMMARY"
 
-      # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md).
-      # Exit 1 (over budget) fails the job and leaves the release a draft for review.
-      - name: Size gate (manual, size_gate input)
-        if: ${{ env.DRY_RUN != 'true' && github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+      # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md), and every
+      # dry run (it only reads the bundle dir). Exit 1 (over budget) fails the job and leaves the
+      # release a draft for review.
+      - name: Size gate (manual, size_gate input or dry run)
+        if: ${{ env.DRY_RUN == 'true' || (github.event_name == 'workflow_dispatch' && inputs.size_gate) }}
         run: node scripts/size-budget.mjs --bundle-dir target/aarch64-apple-darwin/release/bundle --arch aarch64 --markdown "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the draft release (size gate passed)
