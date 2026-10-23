@@ -445,6 +445,12 @@ export interface AppState {
    */
   validatorActivation: ValidatorActivation | null;
   /**
+   * K3 — when the node_status answer behind `node` / `height` / `peers` was read, set by the poll
+   * that committed them (ms since epoch); null = not read this session. Node › Status reads its
+   * freshness from this. Observed, never persisted.
+   */
+  nodeStatusAt: number | null;
+  /**
    * C1-V4/C1-V5 — the member's bond (deployed, activated(), pubkey()); null = grant status not read.
    * Observed, never persisted. `activated` outlives a full exit or a slash (the registry stake reads
    * 0, pubkeyOfStaker is cleared), so with the stake it also decides whether `rewardsOf` is read
@@ -834,6 +840,7 @@ export function freshState(pid: string): AppState {
     hasSbt: false,
     rewards: null,
     validatorActivation: null,
+    nodeStatusAt: null,
     memberBond: null,
     validatorCounts: null,
     blockSecs: null,
