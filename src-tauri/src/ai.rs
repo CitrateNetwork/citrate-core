@@ -242,6 +242,15 @@ pub enum InferenceState {
     NoModel,
     /// Nothing configured that can run a real model → the built-in demo agent.
     Demo,
+    /// K2 (ask first): a remote route is configured and no local model is running. NOT a route:
+    /// chat asks the member before each message (`chat_route::select_route`).
+    AskGateway,
+    /// K2 (local only): a local model is set up but its server is not running. The member is
+    /// offered only to start it; the gateway is never offered.
+    LocalOnlyStopped,
+    /// K2 (local only): no local model is running and the gateway is not allowed, so a message is
+    /// not sent (the app says how to start the local model).
+    LocalOnly,
 }
 
 impl InferenceState {
@@ -254,6 +263,9 @@ impl InferenceState {
             InferenceState::GatewayOnly => "gateway-only",
             InferenceState::NoModel => "no-model",
             InferenceState::Demo => "demo",
+            InferenceState::AskGateway => "ask-gateway",
+            InferenceState::LocalOnlyStopped => "local-only-stopped",
+            InferenceState::LocalOnly => "local-only",
         }
     }
 }
@@ -1109,6 +1121,9 @@ pub async fn ai_chat(
     context_json: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider.
+    let route_dir = crate::chat_route::route_dir(&app_h)?;
+    crate::blocking::off_main(move || crate::chat_route::remote_chat_allowed(&route_dir)).await?;
     crate::blocking::off_main(move || {
         let st3 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
@@ -1143,6 +1158,9 @@ pub async fn ai_chat_tools(
     context_json: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider.
+    let route_dir = crate::chat_route::route_dir(&app_h)?;
+    crate::blocking::off_main(move || crate::chat_route::remote_chat_allowed(&route_dir)).await?;
     crate::blocking::off_main(move || {
         let st4 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
