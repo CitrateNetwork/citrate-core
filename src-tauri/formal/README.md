@@ -44,6 +44,12 @@ named action is never taken, unless the module marks it `\* COVERAGE-EXEMPT:`.
 `python3 src-tauri/formal/tlc_expect.py --self-test` checks both scripts. Set `TLA_JAR_SHA256` to
 pin the jar.
 
+CI (`.github/workflows/tla-models.yml`, SCL-S13.4) runs `tlc_expect.py --all`: every spec with a
+config that carries an `EXPECT` line, on tla2tools.jar v1.7.4 (TLC 2.19) pinned by SHA-256. A named
+spec with no configs, or a config of a checked spec without an `EXPECT` line, fails before TLC runs.
+The job also runs the self-tests and the frame lint over every module here. To bump TLC, change
+`TLA_VERSION` and `TLA_JAR_SHA256` together after a local run of the full suite.
+
 `scripts/run-tlc.sh <Spec> all` exits non-zero for these two specs by design (mutants and
 witnesses fail); use `tlc_expect.py` for them.
 

@@ -581,3 +581,19 @@ Rule-2 record for round 5: TLC configs go from 47 to 50. Still no Rust or TypeSc
 - TLC in CI, including the mutants, is S13.4. `tlc_expect.py` is the entry point it can call.
 - `g0-formal` stays `met: false` in gates.yaml until this PR is reviewed and merged. The gates file
   links to this section.
+
+## SCL-S13.4: TLC in CI (branch ci/k1a-tla-check, stacked on #345)
+
+- Workflow `.github/workflows/tla-models.yml`: `tlc_expect.py --self-test`, the frame lint over all
+  15 modules, then `tlc_expect.py --all` on tla2tools.jar v1.7.4 (`TLC2 Version 2.19 of 08 August
+  2024`, rev 5a47802), sha256 `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88`,
+  checked by `sha256sum -c` at download and by `TLA_JAR_SHA256`. Java 21 (temurin).
+- Red 0c67674 (four discovery/plan self-tests fail on assertion), fix ff299bd. Before the fix,
+  `tlc_expect.py NoSuchSpec` exited 0 having checked nothing; now it exits 1 before TLC runs.
+- Local run of the CI commands with the pinned jar (2026-10-23, host load ~128): 50/50 configs
+  match, exit 0, 230 s. Red runs on a scratch copy: forcing `OthersFirst` on in the green
+  AppExitCoordinator gives MISMATCH (violated X9_HermesDrainsFirst) plus 11 coverage findings,
+  exit 1; an injected `sinceMember' = 0` beside `UNCHANGED sinceMember` in AutoStart fails the
+  frame lint, exit 1; a wrong `TLA_JAR_SHA256` exits 2; a SidecarSupervisor config with no EXPECT
+  line fails the plan, exit 1.
+- The CI log on the PR head is the S13.4 close evidence ("CI log", 05_SPRINTS_AND_WPS.md).

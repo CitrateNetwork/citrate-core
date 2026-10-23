@@ -18,10 +18,12 @@ Two tripwires run with it (review round 2 on core#345):
     unless the module names it on a `\\* COVERAGE-EXEMPT: <Action> ...` line (mutant-only actions).
 
 Usage: python3 src-tauri/formal/tlc_expect.py <Spec> [<Spec> ...] [--markdown]
+       python3 src-tauri/formal/tlc_expect.py --all [--markdown]   (every spec with EXPECT configs; CI)
        python3 src-tauri/formal/tlc_expect.py --self-test
 Env:   JAVA (default: Homebrew openjdk, then `java`), TLA_JAR (default ~/.tla/tla2tools.jar),
        TLA_JAR_SHA256 (optional: refuse to run unless the jar has this digest; CI pins it).
-Exit status is non-zero if any config does not match its expectation or a tripwire fires.
+Exit status is non-zero if any config does not match its expectation or a tripwire fires, and
+before TLC runs if a named spec has no configs or one of its configs has no EXPECT line.
 """
 import glob, hashlib, os, re, shutil, subprocess, sys, tempfile
 
@@ -123,7 +125,67 @@ def self_test():
     good = cov == {"A": 0, "B": 7}
     ok = ok and good
     print(f"{'ok  ' if good else 'FAIL'} coverage parse: got {cov}")
-    return tla_frame_lint.self_test() and ok
+    return plan_self_test() and tla_frame_lint.self_test() and ok
+
+
+def discover_specs(formal=FORMAL):
+    """Every spec that has at least one config carrying an EXPECT line (`--all` checks these)."""
+    specs = set()
+    for path in glob.glob(os.path.join(formal, "*.cfg")):
+        name = os.path.basename(path)[:-4]
+        spec = next((s for s in (name, name.split("_", 1)[0])
+                     if os.path.exists(os.path.join(formal, f"{s}.tla"))), None)
+        if spec and expectation(path)[0] is not None:
+            specs.add(spec)
+    return sorted(specs)
+
+
+def plan(specs, formal=FORMAL):
+    """Spec -> its config paths (green first), plus the errors that stop the run."""
+    plans, errors = {}, []
+    for spec in specs:
+        cfgs = [os.path.join(formal, f"{spec}.cfg")] + sorted(
+            glob.glob(os.path.join(formal, f"{spec}_*.cfg")))
+        plans[spec] = [c for c in cfgs if os.path.exists(c)]
+        if not plans[spec]:
+            errors.append(f"{spec}: no {spec}.cfg or {spec}_*.cfg configs to check")
+        for c in plans[spec]:
+            if expectation(c)[0] is None:
+                errors.append(f"{os.path.basename(c)[:-4]}: no EXPECT line")
+    return plans, errors
+
+
+def plan_self_test():
+    ok = True
+    want = ["AppExitCoordinator", "SidecarSupervisor"]
+    got = discover_specs()
+    good = got == want
+    ok = ok and good
+    print(f"{'ok  ' if good else 'FAIL'} discover: specs with EXPECT configs: got {got}")
+    plans, errors = plan(["NoSuchSpec"])
+    good = bool(errors)
+    ok = ok and good
+    print(f"{'ok  ' if good else 'FAIL'} plan: a spec with no configs is an error: got {errors}")
+    plans, errors = plan(["SidecarSupervisor"])
+    good = (not errors and plans["SidecarSupervisor"][0].endswith("SidecarSupervisor.cfg")
+            and len(plans["SidecarSupervisor"]) == len(glob.glob(
+                os.path.join(FORMAL, "SidecarSupervisor*.cfg"))))
+    ok = ok and good
+    print(f"{'ok  ' if good else 'FAIL'} plan: every SidecarSupervisor config, green first")
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "M.tla"), "w").write("---- MODULE M ----\n====\n")
+        open(os.path.join(d, "M.cfg"), "w").write("\\* EXPECT: pass\n")
+        open(os.path.join(d, "M_Mut.cfg"), "w").write("INIT Init\n")
+        open(os.path.join(d, "Other.cfg"), "w").write("INIT Init\n")
+        got = discover_specs(d)
+        good = got == ["M"]
+        ok = ok and good
+        print(f"{'ok  ' if good else 'FAIL'} discover: configs without EXPECT lines are not specs: got {got}")
+        _, errors = plan(["M"], d)
+        good = any("M_Mut" in e for e in errors)
+        ok = ok and good
+        print(f"{'ok  ' if good else 'FAIL'} plan: a config of a checked spec with no EXPECT line: got {errors}")
+    return ok
 
 
 def tlc_version():
@@ -137,9 +199,16 @@ def main(argv):
         return 0 if self_test() else 1
     markdown = "--markdown" in argv
     specs = [a for a in argv if not a.startswith("--")]
+    if "--all" in argv:
+        specs = sorted(set(specs) | set(discover_specs()))
     if not specs:
         print(__doc__)
         return 2
+    plans, errors = plan(specs)
+    for e in errors:
+        print(f"PLAN {e}")
+    if errors:
+        return 1
     pin = os.environ.get("TLA_JAR_SHA256")
     digest = hashlib.sha256(open(JAR, "rb").read()).hexdigest()
     if pin and digest != pin.lower():
@@ -158,18 +227,10 @@ def main(argv):
             print("| Config | Expected | TLC result | Distinct states | Depth | Match |")
             print("|---|---|---|---|---|---|")
         for spec in specs:
-            cfgs = [os.path.join(FORMAL, f"{spec}.cfg")] + sorted(
-                glob.glob(os.path.join(FORMAL, f"{spec}_*.cfg")))
             taken = {}
-            for path in cfgs:
-                if not os.path.exists(path):
-                    continue
+            for path in plans[spec]:
                 cfg = os.path.basename(path)[:-4]
                 want = expectation(path)
-                if want[0] is None:
-                    print(f"{cfg}: no EXPECT line")
-                    ok = False
-                    continue
                 got, states, depth, cov = run(spec, cfg, os.path.join(work, cfg),
                                               with_coverage=want[0] == "pass")
                 for a, n in cov.items():
