@@ -1490,8 +1490,9 @@ export interface AgentHarnessDomain {
   sessionStop(id: string): Promise<void>;
   /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
    *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
-  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first. */
-  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string): Promise<string>;
+  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first;
+   *  `runId` is the claimed run, which core checks is in flight for that daemon. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string, runId?: string): Promise<string>;
   /** HUP-S10.3 — close a session (a finished daemon run). */
   sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,

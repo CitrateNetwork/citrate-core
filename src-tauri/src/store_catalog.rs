@@ -318,7 +318,7 @@ pub(crate) fn tools_for_permissions(permissions: &[String]) -> Vec<String> {
     out.extend(
         crate::daemons::HOST_TOOL_SETS
             .iter()
-            .filter(|set| permissions.iter().any(|p| p == set.permission))
+            .filter(|set| set.grantable && permissions.iter().any(|p| p == set.permission))
             .map(|set| crate::daemons::host_set_marker(set.id)),
     );
     out.sort();
