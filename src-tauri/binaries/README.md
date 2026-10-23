@@ -83,44 +83,31 @@ tracked.
 Build each from its pinned source and copy it here with the target-triple
 suffix.
 
-The **node** (bin `citrate`, package `citrate-node`, from citrate-chain):
+Every sidecar is pinned in [`release/components.json`](../../release/components.json): source
+repo, exact rev, toolchain, cargo package/bin/features, and the sha256 a release may ship per
+target. Build each at its pin; the script installs it here only if the digest matches (and never
+builds your checkout's HEAD):
 
 ```bash
-cargo build --release --bin citrate
-TRIPLE=$(rustc -vV | sed -n 's/host: //p')
-cp target/release/citrate \
-   /path/to/citrate-core/src-tauri/binaries/citrate-$TRIPLE
+scripts/build-sidecar.sh --target "$TRIPLE"              # node: bin citrate, package citrate-node (citrate-chain)
+scripts/build-component.sh node-agent --target "$TRIPLE" # bin node-agent (citrate-node-agent)
+scripts/build-component.sh mem-mcp --target "$TRIPLE"    # bin mem-mcp, --features rocksdb,transformer (citrate-memories)
+scripts/build-comms-daemon.sh --target "$TRIPLE"         # comms-member-daemon (citrate-comms)
+scripts/build-cluster-daemon.sh --target "$TRIPLE"       # cluster-daemon (citrate-cluster)
+scripts/build-hermes.sh --target "$TRIPLE"               # hermes = citrate-agent-sidecar, stripped (citrate-agent-runtime)
+scripts/build-component.sh kubo --target "$TRIPLE"       # ipfs = upstream Kubo, archive + binary digests checked
 ```
 
-The **node-agent** (bin `node-agent`, from citrate-node-agent; the source pin is
-tracked via a Rule-12 `[[drift]]` entry on
-citrate-federation planset/core-beta-wiring):
+A digest mismatch outside the release Mac is expected (the macOS pins are its builds; see
+`BUILDING.md` §1a). For a dev build, use `--print-digest` (prints the built file's path, installs
+nothing) or the `CITRATE_*_BIN` overrides below.
 
-```bash
-# from citrate-node-agent:
-cargo build --release --bin node-agent
-TRIPLE=$(rustc -vV | sed -n 's/host: //p')
-cp target/release/node-agent \
-   /path/to/citrate-core/src-tauri/binaries/node-agent-$TRIPLE
-```
-
-The **mem-mcp** memory daemon (bin `mem-mcp`, package `mem-mcp`, from
-citrate-memories), built with the `rocksdb,transformer` features:
-
-```bash
-# from citrate-memories:
-cargo build --release -p mem-mcp --bin mem-mcp --features rocksdb,transformer
-TRIPLE=$(rustc -vV | sed -n 's/host: //p')
-cp target/release/mem-mcp \
-   /path/to/citrate-core/src-tauri/binaries/mem-mcp-$TRIPLE
-```
-
-It used to be the `mcp_serve` **example** (`target/release/examples/mcp_serve`);
+mem-mcp used to be the `mcp_serve` **example** (`target/release/examples/mcp_serve`);
 that target no longer exists — it was promoted to a real bin in
 citrate-memories#15. The old command fails with "no example target named
 `mcp_serve`".
 
-**RESOLVED 2026-09-09 — build from `main`.** This used to say "build from
+**RESOLVED 2026-09-09 (the rev is now pinned in release/components.json).** This used to say "build from
 `ff12cab` (`feat/bge-bundle-and-fresh-store-bootstrap`), not from `main`", because
 `memory.rs` spawns the daemon with `CITRATE_BGE_MODEL_DIR` (load the bundled BGE
 weights offline) and `CITRATE_MEM_EMBED=bge` (force BGE on a store with no
