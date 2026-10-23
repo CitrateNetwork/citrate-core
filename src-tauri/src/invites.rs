@@ -47,6 +47,10 @@ pub struct PendingInvite {
     /// Public (the relay's own index). Revoke closes it with `rendezvousClose`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub lookup: String,
+    /// GROW-S2 — revoked or consumed here, with its rendezvous close persisted at the daemon but not
+    /// yet confirmed by the relay. Not claimable; kept until a tick reports the rendezvous revoked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revoking: bool,
 }
 
 /// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
@@ -62,6 +66,8 @@ pub struct PendingInviteView {
     pub link: String,
     /// GROW-S2 — the rendezvous lookup (matches `InviteView.lookup`), "" when none was opened.
     pub lookup: String,
+    /// GROW-S2 — revoke sent, waiting for the relay to confirm the rendezvous is closed.
+    pub revoking: bool,
 }
 
 impl From<&PendingInvite> for PendingInviteView {
@@ -73,6 +79,7 @@ impl From<&PendingInvite> for PendingInviteView {
             created_at: i.created_at,
             link: i.link.clone(),
             lookup: i.lookup.clone(),
+            revoking: i.revoking,
         }
     }
 }
@@ -196,6 +203,7 @@ pub(crate) fn minted_invite(
         priv_key,
         link,
         lookup: decision.lookup,
+        revoking: false,
     }
 }
 
@@ -698,6 +706,16 @@ fn revoke_and_remove_at(
     })
 }
 
+/// GROW-S2 — drop the revoking records the relay has confirmed (pure; `invites` from the daemon's
+/// tick). `now_unix` in seconds.
+pub(crate) fn settle_revocations(
+    records: Vec<PendingInvite>,
+    _invites: &[crate::rendezvous::InviteView],
+    _now_unix: u64,
+) -> Vec<PendingInvite> {
+    records
+}
+
 #[cfg(test)]
 mod tests {
     // ---- GROW-S2 (Join 9, M2) ----------------------------------------------------------------
@@ -789,7 +807,7 @@ mod tests {
             |_| Ok(()),
         );
         assert_eq!(r, Ok(()));
-        assert!(tokens(&path).is_empty());
+        assert!(live_tokens(&path).is_empty());
     }
 
     #[test]
@@ -895,6 +913,16 @@ mod tests {
         super::minted_invite(group, token, "@h", 1, "aa".into(), "l".into(), d)
     }
 
+    /// Tokens of the invites that are still outstanding (not revoked or consumed).
+    fn live_tokens(path: &std::path::Path) -> Vec<String> {
+        super::view_pending_at(path)
+            .expect("pending.json reads")
+            .into_iter()
+            .filter(|i| !i.revoking)
+            .map(|i| i.token)
+            .collect()
+    }
+
     fn tokens(path: &std::path::Path) -> Vec<String> {
         super::view_pending_at(path)
             .expect("pending.json reads")
@@ -923,7 +951,11 @@ mod tests {
             |_| Err("relay error: connection reset".into()),
         );
         assert!(r.is_err(), "a failed legacy revoke is not a revoke: {r:?}");
-        assert_eq!(tokens(&path), vec![T.to_string()], "the record is kept");
+        assert_eq!(
+            live_tokens(&path),
+            vec![T.to_string()],
+            "the record is kept"
+        );
     }
 
     /// The relay's own "no such invite" is confirmed absence: there is nothing left to redeem through
@@ -941,7 +973,7 @@ mod tests {
             |_| Err("relay error: server error: no such invite".into()),
         );
         assert_eq!(r, Ok(()));
-        assert!(tokens(&path).is_empty());
+        assert!(live_tokens(&path).is_empty());
     }
 
     /// pysol-dev #1: the legacy revoke is sent even when the close fails, and the revoke fails closed.
@@ -964,7 +996,7 @@ mod tests {
         );
         assert!(sent.get(), "the INVITE-S2 revoke is always sent");
         assert!(r.is_err(), "a failed close fails the revoke: {r:?}");
-        assert_eq!(tokens(&path), vec![T.to_string()]);
+        assert_eq!(live_tokens(&path), vec![T.to_string()]);
     }
 
     /// pysol-dev #2: every combination of the two answers. Success needs both confirmed (or the
@@ -1002,7 +1034,7 @@ mod tests {
                         "publish {published:?}, close #{ci}, legacy #{li}: {r:?}"
                     );
                     assert_eq!(
-                        tokens(&path).is_empty(),
+                        live_tokens(&path).is_empty(),
                         want,
                         "record kept iff not revoked"
                     );
@@ -1030,7 +1062,7 @@ mod tests {
             |_| Ok(()),
         );
         assert_eq!(r, Ok(()));
-        assert_eq!(tokens(&path), vec!["new".to_string()]);
+        assert_eq!(live_tokens(&path), vec!["new".to_string()]);
     }
 
     /// Codex P2: two overlapping revokes don't resurrect each other's record.
@@ -1049,9 +1081,9 @@ mod tests {
         );
         assert_eq!(r, Ok(()));
         assert!(
-            tokens(&path).is_empty(),
+            live_tokens(&path).is_empty(),
             "both revoked: {:?}",
-            tokens(&path)
+            live_tokens(&path)
         );
     }
 
@@ -1120,7 +1152,7 @@ mod tests {
             Some(LOOKUP),
             "the rendezvous is closed"
         );
-        assert!(tokens(&path).is_empty());
+        assert!(live_tokens(&path).is_empty());
     }
 
     /// Codex round 3 (P1): an unreadable `pending.json` is not "no invites". Revoke fails before
@@ -1210,7 +1242,7 @@ mod tests {
         assert_eq!(r, Ok(true));
         assert_eq!(closed.into_inner().as_deref(), Some(LOOKUP));
         assert_eq!(revoked.into_inner(), Some(super::blake3_token_hash(T)));
-        assert!(tokens(&path).is_empty());
+        assert!(live_tokens(&path).is_empty());
     }
 
     /// A consume whose close fails keeps the record, so the approval can be retried (and revoked).
@@ -1230,7 +1262,7 @@ mod tests {
             r.is_err(),
             "the claim isn't accepted while the rendezvous may be open"
         );
-        assert_eq!(tokens(&path), vec![T.to_string()]);
+        assert_eq!(live_tokens(&path), vec![T.to_string()]);
     }
 
     /// Two approvals of the same claim at once: only one is accepted (the invite is single-use).
@@ -1297,7 +1329,7 @@ mod tests {
             |_| Ok(()),
         );
         assert!(r.is_err(), "{r:?}");
-        assert_eq!(tokens(&path), vec![T.to_string()]);
+        assert_eq!(live_tokens(&path), vec![T.to_string()]);
     }
 
     /// Tripwire: an invite record is only ever removed by `revoke_and_remove_at` (close + legacy
@@ -1312,6 +1344,128 @@ mod tests {
             .expect("revoke_and_remove_at")..];
         let body = &body[..body.find("\n}\n").expect("end")];
         assert!(body.contains(".retain("));
+    }
+
+    // ---- Codex round 5 (P1): a persisted close isn't a relay-confirmed revoke ---------------------
+
+    fn invite_view(
+        lookup: &str,
+        state: crate::rendezvous::InviteState,
+    ) -> crate::rendezvous::InviteView {
+        crate::rendezvous::InviteView {
+            lookup: lookup.into(),
+            group: "g".into(),
+            state,
+            joiner: None,
+            expires_at: 1,
+            updated_at: Some(1),
+            reason: None,
+            dropped: 0,
+        }
+    }
+
+    /// `rendezvousClose` answering Ok means the daemon persisted the close and keeps resending it;
+    /// the relay hasn't confirmed. The record stays, marked revoking (shown as pending, never
+    /// claimable), and keeps the device's local work so a restart resumes the tick.
+    #[test]
+    fn a_persisted_close_keeps_the_invite_as_revoking_across_a_restart() {
+        let path = scratch("revoking");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        assert_eq!(
+            super::revoke_at(&path, "g", T, |_| Ok(()), |_| Ok(())),
+            Ok(())
+        );
+        // "Restart": read the file again.
+        let after = super::view_pending_at(&path).expect("reads");
+        assert_eq!(after.len(), 1, "kept until the relay confirms");
+        assert!(after[0].revoking);
+        assert!(super::PendingInviteView::from(&after[0]).revoking);
+        assert!(live_tokens(&path).is_empty(), "no longer outstanding");
+        assert!(
+            crate::rendezvous::local_work(&[], &after, after[0].created_at + 60),
+            "the tick still starts after a restart"
+        );
+    }
+
+    /// A revoking invite isn't claimable: a claim approval for it is refused without relay calls.
+    #[test]
+    fn a_revoking_invite_cant_be_consumed() {
+        let path = scratch("revoking-consume");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        super::revoke_at(&path, "g", T, |_| Ok(()), |_| Ok(())).expect("revoke");
+        let calls = std::cell::Cell::new(0);
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert_eq!(r, Ok(false));
+        assert_eq!(calls.get(), 0);
+    }
+
+    /// The tick settles a revoking record once the daemon reports the rendezvous `revoked` (or the
+    /// invite's TTL has passed, so the relay holds nothing). Anything else keeps it.
+    #[test]
+    fn a_revoking_record_settles_only_on_a_confirmed_revoke_or_expiry() {
+        use crate::rendezvous::InviteState;
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let mut rec = minted("g", T, d.clone());
+        rec.revoking = true;
+        let live = minted("g", "other", d);
+        let now = rec.created_at + 60;
+        for state in [
+            InviteState::Open,
+            InviteState::RelayUnreachable,
+            InviteState::Adding,
+        ] {
+            let kept = super::settle_revocations(
+                vec![rec.clone(), live.clone()],
+                &[invite_view(LOOKUP, state)],
+                now,
+            );
+            assert_eq!(kept.len(), 2, "{state:?} isn't a confirmed revoke");
+        }
+        let kept = super::settle_revocations(vec![rec.clone()], &[], now);
+        assert_eq!(
+            kept.len(),
+            1,
+            "a lookup missing from the views isn't a confirmation"
+        );
+        let kept = super::settle_revocations(
+            vec![rec.clone(), live.clone()],
+            &[invite_view(LOOKUP, InviteState::Revoked)],
+            now,
+        );
+        assert_eq!(
+            kept.iter().map(|i| i.token.as_str()).collect::<Vec<_>>(),
+            vec!["other"]
+        );
+        let ttl = super::INVITE_TTL_MS / 1000;
+        let kept = super::settle_revocations(vec![rec, live], &[], 1 + ttl);
+        assert_eq!(
+            kept.len(),
+            1,
+            "an expired revoking record settles; a live invite is untouched"
+        );
+    }
+
+    /// The tick applies the settlement.
+    #[test]
+    fn the_tick_settles_revocations() {
+        let src = include_str!("rendezvous.rs");
+        let body = &src[src.find("pub(crate) fn tick_and_emit").expect("fn")..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        assert!(body.contains("crate::invites::settle_revocations_after_tick(app, &views)"));
     }
 
     /// Tripwire: `pending.json` is only written through `update_pending_at` (one lock, read and write
@@ -1394,6 +1548,7 @@ mod tests {
             priv_key: "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
             lookup: String::new(),
+            revoking: false,
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
         assert_eq!(views.len(), 1);
@@ -1428,6 +1583,7 @@ mod tests {
             priv_key: "deadbeef".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
             lookup: String::new(),
+            revoking: false,
         }];
         super::write_pending(&path, &invites).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
