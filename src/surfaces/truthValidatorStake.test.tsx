@@ -195,6 +195,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: 2,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks (~28 h)");
@@ -208,6 +210,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: null,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks left");
@@ -217,7 +221,7 @@ describe("V6 — durations use the measured block time", () => {
 
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   it("Wallet: the grant in a locked bond and LSP self-stake are not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500 })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } })} />);
     expect(html).not.toContain("32,500");
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
@@ -237,11 +241,11 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   });
 
   it("Dashboard: Staked is stakeOf, never grant + self-stake, and never 'LiquidStakingPool shares'", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500 })} />);
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } })} />);
     expect(html).not.toContain("LiquidStakingPool shares");
     expect(html).not.toContain("34,500");
     expect(html).not.toContain(">2,500<");
-    expect(html).toContain("bond locked · not staked");
+    expect(html).toMatch(/bond locked · not staked/i);
   });
 
   it("the model context's staked is the registry stake only", () => {

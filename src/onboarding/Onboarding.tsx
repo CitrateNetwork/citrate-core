@@ -843,7 +843,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
               <SettleRow k="Member wallet" v={short(s.walletAddr)} accent />
             </div>
             <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant })}
+              {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.memberBond?.activated ?? null })}
             </p>
           </div>
           <div>

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
-import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel } from "../shell/chainTruth";
+import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, validatorDash, validatorWord } from "../shell/chainTruth";
 import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
@@ -81,7 +81,10 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   // folded as `bondedStake` from grantStatus. The membership grant sitting in a locked bond is not
   // staked until the bond is activated, and LiquidStakingPool self-stake is not validator stake.
   const staked = s.bondedStake;
-  const bondLockedNotStaked = s.hasGrant && !(staked > 0);
+  // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
+  // validator state gives the word or "— · <reason>".
+  const bondLockedNotStaked = validatorWord(staked, s.validatorActivation, s.hasGrant, s.memberBond) === "Bond locked · not staked";
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.memberBond);
 
   // Height vitals value: live chain read when node is off (reads fall back to
   // the public RPC in the design), sim height when the local node drives it.
@@ -128,7 +131,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     {
       label: "Staked",
       value: staked > 0 ? fmtI(staked) : bondLockedNotStaked ? "0" : "—",
-      sub: staked > 0 ? "SALT · stakeOf" : bondLockedNotStaked ? "bond locked · not staked" : "not a validator",
+      sub: staked > 0 ? "SALT · stakeOf" : validatorStateText,
       color: "var(--tx-1)",
       tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond and LiquidStakingPool deposits are not validator stake.",
       vsize: "21px",

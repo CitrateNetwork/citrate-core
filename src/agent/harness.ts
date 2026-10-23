@@ -46,7 +46,7 @@ export interface AgentContext {
    * `MemberBond.unlockBlock` (null = not read), and whether the bond is activated (staked). null =
    * no grant (free tier, or not granted yet). Optional so older callers default to "no grant".
    */
-  grant?: { amountSalt: number; unlockBlock: number | null; staked: boolean } | null;
+  grant?: { amountSalt: number; unlockBlock: number | null; staked: boolean; activated?: boolean | null } | null;
   walletAddr: string;
   tier: string;
 }
@@ -1001,7 +1001,7 @@ function routeIntent(t: string): Plan {
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4); staked = stakeOf.
         // C1-V review (#349): branch on the real grant state, with the real amount and unlock block.
         c.grant
-          ? `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. ${grantExplanation({ amountSalt: c.grant.amountSalt.toLocaleString("en-US"), unlockBlock: c.grant.unlockBlock, staked: c.grant.staked, granted: true })} Your node is **${c.nodeState}**.`
+          ? `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. ${grantExplanation({ amountSalt: c.grant.amountSalt.toLocaleString("en-US"), unlockBlock: c.grant.unlockBlock, staked: c.grant.staked, granted: true, activated: c.grant.activated })} Your node is **${c.nodeState}**.`
           : `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. You have no membership grant on this wallet${c.tier === "free" ? " (public tier)" : " yet"}. Your node is **${c.nodeState}**.`,
     };
   }
