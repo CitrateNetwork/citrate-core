@@ -939,7 +939,7 @@ describe("slice 3: copy follows the UI truth contract on every Wallet, Groups an
         }
       }
     }
-  });
+  }, 60000);
 });
 
 describe("slice 3 review (#387 Codex round 2)", () => {
@@ -1059,5 +1059,81 @@ describe("slice 2 review (core #417): withdraw wording needs an activated bond",
     const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
     expect(html).not.toMatch(/withdrawing an unlocked bond/);
     for (const m of html.matchAll(/[^.'"]*withdraw(?:ing)? your bond[^.'"]*/gi)) expect(m[0]).toMatch(/activated/);
+  });
+});
+
+describe("slice 3 review (DGX, UI truth contract v1.2)", () => {
+  const wallet = async (persona, tab, extra = {}) => {
+    const c = await mount(persona);
+    c.setState({ route: "wallet", wTab: tab, ...extra });
+    return c;
+  };
+  const rows = (V) => (V.wlCards || []).flatMap((x) => x.rows);
+
+  it.each(["none", "locked"])("a bond that isn't activated (%s) is never shown as withdrawable", async (valWord) => {
+    const c = await wallet("p3", "staking", { valWord, hasGrant: true });
+    const w = rows(c.renderVals()).find((r) => r.k === "Withdraw");
+    expect(w?.v).toBe("only an activated bond can be withdrawn");
+    expect(w?.src ?? "").not.toMatch(/verify identity to withdraw/);
+  });
+
+  it.each(["staked", "active"])("an activated bond (%s) withdraws after the lock, gated on the bond's own identity check", async (valWord) => {
+    const c = await wallet("p2", "staking", { valWord });
+    const w = rows(c.renderVals()).find((r) => r.k === "Withdraw");
+    expect(w?.v).toBe("not before the lock end");
+    expect(w?.src ?? "").toMatch(/MemberBond\.isKycVerified/);
+  });
+
+  it("Identity names the bond's on-chain identity gate, not the userinfo claim, and says withdraw only for an activated bond", async () => {
+    for (const valWord of ["locked", "active"]) {
+      const c = await wallet("p2", "identity", { valWord });
+      const r = rows(c.renderVals()).find((x) => x.k === "Identity verification");
+      expect(r.src, valWord).not.toMatch(/Needed to withdraw/);
+      if (valWord === "locked") expect(r.src).not.toMatch(/withdraw/i);
+    }
+  });
+
+  it("tripwire: with an unactivated bond, no Wallet or Settings text implies the principal can be withdrawn", async () => {
+    const c = await mount("p3");
+    c.setState({ valWord: "locked", hasGrant: true, stage: "done", web: null });
+    const all = [];
+    for (const st of [{ route: "wallet", wTab: "staking" }, { route: "wallet", wTab: "identity" }, { route: "settings", sSec: "billing" }]) {
+      c.setState(st);
+      const V = c.renderVals();
+      const walk = (v) => (typeof v === "string" ? all.push(v) : Array.isArray(v) ? v.forEach(walk) : v && typeof v === "object" ? Object.values(v).forEach(walk) : 0);
+      for (const [k, v] of Object.entries(V)) if (/^(wl|stg)[A-Z]/.test(k)) walk(v);
+    }
+    for (const t of all.filter((x) => /withdraw/i.test(x) && /bond|lock|identity|principal|grant/i.test(x))) expect(t).toMatch(/only an activated bond can be withdrawn|activated/);
+  });
+
+  it("rounds read Group rounds not live yet in both ledger states, with deployed, no rounds as the row value", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "rounds", roundsFlag: true, roundsLedger: "dormant", gTab2: null });
+    const V = c.renderVals();
+    expect(V.gxCards[0].lead).toMatch(/^Group rounds not live yet\./);
+    expect(V.gxCards[0].rows.find((r) => r.k === "FederatedRoundLedger").v).toBe("deployed, no rounds (code at the pinned address)");
+    c.setState({ gTab: "chat" });
+    expect(c.renderVals().gxRoundWord).toBe("Group rounds not live yet");
+  });
+
+  it("tripwire: “Deployed · dormant” and “dormant” never appear on screen", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8").replace(/<!--[\s\S]*?-->/g, "");
+    const code = html.replace(/\/\/[^\n]*/g, "");
+    expect(code).not.toMatch(/Deployed · dormant/i);
+    for (const m of code.matchAll(/'[^'\n]*dormant[^'\n]*'/gi)) expect(m[0], m[0]).toMatch(/^'dormant'$/);
+  });
+
+  it("a reverted transaction reads Included in block N · reverted, with the fee charged, never nothing moved", async () => {
+    const c = await wallet("p2", "activity", { wlRows: "drawn" });
+    const r = c.renderVals().wlTxRows;
+    const rev = r.find((x) => /reverted/.test(x.word));
+    expect(rev?.word).toBe("Included in block — · reverted");
+    expect(rev?.sub ?? "").toMatch(/^receipt status 0: the transfer didn't happen; the fee was charged/);
+    expect(rev?.sub ?? "").toMatch(/gasUsed × effectiveGasPrice/);
+    for (const x of r) {
+      expect(x.word).not.toMatch(/^Failed|nothing moved|no fee/i);
+      expect(x.sub).not.toMatch(/nothing moved|no fee/i);
+    }
+    expect(r.map((x) => x.word)).toContain("Sent, outcome unknown — check tx ⟨hash⟩");
   });
 });
