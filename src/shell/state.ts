@@ -510,6 +510,9 @@ export interface AppState {
   sigPolicy: "hitl" | "allow";
   channel: "stable" | "beta";
   telemetry: boolean;
+  /** The telemetry disclosure version the member consented to (telemetry-fields.json `version`).
+   *  `null` = no consent. 1 = consented before 0.5.2 (before `joinSteps`); see joinFunnel.ts. */
+  telemetryConsentVersion: number | null;
   updState: "idle" | "checking" | "current";
   dataDir: string;
   /**
@@ -851,6 +854,7 @@ export function freshState(pid: string): AppState {
     sigPolicy: "hitl",
     channel: "stable",
     telemetry: false,
+    telemetryConsentVersion: null,
     updState: "idle",
     dataDir: "~/.citrate/core",
     coreMembershipUrl: "https://core-membership.vercel.app",
@@ -1014,7 +1018,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "claimable", "activity",
   "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
+  "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
@@ -1036,6 +1040,10 @@ export function loadState(): AppState {
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
+  // 0.5.2 Join: a telemetry consent stored without a disclosure-version marker was given before
+  // `joinSteps` existed. Mark it now (version 1) so the one-time note runs and join steps stay
+  // unrecorded until the member has read it.
+  if (base.telemetry && typeof base.telemetryConsentVersion !== "number") base.telemetryConsentVersion = 1;
   // Owner decision 2026-10-01: the sidecar agent loop is on for members. Installs that saved the
   // old default (off) are switched on once; a member who turns it off afterwards stays off.
   if (saved && saved.hermesSidecarLoopDefaultApplied !== true) {
