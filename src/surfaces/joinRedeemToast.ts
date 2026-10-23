@@ -52,3 +52,11 @@ export function redeemToast(r: JoinRedeemResult, groupListed: boolean): string {
 export function keepInviteAfter(r: JoinRedeemResult): boolean {
   return r.path === "rendezvous" && (r.join.state === "requesting" || r.join.state === "relay_unreachable");
 }
+
+/** Whether this Join put the member in the group: the legacy self-admit returned (the daemon
+ *  committed it), or the rendezvous reported `joined` / `taken` and the group is listed. Used for the
+ *  join funnel's `join_group` step; a Waiting answer is not a join. */
+export function redeemJoined(r: JoinRedeemResult, groupListed: boolean): boolean {
+  if (r.path === "legacy") return true;
+  return (r.join.state === "joined" || r.join.state === "taken") && groupListed;
+}

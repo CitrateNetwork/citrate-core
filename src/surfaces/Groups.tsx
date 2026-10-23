@@ -18,8 +18,9 @@ import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
+import { reachedStep } from "../privacy/joinFunnel";
 import { RelayStatusChip } from "./RelayStatusChip";
-import { keepInviteAfter, redeemToast } from "./joinRedeemToast";
+import { keepInviteAfter, redeemJoined, redeemToast } from "./joinRedeemToast";
 import { JoinRequests, InviteStateLine } from "./JoinRequests";
 import { rendezvousSlice, startRendezvousFeed, refreshRendezvous, cancelJoin, forgetJoin } from "../shell/slices/rendezvous";
 import {
@@ -425,6 +426,7 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast("That doesn't look like an invite link.");
       return;
     }
+    reachedStep("arrive"); // 0.5.2 Join funnel: an invite arrived by paste (step id only)
     // Primary: one-click self-admit.
     try {
       const result = await bridge.invites.redeem(link);
@@ -433,7 +435,11 @@ export function Groups({ store, s }: SurfaceProps) {
         setRedeemOpen(false);
       }
       await refreshGroups();
-      store.toast(redeemToast(result, groupsSlice.get().groups.some((x) => x.id === g)));
+      const listed = groupsSlice.get().groups.some((x) => x.id === g);
+      // 0.5.2 Join funnel: join_group only once the member is in the group (a rendezvous answer
+      // can be Waiting; the slice records it when a later join://state completes the join).
+      if (redeemJoined(result, listed)) reachedStep("join_group");
+      store.toast(redeemToast(result, listed));
       return;
     } catch (e) {
       // Self-admit didn't take (spent/expired/revoked, or an older unpublished invite). If the link
@@ -590,7 +596,9 @@ export function Groups({ store, s }: SurfaceProps) {
                       const result = await bridge.invites.redeem(pi.url);
                       await refreshGroups();
                       const gid = result.path === "rendezvous" ? result.join.group : "";
-                      store.toast(redeemToast(result, !!gid && groupsSlice.get().groups.some((x) => x.id === gid)));
+                      const listed = !!gid && groupsSlice.get().groups.some((x) => x.id === gid);
+                      if (redeemJoined(result, listed)) reachedStep("join_group");
+                      store.toast(redeemToast(result, listed));
                       if (!keepInviteAfter(result)) store.clearPendingInvite();
                       return;
                     } catch (e) {

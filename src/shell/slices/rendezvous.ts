@@ -13,6 +13,7 @@
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
 import { groupsSlice, refreshGroups } from "./groups";
+import { reachedStep } from "../../privacy/joinFunnel";
 import type { InviteViewDto, JoinViewDto, RendezvousViews } from "../../bridge/domains";
 
 export interface RendezvousState {
@@ -78,7 +79,13 @@ export function ingest(v: RendezvousViews): void {
   const listed = groupsSlice.get().groups.map((g) => g.id);
   if (needsMembershipRefresh(prev, v.joins, listed, lastListFailed)) {
     void refreshGroups().then(() => {
-      lastListFailed = groupsSlice.get().error !== null;
+      const g = groupsSlice.get();
+      lastListFailed = g.error !== null;
+      // 0.5.2 Join funnel: a join that completed in the background is the join_group step.
+      const listedNow = g.groups.map((x) => x.id);
+      if (v.joins.some((j) => (j.state === "joined" || j.state === "taken") && listedNow.includes(j.group))) {
+        reachedStep("join_group");
+      }
     });
   }
 }
