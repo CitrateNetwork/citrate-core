@@ -991,46 +991,23 @@ pub async fn user_claim(
     // Same 4 bytes either way — `claimRewards()` is 0x372500ab on BOTH — so only
     // the target changes. (`ValidatorRegistry.claimRewards(bytes32)` is 0x7790ddc6
     // and is NOT what we build: the clone calls that, not the member.)
-    let grant = crate::grant_status::read_grant_status(&rpc, &wallet.address).ok();
-    let is_validator = grant
-        .as_ref()
-        .map(crate::grant_status::claims_through_bond)
-        .unwrap_or(false);
-
-    let (to, claimable_wei) = if is_validator {
-        // MATURED validator rewards only — `rewardsOf(pubkey).claimableNow`. Rewards
-        // inside the REWARD_RING evidence window are still slashable and are NOT
-        // claimable; the contract reports them separately for exactly that reason.
-        let pubkey_hex = node.0.proposer_pubkey()?;
-        let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
-        let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
-        if bytes.len() != 32 {
-            return Err(format!(
-                "proposer pubkey is {} bytes, expected 32",
-                bytes.len()
-            ));
-        }
-        let mut pubkey = [0u8; 32];
-        pubkey.copy_from_slice(&bytes);
-        let (_total, claimable) = crate::validator::read_validator_rewards(
-            &rpc,
-            crate::addresses::validator_registry(),
-            &pubkey,
-        )?;
-        let bond = grant
-            .as_ref()
-            .map(|g| g.bond_address.clone())
-            .unwrap_or_default();
-        (bond, claimable)
-    } else {
-        let snap =
-            crate::earnings::read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
-        let wei: u128 = snap
-            .claimable_wei
-            .parse()
-            .map_err(|_| "earnings: claimable is not a u128 wei value".to_string())?;
-        (crate::earnings::contribution_accounting().to_string(), wei)
-    };
+    let grant =
+        crate::grant_status::read_grant_status(&rpc, &wallet.address).map_err(|e| e.to_string());
+    let (to, claimable_wei) =
+        match validator_claim(&rpc, crate::addresses::validator_registry(), grant, || {
+            node.0.proposer_pubkey()
+        })? {
+            Some(validator) => validator,
+            None => {
+                let snap = crate::earnings::read_claimable(&rpc, &wallet.address)
+                    .map_err(|e| e.to_string())?;
+                let wei: u128 = snap
+                    .claimable_wei
+                    .parse()
+                    .map_err(|_| "earnings: claimable is not a u128 wei value".to_string())?;
+                (crate::earnings::contribution_accounting().to_string(), wei)
+            }
+        };
 
     // Bridge the REAL claim into a pending ceremony (honest 0 → NoPending error).
     let (id, _req) = agent
@@ -1043,6 +1020,41 @@ pub async fn user_claim(
         .0
         .status(&id)
         .ok_or_else(|| "ceremony: pending claim not found after bridge".to_string())
+}
+
+/// #416 — the validator side of `user_claim`: `Some((bond, claimableNow))` when the member's rewards
+/// are claimed through their bond (`claims_through_bond`), `None` for the ContributionAccounting
+/// claim. MATURED validator rewards only — `rewardsOf(pubkey).claimableNow`; rewards inside the
+/// REWARD_RING evidence window are still slashable and not claimable. (Stub: the node's own
+/// proposer key, and a failed grant read is "not a validator", as before.)
+pub(crate) fn validator_claim<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    registry: &str,
+    grant: std::result::Result<crate::grant_status::GrantStatus, String>,
+    node_key: impl FnOnce() -> std::result::Result<String, String>,
+) -> std::result::Result<Option<(String, u128)>, String> {
+    let grant = grant.ok();
+    let is_validator = grant
+        .as_ref()
+        .map(crate::grant_status::claims_through_bond)
+        .unwrap_or(false);
+    if !is_validator {
+        return Ok(None);
+    }
+    let pubkey_hex = node_key()?;
+    let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
+    let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "proposer pubkey is {} bytes, expected 32",
+            bytes.len()
+        ));
+    }
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&bytes);
+    let (_total, claimable) = crate::validator::read_validator_rewards(rpc, registry, &pubkey)?;
+    let bond = grant.map(|g| g.bond_address).unwrap_or_default();
+    Ok(Some((bond, claimable)))
 }
 
 /// A minimal writer helper for the token file used only by tests that need to
