@@ -1,0 +1,110 @@
+# created: 2026-10-23 | branch: test/join-e2e-gate | author: Larry Klosowski + Claude Opus 5.5 (DGX lane)
+# status: active (board item Join-E2E). The fresh-machine join gate, Linux x86_64 leg: link -> join
+# page -> installer -> install -> first run, against a local landing join service, Postgres, comms
+# relay and CDN, inside the K1-L sealed namespace (scripts/ci/join-e2e.sh, docs/JOIN_E2E_GATE.md).
+# Runs the self-test, which includes the full good case. The DGX runs the aarch64 leg by hand.
+# Not a required check: the gate is not met while steps 4b and 5 are pending.
+#
+# citrate-landing is a private repo: the job needs JOIN_E2E_LANDING_TOKEN, a fine-grained token
+# with read-only Contents on CitrateNetwork/citrate-landing (owner to create). Without it the job
+# stops at the checkout step and says so.
+name: join-e2e-linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      landing_ref:
+        description: citrate-landing ref under test
+        default: feat/join-v2-page
+      comms_ref:
+        description: citrate-comms ref the relay is built from
+        default: main
+  pull_request:
+    paths:
+      - "scripts/ci/join-e2e.sh"
+      - "scripts/ci/join-e2e/**"
+      - "scripts/ci/linux-native-acceptance.sh"
+      - "scripts/ci/lib/**"
+      - ".github/workflows/join-e2e-linux.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: join-e2e-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: join gate self-test (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LANDING_REF: ${{ inputs.landing_ref || 'feat/join-v2-page' }}
+      COMMS_REF: ${{ inputs.comms_ref || 'main' }}
+      JE_LAUNCH_TIMEOUT: "240"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check the landing read token
+        env:
+          HAS_TOKEN: ${{ secrets.JOIN_E2E_LANDING_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != true ]; then
+            echo "::error::JOIN_E2E_LANDING_TOKEN is not set (read-only Contents on citrate-landing); the gate needs the landing join service"
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-landing
+          ref: ${{ env.LANDING_REF }}
+          token: ${{ secrets.JOIN_E2E_LANDING_TOKEN }}
+          path: _landing
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CitrateNetwork/citrate-comms
+          ref: ${{ env.COMMS_REF }}
+          path: _comms
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Install the app's runtime deps and the harness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-0 libgtk-3-0t64 xvfb dbus dbus-x11 gnome-keyring \
+            iproute2 python3 python3-nacl rsync postgresql-16 clang libclang-dev
+      - name: Allow unprivileged user namespaces
+        shell: bash
+        run: |
+          # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor; lift it only on
+          # this throwaway VM, and only if the probe fails. Never do this on a desktop.
+          if ! unshare --user --map-root-user --pid --fork --mount-proc --net true 2>/dev/null; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --pid --fork --mount-proc --net true
+      - name: Landing deps and the headless browser
+        working-directory: _landing
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install chromium-headless-shell
+      - name: Build the comms relay
+        working-directory: _comms
+        run: cargo build --release -p comms-relay
+      - name: Run the gate (good case + three negative controls)
+        shell: bash
+        run: |
+          scripts/ci/join-e2e.sh --self-test --landing "$GITHUB_WORKSPACE/_landing" \
+            --relay "$GITHUB_WORKSPACE/_comms/target/release/comms-relay" \
+            --cache "$RUNNER_TEMP/je-cache" --work "$RUNNER_TEMP/je-work" \
+            --log-dir "$GITHUB_WORKSPACE/je-logs"
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: join-e2e-linux-x86_64
+          path: je-logs
+          if-no-files-found: warn
+          retention-days: 14
