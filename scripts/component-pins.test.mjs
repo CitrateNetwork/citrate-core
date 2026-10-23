@@ -110,9 +110,9 @@ describe("component-pins check", () => {
 
   it("refuses an asset pinned twice (ambiguous)", () => {
     const r = fixture();
-    const line = read(r, "src-tauri/runtime-deps.sha256").split("\n").find((l) => l.endsWith("  mem-mcp-aarch64-apple-darwin-0e9d48822054"));
+    const line = read(r, "src-tauri/runtime-deps.sha256").split("\n").find((l) => l.endsWith("  mem-mcp-aarch64-apple-darwin-5aeda3172369"));
     write(r, "src-tauri/runtime-deps.sha256", read(r, "src-tauri/runtime-deps.sha256") + line + "\n");
-    expect(errorsOf(r)).toMatch(/mem-mcp-aarch64-apple-darwin-0e9d48822054 is pinned 2 times/);
+    expect(errorsOf(r)).toMatch(/mem-mcp-aarch64-apple-darwin-5aeda3172369 is pinned 2 times/);
   });
 
   it("refuses an artifact with no evidence", () => {
