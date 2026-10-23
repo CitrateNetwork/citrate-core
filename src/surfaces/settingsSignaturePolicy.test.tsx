@@ -4,7 +4,7 @@
 //    budgeted web sign-in (SIWE), granted, capped and revocable in Budgets. There is no
 //    "allowlisted intents" policy, so Settings offers no control that writes one, and a value an
 //    older build stored (config.json or the persisted app state) can neither surface nor be read.
-// 2. The wallet row names what the wallet is: a secp256k1 key on this device, sealed in the
+// 2. The wallet row names what the wallet is: an EVM signing key on this device, sealed in the
 //    custody vault, signing through the ceremony. Not a passkey validator, not a lazily deployed
 //    smart wallet.
 import { describe, it, expect, beforeEach } from "vitest";
@@ -103,7 +103,7 @@ describe("Settings › keystore: the wallet row says what the wallet is", () => 
   it("names the device key and shows the device key's address", () => {
     const html = render(keysState({ custodyAddr: DEVICE, walletAddr: DEVICE }));
     expect(html).toContain("Wallet key on this device");
-    expect(html).toContain("secp256k1");
+    expect(html).toContain("EVM signing key · sealed in the custody vault");
     expect(html).toContain("0xD0D0…0E0A");
     expect(html).toContain("linked to your identity");
     expect(html).not.toContain("not linked");

@@ -426,7 +426,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       store.save();
     },
   }));
-  // The wallet is this device's secp256k1 key in the custody vault (custodyAddr). It is linked when
+  // The wallet is this device's EVM signing key in the custody vault (custodyAddr). It is linked when
   // the identity's wallet_address claim is that same address. An unread key address is "—".
   const deviceKey = s.custodyAddr || "";
   const deviceKeyLinked = deviceKey !== "" && (s.walletAddr || "").toLowerCase() === deviceKey.toLowerCase();
@@ -954,7 +954,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <span style={{ flex: 1 }}>
                   <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Wallet key on this device</span>
                   <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
-                    secp256k1 · sealed in the custody vault · signs only through the signature ceremony · {deviceKeyNote}
+                    EVM signing key · sealed in the custody vault · signs only through the signature ceremony · {deviceKeyNote}
                   </span>
                 </span>
                 {/* The device key's own address (custodyAddr), or "—" while unread. The identity
