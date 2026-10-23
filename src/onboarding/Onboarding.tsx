@@ -7,6 +7,12 @@ import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import book from "../../src-tauri/addresses/40204.json";
+import { useNetworkLabel } from "../shell/networkCompat";
+import { CONSENSUS_LAG_NOTE, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
+import { MEMBERSHIP_BUYS } from "../data/membership";
+import { PricingLink } from "../components/PricingLink";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -73,8 +79,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               The federation's house.
             </div>
             <p style={{ fontFamily: "var(--font-sans)", fontSize: 16, lineHeight: 1.55, color: "var(--tx-2)", margin: 0, maxWidth: 520 }}>
-              One membership funds your wallet, covers your validator stake, and opens every Citrate application — on your hardware, with keys that never leave this
-              machine.
+              Citrate runs a node, a wallet and Hermes on this machine. Your keys stay here.
             </p>
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
@@ -85,7 +90,12 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
-          <div style={eyebrow}>Chain 40204 · testnet-beta</div>
+          {/* Join 3 V-01 (fed#353): what Join involves, under the buttons. */}
+          <p style={{ fontFamily: "var(--font-sans)", fontSize: 13, lineHeight: 1.5, color: "var(--tx-3)", margin: 0, maxWidth: 520 }}>
+            Joining means a yearly membership and a bond. Explore free skips both; you can upgrade later in Settings › Billing.
+          </p>
+          {/* Join 3 V-02: the network by its genesis-checked name (contract §2, §6), not the chain id. */}
+          <NetworkName style={eyebrow} />
         </div>
       </div>
     );
@@ -313,7 +323,8 @@ function ClaimBanner({ store, s }: { store: Store; s: AppState }) {
       <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
         {matched ? (
           <>
-            You paid as <strong>{claim.email}</strong>. Your seat (SBT + 32,000 SALT stake) lands on chain once the grant settles — it will appear here.
+            You paid as <strong>{claim.email}</strong>. Your seat (the membership SBT, and a 32,000 SALT grant locked in your bond) lands on chain once the grant is
+            issued — it will appear here. {GRANT_DISCLAIMER}
           </>
         ) : (
           <>
@@ -547,7 +558,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
   }, [s.s3, s.stage, store]);
   const items = [
     "Tier features across the app — chat on the gateway, docs at member tier, gated downloads",
-    "32,000 SALT staked to your validator — the grant covers your stake for validation work",
+    "A 32,000 SALT grant, locked in your bond — it becomes your validator stake when you activate the bond",
     "Membership SBT — the non-transferable on-chain record of your seat",
     "Commissary access — apps, SDKs, docs, and services at your tier",
   ];
@@ -558,7 +569,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr", gap: 12 }}>
         <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={eyebrow}>Free</div>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>$0</div>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>No charge</div>
           <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0, flex: 1 }}>Wallet, agent harness, chain reads, marketplace view. No staking, no grant.</p>
           {s.s3 === "idle" && (
             <button className="btn btn-ghost btn-sm" style={{ marginTop: 8, alignSelf: "flex-start" }} onClick={() => store.onS3Free()}>
@@ -569,7 +580,8 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
         <div style={{ border: "2px solid var(--tx-1)", background: "var(--srf-2)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6, position: "relative" }}>
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>Pilot · selected</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>
-            $48<span style={{ fontSize: 13, color: "var(--tx-3)" }}> / year</span>
+            {/* C1-V V12: no in-app price until core-membership serves one (chain-team ruling). */}
+            <PricingLink open={(u) => void store.openExternal(u)} style={{ fontSize: 15 }} />
           </div>
           <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0 }}>Full membership. Everything listed below.</p>
         </div>
@@ -594,7 +606,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
           </div>
         ))}
         <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: "6px 0 0" }}>
-          The grant is a membership benefit that arrives staked — it covers your stake for work as a validator. It is not purchased, and it is not an investment.
+          {MEMBERSHIP_BUYS} {grantExplanation({ amountSalt: "32,000", unlockBlock: null, staked: false })}
         </p>
       </div>
       {s.s3 === "idle" && (
@@ -610,7 +622,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
             </>
           ) : (
             <button className="btn btn-primary btn-lg" onClick={() => store.onS3Pay()}>
-              Check out in your browser · $48
+              Check out in your browser
             </button>
           )}
         </div>
@@ -639,8 +651,8 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
         <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }} data-testid="s3-poll-exhausted">
           <div style={{ fontSize: 15, fontWeight: 500 }}>Payment received — the grant has not landed yet</div>
           <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
-            Your payment settled. The membership grant (the SBT and the 32,000 SALT stake) is
-            issued server-side and has not appeared on chain yet. This app stopped polling to
+            Your payment settled. The membership grant (the SBT, and a 32,000 SALT grant locked in your bond) is
+            issued server-side and has not appeared on chain yet. {GRANT_DISCLAIMER} This app stopped polling to
             avoid hammering the network — it does not mean anything failed, and you do not need
             to pay again.
           </p>
@@ -693,13 +705,13 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S4 · Wallet ready</div>
-      <div style={h1}>Your smart wallet already exists</div>
+      <div style={h1}>Your wallet key is on this device</div>
       <p style={body}>
-        The address is deterministic from your identity — predicted before anything is deployed. The wallet itself deploys lazily with your first transaction, gas
-        sponsored.
+        The app created an EVM signing key on this machine and sealed it in the custody vault. It signs only through the signature ceremony, after you approve each
+        request. The key never leaves this machine.
       </p>
       <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
-        <div className="lbl">Smart wallet · ERC-4337</div>
+        <div className="lbl">Wallet key on this device</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{walletDisplay}</span>
           {walletKnown && (
@@ -709,9 +721,7 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
           )}
         </div>
         <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          <Row k="Signer" v={<span style={{ fontSize: 13 }}>Passkey validator (WebAuthn P-256) — enrolled with your identity</span>} />
-          <Row k="Recovery" v={<span style={{ fontSize: 13 }}>Guardian module — configure guardians any time in Settings</span>} />
-          <Row k="Local key" v={<span style={{ fontSize: 13 }}>Optional signing key in this machine's keystore — create later in Keys &amp; security</span>} />
+          <Row k="Signer" v={<span style={{ fontSize: 13 }}>EVM signing key · sealed in the custody vault · signs only through the signature ceremony</span>} />
         </div>
       </div>
       <div>
@@ -720,7 +730,7 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
         </button>
       </div>
       <div className="mono" style={dataSrc}>
-        Data source — wallet_address claim · /aa/address · EntryPoint 0x077F…54Ef
+        Data source — wallet_address claim (your identity) · custody vault (this device)
       </div>
     </div>
   );
@@ -735,11 +745,10 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S5 · Grant + stake ceremony</div>
       {s.s5 === "idle" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <div style={h1}>32,000 SALT — staked for you</div>
+          <div style={h1}>Your 32,000 SALT membership grant</div>
           <p style={body}>
-            Your membership grant arrives already staked: the treasury deposits it into the MembershipStakeVault, attributed to your wallet, and the vault stakes it. It
-            covers your validator stake for the membership year. The principal stays vaulted until mainnet release; the rewards your node earns are yours. You approve a
-            single sponsored transaction.
+            {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
+            {grantExplanation({ amountSalt: "32,000", unlockBlock: null, staked: false })}
           </p>
           <div>
             <button className="btn btn-primary btn-lg" onClick={() => store.onS5Begin()}>
@@ -791,11 +800,11 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
       )}
       {s.s5 === "settling" && (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14, padding: "26px 0" }}>
-          <div style={eyebrow}>Arriving · staking</div>
+          <div style={eyebrow}>Arriving · locking in your bond</div>
           <div className="tabular" style={{ fontFamily: "var(--font-display)", fontWeight: 380, fontSize: 72, lineHeight: 1, letterSpacing: "-0.022em", color: "var(--tx-1)" }}>
             {fmtI(s.s5n)}
           </div>
-          <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → LiquidStakingPool</div>
+          <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → your MemberBond</div>
           <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
             treasury UserOp · gas sponsored · first-op category
           </div>
@@ -808,7 +817,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
               <div className="tabular" style={{ fontFamily: "var(--font-display)", fontWeight: 380, fontSize: 44, lineHeight: 1, letterSpacing: "-0.022em" }}>
                 {fmtSaltFromWei(s.s5StakeWei)}
               </div>
-              <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT staked · settled</div>
+              <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT grant · locked in your bond</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
               {/* F1 (Rule 1): every row traces to a real read. Staked position is the
@@ -816,13 +825,12 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
                   (confirmed by balanceOf==1 — the token id was never read); the
                   honest on-chain anchor is the member/vault address, NOT a fabricated
                   tx hash (this app does not broadcast the grant tx). */}
-              <SettleRow k="Staked position" v={`${fmtSaltFromWei(s.s5StakeWei)} SALT · vaulted principal`} />
+              <SettleRow k="Grant" v={`${fmtSaltFromWei(s.s5StakeWei)} SALT · ${s.s5BondStatus ?? "locked in your bond"}`} />
               <SettleRow k="Membership SBT" v="CitrateMemberSBT · minted" />
               <SettleRow k="Member wallet" v={short(s.walletAddr)} accent />
             </div>
             <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              Principal locked for the membership term and until mainnet release policy unlocks vaulted grants. Validator rewards from your node's work accrue to you.
-              Self-added stake carries a 7-day withdrawal lockup.
+              {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated })}
             </p>
           </div>
           <div>
@@ -833,7 +841,8 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
       <div className="mono" style={dataSrc}>
-        Data sources — MembershipStakeVault.attributedStake 0x0ace…267e · CitrateMemberSBT.balanceOf 0x7be0…a7c4 · /userinfo entitlement
+        {/* C1-V V9: addresses come from the bundled address book (a reroll moves them). */}
+        Data sources — MembershipStakeVault.attributedStake {short(book.addresses.MembershipStakeVault)} · CitrateMemberSBT.balanceOf {short(book.addresses.CitrateMemberSBT)} · /userinfo entitlement
       </div>
     </div>
   );
@@ -855,14 +864,15 @@ function S6({ store, s }: { store: Store; s: AppState }) {
   // The REAL height. This used to subtract `(100 - syncPct) * 14` to fake a
   // "catching up" number off the 0/100 stub — a fabricated height (Rule 1). With a
   // real syncPct there is nothing to estimate: show what the node actually has.
-  const heightStr = fmtI(s.height);
+  // C1-V V10: 0 is "no reading yet" (eth_blockNumber returns 0x0 on error), never a height.
+  const heightStr = s.height > 0 ? fmtI(s.height) : "—";
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S6 · Node ignition</div>
       <div style={h1}>Run your node</div>
       <p style={body}>
-        A full node — it validates, executes, and builds blocks. It runs as a supervised process with encryption at rest on by default, and it survives this window
-        closing.
+        A full node follows the chain, checks and executes every block, and serves your reads locally. It produces blocks only once it is an active validator. It
+        runs as a supervised process with encryption at rest on by default, and it survives this window closing.
       </p>
       <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
         {s.node === "off" && (
@@ -922,7 +932,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             </div>
             <div style={{ display: "flex", gap: 20 }}>
               <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }}>
-                height {heightStr} / {fmtI(s.height)}
+                height {heightStr}
               </span>
               <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }}>
                 peers {s.peers}
@@ -936,17 +946,16 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             )}
           </div>
         )}
-        {/* VALIDATING is now gated on the REAL ValidatorRegistry bond (s.bondedStake
-            from pubkeyOfStaker→stakeOf), not on `hasGrant`. A funded-but-unbonded
-            node is `synced`, not `validating` — so this "eligible for proposer" line
-            only shows when the 32k is genuinely bonded (Rule 1). */}
+        {/* C1-V (contract v1.1 §1): `validating` is set only when the key is isActive AND its
+            validatorInfo.actEpoch <= currentEpoch, never from a stake amount, so this card uses the
+            §1 word and the consensus-lag note. */}
         {s.node === "validating" && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", animation: "ccPulse 2.4s var(--ease-standard) infinite", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Validating</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Validator active</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · bonded {fmtI(s.bondedStake)} SALT ≥ minimum · eligible for proposer election
+                synced · activation epoch reached · stake {fmtI(s.bondedStake)} SALT · {CONSENSUS_LAG_NOTE}
               </div>
             </div>
           </div>
@@ -956,17 +965,47 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             yet. Onboarding auto-opens the activation ceremony (maybeAutoBond); this is
             the visible fallback if the member dismissed it — one click re-opens the
             MemberBond.activate review (Rule 3: the human still approves). */}
-        {s.node === "synced" && (
+        {/* Registered stake that is not active yet (pending activation, exiting, or not read):
+            the bond is already staked, so no "Stake my bond" here. */}
+        {s.node === "synced" && s.bondedStake > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant) ?? "— · registry not read yet"}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                stake {fmtI(s.bondedStake)} SALT in the ValidatorRegistry
+              </div>
+            </div>
+          </div>
+        )}
+        {/* C1-V2: after a full exit (or a slash) the registry stake reads 0, but validatorInfo.status
+            says Exiting / Slashed: show that word, and no "Stake my bond". */}
+        {/* #348/#349 review: an already-activated bond (MemberBond.activated() = true) with no
+            registered stake has exited or been slashed; it can't activate again, so it gets the
+            status card (word or "—"), never "Stake my bond". */}
+        {s.node === "synced" && !(s.bondedStake > 0) && !canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) && (s.hasGrant || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced — not yet a validator</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                bond 32,000 SALT to enter the active set and earn the proposer subsidy
+                ValidatorRegistry.validatorInfo status for this node&rsquo;s key; no registered stake
+              </div>
+            </div>
+          </div>
+        )}
+        {/* #348 review: "Stake my bond" only for a bond that reads not activated (activated() = false). */}
+        {s.node === "synced" && !(s.bondedStake > 0) && (canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) || (!s.hasGrant && s.validatorActivation?.status !== 2 && s.validatorActivation?.status !== 3)) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                stake your membership bond in the ValidatorRegistry; it shows the epoch your validator becomes active
               </div>
             </div>
             <button className="btn btn-primary" onClick={() => void store.activateValidator()}>
-              Bond 32,000 SALT
+              Stake my bond
             </button>
           </div>
         )}
@@ -1144,4 +1183,9 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
       </div>
     </div>
   );
+}
+
+/** S0's network line: "Citrate betanet" once the genesis check passes (UI truth contract §2, §6). */
+function NetworkName({ style }: { style: CSSProperties }) {
+  return <div style={style}>{useNetworkLabel()}</div>;
 }

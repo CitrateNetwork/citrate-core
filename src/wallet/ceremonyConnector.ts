@@ -29,6 +29,7 @@
 // ceremony UI; wiring the hook to that live UI is a small host-side step and is
 // intentionally left as a clear seam here (see `defaultApprovalHook`).
 // =====================================================================
+import { broadcastFailure } from "../shell/broadcastOutcome";
 import { http, type Transport } from "viem";
 import { createConnector } from "wagmi";
 import { citrate } from "../chain";
@@ -197,8 +198,16 @@ export function createCeremonyProvider(deps: CeremonyProviderDeps): CeremonyProv
    * with the vault key → broadcast to 40204 → return the REAL tx hash. */
   async function driveTransaction(params: unknown): Promise<string> {
     const { id, rawAck } = await requestAndAwaitApproval("transaction", params);
-    const result = await deps.signing.broadcast(id, rawAck);
-    return result.txHash;
+    try {
+      const result = await deps.signing.broadcast(id, rawAck);
+      return result.txHash;
+    } catch (err) {
+      // C1-V #347 review: once the node may have the tx, hand the dApp its hash so it tracks the
+      // tx rather than asking for a second payment. Only a failure without a known hash throws.
+      const failure = broadcastFailure(err);
+      if (failure.kind === "unknown" && failure.txHash) return failure.txHash;
+      throw err;
+    }
   }
 
   return {

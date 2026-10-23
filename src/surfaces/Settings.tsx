@@ -27,6 +27,8 @@ import { useEffect, useState } from "react";
 import { createPublicClient, http } from "viem";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import { GRANT_DISCLAIMER } from "../data/grantCopy";
+import { PricingLink } from "../components/PricingLink";
 import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
@@ -443,7 +445,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       ? "Public tier — no membership"
       : effTier === "enterprise"
         ? "Enterprise seat · " + (s.org || "")
-        : "Pilot membership · $48/year";
+        : "Pilot membership";
   // BC-6.3 (Rule 1): the renewal/expiry line uses the REAL folded expiry
   // (state.authExpiresAt) — honest "expiry not set" when absent — never a hardcoded
   // date. The Stripe customer portal isn't wired yet (core-membership CORE-S5.4), so
@@ -1036,7 +1038,15 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{ flex: 1 }}>
-                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>{memPlanLabel}</span>
+                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>
+                    {memPlanLabel}
+                    {effTier !== "free" && effTier !== "enterprise" && (
+                      <>
+                        {" · "}
+                        <PricingLink open={(u) => void store.openExternal(u)} style={{ fontSize: 12, fontWeight: 400 }} />
+                      </>
+                    )}
+                  </span>
                   <span className="mono" style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 2 }}>
                     {memRenewLine}
                   </span>
@@ -1067,7 +1077,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />
               </div>
               <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-                On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. Stake attribution ends until renewal; vaulted principal stays vaulted.
+                On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. The membership grant stays locked in your bond until its unlock block. {GRANT_DISCLAIMER}
               </p>
             </div>
             {s.hasSbt && (
@@ -1079,7 +1089,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     the member wallet, NOT a fabricated tx hash — this app does not
                     broadcast the grant tx. */}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Grant · staked at issuance</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Grant · locked in your bond</span>
                   <span className="mono tabular" style={{ fontSize: 12.5 }}>
                     {fmtSaltFromWei(s.s5StakeWei)} SALT
                   </span>
@@ -1091,7 +1101,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Vault release</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Bond</span>
                   {/* M-2.2/M-2.3 (Rule 1): the REAL lock + KYC state read from the
                       member's MemberBond escrow, not a policy slogan. "—" when the
                       read has not landed — never an invented status. */}
@@ -1099,13 +1109,15 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     {s.s5BondStatus ?? "—"}
                   </span>
                 </div>
+                {/* C1-V V5 (UI truth contract §5.7): the disclaimer wherever the grant is mentioned. */}
+                <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>{GRANT_DISCLAIMER}</p>
               </div>
             )}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
               <span className="eyebrow">Receipts</span>
               {/* Q-A.1 (Rule 1) — there is no real receipt read in this build, so we
                   show an honest "No receipts yet" rather than a fabricated
-                  2026-07-11 · $48.00 line, and the PDF download is a disabled state. */}
+                  2026-07-11 receipt line, and the PDF download is a disabled state. */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span className="mono" style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
                   No receipts yet

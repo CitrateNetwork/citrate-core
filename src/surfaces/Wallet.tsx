@@ -18,6 +18,11 @@ import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
+import { blocksWithTime, readsValidatorRewards, saltFromWei, validatorDash } from "../shell/chainTruth";
+import { grantExplanation } from "../data/grantCopy";
+
+/** `LiquidStakingPool.WITHDRAWAL_DELAY` (LiquidStakingPool.sol:26; src-tauri staking.rs). */
+const WITHDRAWAL_DELAY_BLOCKS = 50_400;
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -45,16 +50,18 @@ export function Wallet({ store, s }: SurfaceProps) {
   // numeric grant (for the staked total) parses the same wei; a granted member
   // with no folded read contributes 0 rather than a fabricated 32,000 (Rule 1).
   const grantSaltStr = s.hasGrant ? fmtSaltFromWei(s.s5StakeWei) : "—";
-  const grantSaltNum = (() => {
-    if (!s.hasGrant || !s.s5StakeWei) return 0;
-    try {
-      return Number(BigInt(s.s5StakeWei) / 10n ** 18n);
-    } catch {
-      return 0;
-    }
-  })();
-  const staked = grantSaltNum + s.selfStake;
-  const src = s.node === "off" ? "rpc.citrate.ai" : "local node";
+  // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
+  // folded as `bondedStake`. The grant in a locked bond is not staked until the bond is activated,
+  // and a LiquidStakingPool deposit (`selfStake`) is not validator stake.
+  const staked = s.bondedStake;
+  // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
+  // validator state gives the word or "— · <reason>".
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
+  // C1-V V9: every Wallet read (balance, LiquidStakingPool position, withdrawal queue) goes to the
+  // public RPC through the Rust RpcClient, whether or not the local node runs.
+  const src = "rpc.citrate.ai";
+  const minStake = saltFromWei(s.minStakeWei);
+  const rewardsTotal = s.rewards ? saltFromWei(s.rewards.totalWei) : null;
   // BC-5.3 — which SBT-art source is rendered, for an honest caption. The
   // OnChainSbtEmblem reports "onchain" when the authoritative tokenURI art loaded,
   // else "local" (the deterministic offline preview). Starts null (still resolving).
@@ -67,11 +74,19 @@ export function Wallet({ store, s }: SurfaceProps) {
   useEffect(() => {
     void store.refreshWallet();
     void store.refreshPendingWithdrawals();
+    // C1-V V6/V7: the measured block time (for durations) and ValidatorRegistry.minStake.
+    void store.refreshChainParams();
     // Item 4 — the REAL indexed 40204 tx history (CitrateScan txlist). In a Tauri
     // build this replaces the sim seed with the member's real history; in web-dev
     // the sim adapter echoes state.activity (unchanged).
     void store.refreshActivity();
   }, [store]);
+  // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
+  // once the node poll has reconciled the stake / bond after mount.
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  useEffect(() => {
+    void store.refreshEarnings();
+  }, [store, readsRewards]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);
@@ -95,19 +110,13 @@ export function Wallet({ store, s }: SurfaceProps) {
   const sponsorBarColor = s.sponsorUnits > 1 ? "var(--accent)" : "var(--warn)";
 
   const saltStr = fmt2(s.liquid);
-  const stakedStr = staked ? fmtI(staked) : "0";
+  const stakedStr = staked > 0 ? fmtI(staked) : "0";
   // UI truth contract rules 1 and 2: the number catalog has no wSALT entry and nothing reads a
   // wSALT balance, so the tile shows the unavailable state. Unknown is not zero.
   const wsaltStr = "—";
-  const stakedSub = s.hasGrant
-    ? grantSaltStr + " grant vaulted" + (s.selfStake ? " + " + fmtI(s.selfStake) + " self" : "")
-    : "no grant — join to stake";
-  // Q-A.4b item 6 — the per-source "rewards accrued" (earnVal+earnPin+earnComp) is
-  // SIM-seeded with NO real per-source chain read. In the packaged build there is
-  // no grounded accrued figure, so show "—" rather than a fabricated number (the
-  // single REAL claimable figure lives on the Node Earning tab). The web-dev sim
-  // keeps the labelled prototype estimate.
-  const rewardsStr = BRIDGE_MODE === "tauri" ? "—" : fmt2(s.earnVal + s.earnPin + s.earnComp);
+  const stakedSub = staked > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
+  // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
+  const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
   const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";
   const selfStakeStr = fmtI(s.selfStake) + " SALT";
 
@@ -179,7 +188,7 @@ export function Wallet({ store, s }: SurfaceProps) {
     if (!/^(\d+\.?\d*|\.\d+)$/.test(amtRaw)) return store.toast("Enter a valid amount (e.g. 1.5)");
     const amt = parseFloat(amtRaw);
     if (!(amt > 0)) return store.toast("Enter an amount greater than zero");
-    if (amt > s.selfStake) return store.toast("Only self-added stake can be withdrawn — granted principal is vaulted");
+    if (amt > s.selfStake) return store.toast("Only your LiquidStakingPool deposit can be withdrawn here; the membership grant stays locked in your bond");
     let wei: string;
     try {
       const [whole, frac = ""] = amtRaw.split(".");
@@ -270,7 +279,7 @@ export function Wallet({ store, s }: SurfaceProps) {
                 {saltStr}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                earned rewards — spendable
+                eth_getBalance · latest
               </span>
             </div>
             <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
@@ -358,31 +367,40 @@ export function Wallet({ store, s }: SurfaceProps) {
                 SALT staked
               </span>
               <span className="mono tabular" style={{ marginLeft: "auto", fontSize: 12, color: "var(--tx-2)" }}>
-                rewards accrued · {rewardsStr} SALT
+                validator rewards · {rewardsStr}{rewardsTotal == null ? "" : " SALT"}
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Membership grant · vaulted</span>
+                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Membership grant · locked in your bond</span>
                 <span className="mono tabular" style={{ fontSize: 13 }}>
                   {grantStr}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Self-added stake</span>
+                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Validator stake · ValidatorRegistry.stakeOf</span>
+                <span className="mono tabular" style={{ fontSize: 13 }}>
+                  {staked > 0 ? fmtI(staked) + " SALT" : validatorStateText}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>LiquidStakingPool deposit · not validator stake</span>
                 <span className="mono tabular" style={{ fontSize: 13 }}>
                   {selfStakeStr}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Validator minimum</span>
-                <span className="mono tabular" style={{ fontSize: 13 }}>
-                  32,000 SALT
+                <span className="mono tabular" style={{ fontSize: 13 }} title="ValidatorRegistry.minStake()">
+                  {minStake == null ? "— · reading minStake" : fmtI(minStake) + " SALT"}
                 </span>
               </div>
             </div>
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              The membership grant funds this wallet directly; a staked + time-locked model is in progress. This card shows the REAL on-chain attributed stake, never a fabricated figure. Validator reward eligibility ends below 32,000 SALT staked.
+              {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
+              {s.hasGrant
+                ? grantExplanation({ amountSalt: grantSaltStr, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: true, activated: s.bondActivated })
+                : "No membership grant on this wallet."}
             </p>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -401,7 +419,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span style={{ fontSize: 14, fontWeight: 500 }}>Withdraw self-added stake</span>
               <span>
-                <span className="lbl">Amount · 7-day lockup applies</span>
+                <span className="lbl">Amount · {blocksWithTime(WITHDRAWAL_DELAY_BLOCKS, s.blockSecs)} delay applies</span>
                 <input ref={unstakeAmtEl} className="input mono" placeholder="0.00" type="number" />
               </span>
               <span>
@@ -410,7 +428,7 @@ export function Wallet({ store, s }: SurfaceProps) {
                 </button>
               </span>
               <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
-                Requesting burns your stSALT shares into a queue. The SALT unlocks after ~7 days (50,400 blocks), then you Claim it below. No instant settlement.
+                Requesting burns your stSALT shares into a queue. The SALT unlocks after {blocksWithTime(WITHDRAWAL_DELAY_BLOCKS, s.blockSecs)}, then you Claim it below. No instant settlement.
               </p>
             </div>
           </div>
@@ -439,14 +457,18 @@ export function Wallet({ store, s }: SurfaceProps) {
             )}
             {s.pendingWithdrawalsError === null && !s.pendingWithdrawalsUnconfirmed && pending.length === 0 && (
               <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-                No pending withdrawals. A requested withdrawal appears here and becomes claimable after the ~7-day (50,400-block) delay.
+                No pending withdrawals. A requested withdrawal appears here and becomes claimable after a {blocksWithTime(WITHDRAWAL_DELAY_BLOCKS, s.blockSecs)} delay.
               </p>
             )}
             {s.pendingWithdrawalsError === null && pending.map((w) => {
               const saltStr = fmt2(Number(BigInt(w.saltWei)) / 1e18);
-              const blocksLeft = Math.max(0, w.claimableAtBlock - s.height);
-              const daysLeft = (blocksLeft * 12) / 86400; // ~12s blocks
-              const statusTxt = w.claimable ? "claimable now" : "~" + fmtI(blocksLeft) + " blocks (~" + daysLeft.toFixed(1) + "d) left";
+              // C1-V V6: blocks × the MEASURED block time (contract §2), never an assumed 12 s.
+              // With no height reading there is no "blocks left" either.
+              const statusTxt = w.claimable
+                ? "claimable now"
+                : s.height > 0
+                  ? blocksWithTime(Math.max(0, w.claimableAtBlock - s.height), s.blockSecs) + " left"
+                  : "— · height not read yet";
               return (
                 <div key={w.id} style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr auto", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "center" }}>
                   <span className="mono tabular" style={{ fontSize: 12.5 }}>

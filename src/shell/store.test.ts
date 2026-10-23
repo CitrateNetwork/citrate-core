@@ -487,23 +487,27 @@ describe("store.refreshActivity — folds the real indexed history (item 4)", ()
 // a Tauri build so height/peers/sync are live 40204 truth, not fabricated.
 describe("mapNodeState — supervisor state → app node lifecycle", () => {
   it("stopped/unknown → off", () => {
-    expect(mapNodeState("stopped", 0, 0)).toBe("off");
-    expect(mapNodeState("whatever", 100, 99999)).toBe("off");
+    expect(mapNodeState("stopped", 0, null)).toBe("off");
+    expect(mapNodeState("whatever", 100, null)).toBe("off");
   });
   it("starting/restarting → prov; failed → error", () => {
-    expect(mapNodeState("starting", 0, 0)).toBe("prov");
-    expect(mapNodeState("restarting", 0, 0)).toBe("prov");
-    expect(mapNodeState("failed", 0, 0)).toBe("error");
+    expect(mapNodeState("starting", 0, null)).toBe("prov");
+    expect(mapNodeState("restarting", 0, null)).toBe("prov");
+    expect(mapNodeState("failed", 0, null)).toBe("error");
   });
+  // C1-V v1.1: the third argument is the registry activation (isActive, validatorInfo.actEpoch,
+  // currentEpoch), not a stake amount. Only an activated key is "validating" (contract §1).
+  const ON = { isActive: true, status: 1, actEpoch: 499, currentEpoch: 499 };
   it("running while not fully synced → syncing", () => {
-    expect(mapNodeState("running", 42, 32000)).toBe("syncing");
+    expect(mapNodeState("running", 42, ON)).toBe("syncing");
   });
-  it("running + synced + staked at/above threshold → validating", () => {
-    expect(mapNodeState("running", 100, 32000)).toBe("validating");
+  it("running + synced + activated → validating", () => {
+    expect(mapNodeState("running", 100, ON)).toBe("validating");
   });
-  it("running + synced but under-staked → synced (not validating)", () => {
-    expect(mapNodeState("running", 100, 31999)).toBe("synced");
-    expect(mapNodeState("running", 100, 0)).toBe("synced");
+  it("running + synced but pending activation, not active, or unread → synced", () => {
+    expect(mapNodeState("running", 100, { ...ON, actEpoch: 500 })).toBe("synced");
+    expect(mapNodeState("running", 100, { ...ON, isActive: false })).toBe("synced");
+    expect(mapNodeState("running", 100, null)).toBe("synced");
   });
 });
 
@@ -517,17 +521,18 @@ describe("staked = REAL registry bond, not hasGrant (W1.3 Rule-1 fix)", () => {
   it("hasGrant alone does NOT count as staked", () => {
     store.setState({ hasGrant: true, bondedStake: 0, selfStake: 0 });
     expect(store.snapshot().staked).toBe(0);
-    // …and that 0 keeps the node OUT of the validating set.
-    expect(mapNodeState("running", 100, store.snapshot().staked)).toBe("synced");
+    // …and with no registered stake the node is not active (isActive is never true unread).
+    expect(mapNodeState("running", 100, null)).toBe("synced");
   });
   it("a real registry bond counts as staked", () => {
     store.setState({ hasGrant: true, bondedStake: 32000, selfStake: 0 });
     expect(store.snapshot().staked).toBe(32000);
-    expect(mapNodeState("running", 100, store.snapshot().staked)).toBe("validating");
   });
-  it("bonded stake and self-stake add", () => {
+  // C1-V V7: LiquidStakingPool self-stake is not validator stake (UI truth contract §1, §2), so it
+  // no longer adds to "staked". This replaces "bonded stake and self-stake add" (34,500).
+  it("self-stake does not add to staked", () => {
     store.setState({ hasGrant: false, bondedStake: 32000, selfStake: 2500 });
-    expect(store.snapshot().staked).toBe(34500);
+    expect(store.snapshot().staked).toBe(32000);
   });
 });
 
@@ -893,6 +898,8 @@ describe("isGrantOnChain — vault attribution settles the grant leg", () => {
 // ---------------------------------------------------------------------------
 // describeBond — what the dashboard says about the lock (M-2.2 / M-2.3).
 // ---------------------------------------------------------------------------
+// C1-V V5: the strings are now the UI truth contract §1 membership words. "Staked" appears only once
+// the bond is activated (hasValidator); before that the grant is "Bond locked · not staked".
 describe("describeBond — honest about the lock and the KYC gate", () => {
   const base = {
     bondDeployed: true,
@@ -900,30 +907,32 @@ describe("describeBond — honest about the lock and the KYC gate", () => {
     isUnlocked: false,
     isKycVerified: false,
     hasValidator: false,
+    // #349 review: the bond words key on MemberBond.activated(); this base bond never activated.
+    bondActivated: false as boolean | null,
   };
 
   it("never claims 'staked' for a member whose escrow does not exist", () => {
-    expect(describeBond({ ...base, bondDeployed: false })).toBe("Not yet staked");
+    expect(describeBond({ ...base, bondDeployed: false })).toBe("No bond yet");
   });
 
   it("names the unlock height while locked", () => {
-    expect(describeBond(base)).toBe("Staked · unlocks at block 300,000");
+    expect(describeBond(base)).toBe("Bond locked · not staked · until block 300,000");
+    expect(describeBond({ ...base, hasValidator: true })).toBe("Staked · locked until block 300,000");
   });
 
   // Owner decision A.6: KYC supersedes the lock. An unverified member must NOT be
   // told their funds are available just because the year elapsed.
   it("an unlocked but unverified member is told KYC is required, not that they can withdraw", () => {
-    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · KYC required to withdraw");
+    expect(describeBond({ ...base, isUnlocked: true, bondActivated: true })).toBe("Unlocked · verify identity to withdraw");
+    // A never-activated bond can't be released or withdrawn (NotActivated()): no withdraw wording.
+    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · not activated");
   });
 
   // Owner decision A.5: unlock makes exit ELIGIBLE. "can withdraw", never "has".
   it("an unlocked, verified member CAN withdraw — eligibility, not a payout", () => {
-    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true })).toBe(
-      "Unlocked · can withdraw",
-    );
-    expect(
-      describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true }),
-    ).toBe("Unlocked · validating · can withdraw");
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, bondActivated: true })).toBe("Unlocked");
+    // "validating" is a banned word (§1 Validators); the bond word does not carry validator state.
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true })).toBe("Unlocked");
   });
 });
 

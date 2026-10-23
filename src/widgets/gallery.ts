@@ -46,7 +46,7 @@ export const WIDGET_TEMPLATES: readonly WidgetTemplate[] = [
     name: "Block height",
     description: "Your node's current block height and sync state.",
     queries: ["node.status"],
-    html: poller("node.status", twoLines(`Number(d.height).toLocaleString()`, `d.state + " · " + d.peers + " peers"`)),
+    html: poller("node.status", twoLines(`d.height == null ? "—" : Number(d.height).toLocaleString("en-US")`, `d.state + " · " + d.peers + " peers"`)),
   },
   {
     key: "salt-balance",
@@ -55,7 +55,7 @@ export const WIDGET_TEMPLATES: readonly WidgetTemplate[] = [
     queries: ["wallet.summary"],
     html: poller(
       "wallet.summary",
-      twoLines(`Number(d.liquidSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " SALT"`, `"staked " + Number(d.stakedSalt).toLocaleString() + " · claimable " + Number(d.claimableSalt).toLocaleString(undefined, { maximumFractionDigits: 2 })`),
+      twoLines(`Number(d.liquidSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " SALT"`, `"staked " + Number(d.stakedSalt).toLocaleString() + " · claimable " + (d.claimableSalt == null ? "—" : Number(d.claimableSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }))`),
       30,
     ),
   },

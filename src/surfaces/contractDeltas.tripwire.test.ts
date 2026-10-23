@@ -60,9 +60,8 @@ describe("tripwire: money tiles carry no hard-coded balance", () => {
 });
 
 // Files allowed to mention the forbidden phrases, and why. Each entry is a known gap, not a pass.
-const PASSKEY_KNOWN: Record<string, string> = {
-  "onboarding/Onboarding.tsx": "the 0.5.1 S4 wallet card; rewritten with the onboarding port, listed as a gap in the PR",
-};
+// The onboarding S4 card was rewritten in #349 (core#399 wording), so there are no known gaps.
+const PASSKEY_KNOWN: Record<string, string> = {};
 
 describe("tripwire: no setting skips the signature ceremony", () => {
   it("no frontend file reads or writes a signature-policy value", () => {
