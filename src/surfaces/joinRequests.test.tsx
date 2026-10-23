@@ -1,7 +1,7 @@
 // GROW-S2 (Join 9, M5) — the join rows and invite state line render the §11 words and actions.
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { JoinRequests, InviteStateLine, pendingInviteStatus } from "./JoinRequests";
+import { JoinRequests, InviteStateLine, pendingInviteStatus, revokingRowsSettled } from "./JoinRequests";
 import { readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import type { InviteViewDto, JoinViewDto } from "../bridge/domains";
@@ -87,5 +87,26 @@ describe("revoking invites", () => {
     const src = readFileSync(joinPath(__dirname, "Groups.tsx"), "utf8");
     expect(src).toContain("{pendingInviteStatus(pi)}");
     expect(src).toContain("{!pi.revoking && (\n                        <button className=\"btn btn-ghost btn-sm\" onClick={() => { void navigator.clipboard?.writeText(pi.link");
+  });
+});
+
+// #467: after an unconfirmed revoke or approval, a confirming tick settles the record; the open
+// list reloads so the row leaves.
+describe("settled revoking rows", () => {
+  const view = (state: InviteViewDto["state"]): InviteViewDto => ({ lookup: "l1", group: "g", state, joiner: null, expiresAt: 1, updatedAt: 1, reason: null, dropped: 0 });
+  it("reload when a revoking row's rendezvous is reported revoked or expired", () => {
+    expect(revokingRowsSettled([{ lookup: "l1", revoking: true }], [view("revoked")])).toBe(true);
+    expect(revokingRowsSettled([{ lookup: "l1", revoking: true }], [view("expired")])).toBe(true);
+  });
+
+  it("don't reload otherwise", () => {
+    expect(revokingRowsSettled([{ lookup: "l1", revoking: true }], [view("open")])).toBe(false);
+    expect(revokingRowsSettled([{ lookup: "l1", revoking: false }], [view("revoked")])).toBe(false);
+    expect(revokingRowsSettled([{ lookup: "l1", revoking: true }], [])).toBe(false);
+  });
+
+  it("Groups reloads its invite list on that signal", () => {
+    const src = readFileSync(joinPath(__dirname, "Groups.tsx"), "utf8");
+    expect(src).toContain("if (revokingRowsSettled(pendingInvites, rv.invites)) void refreshInvites();");
   });
 });
