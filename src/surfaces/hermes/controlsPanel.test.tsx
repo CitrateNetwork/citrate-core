@@ -162,9 +162,9 @@ function harness(
   };
 }
 
-const fakeStore = () => ({ setHermesTerminal: vi.fn(async () => {}), setHermesReadAloud: vi.fn() });
+const fakeStore = () => ({ setHermesTerminal: vi.fn(async () => {}), setHermesReadAloud: vi.fn(), setChatRoute: vi.fn(async () => {}) });
 
-async function mount(h: Harness, s = { hermesTerminal: false, hermesReadAloud: false }, st: ReturnType<typeof fakeStore> | typeof store = fakeStore()) {
+async function mount(h: Harness, s: { hermesTerminal: boolean; hermesReadAloud: boolean; chatRoute?: "ask_first" | "local_only" } = { hermesTerminal: false, hermesReadAloud: false }, st: ReturnType<typeof fakeStore> | typeof store = fakeStore()) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -239,18 +239,44 @@ describe("Hermes › Controls, first depth (K2)", () => {
     expect(h.daemons.setAllPaused).not.toHaveBeenCalled();
     expect((st as ReturnType<typeof fakeStore>).setHermesTerminal).not.toHaveBeenCalled();
     expect((st as ReturnType<typeof fakeStore>).setHermesReadAloud).not.toHaveBeenCalled();
+    expect((st as ReturnType<typeof fakeStore>).setChatRoute).not.toHaveBeenCalled();
   });
 
   // ---------- Local model only / ask before the gateway ----------
-  it("local model: no backing setting exists, so it is disabled with its reason; spend reads zero from the escalation budget", async () => {
+  // ---------- Local model only (K2 defaults: a real stored setting, chat_route.rs) ----------
+  it("local model: reads the stored route; ask first (the default) shows off, and the spend line reads zero", async () => {
     const h = harness();
-    await mount(h);
+    await mount(h, { hermesTerminal: false, hermesReadAloud: false, chatRoute: "ask_first" });
     const t = $("toggle-local-model");
-    expect(t?.disabled).toBe(true);
-    expect($("reason-local-model")?.textContent).toContain("not available yet");
+    expect(t?.disabled).toBe(false);
+    expect(t?.checked).toBe(false);
+    expect($("reason-local-model")).toBeNull();
+    expect($("control-local-model")?.getAttribute("data-source")).toContain("chat_route_get");
     expect(h.budget).toHaveBeenCalledTimes(1);
     expect($("local-model-spend")?.textContent).toContain("$0.00");
     expect($("local-model-spend")?.textContent).toContain("asks you first");
+  });
+
+  it("local model: turning it on stores local_only through store.setChatRoute", async () => {
+    const h = harness();
+    const st = (await mount(h, { hermesTerminal: false, hermesReadAloud: false, chatRoute: "ask_first" })) as ReturnType<typeof fakeStore>;
+    await click($("toggle-local-model"));
+    expect(st.setChatRoute).toHaveBeenCalledWith("local_only");
+  });
+
+  it("local model: a stored local_only shows on, and turning it off stores ask_first", async () => {
+    const h = harness();
+    const st = (await mount(h, { hermesTerminal: false, hermesReadAloud: false, chatRoute: "local_only" })) as ReturnType<typeof fakeStore>;
+    expect($("toggle-local-model")?.checked).toBe(true);
+    await click($("toggle-local-model"));
+    expect(st.setChatRoute).toHaveBeenCalledWith("ask_first");
+  });
+
+  it("local model: in the web preview the switch is disabled (the setting lives in the desktop app)", async () => {
+    const h = harness({ webMode: "sim" });
+    await mount(h);
+    expect($("toggle-local-model")?.disabled).toBe(true);
+    expect($("reason-local-model")?.textContent).toContain("desktop app");
   });
 
   it("local model: the spend line also reads zero through the sim escalation bridge (web preview)", async () => {

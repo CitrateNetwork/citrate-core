@@ -188,6 +188,23 @@ describe("WebSearchSettings", () => {
     act(() => root.unmount());
   });
 
+  // K2 (owner 2026-10-19): Jev is a remote service and Local model only does not block it.
+  it("Jev says it uses a remote service (TypeSafe Jev), and with Local model only on notes that it does not apply", async () => {
+    const { io } = tauriIo(status({ settings: { ...DEFAULT_WEB_SETTINGS, jevEnabled: true } }));
+    const { host, root } = await mount(io);
+    expect(q(host, "jev-remote")?.textContent).toBe("Uses a remote service (TypeSafe Jev).");
+    expect(q(host, "jev-local-only-note")).toBeNull();
+    act(() => root.unmount());
+    const h2 = document.createElement("div");
+    document.body.appendChild(h2);
+    const r2 = createRoot(h2);
+    await act(async () => {
+      r2.render(<WebSearchSettings io={io} localOnly />);
+    });
+    expect(q(h2, "jev-local-only-note")?.textContent).toContain("Local model only does not apply to TypeSafe Jev");
+    act(() => r2.unmount());
+  });
+
   it("the browser switch is disabled in the browser preview", async () => {
     const invoke = vi.fn();
     const { host, root } = await mount({ mode: "sim", invoke: invoke as WebSettingsIo["invoke"] });

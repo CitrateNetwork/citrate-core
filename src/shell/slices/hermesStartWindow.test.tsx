@@ -270,4 +270,63 @@ describe("the Hermes start window", () => {
     await flush();
     expect($("fl-traj-toggle")?.disabled).toBe(false);
   });
+
+  // ---------- #341 follow-ups ----------
+  it("a double-tap on Start sends one start call (the busy guard is set before the snapshot read)", async () => {
+    learnCore(false);
+    harnessUp();
+    let running = false;
+    const start = vi.spyOn(bridge.agentHarness, "start").mockImplementation(async () => {
+      running = true;
+    });
+    vi.spyOn(bridge.agentHarness, "status").mockImplementation(async () => ({ running, skills: 0, pendingApprovals: 0 }));
+    await Promise.all([startRuntime("hermes"), startRuntime("hermes")]);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(hermesRunningSlice.get().starting).toBe(0);
+  });
+
+  it("the writer hold clears after a failed start", async () => {
+    learnCore(false);
+    harnessUp();
+    vi.spyOn(bridge.agentHarness, "start").mockRejectedValue(new Error("the sidecar binary is missing"));
+    vi.spyOn(bridge.agentHarness, "status").mockResolvedValue({ running: false, skills: 0, pendingApprovals: 0 });
+    await startRuntime("hermes");
+    expect(hermesRunningSlice.get().starting).toBe(0);
+    expect(hermesRunningSlice.get().learn).toBeNull();
+  });
+
+  it("the writer hold clears after a start that throws (the terminal restart's core call fails)", async () => {
+    const learn = learnCore(false);
+    const io: TerminalAccessIo = {
+      mode: "tauri",
+      invoke: (async () => {
+        throw new Error("core went away");
+      }) as TerminalAccessIo["invoke"],
+    };
+    vi.spyOn(store as unknown as { terminalIo: () => TerminalAccessIo }, "terminalIo").mockReturnValue(io);
+    await mountPanel(learn);
+    await act(async () => {
+      await store.setHermesTerminal(true);
+    });
+    await flush();
+    expect(hermesRunningSlice.get().starting).toBe(0);
+    expect($("toggle-learn")?.disabled).toBe(false);
+  });
+
+  it("the writer hold clears when the panel that started a restart is unmounted mid-restart", async () => {
+    const learn = learnCore(false);
+    const g = gate();
+    await mountPanel(learn, async () => {
+      await g.done;
+      return { ok: true };
+    });
+    await click($("toggle-learn"));
+    await click($("restart-learn"));
+    expect(hermesRunningSlice.get().starting).toBeGreaterThan(0);
+    act(() => root?.unmount());
+    root = null;
+    await act(async () => g.release());
+    await flush();
+    expect(hermesRunningSlice.get().starting).toBe(0);
+  });
 });

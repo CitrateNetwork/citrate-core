@@ -150,14 +150,15 @@ export async function startRuntime(id: RuntimeId): Promise<void> {
   }
   // Idempotent: ignore a tap while a spawn is in flight or it is already up.
   if (agentSlice.get().busy || rt.state === "starting" || rt.state === "running") return;
+  // Claim the start BEFORE any await, so a second tap during the snapshot read is a no-op.
+  agentSlice.set({ busy: true });
+  setHermes({ state: "starting", error: null });
   // Hermes reads the saved web search and learning settings when it starts: snapshot them first
   // (writes are held from here on) and commit the snapshot only once the start is confirmed.
   await withHermesStart((snapshot) => spawnHermes(snapshot));
 }
 
 async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Promise<void> {
-  agentSlice.set({ busy: true });
-  setHermes({ state: "starting", error: null });
   // Whether this call started a new Hermes (not one that was already running).
   let spawned = true;
   try {

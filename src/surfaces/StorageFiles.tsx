@@ -46,7 +46,7 @@ const STATE_COLOR: Record<PinRow["pinState"], string> = {
   unpinned: "var(--tx-3)",
 };
 
-export function StorageFiles({ store }: SurfaceProps) {
+export function StorageFiles({ store, s }: SurfaceProps) {
   const st = storageSlice.use();
   const [dragging, setDragging] = useState(false);
   const down = st.kuboDown;
@@ -209,6 +209,7 @@ export function StorageFiles({ store }: SurfaceProps) {
         <span className="eyebrow">Media · images and video</span>
         <MediaPanel
           io={desktopMediaIo}
+          localOnly={s?.chatRoute === "local_only"}
           openPlayer={() => openPopout("media")}
           onSaved={() => void startMediaHost()?.then((h) => h.refresh()).catch(() => undefined)}
         />

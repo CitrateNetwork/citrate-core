@@ -15,7 +15,7 @@
 // The answer comes from a third party, so it returns to the loop fenced as untrusted data (and the
 // tool's `trust: "untrusted"` annotation taints the session).
 // =====================================================================
-import type { EscalationEndpoint, EscalationQuote, EscalationRun } from "../bridge/domains";
+import type { EscalationEndpoint, EscalationQuote, EscalationRun, ChatRoute } from "../bridge/domains";
 import { UNTRUSTED_CLOSE, UNTRUSTED_OPEN } from "./untrusted";
 import { fieldsCard, type ApprovalCard, type CardRow } from "./approvalCards";
 
@@ -57,6 +57,12 @@ export const ESCALATE_TOOL = {
   },
   annotations: { effect: "spend", trust: "untrusted" },
 } as const;
+
+/** K2: `escalate_plan` is offered only with an endpoint set up, and never under Local model only
+ *  (core refuses it there anyway). */
+export function escalationOffered(endpointCount: number, route: ChatRoute): boolean {
+  return endpointCount > 0 && route !== "local_only";
+}
 
 /** The session tool list, plus `escalate_plan` only when the member has an endpoint set up. */
 export function withEscalationTool<T>(tools: readonly T[], enabled: boolean): (T | typeof ESCALATE_TOOL)[] {
@@ -144,9 +150,15 @@ export async function runEscalationTool(deps: EscalationDeps, args: Record<strin
   const unconfirmable = (e: unknown) => "could not open the approval for this escalation: " + message(e) + ". Nothing was sent.";
 
   let confirmId: string | null = null;
-  if (hic || !quote.withinBudget) {
+  if (hic || !quote.withinBudget || quote.asksFirst) {
     try {
-      confirmId = await ask(hic ? hic.reason : "this would go over today's escalation budget");
+      confirmId = await ask(
+        hic
+          ? hic.reason
+          : quote.asksFirst
+            ? "Hermes asks before anything leaves this device (Local model only is off, so it asks first)"
+            : "this would go over today's escalation budget",
+      );
     } catch (e) {
       return unconfirmable(e);
     }
