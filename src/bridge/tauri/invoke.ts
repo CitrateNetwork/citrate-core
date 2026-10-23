@@ -38,6 +38,9 @@ const UNBOUNDED = new Set<string>([
   "model_catalog_download", // HUP-S0.2: catalog GGUF download (drives its own progress events)
   "storage_add", // HUP-S0.2: adding a large file to IPFS
   "storage_retrieve", // HUP-S0.2: retrieving a large file from IPFS
+  "storage_backup_export", // K4: copies + hashes every stored file (drives its own progress events)
+  "storage_backup_verify", // K4: SHA-256 over every file in a backup folder
+  "storage_backup_restore", // K4: verify, then copy + re-hash every file (drives its own progress events)
   "components_update", // HUP-S5.5: a signed component download (a browser build is hundreds of MB)
   "node_mcp_decide", // HUP-S4.2: an approved MCP transaction signs, broadcasts and polls its receipt (up to ~60s)
 ]);
@@ -58,6 +61,9 @@ const LONG: Record<string, number> = {
   hermes_pending_approvals: 45_000,
   hermes_bridge_pending: 45_000,
   hermes_resolve: 45_000,
+  // C1-W: the paged withdrawal scan starts no request after SCAN_BUDGET (15 s), so it answers by
+  // 15 s plus one 6 s RPC request (staking.rs the_scan_budget_plus_one_request_fits_the_ipc_deadline).
+  wallet_pending_withdrawals: 30_000,
   hermes_stop: 45_000,
   // The terminal-commands switch restarts a running Hermes: a stop (~10 s grace) plus a start.
   hermes_terminal_set: 60_000,
@@ -111,6 +117,8 @@ const LONG: Record<string, number> = {
   mcp_servers_runtime: 45_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
+  // K4: three sequential eth_calls (BOND, REWARD, ROUNDS), each bounded by the RPC timeout.
+  storage_pin_params: 25_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.
   node_stop: 20_000,
   memory_stop: 20_000,
