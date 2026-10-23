@@ -301,3 +301,47 @@ fn a_token_is_only_answered_by_the_supervisor_that_issued_it() {
     let _ = a2.request_stop();
     assert_eq!(a2.receipt(ta), Receipt::Expired, "a replacement never answers for the old one");
 }
+
+/// Tripwire (core#397): every spawn, automatic retries included, is preceded by the full reader
+/// reconcile. `run_monitor` has exactly one spawn admission, and the reconcile
+/// (`drain_readers(&mut readers, READER_DRAIN)`) runs at loop level on the path to it, not
+/// inside a branch that only some spawns take (a "first spawn for a new intent" condition was
+/// the defect).
+#[test]
+fn every_spawn_reconciles_held_readers_first_source_check() {
+    let src = include_str!("supervisor.rs");
+    let start = src
+        .find("fn run_monitor(")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor not found"));
+    let body = &src[start..];
+    let end = body
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor has no end"));
+    let body = &body[..end];
+    assert_eq!(
+        body.matches("admit_spawn(").count(),
+        1,
+        "run_monitor must have exactly one spawn admission"
+    );
+    assert_eq!(
+        src.matches("spawn_child(&").count(),
+        1,
+        "the supervisor must have exactly one spawn call"
+    );
+    let admit = body
+        .find("admit_spawn(")
+        .unwrap_or_else(|| panic!("tripwire: no spawn admission"));
+    let running = body
+        .find("// desired == Running")
+        .unwrap_or_else(|| panic!("tripwire: no Running branch marker"));
+    let path = &body[running..admit];
+    let reconcile = path
+        .lines()
+        .find(|l| l.contains("drain_readers(&mut readers, READER_DRAIN)"))
+        .unwrap_or_else(|| panic!("tripwire: no reader reconcile before the spawn admission"));
+    let indent = reconcile.len() - reconcile.trim_start().len();
+    assert_eq!(
+        indent, 8,
+        "the reader reconcile must run at loop level, for every spawn: {reconcile:?}"
+    );
+}
