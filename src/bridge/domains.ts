@@ -160,8 +160,10 @@ export interface WalletDomain {
   claimWithdrawal(id: string): Promise<CeremonyView>;
   /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
    * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * A fresh wallet honestly returns []. Never fabricated (Rule 1). */
-  pendingWithdrawals(): Promise<PendingWithdrawal[]>;
+   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
+   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
+   * missing and an empty list is not "none". */
+  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -213,6 +215,24 @@ export interface WalletDomain {
 /** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
  * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
  * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
+/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
+ * `complete` = it reached the end of what the node serves and read every withdrawal;
+ * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
+export interface PendingWithdrawalsRead {
+  withdrawals: PendingWithdrawal[];
+  confirmed: boolean;
+  complete: boolean;
+  note: string | null;
+}
+
+/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
+ * when the Wallet reads again; `message` is display only and is never matched. */
+export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
+export interface PendingWithdrawalsError {
+  kind: PendingReadErrorKind;
+  message: string;
+}
+
 export interface PendingWithdrawal {
   id: string;
   saltWei: string;
