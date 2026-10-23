@@ -2,7 +2,7 @@
 // inviter's per-invite state line. Copy comes from joinCopy.ts (contract §11); data from the
 // rendezvous slice (member daemon views, Rule 7). Nothing here invents a state.
 import { useEffect, useState } from "react";
-import type { InviteViewDto, JoinViewDto } from "../bridge/domains";
+import type { InviteViewDto, JoinViewDto, PendingInvite } from "../bridge/domains";
 import type { JoinActionError } from "../shell/slices/rendezvous";
 import { inviteCopy, joinCopy, type StateCopy } from "./joinCopy";
 
@@ -109,4 +109,9 @@ export function InviteStateLine({ view, lastKnown, receivedAt, now, onRetry, onR
       {c.remove && view.joiner && <button className="btn btn-ghost btn-sm" onClick={() => onRemove(view.joiner as string)}>Remove</button>}
     </span>
   );
+}
+
+/** The status line under an outstanding invite in the inviter's list. */
+export function pendingInviteStatus(_pi: Pick<PendingInvite, "revoking">): string {
+  return "invite pending · self-admit · one use";
 }
