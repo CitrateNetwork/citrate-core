@@ -17,6 +17,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// K4: the marker recorded as the "bond" of a pin kept on this node only. Matches the frontend's
+/// `LOCAL_PIN_MARKER` (src/shell/slices/storage.ts). No pin in this build carries a real bond.
+pub const LOCAL_PIN_MARKER: &str = "local";
+
 /// The default kubo HTTP API endpoint (loopback; the daemon is LOCAL, nothing remote).
 pub const DEFAULT_KUBO_API: &str = "http://127.0.0.1:5001";
 /// Env override for the kubo API root (dev/tests point this at a stub or an alt port).
@@ -354,7 +358,14 @@ impl StorageManager {
             .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
-        let out = self.transport.add(&filename, &bytes)?;
+        self.add_bytes(&filename, &bytes)
+    }
+
+    /// K4: add bytes already in memory (a restore re-adds the verified bytes it just hashed, so
+    /// the file is not read a second time). Records size + added_at in the index like
+    /// [`Self::add_file`].
+    pub fn add_bytes(&self, filename: &str, bytes: &[u8]) -> Result<AddOutcome> {
+        let out = self.transport.add(filename, bytes)?;
         std::fs::create_dir_all(&self.dir).map_err(|e| StorageError::Io(e.to_string()))?;
         let mut idx = PinIndex::load(&self.index_path());
         let rec = idx.records.entry(out.cid.clone()).or_default();
@@ -379,6 +390,13 @@ impl StorageManager {
             rec.added_at = (self.now)();
         }
         idx.save(&self.index_path())
+    }
+
+    /// K4: pin a CID on THIS node only, recorded with [`LOCAL_PIN_MARKER`]. No bond and no
+    /// transaction: pin bonds are not live until IPFSIncentivesV3 is funded at genesis (UI truth
+    /// contract §1 "Pin bonds not live yet").
+    pub fn pin_local(&self, cid: &str) -> Result<()> {
+        self.pin(cid, LOCAL_PIN_MARKER)
     }
 
     /// Unpin a CID (releases the daemon pin; the index record is kept, marked by absence from the
@@ -493,16 +511,13 @@ pub fn storage_add_sync(
 }
 
 // ---------------------------------------------------------------------------
-// CX-S2.2 — the ceremony-gated IPFSIncentivesV3 model bond (@rule8 · money path).
+// CX-S2.2 — IPFSIncentivesV3 model-bond builders (@rule8 · money path). NOT wired to any command
+// until S2.2 ships (K4): kept so the chain-vector tests keep pinning them.
 // ---------------------------------------------------------------------------
 
 use sha3::{Digest as _, Keccak256};
 
-/// MIN_MODEL_BOND — 55 SALT (the #170 params). Wei = 55 × 1e18.
-const MIN_MODEL_BOND_WEI: u128 = 55_000_000_000_000_000_000;
-/// Explicit gas for `registerModel` (a calldata tx MUST carry explicit gas).
-const REGISTER_MODEL_GAS: u64 = 300_000;
-
+#[cfg_attr(not(test), allow(dead_code))] // used by the S2.2 builders only
 fn keccak256(bytes: &[u8]) -> [u8; 32] {
     let mut h = Keccak256::new();
     h.update(bytes);
@@ -510,6 +525,7 @@ fn keccak256(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// The three 32-byte commitments the bond registers, from the file's bytes.
+#[cfg_attr(not(test), allow(dead_code))] // S2.2 groundwork; no caller until bonds go live
 pub struct BondCommitments {
     pub comm_d: [u8; 32],
     pub data_hash: [u8; 32],
@@ -520,6 +536,7 @@ pub struct BondCommitments {
 /// (Poseidon-BN254 Merkle / sponge + keccak). Byte-exactness is pinned by a storage_tests vector
 /// check against citrate-commd's frozen `commd_frozen_v1.rs` — a mismatch would register a
 /// slashable bond, so this is a hard gate, not a nicety.
+#[cfg_attr(not(test), allow(dead_code))] // S2.2 groundwork; no caller until bonds go live
 pub fn bond_commitments(bytes: &[u8]) -> BondCommitments {
     BondCommitments {
         comm_d: citrate_commd::compute_comm_d(bytes),
@@ -531,12 +548,14 @@ pub fn bond_commitments(bytes: &[u8]) -> BondCommitments {
 /// The on-chain `bytes32 cid` = keccak256(dataUri). CONVENTION from the IPFSIncentivesV3 tests
 /// (the contract treats cid as an opaque key); reconcile with the pinner cid when the seal/challenge
 /// path activates (0x0130 + the trusted-setup ceremony — not live yet).
+#[cfg_attr(not(test), allow(dead_code))] // S2.2 groundwork; no caller until bonds go live
 pub fn bond_cid(data_uri: &str) -> [u8; 32] {
     keccak256(data_uri.as_bytes())
 }
 
 /// ABI-encode `registerModel(bytes32 cid, bytes32 commD, bytes32 dataHash, bytes32 dataCommit,
 /// string dataUri)`: 4 static words + a string-offset word (0xa0), then the string tail.
+#[cfg_attr(not(test), allow(dead_code))] // S2.2 groundwork; no caller until bonds go live
 pub fn register_model_calldata(cid: [u8; 32], c: &BondCommitments, data_uri: &str) -> Vec<u8> {
     let selector = &keccak256(b"registerModel(bytes32,bytes32,bytes32,bytes32,string)")[..4];
     let mut out = Vec::with_capacity(4 + 32 * 6 + 64);
@@ -558,77 +577,132 @@ pub fn register_model_calldata(cid: [u8; 32], c: &BondCommitments, data_uri: &st
     out
 }
 
-/// The pending-ceremony tx JSON (mirrors node.rs::encode_activate_json): from the member EOA, to
-/// IPFSIncentivesV3, value = the bond, data = registerModel calldata.
-fn encode_bond_tx_json(from: &str, calldata: &[u8]) -> String {
-    serde_json::json!({
-        "from": from,
-        // REROLL-SENSITIVE: sourced from the pinned address book (addresses.rs), never hardcoded —
-        // a genesis reroll is an address-book update, not a code change.
-        "to": crate::addresses::ipfs_incentives_v3(),
-        "value": format!("0x{MIN_MODEL_BOND_WEI:x}"),
-        "data": format!("0x{}", hex::encode(calldata)),
-        "gas": format!("0x{REGISTER_MODEL_GAS:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
-    })
-    .to_string()
-}
-
-/// **Command — storage_pin.** Pin a CID locally AND place the network storage bond: fetch the
-/// bytes, compute the canonical commitments, and submit a `registerModel` tx as a PENDING
-/// SignatureCeremony (Rule 3 — the human approves via the signing flow; nothing signs here). The
-/// bond appears in the ceremony pending list for approval. Returns `()` (the frozen DTO shape); the
-/// ceremony is surfaced by the existing signing surface.
-#[tauri::command]
-pub async fn storage_pin(
-    app_h: tauri::AppHandle,
-    cid: String,
-    bond_salt: String,
-) -> std::result::Result<(), String> {
-    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || {
-        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        let st2 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        storage_pin_sync(app_h.clone(), st1, st2, cid, bond_salt)
-    })
-    .await
-}
-
-/// Blocking body of [`storage_pin`]; reached only through [`crate::blocking::off_main`].
-pub fn storage_pin_sync(
-    app: tauri::AppHandle,
-    custody: tauri::State<'_, crate::custody::CustodyState>,
-    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
-    cid: String,
-    bond_salt: String,
-) -> std::result::Result<(), String> {
-    let mgr = build_manager(&app)?;
-    // Keep the file on THIS node (local pin), recording the bond marker.
-    mgr.pin(&cid, &bond_salt).map_err(|e| e.to_string())?;
-    // Fetch the bytes + compute the canonical commitments for the on-chain bond.
-    let bytes = mgr.cat(&cid).map_err(|e| e.to_string())?;
-    let data_uri = format!("ipfs://{cid}");
-    let commits = bond_commitments(&bytes);
-    let calldata = register_model_calldata(bond_cid(&data_uri), &commits, &data_uri);
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let raw = encode_bond_tx_json(&wallet.address, &calldata);
-    let intent = crate::ceremony::SignatureIntent {
-        origin: "local-user".to_string(),
-        kind: crate::ceremony::IntentKind::Transaction,
-        chain_id: 40204,
-        raw,
-    };
-    // Submit the PENDING ceremony (the user approves + broadcasts via the signing surface).
-    ceremony.0.request(intent);
-    Ok(())
-}
+// K4: the bonded `storage_pin` command (local pin + a pending `registerModel` signing request
+// carrying the 55 SALT model bond) is REMOVED until S2.2 ships. IPFSIncentivesV3 is deployed but
+// dormant and unfunded (UI truth contract §1 "Pin bonds not live yet"), so no command may open a
+// bond signing request. The commitment and calldata builders above stay (tested against the chain's
+// frozen vectors) for S2.2; the removed command body is in git history (citrate-core 7b874a1,
+// src-tauri/src/storage.rs). Pins use `storage_pin_local` below.
 
 /// HUP-S4.2 (`pin_add` over the citrate-node MCP server, after the member approved it): keep a CID
-/// on THIS node only. No storage bond and no transaction (the bonded path is [`storage_pin`]).
+/// on THIS node only. No storage bond and no transaction (no bonded path exists until S2.2).
 pub fn storage_pin_local_sync(app: tauri::AppHandle, cid: &str) -> std::result::Result<(), String> {
-    build_manager(&app)?.pin(cid, "").map_err(|e| e.to_string())
+    build_manager(&app)?
+        .pin_local(cid)
+        .map_err(|e| e.to_string())
+}
+
+/// **Command — storage_pin_local.** K4: keep a CID on THIS node ("Local pin · no bond"). This is
+/// the pin the Files and Pins surfaces use; it never opens a bond ceremony.
+#[tauri::command]
+pub async fn storage_pin_local(
+    app_h: tauri::AppHandle,
+    cid: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || storage_pin_local_sync(app_h.clone(), &cid)).await
+}
+
+// ---------------------------------------------------------------------------
+// K4 — IPFSIncentivesV3 parameters (read-only; UI truth contract §2 "Pin bond / pin reward").
+// ---------------------------------------------------------------------------
+
+/// `BOND()` selector: keccak256("BOND()")[..4]. Pinned by `pin_param_selectors_match_the_contract_getters`.
+pub const BOND_SELECTOR: [u8; 4] = [0xc1, 0xc1, 0xd2, 0x18];
+/// `REWARD()` selector: keccak256("REWARD()")[..4].
+pub const REWARD_SELECTOR: [u8; 4] = [0xca, 0xb3, 0x4c, 0x08];
+/// `ROUNDS()` selector: keccak256("ROUNDS()")[..4].
+pub const ROUNDS_SELECTOR: [u8; 4] = [0xc7, 0xab, 0xf7, 0x55];
+
+/// The pin-bond PARAMETERS of IPFSIncentivesV3, read from chain. Parameters only: the contract is
+/// deployed but dormant and unfunded, so no pin has a bond and no Pinned/Challenged/Released state
+/// is live. Each value is `None` when its read failed (unknown is not zero), with the reason in
+/// `errors`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PinParams {
+    /// The IPFSIncentivesV3 address the values were read from (the pinned address book).
+    pub contract: String,
+    /// `BOND()` in wei (decimal string; SALT has 18 decimals).
+    pub bond_wei: Option<String>,
+    /// `REWARD()` in wei (decimal string), paid over `ROUNDS()` rounds.
+    pub reward_wei: Option<String>,
+    /// `ROUNDS()`.
+    pub rounds: Option<u64>,
+    /// Always false in this build: pin bonds go live with the genesis contract (S2.2).
+    pub bonds_live: bool,
+    /// Where the values came from, for the on-screen source line.
+    pub source: String,
+    /// One line per failed read ("BOND(): …").
+    pub errors: Vec<String>,
+}
+
+/// Decode one ABI `uint256` return word to a u128. An empty or short answer (no contract code, a
+/// revert decoded as empty) and a value above u128 are errors, never 0.
+fn decode_u128_word(raw: &str) -> std::result::Result<u128, String> {
+    let h = raw.strip_prefix("0x").unwrap_or(raw);
+    if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "expected one 32-byte word, got {} hex chars",
+            h.len()
+        ));
+    }
+    let (high, low) = h.split_at(32);
+    if high.bytes().any(|b| b != b'0') {
+        return Err("value out of range".to_string());
+    }
+    u128::from_str_radix(low, 16).map_err(|e| e.to_string())
+}
+
+/// Read the three parameters through `call` (selector → raw `0x` return data). Pure over `call`
+/// so tests drive it; production passes an `eth_call` on chain 40204.
+pub fn read_pin_params(
+    contract: &str,
+    call: impl Fn([u8; 4]) -> std::result::Result<String, String>,
+) -> PinParams {
+    let mut errors = Vec::new();
+    let mut read = |name: &str, sel: [u8; 4]| -> Option<u128> {
+        match call(sel).and_then(|raw| decode_u128_word(&raw)) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                errors.push(format!("{name}: {e}"));
+                None
+            }
+        }
+    };
+    let bond = read("BOND()", BOND_SELECTOR);
+    let reward = read("REWARD()", REWARD_SELECTOR);
+    let rounds = read("ROUNDS()", ROUNDS_SELECTOR);
+    PinParams {
+        contract: contract.to_string(),
+        bond_wei: bond.map(|v| v.to_string()),
+        reward_wei: reward.map(|v| v.to_string()),
+        rounds: rounds.and_then(|v| u64::try_from(v).ok()),
+        bonds_live: false,
+        source: format!(
+            "IPFSIncentivesV3 BOND() / REWARD() / ROUNDS() via eth_call on {}",
+            crate::rpc::CITRATE_RPC_URL
+        ),
+        errors,
+    }
+}
+
+/// **Command — storage_pin_params.** The IPFSIncentivesV3 pin-bond parameters from chain 40204.
+#[tauri::command]
+pub async fn storage_pin_params() -> std::result::Result<PinParams, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(storage_pin_params_sync).await
+}
+
+/// Blocking body of [`storage_pin_params`]; reached only through [`crate::blocking::off_main`].
+pub fn storage_pin_params_sync() -> std::result::Result<PinParams, String> {
+    let contract = crate::addresses::ipfs_incentives_v3().to_string();
+    let client = crate::rpc::RpcClient::with_transport(crate::rpc::HttpTransport::new(
+        crate::rpc::CITRATE_RPC_URL.to_string(),
+    ));
+    Ok(read_pin_params(&contract, |sel| {
+        crate::contract_reader::view_call(&client, &contract, &sel)
+    }))
 }
 
 /// **Command — storage_list.** The pinning file store (index ∪ live pins).

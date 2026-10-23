@@ -16,8 +16,11 @@ import { NetworkCompatGate } from "./shell/NetworkCompatGate";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
 // CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
+import { StoragePins, StorageBackup } from "./surfaces";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
+import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, setTelemetryConsent } from "./privacy/joinFunnel";
+import { JoinStepsNote } from "./privacy/JoinStepsNote";
 
 const queryClient = new QueryClient();
 
@@ -35,6 +38,8 @@ export const REGISTER: Record<string, "instrument" | "charter"> = {
   // CX surfaces (CX-S0.4)
   models: "instrument",
   files: "instrument",
+  pins: "instrument",
+  backup: "instrument",
   groups: "charter",
   cluster: "instrument",
   train: "instrument",
@@ -116,6 +121,10 @@ function Shell({ s }: { s: AppState }) {
         return <Models store={store} s={s} />;
       case "files":
         return <StorageFiles store={store} s={s} />;
+      case "pins":
+        return <StoragePins store={store} s={s} />;
+      case "backup":
+        return <StorageBackup store={store} s={s} />;
       case "people":
         return <People store={store} s={s} />;
       case "groups":
@@ -231,6 +240,18 @@ function AuthGate() {
 function Root() {
   const s = useStore();
 
+  // 0.5.2 Join funnel — gated on the live telemetry toggle (Settings › Telemetry, off by default)
+  // AND on a consent that covers `joinSteps` (a pre-0.5.2 opt-in first sees JoinStepsNote).
+  // Records the bare step id locally; it only leaves the machine inside a reviewed report.
+  useEffect(() => {
+    setJoinFunnelConsent(() => funnelConsented(store.state.telemetry, store.state.telemetryConsentVersion));
+  }, []);
+  useEffect(() => {
+    reachedStep("open_app");
+    const step = stepForStage(s.stage);
+    if (step) reachedStep(step);
+  }, [s.telemetry, s.telemetryConsentVersion, s.stage]);
+
   useEffect(() => {
     store.start();
     // In a Tauri build, hydrate app config from the real on-disk store so the
@@ -284,6 +305,23 @@ function Root() {
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />
       <Toast s={s} />
+      {/* 0.5.2 Join — one-time note for a pre-0.5.2 telemetry opt-in (the report gained joinSteps). */}
+      <JoinStepsNote
+        telemetry={s.telemetry}
+        consentVersion={s.telemetryConsentVersion}
+        onAcknowledge={() => {
+          store.setState(setTelemetryConsent(true));
+          store.save();
+        }}
+        onTurnOff={() => {
+          const c = setTelemetryConsent(false); // forgets unsent steps, drops prepared reports
+          store.setState(c);
+          bridge.config.write({ telemetry: c.telemetry }).catch(() => {
+            /* honest no-op: on the Tauri path a failed persist surfaces on next read */
+          });
+          store.save();
+        }}
+      />
       {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
       <SignedForYou />
       {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
