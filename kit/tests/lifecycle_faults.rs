@@ -291,6 +291,18 @@ fn harness_pgrep_matches_the_marker_as_a_fixed_string() {
         pgrep(&decoy).contains(&decoy_pid).then_some(())
     });
     assert!(seen.is_ok(), "INCONCLUSIVE: the decoy never appeared");
+    // Everything the decoy started, once it has settled into its long-lived process (it either
+    // exec'd that process itself or forked it).
+    let tail = lifecycle::fixture::tail_bin().display().to_string();
+    let settled = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        let kids = lifecycle::fixture::children_of(decoy_pid);
+        let execd = lifecycle::fixture::command_line(decoy_pid).is_some_and(|c| c.contains(&tail));
+        (!kids.is_empty() || execd).then_some(kids)
+    });
+    let forked = match settled {
+        Ok((kids, _)) => kids,
+        Err(_) => panic!("INCONCLUSIVE: the decoy never settled"),
+    };
     let matched = pgrep(fx.marker());
     assert!(
         matched.contains(&leaf),
@@ -302,6 +314,16 @@ fn harness_pgrep_matches_the_marker_as_a_fixed_string() {
     );
     assert!(!fx.is_marked_alive(decoy_pid));
     fx.assert_clean();
+    // Nothing the decoy started outlives the test.
+    let gone = wait_for(Duration::from_secs(5), Duration::from_millis(20), || {
+        forked.iter().all(|p| !pid_alive(*p)).then_some(())
+    });
+    let leaked: Vec<u32> = forked.iter().copied().filter(|p| pid_alive(*p)).collect();
+    for &p in &leaked {
+        lifecycle::fixture::kill(p, libc::SIGKILL);
+    }
+    assert!(gone.is_ok(), "the decoy left {leaked:?} behind");
+    assert!(pid_reaped(decoy_pid), "the decoy itself was reaped");
 }
 
 /// Waits and observation windows are measured on the monotonic clock and never end early.

@@ -530,6 +530,23 @@ pub fn pgrep(pattern: &str) -> Vec<u32> {
         .collect()
 }
 
+/// The direct children of `pid` (`pgrep -P`).
+pub fn children_of(pid: u32) -> Vec<u32> {
+    let out = match Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => panic!("INCONCLUSIVE: pgrep unavailable: {e}"),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .collect()
+}
+
 pub fn kill(pid: u32, signal: i32) -> bool {
     let Some(target) = positive_pid(pid) else {
         return false;
