@@ -800,7 +800,7 @@ fn stop_without_a_monitor_is_observation_unknown() {
     });
     let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
-    fx.expect_pids(1, ACQUIRE);
+    let pid = fx.expect_pids(1, ACQUIRE)[0];
     let gone = wait_for(ACQUIRE, Duration::from_millis(10), || {
         (!sup.monitor_running()).then_some(())
     });
@@ -845,7 +845,15 @@ fn stop_without_a_monitor_is_observation_unknown() {
         ControlResult::ObservationUnknown(token, _) => assert_eq!(token, start),
         other => panic!("a repeated Start without a monitor: {other:?}"),
     }
+    // The monitor that ended still ended its child: nothing outlives the supervisor.
+    let reaped = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        pid_reaped(pid).then_some(())
+    });
     drop(sup);
+    assert!(
+        reaped.is_ok(),
+        "a monitor that ended terminates and reaps its child"
+    );
     fx.assert_clean();
 }
 
