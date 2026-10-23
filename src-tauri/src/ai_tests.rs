@@ -980,3 +980,18 @@ fn a_media_consent_is_single_use_and_bound_to_its_prompt_purpose_and_provider() 
     assert!(r.is_err(), "expired");
     assert_eq!(http.calls().len(), 1, "only the one consented image went out");
 }
+
+#[test]
+fn a_remote_image_is_refused_under_local_model_only() {
+    let dir = std::env::temp_dir().join(format!("citrate-media-route-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(crate::media::media_remote_allowed(&dir).is_ok(), "default is ask first");
+    crate::chat_route::set(&dir, crate::chat_route::ChatRoute::LocalOnly, 1).unwrap();
+    let err = crate::media::media_remote_allowed(&dir).unwrap_err();
+    assert!(err.contains("Local only is on"), "{err}");
+    std::fs::write(dir.join(crate::chat_route::ROUTE_FILE), "{").unwrap();
+    assert!(crate::media::media_remote_allowed(&dir).is_err(), "unreadable counts as local only");
+    crate::chat_route::set(&dir, crate::chat_route::ChatRoute::AskFirst, 2).unwrap();
+    assert!(crate::media::media_remote_allowed(&dir).is_ok(), "ask first allows (with consent)");
+    let _ = std::fs::remove_dir_all(&dir);
+}

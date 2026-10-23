@@ -137,7 +137,7 @@ describe("HUP-S10.1 MediaPanel", () => {
   });
 
   // K2 (owner 2026-10-19): image generation through a provider is a remote service. Local model
-  // only does not block it (it covers chat and escalation), so the panel says both.
+  // only blocks it (owner decision 2026-10-23), so core shows it as not available then.
   it("a provider route says it uses a remote service and names the provider; the local route does not", async () => {
     const remote = { id: "remote", kind: "image" as const, available: true, reason: null, destination: "OpenAI (api.openai.com)", cost: "Billed by the provider to your key", model: "gpt-image-1" };
     const { io } = makeIo(() => options({ image: [options().image[0], remote] }));
@@ -147,15 +147,20 @@ describe("HUP-S10.1 MediaPanel", () => {
     expect(q(host, "media-local-only-note")).toBeNull();
   });
 
-  it("with Local model only on, a provider route notes that Local only does not apply to it", async () => {
-    const remote = { id: "remote", kind: "image" as const, available: true, reason: null, destination: "Citrate gateway (infer.citrate.ai)", cost: "Billed by the provider to your key", model: "x" };
-    const { io } = makeIo(() => options({ image: [options().image[0], remote] }));
+  it("with Local model only on, a provider route is not available and says why; nothing is sent", async () => {
+    // Core marks the provider route not available under Local model only (owner decision 2026-10-23).
+    const remote = { id: "remote", kind: "image" as const, available: false, reason: "Local only is on, so nothing was sent off this device. Turn off Local model only in Hermes › Controls to use the gateway.", destination: "Citrate gateway (infer.citrate.ai)", cost: "Billed by the provider to your key", model: "x" };
+    const { io, calls } = makeIo(() => options({ image: [remote] }));
     const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} localOnly />);
-    expect(q(host, "media-local-only-note")?.textContent).toContain("Local model only does not apply to image generation");
-    // Nothing to note when no provider route exists.
-    const local = makeIo(() => options({ image: [options().image[0]] }));
-    const m = await mount(<MediaPanel io={async () => local.io} openPlayer={() => undefined} localOnly />);
-    expect(q(m.host, "media-local-only-note")).toBeNull();
+    expect(q(host, "media-route-image-remote")?.textContent).toContain("Local only is on");
+    // The note says Local model only covers image generation too (never "does not apply").
+    expect(host.textContent).not.toContain("does not apply");
+    expect(q(host, "media-local-only-note")?.textContent).toBe(
+      "Local model only is on: images are made only on this device, and no prompt is sent to a provider.",
+    );
+    await type(q<HTMLTextAreaElement>(host, "media-prompt"), "a lemon tree");
+    expect(q<HTMLButtonElement>(host, "media-generate")!.disabled).toBe(true);
+    expect(calls.some(([c]) => c === "media_consent_prepare" || c === "media_generate_image")).toBe(false);
   });
 
   it("a remote image is sent with the consent core minted for that prompt", async () => {
