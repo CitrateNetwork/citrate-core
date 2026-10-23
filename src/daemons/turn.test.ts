@@ -8,7 +8,7 @@ import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall, type ToolCallMeta } 
 import type { Claim } from "./api";
 
 const claim: Claim = { daemonId: "d1", runId: "r1", name: "Node digest", prompt: "Summarise my node.", tokensAllowed: 100_000, startedMs: 0 };
-const ctx = { height: 1, peers: 2, finalityAge: 3, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" };
+const ctx = { height: 1, peers: 2, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" };
 const call = (name: string): ToolCall => ({ id: "c1", name, arguments: "{}" });
 
 function deps(over: Partial<DaemonTurnDeps> = {}): DaemonTurnDeps & { handled: [string, ToolCallMeta | undefined][] } {
