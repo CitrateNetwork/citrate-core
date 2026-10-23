@@ -226,6 +226,7 @@ pub(crate) fn tick_and_emit(app: &tauri::AppHandle) -> Result<TickViews, RvError
     use tauri::Emitter;
     let views = crate::comms::rendezvous_tick(app)?;
     record_active_joins(app, &views);
+    crate::invites::settle_revocations_after_tick(app, &views);
     let _ = app.emit(JOIN_STATE_EVENT, &views);
     Ok(views)
 }
