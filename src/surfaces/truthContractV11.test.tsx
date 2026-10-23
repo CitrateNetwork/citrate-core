@@ -29,7 +29,6 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Dashboard } from "./Dashboard";
-import { Node } from "./Node";
 import { Onboarding } from "../onboarding/Onboarding";
 import { REGISTRY_ABI, countEligible, isValidatorActive, validatorWord, type ChainReads, type ValidatorActivation } from "../shell/chainTruth";
 import { mapNodeState, store, type Store } from "../shell/store";
@@ -138,15 +137,6 @@ describe("§1 — activation epoch", () => {
     expect((reads as unknown as { validatorActivation: ReturnType<typeof vi.fn> }).validatorActivation).toHaveBeenCalledWith(KEY);
     expect(store.state.validatorActivation).toEqual(pending);
     expect(store.state.node).toBe("synced");
-  });
-
-  it("Node shows the pending word with the real N, and the active word with the lag note", () => {
-    const p = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: pending })} />);
-    expect(p).toContain("Registered · active from epoch 501");
-    expect(p).not.toContain(">Validator active<");
-    const a = renderToStaticMarkup(<Node store={stub} s={member({ node: "validating", bondedStake: 32_000, validatorActivation: active })} />);
-    expect(a).toContain("Validator active");
-    expect(a).toContain("consensus can lag by up to an epoch");
   });
 
   it("onboarding S6 shows a pending validator as registered, not as an unstaked bond", () => {

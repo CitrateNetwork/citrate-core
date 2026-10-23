@@ -304,9 +304,13 @@ describe("Node › Services", () => {
 const WEI = (salt: string) => (BigInt(Math.round(Number(salt) * 100)) * 10n ** 16n).toString();
 
 describe("Node › Rewards", () => {
+  // The store reads rewardsOf (Store.refreshEarnings) for registered stake or an activated bond.
+  const validator = { bondedStake: 32_000, validatorActivation: { isActive: true, status: 1, actEpoch: 38, currentEpoch: 40 } };
+  const rewards = (totalWei: string, claimableWei: string) => at({ ...validator, rewards: { totalWei, claimableWei } });
+  const rStore = () => stubStore({ refreshEarnings: vi.fn(async () => {}), claimRewards: vi.fn(async () => {}) });
+
   it("rewardsOf total, claimable now and maturing, from the registry read", async () => {
-    const read = vi.fn(async () => ({ totalWei: WEI("12.5"), claimableWei: WEI("2.5"), proposerPubkey: "0x" + "ab".repeat(32) }));
-    const h = await mount(<NodeRewards mode="tauri" read={read} />);
+    const h = await mount(<NodeRewards store={rStore()} s={rewards(WEI("12.5"), WEI("2.5"))} mode="tauri" />);
     expect(h.querySelector('[data-reward="total"]')?.textContent).toBe("12.50 SALT");
     expect(h.querySelector('[data-reward="claimable"]')?.textContent).toBe("2.50 SALT");
     expect(h.querySelector('[data-reward="maturing"]')?.textContent).toBe("10.00 SALT");
@@ -314,54 +318,61 @@ describe("Node › Rewards", () => {
     // The panel carries no money words; the page's one disclaimer names what is never shown.
     expect(h.querySelector('[data-testid="validator-rewards"]')?.textContent).not.toMatch(BANNED);
     expect(h.textContent).not.toContain("Earnings");
-    expect(h.textContent).not.toMatch(/Claim\b/);
+  });
+
+  it("opening the tab asks the store to read", async () => {
+    const store = rStore();
+    await mount(<NodeRewards store={store} s={at(validator)} mode="tauri" />);
+    expect(store.refreshEarnings).toHaveBeenCalled();
   });
 
   it("pin and round rewards are not live", async () => {
-    const h = await mount(<NodeRewards mode="tauri" read={async () => ({ totalWei: "0", claimableWei: "0", proposerPubkey: "0x" + "ab".repeat(32) })} />);
+    const h = await mount(<NodeRewards store={rStore()} s={rewards("0", "0")} mode="tauri" />);
     expect(h.textContent).toContain("Pin bonds not live yet");
     expect(h.textContent).toContain("Group rounds not live yet");
   });
 
   it("Not a validator is a word, not 0", async () => {
-    const h = await mount(<NodeRewards mode="tauri" validatorWord="Not a validator" read={async () => ({ totalWei: "0", claimableWei: "0", proposerPubkey: "0x" + "ab".repeat(32) })} />);
+    const s = at({ hasGrant: false, bondedStake: 0, validatorActivation: { isActive: false, status: 0, actEpoch: 0, currentEpoch: 40 }, memberBond: null });
+    const h = await mount(<NodeRewards store={rStore()} s={s} mode="tauri" />);
     expect(h.querySelector('[data-reward="total"]')?.textContent).toBe("Not a validator");
     expect(h.querySelector('[data-reward="claimable"]')).toBeNull();
   });
 
-  it("empty: a zero read says zero is not proof of registration", async () => {
-    const h = await mount(<NodeRewards mode="tauri" read={async () => ({ totalWei: "0", claimableWei: "0", proposerPubkey: "0x" + "ab".repeat(32) })} />);
+  it("empty: a zero read for an unread validator word says zero is not proof of registration", async () => {
+    const h = await mount(<NodeRewards store={rStore()} s={at({ bondedStake: 32_000, validatorActivation: null, rewards: { totalWei: "0", claimableWei: "0" } })} mode="tauri" />);
     expect(h.querySelector('[data-reward="total"]')?.textContent).toBe("0.00 SALT");
     expect(h.textContent).toMatch(/also reads 0 for a key that isn't registered/);
   });
 
-  it("a malformed or empty read is unknown, never 0", async () => {
-    for (const totalWei of ["", "12x"]) {
-      const h = await mount(<NodeRewards mode="tauri" read={async () => ({ totalWei, claimableWei: "0", proposerPubkey: "0x" + "ab".repeat(32) })} />);
-      expect(h.querySelector('[data-state="error"]'), totalWei).not.toBeNull();
-      expect(h.querySelector('[data-reward="total"]'), totalWei).toBeNull();
-      expect(h.textContent).not.toContain("0.00 SALT");
-      act(() => root?.unmount());
-    }
+  it("an unreadable read is the error state, never 0", async () => {
+    const h = await mount(<NodeRewards store={rStore()} s={at({ ...validator, rewards: null, rewardsError: 'rewardsOf answered an unreadable figure (totalWei "", claimableWei "0")' })} mode="tauri" />);
+    expect(h.querySelector('[data-state="error"]')).not.toBeNull();
+    expect(h.querySelector('[data-reward="total"]')).toBeNull();
+    expect(h.textContent).not.toContain("0.00 SALT");
   });
 
-  it("unavailable without a proposer key, error with '—' otherwise", async () => {
-    const noKey = await mount(<NodeRewards mode="tauri" read={async () => Promise.reject("proposer key not minted yet")} />);
+  it("unavailable without a proposer key, error with '—' otherwise, and Try again re-reads", async () => {
+    const noKey = await mount(<NodeRewards store={rStore()} s={at({ ...validator, rewardsError: "proposer key not minted yet" })} mode="tauri" />);
     expect(noKey.querySelector('[data-state="unavailable"]')?.textContent).toContain("this node's key");
     expect(noKey.querySelector('[data-state="unavailable"]')?.textContent).toContain("armed block production");
     expect(noKey.querySelector('[data-state="unavailable"]')?.textContent).not.toContain("Activate validator");
     act(() => root?.unmount());
-    const err = await mount(<NodeRewards mode="tauri" read={async () => Promise.reject("eth_call timed out")} />);
+    const store = rStore();
+    const err = await mount(<NodeRewards store={store} s={at({ ...validator, rewardsError: "eth_call timed out" })} mode="tauri" />);
     expect(err.querySelector('[data-state="error"]')?.textContent).toContain("eth_call timed out");
     expect(err.textContent).toContain("unknown, not zero");
     expect(err.querySelector('[data-reward="total"]')).toBeNull();
+    const before = (store.refreshEarnings as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    await click(button(err, "Try again"));
+    expect((store.refreshEarnings as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(before + 1);
   });
 
-  it("unavailable in the web preview", async () => {
-    const read = vi.fn();
-    const h = await mount(<NodeRewards mode="sim" read={read} />);
+  it("unavailable in the web preview, and nothing is read", async () => {
+    const store = rStore();
+    const h = await mount(<NodeRewards store={store} s={at(validator)} mode="sim" />);
     expect(h.querySelector('[data-state="unavailable"]')).not.toBeNull();
-    expect(read).not.toHaveBeenCalled();
+    expect(store.refreshEarnings).not.toHaveBeenCalled();
   });
 });
 

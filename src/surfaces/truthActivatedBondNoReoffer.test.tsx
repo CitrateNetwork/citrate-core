@@ -16,7 +16,6 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
 import { Onboarding } from "../onboarding/Onboarding";
 import type { Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
@@ -52,12 +51,6 @@ describe("an already-activated bond with stake 0 is never offered activation aga
     it(`onboarding S6 (registry ${validatorActivation ? "status None" : "unread"})`, () => {
       const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", memberBond: { deployed: true, activated: true, pubkey: "0x" + "44".repeat(32), unlocked: false }, validatorActivation })} />);
       expect(html).not.toContain("Stake my bond");
-      expect(html).not.toContain("Bond locked · not staked");
-    });
-
-    it(`the Node page (registry ${validatorActivation ? "status None" : "unread"})`, () => {
-      const html = renderToStaticMarkup(<Node store={stub} s={member({ memberBond: { deployed: true, activated: true, pubkey: "0x" + "44".repeat(32), unlocked: false }, validatorActivation })} />);
-      expect(html).not.toContain("Activate validator");
       expect(html).not.toContain("Bond locked · not staked");
     });
   }

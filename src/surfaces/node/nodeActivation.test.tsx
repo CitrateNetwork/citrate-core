@@ -13,7 +13,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { freshState, type AppState } from "../../shell/state";
 import type { Store } from "../../shell/store";
-import { canOfferActivation, type MemberBondState, type ValidatorActivation } from "../../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, canOfferActivation, type MemberBondState, type ValidatorActivation } from "../../shell/chainTruth";
 import { NodeStatusView } from "./NodeStatus";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -189,7 +189,7 @@ describe("Node › Status — Activate validator goes through canOfferActivation
   it("the validator word in the sentence and row comes from the store's registry reads", async () => {
     const h = await mount(<NodeStatusView store={stubStore()} s={member({ validatorActivation: ACTIVE, memberBond: ACTIVATED, bondedStake: 32_000 })} {...live} />);
     expect(h.querySelector('[data-testid="node-sentence"]')?.textContent).toBe("Synced · Validator active");
-    expect(h.querySelector('[data-testid="validator-word"]')?.textContent).toBe("Validator active");
+    expect(h.querySelector('[data-testid="validator-word"]')?.textContent).toBe("Validator active" + CONSENSUS_LAG_NOTE);
     const unread = await mount(<NodeStatusView store={stubStore()} s={member({ validatorActivation: null, bondedStake: 32_000 })} {...live} />);
     expect(unread.querySelector('[data-testid="node-sentence"]')?.textContent).toBe("Synced");
     expect(unread.querySelector('[data-testid="validator-word"]')?.textContent).toBe("— · registry not read yet");

@@ -6,6 +6,9 @@
 //   - node word: nodeWords.ts (node_status via Store.refreshNode, public eth_blockNumber, genesis check);
 //   - registered validators: ValidatorRegistry.activeCount() (contract v1.1 §2: it includes
 //     registrations still pending activation, so it is "Registered", never "Active");
+//   - producing blocks: the store's producer sample (distinct proposerPubkey over the last
+//     PRODUCER_SAMPLE_BLOCKS blocks, Store.refreshProducers on the node poll) against this
+//     member's validator key;
 //   - validator word and eligible validators: C1-V's chainTruth reads folded by the store
 //     (`s.validatorActivation`, `s.memberBond`, `s.bondedStake`, `s.validatorCounts`); "—" with the
 //     reason until read, and the validator word is left out of the sentence until then;
@@ -25,7 +28,9 @@ import { BRIDGE_MODE } from "../../bridge/mode";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
 import { useNetworkCompat, type NetworkCompat } from "../../shell/networkCompat";
-import { validatorDash, validatorWord } from "../../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, validatorDash, validatorWord } from "../../shell/chainTruth";
+import { grantExplanation } from "../../data/grantCopy";
+import { fmtSaltFromWei } from "../../shell/state";
 import { FRESH_MS, activationOffer, headFresh, directPeers, heightLine, nodeWord, statusSentence, TONE_COLOR } from "./nodeWords";
 import { PAGE, Panel, Row, StateCard, errText } from "./parts";
 
@@ -213,6 +218,7 @@ export function NodeStatusView({
   const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
   const vDash = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
   const sentence = statusSentence(w, vWord);
+  const producing = producingLine(s);
   const canStart = s.node === "off" || s.node === "error" || s.node === "paused";
   const notice = noticeFor(w.word, store);
 
@@ -268,11 +274,35 @@ export function NodeStatusView({
           <Row
             k="Validator"
             testid="validator-word"
-            v={vDash}
+            v={
+              vWord === "Validator active" ? (
+                <>
+                  {vDash}
+                  <span style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
+                </>
+              ) : (
+                vDash
+              )
+            }
             vColor={vWord ? undefined : "var(--tx-3)"}
             src="ValidatorRegistry.validatorInfo(pubkey) status and actEpoch against currentEpoch(), isActive(pubkey), and MemberBond.activated() / isUnlocked() (contract v1.1 §1). Stake amounts never decide this word"
           />
-          <Row k="Producing blocks" v="— · not read" vColor="var(--tx-3)" src="a recent block with proposerPubkey = this node's key. Validator active does not imply this" />
+          <Row
+            k="Producing"
+            testid="producing-blocks"
+            v={
+              producing.window ? (
+                <>
+                  {producing.text}
+                  <span style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)" }}>{producing.window}</span>
+                </>
+              ) : (
+                producing.text
+              )
+            }
+            vColor={producing.known ? undefined : "var(--tx-3)"}
+            src="distinct proposerPubkey in the producer sample from rpc.citrate.ai (its window is stated with the word), against this member's validator key. Validator active does not imply this"
+          />
         </Panel>
 
         <Panel title="Network" caption="public RPC and ValidatorRegistry">
@@ -324,6 +354,22 @@ export function NodeStatusView({
   );
 }
 
+/**
+ * The "Producing blocks" row (contract §1/§2, C1-V review): seen among the sampled proposers, not
+ * seen ("Not seen producing", never "not producing"), or "—" with why there is no word. Registered
+ * stake is required: an unregistered key has nothing to produce.
+ */
+export function producingLine(s: Pick<AppState, "bondedStake" | "producers" | "producersError" | "validatorPubkey">): { text: string; known: boolean; window: string | null } {
+  if (!(s.bondedStake > 0)) return { text: "— · not a registered validator", known: false, window: null };
+  const word = producingWord(s.producers, s.validatorPubkey);
+  if (word && s.producers) return { text: word, known: true, window: producerWindowLabel(s.producers) };
+  const short = s.producers ? producerShortfall(s.producers) : null;
+  if (short) return { text: "— · producer sample incomplete: " + short, known: false, window: null };
+  if (s.producersError) return { text: "— · producer sample unavailable: " + s.producersError, known: false, window: null };
+  if (!s.validatorPubkey) return { text: "— · validator key not read yet", known: false, window: null };
+  return { text: "— · not sampled yet", known: false, window: null };
+}
+
 /** The notice under the sentence for the words that need an action. */
 function noticeFor(word: string, store: Store): { title: string; body: string; red: boolean; cta?: { label: string; go: () => void } } | null {
   switch (word) {
@@ -369,10 +415,17 @@ function noticeFor(word: string, store: Store): { title: string; body: string; r
  */
 function ActivateCard({ store, s, pageWord }: { store: Store; s: AppState; pageWord: string }) {
   const offer = activationOffer(pageWord, s);
+  // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), for a member with a grant.
+  const grant = s.hasGrant ? (
+    <p data-testid="grant-story" style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0, lineHeight: 1.5 }}>
+      {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant })}
+    </p>
+  ) : null;
   if (!offer.offer) {
     return (
       <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
         <span className="eyebrow">Validator</span>
+        {grant}
         <span data-testid="activate-gate" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
           {offer.why}
         </span>
@@ -383,6 +436,7 @@ function ActivateCard({ store, s, pageWord }: { store: Store; s: AppState; pageW
   return (
     <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
       <span className="eyebrow">Validator</span>
+      {grant}
       {!linked ? (
         <>
           <p style={{ fontSize: 12, color: "var(--tx-2)", margin: 0, lineHeight: 1.5 }}>

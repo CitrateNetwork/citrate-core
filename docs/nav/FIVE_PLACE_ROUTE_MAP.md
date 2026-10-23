@@ -101,7 +101,7 @@ surface unchanged:
 | Hermes › Controls | The Controls panel (`src/surfaces/hermes/ControlsPanel.tsx`) at the top, then the five moved Settings sections, unchanged, under a "Controls" heading. They write the same config as before. The panel is not repeated in the section list, so `settings/hermes` opens the tab with the panel on top and AI providers below. |
 | Groups › Chat, Alerts, Rounds, Members, Cluster, ALF | Groups, Comms, Train, People, Cluster, ALF surfaces |
 | Wallet | Wallet surface |
-| Node › Status, Services, Rewards, Advanced | The K3 Node page (`src/surfaces/node/`): status sentence, the nine supervised services, validator rewards, and network identity, withdrawn-branch notice, crash record and full log above the Node configuration Settings section. The 0.5.1 Node surface (`Node.tsx`) is no longer mounted. |
+| Node › Status, Services, Rewards, Advanced | The K3 Node page (`src/surfaces/node/`): status sentence, the nine supervised services, validator rewards, and network identity, withdrawn-branch notice, crash record and full log above the Node configuration Settings section. The 0.5.1 Node surface (`Node.tsx`) is removed; its truth tests run against this page (`src/surfaces/node/nodePagePorts.test.tsx`). |
 | Node › Storage › Files, Memory | StorageFiles and Storage surfaces |
 | Store › Apps, Models | Commissary and Models surfaces |
 | Settings, Settings › Connections | Settings (account-level sections) and Connections surfaces |

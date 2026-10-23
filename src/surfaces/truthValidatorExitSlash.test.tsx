@@ -18,7 +18,6 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
 import { Onboarding } from "../onboarding/Onboarding";
 import { validatorWord, type ChainReads, type ValidatorActivation } from "../shell/chainTruth";
 import { store, type Store } from "../shell/store";
@@ -111,15 +110,6 @@ describe("C1-V2(a) — the word follows validatorInfo.status before any stake ch
     expect(store.state.bondedStake).toBe(0);
     expect(store.state.validatorActivation).toEqual(exiting);
     expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant)).toBe("Exiting");
-  });
-
-  it("Node shows 'Exiting' / 'Slashed' for a member with stake 0, and offers no activation", () => {
-    for (const [a, word] of [[exiting, "Exiting"], [slashed, "Slashed"]] as const) {
-      const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 0, validatorActivation: a })} />);
-      expect(html).toContain(word);
-      expect(html).not.toContain("Bond locked · not staked");
-      expect(html).not.toContain("Activate validator");
-    }
   });
 
   it("onboarding S6 shows 'Exiting' / 'Slashed' for a synced member with stake 0", () => {

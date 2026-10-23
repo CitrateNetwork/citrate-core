@@ -140,7 +140,7 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
         />
       );
     case "node/rewards":
-      return <NodeRewards />;
+      return <NodeRewards store={store} s={s} />;
     case "node/advanced":
       return <NodeAdvanced store={store} s={s} />;
     case "store/apps":

@@ -32,7 +32,6 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Dashboard } from "./Dashboard";
-import { Node } from "./Node";
 import { Train, groupRoundsLive } from "./Train";
 import { COACH_STEPS, NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
@@ -95,36 +94,12 @@ describe("V1 — finality is not drawn as running", () => {
 });
 
 describe("V2 — heartbeat has no source, so it shows unavailable", () => {
-  it("never renders a seeded ack age or a slashing-protection claim", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={running({ nTab: "earn" })} />);
-    expect(html).not.toMatch(/last ack \d+s ago/);
-    expect(html).not.toContain("slashing protection");
-    expect(html).not.toContain("NematocystSlashing");
-    expect(html).toContain("Heartbeat");
-    expect(html).toContain("no heartbeat reading");
-  });
-
   it("is not part of app state (nothing to go stale)", () => {
     expect("hb" in freshState("p1")).toBe(false);
   });
 });
 
-describe("V3 — pin bonds are dormant", () => {
-  const pins = [
-    { cid: "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi", bond: 120, cadH: 6, nextIn: 400, last: "ok" },
-  ] as unknown as AppState["pins"];
-
-  it("shows 'Pin bonds not live yet' and no projection or challenge tallies", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={running({ nTab: "pin", pins })} />);
-    expect(html).toContain("Pin bonds not live yet");
-    expect(html).not.toContain("Projected");
-    expect(html).not.toContain("at current demand");
-    expect(html).not.toMatch(/passed · 0 failed/);
-    // 1 pin x 9 + 4 = 13 was the made-up "challenges passed" figure.
-    expect(html).not.toContain(">13<");
-    expect(html).not.toContain("Plan &amp; sign");
-  });
-});
+// V3 (pin bonds dormant) is checked on Node › Storage › Pins in shell/placeView.render.test.tsx.
 
 describe("V10 — no seeded height or persisted node state before the first poll", () => {
   it("a fresh state has no height reading (0 = not read), not a seeded 131,2xx", () => {

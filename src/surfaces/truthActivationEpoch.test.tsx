@@ -22,13 +22,15 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
 import { Onboarding } from "../onboarding/Onboarding";
 import { REGISTRY_ABI, isValidatorActive, validatorWord, type ChainReads, type ValidatorActivation } from "../shell/chainTruth";
 import { mapNodeState, store, type Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
 import { bridge } from "../bridge";
 import type { GrantStatus } from "../bridge/domains";
+import { NodeStatusView } from "./node/NodeStatus";
+
+const K3_FRESH = { publicHeadAgeMs: 1_000, publicHeadError: false, statusAgeMs: 1_000, compat: "compatible", mode: "tauri", statusError: null } as const;
 
 const WEI = 10n ** 18n;
 const wei = (salt: number) => (BigInt(salt) * WEI).toString();
@@ -74,8 +76,8 @@ describe("#348 — §1 activation epoch", () => {
     expect(mapNodeState("running", 100, next)).toBe("synced");
   });
 
-  it("an unread registry is '—' on Node and S6, never active", () => {
-    const n = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: null })} />);
+  it("an unread registry is '—' on Node › Status and S6, never active", () => {
+    const n = renderToStaticMarkup(<NodeStatusView store={stub} s={member({ bondedStake: 32_000, validatorActivation: null })} publicHead={(member({ bondedStake: 32_000, validatorActivation: null })).height} {...K3_FRESH} />);
     expect(n).toContain("— · registry not read yet");
     expect(n).not.toContain(">Validator active<");
     const o = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: null })} />);
@@ -132,15 +134,6 @@ describe("#348 — §1 activation epoch", () => {
     expect((reads as unknown as { validatorActivation: ReturnType<typeof vi.fn> }).validatorActivation).toHaveBeenCalledWith(KEY);
     expect(store.state.validatorActivation).toEqual(pending);
     expect(store.state.node).toBe("synced");
-  });
-
-  it("Node shows the pending word with the real N, and the active word with the lag note", () => {
-    const p = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: pending })} />);
-    expect(p).toContain("Registered · active from epoch 501");
-    expect(p).not.toContain(">Validator active<");
-    const a = renderToStaticMarkup(<Node store={stub} s={member({ node: "validating", bondedStake: 32_000, validatorActivation: active })} />);
-    expect(a).toContain("Validator active");
-    expect(a).toContain("consensus can lag by up to an epoch");
   });
 
   it("onboarding S6 shows a pending validator as registered, not as an unstaked bond", () => {

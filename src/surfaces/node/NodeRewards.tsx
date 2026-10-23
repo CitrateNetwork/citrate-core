@@ -1,24 +1,23 @@
 // =====================================================================
 // citrate-core — Node › Rewards (core plan K3; design slice 2 "Node rewards"; contract §1 Rewards)
 //
-// Validator rewards for this node's key, read from the registry and nothing else:
-//   node_validator_earnings → ValidatorRegistry.rewardsOf(proposerPubkey) (node.rs, validator.rs)
-//     Validator rewards = total, Claimable now = claimableNow, Maturing = total − claimableNow.
-// rewardsOf also returns zeros for a key that isn't registered, so a zero read says so; once the
-// validator word is read (C1-V), "Not a validator" and "Bond locked · not staked" replace the
-// numbers. Pin and round rewards are not live (contract §4). No projections, per-day figures or
-// claim button: there is no validator-claim command yet.
+// Validator rewards for this member's validator key, read from the registry and nothing else:
+//   Store.refreshEarnings → node_validator_earnings → ValidatorRegistry.rewardsOf(pubkey)
+//   (node.rs, validator.rs), folded into `s.rewards` / `s.rewardsError`. Validator rewards =
+//   total, Claimable now = claimableNow, Maturing = total − claimableNow.
+// The read runs only when the rewards belong to this member (`readsValidatorRewards`: registered
+// stake, or a bond whose MemberBond.activated() reads true, which outlives a full exit or a slash,
+// #348), and again when that changes while the tab is open. Claim runs Store.claimRewards (the
+// signature ceremony; through the bond for an activated bond, #348). The validator word comes from
+// the same store reads as Node › Status (C1-V). Pin and round rewards are not live (contract §4).
+// No projections or per-day figures.
 // =====================================================================
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { bridge } from "../../bridge";
+import { useEffect, type ReactNode } from "react";
 import { BRIDGE_MODE } from "../../bridge/mode";
-import { PAGE, Panel, Row, StateCard, errText } from "./parts";
-
-export interface ValidatorRewardsRead {
-  totalWei: string;
-  claimableWei: string;
-  proposerPubkey: string;
-}
+import type { Store } from "../../shell/store";
+import type { AppState } from "../../shell/state";
+import { readsValidatorRewards, validatorDash, validatorWord } from "../../shell/chainTruth";
+import { PAGE, Panel, Row, StateCard } from "./parts";
 
 /** SALT with two decimals from a wei string, without floating point; null when it isn't a number. */
 export function saltFromWei2(wei: string): string | null {
@@ -35,49 +34,20 @@ export function saltFromWei2(wei: string): string | null {
   return whole.toLocaleString("en-US") + "." + frac + " SALT";
 }
 
-/** total and claimableNow as integers, or null when either isn't a non-negative decimal wei string. */
-export function parseRewards(d: ValidatorRewardsRead): { total: bigint; claimable: bigint } | null {
-  const one = (w: string): bigint | null => (typeof w === "string" && /^[0-9]+$/.test(w) ? BigInt(w) : null);
-  const total = one(d.totalWei);
-  const claimable = one(d.claimableWei);
-  return total == null || claimable == null ? null : { total, claimable };
-}
+/** Claims below this batch up rather than spend gas on dust (the 0.5.1 Earning tab's rule). */
+const CLAIM_DUST_WEI = 5n * 10n ** 18n;
 
 /** A read error that means "no proposer key yet" (validator.rs: "proposer key not minted yet") rather than a failed chain read. */
 const NO_KEY = /proposer.?key/i;
 
 const NOT_VALIDATOR_WORDS = ["Not a validator", "Bond locked · not staked"];
 
-export function NodeRewards({
-  mode = BRIDGE_MODE,
-  read,
-  validatorWord = null,
-}: {
-  mode?: "tauri" | "sim";
-  read?: () => Promise<ValidatorRewardsRead>;
-  validatorWord?: string | null;
-}) {
-  const [r] = useState(() => read ?? (() => bridge.node.validatorEarnings()));
-  const [data, setData] = useState<ValidatorRewardsRead | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setData(await r());
-      setError(null);
-    } catch (e) {
-      setData(null);
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [r]);
-
+export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s: AppState; mode?: "tauri" | "sim" }) {
+  const reads = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null);
+  // Read on open, and again when the reward eligibility changes while the tab is open (#348).
   useEffect(() => {
-    if (mode === "tauri") void load();
-  }, [mode, load]);
+    if (mode === "tauri") void store.refreshEarnings();
+  }, [store, mode, reads]);
 
   const shell = (body: ReactNode) => (
     <div data-node-tab="rewards" style={{ ...PAGE, maxWidth: 980 }}>
@@ -97,6 +67,7 @@ export function NodeRewards({
       />,
     );
   }
+  const error = reads ? s.rewardsError : null;
   if (error && NO_KEY.test(error)) {
     return shell(
       <StateCard
@@ -112,54 +83,64 @@ export function NodeRewards({
       <StateCard
         kind="error"
         title="Couldn't read rewards"
-        body="The registry read failed, so rewards are unknown, not zero."
+        body="The registry read failed or answered a figure this page can't read, so rewards are unknown, not zero."
         why={"node_validator_earnings → error: " + error}
-        cta={{ label: "Try again", go: () => void load() }}
+        cta={{ label: "Try again", go: () => void store.refreshEarnings() }}
       />,
     );
   }
 
-  // Parse once: an empty or malformed wei string is unknown, never 0 (contract rule 2).
-  const parsed = data ? parseRewards(data) : null;
-  if (data && !parsed) {
-    return shell(
-      <StateCard
-        kind="error"
-        title="Couldn't read rewards"
-        body="The registry answered with a value this page can't read, so rewards are unknown, not zero."
-        why={"node_validator_earnings → totalWei " + JSON.stringify(data.totalWei) + ", claimableWei " + JSON.stringify(data.claimableWei)}
-        cta={{ label: "Try again", go: () => void load() }}
-      />,
-    );
-  }
-  const notValidator = validatorWord != null && NOT_VALIDATOR_WORDS.includes(validatorWord);
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  const data = reads ? s.rewards : null;
   let rows: ReactNode;
   let note: string;
-  if (loading || !data) {
-    rows = <Row k="Validator rewards" v="— · reading" vColor="var(--tx-3)" src="ValidatorRegistry.rewardsOf(pubkey).total" />;
-    note = "Reading the registry for this node's key.";
-  } else if (notValidator) {
-    rows = <Row k="Validator rewards" testid="reward-total" v={<span data-reward="total">{validatorWord}</span>} src="no registered stake for this node's key, so there is nothing to read" />;
-    note = "Rewards are paid to validators that produce blocks. " + (validatorWord === "Not a validator" ? "This node is not a validator." : "Your bond is locked but not staked; activating it registers you as a validator.");
+  if (!reads) {
+    // Not this member's rewards to read: say the word, or "—" with why it isn't known (never 0).
+    const known = vWord != null && NOT_VALIDATOR_WORDS.includes(vWord);
+    rows = (
+      <Row
+        k="Validator rewards"
+        testid="reward-total"
+        v={<span data-reward="total">{known ? vWord : validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)}</span>}
+        vColor={known ? undefined : "var(--tx-3)"}
+        src="no registered stake and no activated bond for this member, so rewardsOf is not read"
+      />
+    );
+    note =
+      "Rewards are paid to validators that produce blocks. " +
+      (vWord === "Not a validator" ? "This node is not a validator." : vWord === "Bond locked · not staked" ? "Your bond is locked but not staked; activating it registers you as a validator." : "This page reads them once the registry and bond reads say they are yours.");
+  } else if (!data) {
+    rows = <Row k="Validator rewards" testid="reward-total" v="— · not read yet" vColor="var(--tx-3)" src="ValidatorRegistry.rewardsOf(pubkey).total" />;
+    note = "Reading the registry for this member's validator key.";
   } else {
-    const { total, claimable } = parsed as { total: bigint; claimable: bigint };
+    const total = BigInt(data.totalWei);
+    const claimable = BigInt(data.claimableWei);
     const maturing = total > claimable ? total - claimable : 0n;
+    const dust = claimable < CLAIM_DUST_WEI;
     rows = (
       <>
         <Row k="Validator rewards" v={<span data-reward="total">{saltFromWei2(data.totalWei) ?? "—"}</span>} src="ValidatorRegistry.rewardsOf(pubkey).total" />
         <Row k="Claimable now" v={<span data-reward="claimable">{saltFromWei2(data.claimableWei) ?? "—"}</span>} src="rewardsOf(pubkey).claimableNow" />
         <Row k="Maturing" v={<span data-reward="maturing">{saltFromWei2(maturing.toString()) ?? "—"}</span>} src="total − claimableNow; slashable for 4 epochs" />
+        <span style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 18px 0", flexWrap: "wrap" }}>
+          <button className="btn btn-primary btn-sm" disabled={dust} onClick={() => void store.claimRewards()}>
+            Claim
+          </button>
+          <span style={{ fontSize: 12, color: "var(--tx-2)" }}>
+            {dust ? "Claims batch until ≥ 5 SALT to avoid dust gas: " + (saltFromWei2((CLAIM_DUST_WEI - claimable).toString()) ?? "—") + " to go." : "Claimable now is above the 5 SALT dust threshold."}
+          </span>
+        </span>
       </>
     );
     note =
-      total === 0n && validatorWord == null
-        ? "No rewards recorded for this key. rewardsOf also reads 0 for a key that isn't registered, so 0 here doesn't say whether this node is a validator."
-        : "Rewards are paid to the validator that produces each block. Claiming validator rewards from the app is not available in this build.";
+      (total === 0n && vWord == null
+        ? "No rewards recorded for this key. rewardsOf also reads 0 for a key that isn't registered, so 0 here doesn't say whether this node is a validator. "
+        : "Rewards are paid to the validator that produces each block. ") + "Claiming signs the unsigned claimRewards() request through the signature ceremony; the balance changes only once that transaction is included.";
   }
 
   return shell(
-    <Panel testid="validator-rewards" title="Validator rewards" caption={data ? "key " + data.proposerPubkey.slice(0, 10) + "…" + data.proposerPubkey.slice(-6) : undefined}>
-      <span style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--tx-2)", padding: "10px 18px 4px" }}>Paid for producing blocks, read from the validator registry for this node's key.</span>
+    <Panel testid="validator-rewards" title="Validator rewards" caption={s.validatorPubkey ? "key " + s.validatorPubkey.slice(0, 10) + "…" + s.validatorPubkey.slice(-6) : undefined}>
+      <span style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--tx-2)", padding: "10px 18px 4px" }}>Paid for producing blocks, read from ValidatorRegistry.rewardsOf for this member's validator key.</span>
       {rows}
       <span style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", padding: "12px 18px" }}>{note}</span>
     </Panel>,

@@ -23,13 +23,15 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
 import { Onboarding } from "../onboarding/Onboarding";
 import { canOfferActivation, validatorDash, validatorWord, type ChainReads, type MemberBondState, type ValidatorActivation } from "../shell/chainTruth";
 import { store, type Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
 import { bridge } from "../bridge";
 import type { GrantStatus } from "../bridge/domains";
+import { NodeStatusView } from "./node/NodeStatus";
+
+const K3_FRESH = { publicHeadAgeMs: 1_000, publicHeadError: false, statusAgeMs: 1_000, compat: "compatible", mode: "tauri", statusError: null } as const;
 
 const WEI = 10n ** 18n;
 const wei = (salt: number) => (BigInt(salt) * WEI).toString();
@@ -119,21 +121,6 @@ describe("C1-V4 — an unread status is '—' with the reason, never a stake wor
     expect(html).toContain("Stake my bond");
   });
 
-  it("the Node page offers no activation while the status is unread", () => {
-    const html = renderToStaticMarkup(
-      <Node store={stub} s={member({ bondedStake: 0, validatorActivation: null, memberBond: activatedBond })} />,
-    );
-    expect(html).not.toContain("Activate validator");
-    expect(html).toContain("— · registry not read yet");
-  });
-
-  it("the Node page offers activation for a bond that is not activated", () => {
-    const html = renderToStaticMarkup(
-      <Node store={stub} s={member({ bondedStake: 0, validatorActivation: none, memberBond: notActivated })} />,
-    );
-    expect(html).toContain("Activate validator");
-  });
-
   it("onboarding never auto-opens activation while the status is unread", async () => {
     const open = vi.spyOn(store, "activateValidator").mockResolvedValue(true);
     vi.spyOn(store, "walletIsLinked").mockReturnValue(true);
@@ -217,11 +204,11 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
 
   // #366 review F1: the chosen registry key (the bond's) is also the key the producer sample is
   // checked against, so a bonded validator that is producing shows "Producing blocks".
-  it("a bonded validator that is producing shows 'Producing blocks' on the Node page", async () => {
+  it("a bonded validator that is producing shows 'Producing blocks' on Node › Status", async () => {
     await poll(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
     expect(store.state.validatorPubkey).toBe(BOND_KEY);
     const html = renderToStaticMarkup(
-      <Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }} />,
+      <NodeStatusView store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }} publicHead={({ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }).height} {...K3_FRESH} />,
     );
     expect(html).toContain("Producing blocks");
     expect(html).not.toContain("validator key not read yet");

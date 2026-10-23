@@ -78,14 +78,14 @@ describe("Services › live adapters report what really happened", () => {
   it("a node start resolves only after node_start answered", async () => {
     const store = newStore();
     store.setState({ node: "off" });
-    let answer: (() => void) | null = null;
+    let answer: () => void = () => {};
     nodeStart.mockImplementation(() => new Promise<void>((r) => (answer = r)));
     let done = false;
     const p = liveServiceControls(store).node.start().then(() => (done = true));
     await Promise.resolve();
     await Promise.resolve();
     expect(done).toBe(false);
-    answer?.();
+    answer();
     await p;
     expect(done).toBe(true);
   });

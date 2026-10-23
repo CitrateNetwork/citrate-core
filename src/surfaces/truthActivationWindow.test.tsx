@@ -21,7 +21,6 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
 import { Onboarding } from "../onboarding/Onboarding";
 import { store, memberBondFromGrant, type Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
@@ -110,14 +109,6 @@ describe("chain#331 — activation only inside the lock (MemberBond.sol:219)", (
     expect(html).toContain("activation window closed");
   });
 
-  it("the Node page shows no 'Activate validator' for an unlocked or unread bond, and says why", () => {
-    for (const [b, why] of [[UNLOCKED, "activation window closed"], [UNREAD, "bond lock not read yet"]] as const) {
-      const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ memberBond: b })} />);
-      expect(html).not.toContain("Activate validator");
-      expect(html).toContain(why);
-    }
-  });
-
   it("activateValidator itself refuses an unlocked bond: no arming, no ceremony", async () => {
     store.setState({ ...member({ memberBond: UNLOCKED }) });
     const arm = vi.spyOn(bridge.node, "armMining");
@@ -151,7 +142,7 @@ describe("tripwire — every activation goes through canOfferActivation", () => 
     const body = store.slice(start, store.indexOf("bridge.node.registerValidator(", start));
     expect(body).toContain("canOfferActivation(");
     expect(body.indexOf("canOfferActivation(")).toBeLessThan(body.indexOf("armMining("));
-    for (const f of ["src/surfaces/Node.tsx", "src/onboarding/Onboarding.tsx", "src/agent/harness.ts"]) {
+    for (const f of ["src/surfaces/node/NodeStatus.tsx", "src/surfaces/node/nodeWords.ts", "src/onboarding/Onboarding.tsx", "src/agent/harness.ts"]) {
       expect(readFileSync(f, "utf8"), f).not.toContain("registerValidator(");
     }
   });

@@ -4,12 +4,9 @@
 // the store keeps it in state for the Node surface, and a producer the backend disarmed is no
 // longer treated as armed here.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
 import { store } from "./store";
 import { bridge } from "../bridge";
 import { freshState } from "./state";
-import { Node } from "../surfaces/Node";
-import type { Store } from "./store";
 
 const HOLD = "Block production is off: 1 other producer(s) are live, at least 2 are needed first.";
 
@@ -49,13 +46,5 @@ describe("mining gate hold", () => {
     const { PERSIST_KEYS } = await import("./state");
     expect(PERSIST_KEYS).not.toContain("miningHold");
     expect(freshState("p1").miningHold).toBeNull();
-  });
-
-  it("the Node surface shows the reason", () => {
-    const stub = { toast: () => {}, identity: () => ({ wallet: "" }), refreshEarnings: () => {} } as unknown as Store;
-    const html = renderToStaticMarkup(<Node store={stub} s={{ ...freshState("p1"), miningHold: HOLD }} />);
-    expect(html).toContain("1 other producer(s) are live");
-    const none = renderToStaticMarkup(<Node store={stub} s={{ ...freshState("p1"), miningHold: null }} />);
-    expect(none).not.toContain("Block production is off");
   });
 });

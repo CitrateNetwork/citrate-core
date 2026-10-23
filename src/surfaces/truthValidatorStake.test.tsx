@@ -25,7 +25,6 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Dashboard } from "./Dashboard";
-import { Node } from "./Node";
 import { Wallet } from "./Wallet";
 import { S5, Onboarding } from "../onboarding/Onboarding";
 import { blocksWithTime, measuredBlockSeconds, validatorWord, type ChainReads } from "../shell/chainTruth";
@@ -172,14 +171,6 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
     expect(said).not.toContain("producing again");
   });
 
-  it("the Node surface shows the §1 word and no made-up election odds", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_PENDING })} />);
-    expect(html).toContain("Registered · active from epoch 501");
-    expect(html).not.toContain("Election odds");
-    const active = renderToStaticMarkup(<Node store={stub} s={member({ node: "validating", bondedStake: 32_000, validatorActivation: ACT_ON })} />);
-    expect(active).toContain("Validator active");
-  });
-
   it("onboarding never says every full node builds blocks", () => {
     const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "synced" })} />);
     expect(html).not.toContain("builds blocks");
@@ -256,26 +247,6 @@ describe("V8 — reward and balance captions per §1 Rewards", () => {
     expect(html).not.toContain("earned rewards");
   });
 
-  it("the Node Earning tab names rewardsOf, splits claimable/maturing, and has no off-chain estimates", () => {
-    const s = member({ nTab: "earn", bondedStake: 32_000, validatorActivation: ACT_ON, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
-    const html = renderToStaticMarkup(<Node store={stub} s={s} />);
-    expect(html).not.toContain("off-chain estimate");
-    expect(html).not.toContain("ContributionAccounting.claimable");
-    expect(html).toContain("Validator rewards");
-    expect(html).toContain("Claimable now");
-    expect(html).toContain("Maturing");
-    expect(html).toContain("ValidatorRegistry.rewardsOf");
-    expect(html).toContain("30.00");
-    expect(html).toContain("20.00");
-    expect(html).toContain("10.00");
-  });
-
-  it("a member who is not a validator sees no rewards figure", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ nTab: "earn", bondedStake: 0, rewards: null, claimable: 9.41 })} />);
-    expect(html).not.toContain("9.41");
-    expect(html).toContain("Not a validator");
-  });
-
   it("the Dashboard has no 'Today' tile", () => {
     const html = renderToStaticMarkup(<Dashboard store={stub} s={member()} />);
     expect(html).not.toContain(">Today<");
@@ -348,12 +319,6 @@ function stringLiterals(path: string): string {
 }
 
 describe("#348 review — §1 Rewards words", () => {
-  it("the Node tab is 'Rewards', not 'Earning'", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member()} />);
-    expect(html).toContain(">Rewards<");
-    expect(html).not.toContain(">Earning<");
-  });
-
   it("no 'earnings' / 'keep accruing' in agent prompts, tools, suggestions, greeting or toasts", () => {
     expect(AGENT_SYSTEM_PROMPT.toLowerCase()).not.toMatch(/\bearning/);
     expect(JSON.stringify(AGENT_TOOLS).toLowerCase()).not.toContain("earnings");
@@ -438,18 +403,9 @@ describe("#348 review — 'Producing blocks' from a sampled proposer set", () =>
     await store.refreshProducers();
     expect(store.state.producers).toBeNull();
     expect(store.state.producersError).toContain("rpc 503");
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: null, producersError: "rpc 503" })} />);
+    const html = renderToStaticMarkup(<NodeStatusView store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: null, producersError: "rpc 503" })} publicHead={(member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: null, producersError: "rpc 503" })).height} {...K3_FRESH} />);
     expect(html).toContain("— · producer sample unavailable: rpc 503");
     expect(html.toLowerCase()).not.toContain("not producing");
-  });
-
-  it("the Node card shows the word and names the window", () => {
-    const seen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: OTHER, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
-    expect(seen).toContain("Producing blocks");
-    expect(seen).toContain("sampled over the last 100 blocks");
-    const unseen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
-    expect(unseen).toContain("Not seen producing in the last 100 blocks");
-    expect(unseen).not.toContain(">Producing blocks<");
   });
 
   it("the Dashboard shows the producing count next to the active count", () => {
@@ -462,6 +418,9 @@ describe("#348 review — 'Producing blocks' from a sampled proposer set", () =>
 // Review round 2 on #348 (chain team).
 // ---------------------------------------------------------------------------------------------
 import { producerWindowLabel, producerShortfall } from "../shell/chainTruth";
+import { NodeStatusView } from "./node/NodeStatus";
+
+const K3_FRESH = { publicHeadAgeMs: 1_000, publicHeadError: false, statusAgeMs: 1_000, compat: "compatible", mode: "tauri", statusError: null } as const;
 
 describe("#348 round 2 — the producer labels state the N actually sampled", () => {
   const ME = "0x" + "11".repeat(32);
@@ -469,11 +428,11 @@ describe("#348 round 2 — the producer labels state the N actually sampled", ()
     expect(producerWindowLabel({ head: 1, window: 100, proposers: [] })).toBe("sampled over the last 100 blocks");
     expect(producerShortfall({ head: 1, window: 100, proposers: [] })).toBeNull();
   });
-  it("a short sample (N < 100) is '—' with a reason, on Node and the Dashboard", () => {
+  it("a short sample (N < 100) is '—' with a reason, on Node › Status and the Dashboard", () => {
     const short = { head: 1, window: 37, proposers: [ME] };
     expect(producerShortfall(short)).toBe("only 37 of 100 blocks came back");
     expect(producingWord(short, ME)).toBeNull();
-    const node = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: short })} />);
+    const node = renderToStaticMarkup(<NodeStatusView store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: short })} publicHead={(member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: short })).height} {...K3_FRESH} />);
     expect(node).toContain("— · producer sample incomplete: only 37 of 100 blocks came back");
     expect(node).not.toContain(">Producing blocks<");
     expect(node).not.toContain("last 100 blocks");

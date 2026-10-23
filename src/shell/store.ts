@@ -4416,15 +4416,27 @@ export class Store {
    */
   async refreshEarnings(): Promise<void> {
     if (!readsValidatorRewards(this.state.bondedStake, this.state.memberBond?.activated ?? null)) {
-      this.setState({ rewards: null });
+      this.setState({ rewards: null, rewardsError: null });
       return;
     }
+    // Contract rule 2: an empty or malformed figure is unknown, never 0 (BigInt("") is 0n), so only
+    // plain decimal wei strings are accepted.
+    const dec = (w: unknown): string | null => (typeof w === "string" && /^[0-9]+$/.test(w) ? BigInt(w).toString() : null);
     try {
       const v = await bridge.node.validatorEarnings();
-      this.setState({ rewards: { totalWei: BigInt(v.totalWei).toString(), claimableWei: BigInt(v.claimableWei).toString() } });
+      const totalWei = dec(v.totalWei);
+      const claimableWei = dec(v.claimableWei);
+      if (totalWei == null || claimableWei == null) {
+        const why = "rewardsOf answered an unreadable figure (totalWei " + JSON.stringify(v.totalWei) + ", claimableWei " + JSON.stringify(v.claimableWei) + ")";
+        this.setState({ rewards: null, rewardsError: why });
+        return;
+      }
+      this.setState({ rewards: { totalWei, claimableWei }, rewardsError: null });
     } catch (err) {
-      this.setState({ rewards: null });
-      this.toast("Validator rewards unavailable — " + String((err as Error).message ?? err));
+      // Tauri rejects a Rust Err(String) as a plain string.
+      const why = err instanceof Error ? err.message : typeof err === "string" && err.trim() ? err : "no answer";
+      this.setState({ rewards: null, rewardsError: why });
+      this.toast("Validator rewards unavailable — " + why);
     }
   }
 
