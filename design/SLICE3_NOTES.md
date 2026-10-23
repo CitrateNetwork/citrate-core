@@ -2,7 +2,7 @@
 created: 2026-10-22
 branch: beta/design-slice3
 author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
-status: review (design slice 3, closes prototype v1 due 2026-10-30); Codex round 2 P2s addressed 2026-10-22; chain-team review not yet requested
+status: review (design slice 3, closes prototype v1 due 2026-10-30); Codex round 2 P2s addressed 2026-10-22; DGX v1.2 blockers addressed 2026-10-23; chain-team review not yet requested
 ---
 
 # Design slice 3: Wallet, Groups, Settings
@@ -48,9 +48,9 @@ Every screen has its empty, error and unavailable variant. Errors and unavailabl
 - **Unknown is not zero.** The C1 fixture has no per-member reads, so balance, stake, grant amount, rewards, lock end and deposit read "—". The "read" balance variant draws `N SALT`, never a number. Send fails closed while the balance is unread: the over-balance check can't run, so nothing reaches the ceremony.
 - **One staked figure.** Staked is `stakeOf(pubkey)` only. A locked bond reads "Bond locked · not staked"; a LiquidStakingPool deposit is labelled "not validator stake", and its buttons are drawn off with the reason.
 - **Durations.** The withdrawal delay reads "50,400 blocks (~28 h)" from the measured ~2 s block time (V6).
-- **Transactions.** Pending, then "Included in block —" (no receipt is read). Confirmations are "a depth count, not finality". No final, settled or irreversible anywhere.
+- **Transactions.** Pending, then "Included in block —" (no receipt is read). Confirmations are "a depth count, not finality". No final, settled or irreversible anywhere. Contract v1.2: a reverted transaction is "Included in block N · reverted" with "the transfer didn't happen; the fee was charged" and the fee from gasUsed × effectiveGasPrice ("—" until read); the drawn states also show "Sent, outcome unknown — check tx ⟨hash⟩" and "Not sent".
 - **Money.** The grant uses core's `grantCustody` wording with the §5.7 disclaimer and the §5.6 betanet line. No SALT price, no USD, no investment words. The membership price follows `membershipPriceLabel` (#379): with no read price, every surface links "See membership pricing" to `https://citrate.ai/membership` (not membership.citrate.ai, per the #349 review); the read variant draws the served `⟨displayAmount⟩ a year` slot, not an amount. The two old `membership.citrate.ai` links (0.5.1 onboarding, Settings) now point at citrate.ai/membership.
-- **Groups.** "Joined ⟨cluster⟩" appears only once the group is in the list (GROW-S2 §11). An unknown code is "We couldn't find that invite", never expired. Rounds say "Group rounds not live yet" with the flag off or on; the fixture round states (Committed, Accepted, Rejected) appear only with the flag on and carry the fixture tag. "Deployed · dormant" is shown as proposed for §1 (core #361 asked the chain team).
+- **Groups.** "Joined ⟨cluster⟩" appears only once the group is in the list (GROW-S2 §11). An unknown code is "We couldn't find that invite", never expired. Rounds say "Group rounds not live yet" with the flag off or on; the fixture round states (Committed, Accepted, Rejected) appear only with the flag on and carry the fixture tag. Contract v1.2 bans "Deployed · dormant": both ledger states read "Group rounds not live yet", and the deployed state's rows read "deployed, no rounds (code at the pinned address)".
 - **Settings.** The old 0.5.1 Settings block is gone: no "behind checkpoint" health line (finality isn't running), no "passkey validator · ACTIVE", no "ATTESTED", no allowlist signature policy (Rule 3 allows only budgeted SIWE), keystore export drawn off as core ships it. Verification states include "not verified (optional for membership)" after a skipped Verify step (slice 2 V-03).
 
 ## Click paths
@@ -70,6 +70,13 @@ All three run end to end; slice 3 changes only path 1's landing.
 - **App-only invites copy their own link.** With the join service down, the row showed a `citrate://invite` link but Copy link copied a citrate.ai/join link. Each invite now gets its own key and link (citrate.ai short link, or the app-only `citrate://invite?g&t&k` fallback), and Copy copies exactly that. The link lives in memory only, never in saved state (core #355: no key in the webview's storage); after a reload the row says to revoke and create a new one.
 - **ALF needs the claim in every variant.** The empty variant used to show ALF content without the claim. Without it, every variant except error shows "ALF members only"; error says the claim couldn't be checked.
 
+## Revised 2026-10-23: DGX review (UI truth contract v1.2)
+
+- **Withdraw needs an activated bond.** For a bond that isn't activated, the Wallet › Staking Withdraw row reads "only an activated bond can be withdrawn" (withdrawToMember requires activated()), before and after the lock. For an activated bond it reads "not before the lock end", gated on MemberBond.isKycVerified() on chain, not the userinfo claim. Identity no longer says the claim is "needed to withdraw".
+- **No "Deployed · dormant".** See Groups above. The slice-2 pin row's source no longer says "dormant until genesis".
+- **Reverted transactions pay their fee.** See Transactions above.
+- Tripwires: no withdraw wording for an unactivated bond; no "dormant" string on screen; "nothing moved", "no fee" and "dormant" join the banned-word scan.
+
 ## Open questions
 
 For core:
@@ -84,7 +91,7 @@ For the chain team:
 
 6. Exiting and Slashed for Wallet and Node: confirm the words and that rehearsal 1 can export one of each.
 7. A sample member's balance, stake, bond principal and lock end in the rehearsal-1 export (ruling 7) so v2 can replace the "—" values.
-8. "Deployed · dormant" for the round ledgers (core #361).
+8. ~~"Deployed · dormant"~~: answered in contract v1.2 (banned; "Group rounds not live yet" in both ledger states).
 
 ## Known debt
 

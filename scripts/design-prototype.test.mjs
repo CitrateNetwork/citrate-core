@@ -905,7 +905,7 @@ describe("slice 3: copy follows the UI truth contract on every Wallet, Groups an
     return out;
   };
   const DISCLAIMER = "The grant is not purchased, and it is not an investment.";
-  const BANNED = /\b(final|finali[sz]ed|finality is running|settled|irreversible|earn(?:s|ed|ing|ings)?|income|projected|projection|estimate[sd]?|apy|apr|yield|invest(?:ed|ing|ment|ments)?|profit|passive|appreciation|validating|producing again)\b/i;
+  const BANNED = /\b(final|finali[sz]ed|finality is running|settled|irreversible|earn(?:s|ed|ing|ings)?|income|projected|projection|estimate[sd]?|apy|apr|yield|invest(?:ed|ing|ment|ments)?|profit|passive|appreciation|validating|producing again|nothing moved|no fee|dormant)\b/i;
 
   it("tripwire: the slice-3 template text has no banned word or price number either", () => {
     const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
@@ -1103,7 +1103,7 @@ describe("slice 3 review (DGX, UI truth contract v1.2)", () => {
       const walk = (v) => (typeof v === "string" ? all.push(v) : Array.isArray(v) ? v.forEach(walk) : v && typeof v === "object" ? Object.values(v).forEach(walk) : 0);
       for (const [k, v] of Object.entries(V)) if (/^(wl|stg)[A-Z]/.test(k)) walk(v);
     }
-    for (const t of all.filter((x) => /withdraw/i.test(x) && /bond|lock|identity|principal|grant/i.test(x))) expect(t).toMatch(/only an activated bond can be withdrawn|activated/);
+    for (const t of all.filter((x) => /withdraw/i.test(x) && /\bbond\b|\block\b|identity|principal|grant/i.test(x) && !/LiquidStakingPool/.test(x))) expect(t).toMatch(/only an activated bond can be withdrawn|activated/);
   });
 
   it("rounds read Group rounds not live yet in both ledger states, with deployed, no rounds as the row value", async () => {

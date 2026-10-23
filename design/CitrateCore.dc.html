@@ -6143,7 +6143,7 @@ class Component extends DCLogic {
     V.soBondParams = [
       { k: 'Bond per pin', v: '10 SALT', src: 'IPFSIncentivesV3.BOND()' },
       { k: 'Pin reward', v: '4 SALT over 4 rounds', src: 'IPFSIncentivesV3.REWARD(), ROUNDS()' },
-      { k: 'Contract', v: 'deployed, not funded', src: 'contract §4: dormant until genesis' },
+      { k: 'Contract', v: 'deployed, not funded', src: 'contract §4: funded at genesis · Pin bonds not live yet' },
     ];
     V.soBondStates = [
       { k: 'Pinned', v: 'status Active, no challenger' }, { k: 'Challenged', v: 'status Active, getChallenge.challenger ≠ 0' },
@@ -7024,13 +7024,15 @@ class Component extends DCLogic {
     // Activity: this session's signed transactions, or the drawn states from contract §1.
     const TXW = {
       pending: ['Pending', 'in the mempool, no receipt yet', 'info'],
-      included: ['Included in block —', 'eth_getTransactionReceipt; N isn’t read in the prototype. Confirmations: head − N, a depth count, not finality', 'ok'],
+      included: ['Included in block —', 'receipt status 0x1 (eth_getTransactionReceipt); N isn’t read in the prototype. Confirmations: head − N, a depth count, not finality', 'ok'],
       confirmations: ['N confirmations', 'head − N, a depth count, not finality', 'ok'],
-      failed: ['Failed · reverted', 'the receipt has status 0; nothing moved', 'warn'],
+      reverted: ['Included in block — · reverted', 'receipt status 0: the transfer didn\'t happen; the fee was charged · fee — SALT (receipt gasUsed × effectiveGasPrice, not read in the prototype)', 'warn'],
+      unknown: ['Sent, outcome unknown — check tx ⟨hash⟩', 'the node may have accepted it; reconcile by hash before trying again. Never re-sent automatically', 'warn'],
+      notsent: ['Not sent', 'the node provably refused the first submission (for example insufficient funds); nothing was broadcast', 'muted'],
     };
     const drawn = s.wlRows === 'drawn';
     const txs = drawn
-      ? [['Send', 'pending'], ['Send', 'included'], ['Send', 'confirmations'], ['Send', 'failed']].map(([kind, st], i) => ({ id: 'd' + i, kind, amount: '— SALT', hash: null, state: st }))
+      ? [['Send', 'pending'], ['Send', 'included'], ['Send', 'confirmations'], ['Send', 'reverted'], ['Send', 'unknown'], ['Send', 'notsent']].map(([kind, st], i) => ({ id: 'd' + i, kind, amount: '— SALT', hash: null, state: st }))
       : (s.wlTx || []);
     V.wlTxRows = txs.map((t) => {
       const w = TXW[t.state] || TXW.pending; const tn = pill(w[2]);
@@ -7066,7 +7068,9 @@ class Component extends DCLogic {
             { k: 'Grant', v: '— SALT', vColor: 'var(--tx-2)', src: 'MemberBond.principal() · not read in the prototype' },
             { k: 'Bond', v: staked ? 'activated · staked in the ValidatorRegistry' : 'Bond locked · not staked', src: 'MemberBond.activated()' },
             lockRow,
-            { k: 'Withdraw', v: 'not before the lock end', vColor: 'var(--tx-2)', src: 'after it: Unlocked · verify identity to withdraw, until isKycVerified()' },
+            staked
+              ? { k: 'Withdraw', v: 'not before the lock end', vColor: 'var(--tx-2)', src: 'after it: Unlocked · verify identity to withdraw until MemberBond.isKycVerified() (the on-chain gate, not the userinfo claim), then Unlocked; requestRelease starts the unbond' }
+              : { k: 'Withdraw', v: 'only an activated bond can be withdrawn', vColor: 'var(--tx-2)', src: 'withdrawToMember requires MemberBond.activated(), before and after the lock' },
           ] : [],
           note: granted ? disc : '',
         }),
@@ -7092,7 +7096,7 @@ class Component extends DCLogic {
           rows: [
             { k: 'Membership', v: s.tier === 'free' ? 'Not a member' : lapsed ? 'Membership lapsed' : 'Member', vColor: lapsed ? 'var(--danger)' : 'var(--tx-1)', src: 'CitrateMemberSBT.isActive(tokenId). isActive does not include identity verification' },
             { k: 'Token', v: s.tier === 'free' ? '—' : '— · not read', vColor: 'var(--tx-2)', src: 'the member token id for this address' },
-            { k: 'Identity verification', v: s.tier === 'free' ? '—' : kyc, src: 'kyc_status in /userinfo (auth_userinfo). Needed to withdraw after the lock end' },
+            { k: 'Identity verification', v: s.tier === 'free' ? '—' : kyc, src: 'kyc_status in /userinfo (auth_userinfo)' + (staked ? '. The bond checks its own gate, MemberBond.isKycVerified(), not this claim' : '') },
           ],
         }),
         card('Wallet addresses', 'Addresses', {
@@ -7201,9 +7205,9 @@ class Component extends DCLogic {
     V.gxJoinPrivacy = 'The invite is kept by core (Rust, in the OS keyring) until you act. Nothing is resolved before you click Review.';
     // Round card in the chat, behind the build flag (#361).
     V.gxChatRound = isG && gt === 'chat' && !!sel && s.roundsFlag;
-    const ledgerWord = s.roundsLedger === 'dormant' ? 'Deployed · dormant' : 'Group rounds not live yet';
-    V.gxRoundWord = ledgerWord;
-    V.gxRoundSrc = s.roundsLedger === 'dormant' ? 'both ledgers in the address book with code at the address · rounds open after mainnet · “Deployed · dormant” is proposed for contract §1' : 'FederatedRoundLedger and PatronageLedger are not in the address book (40204.json), so nothing is read';
+    // Contract v1.2: "Group rounds not live yet" in both ledger states; the deployed state only changes the detail.
+    V.gxRoundWord = 'Group rounds not live yet';
+    V.gxRoundSrc = s.roundsLedger === 'dormant' ? 'Both ledgers are deployed and hold no rounds (code at the pinned addresses in the address book)' : 'FederatedRoundLedger and PatronageLedger are not in the address book (40204.json), so nothing is read';
     // ----- Members -----
     V.gxMembers = gOn('members') && !!sel;
     V.gxMembersNone = gOn('members') && !sel;
@@ -7246,11 +7250,11 @@ class Component extends DCLogic {
       V.gxCards = [card('Groups rounds', 'Group rounds', {
         meta: s.roundsFlag ? 'round cards on (VITE_FL_ROUND_CARDS=1)' : 'round cards off (0.5.2 default)',
         lead: s.roundsLedger === 'dormant'
-          ? 'Deployed · dormant. Both ledgers are on chain and hold no rounds; rounds open after mainnet.'
+          ? 'Group rounds not live yet. Both ledgers are deployed and hold no rounds, so nothing here trains or pays.'
           : 'Group rounds not live yet. FederatedRoundLedger and PatronageLedger are not deployed on 40204, so this tab reads nothing from the chain and shows no rounds, amounts or rewards.',
         rows: [
-          { k: 'FederatedRoundLedger', v: s.roundsLedger === 'dormant' ? 'code at the pinned address' : 'not in the address book', vColor: 'var(--tx-2)', src: 'src-tauri/addresses/40204.json, then contract_code_size (eth_getCode)' },
-          { k: 'PatronageLedger', v: s.roundsLedger === 'dormant' ? 'code at the pinned address' : 'not in the address book', vColor: 'var(--tx-2)', src: 'same check; contract §4: deployed dormant at genesis (audit phase A)' },
+          { k: 'FederatedRoundLedger', v: s.roundsLedger === 'dormant' ? 'deployed, no rounds (code at the pinned address)' : 'not in the address book', vColor: 'var(--tx-2)', src: 'src-tauri/addresses/40204.json, then contract_code_size (eth_getCode)' },
+          { k: 'PatronageLedger', v: s.roundsLedger === 'dormant' ? 'deployed, no rounds (code at the pinned address)' : 'not in the address book', vColor: 'var(--tx-2)', src: 'same check; contract §4: deployed at genesis (audit phase A), with no rounds until after mainnet' },
           { k: 'Training opt-in', v: s.learnSessions ? 'on in Hermes › Controls' : 'off', vColor: 'var(--tx-2)', src: 'trajectories_settings_get: recording only; nothing is sent to a round' },
         ],
         btns: [btn('Training opt-in in Hermes › Learn', () => this.hgo('learn'))],
@@ -7320,7 +7324,7 @@ class Component extends DCLogic {
       V.annFlag = { chat: 'round cards: VITE_FL_ROUND_CARDS (build flag, off in 0.5.2) · invite links: join service live (GROW-S1)', rounds: 'VITE_FL_ROUND_CARDS (off) · rounds: “Group rounds not live yet” (contract §4)', members: 'invite links: join service live (GROW-S1); rendezvous join (GROW-S2)', alf: 'ALF claim (identity)' }[gt] || 'none';
       V.annHasExtra = true;
       V.annExtra = [];
-      if (gt === 'chat' || gt === 'rounds') V.annExtra.push({ label: 'round cards', chips: [chip('off (0.5.2)', !s.roundsFlag, () => this.setState({ roundsFlag: false })), chip('on', s.roundsFlag, () => this.setState({ roundsFlag: true }))] }, { label: 'ledgers', chips: [chip('not in address book (today)', s.roundsLedger !== 'dormant', () => this.setState({ roundsLedger: 'none' })), chip('deployed · dormant', s.roundsLedger === 'dormant', () => this.setState({ roundsLedger: 'dormant' }))] });
+      if (gt === 'chat' || gt === 'rounds') V.annExtra.push({ label: 'round cards', chips: [chip('off (0.5.2)', !s.roundsFlag, () => this.setState({ roundsFlag: false })), chip('on', s.roundsFlag, () => this.setState({ roundsFlag: true }))] }, { label: 'ledgers', chips: [chip('not in address book (today)', s.roundsLedger !== 'dormant', () => this.setState({ roundsLedger: 'none' })), chip('deployed, no rounds', s.roundsLedger === 'dormant', () => this.setState({ roundsLedger: 'dormant' }))] });
       if (gt === 'members') V.annExtra.push({ label: 'join service', chips: [chip('live', s.gxSvc === 'live', () => this.setState({ gxSvc: 'live' })), chip('unavailable', s.gxSvc !== 'live', () => this.setState({ gxSvc: 'down' }))] });
       if (gt === 'alf' || gt === 'chat') V.annExtra.push({ label: 'ALF claim', chips: [chip('no', !s.alfClaim, () => this.setState({ alfClaim: false })), chip('yes', !!s.alfClaim, () => this.setState({ alfClaim: true }))] });
       V.annHasExtra = V.annExtra.length > 0;
