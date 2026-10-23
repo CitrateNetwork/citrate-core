@@ -11,6 +11,7 @@ harness_guard_cleans_up_after_a_panicking_body | harness | SCL-S1.3 | guard kill
 harness_guard_never_signals_an_unmarked_pid | harness | SCL-S1.3 | a recorded pid without the marker is reported foreign and never signalled
 harness_sweep_finds_marked_processes_missing_from_the_record | harness | SCL-S1.3 | a marked process missing from the pid file is still found and killed
 harness_never_signals_pid_zero_or_a_wrapping_pid | harness | SCL-S2.2 | the harness refuses pid 0 and wrapping pids, so it never signals its own group or a negative pid
+harness_unreaped_child_fails_the_reaped_check | harness | SCL-S1.3 | an exited child nobody waited for fails the reaped check and is reported left behind
 harness_timing_windows_are_monotonic_and_never_short | harness | SCL-S1.3 | waits and observation windows run on the monotonic clock and never end early
 pc_fresh_start_creates_exactly_one_incarnation | positive-control | SCL-S1.3 | a fresh Start creates one incarnation and no other over 2 s (bug a positive half)
 pc_single_stop_ends_the_child_and_stays_off | positive-control | SCL-S1.3 | one Stop ends and reaps the child; Off with no new child over 2 s
@@ -24,7 +25,7 @@ repeated_stop_joins_receipt | regression | SCL-S2.2 | a repeated Stop joins the 
 explicit_start_after_stop_creates_exactly_one_incarnation | positive-control | SCL-S2.2 | one explicit Start after Stop creates exactly one new incarnation
 stop_with_a_held_reader_is_incomplete_and_quarantined | regression | SCL-S2.2 | a reader held open makes Stop Incomplete and the service Quarantined until it really ends
 start_during_held_reader_teardown_waits_for_cleanup | regression | SCL-S2.2 | a Start that supersedes a Stop mid-teardown spawns nothing until the old incarnation's readers are reconciled
-stop_without_a_monitor_is_observation_unknown | regression | SCL-S2.2 | with the monitor gone, every Stop and Start (repeated or joining) is ObservationUnknown, never Accepted; legacy stop() returns at once
+stop_without_a_monitor_is_observation_unknown | regression | SCL-S2.2 | with the monitor gone, every Stop and Start (repeated or joining) is ObservationUnknown, never Accepted; legacy stop() returns at once; the ended monitor still terminates and reaps its child
 start_after_a_crash_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after a crash leaves its output held and the budget is spent, a Start spawns nothing until cleanup
 start_after_health_failures_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after health failures exhaust the budget with output held, a Start spawns nothing until cleanup
 start_after_shutdown_is_rejected_closing | regression | SCL-S2.2 | a Start after shutdown begins is RejectedClosing and spawns nothing

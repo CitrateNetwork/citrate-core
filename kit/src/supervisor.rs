@@ -1896,6 +1896,35 @@ pub fn terminate_unsupervised(child: &mut Child, grace: Duration) {
     terminate_child(child, grace, None);
 }
 
+/// The monitor's hold on the current child. Every normal path reaps the child before this goes
+/// out of scope, so the drop finds it reaped and does nothing. If the monitor unwinds instead
+/// (a `ChildWatch` hook panicked), the drop kills and reaps the child, so nothing outlives the
+/// supervisor (the no-orphan guarantee) and no unreaped child is left behind.
+struct OwnedChild(Child);
+
+impl std::ops::Deref for OwnedChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        // `Child` remembers a reaped status, so this never signals a pid that was reused.
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 /// The monitor loop: the sole owner of the child and the sole writer of process state.
 ///
 /// Every turn reads the latest intent from the cell (SC1):
@@ -2032,7 +2061,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
             barrier();
         }
         let mut child = match spawn_child(&spec) {
-            Ok(c) => c,
+            Ok(c) => OwnedChild(c),
             Err(e) => {
                 end_spawn_ticket(&shared);
                 // Spawn itself failed (bad path / EACCES). Treat as a crash so the same bounded
