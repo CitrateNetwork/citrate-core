@@ -592,8 +592,6 @@ export interface AppState {
   s7TxHash: string | null;
   /** Join-8 — when `s7TxHash` was recorded (ms since epoch; from the durable record after a relaunch). */
   s7TxAt: number | null;
-  /** Join-8 — the member chose "Explore free" at S7 (activate later from Node). Persisted. */
-  validatorSkipped: boolean;
   /** Join-8 — the step's last chain read (NOT persisted: chain is the truth, re-read on launch). */
   activation: ActivationStatusView | null;
   /** Join-8 — why the last read failed (the last honest read is kept), or null. */
@@ -820,7 +818,6 @@ export function freshState(pid: string): AppState {
     walletReview: null,
     s7TxHash: null,
     s7TxAt: null,
-    validatorSkipped: false,
     activation: null,
     activationError: null,
     chatMsgs: [],
@@ -1030,7 +1027,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "validatorSkipped", "walletAddr", "commsAddr", "socketPath", "activeModelId",
+  "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
