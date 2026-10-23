@@ -1460,3 +1460,26 @@ fn a_file_a_models_download_left_is_never_verified_or_removed_by_the_store() {
     assert!(marker.exists(), "and its marker");
     assert!(read_store_file(&fx.root).expect("state").installs.is_empty());
 }
+
+/// Tripwire (#441): the Store's only file clean-up and reconcile's interrupted check both skip a
+/// file that carries the Models screen's download marker.
+#[test]
+fn tripwire_the_store_never_touches_a_file_with_a_models_marker() {
+    let src = include_str!("store_catalog.rs");
+    let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src);
+    let body = |sig: &str| -> &str {
+        let f = &prod[prod.find(sig).unwrap_or_else(|| panic!("{sig}"))..];
+        &f[..f.find("\n}\n").expect("ends")]
+    };
+    let clean = body("fn remove_unverified_model_locked(");
+    assert!(clean.find("models_download_left(").expect("marker check") < clean.find("remove_file(").expect("delete"));
+    let rec = body("fn reconcile_models(");
+    assert!(rec.find("models_download_left(").expect("marker check") < rec.find(".verify_held(").expect("verify"));
+    // The only other file removal is the single-use review stage (not a model).
+    let stage = body("fn take_stage(");
+    assert_eq!(
+        prod.matches("std::fs::remove_file(").count(),
+        clean.matches("std::fs::remove_file(").count() + stage.matches("std::fs::remove_file(").count(),
+        "every model file removal in the Store goes through remove_unverified_model_locked"
+    );
+}

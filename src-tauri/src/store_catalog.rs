@@ -967,9 +967,16 @@ fn remove_unverified_model(models_dir: &Path, file: &str) -> Result<(), Refusal>
     remove_unverified_model_locked(models_dir, &file)
 }
 
+/// Whether `file` is the Models screen's: its download marker (`<file>.download.json`) is there.
+/// A Store install never writes one, so such a file (and the marker) is never verified against a
+/// Store listing or removed by the Store; only the Store's record can go.
+fn models_download_left(models_dir: &Path, file: &str) -> bool {
+    std::fs::symlink_metadata(crate::model_catalog::marker_path(models_dir, file)).is_ok()
+}
+
 /// [`remove_unverified_model`] for a caller that already holds the file's download lock.
 fn remove_unverified_model_locked(models_dir: &Path, file: &str) -> Result<(), Refusal> {
-    if crate::model::is_file_ready(models_dir, file) {
+    if crate::model::is_file_ready(models_dir, file) || models_download_left(models_dir, file) {
         return Ok(());
     }
     let mut paths = vec![models_dir.join(file)];
@@ -1020,7 +1027,8 @@ fn reconcile_models(root: &Path, t: &Targets<'_>, installing: Option<&str>) -> R
             continue;
         };
         let interrupted = t.models_dir.join(&file).is_file()
-            && !crate::model::is_file_ready(&t.models_dir, &file);
+            && !crate::model::is_file_ready(&t.models_dir, &file)
+            && !models_download_left(&t.models_dir, &file);
         if !interrupted {
             keep.push(r);
             continue;
