@@ -147,7 +147,7 @@ impl ImportRegistry {
 
     /// Run `f` unless the registry is closed, holding the gate so a concurrent
     /// [`Self::shutdown`] waits for `f` (and the caller's later stops see its effect).
-    fn unless_closed<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
+    pub(crate) fn unless_closed<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
         let closed = lock(&self.gate);
         (!*closed).then(f)
     }
@@ -486,12 +486,11 @@ fn run_importer(
     digest: &str,
     mut on_line: impl FnMut(&ImportLine),
 ) -> KnowledgeImportReport {
+    // K4 (B1): the shared guard rolls back an interrupted restore before the memory dir is
+    // created; when that fails the import refuses, so no corpus-only store takes its place.
     if let Some(parent) = plan.store_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return KnowledgeImportReport::failed(
-                format!("cannot create the memory directory: {e}"),
-                Some(digest.to_string()),
-            );
+        if let Err(e) = crate::storage_backup::ensure_memory_dir(parent) {
+            return KnowledgeImportReport::failed(e, Some(digest.to_string()));
         }
     }
     let mut progress =
@@ -746,10 +745,9 @@ fn import_plan_with_manager(
     if plan.registry.is_closed() {
         return KnowledgeImportReport::failed(INTERRUPTED_ERROR.into(), None);
     }
-    let was_running = mgr.is_running_now();
-    if was_running {
-        mgr.stop();
-    }
+    // `stop` also waits for a stop already under way, so the importer never opens the store
+    // while a daemon still holds it; its answer decides the restart.
+    let was_running = mgr.stop();
     let mut report = run_plan_locked(plan, on_line);
     if was_running {
         // Never restart the daemon once app quit began (it would outlive the quit).

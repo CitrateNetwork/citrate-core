@@ -996,3 +996,50 @@ fn live_interrupted_real_import_resumes_and_leaves_the_store_consistent() {
     assert!(r3.tenants_imported.is_empty(), "{r3:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------- K4 B1: rollback before import
+
+/// A data root left by a restore interrupted between its swap renames: no `memory/`, the previous
+/// store kept beside it.
+#[cfg(unix)]
+fn interrupted_plan(dir: &Path, importer: PathBuf) -> ImportPlan {
+    let kept = dir.join("memory.before-restore-20261019-120000/store.bge.memdag");
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(kept.join("CURRENT"), b"previous").unwrap();
+    ImportPlan {
+        importer,
+        store_path: dir.join("memory/store.bge.memdag"),
+        corpus_dir: Some(fixture_corpus()),
+        semantic: true,
+        env: vec![("CITRATE_MEM_EMBED".into(), "bge".into())],
+        first_line_timeout: std::time::Duration::from_secs(10),
+        registry: Arc::new(ImportRegistry::default()),
+    }
+}
+
+/// B1: when the rollback fails, the import refuses: it never creates `memory/` and never runs the
+/// importer, so no corpus-only store can take the previous store's place.
+#[cfg(unix)]
+#[test]
+fn the_import_refuses_when_the_rollback_fails_and_never_creates_memory() {
+    let dir = tmp_dir("b1-fail");
+    let p = interrupted_plan(&dir, fake_importer(&dir, &done_lines(FIXTURE_DIGEST), 0));
+    let r = crate::storage_backup::tests::with_failing_rollback_rename(|| run_plan(&p, |_| {}));
+    assert_eq!(r.state, "failed", "{r:?}");
+    assert!(r.error.as_deref().unwrap_or("").contains("interrupted"), "{r:?}");
+    assert!(!dir.join("memory").exists(), "no fresh memory dir");
+    assert!(!dir.join("argv.txt").exists(), "the importer never ran");
+    assert!(dir.join("memory.before-restore-20261019-120000/store.bge.memdag/CURRENT").exists());
+}
+
+/// B1: when the rollback works, the import runs on the previous store, not on a fresh one.
+#[cfg(unix)]
+#[test]
+fn the_import_rolls_an_interrupted_restore_back_before_importing() {
+    let dir = tmp_dir("b1-ok");
+    let p = interrupted_plan(&dir, fake_importer(&dir, &done_lines(FIXTURE_DIGEST), 0));
+    let r = run_plan(&p, |_| {});
+    assert_eq!(r.state, "imported", "{r:?}");
+    assert_eq!(std::fs::read(dir.join("memory/store.bge.memdag/CURRENT")).unwrap(), b"previous");
+    assert!(!dir.join("memory.before-restore-20261019-120000").exists());
+}
