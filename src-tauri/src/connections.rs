@@ -16,6 +16,7 @@
 //! the loopback the listener binds is common. NO `#[tauri::command]` here returns a
 //! token or the client secret (I-2 barrier); those live sealed in the OS keyring.
 
+use crate::secret::SecretString;
 use base64::Engine as _;
 use rand::RngCore as _;
 use sha2::{Digest as _, Sha256};
@@ -622,13 +623,13 @@ pub(crate) fn capture_public_pkce(
 /// The provider token response. Only `access_token` is required; the rest vary by
 /// provider (Google → refresh_token + expires_in; GitHub → scope; Notion →
 /// neither, plus workspace fields we ignore). Unknown fields are dropped by serde.
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct TokenResponse {
-    access_token: String,
+    access_token: SecretString,
     #[serde(default)]
     token_type: Option<String>,
     #[serde(default)]
-    refresh_token: Option<String>,
+    refresh_token: Option<SecretString>,
     #[serde(default)]
     scope: Option<String>,
     #[serde(default)]
@@ -661,7 +662,7 @@ struct ConnMeta {
 /// HUP-S0.3b: the token fields of the SAME sealed record, for in-process request auth only.
 #[derive(Deserialize)]
 struct SealedToken {
-    access_token: String,
+    access_token: SecretString,
     #[serde(default)]
     expires_at: Option<u64>,
 }
@@ -677,12 +678,10 @@ pub(crate) fn sealed_access_token(
 ) -> Option<Zeroizing<String>> {
     let bytes = vault.custody_get(&slot(service)).ok()?;
     let rec: SealedToken = serde_json::from_slice(&bytes).ok()?;
-    // Moved (not copied) into a wiping buffer before any early return can drop it.
-    let token = Zeroizing::new(rec.access_token);
-    if rec.expires_at.is_some_and(|exp| exp <= now_unix()) || token.is_empty() {
+    if rec.expires_at.is_some_and(|exp| exp <= now_unix()) || rec.access_token.expose().is_empty() {
         return None;
     }
-    Some(token)
+    Some(rec.access_token.into_zeroizing())
 }
 
 /// The claim-free connection status crossing the invoke boundary — NO token.
@@ -795,8 +794,8 @@ impl ConnectionManager {
         let connected_at = now_unix();
         let expires_at = tok.expires_in.map(|e| connected_at.saturating_add(e));
         let record = StoredConnection {
-            access_token: &tok.access_token,
-            refresh_token: tok.refresh_token.as_deref(),
+            access_token: tok.access_token.expose(),
+            refresh_token: tok.refresh_token.as_ref().map(SecretString::expose),
             token_type: tok.token_type.as_deref(),
             scope: tok.scope.as_deref(),
             expires_at,
@@ -1249,6 +1248,52 @@ mod tests {
         assert!(ct_eq(b"abcdef", b"abcdef"));
         assert!(!ct_eq(b"abcdef", b"abcdeg"));
         assert!(!ct_eq(b"abc", b"abcd"));
+    }
+
+    /// The provider's token response never prints a token in `Debug`, and a response the exchange
+    /// cannot use yields an error that carries no part of the body.
+    #[test]
+    fn token_response_debug_and_errors_carry_no_token() {
+        let tok: TokenResponse = serde_json::from_str(
+            r#"{"access_token":"gho_live_secret_123","refresh_token":"ghr_refresh_456","scope":"repo"}"#,
+        )
+        .unwrap();
+        let dbg = format!("{tok:?}");
+        assert!(
+            !dbg.contains("gho_live_secret_123"),
+            "access token in Debug: {dbg}"
+        );
+        assert!(
+            !dbg.contains("ghr_refresh_456"),
+            "refresh token in Debug: {dbg}"
+        );
+        assert!(
+            dbg.contains("repo"),
+            "non-secret fields stay visible: {dbg}"
+        );
+
+        let vault = fresh_vault();
+        let fake = Arc::new(FakeHttp {
+            last_url: StdMutex::new(None),
+            last_form: StdMutex::new(Vec::new()),
+            response: r#"{"access_token":42,"leak":"gho_live_secret_123"}"#.to_string(),
+        });
+        let mgr = ConnectionManager::new(Box::new(SharedHttp(fake)), PathBuf::from("unused"));
+        let creds = ClientCreds {
+            client_id: "id".to_string(),
+            client_secret: Zeroizing::new("cs".to_string()),
+        };
+        let err = mgr
+            .exchange_and_store(Service::GitHub, &creds, &vault, "c", "v")
+            .expect_err("a non-string token is refused");
+        assert!(
+            !err.to_string().contains("gho_live"),
+            "token in error: {err}"
+        );
+        assert!(
+            !format!("{err:?}").contains("gho_live"),
+            "token in error Debug: {err:?}"
+        );
     }
 
     #[test]

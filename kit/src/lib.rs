@@ -34,6 +34,7 @@ pub mod eip712;
 pub mod fsutil;
 pub mod oidc;
 pub mod rpc;
+pub mod secret;
 pub mod siwe;
 pub mod supervisor;
 pub mod txdecode;

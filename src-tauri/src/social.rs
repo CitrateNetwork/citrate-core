@@ -18,6 +18,7 @@ use zeroize::Zeroize;
 use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
 use crate::connections::{capture_public_pkce, random_state, ConnError, OAUTH_REDIRECT_URI};
 use crate::oidc::HttpClient;
+use crate::secret::SecretString;
 
 const CHAIN_ID: u64 = 40204;
 
@@ -210,11 +211,11 @@ fn authorize_url(cfg: &NetCfg, state: &str, challenge: &str) -> String {
     )
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct TokenResp {
-    access_token: String,
+    access_token: SecretString,
     #[serde(default)]
-    refresh_token: Option<String>,
+    refresh_token: Option<SecretString>,
     #[serde(default)]
     scope: Option<String>,
     #[serde(default)]
@@ -320,8 +321,8 @@ fn do_link(
     let linked_at = now_unix();
     let expires_at = tok.expires_in.map(|e| linked_at.saturating_add(e));
     let sealed = SealedToken {
-        access_token: &tok.access_token,
-        refresh_token: tok.refresh_token.as_deref(),
+        access_token: tok.access_token.expose(),
+        refresh_token: tok.refresh_token.as_ref().map(SecretString::expose),
         scope: tok.scope.as_deref(),
         expires_at,
         linked_at,
@@ -331,7 +332,7 @@ fn do_link(
     bytes.zeroize();
     put.map_err(|_| "could not seal the token in the keyring".to_string())?;
 
-    let handle = fetch_handle(&http, network, &cfg, &tok.access_token)?;
+    let handle = fetch_handle(&http, network, &cfg, tok.access_token.expose())?;
     let mut links = load_links(app);
     links.retain(|l| l.network != network);
     let stored = StoredLink {
@@ -1156,6 +1157,16 @@ pub fn directory_search_sync(
 
 #[cfg(test)]
 mod tests {
+    /// The provider's token response never prints its token in `Debug`.
+    #[test]
+    fn token_response_debug_carries_no_token() {
+        let tok: super::TokenResp =
+            serde_json::from_str(r#"{"access_token":"dsc_live_token_789","scope":"identify"}"#)
+                .unwrap();
+        let dbg = format!("{tok:?}");
+        assert!(!dbg.contains("dsc_live_token_789"), "token in Debug: {dbg}");
+    }
+
     use super::*;
 
     #[test]
