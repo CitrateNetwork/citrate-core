@@ -21,12 +21,13 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::connections::random_state;
+use crate::invite_seal::InvitePrivKey;
 
 /// INVITE-S2 default time-to-live for a published invite: 14 days (Unix ms are added at publish).
 const INVITE_TTL_MS: u64 = 14 * 24 * 60 * 60 * 1000;
 
 /// A one-time claimable invite the owner minted for a group. `for_handle` is a label only.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingInvite {
     pub group: String,
@@ -36,8 +37,8 @@ pub struct PendingInvite {
     /// CONNECT-S1 — the invite's ephemeral PRIVATE key (hex), owner-only. Claims from the relay's
     /// server-blind inbox are sealed to the matching public key (in the link) and open only with this.
     /// `#[serde(default)]` so pre-S1 invites (no key) still load — they fall back to the manual path.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub priv_key: String,
+    #[serde(default, skip_serializing_if = "InvitePrivKey::is_empty")]
+    pub priv_key: InvitePrivKey,
     /// CONNECT-S1 — the full share link (carries the ephemeral PUBLIC key `k=`), so the owner's
     /// "Copy link" hands out a one-click link. Public; safe to serialize. `default` for pre-S1 records.
     #[serde(default)]
@@ -526,7 +527,9 @@ mod tests {
             token: "tok123".into(),
             for_handle: "@alice".into(),
             created_at: 1000,
-            priv_key: "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
+            priv_key: super::InvitePrivKey::from_hex(
+                "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
+            ),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
@@ -544,6 +547,35 @@ mod tests {
         assert!(super::invite_views_for_group(&invites, "other").is_empty());
     }
 
+    /// A pending invite's `Debug` output never carries its private key, and the stored form
+    /// round-trips (the key is kept, a pre-S1 record without one still loads).
+    #[test]
+    fn pending_invite_debug_hides_the_private_key_and_round_trips() {
+        let (priv_key, _pub) = crate::invite_seal::new_invite_keypair();
+        let hex = priv_key.expose_hex().to_string();
+        let inv = super::PendingInvite {
+            group: "grp_abc".into(),
+            token: "tok123".into(),
+            for_handle: "@alice".into(),
+            created_at: 1000,
+            priv_key,
+            link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+        };
+        let dbg = format!("{inv:?}");
+        assert!(!dbg.contains(&hex[..16]), "private key in Debug: {dbg}");
+        assert!(
+            dbg.contains("tok123"),
+            "the rest of the record is still visible: {dbg}"
+        );
+        let json = serde_json::to_vec(&vec![inv]).unwrap();
+        let back: Vec<super::PendingInvite> = serde_json::from_slice(&json).unwrap();
+        assert_eq!(back[0].priv_key.expose_hex(), hex);
+        let legacy: Vec<super::PendingInvite> =
+            serde_json::from_str(r#"[{"group":"g","token":"t","forHandle":"","createdAt":1}]"#)
+                .unwrap();
+        assert!(legacy[0].priv_key.is_empty());
+    }
+
     /// ECIES private keys of outstanding invites — must be written owner-only
     /// (no group/other read bits). Fails on the old `fs::write` (umask `0644`).
     #[cfg(unix)]
@@ -559,7 +591,7 @@ mod tests {
             token: "tok123".into(),
             for_handle: "@alice".into(),
             created_at: 1000,
-            priv_key: "deadbeef".into(),
+            priv_key: super::InvitePrivKey::from_hex("deadbeef".into()),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
         }];
         super::write_pending(&path, &invites).unwrap();

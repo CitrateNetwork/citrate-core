@@ -1815,6 +1815,15 @@ pub async fn custody_put(
 pub fn custody_put_sync(
     state: State<'_, CustodyState>,
     slot: String,
+    bytes: Vec<u8>,
+) -> std::result::Result<(), String> {
+    invoke_put(&state.0, &slot, bytes)
+}
+
+/// The invoke-path write: what [`custody_put`] does with a webview-supplied slot and bytes.
+pub fn invoke_put(
+    vault: &CustodyVault,
+    slot: &str,
     mut bytes: Vec<u8>,
 ) -> std::result::Result<(), String> {
     // A3-01 boundary: the INVOKE path must not address a backend-owned slot
@@ -1823,11 +1832,11 @@ pub fn custody_put_sync(
     // vaulted refresh token. In-process `put` (used by A3/B1) is unrestricted; the
     // command wrapper is where the untrusted frontend crosses, so the guard lives
     // here. Zeroize the inbound bytes even on rejection.
-    if is_backend_reserved_slot(&slot) {
+    if is_backend_reserved_slot(slot) {
         bytes.zeroize();
         return Err("reserved slot name".into());
     }
-    let r = state.0.put(&slot, &mut bytes).map_err(err_str);
+    let r = vault.put(slot, &mut bytes).map_err(err_str);
     bytes.zeroize();
     r
 }

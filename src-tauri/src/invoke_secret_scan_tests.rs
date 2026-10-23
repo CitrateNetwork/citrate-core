@@ -248,3 +248,65 @@ pub fn list() -> Result<Vec<View>, String> { Ok(vec![]) }
 "#;
     assert!(violations(&[("synthetic.rs".into(), fixed.into())]).is_empty());
 }
+
+#[test]
+fn negative_control_a_secret_nested_below_the_return_type_is_flagged() {
+    // The secret-bearing struct is reached through a field (directly, in a Vec, in an Option and
+    // two levels down), and through an enum variant. Each command must be flagged.
+    let nested = r#"
+#[derive(Serialize)]
+pub struct Inner {
+    pub group: String,
+    pub priv_key: String,
+}
+#[derive(Serialize)]
+pub struct Middle {
+    pub label: String,
+    pub inner: Inner,
+}
+#[derive(Serialize)]
+pub struct Outer {
+    pub items: Vec<Middle>,
+}
+#[derive(Serialize)]
+pub struct MaybeOuter {
+    pub one: Option<Inner>,
+}
+#[derive(Serialize)]
+pub enum Event {
+    Plain(String),
+    Leaky { inner: Inner },
+}
+#[tauri::command]
+pub fn direct() -> Result<Middle, String> { todo() }
+#[tauri::command]
+pub fn deep() -> Result<Outer, String> { todo() }
+#[tauri::command]
+pub fn optional() -> Result<MaybeOuter, String> { todo() }
+#[tauri::command]
+pub fn event() -> Result<Vec<Event>, String> { todo() }
+"#;
+    let v = violations(&[("synthetic.rs".into(), nested.into())]);
+    for cmd in ["direct", "deep", "optional", "event"] {
+        assert!(
+            v.iter().any(|m| m.contains(&format!("command `{cmd}`"))),
+            "`{cmd}` reaches a secret through a nested type and must be flagged: {v:?}"
+        );
+    }
+    // A field skipped from serialization does not carry the nested secret across.
+    let skipped = r#"
+#[derive(Serialize)]
+pub struct Inner {
+    pub priv_key: String,
+}
+#[derive(Serialize)]
+pub struct View {
+    pub label: String,
+    #[serde(skip)]
+    pub inner: Inner,
+}
+#[tauri::command]
+pub fn view() -> Result<View, String> { todo() }
+"#;
+    assert!(violations(&[("synthetic.rs".into(), skipped.into())]).is_empty());
+}

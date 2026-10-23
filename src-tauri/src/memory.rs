@@ -91,6 +91,12 @@ const STORE_KEY_LEN: usize = 32;
 /// the grounded daemon ignores it (see the module doc / sprint Concern 1).
 const MEM_STORE_KEY_ENV: &str = "CITRATE_MEM_STORE_KEY";
 
+/// The env var naming the owner-only file the daemon reads its store key from (hex).
+const MEM_STORE_KEY_FILE_ENV: &str = "CITRATE_MEM_STORE_KEY_FILE";
+
+/// The store key file's name, inside an owner-only per-install directory.
+const MEM_STORE_KEY_FILE: &str = "mem-store.key";
+
 /// The reserved chain-state tenant (grounded: `mem-ingest` `CHAIN_STATE_TENANT`).
 /// The UI labels this "chain-facts"; the REAL ingest tenant is `chain-state`
 /// (sprint Concern 2). We key the bridge on the real name.
@@ -551,6 +557,9 @@ pub struct MemoryManager {
     /// HUP-S3.4 (fan-out 7): the learned-memory ledger. Recall and search leave out learned
     /// memories with an unresolved contradiction (`hermes_learn::RecallHide`).
     learned_ledger: Option<PathBuf>,
+    /// The per-user runtime directory the store key file is written in; `None` falls back to an
+    /// owner-only directory next to the memory dir (same rule as the node storage key file).
+    key_runtime_dir: Option<PathBuf>,
     /// Tests only: runs inside [`MemoryManager::stop`] after the supervisor is taken and before
     /// the child is terminated (holds a stop in that window).
     #[cfg(test)]
@@ -607,6 +616,7 @@ impl MemoryManager {
             lifecycle: Mutex::new(()),
             model_dir: None,
             learned_ledger: None,
+            key_runtime_dir: crate::node::key_runtime_dir(),
             #[cfg(test)]
             stop_hook: Mutex::new(None),
         };
@@ -634,6 +644,46 @@ impl MemoryManager {
     pub fn with_learned_ledger(mut self, ledger: Option<PathBuf>) -> Self {
         self.learned_ledger = ledger;
         self
+    }
+
+    /// Tests: use this runtime directory for the store key file (`None` = the fallback).
+    #[cfg(test)]
+    pub(crate) fn with_key_runtime_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.key_runtime_dir = dir;
+        self
+    }
+
+    /// The owner-only file the store key is handed to the daemon in:
+    /// `<runtime dir>/citrate-core-<install id>/mem-store.key`, the install id derived from the
+    /// memory dir so two installs never share it; without a usable runtime directory,
+    /// `<app data>/memory.secrets/mem-store.key` for the memory dir `<app data>/memory`.
+    pub(crate) fn store_key_path(&self) -> PathBuf {
+        let mem_dir = self
+            .store_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.store_path.clone());
+        if let Some(rt) = &self.key_runtime_dir {
+            return rt
+                .join(format!(
+                    "citrate-core-{}",
+                    crate::node::install_key_id(&mem_dir)
+                ))
+                .join(MEM_STORE_KEY_FILE);
+        }
+        let name = mem_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "memory".to_string());
+        mem_dir
+            .with_file_name(format!("{name}.secrets"))
+            .join(MEM_STORE_KEY_FILE)
+    }
+
+    /// Load the store key and build the daemon's spawn spec.
+    fn spawn_spec(&self) -> Result<SidecarSpec> {
+        let key_hex = self.store_key_hex()?;
+        Ok(self.build_spec(&key_hex))
     }
 
     /// Leave out learned memories with an unresolved contradiction (when a ledger is set).
@@ -784,8 +834,7 @@ impl MemoryManager {
         if let Some(parent) = self.store_path.parent() {
             crate::storage_backup::ensure_memory_dir(parent).map_err(MemoryError::Spawn)?;
         }
-        let key_hex = self.store_key_hex()?;
-        let spec = self.build_spec(&key_hex);
+        let spec = self.spawn_spec()?;
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         config.backoff = BackoffPolicy::new();
         let sup = Supervisor::start(config).map_err(|e| MemoryError::Spawn(e.to_string()))?;

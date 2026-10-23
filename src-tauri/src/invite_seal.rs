@@ -32,14 +32,36 @@ fn derive_key(shared: &[u8]) -> [u8; 32] {
     k
 }
 
-/// Generate a fresh invite ephemeral keypair. Returns `(private_key_hex, public_key_hex)` — the private
+/// An invite's ephemeral private key (hex), as persisted with the owner's `PendingInvite`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct InvitePrivKey(String);
+
+impl InvitePrivKey {
+    /// Wrap a private key given as hex.
+    pub fn from_hex(hex: String) -> Self {
+        InvitePrivKey(hex)
+    }
+
+    /// The private key as hex, for opening a sealed claim.
+    pub fn expose_hex(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether no key is held (pre-S1 invites).
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Generate a fresh invite ephemeral keypair. Returns `(private key, public_key_hex)` — the private
 /// key is persisted with the owner's `PendingInvite`; the public key is embedded in the invite link.
-pub fn new_invite_keypair() -> (String, String) {
+pub fn new_invite_keypair() -> (InvitePrivKey, String) {
     let sk = SecretKey::random(&mut OsRng);
     let pk = sk.public_key();
     let priv_hex = hex::encode(sk.to_bytes());
     let pub_hex = hex::encode(pk.to_encoded_point(true).as_bytes());
-    (priv_hex, pub_hex)
+    (InvitePrivKey::from_hex(priv_hex), pub_hex)
 }
 
 /// Seal `plaintext` to the invite's public key (hex, compressed SEC1). Invitee side.
@@ -65,12 +87,12 @@ pub fn seal_to(recipient_pub_hex: &str, plaintext: &[u8]) -> Result<Vec<u8>, Str
 }
 
 /// Open a sealed claim with the invite's private key (hex). Owner side. Fails closed on any tamper.
-pub fn open_with(recipient_priv_hex: &str, sealed: &[u8]) -> Result<Vec<u8>, String> {
+pub fn open_with(recipient_priv: &InvitePrivKey, sealed: &[u8]) -> Result<Vec<u8>, String> {
     if sealed.len() < EPH_LEN + NONCE_LEN {
         return Err("sealed claim is too short".into());
     }
     let priv_bytes =
-        hex::decode(recipient_priv_hex.trim()).map_err(|_| "invite priv is not hex")?;
+        hex::decode(recipient_priv.expose_hex().trim()).map_err(|_| "invite priv is not hex")?;
     let sk = SecretKey::from_slice(&priv_bytes).map_err(|_| "invite priv is not a valid scalar")?;
     let eph = PublicKey::from_sec1_bytes(&sealed[..EPH_LEN]).map_err(|_| "bad ephemeral key")?;
     let nonce = &sealed[EPH_LEN..EPH_LEN + NONCE_LEN];
@@ -125,6 +147,43 @@ mod tests {
         let last = sealed.len() - 1;
         sealed[last] ^= 0x01; // flip a ciphertext bit
         assert!(open_with(&priv_hex, &sealed).is_err()); // AEAD auth fails
+    }
+
+    /// The invite private key never shows in `Debug` output (logs, panics, error chains).
+    #[test]
+    fn invite_private_key_debug_is_redacted() {
+        let (priv_key, _pub_hex) = new_invite_keypair();
+        let hex = priv_key.expose_hex().to_string();
+        assert_eq!(hex.len(), 64);
+        let dbg = format!("{priv_key:?}");
+        assert!(!dbg.contains(&hex), "private key in Debug: {dbg}");
+        assert!(
+            !dbg.contains(&hex[..16]),
+            "private key prefix in Debug: {dbg}"
+        );
+    }
+
+    /// The persisted form (pending.json) is still the bare hex string, so stored invites load and
+    /// their claims still open after a round trip.
+    #[test]
+    fn invite_private_key_persists_as_hex_and_still_opens_claims() {
+        let (priv_key, pub_hex) = new_invite_keypair();
+        let json = serde_json::to_string(&priv_key).unwrap();
+        assert_eq!(json, format!("\"{}\"", priv_key.expose_hex()));
+        let back: InvitePrivKey = serde_json::from_str(&json).unwrap();
+        let sealed = seal_to(&pub_hex, b"claim").unwrap();
+        assert_eq!(open_with(&back, &sealed).unwrap(), b"claim");
+        let empty: InvitePrivKey = serde_json::from_str("\"\"").unwrap();
+        assert!(empty.is_empty());
+        assert!(
+            open_with(&empty, &sealed).is_err(),
+            "an empty key fails closed"
+        );
+        let junk = InvitePrivKey::from_hex("zz".into());
+        assert!(
+            open_with(&junk, &sealed).is_err(),
+            "a non-hex key fails closed"
+        );
     }
 
     #[test]

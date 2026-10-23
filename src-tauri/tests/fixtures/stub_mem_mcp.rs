@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const KEY_ENV: &str = "CITRATE_MEM_STORE_KEY";
+const KEY_FILE_ENV: &str = "CITRATE_MEM_STORE_KEY_FILE";
 const SENTINEL: &[u8] = b"CITRATE_MEM_PLAINTEXT_SENTINEL_v1";
 
 fn main() {
@@ -21,7 +22,12 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let (store_dir, socket_path) = parse_args()?;
-    let key_hex = std::env::var(KEY_ENV).map_err(|_| format!("{KEY_ENV} env required"))?;
+    let key_hex = match std::env::var_os(KEY_FILE_ENV) {
+        Some(path) => std::fs::read_to_string(&path)
+            .map_err(|error| format!("read {KEY_FILE_ENV}: {error}"))?,
+        None => std::env::var(KEY_ENV)
+            .map_err(|_| format!("{KEY_FILE_ENV} or {KEY_ENV} env required"))?,
+    };
     let key = decode_key(&key_hex)?;
 
     std::fs::create_dir_all(&store_dir)
