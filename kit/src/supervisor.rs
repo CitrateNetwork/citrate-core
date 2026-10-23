@@ -1099,7 +1099,8 @@ impl Supervisor {
     ///
     /// - Refused as `RejectedClosing` after shutdown began, and as `Quarantined` while owned
     ///   work from an earlier stop is still running.
-    /// - A Start on a live service is `AlreadySatisfied`; one while a Start is pending joins it.
+    /// - A Start on a live service is `AlreadySatisfied` while its monitor runs; one while a
+    ///   Start is pending joins it. With the monitor gone it is `ObservationUnknown`.
     /// - After a Stop (or after `Failed`) it commits a new intent: the monitor finishes any
     ///   teardown first, then spawns exactly one new incarnation with a fresh retry budget.
     pub fn request_start(&self) -> ControlResult {
@@ -1120,7 +1121,10 @@ impl Supervisor {
             // Joining a pending Start is only Accepted while a monitor can settle it.
             return self.observed(token);
         }
-        if c.desired == Desired::Running && c.phase != Phase::Failed {
+        // Satisfied only while a monitor supervises the running service. Without one the cached
+        // process state can no longer be maintained, so the Start is committed and reported as
+        // ObservationUnknown (core#398).
+        if c.desired == Desired::Running && c.phase != Phase::Failed && self.monitor_running() {
             return ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch));
         }
         let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
@@ -1554,6 +1558,51 @@ impl Drop for OwnedChild {
     }
 }
 
+/// Installed first in [`run_monitor`], so it drops last. If the monitor unwinds (a `ChildWatch`
+/// hook panicked), the [`OwnedChild`] drop has already killed and reaped the child; this marks
+/// the cell so it no longer reports a supervised process: Starting, Alive and Backoff become
+/// Failed with no pid, Stopping becomes Quarantined (its cleanup can no longer be observed), and
+/// a pending receipt is settled. A normal
+/// exit (shutdown) leaves the cell to `finish_closing`.
+struct MonitorExit(Arc<Shared>);
+
+impl Drop for MonitorExit {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let reason = "the service monitor ended; nothing supervises the service";
+        let mut c = self.0.lock();
+        c.status.pid = None;
+        match c.phase {
+            Phase::Starting | Phase::Alive | Phase::Backoff => {
+                c.status.state = SupervisorState::Failed;
+                c.phase = Phase::Failed;
+            }
+            // A Stop's teardown can no longer be observed to finish: never Stopped.
+            Phase::Stopping => {
+                c.status.state = SupervisorState::Off;
+                c.phase = Phase::Quarantined;
+                c.quarantine = Some(reason.to_string());
+            }
+            Phase::Stopped | Phase::Failed | Phase::Quarantined => {}
+        }
+        if let Some((token, kind)) = c.active {
+            let receipt = match kind {
+                IntentKind::Start => Receipt::Failed {
+                    reason: reason.to_string(),
+                },
+                IntentKind::Stop => Receipt::Incomplete {
+                    remaining: vec!["readers".to_string()],
+                    reason: reason.to_string(),
+                },
+            };
+            c.settle(token.intent_sequence, kind, receipt);
+        }
+        c.touch();
+    }
+}
+
 /// The monitor loop: the sole owner of the child and the sole writer of process state.
 ///
 /// Every turn reads the latest intent from the cell (SC1):
@@ -1576,6 +1625,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         join_timeout: _join_timeout,
         clock,
     } = config;
+    // Dropped last: marks the cell if this thread unwinds (core#398).
+    let _exit = MonitorExit(shared.clone());
 
     // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap. Reset to 0 once a
     // respawned child stays Running for `healthy_after` (F-1), and for every new Start intent.
