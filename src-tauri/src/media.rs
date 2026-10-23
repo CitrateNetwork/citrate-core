@@ -894,6 +894,7 @@ pub async fn media_generate_image(
     prompt: String,
     size: String,
     grant_id: String,
+    consent_id: Option<String>,
 ) -> Result<GalleryItem, String> {
     crate::blocking::off_main(move || {
         let s = load_settings(&app);
@@ -917,11 +918,40 @@ pub async fn media_generate_image(
         generate_image(&ctx, &req, now_secs, |id, body| {
             let ai = tauri::Manager::try_state::<crate::ai::AiState>(&app)
                 .ok_or("internal: managed state unavailable")?;
-            ai.0.post_to_provider(id, "/images/generations", body)
-                .map_err(|e| e.to_string())
+            let consents = tauri::Manager::try_state::<crate::chat_consent::ChatConsentState>(&app)
+                .ok_or("internal: managed state unavailable")?;
+            remote_image_post(
+                &ai.0,
+                &consents,
+                crate::chat_consent::now_ms(),
+                consent_id.as_deref(),
+                id,
+                &prompt,
+                body,
+            )
         })
     })
     .await
+}
+
+/// Post one remote image request, only with the member's consent core minted for this prompt
+/// (`media_consent_prepare`). The consent is spent by this call.
+pub(crate) fn remote_image_post(
+    ai: &crate::ai::AiManager,
+    consents: &crate::chat_consent::ChatConsentState,
+    now_ms: u64,
+    consent_id: Option<&str>,
+    provider_id: &str,
+    prompt: &str,
+    body: &Value,
+) -> Result<String, String> {
+    let permit = consents
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .authorize_once(consent_id.unwrap_or(""), provider_id, prompt, now_ms)?;
+    ai.post_to_provider(&permit, provider_id, "/images/generations", body)
+        .map_err(|e| e.to_string())
 }
 
 /// **media_gallery** — saved items, newest first, each marked whether its file is still there.

@@ -896,7 +896,7 @@ fn remote_chat_with_the_members_consent_sends_that_message_only() {
         .0
         .lock()
         .unwrap()
-        .prepare("gateway", "hello", 1_000, "cc_abc".into());
+        .prepare(crate::chat_consent::Purpose::Chat, "gateway", "hello", 1_000, "cc_abc".into());
     let out = ai_chat_sync(&mgr, &consents, 1_001, &v.consent_id, "gateway", &convo("hello"), "{}")
         .expect("consented send");
     assert_eq!(out, "answer");
@@ -914,4 +914,69 @@ fn a_permit_for_one_provider_cannot_send_to_another() {
     let r = mgr.chat(&permit_for("gateway"), "openai", &convo("q"), "{}");
     assert_eq!(r, Err(AiError::NotConfirmed));
     assert!(http.calls().is_empty());
+}
+
+// K2: remote image generation needs a core-issued consent for that prompt.
+
+fn image_body() -> Value {
+    json!({ "prompt": "a lemon tree", "n": 1 })
+}
+
+fn media_consent(consents: &crate::chat_consent::ChatConsentState, prompt: &str) -> String {
+    consents
+        .0
+        .lock()
+        .unwrap()
+        .prepare(crate::chat_consent::Purpose::Media, "gateway", prompt, 1_000, "cc_img".into())
+        .consent_id
+}
+
+#[test]
+fn a_remote_image_without_a_core_issued_consent_sends_nothing() {
+    let http = SharedHttp::new(vec![Ok("{}".into()), Ok("{}".into())]);
+    let mgr = configured_gateway(&http);
+    let consents = crate::chat_consent::ChatConsentState::default();
+    for id in [None, Some(""), Some("cc_made_up")] {
+        let r = crate::media::remote_image_post(&mgr, &consents, 1_001, id, "gateway", "a lemon tree", &image_body());
+        assert!(r.is_err(), "sent without consent ({id:?}): {r:?}");
+    }
+    assert!(http.calls().is_empty(), "nothing may reach the provider");
+}
+
+#[test]
+fn a_media_consent_is_single_use_and_bound_to_its_prompt_purpose_and_provider() {
+    let http = SharedHttp::new(vec![Ok("{}".into()), Ok("{}".into()), Ok("{}".into())]);
+    let mgr = configured_gateway(&http);
+    mgr.set_provider("openai", OPENAI_BASE, "m", "sk-oa-key").unwrap();
+    let consents = crate::chat_consent::ChatConsentState::default();
+    let id = media_consent(&consents, "a lemon tree");
+    let post = |id: &str, provider: &str, prompt: &str| {
+        crate::media::remote_image_post(&mgr, &consents, 1_001, Some(id), provider, prompt, &image_body())
+    };
+    assert!(post(&id, "gateway", "a lemon tree").is_ok());
+    assert!(post(&id, "gateway", "a lemon tree").is_err(), "spent after one image");
+    let id = media_consent(&consents, "a lemon tree");
+    assert!(post(&id, "gateway", "something else").is_err(), "another prompt");
+    let id = media_consent(&consents, "a lemon tree");
+    assert!(post(&id, "openai", "a lemon tree").is_err(), "another provider");
+    // A chat consent is not a media consent.
+    let chat = consents
+        .0
+        .lock()
+        .unwrap()
+        .prepare(crate::chat_consent::Purpose::Chat, "gateway", "a lemon tree", 1_000, "cc_chat".into());
+    assert!(post(&chat.consent_id, "gateway", "a lemon tree").is_err(), "chat consent");
+    // Expired.
+    let id = media_consent(&consents, "a lemon tree");
+    let r = crate::media::remote_image_post(
+        &mgr,
+        &consents,
+        1_000 + crate::chat_consent::CONSENT_TTL_MS,
+        Some(&id),
+        "gateway",
+        "a lemon tree",
+        &image_body(),
+    );
+    assert!(r.is_err(), "expired");
+    assert_eq!(http.calls().len(), 1, "only the one consented image went out");
 }

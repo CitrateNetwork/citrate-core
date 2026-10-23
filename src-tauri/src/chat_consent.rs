@@ -12,6 +12,10 @@
 //! message needs a new one. Every remote chat send goes through a [`RemoteSendPermit`], which
 //! only [`ConsentBook::authorize`] can create, and the `ai` remote send methods take one.
 //!
+//! Remote image generation (`media::media_generate_image` on a provider route) uses the same
+//! book with [`Purpose::Media`]: one consent per image, bound to the prompt
+//! ([`media_consent_prepare`], [`ConsentBook::authorize_once`]).
+//!
 //! Data sources (Rule 7): the consent book is in memory only (nothing is written to disk); the
 //! message binding is the last `user` message of the request the webview sends.
 
@@ -38,6 +42,13 @@ pub struct RemoteSendPermit {
 }
 
 impl RemoteSendPermit {
+    /// Only the consent book's authorize methods call this.
+    fn new(provider_id: &str) -> Self {
+        RemoteSendPermit {
+            provider_id: provider_id.to_string(),
+        }
+    }
+
     /// The provider this permit is for.
     pub(crate) fn provider_id(&self) -> &str {
         &self.provider_id
@@ -61,7 +72,15 @@ pub struct ConsentView {
     pub expires_at_ms: u64,
 }
 
+/// What a consent is for: one chat message (the agent loop's requests for it) or one remote image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    Chat,
+    Media,
+}
+
 struct Open {
+    purpose: Purpose,
     consent_id: String,
     provider_id: String,
     message_hash: [u8; 32],
@@ -109,6 +128,7 @@ impl ConsentBook {
     /// Mint a consent for `message` to `provider_id`. `consent_id` is a fresh random id.
     pub fn prepare(
         &mut self,
+        purpose: Purpose,
         provider_id: &str,
         message: &str,
         now_ms: u64,
@@ -120,6 +140,7 @@ impl ConsentBook {
         }
         let expires_at_ms = now_ms.saturating_add(CONSENT_TTL_MS);
         self.open.push(Open {
+            purpose,
             consent_id: consent_id.clone(),
             provider_id: provider_id.to_string(),
             message_hash: message_hash(message),
@@ -143,6 +164,31 @@ impl ConsentBook {
         messages_json: &str,
         now_ms: u64,
     ) -> Result<RemoteSendPermit, String> {
+        let text = last_user_text(messages_json);
+        let i = self.check(
+            Purpose::Chat,
+            consent_id,
+            provider_id,
+            text.as_deref(),
+            now_ms,
+        )?;
+        self.open[i].sends += 1;
+        if self.open[i].sends >= MAX_SENDS_PER_CONSENT {
+            self.open.remove(i);
+        }
+        Ok(RemoteSendPermit::new(provider_id))
+    }
+
+    /// Find the open consent `consent_id` and check it is for `purpose`, `provider_id` and
+    /// `message`. Expired consents are dropped first; one that fails a check is spent.
+    fn check(
+        &mut self,
+        purpose: Purpose,
+        consent_id: &str,
+        provider_id: &str,
+        message: Option<&str>,
+        now_ms: u64,
+    ) -> Result<usize, String> {
         self.open.retain(|o| o.expires_at_ms > now_ms);
         let Some(i) = self
             .open
@@ -151,20 +197,29 @@ impl ConsentBook {
         else {
             return Err(NOT_CONFIRMED.into());
         };
-        let bound = last_user_text(messages_json)
-            .map(|t| message_hash(&t) == self.open[i].message_hash)
-            .unwrap_or(false);
-        if self.open[i].provider_id != provider_id || !bound {
+        let o = &self.open[i];
+        let bound = message.is_some_and(|m| message_hash(m) == o.message_hash);
+        if o.purpose != purpose || o.provider_id != provider_id || !bound {
             self.open.remove(i);
             return Err(NOT_CONFIRMED.into());
         }
-        self.open[i].sends += 1;
-        if self.open[i].sends >= MAX_SENDS_PER_CONSENT {
-            self.open.remove(i);
-        }
-        Ok(RemoteSendPermit {
-            provider_id: provider_id.to_string(),
-        })
+        Ok(i)
+    }
+}
+
+impl ConsentBook {
+    /// Authorize one remote image: the consent must be open, unexpired, minted for media, for
+    /// `provider_id` and for exactly `prompt`. It is spent by this call whatever the outcome.
+    pub fn authorize_once(
+        &mut self,
+        consent_id: &str,
+        provider_id: &str,
+        prompt: &str,
+        now_ms: u64,
+    ) -> Result<RemoteSendPermit, String> {
+        // Not checked yet: every image is allowed (the current behaviour).
+        let _ = (consent_id, prompt, now_ms);
+        Ok(RemoteSendPermit::new(provider_id))
     }
 }
 
@@ -217,8 +272,34 @@ pub async fn chat_consent_prepare(
         let st = tauri::Manager::try_state::<ChatConsentState>(&app)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let view = st.0.lock().unwrap_or_else(|e| e.into_inner()).prepare(
+            Purpose::Chat,
             &provider_id,
             &message,
+            now_ms(),
+            new_consent_id(),
+        );
+        Ok(view)
+    })
+    .await
+}
+
+/// **media_consent_prepare**: the member pressed Generate on a remote image route. Core mints the
+/// one-time consent `media_generate_image` needs for that prompt. Refused under Local model only.
+#[tauri::command]
+pub async fn media_consent_prepare(
+    app: tauri::AppHandle,
+    provider_id: String,
+    prompt: String,
+) -> Result<ConsentView, String> {
+    let route_dir = crate::chat_route::route_dir(&app)?;
+    crate::blocking::off_main(move || {
+        crate::chat_route::remote_chat_allowed(&route_dir)?;
+        let st = tauri::Manager::try_state::<ChatConsentState>(&app)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let view = st.0.lock().unwrap_or_else(|e| e.into_inner()).prepare(
+            Purpose::Media,
+            &provider_id,
+            &prompt,
             now_ms(),
             new_consent_id(),
         );

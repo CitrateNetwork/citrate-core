@@ -17,7 +17,7 @@ fn msgs(user: &str) -> String {
 
 fn book_with(message: &str) -> (ConsentBook, String) {
     let mut b = ConsentBook::default();
-    let v = b.prepare("gateway", message, T0, "cc_one".into());
+    let v = b.prepare(Purpose::Chat, "gateway", message, T0, "cc_one".into());
     assert_eq!(v.provider_id, "gateway");
     assert_eq!(v.expires_at_ms, T0 + CONSENT_TTL_MS);
     (b, v.consent_id)
@@ -83,7 +83,7 @@ fn ids_are_compared_exactly_and_the_book_is_bounded() {
     assert!(b.authorize("cc_onE", "gateway", &msgs("hello"), T0).is_err());
     let mut b = ConsentBook::default();
     for i in 0..(MAX_OPEN + 4) {
-        b.prepare("gateway", "m", T0, format!("cc_{i}"));
+        b.prepare(Purpose::Chat, "gateway", "m", T0, format!("cc_{i}"));
     }
     assert_eq!(b.open.len(), MAX_OPEN);
     assert!(b.authorize("cc_0", "gateway", &msgs("m"), T0).is_err(), "oldest dropped");
@@ -187,25 +187,29 @@ fn remote_send_fns(src: &str) -> Vec<(String, bool)> {
     out
 }
 
-/// Remote sends that are not chat and keep their own member action, with the reason.
-const NOT_CHAT_SENDS: &[(&str, &str)] = &[(
-    "post_to_provider",
-    "media generation: a separate member action with its own route and cost line (media.rs)",
-)];
-
 #[test]
-fn every_remote_chat_send_takes_a_permit_from_the_consent_book() {
+fn every_remote_send_takes_a_permit_from_the_consent_book() {
     let ai = include_str!("ai.rs");
     let sends = remote_send_fns(ai);
     let names: Vec<&str> = sends.iter().map(|(n, _)| n.as_str()).collect();
     assert!(names.contains(&"chat") && names.contains(&"chat_tools"), "{names:?}");
+    assert!(names.contains(&"post_to_provider"), "{names:?}");
     for (name, takes_permit) in &sends {
-        let exempt = NOT_CHAT_SENDS.iter().any(|(n, _)| n == name);
         assert!(
-            *takes_permit || exempt,
+            *takes_permit,
             "`{name}` posts to a remote provider without a RemoteSendPermit"
         );
     }
+    // Media: the remote image path authorizes before it posts.
+    let media = include_str!("media.rs");
+    let at = media.find("pub(crate) fn remote_image_post(").expect("remote_image_post");
+    let body = &media[at..at + media[at..].find("\n}\n").expect("end")];
+    let auth = body.find(".authorize_once(").expect("authorize_once call");
+    let post = body.find("post_to_provider(").expect("post call");
+    assert!(auth < post, "remote_image_post must authorize before it posts");
+    let cmd = media.find("pub async fn media_generate_image(").expect("command");
+    let cmd_body = &media[cmd..cmd + media[cmd..].find("\n}\n").expect("end")];
+    assert!(cmd_body.contains("remote_image_post("));
     // The commands obtain the permit from the consent book before sending.
     for cmd in ["pub(crate) fn ai_chat_sync(", "pub(crate) fn ai_chat_tools_sync("] {
         let at = ai.find(cmd).expect(cmd);
@@ -218,6 +222,7 @@ fn every_remote_chat_send_takes_a_permit_from_the_consent_book() {
     let me = include_str!("chat_consent.rs");
     let prod = without_test_items(me);
     assert_eq!(prod.matches("RemoteSendPermit {\n            provider_id").count(), 1);
+    assert_eq!(prod.matches("RemoteSendPermit::new(").count(), 2, "authorize and authorize_once");
     for (file, src) in [("ai.rs", ai), ("media.rs", include_str!("media.rs"))] {
         assert!(
             !src.contains("RemoteSendPermit {"),

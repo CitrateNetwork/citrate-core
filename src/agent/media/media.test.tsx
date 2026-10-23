@@ -158,6 +158,34 @@ describe("HUP-S10.1 MediaPanel", () => {
     expect(q(m.host, "media-local-only-note")).toBeNull();
   });
 
+  it("a remote image is sent with the consent core minted for that prompt", async () => {
+    const remote = { id: "remote", kind: "image" as const, available: true, reason: null, destination: "Citrate gateway (infer.citrate.ai)", cost: "Billed by the provider to your key", model: "x" };
+    const opts = options({
+      image: [remote],
+      settings: { localUrl: null, localModel: null, remoteProvider: "gateway", remoteModel: "x" },
+    });
+    const { io, calls } = makeIo((cmd) =>
+      cmd === "media_options"
+        ? opts
+        : cmd === "media_consent_prepare"
+          ? { consentId: "cc_img_1", providerId: "gateway", expiresAtMs: 1 }
+          : cmd === "media_generate_image"
+            ? item({ route: "remote" })
+            : cmd === "media_read"
+              ? PNG
+              : null,
+    );
+    const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} />);
+    await type(q<HTMLTextAreaElement>(host, "media-prompt"), "a lemon tree at dusk");
+    await click(q(host, "media-generate"));
+    const prep = calls.find(([c]) => c === "media_consent_prepare");
+    expect(prep?.[1]).toEqual({ providerId: "gateway", prompt: "a lemon tree at dusk" });
+    const gen = calls.find(([c]) => c === "media_generate_image")!;
+    expect(gen[1]).toEqual({ route: "remote", prompt: "a lemon tree at dusk", size: "1024x1024", grantId: "4", consentId: "cc_img_1" });
+    // The consent is asked for before the image request.
+    expect(calls.findIndex(([c]) => c === "media_consent_prepare")).toBeLessThan(calls.findIndex(([c]) => c === "media_generate_image"));
+  });
+
   it("lists every route with its availability, reason and cost", async () => {
     const { io } = makeIo(() => options());
     const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} />);

@@ -627,10 +627,14 @@ impl AiManager {
     /// chosen by core (`/images/generations`), never a caller-supplied URL.
     pub(crate) fn post_to_provider(
         &self,
+        permit: &RemoteSendPermit,
         provider_id: &str,
         path: &'static str,
         body: &Value,
     ) -> Result<String> {
+        if permit.provider_id() != provider_id {
+            return Err(AiError::NotConfirmed);
+        }
         if !path.starts_with('/') || path.contains("..") || path.contains(['?', '#', '@']) {
             return Err(AiError::BadBaseUrl);
         }
