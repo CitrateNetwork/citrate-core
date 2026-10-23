@@ -8,6 +8,7 @@ import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
+import { useNetworkLabel } from "../shell/networkCompat";
 import { CONSENSUS_LAG_NOTE, validatorWord } from "../shell/chainTruth";
 import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
 import { MEMBERSHIP_BUYS } from "../data/membership";
@@ -78,8 +79,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               The federation's house.
             </div>
             <p style={{ fontFamily: "var(--font-sans)", fontSize: 16, lineHeight: 1.55, color: "var(--tx-2)", margin: 0, maxWidth: 520 }}>
-              One membership funds your wallet, covers your validator stake, and opens every Citrate application — on your hardware, with keys that never leave this
-              machine.
+              Citrate runs a node, a wallet and Hermes on this machine. Your keys stay here.
             </p>
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
@@ -90,7 +90,12 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
-          <div style={eyebrow}>Chain 40204 · testnet-beta</div>
+          {/* Join 3 V-01 (fed#353): what Join involves, under the buttons. */}
+          <p style={{ fontFamily: "var(--font-sans)", fontSize: 13, lineHeight: 1.5, color: "var(--tx-3)", margin: 0, maxWidth: 520 }}>
+            Joining means a yearly membership and a bond. Explore free skips both; you can upgrade later in Settings › Billing.
+          </p>
+          {/* Join 3 V-02: the network by its genesis-checked name (contract §2, §6), not the chain id. */}
+          <NetworkName style={eyebrow} />
         </div>
       </div>
     );
@@ -1179,4 +1184,9 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
       </div>
     </div>
   );
+}
+
+/** S0's network line: "Citrate betanet" once the genesis check passes (UI truth contract §2, §6). */
+function NetworkName({ style }: { style: CSSProperties }) {
+  return <div style={style}>{useNetworkLabel()}</div>;
 }
