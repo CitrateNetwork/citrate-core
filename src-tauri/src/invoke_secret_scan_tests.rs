@@ -469,6 +469,8 @@ const SECRET_TYPED_NAMES: &[&str] = &[
     "password",
     "bearer",
     "token",
+    "sheet",
+    "phrase",
 ];
 
 /// `(file, name)` pairs that keep a plain string on purpose, with the reason.
@@ -496,6 +498,95 @@ const PLAIN_STRING_EXEMPT: &[(&str, &str, &str)] = &[
         "the token endpoint URL, not a credential",
     ),
 ];
+
+/// `(file, fn name)` pairs whose secret-named return stays a plain string on purpose, with the
+/// reason.
+const PLAIN_RETURN_EXEMPT: &[(&str, &str, &str)] = &[
+    // The OAuth `state` / `nonce`: single-use values that travel in the authorize URL.
+    (
+        "oidc.rs",
+        "random_token",
+        "an OAuth state/nonce carried in the URL, not a credential",
+    ),
+    // A salted hash of an MCP server's fingerprint that the webview passes back to enable it.
+    (
+        "mcp_servers.rs",
+        "review_token",
+        "a salted hash the webview echoes back, not a credential",
+    ),
+];
+
+/// Whether a fn name names a secret: it is one of [`SECRET_TYPED_NAMES`] or ends in `_<name>`.
+fn fn_names_a_secret(name: &str) -> bool {
+    SECRET_TYPED_NAMES
+        .iter()
+        .any(|n| name == *n || name.ends_with(&format!("_{n}")))
+}
+
+/// Whether a return type yields a plain owned string: the type itself, or the first type
+/// argument of an outer `Option<…>` / `Result<…>` (at any nesting).
+fn returns_plain(ty: &str) -> bool {
+    let mut t = ty.trim();
+    loop {
+        if is_plain_owned(t) {
+            return true;
+        }
+        let stripped = ["std::result::Result<", "Result<", "Option<"]
+            .iter()
+            .find_map(|p| t.strip_prefix(p));
+        match stripped {
+            Some(rest) => t = rest.trim_start(),
+            None => return false,
+        }
+    }
+}
+
+/// `(file, fn name, signature)` for every non-test fn whose name names a secret and whose
+/// return type is a plain owned string.
+fn plain_secret_returns(file: &str, src: &str) -> Vec<(String, String, String)> {
+    let src = crate::vault_slot_reservation_tests::without_test_items(src);
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = src[from..].find("fn ") {
+        let at = from + i;
+        from = at + 3;
+        if at > 0 && src[..at].chars().next_back().is_some_and(is_ident_char) {
+            continue;
+        }
+        let line_start = src[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        if src[line_start..at].trim_start().starts_with("//") {
+            continue;
+        }
+        let name: String = src[at + 3..]
+            .chars()
+            .take_while(|c| is_ident_char(*c))
+            .collect();
+        if name.is_empty() || !fn_names_a_secret(&name) {
+            continue;
+        }
+        let end = src[at..]
+            .find(['{', ';'])
+            .map(|e| at + e)
+            .unwrap_or(src.len());
+        let sig = &src[at..end];
+        let sig = sig.split(" where").next().unwrap_or(sig);
+        let Some((_, ret)) = sig.rsplit_once("->") else {
+            continue;
+        };
+        if !returns_plain(ret) {
+            continue;
+        }
+        if PLAIN_RETURN_EXEMPT
+            .iter()
+            .any(|(f, n, _)| *f == file && *n == name)
+        {
+            continue;
+        }
+        let flat: String = sig.split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push((file.to_string(), name, flat));
+    }
+    out
+}
 
 /// Types that are a plain owned string or byte buffer.
 fn is_plain_owned(ty: &str) -> bool {
@@ -576,7 +667,9 @@ fn no_key_or_token_is_held_in_a_plain_string() {
                 .and_then(|f| f.to_str())
                 .unwrap_or("")
                 .to_string();
-            plain_secret_slots(&file, src)
+            let mut v = plain_secret_slots(&file, src);
+            v.extend(plain_secret_returns(&file, src));
+            v
         })
         .collect();
     assert!(
@@ -611,6 +704,38 @@ fn included_by_tests(dir: &Path) -> BTreeSet<String> {
         }
     }
     out
+}
+
+#[test]
+fn negative_control_secret_named_fns_returning_a_plain_string_are_flagged() {
+    let src = r#"
+pub fn current_node_token(dir: &Path) -> Option<String> { todo() }
+pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> { todo() }
+fn read_sheet<R: Runtime>(
+    app: &AppHandle<R>,
+) -> std::result::Result<Vec<u8>, String> { todo() }
+fn fine_token() -> SecretString { todo() }
+fn wiped_sheet() -> Zeroizing<String> { todo() }
+fn blake3_token_hash(token: &str) -> String { todo() }
+fn tokens_left() -> Result<(), String> { todo() }
+// fn commented_token() -> String {}
+#[cfg(test)]
+mod tests { fn test_token() -> String { todo() } }
+"#;
+    let hits = plain_secret_returns("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["current_node_token", "hermes_token", "read_sheet"],
+        "{hits:#?}"
+    );
+    // The return exemptions hold only in their own files.
+    let rt = "fn random_token() -> String { todo() }\n";
+    assert!(plain_secret_returns("oidc.rs", rt).is_empty());
+    assert_eq!(plain_secret_returns("other.rs", rt).len(), 1);
+    // `sheet` and `phrase` arguments are flagged too.
+    let args = "fn restore(sheet: String, phrase: Option<String>) {}\n";
+    assert_eq!(plain_secret_slots("x.rs", args).len(), 2);
 }
 
 #[test]
