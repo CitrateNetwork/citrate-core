@@ -2260,7 +2260,7 @@ fn each_definitive_message_is_not_sent_on_first_send_and_unknown_on_resend() {
 fn each_ambiguous_message_is_unknown_even_on_first_send() {
     for msg in AMBIGUOUS {
         let (v, _p) = vault_with_wallet();
-        let c = SignatureCeremony::new();
+        let c = certain_ceremony();
         let (first, hash) = send_once(&c, &v, node_error(msg));
         assert_eq!(submitted_outcome_unknown(&first), Some(hash), "first send of {msg:?}: {first:?}");
         let s = broadcast_err_str(first.expect_err("error"));
@@ -2271,7 +2271,7 @@ fn each_ambiguous_message_is_unknown_even_on_first_send() {
 #[test]
 fn the_error_code_does_not_decide() {
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::new();
+    let c = certain_ceremony();
     let internal = serde_json::json!({ "jsonrpc": "2.0", "id": 1,
         "error": { "code": -32603, "message": "Failed to submit transaction: DuplicateTransaction(0xabc)" } });
     let (r, hash) = send_once(&c, &v, internal);
@@ -2390,7 +2390,7 @@ fn a_definitive_phrase_that_is_not_the_whole_or_leading_message_is_not_definitiv
         "",
     ] {
         let (v, _p) = vault_with_wallet();
-        let c = SignatureCeremony::new();
+        let c = certain_ceremony();
         let (r, hash) = send_once(&c, &v, node_error(msg));
         assert_eq!(submitted_outcome_unknown(&r), Some(hash), "{msg:?}: {r:?}");
     }
