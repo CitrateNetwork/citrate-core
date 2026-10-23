@@ -344,6 +344,8 @@ fn the_directory_is_synced_after_the_rename_before_the_record_is_used() {
     SYNC_SEEN.with(|s| s.borrow_mut().clear());
     let t = Tmp::new("dirsync-order");
     let log = SubmittedTxLog::open_with(t.file(), spy_sync);
+    // Opening a new profile writes its empty record once; count only the record write below.
+    SYNC_SEEN.with(|s| s.borrow_mut().clear());
     assert_eq!(log.try_record_for(&h(41), A, 0), Ok(true));
     let seen = SYNC_SEEN.with(|s| s.borrow().clone());
     assert_eq!(seen.len(), 1, "one directory sync per record write");
@@ -368,6 +370,7 @@ fn every_record_write_syncs_the_directory_including_on_eviction() {
     SYNC_SEEN.with(|s| s.borrow_mut().clear());
     let t = Tmp::new("dirsync-every");
     let log = SubmittedTxLog::open_with(t.file(), spy_sync);
+    SYNC_SEEN.with(|s| s.borrow_mut().clear());
     for n in 0..(CAPACITY as u32 + 2) {
         log.try_record_for(&h(50_000 + n), A, u64::from(n)).expect("record");
     }
