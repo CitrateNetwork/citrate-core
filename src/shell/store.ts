@@ -267,8 +267,8 @@ export function describeBond(g: {
   hasValidator: boolean;
   bondActivated?: boolean | null;
 }): string {
-  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
-  // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from
+  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only while the bond clone is
+  // a registry staker (`hasValidator`), "not staked" only for `bondActivated === false`; "Locked until … (block N)" from
   // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
   // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
   if (!g.bondDeployed) return "No bond yet";
