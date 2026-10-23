@@ -52,6 +52,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
         restarts: 3,
         pid: Some(42),
         quarantine: None,
+        open_tickets: 2,
     };
     let v = serde_json::to_value(&snap).unwrap_or_default();
     assert_eq!(v["appEpoch"], "18446744073709551615");
@@ -62,6 +63,7 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
     assert_eq!(v["revision"], "10");
     assert_eq!(v["restarts"], "3");
     assert_eq!(v["pid"], 42);
+    assert_eq!(v["openTickets"], 2);
     assert_eq!(v["phase"], "stopping");
     assert_eq!(v["readiness"], "notAssessed");
     assert_eq!(v["desired"], "stopped");
@@ -241,6 +243,229 @@ fn a_superseded_start_receipt_says_so() {
         Receipt::Superseded | Receipt::Failed { .. } | Receipt::Expired
     ));
     assert!(matches!(wait_receipt(&sup, stop), Receipt::Complete { .. }));
+}
+
+/// A publisher whose thread is alive but never runs its body (it never observes).
+fn idle_publisher() -> Arc<DeadlinePublisher> {
+    DeadlinePublisher::start_with_spawner(Duration::from_millis(20), |body| {
+        std::thread::Builder::new().spawn(move || {
+            let _never_run = body;
+            loop {
+                std::thread::park();
+            }
+        })
+    })
+}
+
+#[test]
+fn deadline_overlay_arms_up_to_its_fixed_size_and_frees_on_release() {
+    let p = idle_publisher();
+    for seq in 0..DEADLINE_RECORDS as u64 {
+        assert!(p.arm(7, 1, seq, Duration::from_secs(60)));
+    }
+    assert_eq!(p.armed_records(), DEADLINE_RECORDS);
+    assert!(!p.arm(7, 1, 99, Duration::from_secs(60)), "no record beyond the overlay");
+    p.release(7, 1, 3);
+    assert_eq!(p.armed_records(), DEADLINE_RECORDS - 1);
+    assert!(p.arm(7, 1, 99, Duration::from_secs(60)), "a freed record is reused");
+    assert_eq!(p.expired(7, 1, 3), Some(false), "a released control has no record");
+}
+
+#[test]
+fn a_deadline_read_compares_the_monotonic_clock_without_the_publisher() {
+    let p = idle_publisher();
+    assert!(p.is_running());
+    assert!(p.arm(1, 1, 1, Duration::from_millis(20)));
+    assert_eq!(p.expired(1, 1, 1), Some(false));
+    std::thread::sleep(Duration::from_millis(40));
+    let token = ControlToken {
+        app_epoch: 1,
+        instance: 1,
+        intent_sequence: 1,
+    };
+    assert_eq!(p.record_state(1, token), Some(DeadlineState::Armed), "never marked");
+    assert_eq!(p.expired(1, 1, 1), Some(true), "but the read sees the deadline passed");
+}
+
+#[test]
+fn a_stale_expiry_mark_never_applies_to_a_rewritten_record() {
+    let p = idle_publisher();
+    assert!(p.arm(1, 1, 1, Duration::ZERO));
+    p.observe(); // marks the expired record
+    let a = ControlToken {
+        app_epoch: 1,
+        instance: 1,
+        intent_sequence: 1,
+    };
+    assert_eq!(p.record_state(1, a), Some(DeadlineState::Expired));
+    p.release(1, 1, 1);
+    assert!(p.arm(2, 1, 5, Duration::from_secs(60)), "the same record, rewritten");
+    let b = ControlToken {
+        app_epoch: 1,
+        instance: 2,
+        intent_sequence: 5,
+    };
+    assert_eq!(p.record_state(2, b), Some(DeadlineState::Armed));
+    assert_eq!(p.expired(2, 1, 5), Some(false), "A's mark does not carry over to B");
+}
+
+#[test]
+fn the_publisher_marks_expiry_within_its_cadence() {
+    let p = DeadlinePublisher::start(Duration::from_millis(10));
+    assert!(p.is_running() && p.init_error().is_none());
+    assert!(p.arm(3, 1, 1, Duration::from_millis(30)));
+    let token = ControlToken {
+        app_epoch: 1,
+        instance: 3,
+        intent_sequence: 1,
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while p.record_state(3, token) != Some(DeadlineState::Expired) {
+        assert!(std::time::Instant::now() < deadline, "the publisher never marked it");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn joining_a_deadline_only_ever_tightens_it() {
+    let p = idle_publisher();
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(60)), "arms when absent");
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)), "a looser join is accepted");
+    assert_eq!(p.expired(4, 1, 1), Some(false));
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::ZERO), "a tighter join moves it earlier");
+    assert_eq!(p.expired(4, 1, 1), Some(true));
+    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)));
+    assert_eq!(p.expired(4, 1, 1), Some(true), "never moved later again");
+    assert_eq!(p.armed_records(), 1);
+}
+
+/// A hook that reports when a writer reached its pause point and holds it there until released.
+fn pause_hook() -> (
+    Box<dyn FnOnce() + Send>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (at_tx, at_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let hook = Box::new(move || {
+        let _ = at_tx.send(());
+        let _ = go_rx.recv();
+    });
+    (hook, at_rx, go_tx)
+}
+
+/// One owner's release is suspended right after it frees a record; another owner claims and
+/// fully arms that record meanwhile. The new record must read as armed (with its own deadline)
+/// while the first release is still returning, never as torn.
+#[test]
+fn a_record_rearmed_while_its_release_is_still_returning_reads_armed() {
+    let p = idle_publisher();
+    assert!(p.arm(1, 1, 1, Duration::from_secs(60)));
+    let (hook, at, go) = pause_hook();
+    p.pause_once(PausePoint::ReleaseFreed, hook);
+    let releaser = {
+        let p = p.clone();
+        std::thread::spawn(move || p.release(1, 1, 1))
+    };
+    if at.recv_timeout(Duration::from_secs(10)).is_err() {
+        panic!("INCONCLUSIVE: the release never reached its pause point");
+    }
+    // The only free record is the one being released: owner 2 claims and arms it.
+    let armed = p.arm(2, 1, 7, Duration::from_secs(60));
+    let b = ControlToken {
+        app_epoch: 1,
+        instance: 2,
+        intent_sequence: 7,
+    };
+    let state = p.record_state(2, b);
+    let expired = p.expired(2, 1, 7);
+    let _ = go.send(());
+    let _ = releaser.join();
+    assert!(armed, "the freed record was claimed");
+    assert_eq!(
+        state,
+        Some(DeadlineState::Armed),
+        "a fully armed record reads as armed while the previous release returns"
+    );
+    assert_eq!(expired, Some(false), "and its expiry is determinate");
+    assert_eq!(p.record_state(2, b), Some(DeadlineState::Armed));
+    assert_eq!(p.armed_records(), 1);
+}
+
+/// A settlement whose expiry read stays indeterminate (a record mid-write through every bounded
+/// retry) counts the control as expired: a late completion is never stored as Complete.
+#[test]
+fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
+    let p = idle_publisher();
+    let (hook, at, go) = pause_hook();
+    p.pause_once(PausePoint::ArmWriting, hook);
+    let armer = {
+        let p = p.clone();
+        std::thread::spawn(move || p.arm(3, 1, 1, Duration::from_secs(60)))
+    };
+    if at.recv_timeout(Duration::from_secs(10)).is_err() {
+        panic!("INCONCLUSIVE: the arm never reached its pause point");
+    }
+    let read = p.expired(4, 1, 2);
+    let at_settle = p.expired_at_settle(4, 1, 2);
+    let _ = go.send(());
+    let _ = armer.join();
+    assert_eq!(read, None, "INCONCLUSIVE: the paused write did not make the read torn");
+    assert!(at_settle, "an indeterminate expiry at settlement counts as expired");
+    assert!(
+        !p.expired_at_settle(4, 1, 2),
+        "once readable, a control without a record has not expired"
+    );
+}
+
+/// Tripwire: a deadline record is published free only after its writer has finished its
+/// version update, so the next owner's `arm` is always the record's only writer. Fails on any
+/// `REC_FREE` store that is followed by a version bump in the same block.
+#[test]
+fn deadline_records_are_published_free_only_after_their_last_version_bump() {
+    let source = include_str!("supervisor_deadline.rs");
+    let mut stores = 0;
+    for (at, _) in source.match_indices("state.store(REC_FREE") {
+        stores += 1;
+        let rest = &source[at..];
+        let block_end = rest.find("\n            }").unwrap_or(rest.len());
+        assert!(
+            !rest[..block_end].contains("version.fetch_add"),
+            "a record is published free before its version update finished: {}",
+            &rest[..block_end.min(200)]
+        );
+    }
+    assert!(stores >= 1, "the release path publishes REC_FREE");
+}
+
+/// Tripwire: a publication ticket is resolved only by an explicit call (`commit`, `withdraw`,
+/// `cleaned`). A `Drop` that releases one would let an unwinding caller report cleanup that never
+/// happened, so neither ticket type may implement `Drop`.
+#[test]
+fn publication_tickets_never_release_on_drop() {
+    let source = include_str!("supervisor.rs");
+    for ty in ["PublicationTicket", "StaleTicket"] {
+        assert!(
+            !source.contains(&format!("impl Drop for {ty}")),
+            "{ty} must not release its publication on Drop"
+        );
+    }
+}
+
+#[test]
+fn releasing_an_owner_frees_only_its_records() {
+    let p = idle_publisher();
+    assert!(p.arm(5, 1, 1, Duration::from_secs(60)));
+    assert!(p.arm(5, 1, 2, Duration::from_secs(60)));
+    assert!(p.arm(6, 1, 1, Duration::from_secs(60)));
+    p.release_owner(5);
+    assert_eq!(p.armed_records(), 1);
+    let other = ControlToken {
+        app_epoch: 1,
+        instance: 6,
+        intent_sequence: 1,
+    };
+    assert_eq!(p.record_state(6, other), Some(DeadlineState::Armed));
 }
 
 /// Identical concurrent Starts after Failed join one intent: none supersedes another.
