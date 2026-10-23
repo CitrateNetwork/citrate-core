@@ -59,7 +59,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
@@ -1578,7 +1578,8 @@ export class Store {
     if (!s.hasGrant) return; // the grant must have deployed + funded the bond clone (settled S5)
     // #348/#349 review: a bond that already activated (then exited or was slashed) never re-opens
     // activation, and neither does an Exiting / Slashed key.
-    if (s.bondActivated === true || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) return;
+    // #348 review: only a bond that reads not activated (activated() = false); unread never opens it.
+    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated)) return;
 
     // STEP 1 — ARM the producer so the node mints `proposer.key` (the validator
     // identity activation needs). The node runs as a plain follower and NEVER mints
