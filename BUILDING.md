@@ -42,9 +42,11 @@ A sidecar built from an older citrate-chain connects, syncs, and looks perfectly
 healthy — while computing **different state roots** below height 300,000 and
 accepting merge blocks the fleet rejects. It is a silent fork.
 
-`scripts/build-sidecar.sh` reads both constants out of the citrate-chain source
-**before** building and refuses to continue if either is non-zero, so a stale
-checkout fails fast with an actionable message instead of shipping a forking app.
+`scripts/build-sidecar.sh` builds the citrate-chain rev pinned for `citrate-node` in
+`release/components.json`, never whatever your checkout's HEAD is (your checkout only supplies the
+git objects). It reads both constants out of that pinned rev **before** building and refuses to
+continue if either is non-zero, and `scripts/build-component.sh` installs the result only if its
+sha256 matches the pin (see section 1a).
 
 ```bash
 # Apple Silicon
@@ -61,11 +63,25 @@ scripts/build-sidecar.sh --chain ~/src/citrate-chain --target aarch64-apple-darw
 (or with a configured cross toolchain); the script will tell you if the artefact
 for the requested triple is missing rather than installing the wrong one.
 
-First build of citrate-chain takes several minutes. Later runs can reuse it:
+First build of citrate-chain takes several minutes. Later runs reuse the build tree in
+`~/.cache/citrate-components/` and finish in seconds.
 
-```bash
-scripts/build-sidecar.sh --skip-build --target aarch64-apple-darwin
-```
+### 1a. Every bundled component is pinned (release/components.json)
+
+`release/components.json` records, for each sidecar and model the app bundles or downloads, the
+source repo, the exact rev, the Rust toolchain, the build command and the sha256 a release may ship
+per target. `scripts/build-component.sh <id>` (and the wrappers `build-sidecar.sh`,
+`build-comms-daemon.sh`, `build-cluster-daemon.sh`, `build-hermes.sh`) builds at that rev in a fresh
+tree and **fails closed**: no pin for the target, a missing rev, a modified build tree or a digest
+mismatch exits 1 and installs nothing. `node-agent` and `mem-mcp` have no wrapper:
+`scripts/build-component.sh node-agent`, `scripts/build-component.sh mem-mcp`; Kubo is fetched and
+checked the same way (`scripts/build-component.sh kubo`).
+
+A digest mismatch on your machine is expected: macOS pins are the release Mac's builds, and the
+linker derives each binary's UUID from the build path. For a dev build, take the bytes with
+`--print-digest` (it prints the path) or point the app at any build with the `CITRATE_*_BIN`
+variables. Moving a pin is a reviewed PR; `node scripts/component-pins.mjs check` (CI) keeps the
+manifest, the scripts, the overlays, the runtime-deps pins and release.yml in step.
 
 ## 2. The node config — how a member finds the network
 

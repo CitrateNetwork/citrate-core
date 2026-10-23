@@ -186,7 +186,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           autolock: st.autolock,
           channel: st.channel,
           telemetry: st.telemetry,
-          sigPolicy: st.sigPolicy,
           coreMembershipUrl: st.coreMembershipUrl,
         };
       },

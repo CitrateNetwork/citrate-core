@@ -1,0 +1,351 @@
+{
+  "$comment": [
+    "Release component pins: where every bundled sidecar and model comes from, and which bytes a release may ship. Read by scripts/build-component.sh (builds or fetches a component at its pin and installs it only if its sha256 matches) and checked by `node scripts/component-pins.mjs check` (CI, node job), which fails when this file, the build scripts, the bundle overlays, src-tauri/runtime-deps.sha256, release.yml and src-tauri/src/model.rs disagree.",
+    "Each artifact's digest lives in one place: its own sha256, or, for bytes uploaded to the runtime-deps prerelease, the pin of its runtime_deps_asset in src-tauri/runtime-deps.sha256 (release.yml verifies that pin before staging). Digests are of the bytes staged into src-tauri/binaries before bundling; Tauri then signs each externalBin with the Developer ID, so the copies inside a signed macOS app differ.",
+    "macOS cargo builds reproduce byte for byte only on the machine and build root that recorded them (the linker derives the Mach-O UUID from the output path; see scripts/build-component.sh). Linux pins are the 0.5.1 DGX-lane builds (PROVENANCE-linux.txt); the DGX re-pins them with build-component.sh --print-digest before it builds with this script.",
+    "federation: the citrate-federation manifest.toml pin of the source repo, and whether it matches. A mismatch is recorded with a note, never silent (Rule 11). Changing any pin is a reviewed PR."
+  ],
+  "version": 1,
+  "release": "0.5.2",
+  "toolchain": {
+    "rust": "1.96.0"
+  },
+  "components": [
+    {
+      "id": "citrate-node",
+      "external_bin": "binaries/citrate",
+      "source": {
+        "repo": "CitrateNetwork/citrate-chain",
+        "checkout": "citrate-chain",
+        "rev": "c384fc982882f830306142c70dd643b59fcda1f6"
+      },
+      "federation": {
+        "rev": "f9f6257b2dcde21149fe9c09236231ccfc32da68",
+        "status": "drift",
+        "note": "manifest.toml [repos.citrate-chain] pins f9f6257b (#240, 2026-09-26). The node shipped in 0.5.1 and pinned here is c384fc98 (v0.5.1 fork safety), a descendant; the federation pin is behind."
+      },
+      "build": {
+        "kind": "cargo",
+        "package": "citrate-node",
+        "bin": "citrate",
+        "features": [],
+        "env": {
+          "LZMA_API_STATIC": "1"
+        },
+        "strip": false,
+        "script": "scripts/build-sidecar.sh"
+      },
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-c384fc982882",
+          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "33c2447aec63bf40c6902b58c53855cbd05c09696d3769bca318a8c08dabd6fc",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (DGX lane, droplet citrate-core-linux-build)"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "f625c15ee9a4c1dbf3b91c13331172f47f33e07240fac6f4d4e3eb84e539026e",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (DGX lane, spark-2e01)"
+        }
+      }
+    },
+    {
+      "id": "node-agent",
+      "external_bin": "binaries/node-agent",
+      "source": {
+        "repo": "CitrateNetwork/citrate-node-agent",
+        "checkout": "citrate-node-agent",
+        "rev": "1d8cb8e4e24a3d60fb6e8b63cedc2a3c58e2a524"
+      },
+      "federation": {
+        "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
+        "status": "drift",
+        "note": "manifest.toml pins fc35136a, which is a citrate-homestead commit (HOME-WIRE W9.4), not a citrate-node-agent commit; the same SHA is set on most repos of the manifest. Shipped in 0.5.0 and 0.5.1: 1d8cb8e4 (= citrate-node-agent main)."
+      },
+      "build": {
+        "kind": "cargo",
+        "package": "node-agent",
+        "bin": "node-agent",
+        "features": [],
+        "env": {},
+        "strip": false,
+        "script": "scripts/build-component.sh"
+      },
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "node-agent-aarch64-apple-darwin-1d8cb8e4e24a",
+          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "c92d52ebd955d973273a15ed8475b136732d6579568f02eff888e21b1120943a",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "3fbd39c8b8936713c12038b4fd5f2c244bc8849c137af5335ed89e29da20268c",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        }
+      }
+    },
+    {
+      "id": "mem-mcp",
+      "external_bin": "binaries/mem-mcp",
+      "source": {
+        "repo": "CitrateNetwork/citrate-memories",
+        "checkout": "citrate-memories",
+        "rev": "0e9d48822054f6c9d644e691909569d0bc19be02"
+      },
+      "federation": {
+        "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
+        "status": "drift",
+        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-memories commit. Shipped in 0.5.0 and 0.5.1: 0e9d4882 (implements import-corpus; the pinned knowledge corpus was built with it)."
+      },
+      "build": {
+        "kind": "cargo",
+        "package": "mem-mcp",
+        "bin": "mem-mcp",
+        "features": [
+          "rocksdb",
+          "transformer"
+        ],
+        "env": {},
+        "strip": false,
+        "script": "scripts/build-component.sh"
+      },
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "mem-mcp-aarch64-apple-darwin-0e9d48822054",
+          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "1b3898733e676237b6fd038d887d7c82db4132c83521511de4c1f2eca58e7b8e",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "b872672d962298874556f4a1db167120e520d18cab2e5d36094bc014801a3cb9",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        }
+      }
+    },
+    {
+      "id": "comms-member-daemon",
+      "external_bin": "binaries/comms-member-daemon",
+      "source": {
+        "repo": "CitrateNetwork/citrate-comms",
+        "checkout": "citrate-comms",
+        "rev": "9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12"
+      },
+      "federation": {
+        "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
+        "status": "drift",
+        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-comms commit. Shipped in 0.5.0 and 0.5.1: 9cd12c41 (Windows used bc0f92a5, a Windows-only owner override, 2026-10-12; no Windows pin here yet)."
+      },
+      "build": {
+        "kind": "cargo",
+        "package": "comms-member-daemon",
+        "bin": "comms-member-daemon",
+        "features": [],
+        "env": {},
+        "strip": false,
+        "script": "scripts/build-comms-daemon.sh"
+      },
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c",
+          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "96a63e587d4946cac017bfa207a4f4da9f3b281deafbef144b065d7cec96e435",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "db8415872b35685a9e5946bed91fbee3c226c72ff23db0779c2c7354392fb36b",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        }
+      }
+    },
+    {
+      "id": "cluster-daemon",
+      "external_bin": "binaries/cluster-daemon",
+      "source": {
+        "repo": "CitrateNetwork/citrate-cluster",
+        "checkout": "citrate-cluster",
+        "rev": "755cf217226094147e4e67909ab96ccbb5aeeb2a"
+      },
+      "federation": {
+        "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
+        "status": "drift",
+        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-cluster commit. Shipped in 0.5.0 and 0.5.1: 755cf217 (= citrate-cluster main)."
+      },
+      "build": {
+        "kind": "cargo",
+        "package": "cluster-daemon",
+        "bin": "cluster-daemon",
+        "features": [],
+        "env": {},
+        "strip": false,
+        "script": "scripts/build-cluster-daemon.sh"
+      },
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "cluster-daemon-aarch64-apple-darwin-755cf2172260",
+          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "67b6b65e696050544c49ea64bec3843675e4ea62617ffadea6f0b5ad43230a71",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "b6d0683bfd1e911e9352e5355973a195a1b4b8b24bd7ef07339a217730f4f956",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        }
+      }
+    },
+    {
+      "id": "hermes-sidecar",
+      "external_bin": "binaries/hermes",
+      "source": {
+        "repo": "CitrateNetwork/citrate-agent-runtime",
+        "checkout": "citrate-agent-runtime",
+        "rev": "626486b8a7db0ab85cbe62f8a251abfd30677c3d"
+      },
+      "federation": {
+        "rev": "f161e699c51b7c92f59cda6999a982a1916a4b66",
+        "status": "drift",
+        "note": "manifest.toml pins f161e699 (2026-09-07), which is on no branch of citrate-agent-runtime and is not an ancestor of the shipped rev. Shipped in 0.5.0 and 0.5.1: 626486b8 (#72)."
+      },
+      "build": {
+        "kind": "cargo",
+        "package": "agent-sidecar",
+        "bin": "citrate-agent-sidecar",
+        "features": [],
+        "env": {},
+        "strip": true,
+        "script": "scripts/build-hermes.sh"
+      },
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "hermes-aarch64-apple-darwin-626486b8a7db",
+          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "f2af250d114e692bf2a6ca5101b38060853f047fbde8137dea45701ac95fb106",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "2b9b83431e6daf28863d98bb1265cb5c897a7c728d95c6892d80eb94b181fdbe",
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+        }
+      }
+    },
+    {
+      "id": "kubo",
+      "external_bin": "binaries/ipfs",
+      "source": {
+        "repo": "ipfs/kubo",
+        "version": "v0.42.0"
+      },
+      "federation": {
+        "status": "not-pinned",
+        "note": "third-party release (Kubo v0.42.0, the version in release/licences.json and release/notices.json); not a federation repo."
+      },
+      "build": {
+        "kind": "download",
+        "script": "scripts/build-component.sh"
+      },
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "url": "https://github.com/ipfs/kubo/releases/download/v0.42.0/kubo_v0.42.0_darwin-arm64.tar.gz",
+          "archive_sha256": "677d86730d9200fa10150b11942bbb4c293f5055dafc999dd392f08cbf196d48",
+          "member": "kubo/ipfs",
+          "sha256": "2d20ae4f8bd8409f2ccabc3133308bfc992dcdfc0c3b1f3a715273b2de137a57",
+          "evidence": "upstream release asset (GitHub digest = archive_sha256), binary signed by Protocol Labs team 7Y229E2YRL; same size (86,487,504 bytes) as the ipfs in v0.5.1, which Tauri re-signed"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/ipfs/kubo/releases/download/v0.42.0/kubo_v0.42.0_linux-amd64.tar.gz",
+          "archive_sha256": "284145534168b51fe980f73c90f0ce84b55ca293034836b2ba8ea8f93435116e",
+          "member": "kubo/ipfs",
+          "sha256": "a2bcd470ee4c5df3cfc7f11d8acb7b10ab6cadbf0fd8cb079c77fd303746ee4d",
+          "evidence": "upstream release asset; binary equals the ipfs in v0.5.1 PROVENANCE-linux.txt"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/ipfs/kubo/releases/download/v0.42.0/kubo_v0.42.0_linux-arm64.tar.gz",
+          "archive_sha256": "edc6f485ab623f9327bf2ad7aa7a29d84c87c72f1e2584376a77240134a96e69",
+          "member": "kubo/ipfs",
+          "sha256": "48ba9220faa19d100de65e746bb488ff3e378208a82889abdb234b39f81fd817",
+          "evidence": "upstream release asset; binary equals the ipfs in v0.5.1 PROVENANCE-linux.txt"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/ipfs/kubo/releases/download/v0.42.0/kubo_v0.42.0_windows-amd64.zip",
+          "archive_sha256": "f24e4d24445c8abf7bd26bd034cb9f14dac77e30452731a617d2e8e2f2ceb150",
+          "member": "kubo/ipfs.exe",
+          "sha256": "9e63e925e3ee0697446448b119f47d731b7ee55ce74e4c53d7d2b647bb3a9f56",
+          "evidence": "upstream release asset. The runtime-deps asset ipfs-x86_64-pc-windows-msvc.exe (2026-09-11) is Kubo v0.32.1, not this version"
+        }
+      }
+    },
+    {
+      "id": "llama.cpp",
+      "external_bin": "binaries/llama-server",
+      "source": {
+        "repo": "ggml-org/llama.cpp",
+        "tag": "b10909",
+        "rev": "a2878d30df0130dde503a7d9ba30d3d21bd71b9f"
+      },
+      "federation": {
+        "status": "not-pinned",
+        "note": "third-party source; built by hand on the release Mac with the web UI off (docs/RELEASE.md). Linux uses b9438 (d749821db3bd587932d1ed57d43626cd552c9909), CPU-only static, built by the DGX lane."
+      },
+      "build": {
+        "kind": "manual",
+        "doc": "docs/RELEASE.md#the-llama-runtime-llama-server--dylibs-built-with-the-web-ui-off-v050-rc4"
+      },
+      "runtime_deps_assets": [
+        "llama-runtime-arm64-b10909-nowebui.tar.gz"
+      ],
+      "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "llama-server-aarch64-apple-darwin-b10909-nowebui",
+          "evidence": "v0.5.0-rc.4 (2026-10-11), the llama-server shipped in 0.5.0 and 0.5.1"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "f6f87ec572d79cc2d82b2162a24f248c605dfda8dd1c51aaac5261d1ffb116af",
+          "evidence": "llama.cpp b9438 (d749821d); v0.5.1 PROVENANCE-linux.txt"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "8a622da403c99117853fbccf0bd3cd6fc839c146967c726a6c3b435f5901dcd3",
+          "evidence": "llama.cpp b9438 (d749821d); v0.5.1 PROVENANCE-linux.txt"
+        }
+      }
+    }
+  ],
+  "models": [
+    {
+      "id": "gemma-4-e4b",
+      "delivery": "not bundled: downloaded on first run from app_url (a citrate.ai redirect), verified by the app against MODEL_SHA256 and MODEL_SIZE_BYTES in app_pin before it is ever loaded",
+      "url": "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/a69f018d7678a2b9f5e705f8903d6fb29b9b25dc/gemma-4-E4B-it-Q4_0.gguf",
+      "sha256": "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2",
+      "size": 4590807392,
+      "app_pin": "src-tauri/src/model.rs",
+      "app_url": "https://citrate.ai/download/model",
+      "evidence": "Hugging Face paths-info at revision a69f018d (2026-10-23): lfs oid = sha256, size 4,590,807,392. citrate.ai/download/model currently redirects to resolve/main (a branch), so the app's digest check, not the URL, is what pins the bytes."
+    },
+    {
+      "id": "bge-base-en-v1.5",
+      "delivery": "bundled (models/bge-base-en-v1.5 and models/bge-base-en-v1.5-gguf)",
+      "source": {
+        "repo": "BAAI/bge-base-en-v1.5",
+        "rev": "a5beb1e3e68b9ab74eb54cfd186867f64f240e1a"
+      },
+      "runtime_deps_assets": [
+        "bge-base-en-v1.5.tar.gz",
+        "bge-base-en-v1.5-f16.gguf"
+      ],
+      "evidence": "model.safetensors sha256 c7c1988a... (scripts/build-bge-gguf.sh); the GGUF is reproducible with that script, which checks its output against the pin"
+    }
+  ],
+  "other_runtime_deps": [
+    "knowledge-corpus.tar.gz",
+    "skills-bundle.tar.gz"
+  ]
+}
