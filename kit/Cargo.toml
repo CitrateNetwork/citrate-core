@@ -37,6 +37,9 @@ sha2 = "0.10"
 hkdf = "0.12"
 # HUP-S2.3: HMAC-SHA256 integrity tag on the web-signing budget file (already in Cargo.lock via hkdf).
 hmac = "0.12"
+# GROW-S1 task 10 (v2 invite links): XChaCha20-Poly1305 for the sealed invite envelope. RustCrypto,
+# same family + `aead` 0.5 as the aes-gcm already here; adds chacha20 + poly1305 to the lock.
+chacha20poly1305 = "0.10"
 base64 = "0.22"
 sha3 = "0.10"
 bip39 = { version = "1.2", features = ["std", "zeroize"] }
