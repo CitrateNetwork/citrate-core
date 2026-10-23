@@ -16,7 +16,6 @@ const persisted: { app: AppConfig } = {
     autolock: 30,
     channel: "stable",
     telemetry: false,
-    sigPolicy: "hitl",
   },
 };
 
@@ -390,7 +389,6 @@ describe("tauri adapter — config round-trip proof (A1.4, frontend half)", () =
       autolock: 30,
       channel: "stable",
       telemetry: false,
-      sigPolicy: "hitl",
     };
     invokeMock.mockClear();
   });

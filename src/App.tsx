@@ -17,6 +17,7 @@ import { useNetworkLabel } from "./shell/networkCompat";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
 // CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
+import { StoragePins, StorageBackup } from "./surfaces";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
 import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, setTelemetryConsent } from "./privacy/joinFunnel";
@@ -38,6 +39,8 @@ export const REGISTER: Record<string, "instrument" | "charter"> = {
   // CX surfaces (CX-S0.4)
   models: "instrument",
   files: "instrument",
+  pins: "instrument",
+  backup: "instrument",
   groups: "charter",
   cluster: "instrument",
   train: "instrument",
@@ -119,6 +122,10 @@ function Shell({ s }: { s: AppState }) {
         return <Models store={store} s={s} />;
       case "files":
         return <StorageFiles store={store} s={s} />;
+      case "pins":
+        return <StoragePins store={store} s={s} />;
+      case "backup":
+        return <StorageBackup store={store} s={s} />;
       case "people":
         return <People store={store} s={s} />;
       case "groups":
