@@ -445,7 +445,7 @@ describe("slice 2: onboarding Verify step follows the real gate (Join 3 copy rev
     const c = await verifyStep();
     const V = c.renderVals();
     expect(V.ob2Lead).toMatch(/^Verification is optional for membership\./);
-    expect(V.ob2Lead).toMatch(/Unlocked · verify identity to withdraw/);
+    expect(V.ob2Lead).toMatch(/withdrawing your bond after the lock, once it is activated/);
     expect(V.ob2Lead).toMatch(/documents never touch this machine/);
   });
 
@@ -512,5 +512,21 @@ describe("slice 2 follow-ups (core #393): web join page actions", () => {
     }
     expect(html.slice(i, j)).not.toContain("wbSecondary");
     expect(html).toContain('<sc-if value="{{ wbSecondary }}"');
+  });
+});
+
+describe("slice 2 review: sample data that a secret scanner must not mistake for a key", () => {
+  it("the sample invite key is an obvious placeholder of the real key's length", () => {
+    const J = Component.JOIN();
+    expect(J.key).toMatch(/^SAMPLE-not-a-real-key/);
+    expect(J.key).toMatch(/^[A-Za-z0-9_-]{22}$/);
+  });
+});
+
+describe("slice 2 review (core #417): withdraw wording needs an activated bond", () => {
+  it("tripwire: no copy offers withdrawing a bond without saying it must be activated", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    expect(html).not.toMatch(/withdrawing an unlocked bond/);
+    for (const m of html.matchAll(/[^.'"]*withdraw(?:ing)? your bond[^.'"]*/gi)) expect(m[0]).toMatch(/activated/);
   });
 });
