@@ -423,12 +423,26 @@ export function Wallet({ store, s }: SurfaceProps) {
                 source · on-chain queue
               </span>
             </div>
-            {pending.length === 0 && (
+            {/* C1-W: an unread, failed or unfinished read is "—" plus why, never an empty queue. */}
+            {s.pendingWithdrawalsError !== null && (
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="LiquidStakingPool WithdrawalRequested logs (citrate_getLogs, 1000-block windows; eth_getLogs where the RPC lacks it) from rpc.citrate.ai">
+                — · pending withdrawals: {s.pendingWithdrawalsError}
+              </p>
+            )}
+            {/* C1-W: the scan can't confirm it reached the chain head (citrate_getLogs not served, or
+                the node is behind): found rows are real, but an empty list is not "none". */}
+            {s.pendingWithdrawalsError === null && s.pendingWithdrawalsUnconfirmed && (
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="citrate_getLogs (citrate-chain#334, #336, #337) is not on the public RPC yet">
+                {pending.length === 0 ? "— · pending withdrawals: " : ""}can&apos;t confirm the scan reached the chain head
+                {s.pendingWithdrawalsNote ? ": " + s.pendingWithdrawalsNote : ""}
+              </p>
+            )}
+            {s.pendingWithdrawalsError === null && !s.pendingWithdrawalsUnconfirmed && pending.length === 0 && (
               <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
                 No pending withdrawals. A requested withdrawal appears here and becomes claimable after the ~7-day (50,400-block) delay.
               </p>
             )}
-            {pending.map((w) => {
+            {s.pendingWithdrawalsError === null && pending.map((w) => {
               const saltStr = fmt2(Number(BigInt(w.saltWei)) / 1e18);
               const blocksLeft = Math.max(0, w.claimableAtBlock - s.height);
               const daysLeft = (blocksLeft * 12) / 86400; // ~12s blocks

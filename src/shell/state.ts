@@ -406,6 +406,17 @@ export interface AppState {
    * honestly reads [] (Rule 1 — never fabricated).
    */
   pendingWithdrawals: PendingWithdrawal[];
+  /**
+   * C1-W — why `pendingWithdrawals` is not a complete chain read: "not read yet" before the first
+   * read, the failed eth_getLogs window, or "still reading chain history" while the first paged scan
+   * runs. null = the list is a complete read. Never shown as an empty queue. Not persisted.
+   */
+  pendingWithdrawalsError: string | null;
+  /** C1-W — the last read gave no evidence of how far the node executed: the rows shown are real,
+   * but withdrawals in blocks the node has not served yet may be missing. Not persisted. */
+  pendingWithdrawalsUnconfirmed: boolean;
+  /** C1-W — why the last read is not confirmed, in words from the scan (null when confirmed). */
+  pendingWithdrawalsNote: string | null;
   hasGrant: boolean;
   hasSbt: boolean;
   earnVal: number;
@@ -775,6 +786,9 @@ export function freshState(pid: string): AppState {
     selfStake: 0,
     bondedStake: 0,
     pendingWithdrawals: [],
+    pendingWithdrawalsError: "not read yet",
+    pendingWithdrawalsUnconfirmed: false,
+    pendingWithdrawalsNote: null,
     hasGrant: false,
     hasSbt: false,
     earnVal: 0,
