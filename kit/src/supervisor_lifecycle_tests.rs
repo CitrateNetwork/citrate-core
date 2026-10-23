@@ -456,6 +456,20 @@ fn deadline_records_are_published_free_only_after_their_last_version_bump() {
     assert!(stores >= 1, "the release path publishes REC_FREE");
 }
 
+/// Tripwire: a publication ticket is resolved only by an explicit call (`commit`, `withdraw`,
+/// `cleaned`). A `Drop` that releases one would let an unwinding caller report cleanup that never
+/// happened, so neither ticket type may implement `Drop`.
+#[test]
+fn publication_tickets_never_release_on_drop() {
+    let source = include_str!("supervisor.rs");
+    for ty in ["PublicationTicket", "StaleTicket"] {
+        assert!(
+            !source.contains(&format!("impl Drop for {ty}")),
+            "{ty} must not release its publication on Drop"
+        );
+    }
+}
+
 #[test]
 fn releasing_an_owner_frees_only_its_records() {
     let p = idle_publisher();
