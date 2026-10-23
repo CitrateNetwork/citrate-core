@@ -71,7 +71,10 @@ describe("tripwire: no setting skips the signature ceremony", () => {
       readFileSync(f, "utf8")
         .split("\n")
         .forEach((line, i) => {
-          if (/\bsigPolicy\b|\bsig_policy\b/.test(line)) offenders.push(`${rel(f)}:${i + 1}: ${line.trim()}`);
+          if (!/\bsigPolicy\b|\bsig_policy\b/.test(line)) return;
+          // The one allowed mention: loadState deleting a value an older build persisted.
+          if (rel(f) === "shell/state.ts" && /^\s*if \(saved\) delete \(base as \{ sigPolicy\?: unknown \}\)\.sigPolicy;\s*$/.test(line)) return;
+          offenders.push(`${rel(f)}:${i + 1}: ${line.trim()}`);
         });
     }
     expect(offenders).toEqual([]);

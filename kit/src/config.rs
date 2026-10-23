@@ -25,8 +25,10 @@ pub struct AppConfig {
     pub autolock: u32,
     pub channel: String,
     pub telemetry: bool,
-    #[serde(rename = "sigPolicy")]
-    pub sig_policy: String,
+    // There is no signature-policy field (CLAUDE.md Rule 3: every signature goes through the
+    // ceremony; the one exception is a budgeted web sign-in). A config.json written by 0.5.1 or
+    // earlier may still hold `sigPolicy`: serde ignores the unknown key on read, and the next
+    // write drops it.
     /// CORE-D3.C — the core-membership base URL. The S3 onboarding checkout
     /// opens `{core_membership_url}/checkout` in an in-app popup (the money +
     /// entitlement grant happen server-side). Overridable to a preview/prod
@@ -88,7 +90,6 @@ impl Default for AppConfig {
             autolock: 30,
             channel: "stable".into(),
             telemetry: false,
-            sig_policy: "hitl".into(),
             core_membership_url: default_core_membership_url(),
         }
     }
@@ -107,8 +108,6 @@ pub struct AppConfigPatch {
     pub autolock: Option<u32>,
     pub channel: Option<String>,
     pub telemetry: Option<bool>,
-    #[serde(rename = "sigPolicy")]
-    pub sig_policy: Option<String>,
     #[serde(rename = "coreMembershipUrl")]
     pub core_membership_url: Option<String>,
 }
@@ -136,9 +135,6 @@ impl AppConfig {
         }
         if let Some(v) = p.telemetry {
             self.telemetry = v;
-        }
-        if let Some(v) = p.sig_policy {
-            self.sig_policy = v;
         }
         if let Some(v) = p.core_membership_url {
             // CORE-B-004: only accept an https URL on the core-membership allowlist.
@@ -264,7 +260,6 @@ mod tests {
         assert_eq!(d.autolock, 30);
         assert_eq!(d.channel, "stable");
         assert!(!d.telemetry);
-        assert_eq!(d.sig_policy, "hitl");
         // CORE-D3.C — the core-membership base URL default (prod). PHONEPAY moved this to the
         // canonical host membership.citrate.ai (not the raw vercel domain).
         assert_eq!(d.core_membership_url, "https://membership.citrate.ai");
@@ -327,7 +322,6 @@ mod tests {
         // untouched fields keep their defaults
         assert_eq!(merged.rpc, "local");
         assert_eq!(merged.channel, "stable");
-        assert_eq!(merged.sig_policy, "hitl");
     }
 
     /// The config JSON must (de)serialize with the camelCase keys the TS bridge
@@ -338,7 +332,6 @@ mod tests {
         let json = serde_json::to_value(&cfg).unwrap();
         assert!(json.get("dataDir").is_some());
         assert!(json.get("cpuCap").is_some());
-        assert!(json.get("sigPolicy").is_some());
         assert!(json.get("coreMembershipUrl").is_some());
         // round-trips back to an equal value
         let back: AppConfig = serde_json::from_value(json).unwrap();
@@ -422,8 +415,9 @@ mod tests {
                 "sigPolicy": v,
                 "coreMembershipUrl": "https://membership.citrate.ai"
             });
-            let cfg: AppConfig = serde_json::from_value(legacy)
-                .unwrap_or_else(|e| panic!("a stored sigPolicy {v} must not break config_read: {e}"));
+            let cfg: AppConfig = serde_json::from_value(legacy).unwrap_or_else(|e| {
+                panic!("a stored sigPolicy {v} must not break config_read: {e}")
+            });
             // The rest of the stored config still loads.
             assert_eq!(cfg.autolock, 15);
             let out = serde_json::to_value(&cfg).unwrap_or_else(|e| panic!("serialize: {e}"));
