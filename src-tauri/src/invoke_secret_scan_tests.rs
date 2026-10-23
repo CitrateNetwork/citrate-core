@@ -465,6 +465,10 @@ const SECRET_TYPED_NAMES: &[&str] = &[
     "mnemonic",
     "entropy",
     "seed",
+    "passphrase",
+    "password",
+    "bearer",
+    "token",
 ];
 
 /// `(file, name)` pairs that keep a plain string on purpose, with the reason.
@@ -472,6 +476,25 @@ const PLAIN_STRING_EXEMPT: &[(&str, &str, &str)] = &[
     // The cluster group seed is link/QR text naming where to dial (group id + addresses): it is
     // meant to be shared and carries no key material. The name is the cluster-daemon wire format.
     ("cluster.rs", "seed", "a shareable locator, not a secret"),
+    // The group invite token is the share secret by design: it rides the invite link the owner
+    // sends, is single-use and revocable, and the webview shows it (`InviteMinted`).
+    (
+        "invites.rs",
+        "token",
+        "the invite link's share token, shown to the member by design",
+    ),
+    // The same raw invite token on its way to the relay daemon for self-admit (`RedeemInvite`).
+    (
+        "comms.rs",
+        "token",
+        "the invite share token forwarded to the relay for self-admit",
+    ),
+    // `Endpoints::token` is the OIDC token endpoint URL from discovery, not a credential.
+    (
+        "oidc.rs",
+        "token",
+        "the token endpoint URL, not a credential",
+    ),
 ];
 
 /// Types that are a plain owned string or byte buffer.
@@ -532,8 +555,21 @@ fn no_key_or_token_is_held_in_a_plain_string() {
     production_sources(&manifest.join("src"), &mut sources);
     production_sources(&manifest.join("..").join("kit").join("src"), &mut sources);
     assert!(sources.len() > 20, "the scan must see the sources");
+    // A file pulled into a test file with `include!` is test code too.
+    let test_only = included_by_tests(&manifest.join("src"));
+    assert!(
+        test_only.contains("hello_mint_e2e_sidecar.rs"),
+        "the include scan must see the test-only includes: {test_only:?}"
+    );
     let hits: Vec<_> = sources
         .iter()
+        .filter(|(path, _)| {
+            let file = Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("");
+            !test_only.contains(file)
+        })
         .flat_map(|(path, src)| {
             let file = Path::new(path)
                 .file_name()
@@ -547,6 +583,63 @@ fn no_key_or_token_is_held_in_a_plain_string() {
         hits.is_empty(),
         "hold these in citrate_core_kit::secret::SecretString (or a Zeroizing type):\n{hits:#?}"
     );
+}
+
+/// File names `include!`d by a test file (`*_tests.rs`, `tests.rs`) under `dir`.
+fn included_by_tests(dir: &Path) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let fname = p
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !(fname.ends_with("_tests.rs") || fname == "tests.rs") {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        for part in src.split("include!(\"").skip(1) {
+            if let Some(name) = part.split('"').next() {
+                out.insert(name.rsplit('/').next().unwrap_or(name).to_string());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn negative_control_passphrase_bearer_and_token_names_are_flagged() {
+    let src = r#"
+pub async fn custody_unlock(app_h: tauri::AppHandle, passphrase: String) -> Result<(), String> { todo() }
+struct Login {
+    password: Option<String>,
+    bearer: String,
+}
+struct Target {
+    pub token: String,
+    pub token_hash: String,
+    pub port: u16,
+}
+fn ok(passphrase: SecretString, bearer: &str) {}
+"#;
+    let hits = plain_secret_slots("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["passphrase", "password", "bearer", "token"],
+        "{hits:#?}"
+    );
+    // The share-token exemptions hold only in their own files.
+    let tok = "struct I {\n    pub token: String,\n}\n";
+    assert!(plain_secret_slots("invites.rs", tok).is_empty());
+    assert!(plain_secret_slots("comms.rs", tok).is_empty());
+    assert_eq!(plain_secret_slots("hermes_mcp.rs", tok).len(), 1);
 }
 
 #[test]
