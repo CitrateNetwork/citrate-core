@@ -44,6 +44,180 @@ pub(crate) const COMMANDS: [&str; 8] = [
     "daemon_runs_between",
 ];
 
+// ---------------------------------------------------------------------------
+// K5a: sidecar-hosted tool sets and Store daemons
+// ---------------------------------------------------------------------------
+
+/// One tool set the Hermes sidecar offers to EVERY session while it is on (set by the child's
+/// environment at start), outside the tools core passes per session. A Store daemon is bound to
+/// the tools its approved permissions grant, so it is not started while any set its permissions
+/// do not cover is on (a per-session switch for these sets is a later citrate-agent-runtime item).
+pub(crate) struct HostToolSet {
+    pub id: &'static str,
+    /// What the member sees.
+    pub label: &'static str,
+    /// The child environment key that turns the set on, and the value that does (`""` = any
+    /// non-empty value).
+    pub env_key: &'static str,
+    pub on_value: &'static str,
+    /// The declared permission that covers it (and grants it to a Store daemon).
+    pub permission: &'static str,
+    /// How the member turns it off, or `None` when the app has no switch for it yet.
+    pub turn_off: Option<&'static str>,
+}
+
+/// Every sidecar-hosted tool set that can reach a daemon session. The file, sheet, project,
+/// shell and undo tools need a grant document, which daemon sessions are never given, so they
+/// are not listed (docs/STORE_CATALOG.md).
+pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
+    HostToolSet {
+        id: "search",
+        label: "Web search and page reading (web_search, read_url)",
+        env_key: "CITRATE_HERMES_SEARCH",
+        on_value: "1",
+        permission: "web_search",
+        turn_off: Some("turn off \"Let Hermes search the web and read pages\" in Settings > Web search & decisions"),
+    },
+    HostToolSet {
+        id: "browser",
+        label: "Hermes's browser (browser_*)",
+        env_key: "CITRATE_HERMES_BROWSER",
+        on_value: "1",
+        permission: "web_browse",
+        turn_off: Some("turn off \"Let Hermes open and use web pages in its own browser\" in Settings > Web search & decisions"),
+    },
+    HostToolSet {
+        id: "mcp",
+        label: "MCP servers (mcp__*)",
+        env_key: "CITRATE_HERMES_MCP",
+        on_value: "",
+        permission: "mcp",
+        turn_off: Some("turn off every server in Settings > MCP servers"),
+    },
+    HostToolSet {
+        id: "toolchain",
+        label: "the contract toolchain (forge_test, slither_scan, aderyn_scan, medusa_fuzz)",
+        env_key: "CITRATE_HERMES_TOOLCHAIN",
+        on_value: "1",
+        permission: "toolchain",
+        turn_off: Some("turn off the contract toolchain in Agent > Contracts"),
+    },
+    HostToolSet {
+        id: "skills",
+        label: "installed skills (skill_load)",
+        env_key: "CITRATE_HERMES_SKILLS",
+        on_value: "",
+        permission: "skills_read",
+        turn_off: None,
+    },
+    HostToolSet {
+        id: "learn",
+        label: "skill learning (learn_propose)",
+        env_key: "CITRATE_HERMES_LEARN_DIR",
+        on_value: "",
+        permission: "learn_propose",
+        turn_off: None,
+    },
+    HostToolSet {
+        id: "capsules",
+        label: "installed capsules",
+        env_key: "CITRATE_HERMES_CAPSULES",
+        on_value: "",
+        permission: "capsules_run",
+        turn_off: None,
+    },
+];
+
+/// The marker a Store daemon's tool list carries for a host tool set its permissions cover.
+pub(crate) fn host_set_marker(id: &str) -> String {
+    format!("host:{id}")
+}
+
+/// The host tool sets on in the sidecar's environment `env`.
+pub(crate) fn enabled_host_sets(env: &[(String, String)]) -> Vec<&'static HostToolSet> {
+    HOST_TOOL_SETS
+        .iter()
+        .filter(|set| {
+            env.iter().any(|(k, v)| {
+                k == set.env_key
+                    && if set.on_value.is_empty() {
+                        !v.trim().is_empty()
+                    } else {
+                        v.trim() == set.on_value
+                    }
+            })
+        })
+        .collect()
+}
+
+/// The ids of the host tool sets on in `env`, in [`HOST_TOOL_SETS`] order.
+pub(crate) fn enabled_host_set_ids(env: &[(String, String)]) -> Vec<String> {
+    enabled_host_sets(env)
+        .into_iter()
+        .map(|s| s.id.to_string())
+        .collect()
+}
+
+/// Said when core cannot see the sidecar's environment (not running, or restarting).
+pub(crate) const HOST_ENV_UNKNOWN: &str = "Not started: Hermes is not running or is restarting, so the tools it offers could not be checked. It runs at its next scheduled time.";
+
+/// K5a: the check right before a Store daemon's session is opened. `claimed` is the host tool
+/// sets on when the run was claimed; `current` the environment of the sidecar now (`None` = not
+/// running or restarting). Refused when the environment is unknown, when the sets changed since
+/// the claim (a restart with other settings), or when an uncovered set is on.
+pub(crate) fn store_open_check(
+    allowed: &[String],
+    claimed: Option<&[String]>,
+    current: Option<&[(String, String)]>,
+) -> Result<(), String> {
+    let env = current.ok_or_else(|| HOST_ENV_UNKNOWN.to_string())?;
+    let now = enabled_host_set_ids(env);
+    match claimed {
+        Some(c) if c == now.as_slice() => {}
+        _ => {
+            return Err(
+                "Not started: the tools Hermes offers changed since this run was claimed (it restarted with other settings). It runs at its next scheduled time."
+                    .into(),
+            )
+        }
+    }
+    match host_block_reason(allowed, env) {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
+/// Why a Store daemon bound to `allowed` must not start while the sidecar runs with `env`, or
+/// `None` when every host tool set that is on is covered by its approved permissions.
+pub(crate) fn host_block_reason(allowed: &[String], env: &[(String, String)]) -> Option<String> {
+    let uncovered: Vec<&HostToolSet> = enabled_host_sets(env)
+        .into_iter()
+        .filter(|set| !allowed.contains(&host_set_marker(set.id)))
+        .collect();
+    if uncovered.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = uncovered.iter().map(|s| s.label).collect();
+    let steps: Vec<&str> = uncovered.iter().filter_map(|s| s.turn_off).collect();
+    let stuck = uncovered.iter().any(|s| s.turn_off.is_none());
+    let mut msg = format!(
+        "Not started: Hermes offers every session tools this daemon was not approved for: {}.",
+        names.join("; ")
+    );
+    if !steps.is_empty() {
+        msg.push_str(&format!(" To run it sandboxed, {}.", steps.join(", and ")));
+    }
+    if stuck {
+        msg.push_str(
+            " Some of these cannot be turned off in the app yet; Store daemons run once Hermes can open a session without them.",
+        );
+    }
+    Some(msg)
+}
+
+/// Why [`DaemonBook::delete_idle`] refused.
+pub(crate) const DAEMON_RUN_IN_FLIGHT: &str = "a run of this daemon is in flight";
+
 /// The file the book lives in, under the app's local data dir.
 pub(crate) const FILE_NAME: &str = "daemons.json";
 /// File format version.
@@ -427,6 +601,10 @@ struct Running {
     run_id: String,
     started_ms: u64,
     tokens_allowed: u32,
+    /// K5a: for a Store daemon, the host tool sets on when this run was claimed (ids). The
+    /// session open checks the sets are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,6 +630,11 @@ struct Record {
     #[serde(default)]
     last_token_source: Option<String>,
     running: Option<Running>,
+    /// K5a: the agent tools a Store-installed daemon may be offered and may call, from the
+    /// permissions the member approved at install (deny by default: an empty list is no tools).
+    /// `None` for a daemon the member wrote here, which keeps the member-daemon tool set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allowed_tools: Option<Vec<String>>,
 }
 
 /// One claimed run, handed to the runner.
@@ -464,6 +647,8 @@ pub(crate) struct Claim {
     pub prompt: String,
     pub tokens_allowed: u32,
     pub started_ms: u64,
+    /// K5a: the only tools this run may be offered and call; `None` = the member-daemon set.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// What the UI and the Activity monitor show for one daemon.
@@ -643,6 +828,46 @@ impl DaemonBook {
         now_ms: u64,
         offset_min: i32,
     ) -> Result<DaemonView, String> {
+        self.save_with_new_id(input, None, now_ms, offset_min)
+    }
+
+    /// A new daemon id in the book's format (`d` + 16 hex). The Store (K5a) takes one before it
+    /// creates the daemon, so its install record can name the daemon first.
+    pub(crate) fn fresh_id() -> String {
+        new_id("d")
+    }
+
+    /// Create a daemon under a given new id (from [`Self::fresh_id`]), PAUSED from the first
+    /// write, bound to `allowed_tools` (the tools its approved permissions grant; empty = none).
+    /// Refused when the id is already in use or `input.id` is set.
+    pub(crate) fn create_paused_with_id(
+        &mut self,
+        id: String,
+        input: DaemonInput,
+        allowed_tools: Vec<String>,
+        now_ms: u64,
+        offset_min: i32,
+    ) -> Result<DaemonView, String> {
+        if input.id.is_some() {
+            return Err("internal: a new daemon has no id yet".into());
+        }
+        if self.records.iter().any(|r| r.id == id) {
+            return Err("internal: that daemon id is already in use".into());
+        }
+        let v = self.save_with_new_id(input, Some(id), now_ms, offset_min)?;
+        self.set_paused(&v.id, true, now_ms)?;
+        self.find_mut(&v.id)?.allowed_tools = Some(allowed_tools);
+        self.view(&v.id, now_ms, offset_min)
+            .ok_or_else(|| "internal: the saved daemon is missing".to_string())
+    }
+
+    fn save_with_new_id(
+        &mut self,
+        input: DaemonInput,
+        preset_id: Option<String>,
+        now_ms: u64,
+        offset_min: i32,
+    ) -> Result<DaemonView, String> {
         check_offset(offset_min)?;
         let name = one_line(&input.name, NAME_MAX + 1);
         if name.is_empty() || name.chars().count() > NAME_MAX {
@@ -677,7 +902,7 @@ impl DaemonBook {
                 if self.records.len() >= MAX_DAEMONS {
                     return Err(format!("at most {MAX_DAEMONS} daemons"));
                 }
-                let id = new_id("d");
+                let id = preset_id.unwrap_or_else(|| new_id("d"));
                 self.records.push(Record {
                     id: id.clone(),
                     name,
@@ -696,12 +921,43 @@ impl DaemonBook {
                     last_note: None,
                     last_token_source: None,
                     running: None,
+                    allowed_tools: None,
                 });
                 id
             }
         };
         self.view(&id, now_ms, offset_min)
             .ok_or_else(|| "internal: the saved daemon is missing".to_string())
+    }
+
+    /// K5a: delete a daemon only when no run of it is in flight. A run the app has not reported
+    /// back within [`STALE_RUN_MS`] no longer counts (the same release `claim_due` applies).
+    pub(crate) fn delete_idle(&mut self, id: &str, now_ms: u64) -> Result<(), String> {
+        if let Some(r) = self.records.iter().find(|r| r.id == id) {
+            if let Some(run) = &r.running {
+                if now_ms < run.started_ms.saturating_add(STALE_RUN_MS) {
+                    return Err(DAEMON_RUN_IN_FLIGHT.into());
+                }
+            }
+        }
+        self.delete(id)
+    }
+
+    /// The tools a daemon is bound to (`None` = a member-written daemon, or no such daemon).
+    pub(crate) fn allowed_tools_of(&self, id: &str) -> Option<Vec<String>> {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.allowed_tools.clone())
+    }
+
+    /// The host tool sets the daemon's run in flight was claimed against.
+    pub(crate) fn claimed_host_sets(&self, id: &str) -> Option<Vec<String>> {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.running.as_ref())
+            .and_then(|run| run.host_sets.clone())
     }
 
     pub(crate) fn delete(&mut self, id: &str) -> Result<(), String> {
@@ -714,6 +970,24 @@ impl DaemonBook {
     }
 
     /// Pause or resume one daemon. Resuming never replays the minutes it missed.
+    /// Resume (start) a daemon. A Store daemon is refused while the running sidecar offers a host
+    /// tool set its approved permissions do not cover, with the reason and how to run it
+    /// sandboxed. `host_env` `None` = Hermes is not running (the check runs again at claim time).
+    pub(crate) fn resume_checked(
+        &mut self,
+        id: &str,
+        now_ms: u64,
+        host_env: Option<&[(String, String)]>,
+    ) -> Result<(), String> {
+        let r = self.find_mut(id)?;
+        if let (Some(allowed), Some(env)) = (&r.allowed_tools, host_env) {
+            if let Some(why) = host_block_reason(allowed, env) {
+                return Err(why);
+            }
+        }
+        self.set_paused(id, false, now_ms)
+    }
+
     pub(crate) fn set_paused(&mut self, id: &str, paused: bool, now_ms: u64) -> Result<(), String> {
         let r = self.find_mut(id)?;
         r.paused = paused;
@@ -729,9 +1003,24 @@ impl DaemonBook {
         }
     }
 
-    /// Claim every daemon that is due at `now_ms` and inside its budget. Each claim counts as one
-    /// of the day's runs at once; its tokens are charged when it finishes.
+    /// [`Self::claim_due_with`] with no sidecar environment (tests drive schedules with it).
+    #[cfg(test)]
     pub(crate) fn claim_due(&mut self, now_ms: u64, offset_min: i32) -> Result<Vec<Claim>, String> {
+        self.claim_due_with(now_ms, offset_min, None)
+    }
+
+    /// Claim every daemon that is due at `now_ms` and inside its budget. Each claim counts as one
+    /// of the day's runs at once; its tokens are charged when it finishes. With the running
+    /// sidecar's environment (K5a), a Store daemon due now is not
+    /// started while a host tool set its permissions do not cover is on (it is recorded as
+    /// `not_started`, with the reason). `None` = no sidecar environment known (nothing runs then
+    /// anyway: daemons run only in Hermes).
+    pub(crate) fn claim_due_with(
+        &mut self,
+        now_ms: u64,
+        offset_min: i32,
+        host_env: Option<&[(String, String)]>,
+    ) -> Result<Vec<Claim>, String> {
         check_offset(offset_min)?;
         let today = LocalTime::from_utc_ms(now_ms, offset_min).day_key();
         let all_paused = self.all_paused;
@@ -768,6 +1057,22 @@ impl DaemonBook {
                 r.last_note = Some(why.into());
                 continue;
             }
+            // A Store daemon is claimed only against a KNOWN sidecar environment: unknown (Hermes
+            // not running, in crash backoff, or restarting) blocks it like an uncovered set does.
+            let mut host_sets = None;
+            if let Some(allowed) = &r.allowed_tools {
+                let why = match host_env {
+                    None => Some(HOST_ENV_UNKNOWN.to_string()),
+                    Some(env) => host_block_reason(allowed, env),
+                };
+                if let Some(why) = why {
+                    r.skipped_today = r.skipped_today.saturating_add(1);
+                    r.last_outcome = Some("not_started".into());
+                    r.last_note = Some(one_line(&why, NOTE_MAX));
+                    continue;
+                }
+                host_sets = host_env.map(enabled_host_set_ids);
+            }
             let remaining = u64::from(r.budget.max_tokens_per_day).saturating_sub(r.tokens_today);
             let tokens_allowed = u64::from(r.budget.max_tokens_per_run).min(remaining) as u32;
             let run_id = new_id("r");
@@ -777,6 +1082,7 @@ impl DaemonBook {
                 run_id: run_id.clone(),
                 started_ms: now_ms,
                 tokens_allowed,
+                host_sets,
             });
             claims.push(Claim {
                 daemon_id: r.id.clone(),
@@ -785,6 +1091,7 @@ impl DaemonBook {
                 prompt: r.prompt.clone(),
                 tokens_allowed,
                 started_ms: now_ms,
+                allowed_tools: r.allowed_tools.clone(),
             });
         }
         Ok(claims)
@@ -1044,7 +1351,7 @@ pub(crate) fn store_book(path: &Path, book: &DaemonBook) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("could not save the daemons file: {e}"))
 }
 
-fn book_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn book_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join(FILE_NAME))
@@ -1056,14 +1363,45 @@ fn with_book<T>(
     write: bool,
     f: impl FnOnce(&mut DaemonBook) -> Result<T, String>,
 ) -> Result<T, String> {
-    let path = book_path(app)?;
+    with_book_file(&book_path(app)?, write, f)
+}
+
+/// [`with_book`] over an explicit file: load, change and (when `write`) store the book under the
+/// one process-wide lock. The Store's daemon installer (K5a) writes through here.
+pub(crate) fn with_book_file<T>(
+    path: &Path,
+    write: bool,
+    f: impl FnOnce(&mut DaemonBook) -> Result<T, String>,
+) -> Result<T, String> {
     let _guard = BOOK_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let mut book = load_book(&path)?;
+    let mut book = load_book(path)?;
     let out = f(&mut book)?;
     if write {
-        store_book(&path, &book)?;
+        store_book(path, &book)?;
     }
     Ok(out)
+}
+
+/// K5a: for a Store daemon, the open-time check (`store_open_check`) against the sidecar's
+/// current environment. A member daemon (or an unknown id) passes unchanged.
+/// Returns the sidecar generation a Store daemon was checked against (`None` for a member
+/// daemon); the session must be opened in that generation (`HermesManager::session_open_in`).
+pub(crate) fn check_store_daemon_open(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<Option<u64>, String> {
+    let (allowed, claimed) = with_book(app, false, |b| {
+        Ok((b.allowed_tools_of(id), b.claimed_host_sets(id)))
+    })?;
+    let Some(allowed) = allowed else {
+        return Ok(None);
+    };
+    let m = crate::hermes::manager(app).map_err(|e| e.to_string())?;
+    // The generation first, then the environment: a restart between them makes the open refuse.
+    let generation = m.generation();
+    let current = m.started_env();
+    store_open_check(&allowed, claimed.as_deref(), current.as_deref())?;
+    Ok(Some(generation))
 }
 
 fn views(book: &DaemonBook, now_ms: u64, offset_min: i32) -> DaemonsView {
@@ -1111,8 +1449,18 @@ pub async fn daemon_set_paused(
     paused: bool,
     now_ms: u64,
 ) -> Result<(), String> {
-    crate::blocking::off_main(move || with_book(&app, true, |b| b.set_paused(&id, paused, now_ms)))
-        .await
+    crate::blocking::off_main(move || {
+        if paused {
+            return with_book(&app, true, |b| b.set_paused(&id, true, now_ms));
+        }
+        let env = crate::hermes::manager(&app)
+            .ok()
+            .and_then(|m| m.started_env());
+        with_book(&app, true, |b| {
+            b.resume_checked(&id, now_ms, env.as_deref())
+        })
+    })
+    .await
 }
 
 /// **daemons_set_all_paused** — pause or resume every daemon.
@@ -1144,8 +1492,16 @@ pub async fn daemons_claim_due(
     now_ms: u64,
     offset_min: i32,
 ) -> Result<Vec<Claim>, String> {
-    crate::blocking::off_main(move || with_book(&app, true, |b| b.claim_due(now_ms, offset_min)))
-        .await
+    crate::blocking::off_main(move || {
+        // K5a: the sidecar's environment decides whether a Store daemon may start now.
+        let env = crate::hermes::manager(&app)
+            .ok()
+            .and_then(|m| m.started_env());
+        with_book(&app, true, |b| {
+            b.claim_due_with(now_ms, offset_min, env.as_deref())
+        })
+    })
+    .await
 }
 
 /// **daemons_finish_run** — the runner reports a claimed run's end. The run is charged to the

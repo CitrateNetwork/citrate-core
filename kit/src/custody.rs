@@ -157,7 +157,7 @@ const KEYRING_AUTO_PASSPHRASE_ACCOUNT: &str = "custody-auto-passphrase";
 const AUTO_PASSPHRASE_LEN: usize = 32;
 
 /// Envelope file name inside the app data dir.
-const ENVELOPE_FILE: &str = "custody.enc";
+pub(crate) const ENVELOPE_FILE: &str = "custody.enc";
 
 /// Slot-name prefixes reserved for BACKEND-OWNED secrets. The **in-process**
 /// `put`/`custody_get`/`clear_slot` APIs may address these freely (that is how the

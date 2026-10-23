@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 }));
 
 const sources: WidgetSources = {
-  context: () => ({ height: 5, peers: 1, finalityAge: 2, nodeState: "synced", staked: 0, liquid: 0, claimable: 0 }),
+  context: () => ({ height: 5, peers: 1, nodeState: "synced", staked: 0, liquid: 0, claimable: 0 }),
   model: () => ({ label: "m", id: null }),
   daemons: () => ({ allPaused: false, total: 0, running: 0, paused: 0, budgetUsedUp: 0 }),
 };

@@ -1,0 +1,34 @@
+# created: 2026-10-18 | branch: beta/k1a-gate0-harness | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# status: active (SCL-S1.3 suite manifest; the SCL-S13.2 tripwire builds on it)
+#
+# The lifecycle fault-injection suite manifest. One line per fixture in kit/tests/lifecycle_faults.rs:
+#   name | kind | work package | what it proves
+# kind: harness (the harness itself), positive-control (green on the current supervisor and must
+# stay green), regression (a fixed defect; failed first, in the PR that fixed it).
+# Removing or #[ignore]-ing a listed fixture needs an ADR reference (Rule 2; enforced in SCL-S13.2).
+
+harness_guard_cleans_up_after_a_panicking_body | harness | SCL-S1.3 | guard kills and reaps every recorded pid, reparented descendants included, when the body panics
+harness_guard_never_signals_an_unmarked_pid | harness | SCL-S1.3 | a recorded pid without the marker is reported foreign and never signalled
+harness_sweep_finds_marked_processes_missing_from_the_record | harness | SCL-S1.3 | a marked process missing from the pid file is still found and killed
+harness_never_signals_pid_zero_or_a_wrapping_pid | harness | SCL-S2.2 | the harness refuses pid 0 and wrapping pids, so it never signals its own group or a negative pid
+harness_unreaped_child_fails_the_reaped_check | harness | SCL-S1.3 | an exited child nobody waited for fails the reaped check and is reported left behind
+harness_timing_windows_are_monotonic_and_never_short | harness | SCL-S1.3 | waits and observation windows run on the monotonic clock and never end early
+pc_fresh_start_creates_exactly_one_incarnation | positive-control | SCL-S1.3 | a fresh Start creates one incarnation and no other over 2 s (bug a positive half)
+pc_single_stop_ends_the_child_and_stays_off | positive-control | SCL-S1.3 | one Stop ends and reaps the child; Off with no new child over 2 s
+pc_crash_respawns_a_distinct_incarnation | positive-control | SCL-S1.3 | an external kill is a crash and yields one distinct new incarnation
+pc_crash_loop_reaches_failed_after_the_retry_budget | positive-control | SCL-S1.3 | a crash loop runs once plus max_retries, then Failed, then nothing
+pc_fixture_processes_carry_the_suite_prefix | harness | SCL-S1.3 | every fixture process is visible to the CI job's pgrep -f citrate-lcf- check
+stop_in_off_never_respawns | regression | SCL-S2.2 | bug (a): a second Stop on a stopped service creates no child over 2 s
+stop_in_backoff_never_respawns | regression | SCL-S2.2 | a Stop in Backoff cancels the retry; a second Stop changes nothing over 2 s
+concurrent_stops_during_teardown_never_respawn | regression | SCL-S2.2 | 8 Stops racing one teardown leave one stopped service, no respawn over 2 s
+repeated_stop_joins_receipt | regression | SCL-S2.2 | a repeated Stop joins the first receipt; Accepted is Pending until Complete; Stop when stopped is AlreadySatisfied
+explicit_start_after_stop_creates_exactly_one_incarnation | positive-control | SCL-S2.2 | one explicit Start after Stop creates exactly one new incarnation
+stop_with_a_held_reader_is_incomplete_and_quarantined | regression | SCL-S2.2 | a reader held open makes Stop Incomplete and the service Quarantined until it really ends
+start_during_held_reader_teardown_waits_for_cleanup | regression | SCL-S2.2 | a Start that supersedes a Stop mid-teardown spawns nothing until the old incarnation's readers are reconciled
+stop_without_a_monitor_is_observation_unknown | regression | SCL-S2.2 | with the monitor gone, every Stop and Start (repeated or joining) is ObservationUnknown, never Accepted; legacy stop() returns at once; the ended monitor still terminates and reaps its child
+start_after_the_monitor_ends_is_never_already_satisfied | regression | SCL-S2.2 | core#398: after a hook panic ends the monitor while the child runs, the cell stops reporting Alive and a direct Start is ObservationUnknown, never AlreadySatisfied
+start_after_the_monitor_ends_past_an_exited_child_is_never_already_satisfied | regression | SCL-S2.2 | core#398: the same when the child had already exited and been reaped; nothing respawns
+start_after_a_crash_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after a crash leaves its output held and the budget is spent, a Start spawns nothing until cleanup
+start_after_health_failures_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after health failures exhaust the budget with output held, a Start spawns nothing until cleanup
+start_after_shutdown_is_rejected_closing | regression | SCL-S2.2 | a Start after shutdown begins is RejectedClosing and spawns nothing
+manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures

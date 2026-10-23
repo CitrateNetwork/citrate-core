@@ -15,7 +15,8 @@ describe("citrate://pair deep link", () => {
     store.handleDeepLink(PAIR);
     expect(store.state.pendingPairLink).toBe(PAIR);
     expect(store.state.pendingInvite).toBeNull();
-    expect(store.state.route).toBe("cluster");
+    // Five-place navigation: the old "cluster" id opens Groups › Cluster.
+    expect(store.state.route).toBe("groups/cluster");
   });
 
   it("is cleared once the wizard has taken it", () => {

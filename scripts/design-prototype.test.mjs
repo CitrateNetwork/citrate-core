@@ -12,7 +12,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const DESIGN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../design") + path.sep;
-const SAVE_KEY = "citrate-core-proto-v3";
 
 class FakeLogic {
   constructor(props) {
@@ -36,6 +35,8 @@ function loadComponent() {
 }
 
 const Component = loadComponent();
+// The prototype's own save key (it is bumped when the saved shape changes).
+const SAVE_KEY = /localStorage\.getItem\('([^']+)'/.exec(readFileSync(DESIGN + "CitrateCore.dc.html", "utf8"))[1];
 let harness;
 let coreData;
 
@@ -330,5 +331,202 @@ describe("tripwires", () => {
       expect(l).toMatch(/origin: 'journal'/);
       expect(l).toMatch(/if \(this\.sendChat\(/);
     }
+  });
+});
+
+describe("slice 2: Node › Services, node agent", () => {
+  const agentRow = (c) => c.renderVals().svRows.find((r) => r.name === "Node agent");
+
+  it("stopping the node agent shows it Stopped in the row and the detail", async () => {
+    const c = await mount("p2"); // P2: node running
+    c.setState({ route: "node", nPage: "services", svcSel: "agent" });
+    expect(agentRow(c).phase).toBe("Alive");
+    c.svcStop("agent");
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(c.state.svc.agent.log.at(-1).line).toMatch(/stop complete/);
+    expect(agentRow(c).phase).toBe("Stopped");
+    expect(c.renderVals().svdPhase).toBe("Stopped");
+  });
+
+  it("a stopped agent starts again while the node is Alive", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "node", nPage: "services", svcSel: "agent" });
+    c.svcStop("agent");
+    await vi.advanceTimersByTimeAsync(1100);
+    c.svcRestart("agent");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(agentRow(c).phase).toBe("Alive");
+  });
+
+  it("starting the agent while the node is off is refused: it stays Stopped and nothing claims it is alive", async () => {
+    const c = await mount("p3"); // P3: node off, agent stopped
+    c.setState({ route: "node", nPage: "services", svcSel: "agent" });
+    c.svcRestart("agent");
+    expect(c.state.toast ?? "").toMatch(/node/i);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(agentRow(c).phase).toBe("Stopped");
+    expect(c.state.svc.agent.phase).toBe("stopped");
+    expect(c.state.svc.agent.log.map((l) => l.line).join("\n")).not.toMatch(/process alive/);
+  });
+
+  it("tripwire: with the node Alive, every service's row shows its own phase", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "node", nPage: "services" });
+    const names = Component.SERVICES().filter((d) => d.id !== "node");
+    for (const d of names) {
+      c.setState((st) => ({ svc: { ...st.svc, [d.id]: { ...st.svc[d.id], phase: "stopped" } } }));
+      expect(c.renderVals().svRows.find((r) => r.name === d.name).phase, d.id).toBe("Stopped");
+      c.setState((st) => ({ svc: { ...st.svc, [d.id]: { ...st.svc[d.id], phase: "alive" } } }));
+      expect(c.renderVals().svRows.find((r) => r.name === d.name).phase, d.id).toBe("Alive");
+    }
+  });
+});
+
+describe("slice 2: Store daemons do what their listing says", () => {
+  async function installStartFinish(c, id) {
+    c.setState({ webSearch: true });
+    c.restartHermes();
+    await vi.advanceTimersByTimeAsync(1000);
+    c.storeInstall(id);
+    c.daemonStart(id);
+    expect(c.state.daemons.find((d) => d.id === id).state).toBe("running");
+    await vi.advanceTimersByTimeAsync(3000);
+  }
+
+  it("Group thread digest proposes its journal summary, and approving appends it to today's page", async () => {
+    const c = await mount("p2");
+    await installStartFinish(c, "d-triage");
+    const a = c.state.approvals.find((x) => x.daemonId === "d-triage");
+    expect(a).toBeTruthy();
+    expect(c.state.daemons.find((d) => d.id === "d-triage").state).toBe("awaiting");
+    c.resolveApproval(a.id, true);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(c.state.jPages.find((p) => p.id === "d-" + today).blocks.join("\n")).toMatch(/Group thread digest/);
+  });
+
+  it("tripwire: every Store daemon whose listing says it writes after approval proposes a change", async () => {
+    const writers = Component.LISTINGS().filter((l) => l.kind === "daemons" && l.perms.some(([t]) => /only after you approve/i.test(t)));
+    expect(writers.length).toBeGreaterThanOrEqual(2);
+    for (const l of writers) {
+      const c = await mount("p2");
+      await installStartFinish(c, l.id);
+      expect(c.state.approvals.some((x) => x.daemonId === l.id), l.id).toBe(true);
+    }
+  });
+});
+
+describe("slice 2: deep links reach the Node, Store and web pages", () => {
+  const cases = [
+    ["#/settings/node", { route: "node", nPage: "advanced" }],
+    ["#/storage", { route: "node", nPage: "storage", nStore: "memory" }],
+    ["#/files", { route: "node", nPage: "storage", nStore: "files" }],
+    ["#/node/storage/pins", { route: "node", nPage: "storage", nStore: "pins" }],
+    ["#/node/earnings", { route: "node", nPage: "rewards" }],
+    ["#/commissary", { route: "store", stPage: "catalog", stKind: "apps" }],
+    ["#/store/models", { route: "store", stPage: "catalog", stKind: "models" }],
+    ["#/store/listing/d-brief", { route: "store", stPage: "listing", stSel: "d-brief" }],
+    ["#/web/download", { web: "download" }],
+    ["#/web/join/ABC123", { web: "join" }],
+  ];
+  it.each(cases)("%s", async (hash, want) => {
+    const c = await mount("p2");
+    expect(c.resolveHash(hash)).toMatchObject(want);
+  });
+});
+
+describe("slice 2: onboarding Verify step follows the real gate (Join 3 copy review V-03)", () => {
+  const verifyStep = async () => {
+    const c = await mount("p1"); // fresh install: the 0.5.2 onboarding
+    c.setState({ stage: "j", jStage: "verify", jSub: "idle", web: null });
+    return c;
+  };
+
+  it("says verification is optional for membership and names what it unlocks", async () => {
+    const c = await verifyStep();
+    const V = c.renderVals();
+    expect(V.ob2Lead).toMatch(/^Verification is optional for membership\./);
+    expect(V.ob2Lead).toMatch(/withdrawing your bond after the lock, once it is activated/);
+    expect(V.ob2Lead).toMatch(/documents never touch this machine/);
+  });
+
+  it("offers Skip for now, which moves on to Membership without verifying", async () => {
+    const c = await verifyStep();
+    const V = c.renderVals();
+    expect(V.ob2Secondary).toBe("Skip for now");
+    V.onOb2Secondary();
+    expect(c.state.jStage).toBe("membership");
+    expect(c.state.kycOutcome).toBe("skipped");
+  });
+
+  it("tripwire: no copy says membership needs a verified identity", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    expect(html).not.toMatch(/[Mm]embership needs a verified identity/);
+  });
+});
+
+describe("slice 2 follow-ups (core #393): web join page actions", () => {
+  const joinPage = async (os, extra = {}) => {
+    const c = await mount("p1");
+    c.setState({ web: "join", joinState: "direct", inviterVerified: true, os, wbDl: false, ...extra });
+    c.copied = [];
+    c.copy = (text, note) => { c.copied.push(text); c.toast(note || "Copied"); };
+    return c;
+  };
+
+  it("on Linux, Copy the install command copies the full command with the invite key", async () => {
+    const c = await joinPage("linux");
+    const V = c.renderVals();
+    expect(V.wbPrimary).toBe("Copy the install command");
+    V.onWbPrimary();
+    expect(c.copied).toHaveLength(1);
+    const J = Component.JOIN();
+    expect(c.copied[0]).toBe("curl -fsSL https://citrate.ai/install.sh | CITRATE_JOIN='" + J.code + "#" + J.key + "' sh");
+  });
+
+  it("on Mac, the primary download copies nothing", async () => {
+    const c = await joinPage("mac");
+    c.renderVals().onWbPrimary();
+    expect(c.copied).toHaveLength(0);
+  });
+
+  it.each([["phone", {}], ["windows", { winBuilt: false }]])("on %s with no primary action, the secondary action still has a label", async (os, extra) => {
+    const c = await joinPage(os, extra);
+    const V = c.renderVals();
+    expect(V.wbPrimary).toBe("");
+    expect(V.wbSecondary).toBeTruthy();
+  });
+
+  it("tripwire: the secondary action is not nested inside the primary action's conditional", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    const open = '<sc-if value="{{ wbPrimary }}"';
+    const i = html.indexOf(open);
+    expect(i).toBeGreaterThan(0);
+    // The matching </sc-if>, counting nested sc-if blocks.
+    let depth = 0, j = i;
+    const re = /<sc-if\b|<\/sc-if>/g;
+    re.lastIndex = i;
+    let m;
+    while ((m = re.exec(html))) {
+      depth += m[0] === "</sc-if>" ? -1 : 1;
+      if (depth === 0) { j = m.index; break; }
+    }
+    expect(html.slice(i, j)).not.toContain("wbSecondary");
+    expect(html).toContain('<sc-if value="{{ wbSecondary }}"');
+  });
+});
+
+describe("slice 2 review: sample data that a secret scanner must not mistake for a key", () => {
+  it("the sample invite key is an obvious placeholder of the real key's length", () => {
+    const J = Component.JOIN();
+    expect(J.key).toMatch(/^SAMPLE-not-a-real-key/);
+    expect(J.key).toMatch(/^[A-Za-z0-9_-]{22}$/);
+  });
+});
+
+describe("slice 2 review (core #417): withdraw wording needs an activated bond", () => {
+  it("tripwire: no copy offers withdrawing a bond without saying it must be activated", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    expect(html).not.toMatch(/withdrawing an unlocked bond/);
+    for (const m of html.matchAll(/[^.'"]*withdraw(?:ing)? your bond[^.'"]*/gi)) expect(m[0]).toMatch(/activated/);
   });
 });
