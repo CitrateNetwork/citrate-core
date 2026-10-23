@@ -129,6 +129,45 @@ pub struct DiagnosticBundle {
     /// Recent UI errors from the frontend ErrorBoundary ring (scrubbed).
     #[serde(rename = "uiErrors")]
     pub ui_errors: Vec<String>,
+    /// 0.5.2 Join funnel: the join step ids this install reached since its last sent report.
+    /// Bare ids from [`JOIN_STEPS`] only, each once, in path order. `default` so a bundle
+    /// prepared before this field existed still parses.
+    #[serde(rename = "joinSteps", default)]
+    pub join_steps: Vec<String>,
+}
+
+/// 0.5.2 Join funnel — the only values `joinSteps` may carry, in path order. Mirrors
+/// `JOIN_STEPS` in src/privacy/joinFunnel.ts and the list in telemetry-fields.json (pinned by a
+/// test). A step id is the whole event: no invite code, group, address, email or time.
+pub const JOIN_STEPS: [&str; 11] = [
+    "arrive",
+    "download",
+    "open_app",
+    "sign_in",
+    "kyc",
+    "membership",
+    "wallet",
+    "bond",
+    "node_synced",
+    "activate_validator",
+    "join_group",
+];
+
+/// Keep only allowlisted step ids, once each, in path order.
+fn clean_join_steps(steps: &[String]) -> Vec<String> {
+    JOIN_STEPS
+        .iter()
+        .filter(|k| steps.iter().any(|s| s == *k))
+        .map(|k| k.to_string())
+        .collect()
+}
+
+impl DiagnosticBundle {
+    /// Attach the join step ids (filtered to [`JOIN_STEPS`], deduplicated, in path order).
+    pub fn with_join_steps(mut self, steps: &[String]) -> Self {
+        self.join_steps = clean_join_steps(steps);
+        self
+    }
 }
 
 /// Assemble + scrub a bundle from already-gathered fields (pure — id passed in for tests).
@@ -148,6 +187,7 @@ pub fn build_bundle(
         crash_tail: scrub(crash_tail, home),
         node_log_tail: scrub(node_log_tail, home),
         ui_errors: ui_errors.iter().map(|e| scrub(e, home)).collect(),
+        join_steps: Vec::new(),
     }
 }
 
@@ -172,6 +212,10 @@ pub fn rescrub_bundle_json(bundle_json: &str, home: &str) -> Result<String, Stri
     if !id_ok {
         return Err("diagnostic report id is malformed".into());
     }
+    // 0.5.2 Join funnel: refuse (never filter silently) a step that is not allowlisted or repeats.
+    if clean_join_steps(&b.join_steps).len() != b.join_steps.len() {
+        return Err("diagnostic report carries an unknown join step".into());
+    }
     let clean = DiagnosticBundle {
         report_id: b.report_id,
         app_version: scrub(&b.app_version, home),
@@ -179,6 +223,7 @@ pub fn rescrub_bundle_json(bundle_json: &str, home: &str) -> Result<String, Stri
         crash_tail: scrub(&b.crash_tail, home),
         node_log_tail: scrub(&b.node_log_tail, home),
         ui_errors: b.ui_errors.iter().map(|e| scrub(e, home)).collect(),
+        join_steps: clean_join_steps(&b.join_steps),
     };
     serde_json::to_string(&clean).map_err(|e| e.to_string())
 }
@@ -231,15 +276,20 @@ pub fn install_panic_hook<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 /// **Command — diagnostics_bundle.** Assemble the SCRUBBED bundle locally for review. No
-/// network. `ui_errors` is the frontend ErrorBoundary ring. The ephemeral id is fresh each
-/// call and never persisted.
+/// network. `ui_errors` is the frontend ErrorBoundary ring; `join_steps` the pending join step
+/// ids (allowlisted here). The ephemeral id is fresh each call and never persisted.
 #[tauri::command]
 pub async fn diagnostics_bundle<R: tauri::Runtime>(
     app_h: tauri::AppHandle<R>,
     ui_errors: Vec<String>,
+    join_steps: Option<Vec<String>>,
 ) -> std::result::Result<DiagnosticBundle, String> {
+    let steps = join_steps.unwrap_or_default();
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || diagnostics_bundle_sync(app_h.clone(), ui_errors)).await
+    crate::blocking::off_main(move || {
+        diagnostics_bundle_sync(app_h.clone(), ui_errors).map(|b| b.with_join_steps(&steps))
+    })
+    .await
 }
 
 /// Blocking body of [`diagnostics_bundle`]; reached only through [`crate::blocking::off_main`].
