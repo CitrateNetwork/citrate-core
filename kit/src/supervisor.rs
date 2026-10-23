@@ -1253,7 +1253,6 @@ impl Supervisor {
             id,
             seq: c.intent_sequence,
             name,
-            open: true,
         })
     }
 
@@ -1509,13 +1508,16 @@ pub enum PublicationRefused {
 }
 
 /// An admitted credential publication (SCL-S2.3). While it is open the service's Stop cannot
-/// settle `Complete`. Dropping it releases it: say so only once nothing it wrote remains.
+/// settle `Complete`. It is resolved only by [`PublicationTicket::commit`] or
+/// [`PublicationTicket::withdraw`]. Dropping it (an ignored ticket, or a caller that unwinds
+/// after writing the file) releases nothing: what it wrote may still be on disk, so the Stop
+/// stays `Incomplete` naming the publication and the service stays Quarantined.
+#[must_use = "commit() or withdraw() the ticket; dropping it keeps the service's Stop open"]
 pub struct PublicationTicket {
     shared: Arc<Shared>,
     id: u64,
     seq: u64,
     name: String,
-    open: bool,
 }
 
 impl std::fmt::Debug for PublicationTicket {
@@ -1532,41 +1534,34 @@ impl PublicationTicket {
     /// Make the published file the active reference, if the ticket's intent is still current.
     /// Otherwise the ticket stays open as a [`StaleTicket`]: remove what it wrote, then call
     /// [`StaleTicket::cleaned`]. Dropping the `StaleTicket` instead keeps the publication open.
-    pub fn commit(mut self) -> std::result::Result<(), StaleTicket> {
+    pub fn commit(self) -> std::result::Result<(), StaleTicket> {
+        // The currency check and the release are one critical section, so a Stop committed in
+        // between can never list this publication as resolved while it becomes active.
         let current = {
-            let c = self.shared.lock();
-            !c.closing && c.desired == Desired::Running && c.intent_sequence == self.seq
+            let mut c = self.shared.lock();
+            let current =
+                !c.closing && c.desired == Desired::Running && c.intent_sequence == self.seq;
+            if current {
+                resolve_publication(&mut c, self.id);
+            }
+            current
         };
         if current {
-            self.release();
+            self.shared.notify();
             Ok(())
         } else {
-            self.open = false;
             Err(StaleTicket {
-                shared: self.shared.clone(),
+                shared: self.shared,
                 id: self.id,
-                name: std::mem::take(&mut self.name),
+                name: self.name,
             })
         }
     }
 
     /// Nothing the ticket wrote remains (nothing was written, or the caller removed it): release
     /// the ticket without making anything the active reference.
-    pub fn withdraw(mut self) {
-        self.release();
-    }
-
-    fn release(&mut self) {
-        if self.open {
-            self.open = false;
-            release_publication(&self.shared, self.id);
-        }
-    }
-}
-
-impl Drop for PublicationTicket {
-    fn drop(&mut self) {
-        self.release();
+    pub fn withdraw(self) {
+        release_publication(&self.shared, self.id);
     }
 }
 
@@ -1604,22 +1599,25 @@ impl StaleTicket {
 }
 
 fn release_publication(shared: &Shared, id: u64) {
-    {
-        let mut c = shared.lock();
-        let stop_pending = matches!(c.active, Some((_, IntentKind::Stop)));
-        if let Some(pos) = c.publications.iter().position(|(t, _, _)| *t == id) {
-            let (_, _, name) = c.publications.remove(pos);
-            if stop_pending && c.resolved_publications.len() < MAX_SCOPE_PUBLICATIONS {
-                c.resolved_publications.push(format!("publication:{name}"));
-            }
-        }
-        // After shutdown no monitor reconciles a quarantine: the release does, re-checking the
-        // readers itself.
-        c.reconcile_after_close();
-        c.wake = true;
-        c.touch();
-    }
+    resolve_publication(&mut shared.lock(), id);
     shared.notify();
+}
+
+/// Resolve publication `id` under the cell lock the caller holds. The caller notifies after it
+/// drops the lock.
+fn resolve_publication(c: &mut Cell, id: u64) {
+    let stop_pending = matches!(c.active, Some((_, IntentKind::Stop)));
+    if let Some(pos) = c.publications.iter().position(|(t, _, _)| *t == id) {
+        let (_, _, name) = c.publications.remove(pos);
+        if stop_pending && c.resolved_publications.len() < MAX_SCOPE_PUBLICATIONS {
+            c.resolved_publications.push(format!("publication:{name}"));
+        }
+    }
+    // After shutdown no monitor reconciles a quarantine: the release does, re-checking the
+    // readers itself.
+    c.reconcile_after_close();
+    c.wake = true;
+    c.touch();
 }
 
 impl Drop for Supervisor {
