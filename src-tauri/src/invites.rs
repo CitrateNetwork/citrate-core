@@ -130,7 +130,12 @@ fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 pub(crate) fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
-    match store_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
+    // The file holds invite private keys: the read buffer is wiped once parsed.
+    match store_path(app)
+        .ok()
+        .and_then(|p| std::fs::read(p).ok())
+        .map(zeroize::Zeroizing::new)
+    {
         Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         None => Vec::new(),
     }
@@ -150,7 +155,7 @@ fn save(app: &tauri::AppHandle, v: &[PendingInvite]) -> Result<(), String> {
 /// [`citrate_core_kit::fsutil`] writer, which creates the file `0600` in the
 /// `open(2)` call itself.
 fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
+    let bytes = zeroize::Zeroizing::new(serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?);
     citrate_core_kit::fsutil::write_secret_file(path, &bytes).map_err(|e| e.to_string())
 }
 

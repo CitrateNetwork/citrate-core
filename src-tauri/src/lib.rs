@@ -6,6 +6,9 @@
 //! fabricated data (Rule 1). Chain reads happen in the webview via viem/wagmi
 //! (D-13); signing routes through the Rust SignatureCeremony once it exists
 //! (CORE-S2).
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 // WP-S1.2: the safety-critical spine (ceremony, custody, oidc, supervisor,
 // wallet, rpc, txdecode, config) now lives in `citrate-core-kit`, shared with
@@ -162,8 +165,11 @@ mod training;
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
 #[cfg(test)]
 mod invoke_secret_scan_tests;
+// Every in-process vault write targets a slot the webview's custody_put cannot address.
 #[cfg(test)]
 mod main_thread_tripwire;
+#[cfg(test)]
+mod vault_slot_reservation_tests;
 // HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
 #[cfg(test)]
 mod privacy_contract_tests;
@@ -383,9 +389,9 @@ pub fn run() {
             // CORE-C3 — the MemoryManager: the citrate-memories `mcp_serve`
             // daemon under the SidecarSupervisor, serving the per-user encrypted
             // memory graph over a Unix socket. @rule8: a per-user store wrapping
-            // key lives in the OS keyring (never on disk clear) and is handed to
-            // the daemon via the CITRATE_MEM_STORE_KEY env (forward-compat seam —
-            // see memory.rs / sprint Concern 1). recall/search/neighbors speak the
+            // key lives in the OS keyring and is handed to the daemon in an
+            // owner-only key file named by CITRATE_MEM_STORE_KEY_FILE (see
+            // memory.rs). recall/search/neighbors speak the
             // daemon's JSON-RPC over the socket; the Storage constellation renders
             // the real graph (no fabricated nodes — Rule 1).
             app.manage(memory::build_memory_state(&app.handle().clone())?);

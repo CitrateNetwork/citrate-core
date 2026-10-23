@@ -21,6 +21,9 @@
 //! to *this* crate. After the extraction they are unreachable from citrate-core
 //! or citrate-quorum except through `ceremony::approve`. A source-scan test in
 //! each consuming crate asserts no sibling signing site exists.
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod abi_book;
 pub mod blocking;

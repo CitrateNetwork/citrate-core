@@ -40,9 +40,12 @@
 //! 1. The store lives in a **per-user app-data dir** (`memory/store.bge.memdag`)
 //!    — one graph per user, never shared.
 //! 2. citrate-core mints/holds a per-user **store wrapping key** in the OS
-//!    keyring (the C1.1 storage-key pattern, never on disk in clear) and passes
-//!    it to the daemon via [`MEM_STORE_KEY_ENV`] — honoured IFF/when the daemon
-//!    grows a key intake (forward-compatible seam).
+//!    keyring (the C1.1 storage-key pattern) and hands it to the daemon in an
+//!    owner-only key file whose PATH is in [`MEM_STORE_KEY_FILE_ENV`], the same
+//!    hand-off as the node storage key: the file sits in the per-user runtime
+//!    directory, is written at start and removed at stop, and the key itself is
+//!    never in the daemon's environment or argv. The daemon derives its signing
+//!    identity from it; it does not encrypt the store with it.
 //! 3. The ciphertext-at-rest guarantee we can prove TODAY comes from the store's
 //!    own per-tenant seal: node text is XChaCha20 ciphertext on disk (the
 //!    tripwire grep finds no plaintext node title).
@@ -85,11 +88,6 @@ const KEYRING_MEM_STORE_ACCOUNT: &str = "memory-store-key";
 /// Length of the store wrapping key (32 bytes = 256-bit, matches mem-store's
 /// per-tenant key length so a future external-KEK intake lines up).
 const STORE_KEY_LEN: usize = 32;
-
-/// The env var the daemon would read its 32-byte store wrapping key from (hex),
-/// once mem-store grows an external-KEK intake. Passed today for forward-compat;
-/// the grounded daemon ignores it (see the module doc / sprint Concern 1).
-const MEM_STORE_KEY_ENV: &str = "CITRATE_MEM_STORE_KEY";
 
 /// The env var naming the owner-only file the daemon reads its store key from (hex).
 const MEM_STORE_KEY_FILE_ENV: &str = "CITRATE_MEM_STORE_KEY_FILE";
@@ -680,10 +678,28 @@ impl MemoryManager {
             .join(MEM_STORE_KEY_FILE)
     }
 
-    /// Load the store key and build the daemon's spawn spec.
+    /// Load the store key, write it to the owner-only key file, and build the daemon's spawn
+    /// spec (which names only the file's path). Whatever sits at the key file's path (a stale
+    /// file, or a symbolic link) is removed first, so the key always goes into a new regular file.
     fn spawn_spec(&self) -> Result<SidecarSpec> {
         let key_hex = self.store_key_hex()?;
-        Ok(self.build_spec(&key_hex))
+        let path = self.store_key_path();
+        self.remove_store_key_file();
+        citrate_core_kit::fsutil::write_secret_file(&path, key_hex.as_bytes()).map_err(|e| {
+            MemoryError::Keyring(format!("cannot write the memory store key file: {e}"))
+        })?;
+        drop(key_hex);
+        Ok(self.build_spec())
+    }
+
+    /// Remove the store key file (best-effort; absent is fine).
+    fn remove_store_key_file(&self) {
+        let path = self.store_key_path();
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[memory] cannot remove {}: {e}", path.display());
+            }
+        }
     }
 
     /// Leave out learned memories with an unresolved contradiction (when a ledger is set).
@@ -707,8 +723,8 @@ impl MemoryManager {
     }
 
     /// Load the 32-byte store wrapping key from the OS keyring, minting it on
-    /// first use (@rule8). Returned as a hex [`Zeroizing`] string ready to hand
-    /// to the child via env. An unreachable keyring is a HARD FAULT — we never
+    /// first use (@rule8). Returned as a hex [`Zeroizing`] string ready to write
+    /// to the owner-only key file. An unreachable keyring is a HARD FAULT — we never
     /// spawn the daemon without a key (fail closed).
     fn store_key_hex(&self) -> Result<Zeroizing<String>> {
         match self
@@ -742,11 +758,11 @@ impl MemoryManager {
     }
 
     /// Build the [`SidecarSpec`] for the daemon: explicit binary, positional
-    /// `<store-path> <sock-path>` (grounded CLI), and the store wrapping key in
-    /// the ENV (never argv — argv leaks to `ps`). The daemon owns its own
-    /// singleton lock (RocksDB) and stale-socket cleanup, so we pass no lock/
-    /// socket flags beyond the two positionals.
-    fn build_spec(&self, store_key_hex: &str) -> SidecarSpec {
+    /// `<store-path> <sock-path>` (grounded CLI), and the PATH of the store key
+    /// file in the env (never the key itself, and nothing secret in argv). The
+    /// daemon owns its own singleton lock (RocksDB) and stale-socket cleanup, so
+    /// we pass no lock/socket flags beyond the two positionals.
+    fn build_spec(&self) -> SidecarSpec {
         let mut spec = SidecarSpec::new(
             "mem-mcp",
             self.bin.clone(),
@@ -755,7 +771,10 @@ impl MemoryManager {
                 self.socket_path.to_string_lossy().to_string(),
             ],
         );
-        spec.env = vec![(MEM_STORE_KEY_ENV.to_string(), store_key_hex.to_string())];
+        spec.env = vec![(
+            MEM_STORE_KEY_FILE_ENV.to_string(),
+            self.store_key_path().to_string_lossy().to_string(),
+        )];
         // BGE — when the bundled model dir is present, tell the daemon to load the
         // embedder offline from it (CITRATE_BGE_MODEL_DIR) and to bootstrap a fresh
         // store to BGE (CITRATE_MEM_EMBED=bge) so semantic recall is real, not
@@ -799,7 +818,7 @@ impl MemoryManager {
 
     /// Start the daemon under the supervisor. Idempotent-ish: `AlreadyRunning`
     /// if a supervisor is already live. @rule8: the store wrapping key is
-    /// minted/loaded from the keyring and handed to the child via env. Fails
+    /// minted/loaded from the keyring and handed to the child in an owner-only key file. Fails
     /// CLOSED if the binary is missing or the keyring is unreachable.
     pub fn start(&self) -> Result<()> {
         // A stop in progress has taken the supervisor but its child may still hold the store:
@@ -837,7 +856,13 @@ impl MemoryManager {
         let spec = self.spawn_spec()?;
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         config.backoff = BackoffPolicy::new();
-        let sup = Supervisor::start(config).map_err(|e| MemoryError::Spawn(e.to_string()))?;
+        let sup = match Supervisor::start(config) {
+            Ok(sup) => sup,
+            Err(e) => {
+                self.remove_store_key_file();
+                return Err(MemoryError::Spawn(e.to_string()));
+            }
+        };
         *guard = Some(sup);
         Ok(())
     }
@@ -870,6 +895,8 @@ impl MemoryManager {
             sup.stop();
             drop(sup);
         }
+        // The daemon has exited: its store key file is no longer needed.
+        self.remove_store_key_file();
         was_running
     }
 

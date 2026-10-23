@@ -290,6 +290,7 @@ const ADV8_COMMANDS: &[(&str, &str)] = &[
     ("custody_status", "CustodyStatus"),
     ("custody_init", "()"),
     ("custody_unlock", "()"),
+    ("custody_ensure_unlocked", "CustodyStatus"),
     ("custody_lock", "()"),
     ("custody_put", "()"),
     ("custody_list", "Vec<SlotInfo>"),

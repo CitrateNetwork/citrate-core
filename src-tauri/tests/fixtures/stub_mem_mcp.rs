@@ -9,7 +9,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const KEY_ENV: &str = "CITRATE_MEM_STORE_KEY";
 const KEY_FILE_ENV: &str = "CITRATE_MEM_STORE_KEY_FILE";
 const SENTINEL: &[u8] = b"CITRATE_MEM_PLAINTEXT_SENTINEL_v1";
 
@@ -22,12 +21,9 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let (store_dir, socket_path) = parse_args()?;
-    let key_hex = match std::env::var_os(KEY_FILE_ENV) {
-        Some(path) => std::fs::read_to_string(&path)
-            .map_err(|error| format!("read {KEY_FILE_ENV}: {error}"))?,
-        None => std::env::var(KEY_ENV)
-            .map_err(|_| format!("{KEY_FILE_ENV} or {KEY_ENV} env required"))?,
-    };
+    let path = std::env::var_os(KEY_FILE_ENV).ok_or_else(|| format!("{KEY_FILE_ENV} env required"))?;
+    let key_hex =
+        std::fs::read_to_string(&path).map_err(|error| format!("read {KEY_FILE_ENV}: {error}"))?;
     let key = decode_key(&key_hex)?;
 
     std::fs::create_dir_all(&store_dir)
@@ -69,7 +65,7 @@ fn parse_args() -> Result<(PathBuf, PathBuf), String> {
 
 fn decode_key(value: &str) -> Result<[u8; 32], String> {
     if value.len() != 64 {
-        return Err(format!("{KEY_ENV} must contain exactly 32 hex-encoded bytes"));
+        return Err(format!("{KEY_FILE_ENV} must contain exactly 32 hex-encoded bytes"));
     }
 
     let mut key = [0_u8; 32];
@@ -86,7 +82,7 @@ fn decode_nibble(byte: u8) -> Result<u8, String> {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(format!("{KEY_ENV} contains non-hexadecimal characters")),
+        _ => Err(format!("{KEY_FILE_ENV} contains non-hexadecimal characters")),
     }
 }
 

@@ -172,11 +172,17 @@ const ENVELOPE_FILE: &str = "custody.enc";
 ///   vault, so the invoke-boundary reservation is load-bearing — a webview
 ///   `custody_put("wallet-…", …)` that could plant/overwrite the key would be
 ///   fund-relevant. B1.1 mirrors the `oidc-` reservation here (B1.1-ADV-R).
-const BACKEND_SLOT_PREFIXES: &[&str] = &["oidc-", "wallet-"];
+/// - `connection-` — the OAuth connection records (`connection-<service>`), written only by
+///   the backend's token exchange in `connections.rs`.
+/// - `social.` — the sealed social-link tokens (`social.<network>`), written only by the
+///   backend's link flow in `social.rs`.
+///
+/// Every in-process vault write must target one of these namespaces; src-tauri's
+/// `vault_slot_reservation_tests` holds the allowlist of write sites and fails on a new one.
+pub const BACKEND_SLOT_PREFIXES: &[&str] = &["oidc-", "wallet-", "connection-", "social."];
 
 /// Whether `slot` is a backend-owned slot the invoke boundary must refuse. Checks
-/// EVERY reserved prefix (`oidc-`, `wallet-`), so a single guard at the invoke
-/// boundary covers both A3 tokens and B1 wallet keys.
+/// EVERY reserved prefix, so a single guard at the invoke boundary covers them all.
 pub fn is_backend_reserved_slot(slot: &str) -> bool {
     BACKEND_SLOT_PREFIXES.iter().any(|p| slot.starts_with(p))
 }
@@ -1706,7 +1712,7 @@ pub fn custody_status_sync(
     Ok(CustodyStatus {
         initialized: v.is_initialized(),
         unlocked: v.is_unlocked(),
-        autolock_mins: (*v.autolock_secs.lock().unwrap() / 60) as u32,
+        autolock_mins: (*v.autolock_secs.lock().unwrap_or_else(|e| e.into_inner()) / 60) as u32,
         keyring_status: keyring_probe(),
     })
 }
@@ -1785,7 +1791,7 @@ pub async fn custody_ensure_unlocked(
     Ok(CustodyStatus {
         initialized: v.is_initialized(),
         unlocked: v.is_unlocked(),
-        autolock_mins: (*v.autolock_secs.lock().unwrap() / 60) as u32,
+        autolock_mins: (*v.autolock_secs.lock().unwrap_or_else(|e| e.into_inner()) / 60) as u32,
         keyring_status: keyring_probe(),
     })
 }

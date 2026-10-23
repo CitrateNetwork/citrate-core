@@ -15,6 +15,7 @@ use k256::{PublicKey, SecretKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 const EPH_LEN: usize = 33; // compressed SEC1 public key
 const NONCE_LEN: usize = 12;
@@ -22,25 +23,52 @@ const KDF_INFO: &[u8] = b"citrate-connect-s1-claim-v1";
 
 /// Domain-separated KDF from the ECDH shared secret to the AES key (a one-shot; the ephemeral key is
 /// never reused, so a single SHA-256 with a context tag is sufficient).
-fn derive_key(shared: &[u8]) -> [u8; 32] {
+fn derive_key(shared: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut h = Sha256::new();
     h.update(KDF_INFO);
     h.update(shared);
-    let out = h.finalize();
-    let mut k = [0u8; 32];
-    k.copy_from_slice(&out);
+    let mut out = h.finalize();
+    let mut k = Zeroizing::new([0u8; 32]);
+    k.copy_from_slice(out.as_slice());
+    out.as_mut_slice().zeroize();
     k
 }
 
-/// An invite's ephemeral private key (hex), as persisted with the owner's `PendingInvite`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct InvitePrivKey(String);
+/// An invite's ephemeral private key (hex), as persisted with the owner's `PendingInvite`. The
+/// buffer is wiped when dropped and `Debug` never prints it; it serializes as the bare hex string
+/// so stored invites keep their format.
+#[derive(Clone, Default)]
+pub struct InvitePrivKey(Zeroizing<String>);
+
+impl serde::Serialize for InvitePrivKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for InvitePrivKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(InvitePrivKey::from_hex)
+    }
+}
+
+impl std::fmt::Debug for InvitePrivKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = if self.0.is_empty() {
+            "empty"
+        } else {
+            "redacted"
+        };
+        f.debug_tuple("InvitePrivKey").field(&state).finish()
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for InvitePrivKey {}
 
 impl InvitePrivKey {
-    /// Wrap a private key given as hex.
+    /// Wrap a private key given as hex (the string is moved in, not copied).
     pub fn from_hex(hex: String) -> Self {
-        InvitePrivKey(hex)
+        InvitePrivKey(Zeroizing::new(hex))
     }
 
     /// The private key as hex, for opening a sealed claim.
@@ -59,7 +87,9 @@ impl InvitePrivKey {
 pub fn new_invite_keypair() -> (InvitePrivKey, String) {
     let sk = SecretKey::random(&mut OsRng);
     let pk = sk.public_key();
-    let priv_hex = hex::encode(sk.to_bytes());
+    let mut priv_bytes = sk.to_bytes();
+    let priv_hex = hex::encode(priv_bytes.as_slice());
+    priv_bytes.as_mut_slice().zeroize();
     let pub_hex = hex::encode(pk.to_encoded_point(true).as_bytes());
     (InvitePrivKey::from_hex(priv_hex), pub_hex)
 }
@@ -72,7 +102,7 @@ pub fn seal_to(recipient_pub_hex: &str, plaintext: &[u8]) -> Result<Vec<u8>, Str
     let eph = SecretKey::random(&mut OsRng);
     let shared = diffie_hellman(eph.to_nonzero_scalar(), recipient.as_affine());
     let key = derive_key(shared.raw_secret_bytes());
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(&key));
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key.as_slice()));
     let mut nonce = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce);
     let ct = cipher
@@ -91,15 +121,16 @@ pub fn open_with(recipient_priv: &InvitePrivKey, sealed: &[u8]) -> Result<Vec<u8
     if sealed.len() < EPH_LEN + NONCE_LEN {
         return Err("sealed claim is too short".into());
     }
-    let priv_bytes =
-        hex::decode(recipient_priv.expose_hex().trim()).map_err(|_| "invite priv is not hex")?;
+    let priv_bytes = Zeroizing::new(
+        hex::decode(recipient_priv.expose_hex().trim()).map_err(|_| "invite priv is not hex")?,
+    );
     let sk = SecretKey::from_slice(&priv_bytes).map_err(|_| "invite priv is not a valid scalar")?;
     let eph = PublicKey::from_sec1_bytes(&sealed[..EPH_LEN]).map_err(|_| "bad ephemeral key")?;
     let nonce = &sealed[EPH_LEN..EPH_LEN + NONCE_LEN];
     let ct = &sealed[EPH_LEN + NONCE_LEN..];
     let shared = diffie_hellman(sk.to_nonzero_scalar(), eph.as_affine());
     let key = derive_key(shared.raw_secret_bytes());
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(&key));
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key.as_slice()));
     cipher
         .decrypt(GenericArray::from_slice(nonce), ct)
         .map_err(|_| "open: decrypt failed (wrong key or tampered)".into())
@@ -184,6 +215,15 @@ mod tests {
             open_with(&junk, &sealed).is_err(),
             "a non-hex key fails closed"
         );
+    }
+
+    /// The key types are wiped on drop (a type-level check: dropping the wrapper wipes the hex).
+    #[test]
+    fn invite_private_key_is_wiped_on_drop() {
+        fn wipes_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        let (priv_key, _pub_hex) = new_invite_keypair();
+        wipes_on_drop(&priv_key);
+        wipes_on_drop(&derive_key(b"shared"));
     }
 
     #[test]
