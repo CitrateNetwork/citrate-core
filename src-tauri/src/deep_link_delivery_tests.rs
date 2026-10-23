@@ -130,8 +130,8 @@ fn accepted_schemes_match_tauri_conf() {
 
 // --- log redaction: scheme and host only ------------------------------------------------------
 
-/// Secret-looking values placed in every part of a link a log must not carry.
-const SECRETS: &[&str] = &[
+/// Marker values placed in every part of a link (path, query, fragment) that a log must not carry.
+const LINK_PARTS: &[&str] = &[
     "tok3n-T-value",
     "s1g-S-value",
     "c0de-C-value",
@@ -142,7 +142,7 @@ const SECRETS: &[&str] = &[
     "fr4gment-value",
 ];
 
-fn secret_links() -> Vec<String> {
+fn sample_links() -> Vec<String> {
     vec![
         "citrate://invite/pAth-s3gment?t=tok3n-T-value&s=s1g-S-value#fr4gment-value".to_string(),
         "citrate://pair/pAth-s3gment?c=c0de-C-value&k=k3y-K-value#fr4gment-value".to_string(),
@@ -153,8 +153,12 @@ fn secret_links() -> Vec<String> {
 }
 
 fn assert_clean(out: &str) {
-    for secret in SECRETS {
-        assert!(!out.contains(secret), "{secret} appears in: {out}");
+    // The failure message names the marker by position only: it never repeats a link part.
+    for (i, part) in LINK_PARTS.iter().enumerate() {
+        assert!(
+            !out.contains(part),
+            "link part #{i} appears in the log line"
+        );
     }
     assert!(!out.contains("member%40example.org"), "{out}");
     assert!(!out.contains('?'), "query marker appears in: {out}");
@@ -165,7 +169,7 @@ fn assert_clean(out: &str) {
 fn log_redact_keeps_only_scheme_and_host() {
     let urls = urls_from_argv(&argv(
         &std::iter::once("app".to_string())
-            .chain(secret_links())
+            .chain(sample_links())
             .collect::<Vec<_>>()
             .iter()
             .map(String::as_str)
@@ -189,11 +193,11 @@ fn log_redact_keeps_only_scheme_and_host() {
 
 #[test]
 fn delivery_keeps_the_full_url_while_the_log_does_not() {
-    let raw = argv(&["app", &secret_links()[0]]);
+    let raw = argv(&["app", &sample_links()[0]]);
     let urls = urls_from_argv(&raw);
     assert_eq!(
         urls[0].as_str(),
-        secret_links()[0],
+        sample_links()[0],
         "the app receives the link unchanged"
     );
     assert_eq!(log_redact(&urls[0]), "citrate://invite");
@@ -202,7 +206,7 @@ fn delivery_keeps_the_full_url_while_the_log_does_not() {
 #[test]
 fn the_delivery_log_line_records_scheme_host_and_counts_only() {
     let mut args = vec!["app".to_string()];
-    args.extend(secret_links());
+    args.extend(sample_links());
     args.push("https://citrate.ai/join/pAth-s3gment?t=tok3n-T-value#fr4gment-value".to_string());
     args.push("--flag".to_string());
     let raw: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -235,7 +239,7 @@ fn a_single_link_logs_as_one_link_delivered() {
 
 #[test]
 fn log_redact_text_reduces_urls_in_free_text() {
-    for link in secret_links() {
+    for link in sample_links() {
         let msg = format!("xdg-mime failed for '{link}' (exit 1) k=k3y-K-value#x");
         let out = log_redact_text(&msg);
         assert_clean(&out);
@@ -311,7 +315,7 @@ fn appimage_registration_runs_only_on_linux_with_appimage_set() {
 fn appimage_registration_log_lines_carry_no_url() {
     let ok = appimage_register_log_line(&Ok(()));
     let err =
-        appimage_register_log_line(&Err(format!("xdg-mime failed for {}", secret_links()[1])));
+        appimage_register_log_line(&Err(format!("xdg-mime failed for {}", sample_links()[1])));
     for line in [&ok, &err] {
         assert_clean(line);
     }
