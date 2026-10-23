@@ -217,8 +217,14 @@ impl ConsentBook {
         prompt: &str,
         now_ms: u64,
     ) -> Result<RemoteSendPermit, String> {
-        // Not checked yet: every image is allowed (the current behaviour).
-        let _ = (consent_id, prompt, now_ms);
+        let i = self.check(
+            Purpose::Media,
+            consent_id,
+            provider_id,
+            Some(prompt),
+            now_ms,
+        )?;
+        self.open.remove(i);
         Ok(RemoteSendPermit::new(provider_id))
     }
 }
