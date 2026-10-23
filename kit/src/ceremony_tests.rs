@@ -3087,3 +3087,29 @@ fn tripwire_first_submission_classification_checks_for_overlapping_attempts() {
     }
     assert!(offenders.is_empty(), "first-submission classification without sole_attempt: {offenders:?}");
 }
+
+#[test]
+fn join8_a_prepared_activation_refused_after_another_attempt_recorded_it_is_outcome_unknown() {
+    // #347 Codex P1 on #354's own send helper, through the prepared path: A signs the activation
+    // and sends it; while A's send is in flight B records the same bytes (as B would before its own
+    // broadcast); then A's send is refused definitively. B may have sent those bytes, so A's result
+    // is "outcome unknown" with the hash, never "not sent", and the activation stays recoverable.
+    for refusal in ["Failed to submit transaction: Full", "Failed to submit transaction: SenderLimitExceeded"] {
+        let dir = tmp_dir("raced");
+        let file = dir.join("submitted-tx.json");
+        let (v, _p) = vault_with_wallet();
+        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+        let view = c.request(activate_intent());
+        let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+        let t = RacedSend { inner: MockRpc::new(vec![]), log: c.submitted_log(), refusal };
+        let r = c.send_prepared(&RpcClient::with_transport(t), &view.id, bcfg(1));
+        assert_eq!(submitted_outcome_unknown(&r), Some(hash.clone()), "{refusal}: {r:?}");
+        let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+        assert_eq!(
+            reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash),
+            Some(hash),
+            "{refusal}: the activation is still recoverable (it may have been sent)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
