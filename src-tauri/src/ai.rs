@@ -36,6 +36,7 @@
 // Tauri build (the mock drives CI), so allow dead_code on the seam surface.
 #![allow(dead_code)]
 
+use crate::chat_consent::{ChatConsentState, RemoteSendPermit};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zeroize::Zeroize;
@@ -327,6 +328,8 @@ pub enum AiError {
     Provider,
     /// The response JSON did not contain `choices[0].message.content`.
     BadResponse,
+    /// A remote send without a consent for this provider (`chat_consent`).
+    NotConfirmed,
 }
 
 impl std::fmt::Display for AiError {
@@ -340,6 +343,7 @@ impl std::fmt::Display for AiError {
             AiError::Network => "ai: could not reach the provider",
             AiError::Provider => "ai: provider returned an error",
             AiError::BadResponse => "ai: provider response could not be parsed",
+            AiError::NotConfirmed => "ai: this send was not confirmed for that provider",
         };
         f.write_str(s)
     }
@@ -691,7 +695,16 @@ impl AiManager {
     /// STORED `baseURL` (invariant 3 — never a caller-supplied URL) with
     /// `Authorization: Bearer {apiKey}`, and return `choices[0].message.content`.
     /// Non-streaming. Errors are coarse + secret-free (invariant 5).
-    fn chat(&self, provider_id: &str, messages_json: &str, context_json: &str) -> Result<String> {
+    fn chat(
+        &self,
+        permit: &RemoteSendPermit,
+        provider_id: &str,
+        messages_json: &str,
+        context_json: &str,
+    ) -> Result<String> {
+        if permit.provider_id() != provider_id {
+            return Err(AiError::NotConfirmed);
+        }
         let cfg = self.read_config(provider_id)?;
         // INVARIANT 3: the endpoint comes from the STORED config, never the caller.
         let url = format!("{}/chat/completions", cfg.base_url);
@@ -707,11 +720,15 @@ impl AiManager {
     /// holds: the URL is derived from the stored config, never the caller.
     fn chat_tools(
         &self,
+        permit: &RemoteSendPermit,
         provider_id: &str,
         messages_json: &str,
         tools_json: &str,
         context_json: &str,
     ) -> Result<String> {
+        if permit.provider_id() != provider_id {
+            return Err(AiError::NotConfirmed);
+        }
         let cfg = self.read_config(provider_id)?;
         let url = format!("{}/chat/completions", cfg.base_url);
         let body = build_chat_body_with_tools(&cfg.model, messages_json, tools_json, context_json)?;
@@ -1119,6 +1136,7 @@ pub async fn ai_chat(
     provider_id: String,
     messages_json: String,
     context_json: String,
+    consent_id: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider.
@@ -1127,19 +1145,35 @@ pub async fn ai_chat(
     crate::blocking::off_main(move || {
         let st3 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_chat_sync(provider_id, messages_json, context_json, st3)
+        let consents = tauri::Manager::try_state::<ChatConsentState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_sync(
+            &st3.0,
+            &consents,
+            crate::chat_consent::now_ms(),
+            &consent_id,
+            &provider_id,
+            &messages_json,
+            &context_json,
+        )
     })
     .await
 }
 
-/// Blocking body of [`ai_chat`]; reached only through [`crate::blocking::off_main`].
-pub fn ai_chat_sync(
-    provider_id: String,
-    messages_json: String,
-    context_json: String,
-    ai: tauri::State<'_, AiState>,
+/// Blocking body of [`ai_chat`]; reached only through [`crate::blocking::off_main`]. K2: the send
+/// goes out only with the member's consent for this message, minted by core (`chat_consent`).
+pub(crate) fn ai_chat_sync(
+    ai: &AiManager,
+    consents: &ChatConsentState,
+    now_ms: u64,
+    consent_id: &str,
+    provider_id: &str,
+    messages_json: &str,
+    context_json: &str,
 ) -> std::result::Result<String, String> {
-    ai.0.chat(&provider_id, &messages_json, &context_json)
+    let permit =
+        crate::chat_consent::authorize(consents, consent_id, provider_id, messages_json, now_ms)?;
+    ai.chat(&permit, provider_id, messages_json, context_json)
         .map_err(|e| e.to_string())
 }
 
@@ -1156,6 +1190,7 @@ pub async fn ai_chat_tools(
     messages_json: String,
     tools_json: String,
     context_json: String,
+    consent_id: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider.
@@ -1164,21 +1199,45 @@ pub async fn ai_chat_tools(
     crate::blocking::off_main(move || {
         let st4 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_chat_tools_sync(provider_id, messages_json, tools_json, context_json, st4)
+        let consents = tauri::Manager::try_state::<ChatConsentState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_tools_sync(
+            &st4.0,
+            &consents,
+            crate::chat_consent::now_ms(),
+            &consent_id,
+            &provider_id,
+            &messages_json,
+            &tools_json,
+            &context_json,
+        )
     })
     .await
 }
 
-/// Blocking body of [`ai_chat_tools`]; reached only through [`crate::blocking::off_main`].
-pub fn ai_chat_tools_sync(
-    provider_id: String,
-    messages_json: String,
-    tools_json: String,
-    context_json: String,
-    ai: tauri::State<'_, AiState>,
+/// Blocking body of [`ai_chat_tools`]; reached only through [`crate::blocking::off_main`]. K2: the
+/// send goes out only with the member's consent for this message, minted by core.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ai_chat_tools_sync(
+    ai: &AiManager,
+    consents: &ChatConsentState,
+    now_ms: u64,
+    consent_id: &str,
+    provider_id: &str,
+    messages_json: &str,
+    tools_json: &str,
+    context_json: &str,
 ) -> std::result::Result<String, String> {
-    ai.0.chat_tools(&provider_id, &messages_json, &tools_json, &context_json)
-        .map_err(|e| e.to_string())
+    let permit =
+        crate::chat_consent::authorize(consents, consent_id, provider_id, messages_json, now_ms)?;
+    ai.chat_tools(
+        &permit,
+        provider_id,
+        messages_json,
+        tools_json,
+        context_json,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// **Command — ai_chat_local (BC-3.2, F-1 hardened).** REAL LOCAL inference

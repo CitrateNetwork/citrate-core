@@ -248,6 +248,7 @@ commands.allow = [
   "hermes_learn_publish",
   "hermes_web_settings_get",
   "hermes_web_settings_set",
+  "chat_consent_prepare",
   "chat_route_get",
   "chat_route_set",
   "hermes_terminal_get",

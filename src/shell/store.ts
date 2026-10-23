@@ -2894,6 +2894,7 @@ export class Store {
    */
   private async routeHeldMessage(
     msgId: string,
+    text: string,
     signal: AbortSignal,
   ): Promise<{ ok: true; provider: ChatProvider } | { ok: false; error: string }> {
     const hold = (phase: "waiting" | "ask" | "restarting") => this.setState({ chatRouteHold: { msgId, phase, options: this.routeAsk } });
@@ -2924,6 +2925,7 @@ export class Store {
         if (local) return { ok: true, provider: local };
         if (this.routeKind !== "ask") return gone;
       }
+      void text;
       hold("ask");
       const choice = await new Promise<LocalModelChoice>((resolve) => {
         this.localModelChoice = resolve;
@@ -2935,9 +2937,12 @@ export class Store {
       if (choice === "gateway" && this.routeAsk.gateway) {
         // The member's explicit choice, for this one message only (never offered under local only).
         const def = this.state.aiDefault;
+        const consentId = "";
         return {
           ok: true,
-          provider: createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) => bridge.chat.inferTools(pid, msgs, tools, ctx)),
+          provider: createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) =>
+            bridge.chat.inferTools(pid, msgs, tools, ctx, consentId),
+          ),
         };
       }
       // Defensive: a choice that was not offered sends nothing.
@@ -3049,7 +3054,7 @@ export class Store {
     // Hold this message: wait for the app's own startup start, or ask the member. Nothing is sent
     // to the gateway unless the member chooses that for this message.
     if (this.routeKind === "ask") {
-      const routed = await this.routeHeldMessage(userMsg.id, ac.signal);
+      const routed = await this.routeHeldMessage(userMsg.id, text, ac.signal);
       if (!routed.ok) {
         this.setState((s) => ({
           chatMsgs: s.chatMsgs.concat([

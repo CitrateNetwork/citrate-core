@@ -331,6 +331,10 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       if (aiMock.default === pid) aiMock.default = null;
       return undefined;
     }
+    case "chat_consent_prepare": {
+      const a = (args ?? {}) as { providerId: string; message: string };
+      return { consentId: "cc_minted", providerId: a.providerId, expiresAtMs: 1 };
+    }
     case "ai_chat": {
       const a = (args ?? {}) as { providerId: string; messagesJson: string; contextJson: string };
       if (!aiMock.map.has(a.providerId)) throw "ai: no provider configured for that id";
@@ -889,17 +893,18 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
     expect(statuses.find((p) => p.id === "gateway")!.configured).toBe(false);
   });
 
-  it("infer invokes ai_chat with {providerId,messagesJson,contextJson} and returns the completion (no url arg)", async () => {
+  it("infer invokes ai_chat with {providerId,messagesJson,contextJson,consentId} and returns the completion (no url arg)", async () => {
     const bridge = createTauriBridge();
     await bridge.chat.setProvider("gateway", "https://infer.citrate.ai/v1", "gemma", "cgk_key");
     const messagesJson = JSON.stringify([{ role: "user", content: "hi" }]);
     const contextJson = JSON.stringify({ height: 1 });
-    const out = await bridge.chat.infer("gateway", messagesJson, contextJson);
+    const out = await bridge.chat.infer("gateway", messagesJson, contextJson, "cc_minted");
     // The command args have NO url field — the webview cannot supply an endpoint
-    // (exfil-binding). The completion reflects the STORED baseURL.
-    expect(invokeMock).toHaveBeenCalledWith("ai_chat", { providerId: "gateway", messagesJson, contextJson });
+    // (exfil-binding). The completion reflects the STORED baseURL. K2: the core-minted consent rides
+    // along; core refuses a remote send without it.
+    expect(invokeMock).toHaveBeenCalledWith("ai_chat", { providerId: "gateway", messagesJson, contextJson, consentId: "cc_minted" });
     const callArgs = invokeMock.mock.calls.find((c) => c[0] === "ai_chat")![1] as Record<string, unknown>;
-    expect(Object.keys(callArgs).sort()).toEqual(["contextJson", "messagesJson", "providerId"]);
+    expect(Object.keys(callArgs).sort()).toEqual(["consentId", "contextJson", "messagesJson", "providerId"]);
     expect(out).toContain("https://infer.citrate.ai/v1");
   });
 
@@ -908,7 +913,14 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
     await bridge.chat.setProvider("openai", "https://api.openai.com/v1", "gpt-4o", "sk-abc12345");
     await bridge.chat.clearProvider("openai");
     expect(invokeMock).toHaveBeenCalledWith("ai_clear_provider", { providerId: "openai" });
-    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toBeTruthy();
+    await expect(bridge.chat.infer("openai", "[]", "{}", "cc_x")).rejects.toBeTruthy();
+  });
+
+  it("consentPrepare invokes chat_consent_prepare with only the provider id and the message", async () => {
+    const bridge = createTauriBridge();
+    const c = await bridge.chat.consentPrepare("gateway", "hello");
+    expect(invokeMock).toHaveBeenCalledWith("chat_consent_prepare", { providerId: "gateway", message: "hello" });
+    expect(c.consentId).toBe("cc_minted");
   });
 
   it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {

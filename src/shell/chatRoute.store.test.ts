@@ -8,6 +8,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const route = { inference: "ask-gateway", gatewayConfigured: true, chatRoute: "ask_first" as "ask_first" | "local_only", statusFails: false };
+// K2: core mints a one-time consent for each held message the member may send to the gateway.
+const consentPrepareMock = vi.fn(async (providerId: unknown, _message: unknown) => {
+  if (consent.fail) throw new Error("consent unavailable");
+  return { consentId: "cc_" + ++consent.n, providerId, expiresAtMs: 0 };
+});
+const consent = { n: 0, fail: false };
 const inferToolsMock = vi.fn(async (..._a: unknown[]) => JSON.stringify({ role: "assistant", content: "answer from the gateway" }));
 const inferLocalMock = vi.fn(async (..._a: unknown[]) => "answer from the local model");
 const serveStartMock = vi.fn(async () => {
@@ -30,6 +36,7 @@ vi.mock("../bridge", () => ({
       },
       inferenceState: async () => route.inference,
       inferTools: (...a: unknown[]) => inferToolsMock(...a),
+      consentPrepare: (...a: unknown[]) => consentPrepareMock(...a),
       inferLocal: (...a: unknown[]) => inferLocalMock(...a),
       route: async () => ({ route: route.chatRoute, loadError: null }),
       setRoute: (r: "ask_first" | "local_only") => setRouteMock(r),

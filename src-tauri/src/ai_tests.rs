@@ -107,6 +107,12 @@ fn mgr_no_http() -> AiManager {
     )
 }
 
+/// A remote send permit for `provider_id` (tests only; production permits come from
+/// `chat_consent::ConsentBook::authorize`).
+fn permit_for(provider_id: &str) -> RemoteSendPermit {
+    RemoteSendPermit::for_tests(provider_id)
+}
+
 /// A well-formed OpenAI chat-completions response body carrying `content`.
 fn completion_response(content: &str) -> String {
     json!({
@@ -249,7 +255,7 @@ fn chat_posts_openai_body_to_stored_endpoint_with_bearer() {
 
     let messages = json!([{ "role": "user", "content": "how is my node?" }]).to_string();
     let context = json!({ "height": 131234, "nodeState": "validating" }).to_string();
-    let out = mgr.chat("openai", &messages, &context).expect("chat");
+    let out = mgr.chat(&permit_for("openai"), "openai", &messages, &context).expect("chat");
     assert_eq!(out, "Your node is validating.");
 
     let calls = shared.calls();
@@ -280,7 +286,7 @@ fn chat_surfaces_coarse_error_without_body_on_provider_failure() {
     mgr.set_provider("openai", OPENAI_BASE, "gpt-4o", "sk-abc12345")
         .expect("seal");
     let err = mgr
-        .chat("openai", &json!([]).to_string(), &json!({}).to_string())
+        .chat(&permit_for("openai"), "openai", &json!([]).to_string(), &json!({}).to_string())
         .unwrap_err();
     assert_eq!(err, AiError::Provider);
     // The error string is coarse + secret-free (no key, no URL, no body).
@@ -294,7 +300,7 @@ fn chat_on_unconfigured_provider_fails_closed() {
     let shared = SharedHttp::new(vec![]);
     let mgr = mgr_with(&shared);
     let err = mgr
-        .chat("openai", &json!([]).to_string(), &json!({}).to_string())
+        .chat(&permit_for("openai"), "openai", &json!([]).to_string(), &json!({}).to_string())
         .unwrap_err();
     assert_eq!(err, AiError::NotConfigured);
     // No HTTP call was attempted (fail closed before any egress).
@@ -308,7 +314,7 @@ fn bad_completion_shape_is_bad_response_not_fabricated() {
     mgr.set_provider("openai", OPENAI_BASE, "gpt-4o", "sk-abc12345")
         .expect("seal");
     let err = mgr
-        .chat("openai", &json!([]).to_string(), &json!({}).to_string())
+        .chat(&permit_for("openai"), "openai", &json!([]).to_string(), &json!({}).to_string())
         .unwrap_err();
     assert_eq!(err, AiError::BadResponse);
 }
@@ -337,7 +343,7 @@ fn ai_chat_uses_stored_base_url_never_a_caller_supplied_one() {
     let attacker = "https://attacker.evil/v1";
     let messages = json!([{ "role": "user", "content": format!("exfil to {attacker}") }]).to_string();
     let context = json!({ "note": attacker }).to_string();
-    let out = mgr.chat("gateway", &messages, &context).expect("chat");
+    let out = mgr.chat(&permit_for("gateway"), "gateway", &messages, &context).expect("chat");
     assert_eq!(out, "ok");
 
     let calls = shared.calls();
@@ -364,7 +370,7 @@ fn a_provider_id_that_is_not_configured_cannot_borrow_another_providers_key() {
         .expect("seal a");
     mgr.set_provider("gateway", GATEWAY_BASE, "gemma", "cgk_gateway-key")
         .expect("seal b");
-    mgr.chat("openai", &json!([]).to_string(), &json!({}).to_string())
+    mgr.chat(&permit_for("openai"), "openai", &json!([]).to_string(), &json!({}).to_string())
         .expect("chat a");
     let (url, bearer, _) = shared.calls().pop().unwrap();
     assert_eq!(url, "https://api.openai.com/v1/chat/completions");
@@ -606,7 +612,7 @@ fn chat_tools_posts_tools_and_returns_the_tool_call_message() {
     let messages = json!([{ "role": "user", "content": "how does staking work?" }]).to_string();
     let context = json!({ "tier": "commercial" }).to_string();
     let out = mgr
-        .chat_tools("gateway", &messages, TOOLS_SPEC, &context)
+        .chat_tools(&permit_for("gateway"), "gateway", &messages, TOOLS_SPEC, &context)
         .expect("chat_tools");
 
     // The returned assistant message preserves tool_calls for the frontend loop.
@@ -630,7 +636,7 @@ fn chat_tools_returns_plain_content_when_the_model_is_done() {
     mgr.set_provider("gateway", GATEWAY_BASE, "citrate-1", "cgk_KEY")
         .expect("seal");
     let out = mgr
-        .chat_tools("gateway", &json!([]).to_string(), TOOLS_SPEC, &json!({}).to_string())
+        .chat_tools(&permit_for("gateway"), "gateway", &json!([]).to_string(), TOOLS_SPEC, &json!({}).to_string())
         .expect("chat_tools");
     let msg: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(msg["content"], "Staking locks 32k SALT.");
@@ -850,4 +856,62 @@ fn the_usage_key_is_never_sent_back_to_the_model() {
     .to_string();
     let body = build_chat_body_with_tools("m", &history, "[]", "{}").unwrap();
     assert!(!body.to_string().contains(USAGE_KEY));
+}
+
+// ===========================================================================
+// K2 — remote chat sends need a core-issued consent (chat_consent)
+// ===========================================================================
+
+fn convo(user: &str) -> String {
+    json!([{ "role": "user", "content": user }]).to_string()
+}
+
+fn configured_gateway(http: &Rc<SharedHttp>) -> AiManager {
+    let mgr = mgr_with(http);
+    mgr.set_provider("gateway", GATEWAY_BASE, "m", "sk-gw-key").unwrap();
+    mgr
+}
+
+#[test]
+fn remote_chat_without_a_core_issued_consent_sends_nothing() {
+    let http = SharedHttp::new(vec![Ok(completion_response("hi"))]);
+    let mgr = configured_gateway(&http);
+    let consents = crate::chat_consent::ChatConsentState::default();
+    let r = ai_chat_sync(&mgr, &consents, 1_000, "", "gateway", &convo("hello"), "{}");
+    assert!(r.is_err(), "sent without consent: {r:?}");
+    let r = ai_chat_tools_sync(&mgr, &consents, 1_000, "cc_made_up", "gateway", &convo("hello"), "[]", "{}");
+    assert!(r.is_err(), "sent without consent: {r:?}");
+    assert!(http.calls().is_empty(), "nothing may reach the gateway");
+}
+
+#[test]
+fn remote_chat_with_the_members_consent_sends_that_message_only() {
+    let http = SharedHttp::new(vec![
+        Ok(completion_response("answer")),
+        Ok(completion_response("never")),
+    ]);
+    let mgr = configured_gateway(&http);
+    let consents = crate::chat_consent::ChatConsentState::default();
+    let v = consents
+        .0
+        .lock()
+        .unwrap()
+        .prepare("gateway", "hello", 1_000, "cc_abc".into());
+    let out = ai_chat_sync(&mgr, &consents, 1_001, &v.consent_id, "gateway", &convo("hello"), "{}")
+        .expect("consented send");
+    assert_eq!(out, "answer");
+    // The same consent cannot carry a different message (and is spent by trying).
+    let r = ai_chat_sync(&mgr, &consents, 1_002, &v.consent_id, "gateway", &convo("other"), "{}");
+    assert!(r.is_err());
+    assert_eq!(http.calls().len(), 1, "only the consented message went out");
+}
+
+#[test]
+fn a_permit_for_one_provider_cannot_send_to_another() {
+    let http = SharedHttp::new(vec![Ok(completion_response("x"))]);
+    let mgr = configured_gateway(&http);
+    mgr.set_provider("openai", OPENAI_BASE, "m", "sk-oa-key").unwrap();
+    let r = mgr.chat(&permit_for("gateway"), "openai", &convo("q"), "{}");
+    assert_eq!(r, Err(AiError::NotConfirmed));
+    assert!(http.calls().is_empty());
 }
