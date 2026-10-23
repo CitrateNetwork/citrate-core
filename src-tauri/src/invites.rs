@@ -42,6 +42,14 @@ pub struct PendingInvite {
     /// "Copy link" hands out a one-click link. Public; safe to serialize. `default` for pre-S1 records.
     #[serde(default)]
     pub link: String,
+    /// The short invite code (v2 link) this relay invite is sealed inside, when this device minted
+    /// one for it. Revoking that code also closes this relay invite. Not a secret.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub join_code: String,
+    /// The relay invite is already closed (revoked) but its short code isn't revoked yet; a retry of
+    /// the code's revoke skips the relay step.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relay_closed: bool,
 }
 
 /// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
@@ -129,15 +137,49 @@ fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 pub(crate) fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
-    match store_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
-        Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        None => Vec::new(),
+    match store_path(app) {
+        Ok(p) => load_at(&p),
+        Err(_) => Vec::new(),
     }
 }
 
-fn save(app: &tauri::AppHandle, v: &[PendingInvite]) -> Result<(), String> {
-    let p = store_path(app)?;
-    write_pending(&p, v)
+fn load_at(path: &std::path::Path) -> Vec<PendingInvite> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Load the pending invites, change them with `f`, and write them back (owner-only).
+pub(crate) fn update_pending<T>(
+    app: &tauri::AppHandle,
+    f: impl FnOnce(&mut Vec<PendingInvite>) -> T,
+) -> Result<T, String> {
+    update_pending_at(&store_path(app)?, f)
+}
+
+/// Serializes every read-modify-write of `pending.json` in this process (core#355 B-1): without it
+/// two writers that each load, change and save can drop each other's change.
+static PENDING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`update_pending`] on the store at `path`: one read-modify-write under [`PENDING_LOCK`], so it
+/// always changes the current contents. Keep `f` short and free of I/O (no relay or daemon calls):
+/// it runs with the lock held.
+pub(crate) fn update_pending_at<T>(
+    path: &std::path::Path,
+    f: impl FnOnce(&mut Vec<PendingInvite>) -> T,
+) -> Result<T, String> {
+    let _held = PENDING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut v = load_at(path);
+    let out = f(&mut v);
+    write_pending(path, &v)?;
+    Ok(out)
+}
+
+/// Read the store at `path` under [`PENDING_LOCK`] (no write).
+fn read_pending_at<T>(path: &std::path::Path, f: impl FnOnce(&[PendingInvite]) -> T) -> T {
+    let _held = PENDING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    f(&load_at(path))
 }
 
 /// Serialize the pending invites and write them owner-only (`0600`).
@@ -184,16 +226,18 @@ pub async fn group_invite_create(
     } else {
         format!("citrate://invite?g={group}&t={token}&k={pub_key}&n={name_hex}")
     };
-    let mut invites = load(&app);
-    invites.push(PendingInvite {
-        group: group.clone(),
-        token: token.clone(),
-        for_handle: for_handle.clone(),
-        created_at: now_unix(),
-        priv_key,
-        link: link.clone(),
-    });
-    save(&app, &invites)?;
+    update_pending(&app, |invites| {
+        invites.push(PendingInvite {
+            group: group.clone(),
+            token: token.clone(),
+            for_handle: for_handle.clone(),
+            created_at: now_unix(),
+            priv_key,
+            link: link.clone(),
+            join_code: String::new(),
+            relay_closed: false,
+        })
+    })?;
     // #73 — the inviter's audit copy (provable intent; the relay tally is authoritative for scoring).
     append_referral(
         &app,
@@ -211,7 +255,7 @@ pub async fn group_invite_create(
 }
 
 /// `group_invite_redeem` — INVITEE self-admit (INVITE-S2). Parse the link (`g`, `t`, optional `n`),
-/// then self-admit into the group by external commit with the RAW token — no owner action, even if
+/// then self-admit into the group by external commit with the invite token — no owner action, even if
 /// the owner is offline. Honest error if the daemon/relay is unreachable, the token is spent/expired,
 /// or the invite was revoked (Rule 1 — never a fabricated "joined"). Records the joiner's audit copy (#73).
 #[tauri::command]
@@ -222,14 +266,9 @@ pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<
 /// The self-admit body shared by [`group_invite_redeem`] and the v2 invite-link redeem
 /// (`join::join_redeem`, which rebuilds this link from an opened envelope in Rust).
 pub(crate) fn redeem_link(app: &tauri::AppHandle, link: &str) -> Result<(), String> {
-    let group = link_param(link, "g").ok_or("invite link missing group")?;
-    let token = link_param(link, "t").ok_or("invite link missing token")?;
-    let name = link_param(link, "n")
-        .and_then(|h| hex::decode(h).ok())
-        .and_then(|b| String::from_utf8(b).ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Invited group".to_string());
-    crate::comms::redeem_invite(app, group.clone(), token.clone(), name.clone())?;
+    let req = redeem_request(link)?;
+    crate::comms::redeem_invite(app, req.group.clone(), req.token, req.name.clone())?;
+    let (group, name, token_hash) = (req.group, req.name, req.token_hash);
     append_referral(
         app,
         ReferralEvent {
@@ -237,12 +276,151 @@ pub(crate) fn redeem_link(app: &tauri::AppHandle, link: &str) -> Result<(), Stri
             event: "joined".into(),
             group,
             group_name: name,
-            token_hash: blake3_token_hash(&token),
+            token_hash,
             for_handle: String::new(),
             ts: now_unix(),
         },
     );
     Ok(())
+}
+
+/// Length of an invite token as minted ([`random_state`]: 32 bytes, unpadded base64url).
+const INVITE_TOKEN_LEN: usize = 43;
+
+/// The token in the form the member daemon's `RedeemInvite` expects: hex of the bytes the relay
+/// hashes. The relay looks the invite up by `BLAKE3(bytes)` and the owner published
+/// [`blake3_token_hash`]`(token)` = `BLAKE3(token's UTF-8 bytes)`, so the bytes are the token string
+/// itself, hex-encoded (not the base64url-decoded value, which would hash to a different record).
+/// Validates the minted shape first (43 base64url chars that decode to 32 bytes). Errors never
+/// contain the token.
+pub(crate) fn redeem_token_wire(token: &str) -> Result<WireToken, String> {
+    use base64::Engine as _;
+    let shaped = token.len() == INVITE_TOKEN_LEN
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(token)
+            .map(|raw| raw.len() == 32)
+            .unwrap_or(false);
+    if !shaped {
+        return Err("invite link token is malformed; ask for a new link".to_string());
+    }
+    Ok(WireToken(hex::encode(token.as_bytes())))
+}
+
+/// An invite token in the member daemon's wire encoding (see [`redeem_token_wire`]). The field is
+/// private, so [`redeem_token_wire`] is the only way to make one, and `comms::redeem_invite` takes
+/// this type: a raw link token can't reach the daemon (it doesn't compile). No `Debug`.
+pub(crate) struct WireToken(String);
+
+impl WireToken {
+    /// The hex the daemon IPC carries (tests read it; production only moves it into the request).
+    #[cfg(test)]
+    pub(crate) fn as_hex(&self) -> &str {
+        &self.0
+    }
+    /// Hand the hex to the IPC request.
+    pub(crate) fn into_hex(self) -> String {
+        self.0
+    }
+}
+
+/// Everything the invitee's self-admit needs, read from a `citrate://invite?g=…&t=…[&n=…]` link.
+pub(crate) struct RedeemRequest {
+    pub(crate) group: String,
+    /// The token in the daemon's encoding (never the raw link value).
+    pub(crate) token: WireToken,
+    /// The display name for the joined group (from `n=`, else a generic label).
+    pub(crate) name: String,
+    /// `BLAKE3(token)`, the key the relay and the referral log share.
+    pub(crate) token_hash: String,
+}
+
+/// Build the redeem request from an invite link (pure; no IPC). Fails closed on a missing group or
+/// token, and on a token that isn't the minted shape. Errors never contain the token.
+pub(crate) fn redeem_request(link: &str) -> Result<RedeemRequest, String> {
+    let group = link_param(link, "g")
+        .filter(|g| !g.is_empty())
+        .ok_or("invite link missing group")?;
+    let token = link_param(link, "t").ok_or("invite link missing token")?;
+    let name = link_param(link, "n")
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Invited group".to_string());
+    let token_hash = blake3_token_hash(&token);
+    let token = redeem_token_wire(&token)?;
+    Ok(RedeemRequest {
+        group,
+        token,
+        name,
+        token_hash,
+    })
+}
+
+/// Remember which short code (v2 link) seals the relay invite `token`. Returns whether an invite
+/// was found. Called after a direct `join_mint` on this device.
+pub(crate) fn tag_join_code(invites: &mut [PendingInvite], token: &str, code: &str) -> bool {
+    match invites.iter_mut().find(|i| i.token == token) {
+        Some(i) => {
+            i.join_code = code.to_string();
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`close_relay_for_code_at`] on this device's pending-invite store (`join_revoke`'s relay step).
+pub(crate) fn close_relay_for_join_code(
+    app: &tauri::AppHandle,
+    code: &str,
+    revoke_relay: impl FnOnce(String) -> Result<(), String>,
+) -> Result<bool, String> {
+    close_relay_for_code_at(&store_path(app)?, code, revoke_relay)
+}
+
+/// Close (revoke at the relay) the relay invite sealed inside the short code `code`, if this
+/// device minted that code. `Ok(true)` = closed now or earlier; `Ok(false)` = this device has no
+/// record of it; `Err` = the relay refused or was unreachable, and nothing changed.
+///
+/// core#355 B-1: the relay call runs with no copy of the store held. The record is read under the
+/// lock, the relay is called, then the store is re-read under the lock and only that record is
+/// marked closed, so invites created, consumed or tagged while the relay answers are kept as they
+/// are (a record consumed meanwhile stays gone).
+pub(crate) fn close_relay_for_code_at(
+    path: &std::path::Path,
+    code: &str,
+    revoke_relay: impl FnOnce(String) -> Result<(), String>,
+) -> Result<bool, String> {
+    if code.is_empty() {
+        return Ok(false);
+    }
+    let found = read_pending_at(path, |v| {
+        v.iter()
+            .find(|i| i.join_code == code)
+            .map(|i| (i.token.clone(), i.relay_closed))
+    });
+    let token = match found {
+        None => return Ok(false),
+        Some((_, true)) => return Ok(true),
+        Some((token, false)) => token,
+    };
+    revoke_relay(blake3_token_hash(&token))?;
+    update_pending_at(path, |v| {
+        if let Some(i) = v
+            .iter_mut()
+            .find(|i| i.join_code == code && i.token == token)
+        {
+            i.relay_closed = true;
+        }
+    })?;
+    Ok(true)
+}
+
+/// Drop the records of relay invites closed for `code` (after the code itself is revoked).
+pub(crate) fn forget_join_code(invites: &mut Vec<PendingInvite>, code: &str) {
+    invites.retain(|i| !(i.relay_closed && i.join_code == code));
 }
 
 /// Decode a hex-encoded group name back to a display string (empty on any failure).
@@ -446,14 +624,11 @@ pub async fn group_invite_verify_consume(
     group: String,
     token: String,
 ) -> Result<bool, String> {
-    let mut invites = load(&app);
-    let before = invites.len();
-    invites.retain(|i| !(i.group == group && i.token == token));
-    let consumed = invites.len() < before;
-    if consumed {
-        save(&app, &invites)?;
-    }
-    Ok(consumed)
+    update_pending(&app, |invites| {
+        let before = invites.len();
+        invites.retain(|i| !(i.group == group && i.token == token));
+        invites.len() < before
+    })
 }
 
 /// `group_invite_revoke` — drop an outstanding invite the owner no longer wants redeemable. Revokes
@@ -467,13 +642,512 @@ pub async fn group_invite_revoke(
     token: String,
 ) -> Result<(), String> {
     crate::comms::revoke_invite(&app, blake3_token_hash(&token))?;
-    let mut invites = load(&app);
-    invites.retain(|i| !(i.group == group && i.token == token));
-    save(&app, &invites)
+    update_pending(&app, |invites| {
+        invites.retain(|i| !(i.group == group && i.token == token))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    /// A real invite token, exactly as `group_invite_create` mints it (`random_state`: 32 random
+    /// bytes, unpadded base64url, 43 chars), taken from a link in the real share format.
+    fn real_token_from_link() -> String {
+        let token = crate::connections::random_state();
+        let link = format!(
+            "citrate://invite?g={}&t={token}&k={}",
+            "ab".repeat(16),
+            "02".repeat(33)
+        );
+        super::link_param(&link, "t").expect("t= in the link")
+    }
+
+    /// The member daemon's `RedeemInvite` hex-decodes `token` and the relay recomputes
+    /// `BLAKE3(bytes)` to find the record the owner published as `blake3_token_hash(token)`. So the
+    /// wire form must hex-decode to exactly the bytes that were hashed at publish: the token's own
+    /// UTF-8 bytes. A real 43-char base64url token must round-trip to that.
+    #[test]
+    fn redeem_token_wire_round_trips_a_real_token_to_the_published_hash() {
+        for _ in 0..32 {
+            let token = real_token_from_link();
+            assert_eq!(token.len(), 43);
+            let wire = super::redeem_token_wire(&token).expect("a real token is accepted");
+            let wire = wire.as_hex();
+            assert!(
+                wire.chars().all(|c| c.is_ascii_hexdigit()),
+                "the daemon hex-decodes it"
+            );
+            let bytes = hex::decode(wire).expect("hex");
+            assert_eq!(bytes, token.as_bytes());
+            assert_eq!(
+                hex::encode(blake3::hash(&bytes).as_bytes()),
+                super::blake3_token_hash(&token),
+                "the relay finds the record the owner published"
+            );
+        }
+    }
+
+    /// The relay contract's §13 vector (citrate-federation JOIN_GROW_S2_RELAY.md, G1 / task M0): the
+    /// IPC `token` is the hex of the token's UTF-8 bytes, and BLAKE3 of those bytes is the published
+    /// `token_hash`.
+    #[test]
+    fn redeem_token_wire_matches_the_relay_contract_vector() {
+        const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        const TOKEN_UTF8_HEX: &str = "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838";
+        const TOKEN_HASH: &str = "0807456e11ea80a0cabf51014bdab6bb6ae59402cacb3b323853203b178e28d3";
+        assert_eq!(
+            super::redeem_token_wire(T).map(|w| w.into_hex()).as_deref(),
+            Ok(TOKEN_UTF8_HEX)
+        );
+        assert_eq!(super::blake3_token_hash(T), TOKEN_HASH);
+        let bytes = hex::decode(TOKEN_UTF8_HEX).expect("hex");
+        assert_eq!(hex::encode(blake3::hash(&bytes).as_bytes()), TOKEN_HASH);
+    }
+
+    /// The §13 token `T` itself is not hex, even cut to an even length: sending it raw is what made
+    /// the daemon answer "token must be hex". (`T[..42]` keeps base64url letters outside `0-9a-f`.)
+    #[test]
+    fn the_raw_contract_token_is_not_hex_even_at_even_length() {
+        const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        assert!(hex::decode(&T[..42]).is_err());
+        assert!(hex::decode(T).is_err());
+    }
+
+    #[test]
+    fn redeem_token_wire_refuses_malformed_tokens_without_echoing_them() {
+        let good = real_token_from_link();
+        let short = &good[..42];
+        let long = format!("{good}A");
+        let bad_char = format!("{}+", &good[..42]);
+        let padded = format!("{}=", &good[..42]);
+        for bad in [
+            "",
+            short,
+            long.as_str(),
+            bad_char.as_str(),
+            padded.as_str(),
+            "tok123",
+        ] {
+            let err = match super::redeem_token_wire(bad) {
+                Ok(_) => panic!("accepted a malformed token"),
+                Err(e) => e,
+            };
+            if !bad.is_empty() {
+                assert!(!err.contains(bad), "the error never repeats the token");
+            }
+        }
+    }
+
+    /// A link in the exact share format `group_invite_create` builds, with a real minted token.
+    fn real_link() -> (String, String) {
+        let token = crate::connections::random_state();
+        let link = format!(
+            "citrate://invite?g={}&t={token}&k={}&n={}",
+            "ab".repeat(16),
+            "02".repeat(33),
+            hex::encode("Garden club")
+        );
+        (link, token)
+    }
+
+    /// What reaches the daemon for a real link is hex of the `t=` bytes, and BLAKE3 of those bytes is
+    /// the hash the owner published, so the relay finds the invite. Fails for any variant that sends
+    /// the raw token.
+    #[test]
+    fn redeem_request_sends_hex_of_the_link_token_bytes() {
+        for _ in 0..32 {
+            let (link, t) = real_link();
+            let req = super::redeem_request(&link).expect("a real link is accepted");
+            assert_eq!(req.group, "ab".repeat(16));
+            assert_eq!(req.name, "Garden club");
+            let sent = hex::decode(req.token.as_hex()).ok();
+            assert_eq!(sent.as_deref(), Some(t.as_bytes()), "hex of the t= bytes");
+            let sent = sent.unwrap_or_default();
+            assert_eq!(
+                hex::encode(blake3::hash(&sent).as_bytes()),
+                super::blake3_token_hash(&t),
+                "the relay's BLAKE3(bytes) is the published hash"
+            );
+            assert_eq!(req.token_hash, super::blake3_token_hash(&t));
+        }
+    }
+
+    #[test]
+    fn redeem_request_matches_the_relay_contract_vector() {
+        const T: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        const TOKEN_UTF8_HEX: &str = "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838";
+        let link = format!(
+            "citrate://invite?g={}&t={T}&k={}",
+            "11".repeat(32),
+            "02".repeat(33)
+        );
+        let req = super::redeem_request(&link).expect("the contract token is accepted");
+        assert_eq!(req.token.as_hex(), TOKEN_UTF8_HEX);
+        assert_eq!(req.name, "Invited group", "no n= gives the generic label");
+    }
+
+    /// Fail closed: a link whose token isn't the minted shape, or with no group or token, never
+    /// becomes a request, and the error never repeats the token.
+    #[test]
+    fn redeem_request_refuses_bad_links_without_echoing_the_token() {
+        let (_, good) = real_link();
+        let g = "ab".repeat(16);
+        let cases = [
+            format!("citrate://invite?g={g}&t={}", &good[..42]),
+            format!("citrate://invite?g={g}&t={good}A"),
+            format!("citrate://invite?g={g}&t={}%2B", &good[..42]),
+            format!("citrate://invite?g={g}&t={}=", &good[..42]),
+            format!("citrate://invite?g={g}&t={good}#frag"),
+            format!("citrate://invite?g={g}&t=tok123"),
+            format!("citrate://invite?g={g}&t=deadbeef"),
+            format!("citrate://invite?g={g}&t="),
+            format!("citrate://invite?g={g}"),
+            format!("citrate://invite?t={good}"),
+            format!("citrate://invite?g=&t={good}"),
+            "citrate://invite".to_string(),
+        ];
+        for link in &cases {
+            let err = match super::redeem_request(link) {
+                Ok(_) => panic!("accepted {link}"),
+                Err(e) => e,
+            };
+            assert!(!err.contains(&good), "the error never repeats the token");
+        }
+    }
+
+    /// Tripwire for this bug class: the daemon's `RedeemInvite` request is built in exactly one place
+    /// (`comms::redeem_invite`), from a [`super::WireToken`]. A second construction site, or one that
+    /// passes a plain string, fails here (and the type makes a raw token fail to compile).
+    #[test]
+    fn redeem_invite_request_is_built_only_from_a_wire_token() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sites = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("src dir").flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap_or_default();
+            let prod = src.split("\n#[cfg(test)]\nmod tests").next().unwrap_or("");
+            for (i, _) in prod.match_indices("Request::RedeemInvite") {
+                sites.push((
+                    name.clone(),
+                    prod[i..].chars().take(160).collect::<String>(),
+                ));
+            }
+        }
+        assert_eq!(sites.len(), 1, "one RedeemInvite construction: {sites:?}");
+        assert_eq!(sites[0].0, "comms.rs");
+        let comms = include_str!("comms.rs");
+        let f = &comms[comms.find("pub(crate) fn redeem_invite").expect("fn")..];
+        let f = &f[..f.find("\n}\n").expect("end")];
+        assert!(
+            f.contains("token: crate::invites::WireToken"),
+            "takes a WireToken"
+        );
+        assert!(f.contains("token: token.into_hex()"), "sends its hex");
+    }
+
+    fn pending(group: &str, token: &str) -> super::PendingInvite {
+        super::PendingInvite {
+            group: group.into(),
+            token: token.into(),
+            for_handle: String::new(),
+            created_at: 1,
+            priv_key: String::new(),
+            link: format!("citrate://invite?g={group}&t={token}&k=02ab"),
+            join_code: String::new(),
+            relay_closed: false,
+        }
+    }
+
+    #[test]
+    fn a_minted_code_is_linked_to_the_relay_invite_it_seals() {
+        let t1 = crate::connections::random_state();
+        let t2 = crate::connections::random_state();
+        let mut v = vec![pending("grp_a", &t1), pending("grp_a", &t2)];
+        assert!(super::tag_join_code(&mut v, &t2, "Ab3dE7gh"));
+        assert_eq!(v[1].join_code, "Ab3dE7gh");
+        assert!(v[0].join_code.is_empty());
+        assert!(!super::tag_join_code(&mut v, "not-a-token", "Zz9yX8wv"));
+    }
+
+    #[test]
+    fn revoking_a_code_closes_its_relay_invite_once_and_only_its_own() {
+        let t1 = crate::connections::random_state();
+        let t2 = crate::connections::random_state();
+        let path = store_with(
+            "close-once",
+            &[pending("grp_a", &t1), tagged("grp_a", &t2, "Ab3dE7gh")],
+        );
+        let mut sent = Vec::new();
+        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |h| {
+            sent.push(h);
+            Ok(())
+        });
+        assert_eq!(closed, Ok(true));
+        assert_eq!(
+            sent,
+            vec![super::blake3_token_hash(&t2)],
+            "the sealed invite's hash"
+        );
+        let v = super::load_at(&path);
+        assert!(v[1].relay_closed && !v[0].relay_closed);
+        // A retry (the service revoke failed) doesn't call the relay again.
+        let again = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            panic!("the relay was called twice")
+        });
+        assert_eq!(again, Ok(true));
+        // A code this device has no record of changes nothing at the relay.
+        let none = super::close_relay_for_code_at(&path, "Zz9yX8wv", |_| panic!("no record"));
+        assert_eq!(none, Ok(false));
+        super::update_pending_at(&path, |v| super::forget_join_code(v, "Ab3dE7gh")).unwrap();
+        let v = super::load_at(&path);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].token, t1);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_relay_failure_stops_the_revoke_and_keeps_the_record_open() {
+        let t = crate::connections::random_state();
+        let path = store_with("close-fail", &[tagged("grp_a", &t, "Ab3dE7gh")]);
+        let out = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            Err("comms: relay unreachable".to_string())
+        });
+        assert_eq!(out, Err("comms: relay unreachable".to_string()));
+        assert!(!super::load_at(&path)[0].relay_closed);
+        super::update_pending_at(&path, |v| super::forget_join_code(v, "Ab3dE7gh")).unwrap();
+        assert_eq!(
+            super::load_at(&path).len(),
+            1,
+            "an open relay invite is never forgotten"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The scenario: an invitee resolved the direct link (Review) and holds the opened relay
+    /// invite; the inviter then revokes the link; the invitee presses Join. The relay (modelled as
+    /// the set of live invite hashes) must refuse it.
+    #[test]
+    fn review_then_revoke_then_join_is_refused_by_the_relay() {
+        let t = crate::connections::random_state();
+        let group = "ab".repeat(16);
+        let mut relay: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Inviter: create the relay invite (published by hash) and mint a short code for it.
+        relay.insert(super::blake3_token_hash(&t));
+        let mut v = vec![pending(&group, &t)];
+        super::tag_join_code(&mut v, &t, "Ab3dE7gh");
+        let path = store_with("review-revoke-join", &v);
+        // Invitee: Review opened the envelope; it now holds the relay invite link.
+        let opened = format!("citrate://invite?g={group}&t={t}&k={}", "02".repeat(33));
+        // Inviter: Revoke from "Your invite links".
+        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |h| {
+            relay.remove(&h);
+            Ok(())
+        });
+        // Invitee: Join sends hex of the token's bytes; the relay hashes them and looks it up.
+        let req = super::redeem_request(&opened).expect("request");
+        let bytes = hex::decode(req.token.as_hex()).expect("hex");
+        let hash = hex::encode(blake3::hash(&bytes).as_bytes());
+        assert!(!relay.contains(&hash), "the revoked invite still redeems");
+        assert_eq!(closed, Ok(true), "the inviter is told it was closed");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Tripwire: `join_revoke` closes the relay invite, then revokes the code at the service, then
+    /// forgets the closed record (relay -> service -> forget), and tags a minted code with the
+    /// invite it seals.
+    #[test]
+    fn join_revoke_closes_the_relay_invite_first() {
+        let src = include_str!("join.rs");
+        let f = &src[src.find("pub async fn join_revoke").expect("fn")..];
+        let f = &f[..f.find("\n}\n").expect("end")];
+        let relay = f.find("close_relay_for_join_code(").expect("relay step");
+        let service = f.find("join.revoke(").expect("service step");
+        let forget = f.find("forget_join_code(").expect("forget step");
+        assert!(relay < service, "relay first");
+        assert!(
+            service < forget,
+            "the record is forgotten only after the service revoke"
+        );
+        assert_eq!(
+            f.matches("comms::revoke_invite(").count(),
+            1,
+            "one relay call"
+        );
+        assert!(src.contains("crate::invites::tag_join_code(v, &invite.t, &view.code)"));
+    }
+
+    /// The production part of this file (everything before the test module).
+    fn prod_source() -> &'static str {
+        let src = include_str!("invites.rs");
+        &src[..src.find("\n#[cfg(test)]\nmod tests").expect("test module")]
+    }
+
+    /// The text of the function whose signature starts with `sig`, up to its closing brace.
+    fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let at = src.find(sig).unwrap_or_else(|| panic!("{sig} not found"));
+        &src[at..at + src[at..].find("\n}\n").expect("end")]
+    }
+
+    /// Tripwire (core#355 B-1): every write of `pending.json` is one locked read-modify-write
+    /// (`update_pending_at`), and the relay call of a revoke runs outside any of them, so an invite
+    /// created or consumed while the relay answers is never overwritten by a stale copy.
+    #[test]
+    fn pending_writes_are_locked_and_the_relay_call_is_outside_them() {
+        let prod = prod_source();
+        // One writer: `write_pending` is called only from `update_pending_at`.
+        let writes: Vec<usize> = prod
+            .match_indices("write_pending(")
+            .map(|(i, _)| i)
+            .collect();
+        let def = prod.find("fn write_pending(").expect("write_pending") + "fn ".len();
+        let upd = fn_body(prod, "pub(crate) fn update_pending_at");
+        let upd_at = prod.find(upd).expect("update_pending_at");
+        for w in writes {
+            assert!(
+                w == def || (w > upd_at && w < upd_at + upd.len()),
+                "pending.json is written outside update_pending_at: {}",
+                &prod[w.saturating_sub(80)..w + 20]
+            );
+        }
+        assert!(
+            upd.contains("PENDING_LOCK.lock()"),
+            "update_pending_at holds the store lock"
+        );
+        assert!(!prod.contains("fn save("), "no unlocked load/save pair");
+        // The relay call runs between the locked read and the locked write, never inside one.
+        let close = fn_body(prod, "pub(crate) fn close_relay_for_code_at");
+        let relay = close.find("revoke_relay(").expect("relay call");
+        for (c, _) in close.match_indices("_pending_at(") {
+            let end = c + close[c..].find(";\n").expect("statement end");
+            assert!(
+                !(c..end).contains(&relay),
+                "the relay call runs inside a locked pending-store update"
+            );
+        }
+    }
+
+    /// A temp pending-invite store holding `v`.
+    fn store_with(tag: &str, v: &[super::PendingInvite]) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("citrate-invites-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pending.json");
+        super::write_pending(&path, v).unwrap();
+        path
+    }
+
+    fn tagged(group: &str, token: &str, code: &str) -> super::PendingInvite {
+        let mut i = pending(group, token);
+        i.join_code = code.into();
+        i
+    }
+
+    /// core#355 B-1: an invite minted while the relay is closing a revoked code's invite survives.
+    #[test]
+    fn an_invite_created_during_the_relay_close_is_kept() {
+        let t = crate::connections::random_state();
+        let path = store_with("b1-create", &[tagged("grp_a", &t, "Ab3dE7gh")]);
+        let fresh = crate::connections::random_state();
+        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh)))
+        });
+        assert_eq!(closed, Ok(true));
+        let v = super::load_at(&path);
+        assert!(
+            v.iter().any(|i| i.token == fresh),
+            "an invite created during the relay call was overwritten"
+        );
+        assert!(
+            v.iter().any(|i| i.token == t && i.relay_closed),
+            "the closed invite is marked"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// core#355 B-1: an invite consumed while the relay answers (the closed one or another) is not
+    /// brought back by the revoke.
+    #[test]
+    fn an_invite_consumed_during_the_relay_close_stays_consumed() {
+        let (t, other) = (
+            crate::connections::random_state(),
+            crate::connections::random_state(),
+        );
+        let path = store_with(
+            "b1-consume",
+            &[tagged("grp_a", &t, "Ab3dE7gh"), pending("grp_a", &other)],
+        );
+        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            super::update_pending_at(&path, |v| v.retain(|i| i.token != t && i.token != other))
+        });
+        assert_eq!(closed, Ok(true), "the relay invite was closed");
+        assert!(
+            super::load_at(&path).is_empty(),
+            "a consumed invite came back"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// core#355 B-1: a relay failure changes nothing it owns and keeps what changed meanwhile.
+    #[test]
+    fn a_relay_failure_keeps_changes_made_meanwhile() {
+        let t = crate::connections::random_state();
+        let path = store_with("b1-fail", &[tagged("grp_a", &t, "Ab3dE7gh")]);
+        let fresh = crate::connections::random_state();
+        let out = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh)))?;
+            Err("comms: relay unreachable".to_string())
+        });
+        assert_eq!(out, Err("comms: relay unreachable".to_string()));
+        let v = super::load_at(&path);
+        assert!(
+            v.iter().any(|i| i.token == fresh),
+            "a change made meanwhile was overwritten"
+        );
+        assert!(
+            v.iter().any(|i| i.token == t && !i.relay_closed),
+            "the record stays open"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Concurrent writers (create, consume, revoke, tag) each re-read the store under the lock, so
+    /// none of them drops another's change.
+    #[test]
+    fn concurrent_pending_writers_lose_nothing() {
+        let path = store_with("b1-threads", &[]);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let (path, start) = (path.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    for k in 0..25 {
+                        let tok = format!("tok-{n}-{k}");
+                        super::update_pending_at(&path, |v| v.push(pending("grp_t", &tok)))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            super::load_at(&path).len(),
+            200,
+            "a concurrent write was lost"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     // Pure helper: the invite link format the invitee's app parses.
     #[test]
     fn invite_link_shape() {
@@ -534,6 +1208,8 @@ mod tests {
             created_at: 1000,
             priv_key: "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+            join_code: String::new(),
+            relay_closed: false,
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
         assert_eq!(views.len(), 1);
@@ -567,6 +1243,8 @@ mod tests {
             created_at: 1000,
             priv_key: "deadbeef".into(),
             link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+            join_code: String::new(),
+            relay_closed: false,
         }];
         super::write_pending(&path, &invites).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
