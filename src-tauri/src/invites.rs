@@ -216,11 +216,17 @@ pub async fn group_invite_create(
 /// or the invite was revoked (Rule 1 — never a fabricated "joined"). Records the joiner's audit copy (#73).
 #[tauri::command]
 pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<(), String> {
-    let req = redeem_request(&link)?;
-    crate::comms::redeem_invite(&app, req.group.clone(), req.token, req.name.clone())?;
+    redeem_link(&app, &link)
+}
+
+/// The self-admit body shared by [`group_invite_redeem`] and the v2 invite-link redeem
+/// (`join::join_redeem`, which rebuilds this link from an opened envelope in Rust).
+pub(crate) fn redeem_link(app: &tauri::AppHandle, link: &str) -> Result<(), String> {
+    let req = redeem_request(link)?;
+    crate::comms::redeem_invite(app, req.group.clone(), req.token, req.name.clone())?;
     let (group, name, token_hash) = (req.group, req.name, req.token_hash);
     append_referral(
-        &app,
+        app,
         ReferralEvent {
             role: "joiner".into(),
             event: "joined".into(),
@@ -480,7 +486,7 @@ pub async fn group_invite_poll_claims(
 }
 
 /// Extract a query param from a `citrate://invite?...` link.
-fn link_param(link: &str, key: &str) -> Option<String> {
+pub(crate) fn link_param(link: &str, key: &str) -> Option<String> {
     let q = link.split('?').nth(1)?;
     for pair in q.split('&') {
         let mut it = pair.splitn(2, '=');
