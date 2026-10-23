@@ -102,7 +102,8 @@ Each Store daemon declares what it writes (`writes`: a new page, today's journal
   - N-d: "No pin is in these states yet";
   - N-e: the Settings comment says grantCopy.ts is planned.
 - Follow-ups from core #393: on Linux, “Copy the install command” now copies the command with the invite key (before, it only said it had); the secondary actions sit beside the primary instead of inside its conditional, so “Pay for membership now, set up later” (phone) and “Email me when it’s ready” (Windows with no build) render.
-- Join 3 copy review V-03 (citrate-federation JOIN3_COPY_REVIEW.md): the Verify step said “Membership needs a verified identity”, which contradicts the app and ADR-2026-07-25. It now says verification is optional for membership and unlocks features that need a verified identity, including withdrawing an unlocked bond (“Unlocked · verify identity to withdraw”), and the step offers Skip for now. Tests in `scripts/design-prototype.test.mjs`, with a tripwire on the old line.
+- The sample invite key is now an obvious placeholder (`SAMPLE-not-a-real-key0`), so the secret scan doesn't flag it. The scan still sees the old value in the history commit 89bddc8; `.gitleaksignore` lists that one finding with its reason.
+- Join 3 copy review V-03 (citrate-federation JOIN3_COPY_REVIEW.md): the Verify step said “Membership needs a verified identity”, which contradicts the app and ADR-2026-07-25. It now says verification is optional for membership and unlocks features that need a verified identity, including withdrawing your bond after the lock, once it is activated (core #417: a never-activated bond can't be withdrawn, contract v1.2), and the step offers Skip for now. Tests in `scripts/design-prototype.test.mjs`, with a tripwire on the old line.
 
 ## UI truth contract decisions
 
