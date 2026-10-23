@@ -234,6 +234,76 @@ fn harness_unreaped_child_fails_the_reaped_check() {
     assert!(reaped_after_wait, "once waited for, the child is reaped");
 }
 
+/// Cleanup kills every recorded marked pid on its own. With the sweep turned off, a parent's
+/// background descendants (recorded through the pid file, and not children of this test) are
+/// still signalled and gone, and nothing is left over. Without this control the final sweep
+/// would hide a guard that records pids but never kills them.
+#[test]
+fn harness_recorded_pids_are_killed_without_the_sweep() {
+    let fx = OwnedFixture::without_sweep("nosweep");
+    let parent = fx.spawn_direct(fx.descendants_args(2));
+    let pids = fx.expect_pids(3, ACQUIRE);
+    let descendants: Vec<u32> = pids.iter().copied().filter(|p| *p != parent).collect();
+    if descendants.len() != 2 {
+        panic!("INCONCLUSIVE: expected two recorded descendants, got {pids:?}");
+    }
+    let report = fx.cleanup();
+    // Nothing may outlive the test, whatever the result: kill any survivor before asserting.
+    let survivors = fx.live_marked();
+    for &p in &survivors {
+        lifecycle::fixture::kill(p, libc::SIGKILL);
+    }
+    assert!(
+        survivors.is_empty(),
+        "recorded descendants survived a cleanup without the sweep: {survivors:?} ({report:?})"
+    );
+    for d in &descendants {
+        assert!(
+            report.signalled.contains(d),
+            "{d} was signalled: {report:?}"
+        );
+        assert!(!pid_alive(*d), "{d} is gone");
+    }
+    assert!(
+        report.swept.is_empty() && report.leftover.is_empty(),
+        "{report:?}"
+    );
+}
+
+/// The harness's pgrep matches the marker as a fixed string, not as the regular expression
+/// `pgrep -f` takes: a `.` in a marker matches only a `.`, so a process whose command line
+/// differs only there is never counted (or signalled) as the fixture's.
+#[test]
+fn harness_pgrep_matches_the_marker_as_a_fixed_string() {
+    let fx = OwnedFixture::new("dot.ok");
+    let decoy = fx.marker().replace("dot.ok", "dotXok");
+    assert_ne!(decoy, fx.marker());
+    let leaf = fx.spawn_direct(fx.leaf_args());
+    fx.expect_pids(1, ACQUIRE);
+    // The decoy is the guard's own child (reaped at cleanup), and its command line carries the
+    // decoy string but not the marker.
+    let decoy_pid = fx.spawn_direct(vec![
+        "-c".into(),
+        format!("{} 30; exit 0", sleep_bin().display()),
+        decoy.clone(),
+    ]);
+    let seen = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        pgrep(&decoy).contains(&decoy_pid).then_some(())
+    });
+    assert!(seen.is_ok(), "INCONCLUSIVE: the decoy never appeared");
+    let matched = pgrep(fx.marker());
+    assert!(
+        matched.contains(&leaf),
+        "the marked leaf matches: {matched:?}"
+    );
+    assert!(
+        !matched.contains(&decoy_pid),
+        "a `.` in the marker matched another character: {decoy_pid} in {matched:?}"
+    );
+    assert!(!fx.is_marked_alive(decoy_pid));
+    fx.assert_clean();
+}
+
 /// Waits and observation windows are measured on the monotonic clock and never end early.
 #[test]
 fn harness_timing_windows_are_monotonic_and_never_short() {
@@ -1030,6 +1100,11 @@ impl SpawnGate {
         s.1 = true;
         self.cv.notify_all();
     }
+
+    /// How many times the monitor has reached the gate so far.
+    fn entered(&self) -> u32 {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).0
+    }
 }
 
 impl Drop for SpawnGate {
@@ -1310,6 +1385,80 @@ fn publication_ticket_released_before_stop_settles_is_in_the_complete_scope() {
         sup.admit_publication("late"),
         Err(PublicationRefused::NotCurrent)
     ));
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A publication ticket released partway through the stop window, after every log reader is
+/// done, is waited for: the Stop is Complete and names it. The test releases the ticket at the
+/// monitor's settle gate (readers done, ticket open), not on a timer, so a window that stopped
+/// waiting for publications once the readers were done would settle before the gate is reached.
+#[test]
+fn publication_released_after_the_readers_end_is_in_the_complete_scope() {
+    let fx = OwnedFixture::new("pub-late");
+    let gate = std::sync::Arc::new(SpawnGate::default());
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-late"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    cfg.settle_barrier = Some(SpawnGate::hook(&gate));
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("admission while running: {e:?}"));
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    // Either the monitor reaches the gate, or the Stop settles without waiting for the ticket.
+    let reached = wait_for(ACQUIRE, Duration::from_millis(2), || {
+        if gate.entered() > 0 {
+            return Some(None);
+        }
+        match sup.receipt(stop) {
+            Receipt::Pending | Receipt::Unknown { .. } => None,
+            r => Some(Some(r)),
+        }
+    });
+    match reached {
+        Ok((None, _)) => {}
+        Ok((Some(Receipt::Incomplete { remaining, .. }), _))
+            if remaining.iter().any(|r| r != "publication:bearer") =>
+        {
+            panic!(
+                "INCONCLUSIVE: the log readers did not end inside the stop window: {remaining:?}"
+            )
+        }
+        Ok((Some(r), _)) => {
+            panic!("the Stop settled while its publication ticket was still open: {r:?}")
+        }
+        Err(_) => panic!("INCONCLUSIVE: the monitor never reached the settle gate"),
+    }
+    assert_eq!(
+        receipt_of(&sup, stop),
+        Receipt::Pending,
+        "the Stop waits at the gate"
+    );
+    let stale = match ticket.commit() {
+        Err(stale) => stale,
+        Ok(()) => panic!("a ticket admitted before Stop must not become active after it"),
+    };
+    stale.cleaned();
+    gate.release();
+    let settled = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        match receipt_of(&sup, stop) {
+            Receipt::Pending | Receipt::Unknown { .. } => None,
+            r => Some(r),
+        }
+    });
+    match settled {
+        Ok((Receipt::Complete { scope }, _)) => {
+            assert!(scope.iter().any(|s| s == "publication:bearer"), "{scope:?}");
+            assert!(scope.iter().any(|s| s == "readers"), "{scope:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(sup.lifecycle().map(|l| l.phase), Some(Phase::Stopped));
     drop(sup);
     fx.assert_clean();
 }

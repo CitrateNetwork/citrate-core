@@ -13,7 +13,9 @@
 // (it runs from `Drop`). It signals a pid only after checking that the pid's current command
 // line still carries the marker, so a pid that was reused by an unrelated process is reported
 // as foreign and left alone. After the recorded pids it sweeps once more for any process that
-// carries the marker (pgrep), so nothing the fixture started can outlive the test.
+// carries the marker (pgrep), so nothing the fixture started can
+// outlive the test. A harness control can turn the sweep off ([`OwnedFixture::without_sweep`]),
+// so the suite proves the recorded-pid kill on its own instead of leaning on the sweep.
 
 #![allow(dead_code)]
 
@@ -83,6 +85,9 @@ pub struct OwnedFixture {
     extra: Mutex<Vec<u32>>,
     children: Mutex<Vec<Child>>,
     cleaned: Mutex<Option<CleanupReport>>,
+    /// Whether cleanup sweeps for marked processes after the recorded pids. Always on except in
+    /// the harness control that proves the recorded-pid kill alone.
+    sweep: bool,
 }
 
 impl OwnedFixture {
@@ -112,7 +117,17 @@ impl OwnedFixture {
             extra: Mutex::new(Vec::new()),
             children: Mutex::new(Vec::new()),
             cleaned: Mutex::new(None),
+            sweep: true,
         }
+    }
+
+    /// A fixture whose cleanup kills only the recorded pids and does not sweep for other marked
+    /// processes. It still reports every live marked process as left over. Only the harness
+    /// control for the recorded-pid kill uses it: everywhere else the sweep is the safety net.
+    pub fn without_sweep(tag: &str) -> Self {
+        let mut fx = OwnedFixture::new(tag);
+        fx.sweep = false;
+        fx
     }
 
     pub fn marker(&self) -> &str {
@@ -330,6 +345,9 @@ impl OwnedFixture {
         let deadline = Deadline::after(Duration::from_secs(5));
         let mut quiet = 0;
         loop {
+            if !self.sweep {
+                break;
+            }
             let live: Vec<u32> = pgrep(&self.marker)
                 .into_iter()
                 .filter(|p| pid_alive(*p))
@@ -372,7 +390,11 @@ impl OwnedFixture {
         });
         // A last sweep for anything that became visible only now (a shell that was mid-exec
         // during the sweep above); it is killed and counted as swept, not left over.
-        let late: Vec<u32> = self.live_marked();
+        let late: Vec<u32> = if self.sweep {
+            self.live_marked()
+        } else {
+            Vec::new()
+        };
         for &pid in &late {
             if !report.recorded.contains(&pid) && !report.swept.contains(&pid) {
                 report.swept.push(pid);
