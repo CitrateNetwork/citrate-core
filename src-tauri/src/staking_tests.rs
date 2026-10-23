@@ -983,23 +983,24 @@ fn withdrawal_detail_reads_resume_across_calls() {
 // read forward across calls until it reaches the head.
 #[test]
 fn probe_5_a_session_cursor_reaches_the_head_and_found_rows_are_shown() {
+    // On the virtual clock (no wall time): each eth_getLogs answer takes 3 s, so one call's
+    // budget covers a few windows of the 30 000-block history and the read spans several calls.
     let (dir, file) = scan_file("probe5");
+    let costs = [("eth_getLogs", 3.0), ("citrate_getLogs", 0.1), ("batch", 0.5)];
     let node = Node::today(30_000, vec![(1, 900, false), (2, 29_000, false)]);
-    node.logs_delay.set(std::time::Duration::from_millis(3));
+    let clock = on_clock(&node, &costs);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
-    let budget = || Some(std::time::Instant::now() + std::time::Duration::from_millis(12));
-    let first = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, budget()).unwrap_or_default();
+    let first = timed_call(&rpc, &clock, &mut scan).expect("first call");
     assert_eq!(ids_of(&first), vec!["1"], "the row found in the first call is shown");
     assert!(!scan.last_read_confirmed && !scan.last_read_complete);
     let mut starts = vec![rpc.transport().log_reads()[1].1];
     let mut seen = rpc.transport().log_reads().len();
     let mut rows = first;
-    for _ in 0..60 {
-        if scan.last_read_complete {
-            break;
-        }
-        rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, budget()).unwrap_or_default();
+    let mut calls = 1;
+    while !scan.last_read_complete && calls < 60 {
+        rows = timed_call(&rpc, &clock, &mut scan).expect("an incomplete read is an answer");
+        calls += 1;
         let reads: Vec<_> = rpc.transport().log_reads().into_iter().skip(seen).filter(|r| r.0 == "eth_getLogs").collect();
         if let Some(r) = reads.first() {
             starts.push(r.1);
@@ -1007,13 +1008,16 @@ fn probe_5_a_session_cursor_reaches_the_head_and_found_rows_are_shown() {
         seen = rpc.transport().log_reads().len();
     }
     assert!(scan.last_read_complete, "the session cursor reaches the head");
+    assert!(calls > 2, "the history is read over several calls ({calls})");
     assert_eq!(ids_of(&rows), vec!["1", "2"]);
     assert!(starts.windows(2).all(|w| w[1] > w[0]), "each call starts further on: {starts:?}");
     assert_eq!(scan.cursor(), None, "nothing is committed");
     save_scan(&file, "k", &scan).expect("save");
     let mut relaunched = load_scan(&file, "k");
-    let fresh = RpcClient::with_transport(Node::today(30_000, vec![(1, 900, false), (2, 29_000, false)]));
-    read_pending_withdrawals_with(&fresh, STAKER_ADDR, &mut relaunched, budget()).unwrap_or_default();
+    let fresh_node = Node::today(30_000, vec![(1, 900, false), (2, 29_000, false)]);
+    let fresh_clock = on_clock(&fresh_node, &costs);
+    let fresh = RpcClient::with_transport(fresh_node);
+    timed_call(&fresh, &fresh_clock, &mut relaunched).expect("relaunched read");
     let plain: Vec<_> = fresh.transport().log_reads().into_iter().filter(|r| r.0 == "eth_getLogs").collect();
     assert_eq!(plain[0].1, LIQUID_STAKING_POOL_DEPLOY_BLOCK, "the session cursor is not saved");
     let _ = std::fs::remove_dir_all(&dir);
