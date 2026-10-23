@@ -54,6 +54,9 @@ pub struct PendingInvite {
     /// GROW-S2 — the invite was used (a claim approved), not revoked; set together with `revoking`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub consumed: bool,
+    /// GROW-S2 — the claimant approved on this invite, added once the relay confirms the close.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub approved_member: String,
 }
 
 /// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
@@ -223,6 +226,7 @@ pub(crate) fn minted_invite(
         lookup: decision.lookup,
         revoking: false,
         consumed: false,
+        approved_member: String::new(),
     }
 }
 
@@ -667,25 +671,50 @@ pub async fn group_invite_verify_consume(
     app: tauri::AppHandle,
     group: String,
     token: String,
-) -> Result<bool, String> {
+    address: String,
+) -> Result<ConsumeOutcome, String> {
     let path = store_path(&app)?;
     consume_at(
         &path,
         &group,
         &token,
+        &address,
+        |lookup| {
+            crate::comms::rendezvous_tick(&app)
+                .ok()?
+                .invites
+                .into_iter()
+                .find(|v| v.lookup.eq_ignore_ascii_case(lookup))
+                .map(|v| v.state)
+        },
         |lookup| crate::comms::rendezvous_close(&app, lookup),
         |token_hash| crate::comms::revoke_invite(&app, token_hash),
     )
 }
 
-/// The consume itself, over the `pending.json` at `path` and the two relay calls (as [`revoke_at`]).
+/// What approving a claim did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsumeOutcome {
+    /// The caller adds the claimant now.
+    Approved,
+    /// The claimant is added once the relay confirms the invite closed (by the tick).
+    Pending,
+    /// No outstanding invite for this token.
+    Invalid,
+}
+
+/// The consume itself, over the `pending.json` at `path`, the daemon's last view of the invite
+/// (`view_of(lookup)`) and the two relay calls (as [`revoke_at`]).
 pub(crate) fn consume_at(
     path: &std::path::Path,
     group: &str,
     token: &str,
+    _member: &str,
+    _view_of: impl FnOnce(&str) -> Option<crate::rendezvous::InviteState>,
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
-) -> Result<bool, String> {
+) -> Result<ConsumeOutcome, String> {
     // Consuming spends the invite: close its rendezvous and revoke its legacy record first (the same
     // calls as a revoke), so no other holder of the link can still be admitted. A failure keeps the
     // record, so the approval can be retried. Only the call that removes the record returns true
@@ -694,9 +723,30 @@ pub(crate) fn consume_at(
         .iter()
         .any(|i| i.group == group && i.token == token && !i.revoking);
     if !exists {
-        return Ok(false);
+        return Ok(ConsumeOutcome::Invalid);
     }
-    revoke_and_remove_at(path, group, token, true, close, legacy)
+    Ok(
+        if revoke_and_remove_at(path, group, token, true, close, legacy)? {
+            ConsumeOutcome::Approved
+        } else {
+            ConsumeOutcome::Invalid
+        },
+    )
+}
+
+/// The `(group, member, token)` approvals the relay has now confirmed (the close is `revoked`).
+pub(crate) fn approvals_to_complete(
+    _records: &[PendingInvite],
+    _invites: &[crate::rendezvous::InviteView],
+) -> Vec<(String, String, String)> {
+    Vec::new()
+}
+
+/// Drop pending approvals whose invite another holder already used through the rendezvous.
+pub(crate) fn drop_superseded_approvals(
+    _records: &mut [PendingInvite],
+    _invites: &[crate::rendezvous::InviteView],
+) {
 }
 
 /// `group_invite_revoke` — drop an outstanding invite the owner no longer wants redeemable. Revokes
@@ -1329,6 +1379,8 @@ mod tests {
             &path,
             "g",
             T,
+            "0xm",
+            |_| None,
             |l| {
                 *closed.borrow_mut() = Some(l);
                 Ok(())
@@ -1338,7 +1390,7 @@ mod tests {
                 Ok(())
             },
         );
-        assert_eq!(r, Ok(true));
+        assert_eq!(r, Ok(super::ConsumeOutcome::Pending));
         assert_eq!(closed.into_inner().as_deref(), Some(LOOKUP));
         assert_eq!(revoked.into_inner(), Some(super::blake3_token_hash(T)));
         assert!(live_tokens(&path).is_empty());
@@ -1354,6 +1406,8 @@ mod tests {
             &path,
             "g",
             T,
+            "0xm",
+            |_| None,
             |_| Err(RvError::Ipc("timed out".into())),
             |_| Ok(()),
         );
@@ -1375,11 +1429,15 @@ mod tests {
             &path,
             "g",
             T,
+            "0xm",
+            |_| None,
             |_| {
                 inner.set(Some(super::consume_at(
                     &path,
                     "g",
                     T,
+                    "0xm",
+                    |_| None,
                     |_| Ok(()),
                     |_| Ok(()),
                 )));
@@ -1388,7 +1446,13 @@ mod tests {
             |_| Ok(()),
         );
         let inner = inner.into_inner().expect("ran");
-        assert_eq!((inner, outer), (Ok(true), Ok(false)));
+        assert_eq!(
+            (inner, outer),
+            (
+                Ok(super::ConsumeOutcome::Pending),
+                Ok(super::ConsumeOutcome::Invalid)
+            )
+        );
     }
 
     /// A token with no outstanding invite is not valid, and nothing is sent.
@@ -1400,6 +1464,8 @@ mod tests {
             &path,
             "g",
             T,
+            "0xm",
+            |_| None,
             |_| {
                 calls.set(calls.get() + 1);
                 Ok(())
@@ -1409,7 +1475,7 @@ mod tests {
                 Ok(())
             },
         );
-        assert_eq!(r, Ok(false));
+        assert_eq!(r, Ok(super::ConsumeOutcome::Invalid));
         assert_eq!(calls.get(), 0);
     }
 
@@ -1499,6 +1565,8 @@ mod tests {
             &path,
             "g",
             T,
+            "0xm",
+            |_| None,
             |_| {
                 calls.set(calls.get() + 1);
                 Ok(())
@@ -1508,7 +1576,7 @@ mod tests {
                 Ok(())
             },
         );
-        assert_eq!(r, Ok(false));
+        assert_eq!(r, Ok(super::ConsumeOutcome::Invalid));
         assert_eq!(calls.get(), 0);
     }
 
@@ -1622,8 +1690,8 @@ mod tests {
         super::write_pending(&path, &[minted("g", T, d.clone()), minted("g", "b", d)])
             .expect("write");
         assert_eq!(
-            super::consume_at(&path, "g", T, |_| Ok(()), |_| Ok(())),
-            Ok(true)
+            super::consume_at(&path, "g", T, "0xm", |_| None, |_| Ok(()), |_| Ok(())),
+            Ok(super::ConsumeOutcome::Pending)
         );
         super::revoke_at(&path, "g", "b", |_| Ok(()), |_| Ok(())).expect("revoke");
         let after = super::view_pending_at(&path).expect("reads");
@@ -1665,6 +1733,144 @@ mod tests {
         let _staged = super::stage_pending(&path, &[minted("g", "v2", d)]).expect("staged");
         // No commit: the process died here.
         assert_eq!(tokens(&path), vec![T.to_string()]);
+    }
+
+    // ---- re-review: an approval waits for the relay to confirm the close -------------------------
+
+    fn approval_record(member: &str) -> super::PendingInvite {
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let mut r = minted("g", T, d);
+        r.revoking = true;
+        r.consumed = true;
+        r.approved_member = member.into();
+        r
+    }
+
+    /// The daemon's last view says another holder of the link is being (or was) admitted: the
+    /// approval is refused before any relay call, and the invite is left as it is.
+    #[test]
+    fn an_approval_is_refused_while_the_link_is_being_or_was_used() {
+        use crate::rendezvous::InviteState;
+        for state in [
+            InviteState::Adding,
+            InviteState::Added,
+            InviteState::PickedUp,
+        ] {
+            let path = scratch("used-by-link");
+            let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+            super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+            let calls = std::cell::Cell::new(0);
+            let r = super::consume_at(
+                &path,
+                "g",
+                T,
+                "0xclaimant",
+                |l| {
+                    assert_eq!(l, LOOKUP);
+                    Some(state)
+                },
+                |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+                |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+            );
+            assert!(r.is_err(), "{state:?}: {r:?}");
+            assert_eq!(calls.get(), 0, "{state:?}: no relay call");
+            assert_eq!(live_tokens(&path), vec![T.to_string()]);
+        }
+    }
+
+    /// Race: the close is persisted but the relay hasn't confirmed, so a request already in flight
+    /// at the relay could still be admitted. The approval is pending, not approved, and the claimant
+    /// is recorded for the tick to add after the relay confirms.
+    #[test]
+    fn an_approval_with_an_unconfirmed_close_is_pending() {
+        let path = scratch("pending-approval");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            "0xclaimant",
+            |_| Some(crate::rendezvous::InviteState::Open),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+        assert_eq!(r, Ok(super::ConsumeOutcome::Pending));
+        let after = super::view_pending_at(&path).expect("reads");
+        assert_eq!(after[0].approved_member, "0xclaimant");
+        assert!(after[0].revoking && after[0].consumed);
+    }
+
+    /// An invite without a rendezvous has nothing to wait for: approved now.
+    #[test]
+    fn an_approval_without_a_rendezvous_is_approved_now() {
+        let path = scratch("approve-legacy");
+        let d = super::decide_mint(Ok(()), Err(RvError::DaemonUnsupported), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::consume_at(&path, "g", T, "0xc", |_| None, |_| Ok(()), |_| Ok(()));
+        assert_eq!(r, Ok(super::ConsumeOutcome::Approved));
+        assert!(tokens(&path).is_empty());
+    }
+
+    /// The tick completes a pending approval only once the relay confirms the close (`revoked`);
+    /// the record is kept until then (and until the add is done).
+    #[test]
+    fn a_pending_approval_completes_on_a_confirmed_close() {
+        use crate::rendezvous::InviteState;
+        let rec = approval_record("0xclaimant");
+        let now = rec.created_at + 60;
+        assert!(super::approvals_to_complete(
+            &[rec.clone()],
+            &[invite_view(LOOKUP, InviteState::Open)]
+        )
+        .is_empty());
+        assert_eq!(
+            super::approvals_to_complete(
+                &[rec.clone()],
+                &[invite_view(LOOKUP, InviteState::Revoked)]
+            ),
+            vec![("g".to_string(), "0xclaimant".to_string(), T.to_string())]
+        );
+        let kept =
+            super::settle_revocations(vec![rec], &[invite_view(LOOKUP, InviteState::Revoked)], now);
+        assert_eq!(kept.len(), 1, "kept until the approval is completed");
+    }
+
+    /// If the link was used through the rendezvous after all, the pending approval is dropped.
+    #[test]
+    fn a_pending_approval_is_dropped_when_the_link_was_used() {
+        use crate::rendezvous::InviteState;
+        for state in [
+            InviteState::Adding,
+            InviteState::Added,
+            InviteState::PickedUp,
+        ] {
+            let mut recs = vec![approval_record("0xclaimant")];
+            super::drop_superseded_approvals(&mut recs, &[invite_view(LOOKUP, state)]);
+            assert!(recs[0].approved_member.is_empty(), "{state:?}");
+        }
+        let mut recs = vec![approval_record("0xclaimant")];
+        super::drop_superseded_approvals(&mut recs, &[invite_view(LOOKUP, InviteState::Open)]);
+        assert_eq!(recs[0].approved_member, "0xclaimant");
+    }
+
+    /// The tick runs the approval steps.
+    #[test]
+    fn the_tick_completes_and_drops_approvals() {
+        let src = include_str!("invites.rs");
+        let body = &src[src
+            .find("pub(crate) fn settle_revocations_after_tick")
+            .expect("fn")..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        assert!(body.contains("approvals_to_complete("));
+        assert!(body.contains("drop_superseded_approvals("));
+        assert!(body.contains("crate::comms::add_member("));
     }
 
     /// Tripwire: `pending.json` is only written through `update_pending_at` (one lock, read and write
@@ -1749,6 +1955,7 @@ mod tests {
             lookup: String::new(),
             revoking: false,
             consumed: false,
+            approved_member: String::new(),
         }];
         let views = super::invite_views_for_group(&invites, "grp_abc");
         assert_eq!(views.len(), 1);
@@ -1785,6 +1992,7 @@ mod tests {
             lookup: String::new(),
             revoking: false,
             consumed: false,
+            approved_member: String::new(),
         }];
         super::write_pending(&path, &invites).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
