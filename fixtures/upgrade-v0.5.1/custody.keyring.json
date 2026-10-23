@@ -1,0 +1,15 @@
+{
+  "generatedFrom": "v0.5.1 (b521d98e) kit::custody::CustodyVault + kit::wallet::import",
+  "keyring": {
+    "custody-auto-passphrase": "vxARIctv7fY6n/G7VAPIoGb0cj1WNaJ8er+4WvacGn8=",
+    "custody-generation": "AAAAAAAAAAI=",
+    "custody-master-key": "HWZi+nobRQ/VabqnWg3CCn2eZ6uyZ+tnC/QwgN1TFCQ="
+  },
+  "keyringService": "ai.citrate.core.custody",
+  "slots": [
+    "wallet-entropy-0",
+    "connection-github"
+  ],
+  "walletAddress": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+  "walletPublicKeyHex": "048318535b54105d4a7aae60c08fc45f9687181b4fdfc625bd1a753fa7397fed753547f11ca8696646f2f3acb08e31016afac23e630c5d11f59f61fef57b0d2aa5"
+}
