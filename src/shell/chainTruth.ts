@@ -276,7 +276,7 @@ export function readsValidatorRewards(bondedStake: number, bondActivated: boolea
 }
 
 /** The §1 validator words this app can derive today (contract v1.1). */
-export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
+export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Unlocked · not activated" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
 
 /**
  * The member's bond as the chain reports it (C1-V4/C1-V5): `bondDeployed`, `MemberBond.activated()`
@@ -286,13 +286,20 @@ export interface MemberBondState {
   deployed: boolean;
   activated: boolean | null;
   pubkey: string | null;
-  /** `MemberBond.isUnlocked()` (chain#331 activation window); null / absent = not read. */
+  /** `MemberBond.isUnlocked()`; null / absent = not read. */
   unlocked?: boolean | null;
   /** `MemberBond.isKycVerified()`, the gate `claimRewards()` checks (MemberBond.sol:207); null / absent = not read. */
   kycVerified?: boolean | null;
 }
 
-type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" | "activation window closed" };
+type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" | "bond lock not read yet" };
+
+/**
+ * Contract v1.2 §1 "Unlocked · not activated": the required detail. requestRelease() and
+ * withdrawToMember() revert NotActivated for a bond that was never activated. Nothing more is said
+ * about an unactivated grant until the reclaim path (chain#331) is deployed on the network shown.
+ */
+export const UNACTIVATED_WITHDRAW_NOTE = "Only an activated bond can be withdrawn.";
 
 /**
  * The validator state, from the registry and the bond only (contract v1.1 §1 Validators).
@@ -308,9 +315,10 @@ type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" 
  */
 function validatorState(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond: MemberBondState | null | undefined): WordOrReason {
   const bondNotActivated = !!bond && bond.deployed && bond.activated === false;
-  // chain#331: an un-activated bond that reads unlocked can no longer be activated
-  // (MemberBond.sol:219), so it is not "Bond locked"; say why instead.
-  const notStaked: WordOrReason = bond?.unlocked === true ? { reason: "activation window closed" } : { word: "Bond locked · not staked" };
+  // Contract v1.2 §1: "Bond locked · not staked" holds only while the lock runs (isUnlocked() reads
+  // false). Once it reads true the word is "Unlocked · not activated"; unread is "—" (rule 2).
+  const notStaked: WordOrReason =
+    bond?.unlocked === false ? { word: "Bond locked · not staked" } : bond?.unlocked === true ? { word: "Unlocked · not activated" } : { reason: "bond lock not read yet" };
   if (!activation) {
     // A registered stake is already staked: with the status unread it is never "Bond locked · not
     // staked", so no activation is offered for it (#348 review).
@@ -347,21 +355,14 @@ export function validatorDash(stakeSalt: number, activation: ValidatorActivation
   return "word" in st ? st.word : "— · " + st.reason;
 }
 
-/** Why activation is not offered for a bond that would otherwise be (chain#331), or null. */
-export function activationClosedReason(bond?: MemberBondState | null): "activation window closed" | "bond lock not read yet" | null {
-  // MemberBond.activate reverts ActivationWindowClosed once isUnlocked() (MemberBond.sol:219).
-  if (bond?.unlocked === true) return "activation window closed";
-  // Unread (or an older backend that doesn't report it): fail closed.
-  if (bond?.unlocked !== false) return "bond lock not read yet";
-  return null;
-}
-
 /**
  * Stake / activate is offered only for a bond that is not activated, has no registered stake
- * (C1-V4, #348 review) and reads as still locked (chain#331). The one gate for onboarding S6, the
+ * (C1-V4, #348 review) and reads as still locked (isUnlocked() = false). The one gate for onboarding S6, the
  * Node page, maybeAutoBond and activateValidator itself.
  */
 export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond?: MemberBondState | null): boolean {
-  // chain#331: only inside the lock; an unlocked or unread lock is never offered (MemberBond.sol:219).
-  return validatorWord(stakeSalt, activation, hasGrant, bond) === "Bond locked · not staked" && activationClosedReason(bond) === null;
+  // "Bond locked · not staked" requires isUnlocked() to read false, so an unlocked or unread lock is
+  // never offered (owner decision 2026-10-19: activation only inside the lock). The UI says only the
+  // word for an unlocked bond, never that activation has closed (contract v1.2 §1).
+  return validatorWord(stakeSalt, activation, hasGrant, bond) === "Bond locked · not staked";
 }

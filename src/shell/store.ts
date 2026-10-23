@@ -59,7 +59,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { activationClosedReason, canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorDash, type ChainReads, type MemberBondState, type ValidatorActivation } from "./chainTruth";
+import { UNACTIVATED_WITHDRAW_NOTE, canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorDash, type ChainReads, type MemberBondState, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
@@ -242,12 +242,16 @@ export function describeBond(g: {
   // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
   // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
   if (!g.bondDeployed) return "No bond yet";
+  // Contract v1.2 §1: withdraw words need MemberBond.activated() (hasValidator implies it; after an
+  // exit only bondActivated says so).
+  const activated = g.hasValidator || g.bondActivated === true;
   if (!g.isUnlocked) {
     const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
     return g.hasValidator ? `Staked · locked until block ${at}` : `Bond locked · not staked · until block ${at}`;
   }
   // Unlocked. Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
   // unverified member is NOT told their funds are available.
+  if (!activated) return "Unlocked · not activated · " + UNACTIVATED_WITHDRAW_NOTE;
   if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
   return "Unlocked";
 }
@@ -275,8 +279,10 @@ export function memberBondFromGrant(g: GrantStatus): MemberBondState {
     deployed: g.bondDeployed,
     activated: g.bondDeployed ? (g.bondActivated ?? null) : null,
     pubkey,
-    // chain#331 activation window; absent (older backend) or failed = unread.
+    // MemberBond.isUnlocked(); absent (older backend) or failed = unread.
     unlocked: g.bondDeployed ? (g.bondUnlocked ?? null) : null,
+    // MemberBond.isKycVerified(), the gate claimRewards() checks (contract v1.2 §1).
+    kycVerified: g.bondDeployed ? g.isKycVerified : null,
   };
 }
 
@@ -1538,11 +1544,15 @@ export class Store {
       const mb = this.state.memberBond;
       // #366 Codex P2: an unread activated() flag is retried on its own, whether or not the key read.
       const needBondKey = !mb || (mb.deployed && (mb.activated === null || (mb.activated !== false && !mb.pubkey)));
-      // chain#331: an un-activated bond's lock (isUnlocked(), MemberBond.sol:219) decides whether
+      // An un-activated bond's lock (isUnlocked()) decides between "Bond locked · not staked" and
+      // "Unlocked · not activated", and whether
       // activation is offered; while it is unread (or absent from an older backend) the gate stays
       // closed, so read it again on the next due poll, node up or not.
       const needBondLock = !!mb && mb.deployed && mb.activated === false && (mb.unlocked === null || mb.unlocked === undefined);
-      if ((needBond || needGrant || needBondKey || needBondLock) && dueForBondRead) {
+      // Contract v1.2 §1: Claim is gated on MemberBond.isKycVerified(). For an activated bond that
+      // isn't verified (or unread), read again on the due poll so a verification made meanwhile shows.
+      const needBondKyc = !!mb && mb.deployed && mb.activated === true && mb.kycVerified !== true;
+      if ((needBond || needGrant || needBondKey || needBondLock || needBondKyc) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
@@ -4494,19 +4504,33 @@ export class Store {
   }
 
   async claimRewards(): Promise<void> {
-    // Payout gate: KYC is required to take SALT out (participation is not gated).
-    if (!(await this.assertPayoutKyc("Claiming rewards"))) return;
     // C1-V review round 2: choose the claim path from the SAME signal Rust's user_claim uses
     // (grant_status::claims_through_bond: bondDeployed && (hasValidator || bondActivated)), read now.
     // Registry stake is NOT that signal, and neither is hasValidator alone: after a full exit both
     // read 0 / false, yet the activated bond can still claim the key's matured rewards. If the
     // grant status cannot be read, stop with the reason.
     let validator: boolean;
+    let bondKycVerified: boolean;
     try {
       const g = await bridge.membership.grantStatus(this.identity().wallet);
       validator = g.bondDeployed && (g.hasValidator || g.bondActivated === true);
+      bondKycVerified = g.isKycVerified === true;
+      // Fold the fresh bond read, so Node › Rewards' Claim follows what was just read.
+      this.setState({ memberBond: memberBondFromGrant(g) });
     } catch (err) {
       this.toast("Claim unavailable — could not read your validator status: " + String((err as Error).message ?? err));
+      return;
+    }
+    // Payout gate (KYC is required to take SALT out; participation is not gated). Contract v1.2 §1:
+    // the bond's claimRewards() requires MemberBond.isKycVerified() (MemberBond.sol:207, reverts
+    // KycRequired), and the kyc_status userinfo claim is never the source for a rewards gate. So the
+    // bond path is gated on the chain's flag alone; the other path keeps the live identity check.
+    if (validator) {
+      if (!bondKycVerified) {
+        this.toast("Claiming rewards needs identity verification on chain: MemberBond.isKycVerified() reads false, and the bond's claimRewards() requires it.");
+        return;
+      }
+    } else if (!(await this.assertPayoutKyc("Claiming rewards"))) {
       return;
     }
     let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
@@ -4669,12 +4693,12 @@ export class Store {
    * honestly — never a fabricated activation.
    */
   async activateValidator(): Promise<boolean> {
-    // chain#331: the one activation gate, checked before anything else (arming included), so no
-    // entry point can open an activation the chain refuses (MemberBond.sol:219).
+    // The one activation gate, checked before anything else (arming included), so no
+    // entry point can open an activation outside the lock (owner decision 2026-10-19).
     {
       const s = this.state;
       if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)) {
-        const why = activationClosedReason(s.memberBond) ?? validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+        const why = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
         this.toast("Validator activation not available — " + why + ".");
         return false;
       }

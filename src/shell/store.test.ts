@@ -1097,7 +1097,7 @@ describe("store.resumeSession — launch session re-establish", () => {
 describe("activateValidator — arms block production before it needs the key", () => {
   afterEach(() => vi.restoreAllMocks());
   // A bond the gate offers activation for: not activated, no registered stake, still locked
-  // (chain#331, MemberBond.sol:219).
+  // (owner decision 2026-10-19; UI truth contract v1.2 §1).
   beforeEach(() =>
     store.setState({ hasGrant: true, bondedStake: 0, validatorActivation: null, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } }),
   );

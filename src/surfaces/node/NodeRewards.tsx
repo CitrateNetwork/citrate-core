@@ -40,7 +40,7 @@ const CLAIM_DUST_WEI = 5n * 10n ** 18n;
 /** A read error that means "no proposer key yet" (validator.rs: "proposer key not minted yet") rather than a failed chain read. */
 const NO_KEY = /proposer.?key/i;
 
-const NOT_VALIDATOR_WORDS = ["Not a validator", "Bond locked · not staked"];
+const NOT_VALIDATOR_WORDS = ["Not a validator", "Bond locked · not staked", "Unlocked · not activated"];
 
 export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s: AppState; mode?: "tauri" | "sim" }) {
   const reads = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null);
@@ -108,7 +108,13 @@ export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s:
     );
     note =
       "Rewards are paid to validators that produce blocks. " +
-      (vWord === "Not a validator" ? "This node is not a validator." : vWord === "Bond locked · not staked" ? "Your bond is locked but not staked; activating it registers you as a validator." : "This page reads them once the registry and bond reads say they are yours.");
+      (vWord === "Not a validator"
+        ? "This node is not a validator."
+        : vWord === "Bond locked · not staked"
+          ? "Your bond is locked but not staked; activating it registers you as a validator."
+          : vWord === "Unlocked · not activated"
+            ? "Your bond was not activated, so it has no validator rewards."
+            : "This page reads them once the registry and bond reads say they are yours.");
   } else if (!data) {
     rows = <Row k="Validator rewards" testid="reward-total" v="— · not read yet" vColor="var(--tx-3)" src="ValidatorRegistry.rewardsOf(pubkey).total" />;
     note = "Reading the registry for this member's validator key.";
@@ -117,17 +123,22 @@ export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s:
     const claimable = BigInt(data.claimableWei);
     const maturing = total > claimable ? total - claimable : 0n;
     const dust = claimable < CLAIM_DUST_WEI;
+    // Contract v1.2 §1: the bond's claimRewards() requires MemberBond.isKycVerified() on chain
+    // (MemberBond.sol:207); the userinfo kyc_status claim is never this gate.
+    const bondPath = !!s.memberBond?.deployed && (s.memberBond.activated === true || s.bondedStake > 0);
+    const kyc = s.memberBond?.kycVerified;
+    const kycBlock = !bondPath || kyc === true ? null : kyc === false ? "Claiming needs identity verification on chain: MemberBond.isKycVerified() reads false." : "Claim opens once MemberBond.isKycVerified() has been read.";
     rows = (
       <>
         <Row k="Validator rewards" v={<span data-reward="total">{saltFromWei2(data.totalWei) ?? "—"}</span>} src="ValidatorRegistry.rewardsOf(pubkey).total" />
         <Row k="Claimable now" v={<span data-reward="claimable">{saltFromWei2(data.claimableWei) ?? "—"}</span>} src="rewardsOf(pubkey).claimableNow" />
         <Row k="Maturing" v={<span data-reward="maturing">{saltFromWei2(maturing.toString()) ?? "—"}</span>} src="total − claimableNow; slashable for 4 epochs" />
         <span style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 18px 0", flexWrap: "wrap" }}>
-          <button className="btn btn-primary btn-sm" disabled={dust} onClick={() => void store.claimRewards()}>
+          <button className="btn btn-primary btn-sm" disabled={dust || kycBlock != null} onClick={() => void store.claimRewards()}>
             Claim
           </button>
           <span style={{ fontSize: 12, color: "var(--tx-2)" }}>
-            {dust ? "Claims batch until ≥ 5 SALT to avoid dust gas: " + (saltFromWei2((CLAIM_DUST_WEI - claimable).toString()) ?? "—") + " to go." : "Claimable now is above the 5 SALT dust threshold."}
+            {kycBlock ?? (dust ? "Claims batch until ≥ 5 SALT to avoid dust gas: " + (saltFromWei2((CLAIM_DUST_WEI - claimable).toString()) ?? "—") + " to go." : "Claimable now is above the 5 SALT dust threshold.")}
           </span>
         </span>
       </>

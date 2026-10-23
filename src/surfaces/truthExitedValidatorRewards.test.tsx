@@ -61,7 +61,7 @@ function member(over: Partial<AppState> = {}): AppState {
 const PENDING = { isActive: true, status: 1, actEpoch: 547, currentEpoch: 546 };
 
 // The member's bond as the grant read reports it (state.memberBond); `activated` outlives the exit.
-// `unlocked: false`: still inside the lock, so activation is open (chain#331, MemberBond.sol:219).
+// `unlocked: false`: still inside the lock, so activation is offered (owner decision 2026-10-19).
 const bond = (activated: boolean | null) => ({ deployed: true, activated, pubkey: null, unlocked: false });
 
 const exitedGrant: GrantStatus = {

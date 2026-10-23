@@ -12,19 +12,15 @@ import { useNetworkLabel } from "../shell/networkCompat";
 import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
 import { MEMBERSHIP_BUYS } from "../data/membership";
 import { PricingLink } from "../components/PricingLink";
-import { CONSENSUS_LAG_NOTE, activationClosedReason, canOfferActivation, validatorDash, validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, canOfferActivation, validatorDash, validatorWord } from "../shell/chainTruth";
 
 /**
- * chain#331: why an un-activated bond with no registered stake is not offered activation —
- * "activation window closed" (MemberBond.isUnlocked(), MemberBond.sol:219) or the lock not read yet.
+ * Contract v1.2 §1: the required detail for "Unlocked · not activated". Nothing is said about
+ * activation closing or where an unactivated grant goes until chain#331 is deployed; an unread lock
+ * already reads "— · bond lock not read yet" in the word.
  */
 function activationNote(s: AppState): string | null {
-  const notActivated = !!s.memberBond?.deployed && s.memberBond.activated === false && !(s.bondedStake > 0);
-  if (!notActivated) return null;
-  const reason = activationClosedReason(s.memberBond);
-  if (reason === "activation window closed") return "activation window closed: the bond is unlocked, so it can no longer be staked";
-  if (reason && validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond) === "Bond locked · not staked") return reason;
-  return null;
+  return validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond) === "Unlocked · not activated" ? UNACTIVATED_WITHDRAW_NOTE : null;
 }
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");

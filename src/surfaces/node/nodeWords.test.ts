@@ -154,8 +154,8 @@ describe("Activate validator offer (#366 canOfferActivation, contract §1 Valida
     expect(registered).toMatchObject({ offer: false });
     expect(registered.why).toContain("already registered");
   });
-  it("the activation window: unlocked is closed, unread fails closed", () => {
-    expect(activationOffer("Synced", member({ memberBond: { ...LOCKED, unlocked: true } })).why).toContain("activation window closed");
+  it("an unlocked bond says 'Unlocked · not activated', no window; an unread lock fails closed", () => {
+    expect(activationOffer("Synced", member({ memberBond: { ...LOCKED, unlocked: true } })).why).toBe("Unlocked · not activated · Only an activated bond can be withdrawn.");
     expect(activationOffer("Synced", member({ memberBond: { ...LOCKED, unlocked: null } })).why).toContain("bond lock not read yet");
   });
   it("Sync unknown, Syncing or a supervisor not reporting synced: not offered, and says so", () => {
