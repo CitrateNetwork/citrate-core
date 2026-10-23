@@ -62,6 +62,7 @@ mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod chat_consent;
 mod chat_route;
 mod device_link;
 mod device_link_share;
@@ -416,6 +417,8 @@ pub fn run() {
             // https baseURL at set-time and ai_chat calls the STORED baseURL only —
             // the webview picks WHICH provider id, never the URL (exfil-binding).
             app.manage(ai::build_ai_state());
+            // K2: the one-time consents remote chat sends need (in memory only).
+            app.manage(chat_consent::ChatConsentState::default());
             // CORE-BC-3.1 — the ModelManager: the local Gemma GGUF download +
             // SHA-256 verify. model_status is honest (Ready ONLY after a real
             // verify — never mere presence, Rule 1); model_download is STREAMED +
@@ -755,6 +758,8 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            chat_consent::chat_consent_prepare,
+            chat_consent::media_consent_prepare,
             chat_route::chat_route_get,
             chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,

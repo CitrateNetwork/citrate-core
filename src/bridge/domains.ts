@@ -515,6 +515,13 @@ export interface MemoryDomain {
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
  * id, https baseURL, model, and a `configured` flag — NEVER the API key or the
  * Authorization header (invariant 1). Mirrors the Rust `ProviderStatus`. */
+/** K2: a core-minted, one-time consent to send one held message to a remote provider. */
+export interface ChatConsent {
+  consentId: string;
+  providerId: string;
+  expiresAtMs: number;
+}
+
 export interface AiProviderStatus {
   id: string;
   baseURL: string;
@@ -549,7 +556,13 @@ export interface ChatDomain {
    * completion. The webview can NEVER supply the URL (exfil-binding, invariant 3).
    * The Tauri impl invokes `ai_chat`; the sim impl is honestly Unavailable.
    */
-  infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
+  infer(providerId: string, messagesJson: string, contextJson: string, consentId: string): Promise<string>;
+  /**
+   * K2 — the app is asking the member whether to send a held message to the gateway. Core mints
+   * the one-time consent that `infer` / `inferTools` need for that message (`chat_consent_prepare`);
+   * a remote send without it is refused in core. The sim impl is honestly Unavailable.
+   */
+  consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
@@ -562,6 +575,7 @@ export interface ChatDomain {
     messagesJson: string,
     toolsJson: string,
     contextJson: string,
+    consentId: string,
   ): Promise<string>;
   /**
    * BC-3.2 — REAL LOCAL inference against the bundled `llama-server` (llama.cpp)
