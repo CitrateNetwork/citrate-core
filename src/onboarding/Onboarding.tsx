@@ -705,13 +705,13 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S4 · Wallet ready</div>
-      <div style={h1}>Your smart wallet already exists</div>
+      <div style={h1}>Your wallet key is on this device</div>
       <p style={body}>
-        The address is deterministic from your identity — predicted before anything is deployed. The wallet itself deploys lazily with your first transaction, gas
-        sponsored.
+        The app created an EVM signing key on this machine and sealed it in the custody vault. It signs only through the signature ceremony, after you approve each
+        request. The key never leaves this machine.
       </p>
       <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
-        <div className="lbl">Smart wallet · ERC-4337</div>
+        <div className="lbl">Wallet key on this device</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{walletDisplay}</span>
           {walletKnown && (
@@ -721,9 +721,7 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
           )}
         </div>
         <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          <Row k="Signer" v={<span style={{ fontSize: 13 }}>Passkey validator (WebAuthn P-256) — enrolled with your identity</span>} />
-          <Row k="Recovery" v={<span style={{ fontSize: 13 }}>Guardian module — configure guardians any time in Settings</span>} />
-          <Row k="Local key" v={<span style={{ fontSize: 13 }}>Optional signing key in this machine's keystore — create later in Keys &amp; security</span>} />
+          <Row k="Signer" v={<span style={{ fontSize: 13 }}>EVM signing key · sealed in the custody vault · signs only through the signature ceremony</span>} />
         </div>
       </div>
       <div>
@@ -732,7 +730,7 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
         </button>
       </div>
       <div className="mono" style={dataSrc}>
-        Data source — wallet_address claim · /aa/address · EntryPoint 0x077F…54Ef
+        Data source — wallet_address claim (your identity) · custody vault (this device)
       </div>
     </div>
   );
