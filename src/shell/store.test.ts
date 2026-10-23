@@ -1091,6 +1091,11 @@ describe("store.resumeSession — launch session re-establish", () => {
 
 describe("activateValidator — arms block production before it needs the key", () => {
   afterEach(() => vi.restoreAllMocks());
+  // A bond the gate offers activation for: not activated, no registered stake, still locked
+  // (chain#331, MemberBond.sol:219).
+  beforeEach(() =>
+    store.setState({ hasGrant: true, bondedStake: 0, validatorActivation: null, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } }),
+  );
 
   it("calls armMining BEFORE registerValidator", async () => {
     const order: string[] = [];

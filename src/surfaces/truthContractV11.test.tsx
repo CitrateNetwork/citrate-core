@@ -130,6 +130,8 @@ describe("§1 — activation epoch", () => {
       unlockBlock: 16_000_000,
       isUnlocked: false,
       isKycVerified: false,
+      bondActivated: true,
+      bondPubkey: KEY,
     };
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(g);
     await store.refreshNode();

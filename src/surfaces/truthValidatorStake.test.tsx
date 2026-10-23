@@ -76,10 +76,11 @@ describe("chainTruth helpers", () => {
   });
 
   it("derives the §1 validator word from the registry only (V4)", () => {
-    expect(validatorWord(0, null, false)).toBe("Not a validator");
-    // #348 review: the bond-locked word needs MemberBond.activated() = false; unread is null ("—").
-    expect(validatorWord(0, null, true, false)).toBe("Bond locked · not staked");
-    expect(validatorWord(0, null, true)).toBeNull();
+    // C1-V4: "Not a validator" needs status None; "Bond locked" needs MemberBond.activated() = false.
+    const NONE = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 499 };
+    expect(validatorWord(0, NONE, false, { deployed: false, activated: null, pubkey: null })).toBe("Not a validator");
+    expect(validatorWord(0, null, true, { deployed: true, activated: false, pubkey: null, unlocked: false })).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, false)).toBeNull();
     expect(validatorWord(32_000, ACT_PENDING, true)).toBe("Registered · active from epoch 501");
     expect(validatorWord(32_000, ACT_ON, true)).toBe("Validator active");
     expect(validatorWord(32_000, null, true)).toBeNull();
@@ -109,7 +110,11 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
       hasValidator: stakeSalt > 0,
       unlockBlock: 16_000_000,
       isUnlocked: false,
+      bondUnlocked: false,
       isKycVerified: false,
+      // C1-V5: the bond keeps the key it activated with; the registry is read for that key.
+      bondActivated: stakeSalt > 0,
+      bondPubkey: stakeSalt > 0 ? "0x" + "11".repeat(32) : null,
     };
   }
 
@@ -151,7 +156,8 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
     // full exit); self-stake is still never an input, and status None is not a validator.
     await poll(0, true, { selfStake: 40_000 });
     expect(store.state.node).toBe("synced");
-    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, false)).toBe("Not a validator");
+    // C1-V4/V5: the bond is deployed and not activated, so the word comes from the bond.
+    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, true, store.state.memberBond)).toBe("Bond locked · not staked");
   });
 
   it("the re-arm toast does not say 'producing again'", async () => {
@@ -216,7 +222,7 @@ describe("V6 — durations use the measured block time", () => {
 
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   it("Wallet: the grant in a locked bond and LSP self-stake are not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } })} />);
     expect(html).not.toContain("32,500");
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
@@ -236,7 +242,7 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   });
 
   it("Dashboard: Staked is stakeOf, never grant + self-stake, and never 'LiquidStakingPool shares'", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } })} />);
     expect(html).not.toContain("LiquidStakingPool shares");
     expect(html).not.toContain("34,500");
     expect(html).not.toContain(">2,500<");
@@ -394,7 +400,7 @@ describe("#348 review — widget unknowns", () => {
 describe("#348 review — the activation ceremony states the bond principal, not 32,000", () => {
   it("labels the review from the grant read", async () => {
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ walletReview: null, s5StakeWei: wei(33_500) });
+    store.setState({ walletReview: null, s5StakeWei: wei(33_500), hasGrant: true, bondedStake: 0, validatorActivation: null, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } });
     vi.spyOn(bridge.node, "registerValidator").mockResolvedValue({ id: "c1", decoded: { action: "MemberBond.activate", cost: "0", destination: "0x" } } as never);
     await store.activateValidator();
     const r = store.state.walletReview!;
@@ -498,7 +504,8 @@ describe("#348 round 2 — no 'earnings' on ALF or in the handbook", () => {
 
 describe("#348 round 2 — the claim path is chosen from the same signal as Rust (has_validator)", () => {
   const grant = (over: Record<string, unknown>) =>
-    ({ bondDeployed: true, hasValidator: true, bondedStakeWei: "0", unlockBlock: null, isUnlocked: false, ...over }) as never;
+    // Contract v1.2 §1: the bond path is gated on MemberBond.isKycVerified() (true here).
+    ({ bondDeployed: true, hasValidator: true, bondedStakeWei: "0", unlockBlock: null, isUnlocked: false, isKycVerified: true, ...over }) as never;
   afterEach(() => vi.restoreAllMocks());
 
   it("an exited validator (registry stake 0, has_validator) with claimable rewards takes the validator path", async () => {

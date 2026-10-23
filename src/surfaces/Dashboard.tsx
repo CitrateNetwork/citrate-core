@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
-import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, validatorDash } from "../shell/chainTruth";
+import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, validatorDash, validatorWord } from "../shell/chainTruth";
 import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
@@ -83,8 +83,8 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const staked = s.bondedStake;
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
-  const bondLockedNotStaked = s.hasGrant && !(staked > 0) && s.bondActivated === false;
-  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
+  const bondLockedNotStaked = validatorWord(staked, s.validatorActivation, s.hasGrant, s.memberBond) === "Bond locked · not staked";
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.memberBond);
 
   // Height vitals value: live chain read when node is off (reads fall back to
   // the public RPC in the design), sim height when the local node drives it.

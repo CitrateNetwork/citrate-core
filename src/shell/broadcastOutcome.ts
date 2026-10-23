@@ -14,3 +14,13 @@ export function broadcastFailure(err: unknown): { kind: "not-sent"; reason: stri
   if (m) return { kind: "unknown", txHash: m[1], reason: m[2] || msg };
   return { kind: "unknown", txHash: null, reason: msg };
 }
+
+/**
+ * C1-V3 — the identity of an agent chain effect (its target and calldata, case-insensitive), so an
+ * identical payment proposed after an unknown outcome can name the earlier tx. Null when the
+ * sidecar exposed neither.
+ */
+export function agentEffectKey(to: string | undefined, data: string | undefined): string | null {
+  if (!to && !data) return null;
+  return (to ?? "").toLowerCase() + "|" + (data ?? "").toLowerCase();
+}

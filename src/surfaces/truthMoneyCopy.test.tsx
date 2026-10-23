@@ -218,7 +218,7 @@ describe("#349 review — remaining grant mentions use the one explanation", () 
   });
 
   it("the Hermes context carries the grant facts", () => {
-    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0, bondActivated: false });
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } });
     expect(store.snapshot().grant).toEqual({ amountSalt: 32000, unlockBlock: 16_000_000, staked: false, activated: false });
     store.setState({ hasGrant: false });
     expect(store.snapshot().grant).toBeNull();

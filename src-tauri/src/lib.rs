@@ -95,6 +95,8 @@ mod node;
 mod node_genesis;
 mod node_holder;
 mod node_withdrawn;
+// C1-V3 — "submitted, outcome unknown, tx <hash>, check before retrying" for agents and MCP clients.
+mod broadcast_outcome;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
@@ -719,6 +721,7 @@ pub fn run() {
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes::hermes_resolve_outcome_unknown,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,

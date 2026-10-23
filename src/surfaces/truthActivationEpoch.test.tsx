@@ -121,6 +121,8 @@ describe("#348 — §1 activation epoch", () => {
       bondDeployed: true,
       bondedStakeWei: wei(32000),
       hasValidator: true,
+      bondActivated: true,
+      bondPubkey: KEY,
       unlockBlock: 16_000_000,
       isUnlocked: false,
       isKycVerified: false,

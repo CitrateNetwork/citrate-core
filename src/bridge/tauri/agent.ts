@@ -59,6 +59,10 @@ export const tauriAgentHarness: AgentHarnessDomain = {
     // PBA-L7b-003: the approval is bound to the reviewed call id (never the legacy head-resolve).
     await invoke("hermes_resolve", { approve, id });
   },
+  async resolveOutcomeUnknown(id: string, txHash: string | null) {
+    // C1-V3: submitted, outcome unknown; Rust composes the message the sidecar passes on.
+    await invoke("hermes_resolve_outcome_unknown", { id, txHash });
+  },
   sessionOpen(systemPrompt, toolsJson, persona) {
     // HUP-S3.3: the persona travels as `persona` (shipped id) or `customPersona`; none = unchanged.
     const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};

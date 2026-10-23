@@ -72,7 +72,7 @@ describe("#349 review — the grant copy for an exited member", () => {
 
   it("Wallet and Node pass the bond's activated flag: an exited member is not told to activate", () => {
     const stub = { walletIsLinked: () => true, refreshEarnings: () => {}, refreshWallet: () => {}, refreshPendingWithdrawals: () => {}, refreshActivity: () => {}, refreshChainParams: () => {}, refreshProducers: () => {}, toast: () => {}, linkWallet: () => {}, identity: () => ({ sub: "s", wallet: "0x" + "0".repeat(40) }) } as unknown as Store;
-    const s: AppState = { ...freshState("p1"), signedIn: true, node: "synced", syncPct: 100, hasGrant: true, s5StakeWei: (32_000n * 10n ** 18n).toString(), s5UnlockBlock: 300_000, bondedStake: 0, bondActivated: true };
+    const s: AppState = { ...freshState("p1"), signedIn: true, node: "synced", syncPct: 100, hasGrant: true, s5StakeWei: (32_000n * 10n ** 18n).toString(), s5UnlockBlock: 300_000, bondedStake: 0, memberBond: { deployed: true, activated: true, pubkey: null, unlocked: false } };
     for (const html of [
       renderToStaticMarkup(<Wallet store={stub} s={{ ...s, wTab: "staking" }} />),
       renderToStaticMarkup(<Node store={stub} s={{ ...s, nTab: "ops" }} />),

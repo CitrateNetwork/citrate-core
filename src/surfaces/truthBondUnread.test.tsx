@@ -53,7 +53,7 @@ const member = (over: Partial<AppState> = {}): AppState => ({
   height: 546_000,
   hasGrant: true,
   bondedStake: 0,
-  bondActivated: null,
+  memberBond: { deployed: true, activated: null, pubkey: null, unlocked: false },
   ...over,
 });
 
@@ -61,10 +61,10 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond locked · not staked'", () => {
   it("validatorWord needs activated() = false for the bond-locked word", () => {
-    expect(validatorWord(0, null, true, null)).toBeNull();
-    expect(validatorWord(0, NONE, true, null)).toBeNull();
+    expect(validatorWord(0, null, true, { deployed: true, activated: null, pubkey: null, unlocked: false })).toBeNull();
+    expect(validatorWord(0, NONE, true, { deployed: true, activated: null, pubkey: null, unlocked: false })).toBeNull();
     expect(validatorWord(0, null, true, undefined)).toBeNull();
-    expect(validatorWord(0, null, true, false)).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, true, { deployed: true, activated: false, pubkey: null, unlocked: false })).toBe("Bond locked · not staked");
     expect(validatorWord(0, NONE, false, null)).toBe("Not a validator");
   });
 
@@ -72,7 +72,8 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
     const which = validatorActivation ? "status None" : "registry unread";
     it(`onboarding S6 shows '— · bond state not read yet' and no 'Stake my bond' (${which})`, () => {
       const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", validatorActivation })} />);
-      expect(html).toContain("— · bond state not read yet");
+      // #366's validatorState names the unread part (bond state or validator key).
+      expect(html).toMatch(/— · (bond state not read yet|reading validator key)/);
       expect(html).not.toContain("Bond locked · not staked");
       expect(html).not.toContain("Stake my bond");
     });
@@ -95,7 +96,7 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
   });
 
   it("a bond that reads not activated still gets the word and the offer", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", validatorActivation: null, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", validatorActivation: null, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } })} />);
     expect(html).toContain("Bond locked · not staked");
     expect(html).toContain("Stake my bond");
   });

@@ -632,6 +632,14 @@ export interface GrantStatus {
    * key's matured rewards. null = no bond, or the read failed. Optional for older backends.
    */
   bondActivated?: boolean | null;
+  /** C1-V5 — `MemberBond.pubkey()` (kept after an exit); null = zero, no bond, or not read. */
+  bondPubkey?: string | null;
+  /**
+   * `MemberBond.isUnlocked()` as read, for the activation window (chain#331: `activate` reverts
+   * `ActivationWindowClosed` once it is true, MemberBond.sol:219). null = no bond or not read.
+   * Optional for older backends (absent = not read).
+   */
+  bondUnlocked?: boolean | null;
   /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
   unlockBlock: number | null;
   /** `MemberBond.isUnlocked()` — either leg elapsed. Eligibility, not a payout. */
@@ -1484,6 +1492,11 @@ export interface AgentHarnessDomain {
    *  PBA-L7b-003: BOUND to the reviewed call `id` — if the sidecar's head is no longer that call the
    *  promise rejects with a message starting `STALE_APPROVAL` and NOTHING is resolved (re-review). */
   resolve(approve: boolean, id: string): Promise<void>;
+  /** C1-V3 — release the reviewed chain effect `id` after the member approved it and the
+   *  transaction was submitted with an unknown outcome. Core tells the sidecar "submitted, outcome
+   *  unknown, tx <hash>, check before retrying", never "rejected". Bound to `id` like `resolve`
+   *  (STALE_APPROVAL when the head moved). `txHash` null = the failure carried no hash. */
+  resolveOutcomeUnknown(id: string, txHash: string | null): Promise<void>;
   /** HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar). Open a session on the LOCAL
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */

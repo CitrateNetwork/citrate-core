@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
+import type { MemberBondState, ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -220,11 +220,24 @@ export interface CerSpec {
  * `spendSummary` is an optional plain-language line the caller can pass (the
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
+/** C1-V3 — a signed transaction that was (or may have been) submitted, with no known outcome. */
+export interface CeremonyOutcomeUnknown {
+  kind: "outcome-unknown";
+  /** The tx hash when the ceremony knows it; null when the failure carried none. */
+  txHash: string | null;
+  reason: string;
+}
+
 export interface WalletReview {
   kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
+  /**
+   * #366 F2 — a caution the member must see before approving, rendered as an alert on the review
+   * (e.g. an identical payment submitted earlier with an unknown outcome, and its tx hash).
+   */
+  warning?: string;
   /** True once the user has ticked the raw-mode ack (undecodable calldata). */
   rawAck: boolean;
   /**
@@ -237,8 +250,11 @@ export interface WalletReview {
    * Called after the review resolves (approved=true on a successful broadcast, false on
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
+   * C1-V3: `outcome` is set when the member approved and the transaction was (or may have been)
+   * submitted but its outcome is unknown; `approved` is then false (not confirmed), and the agent
+   * path must report it as submitted with an unknown outcome, never as rejected.
    */
-  onResolved?: (approved: boolean) => void | Promise<void>;
+  onResolved?: (approved: boolean, outcome?: CeremonyOutcomeUnknown) => void | Promise<void>;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
@@ -438,14 +454,15 @@ export interface AppState {
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;
+  /**
+   * C1-V4/C1-V5 — the member's bond (deployed, activated(), pubkey()); null = grant status not read.
+   * Observed, never persisted. `activated` outlives a full exit or a slash (the registry stake reads
+   * 0, pubkeyOfStaker is cleared), so with the stake it also decides whether `rewardsOf` is read
+   * (#348 review).
+   */
+  memberBond: MemberBondState | null;
   /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
   validatorCounts: ValidatorCounts | null;
-  /**
-   * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
-   * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
-   * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
-   */
-  bondActivated: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
@@ -825,8 +842,8 @@ export function freshState(pid: string): AppState {
     hasSbt: false,
     rewards: null,
     validatorActivation: null,
+    memberBond: null,
     validatorCounts: null,
-    bondActivated: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,

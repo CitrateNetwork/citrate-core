@@ -1314,18 +1314,46 @@ impl HermesManager {
     /// clearing the whole map is exactly "forget the resolved effect" (H-1: an approved effect is NOT
     /// re-bridgeable until its head is resolved here).
     pub fn resolve_head(&self, approve: bool, id: &str) -> Result<()> {
+        let path = if approve {
+            "/approvals/approve"
+        } else {
+            "/approvals/reject"
+        };
+        self.post_resolve(path, id, serde_json::json!({ "id": id }))
+    }
+
+    /// C1-V3: release the reviewed chain effect `id` after the member approved it and the
+    /// transaction was submitted with an unknown outcome. The member approved and the transaction
+    /// went out, so this is the approve route, never `/approvals/reject` (which the capsule reads as
+    /// "rejected by operator" and an agent may answer by proposing the payment again). The body
+    /// also carries the outcome, the hash and the words the agent must be given:
+    /// "submitted, outcome unknown, tx <hash>, check before retrying".
+    pub fn resolve_head_outcome_unknown(&self, id: &str, tx_hash: Option<&str>) -> Result<()> {
+        if let Some(h) = tx_hash {
+            if !crate::broadcast_outcome::is_tx_hash(h) {
+                return Err(HermesError::Decode(format!(
+                    "not a transaction hash: {h:?}"
+                )));
+            }
+        }
+        let body = serde_json::json!({
+            "id": id,
+            "outcome": "submitted_outcome_unknown",
+            "txHash": tx_hash,
+            "message": crate::broadcast_outcome::agent_message(tx_hash),
+        });
+        self.post_resolve("/approvals/approve", id, body)
+    }
+
+    /// Post one approve/reject resolution for call `id` and handle the sidecar's answer.
+    fn post_resolve(&self, path: &str, id: &str, body: serde_json::Value) -> Result<()> {
         // PBA-L7b-003: an empty id would select the sidecar's legacy "resolve whatever is at the
         // head" path (AR-B-023) — refuse it; every resolve is bound to the reviewed call id.
         if id.is_empty() {
             return Err(HermesError::Stale);
         }
         let bearer = self.bearer()?;
-        let path = if approve {
-            "/approvals/approve"
-        } else {
-            "/approvals/reject"
-        };
-        let body = serde_json::json!({ "id": id }).to_string();
+        let body = body.to_string();
         let resp = self
             .control
             .post(&format!("{}{}", self.control_url(), path), &bearer, &body)?;
@@ -1858,6 +1886,24 @@ pub fn hermes_resolve_sync(
     manager(&app)?
         .resolve_head(approve, &id)
         .map_err(|e| e.to_string())
+}
+
+/// C1-V3 — release the reviewed chain effect `id` as submitted with an unknown outcome (the member
+/// approved it; the ceremony could not confirm it). The sidecar is told "submitted, outcome
+/// unknown, tx <hash>, check before retrying", never "rejected". `tx_hash` is `None` when the
+/// failure carried no hash.
+#[tauri::command]
+pub async fn hermes_resolve_outcome_unknown(
+    app_h: tauri::AppHandle,
+    id: String,
+    tx_hash: Option<String>,
+) -> std::result::Result<(), String> {
+    crate::blocking::off_main(move || {
+        manager(&app_h)?
+            .resolve_head_outcome_unknown(&id, tx_hash.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------

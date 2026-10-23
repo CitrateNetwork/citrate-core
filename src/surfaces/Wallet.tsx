@@ -56,7 +56,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   const staked = s.bondedStake;
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
-  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.memberBond);
   // C1-V V9: every Wallet read (balance, LiquidStakingPool position, withdrawal queue) goes to the
   // public RPC through the Rust RpcClient, whether or not the local node runs.
   const src = "rpc.citrate.ai";
@@ -83,7 +83,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   }, [store]);
   // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
   // once the node poll has reconciled the stake / bond after mount.
-  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null);
   useEffect(() => {
     void store.refreshEarnings();
   }, [store, readsRewards]);
@@ -399,7 +399,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
               {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
               {s.hasGrant
-                ? grantExplanation({ amountSalt: grantSaltStr, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: true, activated: s.bondActivated })
+                ? grantExplanation({ amountSalt: grantSaltStr, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: true, activated: s.memberBond?.activated ?? null })
                 : "No membership grant on this wallet."}
             </p>
           </div>
