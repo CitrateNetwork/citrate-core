@@ -8,7 +8,7 @@
 //
 // Data sources (Rule 7): the comms relay (`group_invite_create` / `group_invite_revoke`) and the
 // citrate.ai join service through the Rust join client (`join_mint` / `join_attach` / `join_revoke`).
-import type { InvitesDomain, JoinCodeEntry, JoinDomain, JoinMinted } from "../bridge/domains";
+import type { InvitesDomain, JoinCodeEntry, JoinDomain, JoinMinted, JoinRevoked } from "../bridge/domains";
 import { joinErrorKind, joinErrorMessage, type JoinGoalId } from "./referral";
 
 export interface InviteDeps {
@@ -75,13 +75,15 @@ export async function createPublicLink(d: InviteDeps, name: string, goal: JoinGo
   }
 }
 
-/** Revoke a direct invite: the short code at the service and the relay invite sealed inside it. */
+/** Revoke a direct invite: the short code and the relay invite sealed inside it. Rust's
+ *  `join_revoke` closes the relay invite first when it has a record of it; otherwise it is closed
+ *  here with the token this panel still holds. The app-only fallback has no code. */
 export async function revokeDirectInvite(d: InviteDeps, groupId: string, code: string | null, relayToken: string): Promise<void> {
-  const jobs: Promise<unknown>[] = [d.invites.revoke(groupId, relayToken)];
-  if (code) jobs.unshift(d.join.revoke(code));
-  const results = await Promise.allSettled(jobs);
-  const failed = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
-  if (failed) throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
+  if (code) {
+    const r = await d.join.revoke(code);
+    if (r.relayInviteClosed) return;
+  }
+  await d.invites.revoke(groupId, relayToken);
 }
 
 // --- The member's own codes, recovered from the service (`join.list`) ----------------------------
@@ -117,8 +119,8 @@ export async function finishPendingCode(d: Pick<InviteDeps, "join">, code: strin
 }
 
 /** Revoke one of the member's codes at the service. */
-export async function revokeCode(d: Pick<InviteDeps, "join">, code: string): Promise<void> {
-  await d.join.revoke(code);
+export async function revokeCode(d: Pick<InviteDeps, "join">, code: string): Promise<JoinRevoked> {
+  return d.join.revoke(code);
 }
 
 /** "Expires 1 Nov 2026" from the service's ISO expiry; "—" when it can't be read (never a guess). */

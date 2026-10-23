@@ -228,15 +228,24 @@ export function YourInviteLinks({ store, version = 0 }: { store: Pick<Store, "to
       else if (out.kind === "error") store.toast(out.message);
       setReload((n) => n + 1);
     });
-  const revoke = (code: string) =>
-    act(code, async () => {
+  const revoke = (row: JoinCodeEntry) =>
+    act(row.code, async () => {
+      const code = row.code;
       try {
-        await revokeCode(deps, code);
+        const r = await revokeCode(deps, code);
         setReady((m) => {
           const { [code]: _gone, ...rest } = m;
           return rest;
         });
-        store.toast("Link revoked. Nobody can open it now.");
+        // Say only what was closed: the relay invite inside a one-time link is closed only when
+        // this device minted the link (it holds the record).
+        store.toast(
+          row.kind !== "direct"
+            ? "Public link revoked."
+            : r.relayInviteClosed
+              ? "Link revoked. The group invite inside it is closed too."
+              : "Short link revoked. This device has no record of the group invite inside it: if it's still listed in the group's invites, revoke it there.",
+        );
       } catch (e) {
         store.toast("Couldn't revoke that link: " + joinErrorMessage(e));
       }
@@ -269,7 +278,7 @@ export function YourInviteLinks({ store, version = 0 }: { store: Pick<Store, "to
                   <button className="btn btn-secondary btn-sm" data-testid={`your-link-finish-${r.code}`} onClick={() => void finish(r.code)} disabled={busy !== null}>Finish link</button>
                 )}
                 {acts.includes("revoke") && (
-                  <button className="btn btn-ghost btn-sm" data-testid={`your-link-revoke-${r.code}`} onClick={() => void revoke(r.code)} disabled={busy !== null} style={{ color: "var(--tx-3)" }}>Revoke</button>
+                  <button className="btn btn-ghost btn-sm" data-testid={`your-link-revoke-${r.code}`} onClick={() => void revoke(r)} disabled={busy !== null} style={{ color: "var(--tx-3)" }}>Revoke</button>
                 )}
               </span>
               {ready[r.code] && <LinkRow url={ready[r.code]} testId={`your-link-copy-${r.code}`} onCopy={(t) => copyLink(store, t)} />}

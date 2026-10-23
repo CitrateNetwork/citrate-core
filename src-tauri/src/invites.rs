@@ -338,26 +338,40 @@ pub(crate) fn redeem_request(link: &str) -> Result<RedeemRequest, String> {
 
 /// Remember which short code (v2 link) seals the relay invite `token`. Returns whether an invite
 /// was found. Called after a direct `join_mint` on this device.
-pub(crate) fn tag_join_code(_invites: &mut [PendingInvite], _token: &str, _code: &str) -> bool {
-    // RED stub: the old behaviour (nothing is linked).
-    false
+pub(crate) fn tag_join_code(invites: &mut [PendingInvite], token: &str, code: &str) -> bool {
+    match invites.iter_mut().find(|i| i.token == token) {
+        Some(i) => {
+            i.join_code = code.to_string();
+            true
+        }
+        None => false,
+    }
 }
 
 /// Close (revoke at the relay) the relay invite sealed inside the short code `code`, if this
 /// device minted that code. `Ok(true)` = closed now or earlier; `Ok(false)` = this device has no
 /// record of it; `Err` = the relay refused or was unreachable, and nothing changed.
 pub(crate) fn close_relay_for_code(
-    _invites: &mut [PendingInvite],
-    _code: &str,
-    _revoke_relay: impl FnOnce(String) -> Result<(), String>,
+    invites: &mut [PendingInvite],
+    code: &str,
+    revoke_relay: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<bool, String> {
-    // RED stub: the old behaviour (the relay invite is left open).
-    Ok(false)
+    if code.is_empty() {
+        return Ok(false);
+    }
+    let Some(i) = invites.iter_mut().find(|i| i.join_code == code) else {
+        return Ok(false);
+    };
+    if !i.relay_closed {
+        revoke_relay(blake3_token_hash(&i.token))?;
+        i.relay_closed = true;
+    }
+    Ok(true)
 }
 
 /// Drop the records of relay invites closed for `code` (after the code itself is revoked).
-pub(crate) fn forget_join_code(_invites: &mut Vec<PendingInvite>, _code: &str) {
-    // RED stub.
+pub(crate) fn forget_join_code(invites: &mut Vec<PendingInvite>, code: &str) {
+    invites.retain(|i| !(i.relay_closed && i.join_code == code));
 }
 
 /// Decode a hex-encoded group name back to a display string (empty on any failure).
