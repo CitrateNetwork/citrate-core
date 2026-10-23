@@ -433,3 +433,33 @@ describe("slice 2: deep links reach the Node, Store and web pages", () => {
     expect(c.resolveHash(hash)).toMatchObject(want);
   });
 });
+
+describe("slice 2: onboarding Verify step follows the real gate (Join 3 copy review V-03)", () => {
+  const verifyStep = async () => {
+    const c = await mount("p1"); // fresh install: the 0.5.2 onboarding
+    c.setState({ stage: "j", jStage: "verify", jSub: "idle", web: null });
+    return c;
+  };
+
+  it("says verification is optional for membership and names what it unlocks", async () => {
+    const c = await verifyStep();
+    const V = c.renderVals();
+    expect(V.ob2Lead).toMatch(/^Verification is optional for membership\./);
+    expect(V.ob2Lead).toMatch(/Unlocked · verify identity to withdraw/);
+    expect(V.ob2Lead).toMatch(/documents never touch this machine/);
+  });
+
+  it("offers Skip for now, which moves on to Membership without verifying", async () => {
+    const c = await verifyStep();
+    const V = c.renderVals();
+    expect(V.ob2Secondary).toBe("Skip for now");
+    V.onOb2Secondary();
+    expect(c.state.jStage).toBe("membership");
+    expect(c.state.kycOutcome).toBe("skipped");
+  });
+
+  it("tripwire: no copy says membership needs a verified identity", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    expect(html).not.toMatch(/[Mm]embership needs a verified identity/);
+  });
+});
