@@ -233,6 +233,7 @@ export function describeBond(g: {
   isUnlocked: boolean;
   isKycVerified: boolean;
   hasValidator: boolean;
+  bondActivated?: boolean | null;
 }): string {
   // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
   // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from

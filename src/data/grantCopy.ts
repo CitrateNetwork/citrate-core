@@ -30,6 +30,8 @@ export interface GrantFacts {
    * the pre-grant "for about a year" (contract rule 2). Omit before the grant exists.
    */
   granted?: boolean;
+  /** `MemberBond.activated()`: true once the bond was activated (it stays true after an exit). */
+  activated?: boolean | null;
 }
 
 /** The custody sentence (§5.4): where the grant is and whether it is staked. */
