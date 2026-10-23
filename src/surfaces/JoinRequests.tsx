@@ -115,5 +115,6 @@ export function InviteStateLine({ view, lastKnown, receivedAt, now, onRetry, onR
  *  close is persisted but not yet relay-confirmed is pending, never shown as done (the tick drops
  *  the row once the relay confirms). */
 export function pendingInviteStatus(pi: Pick<PendingInvite, "revoking" | "consumed">): string {
+  if (pi.revoking && pi.consumed) return "Used · closing the invite at the relay";
   return pi.revoking ? "Revoking… · waiting for the relay to confirm" : "invite pending · self-admit · one use";
 }
