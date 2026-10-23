@@ -119,6 +119,14 @@ describe("S7 · Activate validator", () => {
     expect(view(null)).toContain('data-testid="s7-skip"');
   });
 
+  it("the skip button reads \"Skip for now\": a paid member keeps their membership (copy review C-1)", () => {
+    for (const a of [st(), st({ membershipActive: false }), null]) {
+      const m = /data-testid="s7-skip"[^>]*>([^<]*)</.exec(view(a));
+      expect(m?.[1].trim()).toBe("Skip for now");
+      expect(view(a)).not.toMatch(/Explore free/);
+    }
+  });
+
   it("before the first read shows — rather than a state", () => {
     const html = view(null);
     expect(html).toContain("—");
