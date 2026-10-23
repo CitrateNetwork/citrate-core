@@ -3543,3 +3543,31 @@ fn a_resend_after_upgrading_from_a_build_without_the_record_is_outcome_unknown()
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
+    // Reviewer CR at d737f33: Forget (or a refusal), then the same bytes re-sent, then a restart.
+    // Recovery must find the in-flight send, or Activate is offered a second time.
+    let dir = tmp_dir("forget-resend");
+    let file = dir.join("submitted-tx.json");
+    let (v, _p) = vault_with_wallet();
+    {
+        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+        let first = c.request(activate_intent());
+        let h1 = c.approve_and_sign(&v, &prep_rpc(), &first.id, false, 40204).expect("sign 1");
+        let r1 = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![])), &first.id, bcfg(1));
+        assert_eq!(submitted_outcome_unknown(&r1), Some(h1.clone()));
+        assert_eq!(c.submitted_log().forget(&h1), Ok(true)); // the member's Forget
+        let again = c.request(activate_intent());
+        let h2 = c.approve_and_sign(&v, &prep_rpc(), &again.id, false, 40204).expect("sign 2");
+        assert_eq!(h1, h2, "same nonce, same bytes");
+        let r2 = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![ok(JsonValue::String(h2.clone()))])), &again.id, bcfg(1));
+        assert!(r2.is_ok() || submitted_outcome_unknown(&r2).is_some(), "{r2:?}");
+    }
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+    assert!(
+        reopened.latest_call(&canonical_addr_lower(), &activate_meta()).is_some(),
+        "the re-sent activation is recovered after a restart"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

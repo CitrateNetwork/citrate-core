@@ -1695,7 +1695,6 @@ export class Store {
   /** S7 — "Skip for now": enter the app without activating. Membership and tier are unchanged;
    *  the bond stays locked, not staked, and can be activated later from Node. */
   onS7Skip(): void {
-    this.setState({ validatorSkipped: true });
     this.onEnter();
   }
 
