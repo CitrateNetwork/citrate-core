@@ -48,7 +48,7 @@ export function ALF({ s }: SurfaceProps) {
   }
 
   const nodeUp = s.node !== "off";
-  const nodeText = s.node === "off" ? "node off" : s.node === "syncing" ? `syncing ${s.syncPct | 0}%` : `${nodeLabel(s.node)} · ${Math.round(s.height).toLocaleString("en-US")}`;
+  const nodeText = s.node === "off" ? "node off" : s.node === "syncing" ? `syncing ${s.syncPct | 0}%` : `${nodeLabel(s.node)} · ${s.height > 0 ? Math.round(s.height).toLocaleString("en-US") : "—"}`; // 0 = not read (C1-V V10)
 
   return (
     <div data-testid="alf-surface" style={{ padding: "40px 40px 64px", maxWidth: 900 }}>

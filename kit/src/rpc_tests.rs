@@ -298,6 +298,15 @@ fn redirect_case(status: &'static str) {
     assert!(r.is_err(), "{status}: a redirect is an error, not an answer: {r:?}");
 }
 
+// UI truth contract v1.1 §1: the node's rate limiter answers HTTP 429 before the handler runs, so
+// it is a definitive refusal of the request; the transport keeps it distinct from other failures.
+#[test]
+fn http_429_maps_to_rate_limited_and_other_statuses_stay_transport() {
+    assert_eq!(map_ureq_error(ureq::Error::StatusCode(429)), RpcError::RateLimited);
+    assert!(matches!(map_ureq_error(ureq::Error::StatusCode(502)), RpcError::Transport(_)));
+}
+
+
 // C1-W — citrate-chain#334 answers an eth_getLogs range over 1000 blocks with -32005; a paging
 // caller must be able to tell that from any other failure, to halve its window.
 #[test]
