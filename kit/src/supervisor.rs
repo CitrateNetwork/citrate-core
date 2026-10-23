@@ -875,6 +875,9 @@ struct Cell {
     /// Bumped by every member Start ([`Supervisor::request_start`]). The monitor gives a fresh
     /// retry budget when it changes, and only then (INV-17).
     member_starts: u64,
+    /// The Start intent the latest member Start committed or joined. A member Start that joins
+    /// a pending automated Start promotes it once (it bumps `member_starts`).
+    member_intent: u64,
 }
 
 impl Cell {
@@ -1302,6 +1305,7 @@ impl Supervisor {
                     ..RetryCounters::default()
                 },
                 member_starts: 1,
+                member_intent: 1,
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1589,7 +1593,18 @@ impl Supervisor {
         // monitor picks the new intent up), so identical concurrent Starts never supersede each
         // other.
         if let Some((token, IntentKind::Start)) = c.active {
-            drop(c);
+            // A member joining a pending automated Start makes it a member Start: the fresh
+            // budget the member asked for. Joining a member Start again changes nothing.
+            if origin == StartOrigin::Member && c.member_intent != token.intent_sequence {
+                c.member_starts = c.member_starts.saturating_add(1);
+                c.member_intent = token.intent_sequence;
+                c.wake = true;
+                c.touch();
+                drop(c);
+                self.shared.notify();
+            } else {
+                drop(c);
+            }
             // Joining a pending Start is only Accepted while a monitor can settle it.
             return self.observed(token);
         }
@@ -1599,10 +1614,11 @@ impl Supervisor {
         if origin == StartOrigin::Automated && c.phase == Phase::Failed {
             return ControlResult::RequiresMemberStart(FAILED_NEEDS_MEMBER.to_string());
         }
+        let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
         if origin == StartOrigin::Member {
             c.member_starts = c.member_starts.saturating_add(1);
+            c.member_intent = token.intent_sequence;
         }
-        let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
         drop(c);
         self.shared.notify();
         self.observed(token)
@@ -2309,12 +2325,14 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         // An automated intent cannot buy more retries: with the budget spent, it settles Failed
         // without a spawn (INV-17).
         if consecutive_failures(&shared) > backoff.max_retries {
-            enter_failed(
+            if enter_failed(
                 &shared,
                 seq,
                 "the retry budget is spent; only a member Start gives a fresh one",
-            );
-            failed_seq = Some(seq);
+                budget_member,
+            ) {
+                failed_seq = Some(seq);
+            }
             continue;
         }
 
@@ -2345,8 +2363,14 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 record_crash_status(&shared, &record);
                 let failures = count_failure(&shared);
                 if failures > backoff.max_retries {
-                    enter_failed(&shared, seq, "the binary could not be started");
-                    failed_seq = Some(seq);
+                    if enter_failed(
+                        &shared,
+                        seq,
+                        "the binary could not be started",
+                        budget_member,
+                    ) {
+                        failed_seq = Some(seq);
+                    }
                     continue;
                 }
                 backoff_wait(&shared, seq, backoff.delay_for(failures), clock.as_ref());
@@ -2422,12 +2446,14 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 let failures = count_failure(&shared);
                 if failures > backoff.max_retries {
                     // The fork-bomb bound: give up. Failed, no respawn for this intent.
-                    enter_failed(
+                    if enter_failed(
                         &shared,
                         seq,
                         "the child kept exiting; the retry budget is spent",
-                    );
-                    failed_seq = Some(seq);
+                        budget_member,
+                    ) {
+                        failed_seq = Some(seq);
+                    }
                     continue;
                 }
                 backoff_wait(&shared, seq, backoff.delay_for(failures), clock.as_ref());
@@ -2450,12 +2476,14 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
                 let failures = count_failure(&shared);
                 if failures > backoff.max_retries {
-                    enter_failed(
+                    if enter_failed(
                         &shared,
                         seq,
                         "the health check kept failing; the retry budget is spent",
-                    );
-                    failed_seq = Some(seq);
+                        budget_member,
+                    ) {
+                        failed_seq = Some(seq);
+                    }
                     continue;
                 }
                 backoff_wait(&shared, seq, backoff.delay_for(failures), clock.as_ref());
@@ -2612,11 +2640,16 @@ fn after_teardown(shared: &Shared) {
 }
 
 /// The retry budget for intent `seq` is spent: Failed, and a pending Start receipt says why.
-fn enter_failed(shared: &Shared, seq: u64, reason: &str) {
+fn enter_failed(shared: &Shared, seq: u64, reason: &str, budget_member: u64) -> bool {
     // One critical section: a Start that lands after the Failed phase is visible must find the
     // failing intent already settled, so it commits a fresh intent instead of joining this one.
     {
         let mut c = shared.lock();
+        // A member Start joined this intent after the monitor read it: that is a fresh budget,
+        // not a spent one. The caller goes round again and applies it.
+        if c.member_starts != budget_member {
+            return false;
+        }
         c.apply_state(SupervisorState::Failed);
         c.settle(
             seq,
@@ -2629,6 +2662,7 @@ fn enter_failed(shared: &Shared, seq: u64, reason: &str) {
     if let Some(barrier) = &shared.failed_barrier {
         barrier();
     }
+    true
 }
 
 /// What a Stop's teardown resolved, for its `Complete` scope.
@@ -2884,10 +2918,25 @@ impl Window {
         fresh_limit: Duration,
         healthy_after: Duration,
     ) -> Success {
-        let _ = (at, fresh_limit);
-        let first = *self.first_ok.get_or_insert(now);
-        self.last_ok = Some(now);
-        if !self.credited && now.duration_since(first) >= healthy_after {
+        // Evidence already too old when collected (the monitor was delayed): not fresh, and the
+        // window it would extend has a gap in fresh evidence, so it ends.
+        if now.saturating_duration_since(at) > fresh_limit {
+            *self = Window::default();
+            return Success::Stale;
+        }
+        // A gap over the freshness limit since the last success ends the window first: credit
+        // needs successes that span `healthy_after` without such a gap.
+        if self
+            .last_ok
+            .is_some_and(|last| at.saturating_duration_since(last) > fresh_limit)
+        {
+            *self = Window::default();
+        }
+        let first = *self.first_ok.get_or_insert(at);
+        if self.last_ok.is_none_or(|last| at > last) {
+            self.last_ok = Some(at);
+        }
+        if !self.credited && at.saturating_duration_since(first) >= healthy_after {
             self.credited = true;
             return Success::Fresh { credit: true };
         }

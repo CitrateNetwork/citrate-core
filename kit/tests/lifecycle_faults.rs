@@ -2807,17 +2807,20 @@ fn a_member_start_joining_an_automated_start_gives_a_fresh_budget() {
         "the member Start joined the pending automated Start"
     );
     let receipt = settle(&sup, member, SLOW_FAILED);
-    let spawned_after = fx.pidfile_pids().len();
     if let Receipt::Failed { reason } = &receipt {
         assert!(
             !reason.contains("only a member Start"),
             "a member Start must not be told to make a member Start: {reason}"
         );
     }
+    // The fresh budget (max_retries 0) allows one incarnation, which crashes: Failed again.
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
+    assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
+    fx.expect_pids(spawned_before + 1, ACQUIRE);
     assert_eq!(
-        spawned_after,
+        fx.pidfile_pids().len(),
         spawned_before + 1,
-        "the fresh budget spawned one incarnation: {receipt:?}"
+        "the fresh budget spawned exactly one incarnation: {receipt:?}"
     );
     drop(sup);
     fx.assert_clean();
