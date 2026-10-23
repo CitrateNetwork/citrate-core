@@ -91,11 +91,15 @@ impl From<&PendingInvite> for PendingInviteView {
 }
 
 /// The invites for `group` that are still outstanding: claimable, and listed as open to agents.
+/// A revoking invite (revoked or used here, waiting for the relay) is neither: its claims aren't
+/// polled, so a member just let in doesn't show up again under Requests.
 pub(crate) fn outstanding_invites<'a>(
     all: &'a [PendingInvite],
     group: &str,
 ) -> Vec<&'a PendingInvite> {
-    all.iter().filter(|i| i.group == group).collect()
+    all.iter()
+        .filter(|i| i.group == group && !i.revoking)
+        .collect()
 }
 
 /// The owner's outstanding invites for `group`, as key-free views (PBA-L4-008).
@@ -233,6 +237,14 @@ pub(crate) fn revoke_outcome(
 ) -> Result<(), String> {
     match close {
         None | Some(Ok(())) => {}
+        Some(Err(crate::rendezvous::RvError::DaemonUnsupported)) => {
+            return Err(
+                "couldn't revoke the invite: this device's comms daemon can't close its relay \
+                 rendezvous (it lacks the rendezvous ops, for example after a downgrade). Update \
+                 Citrate Core, then try again."
+                    .to_string(),
+            )
+        }
         Some(Err(e)) => return Err(format!("couldn't revoke the invite: {e}")),
     }
     match legacy {
@@ -325,17 +337,30 @@ fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), Stri
     commit_pending(&staged, path)
 }
 
-/// Write the new contents where [`commit_pending`] makes them current.
+/// #431 — write the new contents to a 0600 sibling and fsync it; [`commit_pending`] renames it over
+/// `pending.json`. A crash before the rename leaves the previous file whole.
 fn stage_pending(
     path: &std::path::Path,
     v: &[PendingInvite],
 ) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
     let bytes = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
-    citrate_core_kit::fsutil::write_secret_file(path, &bytes).map_err(|e| e.to_string())?;
-    Ok(path.to_path_buf())
+    let tmp = path.with_extension("json.tmp");
+    let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp).map_err(|e| e.to_string())?;
+    f.write_all(&bytes).map_err(|e| e.to_string())?;
+    f.sync_all().map_err(|e| e.to_string())?;
+    Ok(tmp)
 }
 
-fn commit_pending(_staged: &std::path::Path, _path: &std::path::Path) -> Result<(), String> {
+/// Rename the staged file over `path` and fsync the directory, so the rename itself is durable.
+fn commit_pending(staged: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    std::fs::rename(staged, path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -671,7 +696,7 @@ pub(crate) fn consume_at(
     if !exists {
         return Ok(false);
     }
-    revoke_and_remove_at(path, group, token, close, legacy)
+    revoke_and_remove_at(path, group, token, true, close, legacy)
 }
 
 /// `group_invite_revoke` — drop an outstanding invite the owner no longer wants redeemable. Revokes
@@ -703,7 +728,7 @@ pub(crate) fn revoke_at(
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<(), String> {
-    revoke_and_remove_at(path, group, token, close, legacy).map(|_| ())
+    revoke_and_remove_at(path, group, token, false, close, legacy).map(|_| ())
 }
 
 /// [`revoke_at`], returning whether this call removed the record.
@@ -711,6 +736,7 @@ fn revoke_and_remove_at(
     path: &std::path::Path,
     group: &str,
     token: &str,
+    consumed: bool,
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<bool, String> {
@@ -740,7 +766,10 @@ fn revoke_and_remove_at(
         if v[pos].lookup.is_empty() {
             v.retain(|i| !(i.group == group && i.token == token));
         } else {
+            // Nothing is opened with the key again: drop it with the claimability.
             v[pos].revoking = true;
+            v[pos].consumed = consumed;
+            v[pos].priv_key.clear();
         }
         true
     })
@@ -757,7 +786,11 @@ pub(crate) fn settle_revocations(
     records.retain(|r| {
         let confirmed = invites.iter().any(|v| {
             v.lookup.eq_ignore_ascii_case(&r.lookup)
-                && v.state == crate::rendezvous::InviteState::Revoked
+                && matches!(
+                    v.state,
+                    crate::rendezvous::InviteState::Revoked
+                        | crate::rendezvous::InviteState::Expired
+                )
         });
         let expired = r.created_at.saturating_add(ttl_secs) <= now_unix;
         !(r.revoking && (confirmed || expired))
