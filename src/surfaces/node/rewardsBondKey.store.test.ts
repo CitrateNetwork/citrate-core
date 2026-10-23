@@ -156,7 +156,8 @@ describe("#394 — the rewards read names the member's validator key", () => {
   });
 
   const K32 = "0x" + "55".repeat(32);
-  const grant = { bondDeployed: true, bondActivated: true, hasValidator: false, bondPubkey: K32 };
+  // Contract v1.2 §1 (#362): the bond path also needs MemberBond.isKycVerified() on chain.
+  const grant = { bondDeployed: true, bondActivated: true, hasValidator: false, bondPubkey: K32, isKycVerified: true };
   const claimStore = () => {
     const store = new Store();
     (store as unknown as { assertPayoutKyc: () => Promise<boolean> }).assertPayoutKyc = async () => true;

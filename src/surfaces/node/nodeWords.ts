@@ -16,7 +16,7 @@
 // answering yet" (the call returns 0x0 on error), never block 0.
 // =====================================================================
 import type { AppState } from "../../shell/state";
-import { activationClosedReason, canOfferActivation, validatorDash, validatorWord } from "../../shell/chainTruth";
+import { UNACTIVATED_WITHDRAW_NOTE, canOfferActivation, validatorDash, validatorWord } from "../../shell/chainTruth";
 import type { NetworkCompat } from "../../shell/networkCompat";
 
 /** Contract §1: Synced means within this many blocks of the public RPC head. */
@@ -157,7 +157,7 @@ export function heightLine(localHeight: number, publicHead: number | null): stri
 /**
  * Whether Node › Status offers Activate validator, and why not (contract §1 Validators). The
  * decision is #366's one activation gate, `canOfferActivation` (registry status and actEpoch,
- * registered stake, MemberBond.activated() and the activation window MemberBond.isUnlocked(), all
+ * registered stake, MemberBond.activated() and the bond lock MemberBond.isUnlocked(), all
  * read by the store), and nothing page-local. On top of it the page must read "Synced" against a
  * fresh public head (block production stays unarmed under Sync unknown) and the supervisor must
  * report synced, because arming re-checks the tip in Rust. The reason is the gate's own: the
@@ -174,11 +174,10 @@ export function activationOffer(
   }
   const word = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
   switch (word) {
-    case "Bond locked · not staked":
-      // The only way this word is not offered: the lock (chain#331, MemberBond.sol:219).
-      return activationClosedReason(s.memberBond) === "activation window closed"
-        ? { offer: false, why: "Activation unavailable · activation window closed: the bond is unlocked, so it can no longer be staked (MemberBond.isUnlocked())." }
-        : { offer: false, why: "Activation unavailable · bond lock not read yet (MemberBond.isUnlocked())." };
+    case "Unlocked · not activated":
+      // Contract v1.2 §1: the word and its required detail only; no activation-window copy until
+      // chain#331 is deployed on the network shown.
+      return { offer: false, why: "Unlocked · not activated · " + UNACTIVATED_WITHDRAW_NOTE };
     case "Not a validator":
       return { offer: false, why: "Not a validator · activation needs the membership grant's bond on chain." };
     case "Exiting":

@@ -145,7 +145,7 @@ describe("activation offer (#348, chain#331, C1-V4, from Node.tsx)", () => {
 
   it("an unlocked or unread lock: no activation, and the reason", () => {
     for (const [b, why] of [
-      [bond(false, true), "activation window closed"],
+      [bond(false, true), "Unlocked · not activated"],
       [bond(false, null), "bond lock not read yet"],
     ] as const) {
       const html = page(member({ memberBond: b, validatorActivation: ACT_NONE }));
@@ -210,7 +210,8 @@ describe("Node › Rewards from the store's rewardsOf read (#348, contract §1 R
 
   it("an exited validator's claimable rewards show through the bond, and Claim is enabled", async () => {
     const store = stubStore();
-    const s = member({ bondedStake: 0, memberBond: bond(true), validatorActivation: { ...ACT_ON, isActive: false, status: 2 }, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
+    // v1.2 §1: the bond's claimRewards() needs MemberBond.isKycVerified() on chain (true here).
+    const s = member({ bondedStake: 0, memberBond: { ...bond(true), kycVerified: true }, validatorActivation: { ...ACT_ON, isActive: false, status: 2 }, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
     const html = renderToStaticMarkup(<NodeRewards store={store} s={s} mode="tauri" />);
     expect(html).toContain("20.00");
     expect(html).toMatch(/<button[^>]*>\s*Claim/);

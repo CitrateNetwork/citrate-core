@@ -131,7 +131,9 @@ describe("V5 — one grant-custody explanation everywhere", () => {
     const base = { bondDeployed: true, unlockBlock: 300_000, isUnlocked: false, isKycVerified: false, hasValidator: false };
     expect(describeBond(base)).toBe("Bond locked · not staked · until block 300,000");
     expect(describeBond({ ...base, hasValidator: true })).toBe("Staked · locked until block 300,000");
-    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · verify identity to withdraw");
+    // Contract v1.2 §1: the withdraw words need activated(); a never-activated bond is "Unlocked · not activated".
+    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · not activated · Only an activated bond can be withdrawn.");
+    expect(describeBond({ ...base, isUnlocked: true, hasValidator: true })).toBe("Unlocked · verify identity to withdraw");
     expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true })).toBe("Unlocked");
   });
 });

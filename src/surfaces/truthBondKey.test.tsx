@@ -58,7 +58,7 @@ function member(over: Partial<AppState> = {}): AppState {
 
 const none: ValidatorActivation = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 511 };
 const active: ValidatorActivation = { isActive: true, status: 1, actEpoch: 480, currentEpoch: 511 };
-// Still locked (MemberBond.isUnlocked() = false), so activation is open (chain#331, MemberBond.sol:219).
+// Still locked (MemberBond.isUnlocked() = false), so activation is offered (owner decision 2026-10-19).
 const notActivated: MemberBondState = { deployed: true, activated: false, pubkey: null, unlocked: false };
 const activatedBond: MemberBondState = { deployed: true, activated: true, pubkey: BOND_KEY };
 const bondUnread: MemberBondState = { deployed: true, activated: null, pubkey: null };
@@ -180,7 +180,7 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
     const reads = await poll(grant({}));
     expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
     expect(reads.validatorActivation).not.toHaveBeenCalledWith(NODE_KEY);
-    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null });
+    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null, kycVerified: false });
   });
 
   it("falls back to the node's key only when no bond exists", async () => {
@@ -189,7 +189,8 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
   });
 
   it("a bond that is not activated has no key yet: no registry read, and the word is 'Bond locked · not staked'", async () => {
-    const reads = await poll(grant({ bondActivated: false, bondPubkey: null }));
+    // v1.2 §1: "Bond locked · not staked" while the lock reads as running (isUnlocked() = false).
+    const reads = await poll(grant({ bondActivated: false, bondPubkey: null, bondUnlocked: false }));
     expect(reads.validatorActivation).not.toHaveBeenCalled();
     expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.memberBond)).toBe(
       "Bond locked · not staked",
@@ -266,7 +267,7 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
     const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
     await store.refreshNode();
     expect(gs).toHaveBeenCalledTimes(1);
-    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null });
+    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null, kycVerified: false });
     expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
     expect(store.state.validatorActivation).toEqual(active);
   });

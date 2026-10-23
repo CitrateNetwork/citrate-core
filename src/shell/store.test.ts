@@ -922,15 +922,22 @@ describe("describeBond — honest about the lock and the KYC gate", () => {
 
   // Owner decision A.6: KYC supersedes the lock. An unverified member must NOT be
   // told their funds are available just because the year elapsed.
-  it("an unlocked but unverified member is told KYC is required, not that they can withdraw", () => {
-    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · verify identity to withdraw");
+  // Contract v1.2 §1: the withdraw words need MemberBond.activated().
+  it("an unlocked, activated but unverified member is told KYC is required, not that they can withdraw", () => {
+    expect(describeBond({ ...base, isUnlocked: true, hasValidator: true })).toBe("Unlocked · verify identity to withdraw");
   });
 
   // Owner decision A.5: unlock makes exit ELIGIBLE. "can withdraw", never "has".
-  it("an unlocked, verified member CAN withdraw — eligibility, not a payout", () => {
-    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true })).toBe("Unlocked");
+  it("an unlocked, activated, verified member CAN withdraw — eligibility, not a payout", () => {
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, bondActivated: true })).toBe("Unlocked");
     // "validating" is a banned word (§1 Validators); the bond word does not carry validator state.
     expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true })).toBe("Unlocked");
+  });
+
+  // Contract v1.2 §1: a bond that was never activated can't be withdrawn, verified or not.
+  it("an unlocked bond that was never activated is 'Unlocked · not activated', with no identity prompt", () => {
+    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · not activated · Only an activated bond can be withdrawn.");
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, bondActivated: false })).toBe("Unlocked · not activated · Only an activated bond can be withdrawn.");
   });
 });
 
@@ -1090,7 +1097,7 @@ describe("store.resumeSession — launch session re-establish", () => {
 describe("activateValidator — arms block production before it needs the key", () => {
   afterEach(() => vi.restoreAllMocks());
   // A bond the gate offers activation for: not activated, no registered stake, still locked
-  // (chain#331, MemberBond.sol:219).
+  // (owner decision 2026-10-19; UI truth contract v1.2 §1).
   beforeEach(() =>
     store.setState({ hasGrant: true, bondedStake: 0, validatorActivation: null, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } }),
   );

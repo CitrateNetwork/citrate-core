@@ -127,10 +127,11 @@ describe("Node › Status — Activate validator goes through canOfferActivation
     }
   });
 
-  it("an unlocked bond: no Activate, and the reason is the closed activation window", async () => {
+  // Contract v1.2 §1: the word and its required detail; no activation-window copy (chain#331 not deployed).
+  it("an unlocked bond: no Activate, and the reason is 'Unlocked · not activated'", async () => {
     const h = await mount(<NodeStatusView store={stubStore()} s={member({ memberBond: UNLOCKED })} {...live} />);
     expect(activateButton(h)).toBeUndefined();
-    expect(gateText(h)).toContain("activation window closed");
+    expect(gateText(h)).toBe("Unlocked · not activated · Only an activated bond can be withdrawn.");
   });
 
   it("an unread lock fails closed: no Activate, 'bond lock not read yet'", async () => {
