@@ -1051,7 +1051,7 @@ fn then_deploy_refused(w: &mut World) -> Result<(), String> {
             return Err(format!("the refusal does not name {}: {err}", it.label));
         }
     }
-    // No ceremony was minted: ids are monotonic from 1, so the next request still gets id 1.
+    // No ceremony was minted: the probe is the first request this ceremony ever opened.
     let probe = w.ceremony.request(SignatureIntent {
         origin: "e2e-probe".into(),
         kind: IntentKind::PersonalSign,
@@ -1059,11 +1059,9 @@ fn then_deploy_refused(w: &mut World) -> Result<(), String> {
         raw: "0x00".into(),
     });
     let _ = w.ceremony.reject(&probe.id);
-    (probe.id == "1").then_some(()).ok_or_else(|| {
-        format!(
-            "a ceremony was opened before the refusal (next id {})",
-            probe.id
-        )
+    let opened = w.ceremony.opened();
+    (opened == 1).then_some(()).ok_or_else(|| {
+        format!("a ceremony was opened before the refusal ({opened} opened including the probe)")
     })
 }
 
