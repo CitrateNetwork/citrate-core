@@ -147,6 +147,9 @@ pub struct SubmittedTxLog {
     path: Option<PathBuf>,
     inner: Mutex<Inner>,
     sync_dir: SyncDir,
+    /// How many attempts in this process recorded each hash (#347 Codex P1). Not persisted: it
+    /// tells an attempt whether another one may have sent the same bytes while it was sending.
+    attempts: Mutex<std::collections::BTreeMap<String, u32>>,
 }
 
 impl SubmittedTxLog {
@@ -164,6 +167,7 @@ impl SubmittedTxLog {
                 uncertain: false,
             }),
             sync_dir,
+            attempts: Default::default(),
         }
     }
 
@@ -180,6 +184,7 @@ impl SubmittedTxLog {
                 uncertain: true,
             }),
             sync_dir,
+            attempts: Default::default(),
         }
     }
 
@@ -246,6 +251,7 @@ impl SubmittedTxLog {
             path: Some(path),
             inner: Mutex::new(inner),
             sync_dir,
+            attempts: Default::default(),
         }
     }
 
@@ -273,9 +279,11 @@ impl SubmittedTxLog {
         let origin = origin.map(|(s, n)| (s.to_ascii_lowercase(), n));
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.contains(&hash) {
+            self.count_attempt(&hash);
             return Ok(false);
         }
         let first = g.absent_is_first(origin.as_ref().map(|(s, n)| (s.as_str(), *n)));
+        let hash_key = hash.clone();
         let mut next = g.clone();
         next.entries.push_back(Entry {
             hash,
@@ -295,6 +303,7 @@ impl SubmittedTxLog {
         next.evict_to_capacity();
         self.persist(&next)?;
         *g = next;
+        self.count_attempt(&hash_key);
         Ok(first)
     }
 
@@ -360,6 +369,20 @@ impl SubmittedTxLog {
         self.persist(&next)?;
         *g = next;
         Ok(true)
+    }
+
+    fn count_attempt(&self, hash: &str) {
+        let mut a = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        *a.entry(hash.to_string()).or_insert(0) += 1;
+    }
+
+    /// True when this process recorded `hash` exactly once: no other attempt may have sent the
+    /// same signed bytes. A first submission whose send is refused may be reported as "not sent"
+    /// only while this holds; once a second attempt recorded the hash, the refusal can be the node
+    /// knowing (or having mined) bytes the other attempt sent (#347 Codex P1).
+    pub fn sole_attempt(&self, hash: &str) -> bool {
+        let a = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        a.get(&hash.to_ascii_lowercase()).copied() == Some(1)
     }
 
     /// [`Self::try_record`] for callers that only need first-ness. A failed write is never a
