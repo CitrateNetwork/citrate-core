@@ -202,7 +202,7 @@ export async function reloadMessages(groupId: string): Promise<void> {
 }
 
 /** Grant/change a member's role (owner-signed RoleAssertion, enforced at the relay). */
-export async function assignRole(address: string, role: GroupRole): Promise<void> {
+export async function assignRole(_group: string, address: string, role: GroupRole): Promise<void> {
   const groupId = groupsSlice.get().selectedId;
   if (!groupId) return;
   groupsSlice.set({ busyMember: address, error: null });
@@ -216,7 +216,7 @@ export async function assignRole(address: string, role: GroupRole): Promise<void
 }
 
 /** Remove a member (atomic offboard — drops all four planes in one epoch, ADR-001). */
-export async function offboardMember(address: string): Promise<void> {
+export async function offboardMember(_group: string, address: string): Promise<void> {
   const groupId = groupsSlice.get().selectedId;
   if (!groupId) return;
   groupsSlice.set({ busyMember: address, error: null });
@@ -230,7 +230,7 @@ export async function offboardMember(address: string): Promise<void> {
 }
 
 /** Owner-invite a member (who has published a key package to the relay), then reload the roster. */
-export async function addMemberToGroup(address: string): Promise<void> {
+export async function addMemberToGroup(_group: string, address: string): Promise<void> {
   const groupId = groupsSlice.get().selectedId;
   const addr = address.trim();
   if (!groupId || !addr) return;
