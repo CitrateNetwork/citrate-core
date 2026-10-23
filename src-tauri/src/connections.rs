@@ -784,10 +784,12 @@ impl ConnectionManager {
             verifier,
         );
         let form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let body = self
-            .http
-            .post_form(service.token_endpoint(), &form)
-            .map_err(|_| ConnError::TokenExchange)?;
+        // The body holds the tokens: keep it in a wiping buffer.
+        let body = Zeroizing::new(
+            self.http
+                .post_form(service.token_endpoint(), &form)
+                .map_err(|_| ConnError::TokenExchange)?,
+        );
         let tok: TokenResponse =
             serde_json::from_str(&body).map_err(|_| ConnError::TokenExchange)?;
 

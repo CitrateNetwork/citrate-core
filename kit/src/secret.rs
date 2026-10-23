@@ -1,17 +1,42 @@
 //! Secret strings (API keys, OAuth tokens) held in one type end to end.
 //!
 //! [`SecretString`] deserializes straight from a JSON string, so it can be a `#[tauri::command]`
-//! argument or a field of a provider response. It has no `Serialize`: a record that must store the
-//! value (a sealed vault or keyring blob) opts in per field with [`serialize_exposed`].
+//! argument or a field of a provider response. The string serde builds is moved into a wiping
+//! buffer, not copied. It has no `Serialize`: a record that must store the value (a sealed vault or
+//! keyring blob) opts in per field with [`serialize_exposed`]. `Debug` never prints it.
+//!
+//! Boundary note: for a command argument, Tauri parses the IPC payload into its own JSON value
+//! before serde hands us the string; that copy belongs to Tauri and is not wiped here.
 
-#[derive(Clone, Default, Debug, zeroize::Zeroize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct SecretString(String);
+use zeroize::Zeroizing;
+
+/// A secret string: wiped on drop, redacted in `Debug`, never serialized by default.
+#[derive(Clone, Default)]
+pub struct SecretString(Zeroizing<String>);
+
+impl zeroize::ZeroizeOnDrop for SecretString {}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = if self.0.is_empty() {
+            "empty"
+        } else {
+            "redacted"
+        };
+        f.debug_tuple("SecretString").field(&state).finish()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SecretString {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(SecretString::new)
+    }
+}
 
 impl SecretString {
     /// Take ownership of `s` (moved, not copied).
     pub fn new(s: String) -> Self {
-        SecretString(s)
+        SecretString(Zeroizing::new(s))
     }
 
     /// The secret, for the one call that needs it (a header, a request body, a sealed record).
@@ -20,8 +45,8 @@ impl SecretString {
     }
 
     /// Move the secret into a wiping buffer for an API that takes one.
-    pub fn into_zeroizing(self) -> zeroize::Zeroizing<String> {
-        zeroize::Zeroizing::new(self.0)
+    pub fn into_zeroizing(mut self) -> Zeroizing<String> {
+        std::mem::take(&mut self.0)
     }
 
     /// Whether the secret is empty or whitespace only.
@@ -66,6 +91,15 @@ mod tests {
         assert!(!dbg.contains("sk-live"), "secret in Debug: {dbg}");
         let opt = Some(s.clone());
         assert!(!format!("{opt:?}").contains("0123456789"));
+    }
+
+    #[test]
+    fn wipes_on_drop_and_moves_into_a_wiping_buffer() {
+        fn wipes_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        let s = SecretString::new("k".into());
+        wipes_on_drop(&s);
+        let z: Zeroizing<String> = s.into_zeroizing();
+        assert_eq!(z.as_str(), "k");
     }
 
     #[test]

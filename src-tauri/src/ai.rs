@@ -369,12 +369,6 @@ impl std::fmt::Debug for ProviderConfig {
     }
 }
 
-impl Drop for ProviderConfig {
-    fn drop(&mut self) {
-        self.api_key.zeroize();
-    }
-}
-
 /// Non-secret provider status crossing the invoke boundary (invariant 1). Carries
 /// the id, baseURL, model and a `configured` flag — NEVER the key or the
 /// Authorization header.
@@ -596,6 +590,8 @@ impl AiManager {
             .keyring
             .get(&account_for(provider_id))?
             .ok_or(AiError::NotConfigured)?;
+        // The blob holds the key: parse it from a wiping buffer.
+        let blob = zeroize::Zeroizing::new(blob);
         let cfg: ProviderConfig =
             serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
         Ok(cfg)
@@ -640,7 +636,8 @@ impl AiManager {
             validate_provider_id(id)?;
             match self.keyring.get(&account_for(id))? {
                 Some(blob) => {
-                    // Decode to surface baseURL + model (NOT the key).
+                    // Decode to surface baseURL + model (NOT the key); the blob holds the key.
+                    let blob = zeroize::Zeroizing::new(blob);
                     let cfg: ProviderConfig =
                         serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
                     out.push(ProviderStatus {

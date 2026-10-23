@@ -174,8 +174,8 @@ const ENVELOPE_FILE: &str = "custody.enc";
 ///   fund-relevant. B1.1 mirrors the `oidc-` reservation here (B1.1-ADV-R).
 /// - `connection-` — the OAuth connection records (`connection-<service>`), written only by
 ///   the backend's token exchange in `connections.rs`.
-/// - `social.` — the sealed social-link tokens (`social.<network>`), written only by the
-///   backend's link flow in `social.rs`.
+/// - `social.` — social-link tokens (`social.<network>`) sealed by earlier builds; nothing
+///   writes them now and disconnect clears them, but the namespace stays reserved.
 ///
 /// Every in-process vault write must target one of these namespaces; src-tauri's
 /// `vault_slot_reservation_tests` holds the allowlist of write sites and fails on a new one.
