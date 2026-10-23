@@ -143,8 +143,25 @@ impl ConsentBook {
         messages_json: &str,
         now_ms: u64,
     ) -> Result<RemoteSendPermit, String> {
-        // Not checked yet: every send is allowed (the current behaviour).
-        let _ = (consent_id, messages_json, now_ms, NOT_CONFIRMED);
+        self.open.retain(|o| o.expires_at_ms > now_ms);
+        let Some(i) = self
+            .open
+            .iter()
+            .position(|o| ct_eq(&o.consent_id, consent_id))
+        else {
+            return Err(NOT_CONFIRMED.into());
+        };
+        let bound = last_user_text(messages_json)
+            .map(|t| message_hash(&t) == self.open[i].message_hash)
+            .unwrap_or(false);
+        if self.open[i].provider_id != provider_id || !bound {
+            self.open.remove(i);
+            return Err(NOT_CONFIRMED.into());
+        }
+        self.open[i].sends += 1;
+        if self.open[i].sends >= MAX_SENDS_PER_CONSENT {
+            self.open.remove(i);
+        }
         Ok(RemoteSendPermit {
             provider_id: provider_id.to_string(),
         })

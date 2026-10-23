@@ -37,7 +37,7 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
-import type { ChatRoute, FlRoundPlan, PendingReadErrorKind, PendingWithdrawalsError, RouteAskOptions } from "../bridge/domains";
+import type { ChatConsent, ChatRoute, FlRoundPlan, PendingReadErrorKind, PendingWithdrawalsError, RouteAskOptions } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
@@ -454,6 +454,8 @@ export const LOCAL_ROUTE_POLL_MS = 1_000;
 
 /** SCL-S7.5a — the error shown on a held message the member cancelled (Retry asks again). */
 export const LOCAL_ASK_NOT_SENT = "not sent; you cancelled before choosing where it goes";
+/** K2: core could not mint the consent for this message, so nothing was sent to the gateway. */
+export const GATEWAY_CONSENT_UNAVAILABLE = "not sent; the app could not confirm this message for the gateway. Try again";
 /** K2: local only is on and there is no local model to start, so the message is not sent. */
 export const LOCAL_ONLY_NOT_SENT =
   "Local only is on and there is no local model running, so this message was not sent. To chat, start the local model (Models), or turn off Local model only in Hermes › Controls.";
@@ -2925,7 +2927,12 @@ export class Store {
         if (local) return { ok: true, provider: local };
         if (this.routeKind !== "ask") return gone;
       }
-      void text;
+      // K2: core mints the one-time consent for this message when the question opens. Core sends
+      // nothing to the gateway without it, so a failed mint offers no gateway send.
+      let consent: ChatConsent | null = null;
+      if (this.routeAsk.gateway) {
+        consent = await bridge.chat.consentPrepare(this.state.aiDefault, text).catch(() => null);
+      }
       hold("ask");
       const choice = await new Promise<LocalModelChoice>((resolve) => {
         this.localModelChoice = resolve;
@@ -2935,9 +2942,11 @@ export class Store {
       this.localModelChoice = null;
       if (choice === "cancel" || signal.aborted) return cancelled;
       if (choice === "gateway" && this.routeAsk.gateway) {
-        // The member's explicit choice, for this one message only (never offered under local only).
-        const def = this.state.aiDefault;
-        const consentId = "";
+        // The member's explicit choice, for this one message only (never offered under local only),
+        // carried to core as the consent core minted for it.
+        if (!consent) return { ok: false, error: GATEWAY_CONSENT_UNAVAILABLE };
+        const def = consent.providerId;
+        const consentId = consent.consentId;
         return {
           ok: true,
           provider: createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) =>
