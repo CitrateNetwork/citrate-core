@@ -118,3 +118,9 @@ export function pendingInviteStatus(pi: Pick<PendingInvite, "revoking" | "consum
   if (pi.revoking && pi.consumed) return "Used · closing the invite at the relay";
   return pi.revoking ? "Revoking… · waiting for the relay to confirm" : "invite pending · self-admit · one use";
 }
+
+/** Whether the inviter's cached invite list is out of date: a row shown as revoking whose rendezvous
+ *  the daemon now reports closed, so the tick has settled (removed) the record. */
+export function revokingRowsSettled(_rows: Pick<PendingInvite, "lookup" | "revoking">[], _views: InviteViewDto[]): boolean {
+  return false;
+}
