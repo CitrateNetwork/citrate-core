@@ -1550,6 +1550,12 @@ impl PublicationTicket {
         }
     }
 
+    /// Nothing the ticket wrote remains (nothing was written, or the caller removed it): release
+    /// the ticket without making anything the active reference.
+    pub fn withdraw(mut self) {
+        self.release();
+    }
+
     fn release(&mut self) {
         if self.open {
             self.open = false;
