@@ -907,6 +907,17 @@ describe("slice 3: copy follows the UI truth contract on every Wallet, Groups an
   const DISCLAIMER = "The grant is not purchased, and it is not an investment.";
   const BANNED = /\b(final|finali[sz]ed|finality is running|settled|irreversible|earn(?:s|ed|ing|ings)?|income|projected|projection|estimate[sd]?|apy|apr|yield|invest(?:ed|ing|ment|ments)?|profit|passive|appreciation|validating|producing again)\b/i;
 
+  it("tripwire: the slice-3 template text has no banned word or price number either", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    const a = html.indexOf("<!-- slice3:start -->");
+    const b = html.indexOf("<!-- slice3:end -->");
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    const text = html.slice(a, b).replace(/<!--[\s\S]*?-->/g, " ").replace(/\{\{[^}]*\}\}/g, " ").replace(/<[^>]+>/g, " ");
+    expect(text).not.toMatch(BANNED);
+    expect(text).not.toMatch(/\$\s?\d/);
+  });
+
   it.each(["p1", "p2", "p3", "p4"])("%s: no banned word, no price number, no SALT price in any state", async (persona) => {
     const c = await mount(persona);
     c.setState({ stage: "done", web: null });

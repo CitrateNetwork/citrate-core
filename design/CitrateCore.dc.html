@@ -188,7 +188,7 @@
             </div>
             <div style="border:2px solid var(--tx-1);background:var(--srf-2);border-radius:var(--r-2);padding:16px;display:flex;flex-direction:column;gap:6px;position:relative;">
               <div class="eyebrow" style="color:var(--accent-text);">Pilot · selected</div>
-              <div style="font-family:var(--font-display);font-size:24px;font-weight:420;"><a href="https://membership.citrate.ai" target="_blank" rel="noopener" style="font-size:16px;">See membership pricing ↗</a></div>
+              <div style="font-family:var(--font-display);font-size:24px;font-weight:420;"><a href="https://citrate.ai/membership" target="_blank" rel="noopener" style="font-size:16px;">See membership pricing ↗</a></div>
               <p style="font-size:12px;line-height:1.5;color:var(--tx-2);margin:0;">Full membership. Everything listed below.</p>
             </div>
             <div style="border:1px solid var(--line-1);background:var(--srf-1);border-radius:var(--r-2);padding:16px;display:flex;flex-direction:column;gap:6px;">
@@ -2203,37 +2203,515 @@
       </div>
       </sc-if>
 
-      <!-- ===================== PLACE STUBS (later slices) ===================== -->
-      <sc-if value="{{ rStub }}" hint-placeholder-val="{{ false }}">
-      <div data-screen-label="{{ stubLabel }}" style="padding:20px 26px 24px;display:flex;flex-direction:column;gap:16px;max-width:880px;">
-        <div style="display:flex;align-items:baseline;gap:12px;">
-          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;">{{ stubTitle }}</span>
-          <span class="mono" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid var(--line-2);color:var(--tx-2);">{{ stubSlice }}</span>
+      <!-- slice3:start -->
+      <!-- ===================== WALLET (slice 3) =====================
+           Overview, Staking, Activity, Identity. One "staked" figure (stakeOf), the validator and bond
+           words of UI truth contract v1 §1, the one grant explanation (core grantCopy.ts). A member's own
+           chain numbers aren't in the C1 fixture, so they read "—", never 0. -->
+      <sc-if value="{{ wlShow }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Wallet" style="display:flex;flex-direction:column;min-height:100%;">
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 26px 0;flex-wrap:wrap;">
+          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;">Wallet</span>
+          <div role="tablist" style="display:flex;gap:2px;background:var(--srf-1);border:1px solid var(--line-1);border-radius:var(--r-2);padding:3px;">
+            <sc-for list="{{ wlTabs }}" as="wtb" hint-placeholder-count="4">
+              <button role="tab" aria-selected="{{ wtb.sel }}" onClick="{{ wtb.go }}" style="font-family:var(--font-sans);font-size:12.5px;font-weight:{{ wtb.weight }};padding:6px 14px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ wtb.bg }};color:{{ wtb.color }};">{{ wtb.label }}</button>
+            </sc-for>
+          </div>
+          <span style="flex:1;"></span>
+          <span class="mono" title="ValidatorRegistry · MemberBond" style="font-size:10px;letter-spacing:.06em;padding:4px 10px;border-radius:999px;border:1px solid {{ wlValBd }};color:{{ wlValFg }};background:{{ wlValBg }};">{{ wlValWord }}</span>
+          <button class="btn btn-ghost btn-sm" onClick="{{ onWlLegacy }}" title="0.5.1 Wallet screen, reference only">0.5.1 screen</button>
         </div>
-        <p style="font-size:14px;line-height:1.6;color:var(--tx-2);margin:0;">{{ stubLead }}</p>
-        <div class="surface" style="display:flex;flex-direction:column;">
-          <sc-for list="{{ stubTabs }}" as="sbt" hint-placeholder-count="4">
-            <div style="display:flex;gap:14px;padding:11px 18px;border-bottom:1px solid var(--line-1);">
-              <span style="width:120px;flex-shrink:0;font-size:13px;font-weight:500;">{{ sbt.k }}</span>
-              <span style="font-size:12.5px;line-height:1.5;color:var(--tx-2);">{{ sbt.v }}</span>
+        <div style="padding:6px 26px 0;"><span class="mono" style="font-size:10px;letter-spacing:.06em;color:var(--tx-3);">{{ wlSource }}</span></div>
+
+        <sc-if value="{{ wlCard }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:20px 26px 24px;">
+          <div class="surface" data-screen-label="{{ wlCardLabel }}" style="max-width:640px;padding:22px 24px;display:flex;flex-direction:column;gap:12px;border-color:{{ wlCardBd }};">
+            <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:{{ wlCardFg }};">{{ wlCardKind }}</span>
+            <span style="font-family:var(--font-display);font-weight:420;font-size:20px;line-height:1.25;">{{ wlCardTitle }}</span>
+            <p style="font-size:13.5px;line-height:1.6;color:var(--tx-2);margin:0;">{{ wlCardBody }}</p>
+            <sc-if value="{{ wlCardWhy }}" hint-placeholder-val="{{ false }}">
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);background:var(--srf-inset);border-radius:var(--r-1);padding:8px 10px;">{{ wlCardWhy }}</span>
+            </sc-if>
+            <sc-if value="{{ wlCardCta }}" hint-placeholder-val="{{ false }}"><span><button class="btn btn-ghost btn-sm" onClick="{{ onWlCardCta }}">{{ wlCardCta }}</button></span></sc-if>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ OVERVIEW ============ -->
+        <sc-if value="{{ wlOverview }}" hint-placeholder-val="{{ true }}">
+        <div data-screen-label="Wallet overview" style="padding:14px 26px 24px;display:flex;flex-direction:column;gap:16px;max-width:1040px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
+            <sc-for list="{{ wlTiles }}" as="t" hint-placeholder-count="3">
+              <div class="surface" style="padding:16px 18px;display:flex;flex-direction:column;gap:6px;">
+                <span class="eyebrow">{{ t.k }}</span>
+                <span class="tabular" style="font-family:var(--font-display);font-weight:400;font-size:24px;line-height:1.25;">{{ t.v }}</span>
+                <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ t.src }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;">
+            <div class="surface" data-screen-label="Wallet send" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <span style="font-size:14px;font-weight:500;">Send</span>
+              <span><span class="lbl">To address</span><input ref="{{ setWlTo }}" class="input mono" placeholder="0x…"></span>
+              <span><span class="lbl">Amount · SALT</span><input ref="{{ setWlAmt }}" class="input mono" placeholder="0.00" inputmode="decimal"></span>
+              <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" onClick="{{ onWlSend }}" disabled="{{ wlSendOff }}">Review &amp; sign</button>
+                <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);flex:1;min-width:160px;">{{ wlSendNote }}</span>
+              </span>
+              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;">Every send stops at the signature ceremony. It is Pending until a receipt exists, then Included in block N.</p>
+            </div>
+            <div class="surface" data-screen-label="Wallet receive" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <span style="font-size:14px;font-weight:500;">Receive</span>
+              <span class="lbl">Your smart wallet · Citrate betanet</span>
+              <span class="mono" style="font-size:12.5px;word-break:break-all;background:var(--srf-inset);border:1px solid var(--line-1);border-radius:var(--r-1);padding:10px 12px;">{{ wlAddr }}</span>
+              <span><button class="btn btn-ghost btn-sm" onClick="{{ onWlCopy }}">Copy address</button></span>
+              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;">Send only SALT on Citrate betanet to this address. Betanet. What carries over to mainnet is set in the genesis spec.</p>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ ACTIVITY ============ -->
+        <sc-if value="{{ wlActivity }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Wallet activity" style="padding:14px 26px 24px;max-width:1040px;">
+          <div class="surface" style="display:flex;flex-direction:column;">
+            <div style="display:grid;grid-template-columns:minmax(0,1fr) 120px 150px minmax(0,1.4fr);gap:12px;padding:10px 18px;border-bottom:1px solid var(--line-strong);">
+              <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">action</span><span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">transaction</span><span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">amount</span><span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);">state</span>
+            </div>
+            <sc-if value="{{ wlTxEmpty }}" hint-placeholder-val="{{ false }}">
+              <p style="font-size:12.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:16px 18px;">No transactions yet. A fresh wallet shows nothing until it sends or receives. Each signed send appears here as Pending, then Included in block N.</p>
+            </sc-if>
+            <sc-for list="{{ wlTxRows }}" as="tx" hint-placeholder-count="2">
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) 120px 150px minmax(0,1.4fr);gap:12px;padding:11px 18px;border-bottom:1px solid var(--line-1);align-items:baseline;">
+                <span style="font-size:12.5px;font-weight:500;">{{ tx.kind }}</span>
+                <span class="mono" style="font-size:11px;color:var(--accent-text);">{{ tx.hash }}</span>
+                <span class="mono tabular" style="font-size:12px;">{{ tx.amount }}</span>
+                <span style="display:flex;flex-direction:column;gap:3px;">
+                  <span><span class="mono" style="font-size:9.5px;letter-spacing:.06em;padding:2px 8px;border-radius:999px;border:1px solid {{ tx.bd }};color:{{ tx.fg }};background:{{ tx.bg }};">{{ tx.word }}</span></span>
+                  <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ tx.sub }}</span>
+                </span>
+              </div>
+            </sc-for>
+            <div style="padding:10px 18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <sc-if value="{{ wlTxDrawn }}" hint-placeholder-val="{{ false }}"><span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span></sc-if>
+              <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ wlTxFoot }}</span>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ STAKING, IDENTITY ============ -->
+        <sc-if value="{{ wlStack }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Wallet cards" style="padding:14px 26px 24px;display:flex;flex-direction:column;gap:16px;max-width:880px;">
+          <sc-for list="{{ wlCards }}" as="cd" hint-placeholder-count="2">
+            <div class="surface" data-screen-label="{{ cd.label }}" style="display:flex;flex-direction:column;border-color:{{ cd.bd }};">
+              <div style="padding:12px 18px;border-bottom:1px solid var(--line-1);display:flex;align-items:center;gap:10px;">
+                <span style="font-size:14px;font-weight:500;">{{ cd.title }}</span>
+                <span class="mono" style="margin-left:auto;font-size:10px;color:var(--tx-3);">{{ cd.meta }}</span>
+              </div>
+              <sc-if value="{{ cd.lead }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:13px;line-height:1.6;color:var(--tx-1);margin:0;padding:12px 18px;border-bottom:1px solid var(--line-1);">{{ cd.lead }}</p>
+              </sc-if>
+              <sc-if value="{{ cd.hasRows }}" hint-placeholder-val="{{ true }}">
+              <sc-for list="{{ cd.rows }}" as="r" hint-placeholder-count="3">
+                <div style="display:flex;align-items:baseline;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line-1);">
+                  <span style="width:170px;flex-shrink:0;font-size:12.5px;color:var(--tx-2);">{{ r.k }}</span>
+                  <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;">
+                    <span class="mono tabular" style="font-size:12.5px;color:{{ r.vColor }};word-break:break-word;">{{ r.v }}<sc-if value="{{ r.fx }}" hint-placeholder-val="{{ false }}"><span style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);margin-left:8px;">fixture</span></sc-if></span>
+                    <span class="mono" style="font-size:10px;color:var(--tx-3);line-height:1.5;">{{ r.src }}</span>
+                  </span>
+                </div>
+              </sc-for>
+              </sc-if>
+              <sc-if value="{{ cd.note }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:10px 18px;">{{ cd.note }}</p>
+              </sc-if>
+              <sc-if value="{{ cd.fx }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:10px 18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
+                  <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ cd.fxNote }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ cd.hasBtns }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 18px;">
+                  <sc-for list="{{ cd.btns }}" as="b" hint-placeholder-count="1">
+                    <button class="btn btn-sm {{ b.cls }}" onClick="{{ b.go }}" disabled="{{ b.off }}">{{ b.label }}</button>
+                  </sc-for>
+                  <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ cd.btnNote }}</span>
+                </div>
+              </sc-if>
             </div>
           </sc-for>
         </div>
-        <sc-if value="{{ grpStubShow }}" hint-placeholder-val="{{ false }}">
-          <div class="surface" data-screen-label="Joined group" style="padding:16px 18px;display:flex;flex-direction:column;gap:6px;border-color:var(--accent);">
-            <span style="display:flex;align-items:center;gap:8px;"><span style="font-size:15px;font-weight:500;flex:1;">{{ grpName }}</span><span class="mono" style="font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid var(--ok);color:var(--ok);background:var(--ok-bg);">joined</span></span>
-            <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ grpSub }}</span>
-            <span style="font-size:12.5px;line-height:1.55;color:var(--tx-2);">The group chat, Rounds, Members and Cluster are drawn in a later slice. This card shows the join from click path 1 landed.</span>
-          </div>
-        </sc-if>
-        <sc-if value="{{ stubHasLegacy }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;gap:10px;align-items:center;">
-            <button class="btn btn-ghost btn-sm" onClick="{{ onStubLegacy }}">Open the 0.5.1 screen (reference, not a port target)</button>
-            <span style="font-size:11.5px;color:var(--tx-3);">It predates the UI truth contract and shows numbers the contract does not allow.</span>
-          </div>
         </sc-if>
       </div>
       </sc-if>
+
+      <!-- ===================== GROUPS (slice 3) =====================
+           K0 tabs: Chat (Groups, Alerts), Rounds, Members, Cluster, ALF (ALF members only). Join and
+           invite words follow GROW-S2 §11; rounds say "Group rounds not live yet" (contract §4). -->
+      <sc-if value="{{ gxShow }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Groups" style="display:flex;flex-direction:column;min-height:100%;">
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 26px 0;flex-wrap:wrap;">
+          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;">Groups</span>
+          <div role="tablist" style="display:flex;gap:2px;background:var(--srf-1);border:1px solid var(--line-1);border-radius:var(--r-2);padding:3px;">
+            <sc-for list="{{ gxTabs }}" as="gtb" hint-placeholder-count="4">
+              <button role="tab" aria-selected="{{ gtb.sel }}" onClick="{{ gtb.go }}" style="font-family:var(--font-sans);font-size:12.5px;font-weight:{{ gtb.weight }};padding:6px 14px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ gtb.bg }};color:{{ gtb.color }};">{{ gtb.label }}</button>
+            </sc-for>
+          </div>
+          <span style="flex:1;"></span>
+          <span class="mono" title="comms_relay_status" style="font-size:10px;letter-spacing:.06em;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--line-2);color:var(--tx-2);">
+            <span style="width:6px;height:6px;border-radius:999px;background:{{ gxRelayDot }};"></span>{{ gxRelay }}
+          </span>
+          <button class="btn btn-ghost btn-sm" onClick="{{ onGxLegacy }}" title="0.5.1 Comms screen, reference only">0.5.1 screen</button>
+        </div>
+        <sc-if value="{{ gxChatSub }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;gap:6px;padding:12px 26px 0;">
+            <sc-for list="{{ gxSubTabs }}" as="gst" hint-placeholder-count="2">
+              <button onClick="{{ gst.go }}" style="font-family:var(--font-sans);font-size:12px;font-weight:{{ gst.weight }};padding:5px 12px;border-radius:999px;cursor:pointer;border:1px solid {{ gst.bd }};background:{{ gst.bg }};color:{{ gst.color }};">{{ gst.label }}</button>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ gxCard }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:20px 26px 24px;">
+          <div class="surface" data-screen-label="{{ gxCardLabel }}" style="max-width:640px;padding:22px 24px;display:flex;flex-direction:column;gap:12px;border-color:{{ gxCardBd }};">
+            <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:{{ gxCardFg }};">{{ gxCardKind }}</span>
+            <span style="font-family:var(--font-display);font-weight:420;font-size:20px;line-height:1.25;">{{ gxCardTitle }}</span>
+            <p style="font-size:13.5px;line-height:1.6;color:var(--tx-2);margin:0;">{{ gxCardBody }}</p>
+            <sc-if value="{{ gxCardWhy }}" hint-placeholder-val="{{ false }}">
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);background:var(--srf-inset);border-radius:var(--r-1);padding:8px 10px;">{{ gxCardWhy }}</span>
+            </sc-if>
+            <sc-if value="{{ gxCardCta }}" hint-placeholder-val="{{ false }}"><span><button class="btn btn-ghost btn-sm" onClick="{{ onGxCardCta }}">{{ gxCardCta }}</button></span></sc-if>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ CHAT › GROUPS ============ -->
+        <sc-if value="{{ gxChat }}" hint-placeholder-val="{{ true }}">
+        <div data-screen-label="Groups chat" style="padding:16px 26px 24px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:16px;align-items:start;">
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div class="surface" data-screen-label="Groups list" style="display:flex;flex-direction:column;">
+              <div style="padding:12px 16px;border-bottom:1px solid var(--line-1);font-size:13.5px;font-weight:500;">Your groups</div>
+              <sc-if value="{{ gxNoGroups }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:12px;line-height:1.55;color:var(--tx-3);margin:0;padding:12px 16px;">No groups yet. Paste an invite below, or create one.</p>
+              </sc-if>
+              <sc-for list="{{ gxList }}" as="g" hint-placeholder-count="2">
+                <button onClick="{{ g.go }}" style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;font-family:var(--font-sans);padding:10px 16px;border:none;border-bottom:1px solid var(--line-1);background:{{ g.bg }};cursor:pointer;color:var(--tx-1);">
+                  <span style="font-size:13px;font-weight:{{ g.weight }};">{{ g.name }}</span>
+                  <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ g.sub }}</span>
+                </button>
+              </sc-for>
+            </div>
+            <div class="surface" data-screen-label="Have an invite" style="padding:14px 16px;display:flex;flex-direction:column;gap:8px;">
+              <span style="font-size:13px;font-weight:500;">Have an invite?</span>
+              <input ref="{{ setGxPaste }}" class="input mono" placeholder="Paste an invite link or code" style="font-size:12px;">
+              <span><button class="btn btn-ghost btn-sm" onClick="{{ onGxPaste }}">Review invite</button></span>
+              <span style="font-size:11px;line-height:1.5;color:var(--tx-3);">{{ gxJoinPrivacy }}</span>
+            </div>
+            <div class="surface" data-screen-label="New group" style="padding:14px 16px;display:flex;flex-direction:column;gap:8px;">
+              <span style="font-size:13px;font-weight:500;">New group</span>
+              <input ref="{{ setGxNew }}" class="input" placeholder="Group name" style="font-size:12.5px;">
+              <span><button class="btn btn-ghost btn-sm" onClick="{{ onGxCreate }}">Create</button></span>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px;min-width:0;">
+            <sc-if value="{{ gxJoinShow }}" hint-placeholder-val="{{ false }}">
+              <div class="surface cc-fade-up" data-screen-label="Invite review" style="padding:16px 18px;display:flex;flex-direction:column;gap:8px;border-color:var(--accent);">
+                <span style="display:flex;align-items:center;gap:10px;"><span style="font-size:15px;font-weight:500;flex:1;">{{ gxJoinWord }}</span><button class="btn btn-ghost btn-sm" onClick="{{ onGxJoinClose }}">Close</button></span>
+                <span style="font-size:12.5px;line-height:1.55;color:var(--tx-2);">{{ gxJoinBody }}</span>
+                <sc-if value="{{ gxJoinCta }}" hint-placeholder-val="{{ false }}"><span><button class="btn btn-primary btn-sm" onClick="{{ onGxJoin }}">{{ gxJoinCta }}</button></span></sc-if>
+              </div>
+            </sc-if>
+            <sc-if value="{{ gxChatRound }}" hint-placeholder-val="{{ false }}">
+              <div class="surface" data-screen-label="Group round card" style="padding:12px 16px;display:flex;flex-direction:column;gap:4px;">
+                <span style="display:flex;align-items:center;gap:8px;"><span class="eyebrow">Round card</span><span style="font-size:13px;font-weight:500;">{{ gxRoundWord }}</span></span>
+                <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ gxRoundSrc }}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ gxHasSel }}" hint-placeholder-val="{{ true }}">
+            <div class="surface" data-screen-label="Group conversation" style="display:flex;flex-direction:column;min-height:420px;">
+              <div style="padding:12px 18px;border-bottom:1px solid var(--line-1);display:flex;flex-direction:column;gap:2px;">
+                <span style="font-size:14px;font-weight:500;">{{ gxSelName }}</span>
+                <span class="mono" style="font-size:10px;color:var(--tx-3);">{{ gxSelSub }}</span>
+              </div>
+              <div style="flex:1;padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+                <sc-for list="{{ gxMsgs }}" as="m" hint-placeholder-count="3">
+                  <div style="display:flex;flex-direction:column;gap:3px;">
+                    <span style="display:flex;gap:8px;align-items:baseline;"><span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:{{ m.whoColor }};">{{ m.who }}</span><span class="mono" style="font-size:9.5px;color:var(--tx-3);">{{ m.at }}</span></span>
+                    <span style="font-size:13.5px;line-height:1.55;color:var(--tx-1);">{{ m.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display:flex;gap:10px;padding:12px 18px;border-top:1px solid var(--line-1);">
+                <input ref="{{ setGxMsg }}" class="input" placeholder="Message the group" onKeyDown="{{ onGxMsgKey }}" style="flex:1;">
+                <button class="btn btn-primary" onClick="{{ onGxSend }}" disabled="{{ gxSendOff }}">Send</button>
+              </div>
+            </div>
+            </sc-if>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ MEMBERS ============ -->
+        <sc-if value="{{ gxMembers }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Groups members" style="padding:16px 26px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;align-items:start;">
+          <div class="surface" data-screen-label="Roster" style="display:flex;flex-direction:column;">
+            <div style="padding:12px 18px;border-bottom:1px solid var(--line-1);display:flex;align-items:center;gap:10px;"><span style="font-size:14px;font-weight:500;">{{ gxSelName }} · members</span><span class="mono" style="margin-left:auto;font-size:10px;color:var(--tx-3);">groups_roster</span></div>
+            <sc-for list="{{ gxRoster }}" as="r" hint-placeholder-count="3">
+              <div style="display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid var(--line-1);flex-wrap:wrap;">
+                <span style="flex:1;min-width:120px;display:flex;flex-direction:column;gap:2px;"><span style="font-size:13px;">{{ r.name }}</span><span class="mono" style="font-size:10px;color:var(--tx-3);">{{ r.addr }}</span></span>
+                <span class="mono" style="font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid {{ r.bd }};color:{{ r.fg }};background:{{ r.bg }};">{{ r.role }}</span>
+                <sc-if value="{{ r.manage }}" hint-placeholder-val="{{ false }}">
+                  <button class="btn btn-ghost btn-sm" onClick="{{ r.promote }}">{{ r.promoteLabel }}</button>
+                  <button class="btn btn-ghost btn-sm" onClick="{{ r.remove }}">Remove</button>
+                </sc-if>
+              </div>
+            </sc-for>
+            <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:10px 18px;">{{ gxRosterNote }}</p>
+          </div>
+          <div class="surface" data-screen-label="Invites" style="display:flex;flex-direction:column;">
+            <div style="padding:12px 18px;border-bottom:1px solid var(--line-1);display:flex;align-items:center;gap:10px;"><span style="font-size:14px;font-weight:500;">Invites</span>
+              <sc-if value="{{ gxCanInvite }}" hint-placeholder-val="{{ true }}"><button class="btn btn-secondary btn-sm" style="margin-left:auto;" onClick="{{ onGxInvite }}">Create an invite link</button></sc-if>
+            </div>
+            <sc-if value="{{ gxInvitesEmpty }}" hint-placeholder-val="{{ false }}">
+              <p style="font-size:12px;line-height:1.55;color:var(--tx-3);margin:0;padding:12px 18px;">No invites. An invite link works once and expires after 14 days. Nobody joins until they click Join.</p>
+            </sc-if>
+            <sc-for list="{{ gxInvites }}" as="iv" hint-placeholder-count="2">
+              <div style="display:flex;flex-direction:column;gap:6px;padding:10px 18px;border-bottom:1px solid var(--line-1);">
+                <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span class="mono" style="font-size:11.5px;flex:1;min-width:160px;">{{ iv.code }}</span>
+                  <span class="mono" style="font-size:9.5px;letter-spacing:.06em;padding:2px 8px;border-radius:999px;border:1px solid {{ iv.bd }};color:{{ iv.fg }};background:{{ iv.bg }};">{{ iv.word }}</span>
+                </span>
+                <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span class="mono" style="font-size:10px;color:var(--tx-3);flex:1;">{{ iv.note }}</span>
+                  <sc-if value="{{ iv.canRevoke }}" hint-placeholder-val="{{ false }}"><button class="btn btn-ghost btn-sm" onClick="{{ iv.copy }}">Copy link</button><button class="btn btn-ghost btn-sm" onClick="{{ iv.revoke }}">Revoke</button></sc-if>
+                </span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        </sc-if>
+        <sc-if value="{{ gxMembersNone }}" hint-placeholder-val="{{ false }}">
+          <p style="font-size:13px;line-height:1.6;color:var(--tx-2);margin:0;padding:20px 26px;">Join or create a group first. Its members and invites show here.</p>
+        </sc-if>
+
+        <!-- ============ ALERTS, ROUNDS, CLUSTER, ALF, COMMUNITY ============ -->
+        <div data-screen-label="Groups cards" style="padding:16px 26px 24px;display:flex;flex-direction:column;gap:16px;max-width:880px;">
+          <sc-for list="{{ gxCards }}" as="cd" hint-placeholder-count="2">
+            <div class="surface" data-screen-label="{{ cd.label }}" style="display:flex;flex-direction:column;border-color:{{ cd.bd }};">
+              <div style="padding:12px 18px;border-bottom:1px solid var(--line-1);display:flex;align-items:center;gap:10px;">
+                <span style="font-size:14px;font-weight:500;">{{ cd.title }}</span>
+                <span class="mono" style="margin-left:auto;font-size:10px;color:var(--tx-3);">{{ cd.meta }}</span>
+              </div>
+              <sc-if value="{{ cd.lead }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:13px;line-height:1.6;color:var(--tx-1);margin:0;padding:12px 18px;border-bottom:1px solid var(--line-1);">{{ cd.lead }}</p>
+              </sc-if>
+              <sc-if value="{{ cd.hasRows }}" hint-placeholder-val="{{ true }}">
+              <sc-for list="{{ cd.rows }}" as="r" hint-placeholder-count="3">
+                <div style="display:flex;align-items:baseline;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line-1);">
+                  <span style="width:170px;flex-shrink:0;font-size:12.5px;color:var(--tx-2);">{{ r.k }}</span>
+                  <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;">
+                    <span class="mono tabular" style="font-size:12.5px;color:{{ r.vColor }};word-break:break-word;">{{ r.v }}<sc-if value="{{ r.fx }}" hint-placeholder-val="{{ false }}"><span style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);margin-left:8px;">fixture</span></sc-if></span>
+                    <span class="mono" style="font-size:10px;color:var(--tx-3);line-height:1.5;">{{ r.src }}</span>
+                  </span>
+                </div>
+              </sc-for>
+              </sc-if>
+              <sc-if value="{{ cd.note }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:10px 18px;">{{ cd.note }}</p>
+              </sc-if>
+              <sc-if value="{{ cd.fx }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:10px 18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
+                  <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ cd.fxNote }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ cd.hasBtns }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 18px;">
+                  <sc-for list="{{ cd.btns }}" as="b" hint-placeholder-count="1">
+                    <button class="btn btn-sm {{ b.cls }}" onClick="{{ b.go }}" disabled="{{ b.off }}">{{ b.label }}</button>
+                  </sc-for>
+                  <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ cd.btnNote }}</span>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== SETTINGS (slice 3 redraw) =====================
+           Account-level sections only (K0 ACCOUNT_SETTINGS). The price shows only when membership_price
+           was read (C1-P #379); the grant uses core grantCopy.ts; signatures go through the ceremony. -->
+      <sc-if value="{{ stgShow }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Settings" style="padding:20px 26px 24px;display:grid;grid-template-columns:196px minmax(0,1fr);gap:22px;max-width:1040px;">
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;margin-bottom:12px;">Settings</span>
+          <sc-for list="{{ setNav }}" as="sn" hint-placeholder-count="7">
+            <button onClick="{{ sn.go }}" style="font-family:var(--font-sans);text-align:left;font-size:13px;font-weight:{{ sn.weight }};padding:8px 12px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ sn.bg }};color:{{ sn.color }};">{{ sn.label }}</button>
+          </sc-for>
+          <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:14px 0 0;padding:12px 12px 0;border-top:1px solid var(--line-1);">AI providers, escalation, MCP servers, web search and budgets are in <a href="#/hermes/controls" onClick="{{ goControls }}">Hermes › Controls</a>. Node configuration is in Node › Advanced.</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px;padding-top:44px;min-width:0;">
+
+        <sc-if value="{{ stgCard }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:0;">
+          <div class="surface" data-screen-label="{{ stgCardLabel }}" style="max-width:640px;padding:22px 24px;display:flex;flex-direction:column;gap:12px;border-color:{{ stgCardBd }};">
+            <span class="mono" style="font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:{{ stgCardFg }};">{{ stgCardKind }}</span>
+            <span style="font-family:var(--font-display);font-weight:420;font-size:20px;line-height:1.25;">{{ stgCardTitle }}</span>
+            <p style="font-size:13.5px;line-height:1.6;color:var(--tx-2);margin:0;">{{ stgCardBody }}</p>
+            <sc-if value="{{ stgCardWhy }}" hint-placeholder-val="{{ false }}">
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);background:var(--srf-inset);border-radius:var(--r-1);padding:8px 10px;">{{ stgCardWhy }}</span>
+            </sc-if>
+            <sc-if value="{{ stgCardCta }}" hint-placeholder-val="{{ false }}"><span><button class="btn btn-ghost btn-sm" onClick="{{ onStgCardCta }}">{{ stgCardCta }}</button></span></sc-if>
+          </div>
+        </div>
+        </sc-if>
+          <sc-if value="{{ stgConn }}" hint-placeholder-val="{{ false }}">
+          <div class="surface" data-screen-label="Settings connections" style="display:flex;flex-direction:column;">
+            <div style="padding:14px 18px;border-bottom:1px solid var(--line-1);display:flex;flex-direction:column;gap:3px;">
+              <span class="eyebrow">Connections · tools your agent can use</span>
+              <span style="font-size:12px;color:var(--tx-3);">Sign-in runs in your system browser. Tokens are sealed in the OS keyring, never in config files.</span>
+            </div>
+            <sc-for list="{{ connRows }}" as="cn" hint-placeholder-count="6">
+              <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line-1);">
+                <span style="flex:1;min-width:0;"><span style="display:block;font-size:13px;font-weight:500;">{{ cn.name }}</span><span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:1px;">{{ cn.scope }}</span></span>
+                <sc-if value="{{ cn.connected }}" hint-placeholder-val="{{ false }}"><span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;background:var(--ok-bg);border:1px solid var(--ok);color:var(--ok);">connected</span></sc-if>
+                <button class="btn btn-ghost btn-sm" onClick="{{ cn.go }}">{{ cn.btn }}</button>
+              </div>
+            </sc-for>
+            <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;padding:10px 18px;">Every write an agent proposes through a connection (an event, an issue, a page) waits for your approval like any other tool write.</p>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{ stgApi }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings API">
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <span class="eyebrow">RPC endpoint</span>
+              <span style="display:flex;gap:8px;">
+                <button class="btn btn-sm {{ stgRpcLocalCls }}" onClick="{{ onStgRpcLocal }}">local node</button>
+                <button class="btn btn-sm {{ stgRpcPublicCls }}" onClick="{{ onStgRpcPublic }}">rpc.citrate.ai</button>
+              </span>
+              <span style="display:inline-flex;align-items:center;gap:8px;"><span style="width:7px;height:7px;border-radius:999px;background:{{ stgRpcDot }};"></span><span class="mono" style="font-size:11px;color:var(--tx-2);">{{ stgRpcText }}</span></span>
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">Wallet reads always use the public RPC through the Rust client (C1-V V9).</span>
+            </div>
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <span class="eyebrow">Gateway key · inference</span>
+              <sc-if value="{{ noGwKey }}" hint-placeholder-val="{{ true }}">
+                <p style="font-size:12.5px;color:var(--tx-2);margin:0;">No key issued. The membership service issues one against your live entitlement, with tier-bounded quotas. Hermes still asks before it uses the gateway.</p>
+                <span><button class="btn btn-secondary btn-sm" onClick="{{ onIssueKey }}">Issue key</button></span>
+              </sc-if>
+              <sc-if value="{{ gwKeyShown }}" hint-placeholder-val="{{ false }}">
+                <div style="border:1px solid var(--warn);background:var(--warn-bg);border-radius:var(--r-1);padding:10px 12px;display:flex;flex-direction:column;gap:8px;">
+                  <span style="font-size:12px;color:var(--warn);font-weight:500;">Shown once. It is being stored in your OS keyring now.</span>
+                  <span style="display:flex;align-items:center;gap:8px;"><span class="mono" style="font-size:12px;flex:1;word-break:break-all;">{{ gwKeyFull }}</span><button class="btn btn-ghost btn-sm" onClick="{{ onCopyKey }}">Copy</button></span>
+                  <span><button class="btn btn-secondary btn-sm" onClick="{{ onKeyStored }}">Done, stored</button></span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ gwKeyHeld }}" hint-placeholder-val="{{ false }}">
+                <span style="display:flex;align-items:center;gap:10px;"><span class="mono" style="font-size:12px;flex:1;">{{ gwKeyMasked }}</span><button class="btn btn-ghost btn-sm" onClick="{{ onRotateKey }}">Rotate</button><button class="btn btn-danger btn-sm" onClick="{{ onRevokeKey }}">Revoke</button></span>
+                <span class="mono" style="font-size:10.5px;color:var(--tx-3);">in the OS keyring · old keys are revoked on the server when you rotate</span>
+              </sc-if>
+            </div>
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
+              <span class="eyebrow">Memory socket</span>
+              <span class="mono" style="font-size:11px;background:var(--srf-inset);border:1px solid var(--line-1);border-radius:var(--r-1);padding:8px 10px;word-break:break-all;">{{ socketPath }}</span>
+            </div>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{ stgBilling }}" hint-placeholder-val="{{ false }}">
+          <div class="surface" data-screen-label="Settings price" style="padding:16px 18px;display:flex;flex-direction:column;gap:6px;">
+            <span class="eyebrow">Membership price</span>
+            <sc-if value="{{ stgPriceIsLink }}" hint-placeholder-val="{{ true }}"><span style="font-size:15px;"><a href="{{ stgPriceUrl }}" target="_blank" rel="noopener">{{ stgPriceText }} ↗</a></span></sc-if>
+            <sc-if value="{{ !stgPriceIsLink }}" hint-placeholder-val="{{ false }}"><span style="font-family:var(--font-display);font-size:20px;font-weight:420;">{{ stgPriceText }}</span></sc-if>
+            <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ stgPriceSrc }}</span>
+            <span style="font-size:12px;color:var(--tx-2);">Membership does not buy SALT.</span>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{ stgKeys }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings keys">
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <span class="eyebrow">Custody vault</span>
+              <div style="display:flex;align-items:center;gap:12px;">
+                <span style="flex:1;"><span style="display:block;font-size:13px;font-weight:500;">Session lock</span><span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;">Argon2id + AES-256-GCM envelope · master key sealed in the OS keyring · custody_status</span></span>
+                <span class="mono" style="font-size:10px;color:{{ stgLockColor }};">{{ stgLockWord }}</span>
+                <button class="btn btn-ghost btn-sm" onClick="{{ onStgLock }}">{{ stgLockBtn }}</button>
+              </div>
+            </div>
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <span class="eyebrow">Keys on this device</span>
+              <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line-1);padding-bottom:10px;">
+                <span style="flex:1;"><span style="display:block;font-size:13px;font-weight:500;">Smart wallet</span><span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;">address from wallet_ensure_ready</span></span>
+                <span class="mono" style="font-size:11px;color:var(--accent-text);">{{ stgWallet }}</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line-1);padding-bottom:10px;">
+                <span style="flex:1;"><span style="display:block;font-size:13px;font-weight:500;">Machine attestation</span><span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;">{{ deviceId }} · hardware-backed attestation is not available in this build</span></span>
+                <span class="mono" style="font-size:10px;color:var(--warn);">NOT AVAILABLE</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:12px;">
+                <span style="flex:1;"><span style="display:block;font-size:13px;font-weight:500;">Local signing key</span><span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;">Argon2id + AES-GCM keystore · sealed in the OS keyring</span></span>
+                <button class="btn btn-ghost btn-sm" disabled="{{ true }}" title="not available in this build">Export…</button>
+              </div>
+              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;">Export is not available in this build. No command returns a key or a seed, and no support agent will ever ask for one.</p>
+            </div>
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
+              <span class="eyebrow">Auto-lock</span>
+              <span style="display:flex;gap:8px;"><sc-for list="{{ lockOpts }}" as="lo" hint-placeholder-count="3"><button class="btn btn-sm {{ lo.cls }}" onClick="{{ lo.go }}">{{ lo.label }}</button></sc-for></span>
+              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">the screen and the keystore use this one setting; there is no second timer</span>
+            </div>
+            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
+              <span class="eyebrow">Signatures</span>
+              <span style="font-size:12.5px;line-height:1.6;color:var(--tx-2);">Every signature stops at the signature ceremony, one approval for one signature. The one exception is a web sign-in (SIWE) inside a budget you grant, cap and can revoke, in Hermes › Controls › Budgets.</span>
+            </div>
+          </div>
+          </sc-if>
+
+          <sc-for list="{{ stgCards }}" as="cd" hint-placeholder-count="2">
+            <div class="surface" data-screen-label="{{ cd.label }}" style="display:flex;flex-direction:column;border-color:{{ cd.bd }};">
+              <div style="padding:12px 18px;border-bottom:1px solid var(--line-1);display:flex;align-items:center;gap:10px;">
+                <span style="font-size:14px;font-weight:500;">{{ cd.title }}</span>
+                <span class="mono" style="margin-left:auto;font-size:10px;color:var(--tx-3);">{{ cd.meta }}</span>
+              </div>
+              <sc-if value="{{ cd.lead }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:13px;line-height:1.6;color:var(--tx-1);margin:0;padding:12px 18px;border-bottom:1px solid var(--line-1);">{{ cd.lead }}</p>
+              </sc-if>
+              <sc-if value="{{ cd.hasRows }}" hint-placeholder-val="{{ true }}">
+              <sc-for list="{{ cd.rows }}" as="r" hint-placeholder-count="3">
+                <div style="display:flex;align-items:baseline;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line-1);">
+                  <span style="width:170px;flex-shrink:0;font-size:12.5px;color:var(--tx-2);">{{ r.k }}</span>
+                  <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;">
+                    <span class="mono tabular" style="font-size:12.5px;color:{{ r.vColor }};word-break:break-word;">{{ r.v }}<sc-if value="{{ r.fx }}" hint-placeholder-val="{{ false }}"><span style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);margin-left:8px;">fixture</span></sc-if></span>
+                    <span class="mono" style="font-size:10px;color:var(--tx-3);line-height:1.5;">{{ r.src }}</span>
+                  </span>
+                </div>
+              </sc-for>
+              </sc-if>
+              <sc-if value="{{ cd.note }}" hint-placeholder-val="{{ false }}">
+                <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:0;padding:10px 18px;">{{ cd.note }}</p>
+              </sc-if>
+              <sc-if value="{{ cd.fx }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:10px 18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span class="mono" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);">fixture</span>
+                  <span class="mono" style="font-size:10px;line-height:1.5;color:var(--tx-3);">{{ cd.fxNote }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ cd.hasBtns }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 18px;">
+                  <sc-for list="{{ cd.btns }}" as="b" hint-placeholder-count="1">
+                    <button class="btn btn-sm {{ b.cls }}" onClick="{{ b.go }}" disabled="{{ b.off }}">{{ b.label }}</button>
+                  </sc-for>
+                  <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ cd.btnNote }}</span>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+      <!-- slice3:end -->
 
       <sc-if value="{{ rLegacyBar }}" hint-placeholder-val="{{ false }}">
         <div style="display:flex;align-items:center;gap:12px;padding:9px 26px;background:var(--danger-bg);border-bottom:1px solid var(--danger);">
@@ -2899,311 +3377,6 @@
       </div>
       </sc-if>
 
-      <!-- ===================== SETTINGS ===================== -->
-      <sc-if value="{{ rSettings }}" hint-placeholder-val="{{ false }}">
-      <div data-screen-label="Settings" style="padding:20px 26px 24px;display:grid;grid-template-columns:196px minmax(0,1fr);gap:22px;max-width:1000px;">
-        <div style="display:flex;flex-direction:column;gap:2px;">
-          <span style="font-family:var(--font-display);font-weight:420;font-size:24px;margin-bottom:12px;">Settings</span>
-          <sc-for list="{{ setNav }}" as="sn" hint-placeholder-count="6">
-            <button onClick="{{ sn.go }}" style="font-family:var(--font-sans);text-align:left;font-size:13px;font-weight:{{ sn.weight }};padding:8px 12px;border:none;border-radius:var(--r-1);cursor:pointer;background:{{ sn.bg }};color:{{ sn.color }};">{{ sn.label }}</button>
-          </sc-for>
-          <p style="font-size:11.5px;line-height:1.55;color:var(--tx-3);margin:14px 0 0;padding:12px 12px 0;border-top:1px solid var(--line-1);">AI providers, escalation, MCP servers, web search and budgets moved to <a href="#/hermes/controls" onClick="{{ goControls }}">Hermes › Controls</a>. Node configuration moves to Node › Advanced (slice 2).</p>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:14px;padding-top:44px;">
-
-          <sc-if value="{{ ssAccount }}" hint-placeholder-val="{{ true }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings account">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <span class="eyebrow">Entitlement claim · live from /userinfo</span>
-              <sc-for list="{{ claimRows }}" as="cl" hint-placeholder-count="5">
-                <div style="display:flex;gap:14px;border-bottom:1px solid var(--line-1);padding-bottom:8px;">
-                  <span class="mono" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3);width:110px;flex-shrink:0;padding-top:2px;">{{ cl.k }}</span>
-                  <span class="mono" style="font-size:12.5px;color:{{ cl.color }};word-break:break-all;">{{ cl.v }}</span>
-                </div>
-              </sc-for>
-              <div style="display:flex;gap:10px;margin-top:4px;">
-                <button class="btn btn-ghost btn-sm" onClick="{{ onManageAccount }}">Manage account ↗</button>
-                <button class="btn btn-ghost btn-sm" onClick="{{ onSignOut }}">Sign out</button>
-              </div>
-            </div>
-          </div>
-          </sc-if>
-
-          <sc-if value="{{ ssConn }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings connections">
-            <div class="surface" style="display:flex;flex-direction:column;">
-              <div style="padding:14px 18px;border-bottom:1px solid var(--line-1);display:flex;flex-direction:column;gap:3px;">
-                <span class="eyebrow">Connections · mount as MCP tools for your agent</span>
-                <span style="font-size:12px;color:var(--tx-3);">OAuth runs in your system browser. Tokens land in the OS keyring — never in config files.</span>
-              </div>
-              <sc-for list="{{ connRows }}" as="cn" hint-placeholder-count="6">
-                <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line-1);">
-                  <span style="flex:1;min-width:0;">
-                    <span style="display:block;font-size:13px;font-weight:500;">{{ cn.name }}</span>
-                    <span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:1px;">{{ cn.scope }}</span>
-                  </span>
-                  <sc-if value="{{ cn.connected }}" hint-placeholder-val="{{ false }}">
-                    <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;background:var(--ok-bg);border:1px solid var(--ok);color:var(--ok);">connected</span>
-                  </sc-if>
-                  <button class="btn btn-ghost btn-sm" onClick="{{ cn.go }}">{{ cn.btn }}</button>
-                </div>
-              </sc-for>
-            </div>
-            <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;">Agent access to a connection is capability-scoped, and every write it proposes — an event, an issue, a page — queues for your approval like any other tool write.</p>
-          </div>
-          </sc-if>
-
-          <sc-if value="{{ ssAi }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings AI providers">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <span class="eyebrow">Default model route</span>
-              <span style="display:flex;gap:6px;flex-wrap:wrap;">
-                <sc-for list="{{ aiDefaults }}" as="ad" hint-placeholder-count="2">
-                  <button class="btn btn-sm {{ ad.cls }}" onClick="{{ ad.go }}">{{ ad.label }}</button>
-                </sc-for>
-              </span>
-              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">the gateway path needs no key; provider keys route the harness directly from this machine</span>
-            </div>
-            <div class="surface" style="display:flex;flex-direction:column;">
-              <div style="padding:14px 18px;border-bottom:1px solid var(--line-1);">
-                <span class="eyebrow">Provider keys · bring your own</span>
-              </div>
-              <sc-for list="{{ aiRows }}" as="ai" hint-placeholder-count="5">
-                <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line-1);flex-wrap:wrap;">
-                  <span style="flex:1;min-width:120px;">
-                    <span style="display:block;font-size:13px;font-weight:500;">{{ ai.name }}</span>
-                    <span class="mono" style="display:block;font-size:10.5px;color:{{ ai.keyColor }};margin-top:1px;">{{ ai.keyLine }}</span>
-                  </span>
-                  <sc-if value="{{ ai.editing }}" hint-placeholder-val="{{ false }}">
-                    <input ref="{{ setAiInput }}" class="input mono" placeholder="{{ ai.placeholder }}" style="width:260px;height:30px;font-size:12px;">
-                    <button class="btn btn-secondary btn-sm" onClick="{{ ai.save }}">Save to keyring</button>
-                    <button class="btn btn-ghost btn-sm" onClick="{{ ai.cancel }}">Cancel</button>
-                  </sc-if>
-                  <sc-if value="{{ ai.idle }}" hint-placeholder-val="{{ true }}">
-                    <sc-if value="{{ ai.hasKey }}" hint-placeholder-val="{{ false }}">
-                      <button class="btn btn-ghost btn-sm" onClick="{{ ai.edit }}">Rotate</button>
-                      <button class="btn btn-danger btn-sm" onClick="{{ ai.remove }}">Remove</button>
-                    </sc-if>
-                    <sc-if value="{{ ai.noKey }}" hint-placeholder-val="{{ true }}">
-                      <button class="btn btn-ghost btn-sm" onClick="{{ ai.edit }}">Add key</button>
-                    </sc-if>
-                  </sc-if>
-                </div>
-              </sc-for>
-            </div>
-            <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;">Keys are sealed in the OS keyring and shown never again. The agent harness reads them at call time; nothing is proxied through Citrate unless you route through the gateway.</p>
-          </div>
-          </sc-if>
-
-          <sc-if value="{{ ssNode }}" hint-placeholder-val="{{ false }}">
-          <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:14px;" data-screen-label="Settings node">
-            <span class="eyebrow">Node configuration · every field here is wired</span>
-            <div style="display:flex;flex-direction:column;gap:6px;">
-              <span class="lbl">Network</span>
-              <span style="display:flex;gap:8px;">
-                <button class="btn btn-sm {{ netTestnetCls }}" onClick="{{ onNetTestnet }}">testnet · 40204</button>
-                <button class="btn btn-sm {{ netLocalCls }}" onClick="{{ onNetLocal }}">local devnet</button>
-              </span>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:6px;">
-              <span class="lbl">Data directory</span>
-              <span style="display:flex;gap:8px;align-items:center;">
-                <span class="mono" style="font-size:12px;background:var(--srf-inset);border:1px solid var(--line-1);border-radius:var(--r-1);padding:8px 10px;flex:1;">{{ dataDir }}</span>
-                <button class="btn btn-ghost btn-sm" onClick="{{ onMoveDir }}">Move…</button>
-              </span>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:6px;">
-              <span class="lbl">Bootnodes</span>
-              <span class="mono" style="font-size:11px;background:var(--srf-inset);border:1px solid var(--line-1);border-radius:var(--r-1);padding:8px 10px;line-height:1.6;">boot1.citrate.ai:30303 · boot2.citrate.ai:30303 · boot-eu1.citrate.ai:30303</span>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:6px;">
-              <span class="lbl">Resource cap · CPU</span>
-              <span style="display:flex;gap:8px;">
-                <sc-for list="{{ cpuCaps }}" as="cc" hint-placeholder-count="3">
-                  <button class="btn btn-sm {{ cc.cls }}" onClick="{{ cc.go }}">{{ cc.label }}</button>
-                </sc-for>
-              </span>
-              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">applies to the citrate-node sidecar at next start</span>
-            </div>
-          </div>
-          </sc-if>
-
-          <sc-if value="{{ ssApi }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings API keys">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
-              <span class="eyebrow">RPC endpoint</span>
-              <span style="display:flex;gap:8px;">
-                <button class="btn btn-sm {{ rpcLocalCls }}" onClick="{{ onRpcLocal }}">local node</button>
-                <button class="btn btn-sm {{ rpcPublicCls }}" onClick="{{ onRpcPublic }}">rpc.citrate.ai</button>
-              </span>
-              <span style="display:inline-flex;align-items:center;gap:8px;">
-                <span style="width:7px;height:7px;border-radius:999px;background:{{ rpcHealthColor }};"></span>
-                <span class="mono" style="font-size:11px;color:var(--tx-2);">{{ rpcHealthText }}</span>
-              </span>
-            </div>
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
-              <span class="eyebrow">Gateway key · inference</span>
-              <sc-if value="{{ noGwKey }}" hint-placeholder-val="{{ true }}">
-                <p style="font-size:12.5px;color:var(--tx-2);margin:0;">No key issued. The membership service issues it against your live entitlement, with tier-bounded quotas.</p>
-                <span><button class="btn btn-secondary btn-sm" onClick="{{ onIssueKey }}">Issue key</button></span>
-              </sc-if>
-              <sc-if value="{{ gwKeyShown }}" hint-placeholder-val="{{ false }}">
-                <div style="border:1px solid var(--warn);background:var(--warn-bg);border-radius:var(--r-1);padding:10px 12px;display:flex;flex-direction:column;gap:8px;">
-                  <span style="font-size:12px;color:var(--warn);font-weight:500;">Shown once — it is being stored in your OS keyring now.</span>
-                  <span style="display:flex;align-items:center;gap:8px;">
-                    <span class="mono" style="font-size:12px;flex:1;word-break:break-all;">{{ gwKeyFull }}</span>
-                    <button class="btn btn-ghost btn-sm" onClick="{{ onCopyKey }}">Copy</button>
-                  </span>
-                  <span><button class="btn btn-secondary btn-sm" onClick="{{ onKeyStored }}">Done — stored</button></span>
-                </div>
-              </sc-if>
-              <sc-if value="{{ gwKeyHeld }}" hint-placeholder-val="{{ false }}">
-                <span style="display:flex;align-items:center;gap:10px;">
-                  <span class="mono" style="font-size:12px;flex:1;">{{ gwKeyMasked }}</span>
-                  <button class="btn btn-ghost btn-sm" onClick="{{ onRotateKey }}">Rotate</button>
-                  <button class="btn btn-danger btn-sm" onClick="{{ onRevokeKey }}">Revoke</button>
-                </span>
-                <span class="mono" style="font-size:10.5px;color:var(--tx-3);">in OS keyring · old keys revoke server-side on rotation</span>
-              </sc-if>
-            </div>
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
-              <span class="eyebrow">Memory socket</span>
-              <span class="mono" style="font-size:11px;background:var(--srf-inset);border:1px solid var(--line-1);border-radius:var(--r-1);padding:8px 10px;word-break:break-all;">{{ socketPath }}</span>
-            </div>
-          </div>
-          </sc-if>
-
-          <sc-if value="{{ ssKeys }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings keys">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
-              <span class="eyebrow">Keystore</span>
-              <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line-1);padding-bottom:10px;">
-                <span style="flex:1;">
-                  <span style="display:block;font-size:13px;font-weight:500;">Smart wallet · passkey validator</span>
-                  <span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;">WebAuthn P-256 · enrolled with identity</span>
-                </span>
-                <span class="mono" style="font-size:10px;color:var(--ok);">ACTIVE</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line-1);padding-bottom:10px;">
-                <span style="flex:1;">
-                  <span style="display:block;font-size:13px;font-weight:500;">Machine attestation</span>
-                  <span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;">{{ deviceId }} · hardware-backed device key · proved at sign-in · binds session + license to this machine</span>
-                </span>
-                <span class="mono" style="font-size:10px;color:var(--ok);">ATTESTED</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:12px;">
-                <span style="flex:1;">
-                  <span style="display:block;font-size:13px;font-weight:500;">Local signing key</span>
-                  <span class="mono" style="display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;">Argon2id + AES-GCM keystore · OS keyring sealed</span>
-                </span>
-                <button class="btn btn-ghost btn-sm" onClick="{{ onExportKey }}">Export…</button>
-              </div>
-              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;">Export reveals your encrypted keystore file. Anyone with the file and your passphrase controls the key. No support agent will ever ask for it.</p>
-            </div>
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <span class="eyebrow">Session policy · one truth</span>
-              <span style="display:flex;gap:8px;">
-                <sc-for list="{{ lockOpts }}" as="lo" hint-placeholder-count="3">
-                  <button class="btn btn-sm {{ lo.cls }}" onClick="{{ lo.go }}">{{ lo.label }}</button>
-                </sc-for>
-              </span>
-              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">auto-lock — the UI and the keystore enforce this same constant; there is no second timer</span>
-            </div>
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <span class="eyebrow">Signature approval policy</span>
-              <span style="display:flex;gap:8px;">
-                <button class="btn btn-sm {{ polHitlCls }}" onClick="{{ onPolHitl }}">Approve every signature</button>
-                <button class="btn btn-sm {{ polAllowCls }}" onClick="{{ onPolAllow }}">Allowlist rules…</button>
-              </span>
-              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">{{ polNote }}</span>
-            </div>
-          </div>
-          </sc-if>
-
-          <sc-if value="{{ ssBilling }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings billing">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <div style="display:flex;align-items:center;gap:12px;">
-                <span style="flex:1;">
-                  <span style="display:block;font-size:14px;font-weight:500;">{{ memPlanLabel }}</span>
-                  <span class="mono" style="display:block;font-size:11px;color:var(--tx-3);margin-top:2px;">{{ memRenewLine }}</span>
-                </span>
-                <span class="mono" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;background:{{ memBadgeBg }};border:1px solid {{ memBadgeBd }};color:{{ memBadgeFg }};">{{ memBadge }}</span>
-              </div>
-              <div style="display:flex;gap:10px;">
-                <button class="btn btn-secondary btn-sm" onClick="{{ onRenew }}">Renew ↗</button>
-                <button class="btn btn-ghost btn-sm" onClick="{{ onCancelMem }}">Cancel membership</button>
-              </div>
-              <p style="font-size:11px;line-height:1.55;color:var(--tx-3);margin:0;">On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock. Your keys and chain access are yours. The membership grant stays locked in your bond until its unlock block.</p>
-              <span style="font-size:11px;color:var(--tx-3);"><a href="https://membership.citrate.ai" target="_blank" rel="noopener">See membership pricing ↗</a> · Membership does not buy SALT.</span>
-            </div>
-            <sc-if value="{{ hasSbtV }}" hint-placeholder-val="{{ true }}">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
-              <span class="eyebrow">Membership grant</span>
-              <!-- UI truth contract §5.4 / §5.6 / §5.7: the one grant explanation (core src/data/grantCopy.ts, planned, PR #349) -->
-              <p style="font-size:13px;line-height:1.6;color:var(--tx-1);margin:0;">{{ grantCustody }}</p>
-              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:var(--tx-2);">Grant · locked in your bond</span><span class="mono tabular" style="font-size:12.5px;">32,000 SALT</span></div>
-              <div style="display:flex;justify-content:space-between;" title="MemberBond.activated()"><span style="font-size:12.5px;color:var(--tx-2);">Bond</span><span class="mono" style="font-size:11.5px;">Bond locked · not staked</span></div>
-              <div style="display:flex;justify-content:space-between;" title="MemberBond.unlockTimestamp(), unlockBlock()"><span style="font-size:12.5px;color:var(--tx-2);">Lock end</span><span class="mono" style="font-size:11.5px;color:var(--tx-3);">— · not read in the prototype</span></div>
-              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:var(--tx-2);">Transaction</span><span class="mono" style="font-size:11.5px;color:var(--accent-text);cursor:pointer;">{{ s5Hash }} ↗</span></div>
-              <p style="font-size:11px;line-height:1.5;color:var(--tx-3);margin:0;">{{ grantDisclaimer }} {{ grantBetanet }}</p>
-            </div>
-            </sc-if>
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:8px;">
-              <span class="eyebrow">Receipts</span>
-              <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span class="mono" style="font-size:11.5px;">{{ memReceipt }}</span>
-                <button class="btn btn-ghost btn-sm" onClick="{{ onReceipt }}">PDF ↗</button>
-              </div>
-            </div>
-          </div>
-          </sc-if>
-
-          <!-- Privacy & recovery: core ships it (HUP-S10.5, src/privacy/PrivacySection.tsx); slice 1 lists it unchanged -->
-          <sc-if value="{{ ssPrivacy }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings privacy">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <span class="eyebrow">Privacy &amp; recovery · unchanged in 0.5.2</span>
-              <span style="font-size:13px;line-height:1.6;color:var(--tx-2);">This section stays as it ships today. Slice 1 does not redraw it.</span>
-              <span style="font-size:12.5px;line-height:1.7;color:var(--tx-2);">· Recovery kit for this device's keys: a phrase sheet or a passphrase file, your choice<br>· Delete my local data: a dry run first, then a typed confirmation<br>· What works offline<br>· Default budget values (read only)</span>
-            </div>
-          </div>
-          </sc-if>
-
-          <sc-if value="{{ ssApp }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:12px;" data-screen-label="Settings app">
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:12px;">
-              <span class="eyebrow">Updates · signed manifests</span>
-              <span style="display:flex;gap:8px;">
-                <button class="btn btn-sm {{ chStableCls }}" onClick="{{ onChStable }}">stable</button>
-                <button class="btn btn-sm {{ chBetaCls }}" onClick="{{ onChBeta }}">beta</button>
-              </span>
-              <span style="display:flex;align-items:center;gap:10px;">
-                <button class="btn btn-ghost btn-sm" onClick="{{ onCheckUpdate }}" disabled="{{ updChecking }}">Check now</button>
-                <sc-if value="{{ updCheckingV }}" hint-placeholder-val="{{ false }}"><span style="width:22px;height:22px;display:inline-block;"><dc-import name="LoaderMark" size="22" hint-size="22px,22px"></dc-import></span></sc-if>
-                <span class="mono" style="font-size:11px;color:var(--tx-2);">{{ updText }}</span>
-              </span>
-              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">updater signature verified offline before anything applies · citrate-core 0.1.0-proto</span>
-            </div>
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <span class="eyebrow">Telemetry</span>
-              <span style="display:flex;align-items:center;gap:12px;">
-                <button class="btn btn-sm {{ telOffCls }}" onClick="{{ onTelOff }}">off</button>
-                <button class="btn btn-sm {{ telOnCls }}" onClick="{{ onTelOn }}">crash reports only</button>
-              </span>
-              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">default off · never message content, never keys, never addresses</span>
-            </div>
-            <div class="surface" style="padding:18px;display:flex;flex-direction:column;gap:10px;">
-              <span class="eyebrow">Diagnostics</span>
-              <span><button class="btn btn-ghost btn-sm" onClick="{{ onDiag }}">Export diagnostics bundle</button></span>
-              <span class="mono" style="font-size:10.5px;color:var(--tx-3);">logs + config + crash records · scrubbed of keys and tokens · citrate-core:// scheme registered for deep links</span>
-            </div>
-          </div>
-          </sc-if>
-
-        </div>
-      </div>
-      </sc-if>
 
 
     </div>
@@ -3628,12 +3801,12 @@ class Component extends DCLogic {
   // Follows the K0 route map (core src/shell/places.ts, docs/nav/FIVE_PLACE_ROUTE_MAP.md): every
   // 0.5.1 route id and every settings/<id> section opens its new home. Slice 2 adds the Node pages
   // (node/<page>[/<sub>]), the Store (store/<page>[/<id>]; K0's store/apps and store/models open the
-  // catalog on that kind) and the web pages web/join/<code> and web/download. Groups is a stub, so
-  // its tab segments open the place.
+  // catalog on that kind) and the web pages web/join/<code> and web/download. Slice 3 adds the Groups
+  // tabs (groups/<tab>, groups/chat/alerts) and the Wallet tabs (wallet/<tab>).
   resolveHash(hash) {
     const parts = (hash || '').replace(/^#\/?/, '').split('/').filter(Boolean);
     if (parts[0] === 'web') return { web: parts[1] === 'download' ? 'download' : 'join' };
-    const LEGACY = { dashboard: ['hermes', 'chat'], agent: ['hermes', 'work'], journal: ['hermes', 'journal'], comms: ['groups'], people: ['groups'], cluster: ['groups'], train: ['groups'], alf: ['groups'], community: ['groups'], files: ['node', 'storage', 'files'], storage: ['node', 'storage', 'memory'], commissary: ['store', 'apps'], models: ['store', 'models'], connections: ['settings', 'connections'] };
+    const LEGACY = { dashboard: ['hermes', 'chat'], agent: ['hermes', 'work'], journal: ['hermes', 'journal'], comms: ['groups', 'chat', 'alerts'], people: ['groups', 'members'], cluster: ['groups', 'cluster'], train: ['groups', 'rounds'], alf: ['groups', 'alf'], community: ['groups', 'community'], files: ['node', 'storage', 'files'], storage: ['node', 'storage', 'memory'], commissary: ['store', 'apps'], models: ['store', 'models'], connections: ['settings', 'connections'] };
     // Settings sections that moved to Hermes › Controls; `hermes` is the depth-1 panel itself.
     const CONTROLS = { hermes: [1], ai: [2, 'providers'], escalation: [2, 'escalation'], mcp: [2, 'mcp'], web: [2, 'web'], budgets: [2, 'budgets'], terminal: [2, 'terminal'], personas: [2, 'personas'] };
     const ACCOUNT = ['account', 'connections', 'api', 'keys', 'billing', 'privacy', 'app'];
@@ -3652,6 +3825,10 @@ class Component extends DCLogic {
     if (['hermes', 'groups', 'wallet', 'node', 'store', 'settings'].indexOf(r) < 0) return null;
     const u = { route: r, legacy: null, web: null };
     if (r === 'hermes' && ['chat', 'journal', 'work', 'learn', 'controls'].indexOf(t) >= 0) u.hTab = t;
+    // Groups (slice 3): K0's tabs, with Alerts under Chat and the hidden groups/community leaf.
+    if (r === 'groups') u.gTab = t === 'chat' || !t ? (v === 'alerts' ? 'alerts' : 'chat') : ['rounds', 'members', 'cluster', 'alf', 'community'].indexOf(t) >= 0 ? t : 'chat';
+    // Wallet is one K0 route; wallet/<tab> is a prototype deep link to its tab.
+    if (r === 'wallet') u.wTab = ['overview', 'staking', 'activity', 'identity'].indexOf(t) >= 0 ? t : 'overview';
     if (r === 'node') {
       if (t === 'earnings') t = 'rewards'; // an earlier draft name (K0)
       u.nPage = ['status', 'services', 'storage', 'rewards', 'advanced'].indexOf(t) >= 0 ? t : 'status';
@@ -4516,49 +4693,7 @@ class Component extends DCLogic {
     });
     V.svcCards = D ? D.CATALOG.services : [];
 
-    // ----- settings -----
-    // 0.5.2: only account-level things remain. AI providers moved to Hermes › Controls; node configuration to Node › Advanced (slice 2).
-    // The account-level sections core ships after K0 (src/shell/places.ts ACCOUNT_SETTINGS), in its order.
-    const secs = [['account', 'Account & RBAC'], ['connections', 'Connections'], ['api', 'API endpoints & keys'], ['keys', 'Keys & security'], ['billing', 'Memberships & billing'], ['privacy', 'Privacy & recovery'], ['app', 'App']];
-    if (s.sSec === 'ai' || s.sSec === 'node') s.sSec = 'account';
-    V.setNav = secs.map(([id, label]) => ({
-      label, go: () => { this.setState({ sSec: id }); this.save(); },
-      weight: s.sSec === id ? 500 : 400,
-      bg: s.sSec === id ? 'var(--srf-1)' : 'transparent',
-      color: s.sSec === id ? 'var(--tx-1)' : 'var(--tx-2)',
-    }));
-    V.ssAccount = s.sSec === 'account'; V.ssNode = s.sSec === 'node'; V.ssApi = s.sSec === 'api';
-    V.ssConn = s.sSec === 'connections'; V.ssAi = s.sSec === 'ai';
-    V.ssKeys = s.sSec === 'keys'; V.ssBilling = s.sSec === 'billing'; V.ssPrivacy = s.sSec === 'privacy'; V.ssApp = s.sSec === 'app';
-    const expTxt = s.entitlement === 'lapsed' ? '2026-06-28 · lapsed' : s.entitlement === 'expiring' ? '2026-07-25 · 14 days' : '2027-07-11';
-    V.claimRows = [
-      { k: 'sub', v: 'usr_2af4c19e…' + P.initials.toLowerCase(), color: 'var(--tx-1)' },
-      { k: 'email', v: P.email, color: 'var(--tx-1)' },
-      { k: 'tier', v: effTier + (effTier !== s.tier ? ' (was ' + s.tier + ')' : ''), color: 'var(--tx-1)' },
-      { k: 'role', v: P.role, color: 'var(--tx-1)' },
-      { k: 'org', v: s.org || '—', color: s.org ? 'var(--info)' : 'var(--tx-3)' },
-      { k: 'expiresAt', v: expTxt, color: s.entitlement === 'active' ? 'var(--tx-1)' : s.entitlement === 'lapsed' ? 'var(--danger)' : 'var(--warn)' },
-      { k: 'kyc_status', v: s.hasSbt || s.s2 === 'verified' ? 'verified' : 'none', color: 'var(--tx-1)' },
-    ];
-    V.onManageAccount = () => this.toast('Opens account-hub /account in your browser — shared OIDC session');
-    V.onSignOut = () => this.toast('Signs out and revokes the refresh token at the authority — reset the prototype to replay onboarding');
-    V.netTestnetCls = s.net === 'testnet' ? 'btn-secondary' : 'btn-ghost';
-    V.netLocalCls = s.net === 'local' ? 'btn-secondary' : 'btn-ghost';
-    V.onNetTestnet = () => { this.setState({ net: 'testnet' }); this.save(); };
-    V.onNetLocal = () => { this.setState({ net: 'local' }); this.toast('Applies at next node start — the running sidecar is untouched'); this.save(); };
-    V.dataDir = s.dataDir;
-    V.onMoveDir = () => this.toast('Move stops the node, relocates the encrypted store, verifies, then restarts — guided flow in the wired build');
-    V.cpuCaps = [25, 50, 75].map((c) => ({
-      label: c + ' %', cls: s.cpuCap === c ? 'btn-secondary' : 'btn-ghost',
-      go: () => { this.setState({ cpuCap: c }); this.save(); },
-    }));
-    V.rpcLocalCls = s.rpc === 'local' ? 'btn-secondary' : 'btn-ghost';
-    V.rpcPublicCls = s.rpc === 'public' ? 'btn-secondary' : 'btn-ghost';
-    V.onRpcLocal = () => { this.setState({ rpc: 'local' }); this.save(); };
-    V.onRpcPublic = () => { this.setState({ rpc: 'public' }); this.save(); };
-    const rpcUp = s.rpc === 'public' || s.node !== 'off';
-    V.rpcHealthColor = rpcUp ? 'var(--ok)' : 'var(--warn)';
-    V.rpcHealthText = s.rpc === 'local' ? (s.node !== 'off' ? '127.0.0.1:8545 · healthy · ' + Math.round(s.finAge) + 's behind checkpoint' : '127.0.0.1:8545 · node off — reads fall back to rpc.citrate.ai (shown in UI)') : 'rpc.citrate.ai · healthy · TLS';
+    // ----- settings (the section list and cards are drawn in slice3Vals) -----
     V.noGwKey = !s.gwKey && !s.gwKeyFull;
     V.gwKeyShown = !!s.gwKeyFull;
     V.gwKeyHeld = !!s.gwKey && !s.gwKeyFull;
@@ -4575,45 +4710,10 @@ class Component extends DCLogic {
     };
     V.onRotateKey = () => { this.setState({ gwKey: null, gwKeyFull: null }); this.toast('Old key revoked server-side — issue a new one'); this.save(); };
     V.onRevokeKey = () => { this.setState({ gwKey: null, gwKeyFull: null }); this.toast('Key revoked server-side'); this.save(); };
-    V.onExportKey = () => this.toast('Export shows the strong-warning dialog, then reveals the encrypted keystore file');
     V.lockOpts = [15, 30, 60].map((m) => ({
       label: m + ' min', cls: s.autolock === m ? 'btn-secondary' : 'btn-ghost',
       go: () => { this.setState({ autolock: m }); this.toast('Auto-lock set to ' + m + ' minutes — UI and keystore share this constant'); this.save(); },
     }));
-    V.polHitlCls = s.sigPolicy === 'hitl' ? 'btn-secondary' : 'btn-ghost';
-    V.polAllowCls = s.sigPolicy === 'allow' ? 'btn-secondary' : 'btn-ghost';
-    V.onPolHitl = () => { this.setState({ sigPolicy: 'hitl' }); this.save(); };
-    V.onPolAllow = () => { this.setState({ sigPolicy: 'allow' }); this.toast('Allowlist rules are user-authored per origin + contract — editor ships in the wired build'); this.save(); };
-    V.polNote = s.sigPolicy === 'hitl' ? 'every signature stops at the ceremony — the default' : 'allowlisted intents skip the ceremony; everything else still stops';
-    V.memPlanLabel = effTier === 'free' ? 'Public tier — no membership' : effTier === 'enterprise' ? 'Enterprise seat · ' + (s.org || '') : 'Pilot membership';
-    // V12: the price has one source (core src/data/membership.ts, PR #349); it buys membership, not SALT.
-    V.memReceipt = '2026-07-11 · Pilot membership · amount on the receipt';
-    V.grantCustody = 'Your membership comes with a 32,000 SALT grant, locked in your bond until block — (not read yet). It is not staked until you activate the bond.';
-    V.grantDisclaimer = 'The grant is not purchased, and it is not an investment.';
-    V.grantBetanet = 'Betanet. What carries over to mainnet is set in the genesis spec.';
-    V.memRenewLine = s.entitlement === 'lapsed' ? 'lapsed 2026-06-28' : 'renews 2027-07-11 · Stripe customer portal';
-    V.memBadge = s.entitlement === 'active' ? 'active' : s.entitlement;
-    const mb = s.entitlement === 'active' ? ['var(--ok-bg)', 'var(--ok)', 'var(--ok)'] : s.entitlement === 'lapsed' ? ['var(--danger-bg)', 'var(--danger)', 'var(--danger)'] : ['var(--warn-bg)', 'var(--warn)', 'var(--warn)'];
-    V.memBadgeBg = mb[0]; V.memBadgeBd = mb[1]; V.memBadgeFg = mb[2];
-    V.onRenew = () => this.toast('Renewal opens the Stripe customer portal in your browser');
-    V.onCancelMem = () => this.toast('Cancellation runs in the customer portal — grace and downgrade rules are spelled out first');
-    V.onReceipt = () => this.toast('Receipt PDF downloads from core-membership');
-    V.chStableCls = s.channel === 'stable' ? 'btn-secondary' : 'btn-ghost';
-    V.chBetaCls = s.channel === 'beta' ? 'btn-secondary' : 'btn-ghost';
-    V.onChStable = () => { this.setState({ channel: 'stable' }); this.save(); };
-    V.onChBeta = () => { this.setState({ channel: 'beta' }); this.save(); };
-    V.updChecking = s.updState === 'checking';
-    V.updCheckingV = s.updState === 'checking';
-    V.updText = s.updState === 'checking' ? 'checking ' + s.channel + ' channel…' : s.updState === 'current' ? '0.1.0-proto is current on ' + s.channel : 'last checked at launch';
-    V.onCheckUpdate = () => {
-      this.setState({ updState: 'checking' });
-      setTimeout(() => this.setState({ updState: 'current' }), 1700);
-    };
-    V.telOffCls = !s.telemetry ? 'btn-secondary' : 'btn-ghost';
-    V.telOnCls = s.telemetry ? 'btn-secondary' : 'btn-ghost';
-    V.onTelOff = () => { this.setState({ telemetry: false }); this.save(); };
-    V.onTelOn = () => { this.setState({ telemetry: true }); this.save(); };
-    V.onDiag = () => this.toast('Diagnostics bundle exported — logs, config, crash records; keys and tokens scrubbed');
 
     // ----- validator stats -----
     V.blocksProposedStr = s.node === 'off' ? '—' : fmtI(s.blocksProposed);
@@ -4774,45 +4874,6 @@ class Component extends DCLogic {
       };
     });
 
-    // ----- AI providers -----
-    const AIP = [
-      ['openai', 'OpenAI', 'sk-…'],
-      ['anthropic', 'Anthropic', 'sk-ant-…'],
-      ['gemini', 'Google Gemini', 'AIza…'],
-      ['xai', 'xAI', 'xai-…'],
-      ['custom', 'Custom endpoint', 'https://… · bearer'],
-    ];
-    const aiName = {}; AIP.forEach(([id, n]) => { aiName[id] = n; });
-    V.setAiInput = (el) => { this.aiInputEl = el; if (el && el.dataset.fresh !== s.aiEdit) { el.dataset.fresh = s.aiEdit; el.value = ''; try { el.focus(); } catch (e) {} } };
-    V.aiDefaults = [['gateway', 'Citrate gateway']].concat(AIP.filter(([id]) => s.aiKeys[id]).map(([id, n]) => [id, n])).map(([id, label]) => ({
-      label, cls: s.aiDefault === id ? 'btn-secondary' : 'btn-ghost',
-      go: () => { this.setState({ aiDefault: id }); this.toast('Harness routes to ' + label + ' by default'); this.save(); },
-    }));
-    V.aiRows = AIP.map(([id, name, ph]) => {
-      const key = s.aiKeys[id];
-      const editing = s.aiEdit === id;
-      return {
-        name, editing, idle: !editing, hasKey: !!key, noKey: !key,
-        keyLine: key ? key + ' · OS keyring' : 'no key',
-        keyColor: key ? 'var(--ok)' : 'var(--tx-3)',
-        placeholder: ph,
-        edit: () => this.setState({ aiEdit: id }),
-        cancel: () => this.setState({ aiEdit: null }),
-        remove: () => {
-          const k = Object.assign({}, this.state.aiKeys); delete k[id];
-          const upd = { aiKeys: k }; if (this.state.aiDefault === id) upd.aiDefault = 'gateway';
-          this.setState(upd); this.toast(name + ' key removed from the keyring'); this.save();
-        },
-        save: () => {
-          const v = this.aiInputEl ? this.aiInputEl.value.trim() : '';
-          if (v.length < 8) return this.toast('That does not look like a key');
-          const masked = v.slice(0, 5) + '•••••••••••••' + v.slice(-4);
-          this.setState((st) => ({ aiKeys: Object.assign({}, st.aiKeys, (function () { const o = {}; o[id] = masked; return o; })()), aiEdit: null }));
-          this.toast(name + ' key sealed in the OS keyring — shown never again');
-          this.save();
-        },
-      };
-    });
 
     // ----- ceremony -----
     const head = s.queue[0];
@@ -5439,26 +5500,13 @@ class Component extends DCLogic {
     }
     V.d3Empty = V.d3Rows.length === 0;
 
-    // ----- place stubs, Store stub, Settings -----
-    const STUBS = {
-      groups: { t: 'Groups', slice: 'slice 2 or later', lead: 'Chat with round cards, Rounds, Members, Cluster and ALF, the tabs core ships after K0. Training becomes round cards in the chat plus a Rounds tab (group rounds ADR).', tabs: [['Chat', 'Sub-tabs Groups and Alerts. Group chat with round cards (unverified, fixture round, accepted, rejected)'], ['Rounds', 'Group rounds not live yet: FederatedRoundLedger and PatronageLedger are not deployed on 40204'], ['Members', 'Roster, roles, invites'], ['Cluster', 'Co-pinning and linked devices'], ['ALF', 'ALF members only']], legacy: 'comms' },
-      wallet: { t: 'Wallet', slice: 'slice 2', lead: 'Overview, Staking, Activity and Identity, redrawn against UI truth contract v1: one definition of “staked” (stakeOf), the bond state words, and the grant explained one way everywhere.', tabs: [['Overview', 'Balance (eth_getBalance, “latest”; unknown on error, never 0)'], ['Staking', 'Bond locked · not staked until MemberBond.activated()'], ['Activity', 'Pending, Included in block N, N confirmations'], ['Identity', 'Membership SBT, linked identities']], legacy: 'wallet' },
-    };
-    const stub = STUBS[s.route];
+    // ----- Store stub (click path 2 hop) and the 0.5.1 reference screens -----
     const storeHop = s.route === 'store' && s.cp2.store && !s.legacy;
     V.rStoreStub = storeHop;
-    V.rStub = !!stub && !s.legacy && !storeHop;
-    if (stub) {
-      V.stubLabel = stub.t + ' stub'; V.stubTitle = stub.t; V.stubSlice = stub.slice; V.stubLead = stub.lead;
-      V.stubTabs = stub.tabs.map(([k, v]) => ({ k, v }));
-      V.stubHasLegacy = !!stub.legacy;
-      V.onStubLegacy = () => this.setState({ legacy: stub.legacy });
-    }
     V.rLegacyBar = !!s.legacy;
     V.onLegacyClose = () => this.setState({ legacy: null });
     V.rWallet = s.legacy === 'wallet'; V.rNode = s.legacy === 'node'; V.rComms = s.legacy === 'comms'; V.rComm = s.legacy === 'commissary';
     V.rStorage = false; V.rDash = false;
-    V.rSettings = s.route === 'settings';
     const inst = !!s.daemons.find((d) => d.id === 'd-brief');
     V.stInstalled = inst; V.stCanInstall = !inst;
     V.stNeedsWeb = !s.webSearch;
@@ -5490,11 +5538,7 @@ class Component extends DCLogic {
         spend: 'escalation.budget (escalation_budget → history, capMicros, usedMicros, confirmedMicros) · daemons_list (spendTodaySalt is always "0"; drawn as “Daemons can’t spend SALT”, ruling 5)',
         runs: 'daemonsApi.runsBetween (daemon_runs_between → DaemonRunLog)',
       }[s.cAud], 'none'],
-      groups: ['Groups (stub)', 'groups   (K0 #343: groups, comms, people, cluster, train, alf and community redirect here)', 'groups.*, cluster.*, flRounds.* (drawn in slice 2 or later)', 'rounds: “Group rounds not live yet” (contract §4)'],
-      wallet: ['Wallet (stub)', 'wallet', 'wallet.balances / activity, membership.grantStatus (redrawn in slice 2)', 'none'],
-      node: ['Node (stub)', 'node   (K0 #343: node, storage, files and settings/node redirect here)', 'node.status, K1 services registry (none yet), storage.list (slice 2)', 'K6 network switch at genesis'],
       store: [storeHop ? 'Store stub · install sheet (click path 2 hop)' : 'Store (stub)', 'store   (today: commissary, models)', storeHop ? 'none yet (core plan K5): signed catalog, install path; installs via daemonsApi.save (daemon_save) with paused = true' : 'commissary.catalog today; signed catalog none yet (core plan K5)', 'catalog key from the key ceremony (K5)'],
-      settings: ['Settings', 'settings   (today: settings, connections)', 'auth.status / userinfo, membership.entitlement, connections.status, custody.status, config.read / write', 'none'],
     };
     const key = isH ? vKey : s.route;
     const a = A[key] || ['—', s.route, '—', '—'];
@@ -5881,7 +5925,7 @@ class Component extends DCLogic {
       error: ['Error', 'The node failed to start or crashed.', '#dd7259'],
     };
     const W = WORDS[word];
-    const VAL = { none: 'Not a validator', locked: 'Bond locked · not staked', staked: 'Registered · active from epoch —', active: 'Validator active' };
+    const VAL = { none: 'Not a validator', locked: 'Bond locked · not staked', staked: 'Registered · active from epoch —', active: 'Validator active', exiting: 'Exiting', slashed: 'Slashed' };
     const running = ['synced', 'syncing', 'notchecked', 'stalled', 'nopeers'].indexOf(word) >= 0;
     const peersKnown = word === 'synced' || word === 'syncing' || word === 'stalled';
     const peersTxt = word === 'nopeers' ? '0 direct peers' : null;
@@ -6530,7 +6574,7 @@ class Component extends DCLogic {
           { k: 'Invited by', v: inv.inviter + (inv.verified ? ' · verified' : ''), vColor: 'var(--tx-1)', src: 'the identity directory, set by the join service' },
           { k: 'Invite', v: inv.code + ' · works once · expires in ' + J.expDays + ' days', vColor: 'var(--tx-1)', src: 'the relay keeps single use, expiry and revocation' },
         ] : null,
-          p: sub2 === 'done' ? 'Open Hermes' : inv ? 'Join ' + inv.cluster : 'Open Hermes', pa: sub2 === 'done' || !inv ? () => this.ob2Finish() : () => this.ob2Wait(1600, () => this.setState((st) => ({ jSub: 'done', groupJoined: { cluster: inv.cluster, goal: inv.goal, inviter: inv.inviter, at: new Date().toISOString().slice(0, 10) }, cp1: Object.assign({}, st.cp1, { joined: true }) }))),
+          p: sub2 === 'done' ? 'Open Hermes' : inv ? 'Join ' + inv.cluster : 'Open Hermes', pa: sub2 === 'done' || !inv ? () => this.ob2Finish() : () => this.ob2Wait(1600, () => this.setState((st) => { const today = new Date().toISOString().slice(0, 10); const g = Component.joinedGroup(inv, this.short(this.addr(P.name + '::comms')), today); return { jSub: 'done', groupJoined: { cluster: inv.cluster, goal: inv.goal, inviter: inv.inviter, at: today }, groups: st.groups.some((x) => x.id === g.id) ? st.groups : st.groups.concat([g]), gSel: g.id, gTab: 'chat', cp1: Object.assign({}, st.cp1, { joined: true }) }; })),
           sec: sub2 === 'done' || !inv ? '' : 'Not now', sa: () => { this.setState({ invite: null }); this.ob2Finish(); },
           wait: 'Joining ' + (inv ? inv.cluster : ''), waitSub: 'group_invite_redeem: the relay checks the invite is unused, unexpired and not revoked',
           done: inv ? 'You joined ' + inv.cluster : '', doneSub: 'the relay accepted the invite; the group opens in Groups',
@@ -6570,7 +6614,6 @@ class Component extends DCLogic {
     // ----- Groups stub and the Hermes rail after click path 1 -----
     const g = s.groupJoined;
     V.grpShow = !!g && V.shell && s.route === 'hermes' && (s.hTab || 'chat') === 'chat' && !!V.htChat;
-    V.grpStubShow = !!g && V.shell && s.route === 'groups' && !s.legacy;
     if (g) { V.grpName = g.cluster; V.grpSub = g.goal + ' group · joined ' + g.at + ' · invited by ' + g.inviter; V.grpBody = 'You joined with an invite link. The group chat and its tabs open in Groups.'; }
     V.goGroups = (e) => { if (e && e.preventDefault) e.preventDefault(); this.go('groups'); };
 
@@ -6606,11 +6649,33 @@ class Component extends DCLogic {
   }
 
   // =====================================================================
-  // Slice 3 (red): the API the slice-3 tests call, with today's behaviour.
-  // Wallet and Groups are stubs, the validator word follows isActive alone,
-  // and no price is ever shown.
+  // Slice 3 (0.5.2 design): Wallet, Groups and Settings, the last screen
+  // groups of prototype v1. Words follow UI truth contract v1 §1 (validator,
+  // bond, membership and transaction words) and the GROW-S2 §11 join and invite
+  // words; money copy follows §5. The C1 fixture has no per-member reads, so a
+  // member's balance, stake, bond and rewards read "—" (unknown, not zero) until
+  // the rehearsal-1 export adds a sample member (chain-team ruling 7).
   // =====================================================================
-  static validatorWord(rec) { return rec && rec.isActive ? 'Validator active' : 'Not a validator'; }
+
+  // The validator word (contract §1; core src/shell/chainTruth.ts validatorWord). `rec` is the
+  // registry record for this node's key: status (0 None, 1 Active, 2 Exiting, 3 Slashed),
+  // isActive(pubkey) and validatorInfo(pubkey).actEpoch (null = not read). "Validator active"
+  // needs isActive AND actEpoch ≤ currentEpoch(); anything unread never reads as active. null
+  // means the reads disagree or weren't made, and the screen shows "—".
+  static validatorWord(rec, currentEpoch) {
+    if (!rec) return null;
+    if (rec.status === 2) return 'Exiting';
+    if (rec.status === 3) return 'Slashed';
+    if (rec.status === 1) {
+      const reached = rec.actEpoch != null && currentEpoch != null && rec.actEpoch <= currentEpoch;
+      if (reached) return rec.isActive ? 'Validator active' : null;
+      return 'Registered · active from epoch ' + (rec.actEpoch != null ? Number(rec.actEpoch).toLocaleString('en-US') : '—');
+    }
+    if (rec.hasGrant) return rec.bondActivated === false ? 'Bond locked · not staked' : null;
+    return 'Not a validator';
+  }
+  // The annotation strip's validator switch, as the registry record each word stands for. The
+  // fixture has no per-validator read, so these are drawn states, not reads.
   static valRecord(word, epoch) {
     return {
       none: { status: 0, hasGrant: false },
@@ -6621,12 +6686,27 @@ class Component extends DCLogic {
       slashed: { status: 3 },
     }[word] || null;
   }
-  static priceLabel() { return null; }
-  static get PRICING_URL() { return 'https://membership.citrate.ai'; }
+  // core src/data/membership.ts membershipPriceLabel (C1-P #379): a price only when core-membership
+  // served one with an amount and a known interval. Otherwise every surface shows the pricing link.
+  static priceLabel(price) {
+    if (!price || !price.displayAmount || !(price.unitAmount > 0)) return null;
+    const per = price.interval === 'year' ? 'a year' : price.interval === 'month' ? 'a month' : null;
+    return per ? price.displayAmount + ' ' + per : null;
+  }
+  static get PRICING_URL() { return 'https://citrate.ai/membership'; }
+  // The shape membership_price returns. The prototype has no live read, so it draws the slot, not an amount.
   static get PRICE_SHAPE() { return { currency: '⟨currency⟩', unitAmount: 1, interval: 'year', displayAmount: '⟨displayAmount⟩' }; }
-  static grantCustody() { return 'Your membership comes with a 32,000 SALT grant, locked in your bond until block — (not read yet). It is not staked until you activate the bond.'; }
+  // core src/data/grantCopy.ts grantCustody (#349): the one grant explanation (§5.4).
+  static grantCustody({ amountSalt, unlockBlock, staked, granted }) {
+    const grant = amountSalt && amountSalt !== '—' ? 'a ' + amountSalt + ' SALT grant' : 'a SALT grant';
+    const until = unlockBlock != null ? 'until block ' + Number(unlockBlock).toLocaleString('en-US') : granted ? 'until block — (not read yet)' : 'for about a year';
+    return staked
+      ? 'Your membership comes with ' + grant + ', locked in your bond ' + until + '. Your bond is activated, so the grant is staked in the ValidatorRegistry.'
+      : 'Your membership comes with ' + grant + ', locked in your bond ' + until + '. It is not staked until you activate the bond.';
+  }
   static get GRANT_DISCLAIMER() { return 'The grant is not purchased, and it is not an investment.'; }
   static get BETANET_LINE() { return 'Betanet. What carries over to mainnet is set in the genesis spec.'; }
+
   slice3Seed(s, pid) {
     const day = (d) => new Date(Date.now() - d * 864e5).toISOString().slice(0, 10);
     const a = (n) => this.short(this.addr(n));
@@ -6664,19 +6744,721 @@ class Component extends DCLogic {
     }
     s.gSel = s.groups[0] ? s.groups[0].id : null;
   }
-  walletSend() { return false; }
-  activateFromWallet() { return false; }
-  gxPaste() { return false; }
-  gxJoinNow() { return false; }
-  gxSend() { return false; }
-  gxCreate() { return false; }
-  gxInvite() { return false; }
-  gxRevoke() { return false; }
-  gxRoster() { return false; }
-  gxCluster() { return false; }
-  gxShare() { return false; }
-  slice3Vals(V) {
-    for (const k of ['wlTiles', 'wlTxRows', 'wlCards', 'gxTabs', 'gxSubTabs', 'gxList', 'gxMsgs', 'gxRoster', 'gxInvites', 'gxCards']) V[k] = [];
+
+  // ----- Wallet -----
+  wlgo(tab) {
+    this.setState({ route: 'wallet', wTab: tab, legacy: null, web: null });
+    const h = '#/wallet' + (tab === 'overview' ? '' : '/' + tab);
+    try { if (location.hash !== h) location.hash = h; } catch (e) {}
+    this.save();
+  }
+  // Send: the strict decimal path core uses (Wallet.tsx). With the balance unread it fails closed:
+  // the over-balance check can't run, so nothing goes to the ceremony.
+  walletSend(to, amtRaw) {
+    const t = String(to || '').trim(), amt = String(amtRaw || '').trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(t)) { this.toast('Enter a full address: 0x and 40 hex characters.'); return false; }
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(amt) || !(parseFloat(amt) > 0)) { this.toast('Enter an amount in SALT, for example 1.5.'); return false; }
+    if (this.state.wlBal !== 'read') { this.toast('Your balance hasn’t been read, so Send waits. Nothing was signed.'); return false; }
+    this.requestSig({
+      origin: 'user wallet action', requester: 'you · Wallet › Send',
+      title: 'Send ' + amt + ' SALT',
+      rows: [{ k: 'To', v: t }, { k: 'Amount', v: amt + ' SALT' }, { k: 'Call', v: 'wallet_send, a native SALT transfer on 40204' }],
+      cost: 'base fee 1 gwei (fixed) · fixture', sponsor: 'No gas sponsorship: 40204 has no paymaster read.', sponsorColor: 'var(--tx-3)',
+      steps: ['signing in the ceremony', 'sending to 40204', 'waiting for inclusion'],
+      apply: (h) => this.wlTxAdd('Send', '−' + amt + ' SALT', h),
+    });
+    return true;
+  }
+  // A signed transaction is Pending until a receipt exists, then Included in block N (contract §1).
+  // The prototype reads no receipt, so N is "—". Session rows aren't saved: the app reads history from CitrateScan.
+  wlTxAdd(kind, amount, hash) {
+    const id = 'tx' + (++this.mid);
+    this.setState((st) => ({ wlTx: [{ id, kind, amount, hash, state: 'pending' }].concat(st.wlTx || []) }));
+    setTimeout(() => this.setState((st) => ({ wlTx: (st.wlTx || []).map((x) => (x.id === id && x.state === 'pending' ? Object.assign({}, x, { state: 'included' }) : x)) })), 2600);
+  }
+  // Activate from Wallet › Staking: the same ceremony as onboarding step 7. It needs Synced first.
+  activateFromWallet() {
+    const s = this.state;
+    if (s.valWord !== 'locked') { this.toast('Only a locked bond can be activated.'); return false; }
+    if (this.nodeWordOf(s) !== 'synced') { this.toast('Activation needs Synced first. Start your node in Node › Status.'); return false; }
+    const proposer = this.short(this.addr(this.PERSONAS[s.persona].name + '::proposer'));
+    this.requestSig({
+      origin: 'user wallet action', requester: 'you · Wallet › Staking',
+      title: 'Activate your validator bond',
+      rows: [
+        { k: 'Calls', v: 'MemberBond.activate() on your bond' },
+        { k: 'Moves', v: 'the bond principal into the validator registry, as this node’s stake' },
+        { k: 'Validator key', v: proposer + ' (proposer.key on this node)' },
+        { k: 'After', v: 'Registered · active from epoch N (N = actEpoch, read after inclusion)' },
+      ],
+      cost: 'base fee 1 gwei (fixed) · fixture', sponsor: Component.GRANT_DISCLAIMER, sponsorColor: 'var(--tx-3)',
+      steps: ['signing in the ceremony', 'sending to 40204', 'waiting for inclusion'],
+      apply: () => { this.setState({ valWord: 'staked' }); this.recordDecision('ceremony.approval', 'approved', 'MemberBond.activate · validator bond', 'wallet · staking'); },
+    });
+    return true;
+  }
+
+  // ----- Groups -----
+  gxgo(tab, extra) {
+    this.setState(Object.assign({ route: 'groups', gTab: tab, legacy: null, web: null }, extra || {}));
+    const h = '#/groups/' + (tab === 'alerts' ? 'chat/alerts' : tab);
+    try { if (location.hash !== h) location.hash = h; } catch (e) {}
+    this.save();
+  }
+  patchGroup(id, fn) { this.setState((st) => ({ groups: st.groups.map((g) => (g.id === id ? Object.assign({}, g, fn(g)) : g)) })); }
+  // A joined group as the daemon lists it (groups_list). "Joined ⟨cluster⟩" is shown only once it is here (GROW-S2 §11).
+  static joinedGroup(inv, me, today) {
+    return {
+      id: 'g-' + inv.cluster.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name: inv.cluster, kind: 'channel', role: 'member', goal: inv.goal, joinedAt: today, invitedBy: inv.inviter,
+      msgs: [{ who: 'Citrate', text: 'You joined with ' + (inv.verified === false ? 'an invite' : inv.inviter + '’s invite') + '. Messages here are end-to-end encrypted between members.', at: today, sys: true }],
+      roster: [{ addr: '—', name: inv.verified === false ? 'the person who invited you' : inv.inviter, role: 'owner' }, { addr: me, name: 'You', role: 'member' }],
+      invites: [], cluster: { joined: false, files: [] },
+    };
+  }
+  // Paste an invite link or a bare code (#355): the app keeps it and makes no call until you act.
+  gxPaste(text) {
+    const raw = String(text || '').trim();
+    const J = Component.JOIN();
+    const m = /^(?:https:\/\/citrate\.ai\/join\/|citrate:\/\/join\/)?([A-Z0-9]{8})(?:#([A-Za-z0-9_-]{22}))?$/.exec(raw);
+    if (!m) { this.toast('That doesn’t look like an invite link or code.'); return false; }
+    if (!m[2]) { this.setState({ gxJoin: { code: m[1], phase: 'nokey' } }); return true; }
+    if (m[1] !== J.code) { this.setState({ gxJoin: { code: m[1], phase: 'unknown' } }); return true; }
+    if (this.state.groups.some((g) => g.name === J.cluster)) { this.setState({ gxJoin: { code: m[1], phase: 'already' } }); return true; }
+    this.setState({ gxJoin: { code: m[1], phase: 'review' } });
+    return true;
+  }
+  // One explicit Join click redeems it (group_invite_redeem). Joined only once the group is listed.
+  gxJoinNow() {
+    const j = this.state.gxJoin;
+    if (!j || j.phase !== 'review') return false;
+    const J = Component.JOIN();
+    this.setState({ gxJoin: Object.assign({}, j, { phase: 'joining' }) });
+    setTimeout(() => {
+      const today = new Date().toISOString().slice(0, 10);
+      const me = this.short(this.addr(this.PERSONAS[this.state.persona].name + '::comms'));
+      const g = Component.joinedGroup({ cluster: J.cluster, goal: J.goal, inviter: J.inviter, verified: true }, me, today);
+      this.setState((st) => ({ groups: st.groups.some((x) => x.id === g.id) ? st.groups : st.groups.concat([g]), gSel: g.id, gxJoin: Object.assign({}, st.gxJoin, { phase: 'joined' }), groupJoined: st.groupJoined || { cluster: J.cluster, goal: J.goal, inviter: J.inviter, at: today } }));
+      this.save();
+    }, 1500);
+    return true;
+  }
+  gxSend(text) {
+    const t = String(text || '').trim();
+    const s = this.state;
+    const g = s.groups.find((x) => x.id === s.gSel);
+    if (!t || !g) return false;
+    if ((s.variants || {})['gx-chat'] === 'error') { this.toast('The relay is unreachable, so nothing was sent. Your message is kept here.'); return false; }
+    this.patchGroup(g.id, (x) => ({ msgs: x.msgs.concat([{ who: 'You', text: t, at: new Date().toISOString().slice(0, 10) }]) }));
+    this.save();
+    return true;
+  }
+  gxCreate(name) {
+    const n = String(name || '').trim();
+    if (!n) { this.toast('Name the group first.'); return false; }
+    if (!/^[A-Za-z0-9 .'-]{2,40}$/.test(n) || /official|support/i.test(n)) { this.toast('Use Latin letters and digits, and leave out words like “official” or “support”.'); return false; }
+    const today = new Date().toISOString().slice(0, 10);
+    const me = this.short(this.addr(this.PERSONAS[this.state.persona].name + '::comms'));
+    const id = 'g-new-' + Date.now().toString(36) + '-' + (++this.mid);
+    const g = { id, name: n, kind: 'channel', role: 'owner', goal: 'general', joinedAt: today, invitedBy: null, msgs: [{ who: 'Citrate', text: 'You created this group. Invite people from Members.', at: today, sys: true }], roster: [{ addr: me, name: 'You', role: 'owner' }], invites: [], cluster: { joined: false, files: [] } };
+    this.setState((st) => ({ groups: st.groups.concat([g]), gSel: id }));
+    this.save();
+    return true;
+  }
+  // Create an invite link (join_mint direct + group_invite_create). With the join service down it
+  // falls back to the app-only citrate://invite link, which opens only for people who have Citrate.
+  gxInvite() {
+    const s = this.state;
+    const g = s.groups.find((x) => x.id === s.gSel);
+    if (!g) return false;
+    if (g.role !== 'owner' && g.role !== 'admin') { this.toast('Only owners and admins can invite. The relay refuses it otherwise.'); return false; }
+    const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) code += A[(Math.random() * A.length) | 0];
+    const exp = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+    const app = s.gxSvc !== 'live';
+    this.patchGroup(g.id, (x) => ({ invites: [{ code, state: 'open', who: null, at: new Date().toISOString().slice(0, 10), exp, app }].concat(x.invites) }));
+    this.toast(app ? 'The join service isn’t reachable, so this is an app-only link. It opens only for people who already have Citrate.' : 'Invite link created. It works once and expires ' + exp + '.');
+    this.save();
+    return true;
+  }
+  gxRevoke(code) {
+    const s = this.state;
+    const g = s.groups.find((x) => x.id === s.gSel);
+    if (!g) return false;
+    this.patchGroup(g.id, (x) => ({ invites: x.invites.map((i) => (i.code === code && i.state === 'open' ? Object.assign({}, i, { state: 'revoked' }) : i)) }));
+    this.save();
+    return true;
+  }
+  // Role changes and removals stop at the signature ceremony (core Groups.tsx); the relay enforces RBAC.
+  gxRoster(addr, change) {
+    const s = this.state;
+    const g = s.groups.find((x) => x.id === s.gSel);
+    const r = g && g.roster.find((x) => x.addr === addr);
+    if (!g || !r) return false;
+    if (g.role !== 'owner' && g.role !== 'admin') { this.toast('Only owners and admins can change roles. The relay refuses it otherwise.'); return false; }
+    const remove = change === 'remove';
+    this.requestSig({
+      origin: 'user wallet action', requester: 'you · Groups › Members',
+      title: remove ? 'Remove ' + r.name + ' from ' + g.name : 'Make ' + r.name + ' ' + change + ' in ' + g.name,
+      rows: [{ k: 'Group', v: g.name }, { k: 'Member', v: r.name + ' · ' + r.addr }, { k: remove ? 'Action' : 'New role', v: remove ? 'offboard (groups_offboard): their key leaves the group' : change + ' (groups_assign_role)' }],
+      cost: 'no chain transaction · signed for the relay', sponsor: 'The relay checks your role before it applies this.', sponsorColor: 'var(--tx-3)', chainless: true,
+      apply: () => {
+        this.patchGroup(g.id, (x) => ({ roster: remove ? x.roster.filter((y) => y.addr !== addr) : x.roster.map((y) => (y.addr === addr ? Object.assign({}, y, { role: change }) : y)) }));
+        this.recordDecision('groups.roster', 'approved', (remove ? 'remove ' : change + ' · ') + r.name, 'groups · members');
+      },
+    });
+    return true;
+  }
+  gxCluster(join) {
+    const s = this.state;
+    const g = s.groups.find((x) => x.id === s.gSel);
+    if (!g) return false;
+    this.patchGroup(g.id, (x) => ({ cluster: Object.assign({}, x.cluster, { joined: !!join }) }));
+    this.toast(join ? 'Joined the cluster. Files shared here are co-pinned by members’ nodes, with no bond.' : 'Left the cluster. Your own files stay on this node.');
+    this.save();
+    return true;
+  }
+  gxShare() {
+    const s = this.state;
+    const g = s.groups.find((x) => x.id === s.gSel);
+    if (!g || !g.cluster.joined) return false;
+    const pick = (s.files || []).find((f) => !g.cluster.files.some((x) => x.name === f.name));
+    if (!pick) { this.toast('Every file in Node › Storage › Files is already shared here. Add one there first.'); return false; }
+    this.patchGroup(g.id, (x) => ({ cluster: Object.assign({}, x.cluster, { files: x.cluster.files.concat([{ name: pick.name, size: pick.size }]) }) }));
+    this.toast('Shared with ' + g.name + ' (cluster_share_file). No bond: pin bonds not live yet.');
+    this.save();
+    return true;
+  }
+
+  slice3Vals(V, s, P) {
+    const FX = Component.FX();
+    const fmtI = (n) => Math.round(n).toLocaleString('en-US');
+    const chip = (label, on, go) => ({ label, go, bd: on ? 'var(--tx-1)' : 'var(--line-2)', bg: on ? 'var(--tx-1)' : 'transparent', fg: on ? 'var(--srf-0)' : 'var(--tx-2)' });
+    const variantOf = (key) => (s.variants && s.variants[key]) || 'data';
+    const setVariants = (key) => {
+      const cur = variantOf(key);
+      V.annHasVariants = true;
+      V.annVariants = ['data', 'empty', 'error', 'unavailable'].map((v) => chip(v, cur === v, () => this.setVariant(key, v)));
+      return cur;
+    };
+    const pill = (tone) => ({ ok: ['var(--ok)', 'var(--ok)', 'var(--ok-bg)'], warn: ['var(--warn)', 'var(--warn)', 'var(--warn-bg)'], danger: ['var(--danger)', 'var(--danger)', 'var(--danger-bg)'], info: ['var(--info)', 'var(--info)', 'var(--info-bg)'], accent: ['var(--accent)', 'var(--accent-text)', 'var(--accent-wash)'] }[tone] || ['var(--line-2)', 'var(--tx-2)', 'transparent']);
+    const btn = (label, go, opts) => Object.assign({ label, go, cls: 'btn-ghost', off: false }, opts || {});
+    // A card in a place's card stack: title, optional lead, rows (k, v, src, fixture tag), note and buttons.
+    const card = (label, title, o) => {
+      const c = Object.assign({ label, title, meta: '', lead: '', rows: [], note: '', fx: false, fxNote: '', btns: [], btnNote: '', bd: 'var(--line-1)' }, o || {});
+      c.rows = c.rows.map((r) => Object.assign({ vColor: 'var(--tx-1)', src: '', fx: false }, r));
+      c.hasRows = c.rows.length > 0; c.hasBtns = c.btns.length > 0;
+      return c;
+    };
+    const stateCard = (prefix, kind, title, c) => {
+      V[prefix + 'Card'] = !!c;
+      if (!c) return;
+      V[prefix + 'CardKind'] = kind === 'error' ? 'Error' : kind === 'unavailable' ? 'Unavailable' : 'Empty';
+      V[prefix + 'CardLabel'] = title + ' ' + kind;
+      V[prefix + 'CardTitle'] = c[0]; V[prefix + 'CardBody'] = c[1]; V[prefix + 'CardWhy'] = c[2]; V[prefix + 'CardCta'] = c[3] || '';
+      V[prefix + 'CardBd'] = kind === 'error' ? 'var(--danger)' : 'var(--line-2)'; V[prefix + 'CardFg'] = kind === 'error' ? 'var(--danger)' : 'var(--tx-3)';
+    };
+    const fxFoot = FX.label + ' · ' + FX.file + ' (' + FX.rev + ') · captured ' + FX.capturedAt + ', head ' + fmtI(FX.block) + ' to ' + fmtI(FX.headEnd) + '.';
+    const disc = Component.GRANT_DISCLAIMER + ' ' + Component.BETANET_LINE;
+    const vRec = Component.valRecord(s.valWord, FX.epoch);
+    const vWord = Component.validatorWord(vRec, FX.epoch);
+    const registered = !!vRec && vRec.status >= 1;
+    const granted = !!s.hasGrant || s.valWord !== 'none';
+    const staked = registered && s.valWord !== 'locked';
+
+    // ===================== WALLET =====================
+    const isW = V.shell && s.route === 'wallet' && !s.legacy;
+    V.wlShow = isW;
+    const wt = ['overview', 'staking', 'activity', 'identity'].indexOf(s.wTab) >= 0 ? s.wTab : 'overview';
+    const wKey = 'wl-' + wt;
+    const wVar = isW ? setVariants(wKey) : 'data';
+    V.wlTabs = [['overview', 'Overview'], ['staking', 'Staking'], ['activity', 'Activity'], ['identity', 'Identity']].map(([id, label]) => ({
+      label, sel: wt === id ? 'true' : 'false', weight: wt === id ? 500 : 400, bg: wt === id ? 'var(--srf-2)' : 'transparent', color: wt === id ? 'var(--tx-1)' : 'var(--tx-3)', go: () => this.wlgo(id),
+    }));
+    V.wlValWord = vWord || '— · not read';
+    const vt = pill(vWord === 'Validator active' ? 'ok' : vWord === 'Slashed' ? 'danger' : vWord === 'Exiting' ? 'warn' : 'muted');
+    V.wlValBd = vt[0]; V.wlValFg = vt[1]; V.wlValBg = vt[2];
+    V.wlSource = 'source · rpc.citrate.ai (public RPC, through the Rust RpcClient)';
+    V.onWlLegacy = () => this.setState({ legacy: 'wallet' });
+    const WCOPY = {
+      empty: ['No wallet on this device yet', 'Your wallet is created during setup, at the Wallet and bond step. If you explored free, set it up here; nothing is sent until you sign.', 'wallet_ensure_ready has not run on this device', 'Set up my wallet'],
+      error: ['Couldn’t read your wallet', 'The balance and stake reads failed, so every amount is unknown here, not zero. Nothing was sent.', ({ overview: 'wallet_balances → error: eth_call timed out', staking: 'stakeOf / MemberBond reads → error: eth_call timed out', activity: 'wallet_activity → error: CitrateScan txlist unreachable', identity: 'auth_userinfo → error: identity service unreachable' })[wt], 'Try again'],
+      unavailable: ['Your wallet is locked', 'The keystore is locked. Unlock it to read balances or sign; nothing is read from a cache.', 'custody.status → { unlocked: false }', 'Unlock'],
+    };
+    stateCard('wl', wVar, 'Wallet ' + wt, isW && wVar !== 'data' ? WCOPY[wVar] : null);
+    V.onWlCardCta = () => { this.setVariant(wKey, 'data'); if (wVar === 'empty') this.toast('Setup opens at the Wallet and bond step.'); };
+    const wOn = (t) => isW && wVar === 'data' && wt === t;
+    V.wlOverview = wOn('overview'); V.wlActivity = wOn('activity');
+    V.wlStack = wOn('staking') || wOn('identity');
+    const balRead = s.wlBal === 'read';
+    V.wlTiles = [
+      { k: 'SALT · liquid', v: balRead ? 'N SALT' : '—', src: balRead ? 'eth_getBalance(address, "latest") · read (the prototype draws N, not a number)' : 'eth_getBalance(address, "latest") · not read in the prototype, so unknown, not 0' },
+      { k: 'Staked', v: staked ? '— SALT' : vWord || '—', src: 'ValidatorRegistry.stakeOf(pubkey), the only “staked” figure' + (staked ? ' · not read in the prototype' : '') },
+      { k: 'Validator rewards', v: staked ? '—' : 'none · ' + (vWord || '—'), src: 'ValidatorRegistry.rewardsOf(pubkey).total, for producing blocks · Node › Rewards has the breakdown' },
+    ];
+    V.wlSendNote = balRead ? 'base fee 1 gwei (fixed) · fixture · no gas sponsorship: 40204 has no paymaster read' : 'Send waits until your balance is read, so the amount can be checked first.';
+    V.wlSendOff = false;
+    V.setWlTo = (el) => { this.wlToEl = el; };
+    V.setWlAmt = (el) => { this.wlAmtEl = el; };
+    V.onWlSend = () => {
+      if (this.walletSend(this.wlToEl ? this.wlToEl.value : '', this.wlAmtEl ? this.wlAmtEl.value : '')) {
+        if (this.wlAmtEl) this.wlAmtEl.value = '';
+      }
+    };
+    V.wlAddr = s.walletAddr;
+    V.onWlCopy = () => this.copy(s.walletAddr, 'Address copied');
+    // Activity: this session's signed transactions, or the drawn states from contract §1.
+    const TXW = {
+      pending: ['Pending', 'in the mempool, no receipt yet', 'info'],
+      included: ['Included in block —', 'eth_getTransactionReceipt; N isn’t read in the prototype. Confirmations: head − N, a depth count, not finality', 'ok'],
+      confirmations: ['N confirmations', 'head − N, a depth count, not finality', 'ok'],
+      failed: ['Failed · reverted', 'the receipt has status 0; nothing moved', 'warn'],
+    };
+    const drawn = s.wlRows === 'drawn';
+    const txs = drawn
+      ? [['Send', 'pending'], ['Send', 'included'], ['Send', 'confirmations'], ['Send', 'failed']].map(([kind, st], i) => ({ id: 'd' + i, kind, amount: '— SALT', hash: null, state: st }))
+      : (s.wlTx || []);
+    V.wlTxRows = txs.map((t) => {
+      const w = TXW[t.state] || TXW.pending; const tn = pill(w[2]);
+      return { kind: t.kind, amount: t.amount, hash: t.hash ? this.short(t.hash) : '—', word: w[0], sub: w[1], bd: tn[0], fg: tn[1], bg: tn[2] };
+    });
+    V.wlTxEmpty = V.wlTxRows.length === 0;
+    V.wlTxDrawn = drawn;
+    V.wlTxFoot = drawn ? 'Drawn states from contract §1, with no amounts: the C1 fixture has no transaction export.' : 'Signed in this session only. The app reads your history from CitrateScan (wallet_activity) and each row’s receipt; this prototype keeps no history across a reload.';
+    // Staking and Identity are card stacks.
+    const lockRow = { k: 'Lock', v: granted ? 'Locked until — (block —)' : '—', vColor: 'var(--tx-2)', src: 'MemberBond.unlockTimestamp() and unlockBlock(), both shown: the lock opens when either is reached · not read in the prototype' };
+    V.wlCards = [];
+    if (wOn('staking')) {
+      const canAct = s.valWord === 'locked';
+      V.wlCards = [
+        card('Wallet validator', 'Your validator', {
+          meta: 'ValidatorRegistry',
+          rows: [
+            { k: 'Validator', v: vWord || '— · not read', vColor: vWord === 'Validator active' ? 'var(--ok)' : 'var(--tx-1)', src: 'Validator active = isActive(pubkey) and validatorInfo(pubkey).actEpoch ≤ currentEpoch(). Consensus follows the epoch snapshot, so it can lag by up to an epoch' },
+            { k: 'Validator stake', v: staked ? '— SALT' : vWord || '—', src: 'ValidatorRegistry.stakeOf(pubkey)' + (staked ? ' · not read in the prototype' : '') },
+            { k: 'Producing blocks', v: staked ? '— · not read' : 'No', vColor: 'var(--tx-2)', src: 'a block in the last 1,000 with proposerPubkey = this node’s key. Validator active does not imply this' },
+            { k: 'Minimum stake', v: '32,000 SALT', fx: true, src: 'ValidatorRegistry.minStake() · observed_head 510,036' },
+            { k: 'Epoch', v: FX.epoch + ' · every 1,000 blocks (~33 min)', fx: true, src: 'ValidatorRegistry.currentEpoch() · observed_head 510,037' },
+          ],
+          fx: true, fxNote: fxFoot,
+          note: 'Only a validator that produces blocks receives validator rewards. In the fixture sample, ' + FX.producing + ' validator produced blocks over blocks ' + fmtI(FX.prodFrom) + '–' + fmtI(FX.prodTo) + '.',
+          btns: canAct ? [btn('Activate validator', () => this.activateFromWallet(), { cls: 'btn-secondary' })] : [],
+          btnNote: canAct ? 'Needs Synced first. You sign MemberBond.activate() once, in the signature ceremony.' : '',
+        }),
+        card('Wallet grant', 'Membership grant · locked in your bond', {
+          meta: 'MemberBond',
+          lead: granted ? Component.grantCustody({ amountSalt: null, unlockBlock: null, staked, granted: true }) : 'No membership grant on this wallet.',
+          rows: granted ? [
+            { k: 'Grant', v: '— SALT', vColor: 'var(--tx-2)', src: 'MemberBond.principal() · not read in the prototype' },
+            { k: 'Bond', v: staked ? 'activated · staked in the ValidatorRegistry' : 'Bond locked · not staked', src: 'MemberBond.activated()' },
+            lockRow,
+            { k: 'Withdraw', v: 'not before the lock end', vColor: 'var(--tx-2)', src: 'after it: Unlocked · verify identity to withdraw, until isKycVerified()' },
+          ] : [],
+          note: granted ? disc : '',
+        }),
+        card('Wallet liquid staking', 'LiquidStakingPool deposit · not validator stake', {
+          meta: 'pending the money-path decision',
+          lead: 'Core still ships the liquid path; the plan retires it, pending the money-path decision (contract §4). A deposit here never makes a validator: only the registry does.',
+          rows: [
+            { k: 'Deposit', v: '—', vColor: 'var(--tx-2)', src: 'LiquidStakingPool shares for this address · not read in the prototype' },
+            { k: 'Withdrawal delay', v: '50,400 blocks (~28 h)', fx: true, src: 'LiquidStakingPool.WITHDRAWAL_DELAY × the measured ~2 s block time (fixture, observed_head 510,031). Never 12 s blocks' },
+            { k: 'Pending withdrawals', v: 'none', vColor: 'var(--tx-2)', src: 'wallet_pending_withdrawals (eth_getLogs in 1,000-block windows)' },
+          ],
+          btns: [btn('Add stake…', () => {}, { off: true }), btn('Withdraw…', () => {}, { off: true })],
+          btnNote: 'Drawn as core ships them and off here: the deposit isn’t read, so nothing can be checked.',
+        }),
+      ];
+    }
+    if (wOn('identity')) {
+      const lapsed = s.entitlement === 'lapsed';
+      const kyc = { verified: 'verified', failed: 'not verified', review: 'in manual review', skipped: 'not verified (optional for membership)' }[s.kycOutcome] || '—';
+      V.wlCards = [
+        card('Wallet membership', 'Membership', {
+          meta: 'CitrateMemberSBT',
+          rows: [
+            { k: 'Membership', v: s.tier === 'free' ? 'Not a member' : lapsed ? 'Membership lapsed' : 'Member', vColor: lapsed ? 'var(--danger)' : 'var(--tx-1)', src: 'CitrateMemberSBT.isActive(tokenId). isActive does not include identity verification' },
+            { k: 'Token', v: s.tier === 'free' ? '—' : '— · not read', vColor: 'var(--tx-2)', src: 'the member token id for this address' },
+            { k: 'Identity verification', v: s.tier === 'free' ? '—' : kyc, src: 'kyc_status in /userinfo (auth_userinfo). Needed to withdraw after the lock end' },
+          ],
+        }),
+        card('Wallet addresses', 'Addresses', {
+          rows: [
+            { k: 'Smart wallet', v: s.walletAddr, src: 'wallet_ensure_ready · receives on chain 40204' },
+            { k: 'Validator key', v: s.valWord === 'none' || s.valWord === 'locked' ? '— · not created yet' : this.short(this.addr(P.name + '::proposer')), vColor: 'var(--tx-2)', src: 'node_proposer_identity (proposer.key in the node data dir)' },
+            { k: 'Comms key', v: this.short(this.addr(P.name + '::comms')), vColor: 'var(--tx-2)', src: 'groups_self_address: your address in groups, sealed on this device, not your wallet' },
+          ],
+          btns: [btn('Copy wallet address', () => this.copy(s.walletAddr, 'Address copied'))],
+        }),
+        card('Wallet network members', 'On the network', {
+          meta: 'fixture',
+          rows: [
+            { k: 'Member tokens issued', v: '5', fx: true, src: 'CitrateMemberSBT.nextTokenId() · observed_head 510,042. totalSupply() reverts, so it isn’t called' },
+            { k: 'Membership grants issued', v: '5', fx: true, src: 'MembershipStakeVault.nextGrantId() · observed_head 510,041' },
+          ],
+          fx: true, fxNote: fxFoot,
+        }),
+      ];
+    }
+    if (isW) {
+      const WB = {
+        overview: 'wallet.balances (wallet_balances → eth_getBalance "latest"; an error is unknown, never 0) · wallet.send (wallet_send) through the signature ceremony (sign_request, sign_approve) · validator word: ValidatorRegistry.validatorInfo / isActive / stakeOf and MemberBond.activated() (C1-V #348, #358) · rewards: node_validator_earnings',
+        staking: 'stakeOf / validatorInfo / isActive / currentEpoch (C1-V #348, #358) · MemberBond.principal / activated / unlockTimestamp / unlockBlock (membership_grant_status; bond reads #348) · activate: node_register_validator through the signature ceremony · liquid path: wallet_stake, wallet_request_withdrawal, wallet_pending_withdrawals (C1-W #371), wallet_claim_withdrawal · minStake: C1 fixture',
+        activity: 'wallet.activity (wallet_activity → CitrateScan txlist) with each row’s receipt (eth_getTransactionReceipt) · head for confirmations: public eth_blockNumber',
+        identity: 'auth.userinfo (auth_userinfo: tier, kyc_status) · CitrateMemberSBT.isActive(tokenId) · sbt_token_uri · node_proposer_identity · groups_self_address · network counts: C1 fixture',
+      };
+      V.annScreen = 'Wallet › ' + { overview: 'Overview', staking: 'Staking', activity: 'Activity', identity: 'Identity' }[wt];
+      V.annRoute = 'wallet   (K0: one route; the tab is state, and wallet/' + wt + ' is a prototype deep link)';
+      V.annBridge = WB[wt];
+      V.annFlag = { staking: 'bond model per the C4 decision; the liquid path per the money-path decision', overview: 'none', activity: 'none', identity: 'none' }[wt];
+      V.annHasExtra = true;
+      V.annExtra = [{ label: 'validator', chips: [['Not a validator', 'none'], ['Bond locked', 'locked'], ['Registered', 'staked'], ['Validator active', 'active'], ['Exiting', 'exiting'], ['Slashed', 'slashed']].map(([l, v]) => chip(l, s.valWord === v, () => this.setState({ valWord: v }))) }];
+      if (wt === 'overview') V.annExtra.push({ label: 'balance', chips: [chip('not read', !balRead, () => this.setState({ wlBal: 'unread' })), chip('read', balRead, () => this.setState({ wlBal: 'read' }))] });
+      if (wt === 'activity') V.annExtra.push({ label: 'rows', chips: [chip('this session', !drawn, () => this.setState({ wlRows: 'session' })), chip('drawn states', drawn, () => this.setState({ wlRows: 'drawn' }))] });
+    }
+
+    // ===================== GROUPS =====================
+    const isG = V.shell && s.route === 'groups' && !s.legacy;
+    V.gxShow = isG;
+    const GT = ['chat', 'alerts', 'rounds', 'members', 'cluster', 'alf', 'community'];
+    const gt = GT.indexOf(s.gTab) >= 0 ? s.gTab : 'chat';
+    const gKey = 'gx-' + gt;
+    const gVar = isG ? setVariants(gKey) : 'data';
+    const tabs = [['chat', 'Chat'], ['rounds', 'Rounds'], ['members', 'Members'], ['cluster', 'Cluster']].concat(s.alfClaim ? [['alf', 'ALF']] : []);
+    const tabOf = gt === 'alerts' ? 'chat' : gt;
+    V.gxTabs = tabs.map(([id, label]) => ({ label, sel: tabOf === id ? 'true' : 'false', weight: tabOf === id ? 500 : 400, bg: tabOf === id ? 'var(--srf-2)' : 'transparent', color: tabOf === id ? 'var(--tx-1)' : 'var(--tx-3)', go: () => this.gxgo(id) }));
+    V.gxChatSub = isG && (gt === 'chat' || gt === 'alerts');
+    V.gxSubTabs = [['chat', 'Groups'], ['alerts', 'Alerts']].map(([id, label]) => ({ label, weight: gt === id ? 500 : 400, bd: gt === id ? 'var(--tx-1)' : 'var(--line-2)', bg: gt === id ? 'var(--srf-2)' : 'transparent', color: gt === id ? 'var(--tx-1)' : 'var(--tx-2)', go: () => this.gxgo(id) }));
+    V.onGxLegacy = () => this.setState({ legacy: 'comms' });
+    const gEmpty = gVar === 'empty';
+    const groups = gEmpty ? [] : s.groups;
+    const sel = groups.find((g) => g.id === s.gSel) || groups[0] || null;
+    const relayDown = gVar === 'error' && gt === 'chat';
+    V.gxRelay = relayDown ? 'Relay unreachable · messages wait here' : groups.length ? 'Relay connected' : 'Relay · no groups yet';
+    V.gxRelayDot = relayDown ? 'var(--warn)' : groups.length ? 'var(--ok)' : 'var(--tx-3)';
+    const GCOPY = {
+      chat: { unavailable: ['Groups need the desktop app', 'Group chat runs through the comms daemon on this machine. The web preview has none, so nothing is listed rather than invented groups.', 'groups_list → Unavailable (BRIDGE_MODE = sim)'] },
+      alerts: { error: ['Couldn’t read alerts', 'The comms daemon didn’t answer, so alerts are unknown here. Nothing was marked read.', 'comms notifications → error: daemon not answering', 'Try again'], unavailable: ['Alerts aren’t connected yet', 'Core has no notifications command yet, so the shipped app shows no alerts rather than sample ones.', 'comms notifications API: none yet'] },
+      rounds: { error: ['Round ledgers: —', 'Reading the ledger code failed, so whether rounds are deployed is unknown here, not “no”.', 'contract_code_size(FederatedRoundLedger) → error: eth_getCode timed out', 'Try again'], unavailable: ['Rounds need the desktop app', 'The round card reads the address book and the chain through core. The web preview has neither.', 'BRIDGE_MODE = sim'] },
+      members: { error: ['Couldn’t read the roster', 'The relay didn’t return this group’s roster, so members and roles are unknown here. No one was removed.', 'groups_roster → error: relay unreachable', 'Try again'], unavailable: ['Members need the desktop app', 'Rosters come from the relay through the comms daemon. The web preview has neither.', 'BRIDGE_MODE = sim'] },
+      cluster: { error: ['Couldn’t read the cluster', 'The cluster daemon didn’t answer, so shared files and devices are unknown here. Nothing was unshared.', 'cluster_status → error: socket not found', 'Try again'], unavailable: ['Cluster isn’t running', 'Co-pinning needs the Cluster service. Start it in Node › Services.', 'cluster_status → { running: false }', 'Open Services'] },
+      alf: { error: ['Couldn’t check ALF membership', 'The identity service didn’t answer, so ALF access is unknown here.', 'auth_userinfo → error: identity service unreachable', 'Try again'], unavailable: ['ALF members only', 'This tab is shown to members with the ALF claim. Your identity doesn’t carry it.', 'auth_userinfo → no alf claim'] },
+      community: { error: ['Couldn’t read the community board', 'The relay didn’t answer.', 'groups_list(open network) → error: relay unreachable', 'Try again'], unavailable: ['Community needs the desktop app', 'The community board runs through the comms daemon.', 'BRIDGE_MODE = sim'] },
+    };
+    const gc = isG && gVar !== 'data' && gVar !== 'empty' ? (GCOPY[gt] || {})[gVar] : null;
+    const alfLocked = isG && gt === 'alf' && !s.alfClaim && gVar === 'data';
+    stateCard('gx', alfLocked ? 'unavailable' : gVar, 'Groups ' + gt, alfLocked ? GCOPY.alf.unavailable : gc);
+    V.onGxCardCta = () => { if (gc && /Services/.test(gc[3] || '')) this.ngo('services'); this.setVariant(gKey, 'data'); };
+    const gOn = (t) => isG && !V.gxCard && gt === t;
+    // ----- Chat › Groups -----
+    V.gxChat = gOn('chat');
+    V.gxList = groups.map((g) => ({
+      name: g.name, sub: ({ owner: 'owner', admin: 'admin', member: 'member', guest: 'guest' }[g.role] || g.role) + ' · ' + ({ channel: 'Circle', forum: 'Working', dm: 'Direct' }[g.kind] || g.kind),
+      bg: sel && sel.id === g.id ? 'var(--srf-2)' : 'transparent', weight: sel && sel.id === g.id ? 500 : 400, go: () => { this.setState({ gSel: g.id }); this.save(); },
+    }));
+    V.gxNoGroups = groups.length === 0;
+    V.gxHasSel = !!sel;
+    V.gxSelName = sel ? sel.name : '';
+    V.gxSelSub = sel ? (sel.goal + ' group · joined ' + sel.joinedAt + (sel.invitedBy ? ' · invited by ' + sel.invitedBy : '')) : '';
+    V.gxMsgs = sel ? sel.msgs.map((m) => ({ who: m.who, text: m.text, at: m.at, whoColor: m.sys ? 'var(--tx-3)' : m.who === 'You' ? 'var(--accent-text)' : 'var(--tx-2)' })) : [];
+    V.setGxMsg = (el) => { this.gxMsgEl = el; };
+    V.onGxSend = () => { if (this.gxSend(this.gxMsgEl ? this.gxMsgEl.value : '') && this.gxMsgEl) this.gxMsgEl.value = ''; };
+    V.onGxMsgKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); V.onGxSend(); } };
+    V.gxSendOff = !sel;
+    V.setGxPaste = (el) => { this.gxPasteEl = el; };
+    V.onGxPaste = () => { if (this.gxPaste(this.gxPasteEl ? this.gxPasteEl.value : '') && this.gxPasteEl) this.gxPasteEl.value = ''; };
+    V.setGxNew = (el) => { this.gxNewEl = el; };
+    V.onGxCreate = () => { if (this.gxCreate(this.gxNewEl ? this.gxNewEl.value : '') && this.gxNewEl) this.gxNewEl.value = ''; };
+    const J = Component.JOIN();
+    const j = s.gxJoin;
+    const JW = {
+      review: ['Ready to join ' + J.cluster, J.inviter + ' invited you to ' + J.cluster + ', a ' + J.goal + ' group. Joining is your choice: nothing joins on its own.', 'Join ' + J.cluster],
+      joining: ['Joining ' + J.cluster + '…', 'group_invite_redeem: the relay checks the invite is unused, unexpired and not revoked.', ''],
+      joined: ['Joined ' + J.cluster, 'It is in your groups list now.', ''],
+      already: ['Already a member', 'You are already in ' + J.cluster + ', so the invite wasn’t used.', ''],
+      nokey: ['This link is missing its key', 'The part after # opens the invite and never leaves your browser. Ask for the full link.', ''],
+      unknown: ['We couldn’t find that invite', 'The join service has no invite with that code. Check the code, or ask for a new link.', ''],
+    };
+    const jw = j && JW[j.phase];
+    V.gxJoinShow = !!jw;
+    V.gxJoinWord = jw ? jw[0] : ''; V.gxJoinBody = jw ? jw[1] : ''; V.gxJoinCta = jw ? jw[2] : '';
+    V.onGxJoin = () => this.gxJoinNow();
+    V.onGxJoinClose = () => this.setState({ gxJoin: null });
+    V.gxJoinPrivacy = 'The invite is kept by core (Rust, in the OS keyring) until you act. Nothing is resolved before you click Review.';
+    // Round card in the chat, behind the build flag (#361).
+    V.gxChatRound = isG && gt === 'chat' && !!sel && s.roundsFlag;
+    const ledgerWord = s.roundsLedger === 'dormant' ? 'Deployed · dormant' : 'Group rounds not live yet';
+    V.gxRoundWord = ledgerWord;
+    V.gxRoundSrc = s.roundsLedger === 'dormant' ? 'both ledgers in the address book with code at the address · rounds open after mainnet · “Deployed · dormant” is proposed for contract §1' : 'FederatedRoundLedger and PatronageLedger are not in the address book (40204.json), so nothing is read';
+    // ----- Members -----
+    V.gxMembers = gOn('members') && !!sel;
+    V.gxMembersNone = gOn('members') && !sel;
+    const canManage = !!sel && (sel.role === 'owner' || sel.role === 'admin');
+    V.gxRoster = sel ? sel.roster.map((r) => {
+      const t = pill({ owner: 'accent', admin: 'info', agent: 'info' }[r.role] || 'muted');
+      const mine = r.name === 'You' || r.name === P.name;
+      return { name: r.name, addr: r.addr, role: r.role, bd: t[0], fg: t[1], bg: t[2], manage: canManage && !mine && r.role !== 'owner', promote: () => this.gxRoster(r.addr, r.role === 'admin' ? 'member' : 'admin'), promoteLabel: r.role === 'admin' ? 'Make member' : 'Make admin', remove: () => this.gxRoster(r.addr, 'remove') };
+    }) : [];
+    V.gxRosterNote = canManage ? 'Role changes and removals stop at the signature ceremony. The relay checks your role before it applies them.' : 'Only owners and admins can change roles. You can see who is here.';
+    const IW = {
+      open: (i) => ['Not used yet · expires ' + i.exp, 'muted'],
+      adding: (i) => ['Adding ' + i.who + '…', 'info'],
+      added: (i) => ['Added ' + i.who + ' · waiting for them to open Citrate', 'info'],
+      picked_up: (i) => ['Picked up by ' + i.who, 'ok'],
+      welcome_expired: (i) => ['Not picked up · Remove ' + i.who + '?', 'warn'],
+      expired: () => ['Expired', 'muted'],
+      revoked: () => ['Withdrawn', 'muted'],
+    };
+    V.gxInvites = sel ? sel.invites.map((i) => {
+      const w = (IW[i.state] || IW.open)(i); const t = pill(w[1]);
+      return { code: (i.app ? 'citrate://invite?…' : 'citrate.ai/join/' + i.code + '#••••'), word: w[0], bd: t[0], fg: t[1], bg: t[2], note: i.app ? 'app-only link: opens only for people who already have Citrate' : 'works once · the key after # is copied only by the copy button', canRevoke: i.state === 'open', revoke: () => this.gxRevoke(i.code), copy: () => this.copy('https://citrate.ai/join/' + i.code + '#' + J.key, 'Invite link copied') };
+    }) : [];
+    V.gxInvitesEmpty = V.gxInvites.length === 0;
+    V.gxCanInvite = canManage;
+    V.onGxInvite = () => this.gxInvite();
+    // ----- card-stack tabs: Alerts, Rounds, Cluster, ALF, Community -----
+    V.gxCards = [];
+    if (gOn('alerts')) {
+      const al = gEmpty ? [] : s.alerts;
+      V.gxCards = [card('Groups alerts', 'Alerts', {
+        meta: 'who, which group, what kind, when',
+        lead: al.length ? '' : 'No alerts. Mentions, replies and invites from your groups show here. Message text is never shown in alerts.',
+        rows: al.map((x) => ({ k: x.actor + ' · ' + x.group, v: x.kind, vColor: 'var(--tx-1)', src: x.ago })),
+        note: al.length ? 'Drawn rows: core has no notifications command yet, so the shipped app shows none of these until it does.' : '',
+      })];
+    }
+    if (gOn('rounds')) {
+      V.gxCards = [card('Groups rounds', 'Group rounds', {
+        meta: s.roundsFlag ? 'round cards on (VITE_FL_ROUND_CARDS=1)' : 'round cards off (0.5.2 default)',
+        lead: s.roundsLedger === 'dormant'
+          ? 'Deployed · dormant. Both ledgers are on chain and hold no rounds; rounds open after mainnet.'
+          : 'Group rounds not live yet. FederatedRoundLedger and PatronageLedger are not deployed on 40204, so this tab reads nothing from the chain and shows no rounds, amounts or rewards.',
+        rows: [
+          { k: 'FederatedRoundLedger', v: s.roundsLedger === 'dormant' ? 'code at the pinned address' : 'not in the address book', vColor: 'var(--tx-2)', src: 'src-tauri/addresses/40204.json, then contract_code_size (eth_getCode)' },
+          { k: 'PatronageLedger', v: s.roundsLedger === 'dormant' ? 'code at the pinned address' : 'not in the address book', vColor: 'var(--tx-2)', src: 'same check; contract §4: deployed dormant at genesis (audit phase A)' },
+          { k: 'Training opt-in', v: s.learnSessions ? 'on in Hermes › Controls' : 'off', vColor: 'var(--tx-2)', src: 'trajectories_settings_get: recording only; nothing is sent to a round' },
+        ],
+        btns: [btn('Training opt-in in Hermes › Learn', () => this.hgo('learn'))],
+      })];
+      if (s.roundsFlag) {
+        V.gxCards.push(card('Groups round states', 'Round card states', {
+          meta: 'fixture', fx: true, fxNote: 'Drawn from FederatedRoundLedger Status (src/fl/fixtures/groupRoundStates.fixture.tsx, rendered only by tests in core). No round exists on 40204.',
+          rows: [
+            { k: 'Committed', v: 'a member committed an update; not checked yet', fx: true, src: 'Status.Committed' },
+            { k: 'Accepted', v: 'the round accepted the update', fx: true, src: 'Status.Accepted' },
+            { k: 'Rejected', v: 'the round rejected the update', fx: true, src: 'Status.Rejected' },
+          ],
+        }));
+      }
+    }
+    if (gOn('cluster')) {
+      const cl = sel ? sel.cluster : null;
+      V.gxCards = !sel ? [card('Groups cluster none', 'Cluster', { lead: 'Join or create a group first. A cluster is a group’s shared files, co-pinned by members’ nodes.' })] : [
+        card('Groups cluster', 'Cluster · ' + sel.name, {
+          meta: 'cluster_status',
+          lead: cl.joined ? 'Files shared here are co-pinned by members’ nodes, with no bond.' : 'This node isn’t in ' + sel.name + '’s cluster. Joining shares nothing until you pick a file.',
+          rows: [
+            { k: 'This node', v: cl.joined ? 'in the cluster' : 'not in the cluster', src: 'cluster_status, cluster_join / cluster_leave' },
+            { k: 'Pin bonds', v: 'Pin bonds not live yet', vColor: 'var(--tx-2)', src: 'contract §4: IPFSIncentivesV3 deployed, not funded' },
+          ].concat(cl.files.map((f) => ({ k: f.name, v: f.size, vColor: 'var(--tx-2)', src: 'shared file · cluster_share_file' }))),
+          btns: cl.joined ? [btn('Share a file from Node › Storage', () => this.gxShare(), { cls: 'btn-secondary' }), btn('Leave cluster', () => this.gxCluster(false))] : [btn('Join cluster', () => this.gxCluster(true), { cls: 'btn-secondary' })],
+          btnNote: cl.joined ? '' : 'Needs the Cluster service Alive (Node › Services).',
+        }),
+        card('Groups devices', 'Linked devices', {
+          meta: 'device_links',
+          rows: (gEmpty ? [] : s.devices).map((d) => ({ k: d.name, v: d.note, vColor: 'var(--tx-2)' })),
+          btns: [btn('Link a device…', () => this.toast('Linking shows a code on the other device (device_link_request); you approve it here.'))],
+        }),
+      ];
+    }
+    if (gOn('alf')) {
+      V.gxCards = [card('Groups ALF', 'American Learning Federation', {
+        meta: 'ALF members only',
+        lead: 'The ALF is a member cooperative that plans to train shared models with federated rounds. Group rounds not live yet, so nothing here trains or pays.',
+        rows: [
+          { k: 'Your ALF claim', v: 'present', src: 'auth_userinfo (alf claim)' },
+          { k: 'Rounds', v: 'Group rounds not live yet', vColor: 'var(--tx-2)', src: 'contract §4' },
+        ],
+        btns: [btn('Open the ALF portal ↗', () => this.toast('The ALF portal opens in your browser.'))],
+      })];
+    }
+    if (gOn('community')) {
+      V.gxCards = [card('Groups community', 'Community', {
+        meta: 'routable, not in the tab strip',
+        lead: 'groups/community still opens (the 0.5.1 community link), but K0 keeps it out of the tab strip because it isn’t wired enough to list (HIDDEN_ROUTES).',
+        btns: [btn('Back to Groups', () => this.gxgo('chat'))],
+      })];
+    }
+    if (isG) {
+      const GB = {
+        chat: 'groups.list / messages / send (groups_list, groups_messages, groups_send) · groups_create · relay: comms_relay_status · paste an invite: pending_join_set / pending_join_resolve (core #355), then invites.redeem (group_invite_redeem) on one explicit Join · join states: GROW-S2 §11 (rendezvous, core #374) · round card: address book + contract_code_size behind VITE_FL_ROUND_CARDS (core #361)',
+        alerts: 'comms notifications (actor, group, kind, time; never message text): none yet as a command',
+        rounds: 'src-tauri/addresses/40204.json, then contract_code_size (eth_getCode) for FederatedRoundLedger and PatronageLedger (core #361) · training opt-in: trajectories_settings_get',
+        members: 'groups.roster (groups_roster) · groups_assign_role, groups_offboard through the signature ceremony · invites: join_mint(direct), group_invite_create, group_invites, join_revoke + group_invite_revoke (core #355) · inviter states: rendezvous (core #374, GROW-S2 §11)',
+        cluster: 'cluster_status, cluster_join, cluster_leave, cluster_share_file, cluster_peers · devices: device_links, device_link_request / approve / revoke',
+        alf: 'auth_userinfo (alf claim) · the ALF portal opens in the browser',
+        community: 'groups/community (K0 HIDDEN_ROUTES) · groups_list for the open network',
+      };
+      V.annScreen = 'Groups › ' + { chat: 'Chat › Groups', alerts: 'Chat › Alerts', rounds: 'Rounds', members: 'Members', cluster: 'Cluster', alf: 'ALF', community: 'Community (hidden route)' }[gt];
+      V.annRoute = { chat: 'groups/chat   (today: groups)', alerts: 'groups/chat/alerts   (today: comms)', rounds: 'groups/rounds   (today: train)', members: 'groups/members   (today: people)', cluster: 'groups/cluster   (today: cluster)', alf: 'groups/alf   (today: alf; ALF members only)', community: 'groups/community   (today: community; not in the tab strip)' }[gt];
+      V.annBridge = GB[gt];
+      V.annFlag = { chat: 'round cards: VITE_FL_ROUND_CARDS (build flag, off in 0.5.2) · invite links: join service live (GROW-S1)', rounds: 'VITE_FL_ROUND_CARDS (off) · rounds: “Group rounds not live yet” (contract §4)', members: 'invite links: join service live (GROW-S1); rendezvous join (GROW-S2)', alf: 'ALF claim (identity)' }[gt] || 'none';
+      V.annHasExtra = true;
+      V.annExtra = [];
+      if (gt === 'chat' || gt === 'rounds') V.annExtra.push({ label: 'round cards', chips: [chip('off (0.5.2)', !s.roundsFlag, () => this.setState({ roundsFlag: false })), chip('on', s.roundsFlag, () => this.setState({ roundsFlag: true }))] }, { label: 'ledgers', chips: [chip('not in address book (today)', s.roundsLedger !== 'dormant', () => this.setState({ roundsLedger: 'none' })), chip('deployed · dormant', s.roundsLedger === 'dormant', () => this.setState({ roundsLedger: 'dormant' }))] });
+      if (gt === 'members') V.annExtra.push({ label: 'join service', chips: [chip('live', s.gxSvc === 'live', () => this.setState({ gxSvc: 'live' })), chip('unavailable', s.gxSvc !== 'live', () => this.setState({ gxSvc: 'down' }))] });
+      if (gt === 'alf' || gt === 'chat') V.annExtra.push({ label: 'ALF claim', chips: [chip('no', !s.alfClaim, () => this.setState({ alfClaim: false })), chip('yes', !!s.alfClaim, () => this.setState({ alfClaim: true }))] });
+      V.annHasExtra = V.annExtra.length > 0;
+    }
+
+    // ===================== SETTINGS =====================
+    const isSt = V.shell && s.route === 'settings' && !s.legacy;
+    V.stgShow = isSt;
+    const SECS = [['account', 'Account & RBAC'], ['connections', 'Connections'], ['api', 'API endpoints & keys'], ['keys', 'Keys & security'], ['billing', 'Memberships & billing'], ['privacy', 'Privacy & recovery'], ['app', 'App']];
+    const sec = SECS.some((x) => x[0] === s.sSec) ? s.sSec : 'account';
+    V.setNav = SECS.map(([id, label]) => ({
+      label, go: () => { this.setState({ sSec: id }); try { location.hash = '#/settings/' + id; } catch (e) {} this.save(); },
+      weight: sec === id ? 500 : 400, bg: sec === id ? 'var(--srf-1)' : 'transparent', color: sec === id ? 'var(--tx-1)' : 'var(--tx-2)',
+    }));
+    const sKey = 'stg-' + sec;
+    const sVar = isSt ? setVariants(sKey) : 'data';
+    const SCOPY = {
+      account: { empty: ['You’re not signed in', 'Explore free works without an account. Sign in to see your membership and identity claims.', 'auth_status → { signedIn: false }', 'Sign in'], error: ['Couldn’t read your account', 'The identity service didn’t answer, so your claims are unknown here. You stay signed in.', 'auth_userinfo → error: identity service unreachable', 'Try again'], unavailable: ['Account needs the desktop app', 'Sign-in tokens live in the OS keyring. The web preview has none.', 'BRIDGE_MODE = sim'] },
+      connections: { empty: ['No connections yet', 'Connect a service and its sign-in opens in your system browser. Nothing is connected until you do.', 'connections → []'], error: ['Couldn’t read connections', 'The keyring didn’t answer, so which services are connected is unknown here.', 'connections → error: keyring unavailable', 'Try again'], unavailable: ['Connections need the desktop app', 'Tokens are sealed in the OS keyring. The web preview has none.', 'config_keyring_status → "unavailable"'] },
+      api: { empty: ['No gateway key yet', 'You haven’t issued a gateway key. Chat runs locally, and Hermes asks before it uses the gateway.', 'gateway key: none issued'], error: ['Couldn’t read your endpoints', 'config_read failed, so the RPC choice is unknown here. Nothing was rewritten.', 'config_read → error: config unreadable', 'Try again'], unavailable: ['Endpoints need the desktop app', 'The RPC choice and keys are core settings. The web preview has no core.', 'BRIDGE_MODE = sim'] },
+      keys: { empty: ['No keys on this device yet', 'Keys are created during setup. Nothing to lock or export yet.', 'custody_list → []'], error: ['Couldn’t read the vault', 'custody_status failed, so the lock state is unknown, not unlocked.', 'custody_status → error: keyring unavailable', 'Try again'], unavailable: ['Keys need the desktop app', 'The vault lives in the OS keyring. The web preview has none.', 'config_keyring_status → "unavailable"'] },
+      billing: { empty: ['No membership', 'You’re exploring free. Membership opens tier features and comes with a grant locked in your bond.', 'membership.entitlement → { tier: "free" }', 'See membership pricing'], error: ['Couldn’t read your membership', 'The membership service didn’t answer, so your plan is unknown here, not lapsed. Paid features stay open through the offline grace window.', 'membership.entitlement → error: membership service unreachable', 'Try again'], unavailable: ['Billing needs the desktop app', 'Membership reads go through core. The web preview has none.', 'BRIDGE_MODE = sim'] },
+      privacy: { error: ['Couldn’t read privacy settings', 'Nothing is shown as on or off until the settings are read.', 'privacy settings → error: config unreadable', 'Try again'], unavailable: ['Privacy & recovery needs the desktop app', 'Recovery kits and local data are on this machine. The web preview has neither.', 'BRIDGE_MODE = sim'] },
+      app: { error: ['Couldn’t check for updates', 'The update manifest couldn’t be fetched, so whether you’re current is unknown here. Nothing was installed.', 'updater → error: manifest unreachable', 'Try again'], unavailable: ['Updates need the desktop app', 'The updater is part of the desktop app.', 'BRIDGE_MODE = sim'] },
+    };
+    const sc = isSt && sVar !== 'data' ? (SCOPY[sec] || {})[sVar] : null;
+    stateCard('stg', sVar, 'Settings ' + sec, sc);
+    V.onStgCardCta = () => { if (sc && /pricing/.test(sc[3] || '')) this.toast('Pricing opens in your browser: ' + Component.PRICING_URL); this.setVariant(sKey, 'data'); };
+    const sOn = (x) => isSt && !V.stgCard && sec === x;
+    V.stgConn = sOn('connections'); V.stgApi = sOn('api'); V.stgKeys = sOn('keys'); V.stgBilling = sOn('billing');
+    // Membership price: shown only when membership_price was read (C1-P #379); otherwise the link.
+    const price = s.priceRead ? Component.PRICE_SHAPE : null;
+    const served = Component.priceLabel(price);
+    V.stgPriceText = served || 'See membership pricing';
+    V.stgPriceUrl = Component.PRICING_URL;
+    V.stgPriceIsLink = !served;
+    V.stgPriceSrc = served ? 'membership_price (core-membership /api/membership/price) · the prototype draws the slot, not an amount' : 'membership_price → not read (503, error or the web preview), so no number: the link opens citrate.ai/membership';
+    V.stgCards = [];
+    const effTier = s.entitlement === 'lapsed' ? 'free' : s.tier;
+    if (sOn('account')) {
+      V.stgCards = [card('Settings account', 'Account', {
+        meta: 'auth_userinfo',
+        rows: [
+          { k: 'Name', v: P.name, src: 'name claim' }, { k: 'Email', v: P.email, src: 'email claim' },
+          { k: 'Tier', v: effTier === 'free' ? 'public tier' : effTier === 'enterprise' ? 'enterprise · ' + (s.org || '') : 'pilot member', src: 'membership.entitlement' },
+          { k: 'Role', v: P.role, src: 'RBAC role claim; enforced by each service, not by this app' },
+          { k: 'Identity verification', v: s.tier === 'free' ? '—' : ({ verified: 'verified', failed: 'not verified', review: 'in manual review', skipped: 'not verified (optional for membership)' }[s.kycOutcome] || '—'), src: 'kyc_status claim' },
+          { k: 'Device', v: s.deviceId, vColor: 'var(--tx-2)', src: 'device_id bound to this session at sign-in' },
+        ],
+        btns: [btn('Manage account ↗', () => this.toast('Your account opens at auth.citrate.ai in your browser.')), btn('Sign out', () => this.toast('Signs out here (auth_logout). Your node, wallet and local memory keep working.'))],
+      })];
+    }
+    if (sOn('billing')) {
+      const free = effTier === 'free';
+      V.stgCards = [
+        card('Settings billing plan', free ? 'Public tier · no membership' : effTier === 'enterprise' ? 'Enterprise seat · ' + (s.org || '') : 'Pilot membership', {
+          meta: s.entitlement === 'active' ? 'active' : s.entitlement,
+          rows: [
+            { k: 'Renewal', v: s.entitlement === 'lapsed' ? 'lapsed' : free ? '—' : 'renews on the date in your customer portal', vColor: 'var(--tx-2)', src: 'membership.entitlement' },
+          ],
+          note: 'On lapse, paid features lock after the 72-hour offline grace window; your node, local wallet and local memory never lock.',
+          btns: free ? [btn('See membership pricing ↗', () => this.toast('Pricing opens in your browser: ' + Component.PRICING_URL), { cls: 'btn-secondary' })] : [btn('Renew ↗', () => this.toast('Renewal opens the customer portal in your browser.'), { cls: 'btn-secondary' }), btn('Cancel membership', () => this.toast('Cancellation runs in the customer portal; grace and downgrade rules are spelled out first.'))],
+        }),
+      ];
+      if (granted && !free) {
+        V.stgCards.push(card('Settings billing grant', 'Membership grant', {
+          meta: 'MemberBond',
+          lead: Component.grantCustody({ amountSalt: null, unlockBlock: null, staked, granted: true }),
+          rows: [
+            { k: 'Bond', v: staked ? 'activated · staked in the ValidatorRegistry' : 'Bond locked · not staked', src: 'MemberBond.activated()' },
+            lockRow,
+          ],
+          note: disc,
+          btns: [btn('Open Wallet › Staking', () => this.wlgo('staking'))],
+        }));
+      }
+      V.stgCards.push(card('Settings billing receipts', 'Receipts', { lead: free ? 'No receipts.' : 'Receipts come from the membership service, with the amount on each receipt.', btns: free ? [] : [btn('Receipts ↗', () => this.toast('Receipts open in the customer portal.'))] }));
+    }
+    if (sOn('privacy')) {
+      V.stgCards = [card('Settings privacy', 'Privacy & recovery', {
+        meta: 'unchanged in 0.5.2',
+        lead: 'This section stays as it ships today (HUP-S10.5, src/privacy/PrivacySection.tsx). The prototype lists it and does not redraw it.',
+        rows: [
+          { k: 'Recovery kit', v: 'a phrase sheet or a passphrase file, your choice', vColor: 'var(--tx-2)' },
+          { k: 'Delete my local data', v: 'a dry run first, then a typed confirmation', vColor: 'var(--tx-2)' },
+          { k: 'What works offline', v: 'listed', vColor: 'var(--tx-2)' },
+          { k: 'Default budget values', v: 'read only', vColor: 'var(--tx-2)' },
+        ],
+      })];
+    }
+    if (sOn('app')) {
+      V.stgCards = [
+        card('Settings app updates', 'Updates', {
+          meta: 'signed manifests',
+          rows: [
+            { k: 'Channel', v: s.channel, src: 'updater channel' },
+            { k: 'This build', v: '0.5.2 (prototype)', src: 'the app version' },
+            { k: 'Status', v: s.updState === 'checking' ? 'checking…' : s.updState === 'current' ? 'current on ' + s.channel : 'checked at launch', vColor: 'var(--tx-2)', src: 'the updater verifies the manifest signature before anything applies' },
+          ],
+          btns: [btn('stable', () => { this.setState({ channel: 'stable' }); this.save(); }, { cls: s.channel === 'stable' ? 'btn-secondary' : 'btn-ghost' }), btn('beta', () => { this.setState({ channel: 'beta' }); this.save(); }, { cls: s.channel === 'beta' ? 'btn-secondary' : 'btn-ghost' }), btn('Check now', () => { this.setState({ updState: 'checking' }); setTimeout(() => this.setState({ updState: 'current' }), 1700); }, { off: s.updState === 'checking' })],
+        }),
+        card('Settings app telemetry', 'Telemetry', {
+          meta: 'off by default',
+          rows: [
+            { k: 'Crash reports', v: s.telemetry ? 'on' : 'off', src: 'never message content, keys or addresses' },
+            { k: 'Join funnel events', v: s.telemetry ? 'on · anonymous step reached' : 'off', vColor: 'var(--tx-2)', src: 'opt-in step-reached events (core #365); no identifiers' },
+          ],
+          btns: [btn('off', () => { this.setState({ telemetry: false }); this.save(); }, { cls: !s.telemetry ? 'btn-secondary' : 'btn-ghost' }), btn('on', () => { this.setState({ telemetry: true }); this.save(); }, { cls: s.telemetry ? 'btn-secondary' : 'btn-ghost' })],
+        }),
+        card('Settings app diagnostics', 'Diagnostics', {
+          lead: 'Logs, configuration and crash records, scrubbed of keys and tokens.',
+          btns: [btn('Export diagnostics bundle', () => this.toast('Diagnostics exported: logs, config and crash records, with keys and tokens scrubbed.'))],
+        }),
+      ];
+    }
+    // API endpoints: node words, never "behind checkpoint" (no finality runs).
+    V.stgRpcLocalCls = s.rpc === 'local' ? 'btn-secondary' : 'btn-ghost';
+    V.stgRpcPublicCls = s.rpc !== 'local' ? 'btn-secondary' : 'btn-ghost';
+    V.onStgRpcLocal = () => { this.setState({ rpc: 'local' }); this.save(); };
+    V.onStgRpcPublic = () => { this.setState({ rpc: 'public' }); this.save(); };
+    const nodeW = this.nodeLabel(s.node);
+    V.stgRpcText = s.rpc === 'local' ? '127.0.0.1:8545 · Node · ' + nodeW + (s.node === 'off' ? ' · chain reads go to rpc.citrate.ai until it runs' : '') : 'rpc.citrate.ai · TLS';
+    V.stgRpcDot = s.rpc === 'local' && s.node === 'off' ? 'var(--warn)' : 'var(--ok)';
+    // Keys & security: the custody vault as core ships it; no export and no attestation in this build.
+    V.stgLockWord = s.custody === 'unlocked' ? 'Unlocked' : 'Locked';
+    V.stgLockColor = s.custody === 'unlocked' ? 'var(--ok)' : 'var(--warn)';
+    V.stgLockBtn = s.custody === 'unlocked' ? 'Lock now' : 'Unlock';
+    V.onStgLock = () => { this.setState({ custody: s.custody === 'unlocked' ? 'locked' : 'unlocked' }); this.toast(s.custody === 'unlocked' ? 'Vault locked. The in-memory data key is cleared.' : 'Vault unlocked with the device key in the OS keyring.'); };
+    V.stgWallet = this.short(s.walletAddr);
+    if (isSt) {
+      const SB = {
+        account: 'auth.status / userinfo (auth_status, auth_userinfo) · auth_logout · membership.entitlement',
+        connections: 'connections (connections) · OAuth in the system browser; tokens sealed in the OS keyring (config_keyring_status)',
+        api: 'config.read / write (config_read, config_write: rpc) · node words: node_status · gateway key: issued by the membership service against the live entitlement · memory socket: memory_status.socketPath',
+        keys: 'custody.status / lock / ensureUnlocked (custody_status, custody_lock, custody_ensure_unlocked) · custody_list · signatures: the signature ceremony only (sign_request, sign_approve); budgeted SIWE only via web_budget_* (ADR-2026-09-30)',
+        billing: 'membership.entitlement · membership.price (membership_price, C1-P #379; shown only when read) · membership_grant_status · MemberBond.activated / unlockTimestamp / unlockBlock (C1-V #348) · grant copy: src/data/grantCopy.ts (#349)',
+        privacy: 'unchanged: src/privacy/PrivacySection.tsx (HUP-S10.5)',
+        app: 'updater (signed manifest, verified offline) · telemetry settings · funnel events opt-in (core #365) · diagnostics export',
+      };
+      V.annScreen = 'Settings › ' + SECS.find((x) => x[0] === sec)[1];
+      V.annRoute = (sec === 'connections' ? 'settings/connections' : 'settings · section ' + sec + '   (settings/' + sec + ' also opens it)');
+      V.annBridge = SB[sec];
+      V.annFlag = { billing: 'counsel memo on file before the money copy ships', keys: 'none · Rule 3: every signature goes through the ceremony' }[sec] || 'none';
+      V.annHasExtra = sec === 'billing';
+      V.annExtra = sec === 'billing' ? [{ label: 'price', chips: [chip('not read (503 or error)', !s.priceRead, () => this.setState({ priceRead: false })), chip('read', !!s.priceRead, () => this.setState({ priceRead: true }))] }] : [];
+    }
+    // The 0.5.1 reference screens behind the red bar.
+    if (V.shell && s.legacy) {
+      V.annScreen = ({ wallet: 'Wallet', comms: 'Comms', node: 'Node', commissary: 'Commissary' }[s.legacy] || s.legacy) + ' · 0.5.1 reference, not a port target';
+      V.annRoute = s.route + '   (the 0.5.1 screen)';
+      V.annBridge = 'as it ships before the 0.5.2 port; UI truth contract §8 lists its violations (V1 to V12)';
+      V.annFlag = 'none';
+      V.annHasVariants = false; V.annHasExtra = false;
+    }
   }
 
   ob2Activate() {
