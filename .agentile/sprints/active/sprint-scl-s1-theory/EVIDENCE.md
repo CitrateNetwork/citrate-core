@@ -305,3 +305,23 @@ fixture flakes in CI, the fix belongs in the fixture (a longer probe interval), 
   load average of 33 to 79: 90/90 green, and no `citrate-lcf-` process left.
   `start_after_health_failures_with_a_held_reader_waits_for_cleanup` did not flake, so its
   probe interval is unchanged.
+
+### SCL-S3 review round 3 (2026-10-22)
+
+- **Red:** `ebc2b20`. **Fix:** the commit after it. Merges #352 at `964aa51`, which brings #351
+  and #342 (the reaped check) and `origin/main`.
+- **Probe timing (Codex P1).** `Window::record_success` takes the worker's own finish time. A
+  success older than the freshness limit when it is collected is `Stale`; a success after a gap
+  starts a new window. Red: `a_success_collected_after_the_freshness_limit_is_stale`,
+  `a_success_is_timed_when_the_probe_finished`, `a_success_after_a_freshness_gap_starts_a_new_window`.
+- **Member Start joining an automated Start (pysol-dev 1).** It promotes the pending intent, and
+  `enter_failed` refuses to settle Failed when a member Start arrived after the monitor read the
+  intent. Red: `a_member_start_joining_an_automated_start_gives_a_fresh_budget` (held at the new
+  `budget_barrier` seam).
+- **Coverage (pysol-dev 2 and 3).** `successes_spanning_healthy_after_earn_one_credit`,
+  `a_flapping_probe_never_earns_credit` and `a_hung_probe_slot_counts_as_a_failure_outside_the_grace`.
+  They kill the mutants "credit on the first success" and "slot-taken arm disabled"; the
+  `enter_failed` check mutant is killed by the member-join fixture.
+- **Counts:** kit lib 373 -> 377; `supervisor::tests` 50 -> 54 Unix (lifecycle-platforms
+  expects 54 and 32); `lifecycle_faults` 59 -> 62. 16 concurrent copies of the suite (two rounds
+  of 8): 16/16 green, no `citrate-lcf-` process left.
