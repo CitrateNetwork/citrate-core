@@ -79,7 +79,7 @@ describe("chainTruth helpers", () => {
     // C1-V4: "Not a validator" needs status None; "Bond locked" needs MemberBond.activated() = false.
     const NONE = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 499 };
     expect(validatorWord(0, NONE, false, { deployed: false, activated: null, pubkey: null })).toBe("Not a validator");
-    expect(validatorWord(0, null, true, { deployed: true, activated: false, pubkey: null })).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, true, { deployed: true, activated: false, pubkey: null, unlocked: false })).toBe("Bond locked · not staked");
     expect(validatorWord(0, null, false)).toBeNull();
     expect(validatorWord(32_000, ACT_PENDING, true)).toBe("Registered · active from epoch 501");
     expect(validatorWord(32_000, ACT_ON, true)).toBe("Validator active");
@@ -110,6 +110,7 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
       hasValidator: stakeSalt > 0,
       unlockBlock: 16_000_000,
       isUnlocked: false,
+      bondUnlocked: false,
       isKycVerified: false,
       // C1-V5: the bond keeps the key it activated with; the registry is read for that key.
       bondActivated: stakeSalt > 0,
@@ -195,6 +196,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: 2,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks (~28 h)");
@@ -208,6 +211,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: null,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks left");
@@ -241,8 +246,7 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
     expect(html).not.toContain("LiquidStakingPool shares");
     expect(html).not.toContain("34,500");
     expect(html).not.toContain(">2,500<");
-    // core#407: the word needs MemberBond.activated() = false, not just a grant with stake 0.
-    expect(html).toContain("Bond locked · not staked");
+    expect(html).toMatch(/bond locked · not staked/i);
   });
 
   it("the model context's staked is the registry stake only", () => {
@@ -500,7 +504,8 @@ describe("#348 round 2 — no 'earnings' on ALF or in the handbook", () => {
 
 describe("#348 round 2 — the claim path is chosen from the same signal as Rust (has_validator)", () => {
   const grant = (over: Record<string, unknown>) =>
-    ({ bondDeployed: true, hasValidator: true, bondedStakeWei: "0", unlockBlock: null, isUnlocked: false, ...over }) as never;
+    // Contract v1.2 §1: the bond path is gated on MemberBond.isKycVerified() (true here).
+    ({ bondDeployed: true, hasValidator: true, bondedStakeWei: "0", unlockBlock: null, isUnlocked: false, isKycVerified: true, ...over }) as never;
   afterEach(() => vi.restoreAllMocks());
 
   it("an exited validator (registry stake 0, has_validator) with claimable rewards takes the validator path", async () => {

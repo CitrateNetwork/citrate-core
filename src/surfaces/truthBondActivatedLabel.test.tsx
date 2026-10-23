@@ -209,6 +209,8 @@ describe("core#407 tripwire — 'Bond locked · not staked' has one derivation",
   it("describeBond's not-staked branch is gated on bondActivated === false", () => {
     const src = readFileSync(join(SRC, "shell/store.ts"), "utf8");
     const line = src.split("\n").find((l) => codeHits(l) > 0) ?? "";
-    expect(line).toMatch(/bondActivated === false/);
+    // #349 derives `activated` from bondActivated (a registry binding implies it); either spelling.
+    expect(line).toMatch(/\b(bondActivated|activated) === false/);
+    expect(src).toMatch(/const activated = g\.hasValidator \? true : \(g\.bondActivated \?\? null\);/);
   });
 });

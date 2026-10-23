@@ -18,7 +18,7 @@ export const PERSONAS = {
   p1: { id: 'p1', name: 'Dana Okafor', initials: 'DO', label: 'P1 · The Joiner', tier: 'pilot', tierLabel: 'Pilot member', role: 'member', org: null, fresh: true,
         blurb: 'Fresh install — walks S0–S6.' },
   p2: { id: 'p2', name: 'Marcus Bell', initials: 'MB', label: 'P2 · The Operator', tier: 'pilot', tierLabel: 'Pilot member', role: 'operator', org: null, fresh: false,
-        blurb: 'Onboarded, node validating, deep telemetry.' },
+        blurb: 'Onboarded, node synced, daemons and approvals seeded.' },
   p3: { id: 'p3', name: 'Priya Anand', initials: 'PA', label: 'P3 · The Builder', tier: 'pilot', tierLabel: 'Pilot member', role: 'builder', org: null, fresh: false,
         blurb: 'SDKs, gateway key, agents on the MCP socket.' },
   p4: { id: 'p4', name: 'R. Calloway', initials: 'RC', label: 'P4 · The Org Seat', tier: 'enterprise', tierLabel: 'Enterprise · BA-7', role: 'org-seat', org: 'BA-7', fresh: false,
@@ -130,9 +130,9 @@ export const GRAPH = {
 };
 
 export const COACH_STEPS = [
-  { id: 'earn', title: 'Your node earns while this window is closed', body: 'The vitals strip is chain truth from your local node — height, peers, finality, and today\u2019s earnings, decomposed honestly on the Node page.' },
-  { id: 'chat', title: 'The agent is grounded in your machine', body: 'It reads your memory graph and local chain state. Anything it wants to write comes back to you for approval — every time.' },
-  { id: 'commissary', title: 'The Commissary is your tier\u2019s store-room', body: 'Apps, SDKs, docs, and services. Locked cards name the one action that unlocks them. Downloads are signed and checksum-verified.' },
+  { id: 'hermes', title: 'Hermes is home', body: 'Chat, Journal, Work and Learn live here. Hermes runs on this machine, and anything it wants to change waits for you in Work \u203a Awaiting your review.' },
+  { id: 'controls', title: 'Six switches decide what Hermes may do', body: 'Hermes \u203a Controls: where replies are made, web search, terminal access, daemons, learning and voice. Nothing new is on by default, and spend starts at zero.' },
+  { id: 'places', title: 'Five places', body: 'Hermes, Groups, Wallet, Node and Store, plus Settings for your account. Numbers about the chain say where they come from, and show \u201c\u2014\u201d when they can\u2019t be read.' },
 ];
 
 export function makeAddr(seed) {

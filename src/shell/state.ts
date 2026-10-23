@@ -427,6 +427,17 @@ export interface AppState {
    * honestly reads [] (Rule 1 — never fabricated).
    */
   pendingWithdrawals: PendingWithdrawal[];
+  /**
+   * C1-W — why `pendingWithdrawals` is not a complete chain read: "not read yet" before the first
+   * read, the failed eth_getLogs window, or "still reading chain history" while the first paged scan
+   * runs. null = the list is a complete read. Never shown as an empty queue. Not persisted.
+   */
+  pendingWithdrawalsError: string | null;
+  /** C1-W — the last read gave no evidence of how far the node executed: the rows shown are real,
+   * but withdrawals in blocks the node has not served yet may be missing. Not persisted. */
+  pendingWithdrawalsUnconfirmed: boolean;
+  /** C1-W — why the last read is not confirmed, in words from the scan (null when confirmed). */
+  pendingWithdrawalsNote: string | null;
   hasGrant: boolean;
   hasSbt: boolean;
   /**
@@ -528,7 +539,6 @@ export interface AppState {
    * UI shim. `"unknown"` before the first status read.
    */
   custodyLock: "locked" | "unlocked" | "unknown";
-  sigPolicy: "hitl" | "allow";
   channel: "stable" | "beta";
   telemetry: boolean;
   /** The telemetry disclosure version the member consented to (telemetry-fields.json `version`).
@@ -825,6 +835,9 @@ export function freshState(pid: string): AppState {
     selfStake: 0,
     bondedStake: 0,
     pendingWithdrawals: [],
+    pendingWithdrawalsError: "not read yet",
+    pendingWithdrawalsUnconfirmed: false,
+    pendingWithdrawalsNote: null,
     hasGrant: false,
     hasSbt: false,
     rewards: null,
@@ -874,7 +887,6 @@ export function freshState(pid: string): AppState {
     // Keys-&-security section still renders. A Tauri build overwrites this from
     // the real custody_status on load.
     custodyLock: "unlocked",
-    sigPolicy: "hitl",
     channel: "stable",
     telemetry: false,
     telemetryConsentVersion: null,
@@ -1040,7 +1052,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "claimable", "activity",
-  "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
+  "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "channel",
   "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
@@ -1050,6 +1062,9 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
+
+/** Keys earlier builds persisted that are retired (C1-V V8): dropped from a save when it loads. */
+export const RETIRED_PERSISTED_KEYS = ["earnVal", "earnPin", "earnComp", "earnToday"] as const;
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1062,7 +1077,14 @@ export function loadState(): AppState {
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
+  // Upgrade review: keys older builds persisted that no longer exist (V8 retired the off-chain
+  // earnings estimates). A 0.5.1 save still carries them; never fold them into state.
+  if (saved) for (const k of RETIRED_PERSISTED_KEYS) delete (saved as Record<string, unknown>)[k];
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
+  // CLAUDE.md Rule 3: there is no signature-policy setting (every signature goes through the
+  // ceremony; the one exception is a budgeted web sign-in). An older build persisted one, so drop
+  // whatever was stored rather than carry it in state.
+  if (saved) delete (base as { sigPolicy?: unknown }).sigPolicy;
   // 0.5.2 Join: a telemetry consent stored without a disclosure-version marker was given before
   // `joinSteps` existed. Mark it now (version 1) so the one-time note runs and join steps stay
   // unrecorded until the member has read it.

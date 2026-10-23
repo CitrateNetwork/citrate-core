@@ -907,7 +907,8 @@ describe("describeBond — honest about the lock and the KYC gate", () => {
     isUnlocked: false,
     isKycVerified: false,
     hasValidator: false,
-    bondActivated: false,
+    // #349 review: the bond words key on MemberBond.activated(); this base bond never activated.
+    bondActivated: false as boolean | null,
   };
 
   it("never claims 'staked' for a member whose escrow does not exist", () => {
@@ -922,12 +923,14 @@ describe("describeBond — honest about the lock and the KYC gate", () => {
   // Owner decision A.6: KYC supersedes the lock. An unverified member must NOT be
   // told their funds are available just because the year elapsed.
   it("an unlocked but unverified member is told KYC is required, not that they can withdraw", () => {
-    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · verify identity to withdraw");
+    expect(describeBond({ ...base, isUnlocked: true, bondActivated: true })).toBe("Unlocked · verify identity to withdraw");
+    // A never-activated bond can't be released or withdrawn (NotActivated()): no withdraw wording.
+    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · not activated");
   });
 
   // Owner decision A.5: unlock makes exit ELIGIBLE. "can withdraw", never "has".
   it("an unlocked, verified member CAN withdraw — eligibility, not a payout", () => {
-    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true })).toBe("Unlocked");
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, bondActivated: true })).toBe("Unlocked");
     // "validating" is a banned word (§1 Validators); the bond word does not carry validator state.
     expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true })).toBe("Unlocked");
   });

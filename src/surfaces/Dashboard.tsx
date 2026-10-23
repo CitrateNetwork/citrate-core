@@ -81,9 +81,8 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   // folded as `bondedStake` from grantStatus. The membership grant sitting in a locked bond is not
   // staked until the bond is activated, and LiquidStakingPool self-stake is not validator stake.
   const staked = s.bondedStake;
-  // core#407: with no registered stake the word comes from the one validator state (registry status,
-  // then MemberBond.activated()), never from the grant: an exited or slashed validator keeps the
-  // grant and an activated bond with stake 0.
+  // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
+  // validator state gives the word or "— · <reason>".
   const bondLockedNotStaked = validatorWord(staked, s.validatorActivation, s.hasGrant, s.memberBond) === "Bond locked · not staked";
   const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.memberBond);
 

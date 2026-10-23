@@ -56,7 +56,7 @@ function member(over: Partial<AppState> = {}): AppState {
 
 const none: ValidatorActivation = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 511 };
 const active: ValidatorActivation = { isActive: true, status: 1, actEpoch: 480, currentEpoch: 511 };
-// Still locked (MemberBond.isUnlocked() = false), so activation is open (chain#331, MemberBond.sol:219).
+// Still locked (MemberBond.isUnlocked() = false), so activation is offered (owner decision 2026-10-19).
 const notActivated: MemberBondState = { deployed: true, activated: false, pubkey: null, unlocked: false };
 const activatedBond: MemberBondState = { deployed: true, activated: true, pubkey: BOND_KEY };
 const bondUnread: MemberBondState = { deployed: true, activated: null, pubkey: null };
@@ -202,7 +202,8 @@ describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the b
   });
 
   it("a bond that is not activated has no key yet: no registry read, and the word is 'Bond locked · not staked'", async () => {
-    const reads = await poll(grant({ bondActivated: false, bondPubkey: null }));
+    // v1.2 §1: "Bond locked · not staked" while the lock reads as running (isUnlocked() = false).
+    const reads = await poll(grant({ bondActivated: false, bondPubkey: null, bondUnlocked: false }));
     expect(reads.validatorActivation).not.toHaveBeenCalled();
     expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.memberBond)).toBe(
       "Bond locked · not staked",
