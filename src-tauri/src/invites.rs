@@ -137,9 +137,16 @@ fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 pub(crate) fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
-    match store_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
-        Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        None => Vec::new(),
+    match store_path(app) {
+        Ok(p) => load_at(&p),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn load_at(path: &std::path::Path) -> Vec<PendingInvite> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -148,9 +155,17 @@ pub(crate) fn update_pending<T>(
     app: &tauri::AppHandle,
     f: impl FnOnce(&mut Vec<PendingInvite>) -> T,
 ) -> Result<T, String> {
-    let mut v = load(app);
+    update_pending_at(&store_path(app)?, f)
+}
+
+/// [`update_pending`] on the store at `path`.
+pub(crate) fn update_pending_at<T>(
+    path: &std::path::Path,
+    f: impl FnOnce(&mut Vec<PendingInvite>) -> T,
+) -> Result<T, String> {
+    let mut v = load_at(path);
     let out = f(&mut v);
-    save(app, &v)?;
+    write_pending(path, &v)?;
     Ok(out)
 }
 
@@ -367,6 +382,24 @@ pub(crate) fn close_relay_for_code(
         i.relay_closed = true;
     }
     Ok(true)
+}
+
+/// [`close_relay_for_code`] on this device's pending-invite store (`join_revoke`'s relay step).
+pub(crate) fn close_relay_for_join_code(
+    app: &tauri::AppHandle,
+    code: &str,
+    revoke_relay: impl FnOnce(String) -> Result<(), String>,
+) -> Result<bool, String> {
+    close_relay_for_code_at(&store_path(app)?, code, revoke_relay)
+}
+
+/// [`close_relay_for_code`] on the store at `path`.
+pub(crate) fn close_relay_for_code_at(
+    path: &std::path::Path,
+    code: &str,
+    revoke_relay: impl FnOnce(String) -> Result<(), String>,
+) -> Result<bool, String> {
+    update_pending_at(path, |v| close_relay_for_code(v, code, revoke_relay))?
 }
 
 /// Drop the records of relay invites closed for `code` (after the code itself is revoked).
@@ -902,17 +935,193 @@ mod tests {
         assert_eq!(closed, Ok(true), "the inviter is told it was closed");
     }
 
-    /// Tripwire: `join_revoke` closes the relay invite before it revokes the code, and tags a
-    /// minted code with the invite it seals.
+    /// Tripwire: `join_revoke` closes the relay invite, then revokes the code at the service, then
+    /// forgets the closed record (relay -> service -> forget), and tags a minted code with the
+    /// invite it seals.
     #[test]
     fn join_revoke_closes_the_relay_invite_first() {
         let src = include_str!("join.rs");
         let f = &src[src.find("pub async fn join_revoke").expect("fn")..];
         let f = &f[..f.find("\n}\n").expect("end")];
-        let relay = f.find("close_relay_for_code").expect("relay step");
+        let relay = f.find("close_relay_for_join_code(").expect("relay step");
         let service = f.find("join.revoke(").expect("service step");
+        let forget = f.find("forget_join_code(").expect("forget step");
         assert!(relay < service, "relay first");
+        assert!(
+            service < forget,
+            "the record is forgotten only after the service revoke"
+        );
+        assert_eq!(
+            f.matches("comms::revoke_invite(").count(),
+            1,
+            "one relay call"
+        );
         assert!(src.contains("crate::invites::tag_join_code(v, &invite.t, &view.code)"));
+    }
+
+    /// The production part of this file (everything before the test module).
+    fn prod_source() -> &'static str {
+        let src = include_str!("invites.rs");
+        &src[..src.find("\n#[cfg(test)]\nmod tests").expect("test module")]
+    }
+
+    /// The text of the function whose signature starts with `sig`, up to its closing brace.
+    fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let at = src.find(sig).unwrap_or_else(|| panic!("{sig} not found"));
+        &src[at..at + src[at..].find("\n}\n").expect("end")]
+    }
+
+    /// Tripwire (core#355 B-1): every write of `pending.json` is one locked read-modify-write
+    /// (`update_pending_at`), and the relay call of a revoke runs outside any of them, so an invite
+    /// created or consumed while the relay answers is never overwritten by a stale copy.
+    #[test]
+    fn pending_writes_are_locked_and_the_relay_call_is_outside_them() {
+        let prod = prod_source();
+        // One writer: `write_pending` is called only from `update_pending_at`.
+        let writes: Vec<usize> = prod
+            .match_indices("write_pending(")
+            .map(|(i, _)| i)
+            .collect();
+        let def = prod.find("fn write_pending(").expect("write_pending") + "fn ".len();
+        let upd = fn_body(prod, "pub(crate) fn update_pending_at");
+        let upd_at = prod.find(upd).expect("update_pending_at");
+        for w in writes {
+            assert!(
+                w == def || (w > upd_at && w < upd_at + upd.len()),
+                "pending.json is written outside update_pending_at: {}",
+                &prod[w.saturating_sub(80)..w + 20]
+            );
+        }
+        assert!(
+            upd.contains("PENDING_LOCK.lock()"),
+            "update_pending_at holds the store lock"
+        );
+        assert!(!prod.contains("fn save("), "no unlocked load/save pair");
+        // The relay call runs between the locked read and the locked write, never inside one.
+        let close = fn_body(prod, "pub(crate) fn close_relay_for_code_at");
+        let relay = close.find("revoke_relay(").expect("relay call");
+        for (c, _) in close.match_indices("_pending_at(") {
+            let end = c + close[c..].find(";\n").expect("statement end");
+            assert!(
+                !(c..end).contains(&relay),
+                "the relay call runs inside a locked pending-store update"
+            );
+        }
+    }
+
+    /// A temp pending-invite store holding `v`.
+    fn store_with(tag: &str, v: &[super::PendingInvite]) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("citrate-invites-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pending.json");
+        super::write_pending(&path, v).unwrap();
+        path
+    }
+
+    fn tagged(group: &str, token: &str, code: &str) -> super::PendingInvite {
+        let mut i = pending(group, token);
+        i.join_code = code.into();
+        i
+    }
+
+    /// core#355 B-1: an invite minted while the relay is closing a revoked code's invite survives.
+    #[test]
+    fn an_invite_created_during_the_relay_close_is_kept() {
+        let t = crate::connections::random_state();
+        let path = store_with("b1-create", &[tagged("grp_a", &t, "Ab3dE7gh")]);
+        let fresh = crate::connections::random_state();
+        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh)))
+        });
+        assert_eq!(closed, Ok(true));
+        let v = super::load_at(&path);
+        assert!(
+            v.iter().any(|i| i.token == fresh),
+            "an invite created during the relay call was overwritten"
+        );
+        assert!(
+            v.iter().any(|i| i.token == t && i.relay_closed),
+            "the closed invite is marked"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// core#355 B-1: an invite consumed while the relay answers (the closed one or another) is not
+    /// brought back by the revoke.
+    #[test]
+    fn an_invite_consumed_during_the_relay_close_stays_consumed() {
+        let (t, other) = (
+            crate::connections::random_state(),
+            crate::connections::random_state(),
+        );
+        let path = store_with(
+            "b1-consume",
+            &[tagged("grp_a", &t, "Ab3dE7gh"), pending("grp_a", &other)],
+        );
+        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            super::update_pending_at(&path, |v| v.retain(|i| i.token != t && i.token != other))
+        });
+        assert_eq!(closed, Ok(true), "the relay invite was closed");
+        assert!(
+            super::load_at(&path).is_empty(),
+            "a consumed invite came back"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// core#355 B-1: a relay failure changes nothing it owns and keeps what changed meanwhile.
+    #[test]
+    fn a_relay_failure_keeps_changes_made_meanwhile() {
+        let t = crate::connections::random_state();
+        let path = store_with("b1-fail", &[tagged("grp_a", &t, "Ab3dE7gh")]);
+        let fresh = crate::connections::random_state();
+        let out = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
+            super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh)))?;
+            Err("comms: relay unreachable".to_string())
+        });
+        assert_eq!(out, Err("comms: relay unreachable".to_string()));
+        let v = super::load_at(&path);
+        assert!(
+            v.iter().any(|i| i.token == fresh),
+            "a change made meanwhile was overwritten"
+        );
+        assert!(
+            v.iter().any(|i| i.token == t && !i.relay_closed),
+            "the record stays open"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Concurrent writers (create, consume, revoke, tag) each re-read the store under the lock, so
+    /// none of them drops another's change.
+    #[test]
+    fn concurrent_pending_writers_lose_nothing() {
+        let path = store_with("b1-threads", &[]);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let (path, start) = (path.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    for k in 0..25 {
+                        let tok = format!("tok-{n}-{k}");
+                        super::update_pending_at(&path, |v| v.push(pending("grp_t", &tok)))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            super::load_at(&path).len(),
+            200,
+            "a concurrent write was lost"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     // Pure helper: the invite link format the invitee's app parses.
