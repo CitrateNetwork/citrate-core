@@ -964,10 +964,15 @@ fn remove_unverified_model(models_dir: &Path, file: &str) -> Result<(), Refusal>
         .map_err(|e| refuse("install_failed", e.to_string()))?;
     let _lock = crate::model::DownloadGuard::acquire(&models_dir.join(format!("{file}.part")))
         .map_err(|_| refuse("in_use", "A download of this model is running"))?;
-    if crate::model::is_file_ready(models_dir, &file) {
+    remove_unverified_model_locked(models_dir, &file)
+}
+
+/// [`remove_unverified_model`] for a caller that already holds the file's download lock.
+fn remove_unverified_model_locked(models_dir: &Path, file: &str) -> Result<(), Refusal> {
+    if crate::model::is_file_ready(models_dir, file) {
         return Ok(());
     }
-    let mut paths = vec![models_dir.join(&file)];
+    let mut paths = vec![models_dir.join(file)];
     paths.extend(
         crate::model_delete::SIDE_SUFFIXES
             .iter()
@@ -988,16 +993,34 @@ fn remove_unverified_model(models_dir: &Path, file: &str) -> Result<(), Refusal>
 /// the file on disk, no verified flag, no install running) is checked again by its pinned hash:
 /// it is confirmed when it matches, and when it does not (or cannot be checked) the file and its
 /// record are removed together, so the listing can be installed again.
+/// Each check runs under the file's download lock (shared with the Models screen); a record
+/// whose file a download is writing right now is left for a later read.
 fn reconcile_models(root: &Path, t: &Targets<'_>, installing: Option<&str>) -> Result<(), Refusal> {
     let mut st = read_store_file(root)?;
     let mut changed = false;
     let mut keep = Vec::with_capacity(st.installs.len());
     for mut r in std::mem::take(&mut st.installs) {
-        let interrupted = r.kind == ListingKind::Model
-            && r.pending
-            && installing != Some(r.listing_id.as_str())
-            && t.models_dir.join(&r.target).is_file()
-            && !crate::model::is_file_ready(&t.models_dir, &r.target);
+        let candidate =
+            r.kind == ListingKind::Model && r.pending && installing != Some(r.listing_id.as_str());
+        if !candidate {
+            keep.push(r);
+            continue;
+        }
+        // The file's download lock (shared with the Models screen) is held from the check below
+        // through the verify and any clean-up: no download can rename other bytes in meanwhile.
+        // A download holding it owns the file right now; the record waits for a later read.
+        let Ok(file) = crate::model_delete::file_from_id(&r.target) else {
+            keep.push(r);
+            continue;
+        };
+        let Ok(lock) =
+            crate::model::DownloadGuard::acquire(&t.models_dir.join(format!("{file}.part")))
+        else {
+            keep.push(r);
+            continue;
+        };
+        let interrupted = t.models_dir.join(&file).is_file()
+            && !crate::model::is_file_ready(&t.models_dir, &file);
         if !interrupted {
             keep.push(r);
             continue;
@@ -1011,15 +1034,16 @@ fn reconcile_models(root: &Path, t: &Targets<'_>, installing: Option<&str>) -> R
                 r.sha256.clone(),
                 r.size,
             )
-            .with_file(r.target.clone())
-            .verify()
+            .with_file(file.clone())
+            .verify_held(&lock)
             .is_ok();
         if verified {
             r.pending = false;
             keep.push(r);
         } else {
-            remove_unverified_model(&t.models_dir, &r.target)?;
+            remove_unverified_model_locked(&t.models_dir, &file)?;
         }
+        drop(lock);
     }
     st.installs = keep;
     if changed {

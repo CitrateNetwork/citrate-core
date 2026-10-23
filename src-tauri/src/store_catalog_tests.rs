@@ -1413,3 +1413,24 @@ fn reconcile_takes_and_releases_the_download_lock() {
     // The lock is free again afterwards.
     assert!(crate::model::DownloadGuard::acquire(&fx.models.join("tiny-model.gguf.part")).is_ok());
 }
+
+/// Tripwire (#392): every model verify in the Store path runs under the file's download lock:
+/// `download_and_verify` (which takes it) or `verify_held` (which needs it); never a bare verify.
+#[test]
+fn tripwire_every_store_model_verify_runs_under_the_download_lock() {
+    let src = include_str!("store_catalog.rs");
+    let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src);
+    assert!(!prod.contains(".verify()"), "a bare verify in store_catalog.rs");
+    let rec = &prod[prod.find("fn reconcile_models(").expect("reconcile")..];
+    let rec = &rec[..rec.find("\n}\n").expect("ends")];
+    let lock = rec.find("DownloadGuard::acquire(").expect("reconcile takes the lock");
+    let check = rec.find("is_file_ready(").expect("re-check");
+    let verify = rec.find(".verify_held(&lock)").expect("verify under it");
+    let clean = rec.find("remove_unverified_model_locked(").expect("clean-up under it");
+    assert!(lock < check && check < verify && verify < clean, "lock, re-check, verify, clean-up");
+    assert!(!rec.contains("remove_unverified_model("), "the clean-up does not re-take the lock");
+    let model = include_str!("model.rs");
+    let vh = &model[model.find("pub fn verify_held(").expect("verify_held")..];
+    let vh = &vh[..vh.find("\n    }\n").expect("ends")];
+    assert!(vh.find("guard.path != self.part_path()").expect("checks the guard") < vh.find("self.verify()").expect("verify"));
+}
