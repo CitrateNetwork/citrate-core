@@ -1,0 +1,100 @@
+// SCRATCH generator, run inside a v0.5.1 checkout only (never committed there). It writes the
+// webview's persisted state exactly as v0.5.1 writes it: real freshState, real reconciledGrantPatch,
+// real Store.save() (the PERSIST_KEYS filter at store.ts:2008), real groups history writer.
+import { describe, it, vi } from "vitest";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { STORAGE_KEY, freshState } from "./shell/state";
+import { store, reconciledGrantPatch } from "./shell/store";
+
+const OUT = process.env.FIXTURE_OUT as string;
+
+function savedBlob(): unknown {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) throw new Error("v0.5.1 save() wrote nothing");
+  return JSON.parse(raw);
+}
+
+describe("v0.5.1 webview fixtures", () => {
+  it("writes a settled member's saved state", () => {
+    vi.useFakeTimers();
+    mkdirSync(OUT, { recursive: true });
+    localStorage.clear();
+    const grant = reconciledGrantPatch({
+      attributedStakeWei: "32000000000000000000000",
+      attributedPrincipalWei: "32000000000000000000000",
+      hasSbt: true,
+      bondAddress: "0x00000000000000000000000000000000000b0bd5",
+      bondDeployed: true,
+      bondedStakeWei: "0",
+      hasValidator: false,
+      unlockBlock: 2_700_000,
+      isUnlocked: false,
+      isKycVerified: true,
+    });
+    if (!grant) throw new Error("grant patch was null");
+    const base = freshState("p1");
+    store.state = {
+      ...base,
+      ...grant,
+      stage: "done",
+      coachDone: true,
+      tier: "member",
+      entitlement: "active",
+      s2: "verified",
+      kycOutcome: "verified",
+      // Observed node facts that 0.5.1 persisted (contract v1.1: never restore these).
+      node: "validating",
+      nodeIntent: "run",
+      syncPct: 100,
+      peers: 9,
+      // The design-era earnings counters 0.5.1 persisted.
+      earnVal: 12.5,
+      earnPin: 0.75,
+      earnComp: 3.25,
+      earnToday: 0.5,
+      claimable: 1.25,
+      liquid: 41.5,
+      selfStake: 0,
+      bondedStake: 0,
+      sigPolicy: "allow",
+      telemetry: true,
+      walletAddr: "0x1111111111111111111111111111111111111111",
+      commsAddr: "0x2222222222222222222222222222222222222222",
+      deviceId: "dev-upgrade-fixture",
+      aiDefault: "local",
+      chatBackend: "local",
+      activeModelId: "qwen3-4b-instruct-q4_k_m",
+      hermesSidecarLoop: false,
+      hermesSidecarLoopDefaultApplied: true,
+      hermesTerminal: false,
+      hermesTerminalDefaultApplied: true,
+      hermesReadAloud: true,
+      journalAutoSummary: true,
+      journalAutoSummaryDay: "2026-10-20",
+      connections: { github: true },
+      jPages: [{ id: "pg-1", title: "Notes", kind: "page", pinned: true, blocks: ["first block"] }],
+      jSel: "pg-1",
+      userSkills: [{ id: "sk-1", name: "Summarise", description: "", instruction: "Summarise the page." }],
+      pins: [{ cid: "bafybeigdyrztq7v7zv6fixturefixturefixturefixturefixture", bond: 0, cadH: 24, nextIn: 3, last: "ok" }],
+      activity: [
+        { id: "a1", kind: "Grant + stake ceremony", amount: "32,000 SALT", hash: "0x" + "ab".repeat(32), ts: 1_792_300_000_000, status: 1, direction: "in" },
+        { id: "a2", kind: "Claim rewards", amount: "+1.25 SALT", hash: "0x" + "cd".repeat(32), ts: 1_792_310_000_000 },
+      ],
+      crashes: [{ when: "2026-10-19 08:00", note: "node exited 1" }],
+      sponsorUnits: 3,
+      blocksProposed: 0,
+    };
+    store.save();
+    vi.advanceTimersByTime(1000);
+    const blob = savedBlob();
+    writeFileSync(`${OUT}/localStorage.citrate-core-proto-v2.member.json`, JSON.stringify(blob, null, 2) + "\n");
+
+    // A member part-way through onboarding (stage s6, the step before "done" in 0.5.1).
+    localStorage.clear();
+    store.state = { ...freshState("p1"), ...grant, stage: "s6", telemetry: false };
+    store.save();
+    vi.advanceTimersByTime(1000);
+    writeFileSync(`${OUT}/localStorage.citrate-core-proto-v2.onboarding-s6.json`, JSON.stringify(savedBlob(), null, 2) + "\n");
+    vi.useRealTimers();
+  });
+});

@@ -19,6 +19,7 @@ import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLi
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { InviteLinks, YourInviteLinks } from "./InviteLinks";
 import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
+import { reachedStep } from "../privacy/joinFunnel";
 import { RelayStatusChip } from "./RelayStatusChip";
 import {
   groupsSlice,
@@ -394,9 +395,11 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast("That doesn't look like an invite link.");
       return;
     }
+    reachedStep("arrive"); // 0.5.2 Join funnel: an invite arrived by paste (step id only)
     // Primary: one-click self-admit.
     try {
       await bridge.invites.redeem(link);
+      reachedStep("join_group");
       setRedeemOpen(false);
       await refreshGroups();
       store.toast("You're in — welcome to the group.");
@@ -541,6 +544,7 @@ export function Groups({ store, s }: SurfaceProps) {
                     // older link (with a `k=` key) whose self-admit didn't take.
                     try {
                       await bridge.invites.redeem(pi.url);
+                      reachedStep("join_group");
                       await refreshGroups();
                       store.toast("You're in — welcome to the group.");
                       store.clearPendingInvite();

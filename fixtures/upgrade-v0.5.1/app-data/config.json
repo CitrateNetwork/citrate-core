@@ -1,0 +1,13 @@
+{
+  "app": {
+    "autolock": 15,
+    "channel": "stable",
+    "coreMembershipUrl": "https://membership.citrate.ai",
+    "cpuCap": 50,
+    "dataDir": "~/.citrate/core",
+    "net": "testnet",
+    "rpc": "local",
+    "sigPolicy": "allow",
+    "telemetry": true
+  }
+}

@@ -86,6 +86,11 @@ jobs:
       # committed sha256 manifest, verified before anything is staged or signed.
       - name: release pin tripwire
         run: scripts/ci/check-release-pins.sh
+      # Release component pins: release/components.json, the build scripts, the bundle overlays,
+      # src-tauri/runtime-deps.sha256, release.yml (incl. its dry-run guards) and the app's model
+      # pin must agree; a component script that builds outside the pinned engine fails here.
+      - name: release component pins
+        run: node scripts/component-pins.mjs check
       - name: typecheck
         run: npm run typecheck
       - name: test

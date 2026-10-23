@@ -37,6 +37,7 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
+import type { PendingReadErrorKind, PendingWithdrawalsError } from "../bridge/domains";
 import type { FlRoundPlan } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
@@ -83,6 +84,7 @@ import {
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
+import { reachedStep } from "../privacy/joinFunnel";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 /**
@@ -130,6 +132,37 @@ type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
  * and NEVER expired. Disambiguate by magnitude: a value already in ms range
  * (>= 1e12, i.e. any time after 2001) is used as-is; a smaller value is seconds.
  */
+/** C1-W — how soon an unfinished pending-withdrawal scan is read again. */
+export const PENDING_SCAN_RETRY_MS = 2_000;
+/** C1-W — how soon a read the node answered "still indexing" (-32002) is tried again. */
+export const PENDING_INDEXING_RETRY_MS = 10_000;
+/** C1-W — how soon a complete but unconfirmed read (the node is behind, or gives no evidence) is
+ *  read again. */
+export const PENDING_CATCHUP_RETRY_MS = 30_000;
+/** C1-W — how soon a read that missed the IPC deadline (InvokeTimeout) is tried again. */
+export const PENDING_TIMEOUT_RETRY_MS = 10_000;
+
+/** C1-W — when a failed pending-withdrawals read is read again, by kind: an unfinished scan soon,
+ *  a node still indexing (-32002) later, an IPC timeout later; any other failure is shown only. */
+const PENDING_RETRY_MS: Record<PendingReadErrorKind | "timeout", number | null> = {
+  scanning: PENDING_SCAN_RETRY_MS,
+  indexing: PENDING_INDEXING_RETRY_MS,
+  timeout: PENDING_TIMEOUT_RETRY_MS,
+  failed: null,
+};
+
+/** C1-W — the kind and the words of a failed pending-withdrawals read. A rejection that is not a
+ *  structured PendingWithdrawalsError (or an InvokeTimeout) is `failed`: fail closed. */
+function pendingReadFailure(err: unknown): { kind: PendingReadErrorKind | "timeout"; message: string } {
+  // InvokeTimeout (bridge/tauri/invoke.ts) by its type name: that module is loaded lazily here.
+  if (err instanceof Error && err.name === "InvokeTimeout") return { kind: "timeout", message: err.message };
+  const e = err as Partial<PendingWithdrawalsError> | null;
+  if (e && typeof e === "object" && typeof e.message === "string" && (e.kind === "scanning" || e.kind === "indexing" || e.kind === "failed")) {
+    return { kind: e.kind, message: e.message };
+  }
+  return { kind: "failed", message: String((err as Error)?.message ?? err) };
+}
+
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
   let ms: number;
@@ -1470,6 +1503,8 @@ export class Store {
         /* honest no-op: keep the last real log tail, never a fabricated one */
       }
       this.setState(patch);
+      // 0.5.2 Join funnel: the node reached sync (real poll only; the step id only, no height).
+      if (patch.node === "synced" || patch.node === "validating") reachedStep("node_synced");
       // Re-seed the memory graph's personal/stake facts the moment the grant first surfaces (the
       // launch-time seed ran before the grant reconciled, so the personal tenant was skipped then).
       if (grantJustSurfaced && this.state.memDaemon === "running") void this.seedMemoryGraph();
@@ -2205,6 +2240,7 @@ export class Store {
     // it to Rust to hold and drop it here. Nothing is resolved until the member acts. During first-run
     // setup it waits on the onboarding card; once set up it waits on the Groups banner.
     if (kind.kind === "v2") {
+      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
       void this.holdInvite(url).then((ok) => {
         if (ok && this.state.stage === "done") this.go("groups");
       });
@@ -2212,6 +2248,7 @@ export class Store {
     }
     // The app-only relay invite (`citrate://invite?g=&t=`) keeps its one-click Join on Groups.
     if (kind.kind === "relay") {
+      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
       this.setState({ pendingInvite: { url } });
       this.go("groups");
       return;
@@ -2220,6 +2257,7 @@ export class Store {
     if (kind.kind === "legacy-referral") {
       const parts = kind.parts;
       if (!parts.clusterId && !parts.inviterHandle) return;
+      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link's contents
       this.setState({
         pendingInvite: { url, clusterId: parts.clusterId, clusterName: parts.clusterName, inviterHandle: parts.inviterHandle, goal: parts.goal },
       });
@@ -4660,11 +4698,60 @@ export class Store {
    * reads []. Failure leaves the last honest list untouched — no fabricated rows.
    */
   async refreshPendingWithdrawals(): Promise<void> {
+    // C1-W (#371 review): one read at a time. Overlapping callers (launch, Wallet mount, after a
+    // ceremony, the retry timers) share the read in flight, so the retry chains never multiply.
+    if (this.pendingWithdrawalsRead) return this.pendingWithdrawalsRead;
+    // A fresh read replaces any scheduled retry: it schedules its own if it needs one, so one
+    // retry chain exists per Store (#371 review @31c065f).
+    this.clearPendingRetry();
+    this.pendingWithdrawalsRead = this.readPendingWithdrawals().finally(() => {
+      this.pendingWithdrawalsRead = null;
+    });
+    return this.pendingWithdrawalsRead;
+  }
+
+  private pendingWithdrawalsRead: Promise<void> | null = null;
+
+  /** C1-W — the one scheduled pending-withdrawals retry, if any. */
+  private pendingWithdrawalsRetry: ReturnType<typeof setTimeout> | null = null;
+
+  private clearPendingRetry(): void {
+    if (this.pendingWithdrawalsRetry !== null) clearTimeout(this.pendingWithdrawalsRetry);
+    this.pendingWithdrawalsRetry = null;
+  }
+
+  /** Read again in `ms`, replacing any retry already scheduled. */
+  private schedulePendingRetry(ms: number): void {
+    this.clearPendingRetry();
+    this.pendingWithdrawalsRetry = setTimeout(() => {
+      this.pendingWithdrawalsRetry = null;
+      void this.refreshPendingWithdrawals();
+    }, ms);
+  }
+
+  private async readPendingWithdrawals(): Promise<void> {
     try {
-      const list = await bridge.wallet.pendingWithdrawals();
-      this.setState({ pendingWithdrawals: list });
-    } catch {
-      /* honest no-op: keep the last real list, never a fabricated one */
+      const read = await bridge.wallet.pendingWithdrawals();
+      this.setState({
+        pendingWithdrawals: read.withdrawals,
+        pendingWithdrawalsError: null,
+        pendingWithdrawalsUnconfirmed: !read.confirmed,
+        pendingWithdrawalsNote: read.confirmed ? null : read.note,
+      });
+      // C1-W: an incomplete read (the scan or the withdrawal reads ran out of budget) continues
+      // soon; a complete but unconfirmed one (the node is behind, or has no citrate_getLogs) is
+      // read again later, so the list catches up without a refresh.
+      if (!read.complete) this.schedulePendingRetry(PENDING_SCAN_RETRY_MS);
+      else if (!read.confirmed) this.schedulePendingRetry(PENDING_CATCHUP_RETRY_MS);
+    } catch (err) {
+      // C1-W: a failed log window (or an unfinished first scan) is shown as "—" plus the
+      // reason, never as an empty queue. The Rust scan keeps the blocks it read, so the next read
+      // resumes. When to read again follows the error's kind (Rust PendingWithdrawalsError, or an
+      // IPC timeout), never the words of its message.
+      const failure = pendingReadFailure(err);
+      this.setState({ pendingWithdrawalsError: failure.message });
+      const retryMs = PENDING_RETRY_MS[failure.kind];
+      if (retryMs !== null) this.schedulePendingRetry(retryMs);
     }
   }
 
