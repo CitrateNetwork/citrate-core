@@ -10,6 +10,9 @@ export { ALF } from "./ALF";
 // CX (planset citrate-core-social) — new surfaces, one per feature lane (CX-S0.4 shells).
 export { Models } from "./Models";
 export { StorageFiles } from "./StorageFiles";
+// K4 — storage components (Files, Memory = Storage, Pins, Backup) for Node › Storage.
+export { StoragePins, PinBondParams } from "./StoragePins";
+export { StorageBackup } from "./StorageBackup";
 export { Groups } from "./Groups";
 export { Cluster } from "./Cluster";
 export { Train } from "./Train";

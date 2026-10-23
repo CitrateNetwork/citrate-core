@@ -1,0 +1,79 @@
+# created: 2026-10-18 | branch: beta/k1a-gate0-harness | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# status: stub (SCL-S1.3). Runs the lifecycle fault-injection suite on Linux and macOS and fails
+# if any fixture process is left behind. SCL-S13.1 grows it to Windows, the src-tauri and runtime
+# suites, and makes it a required check; it is not required yet.
+name: lifecycle-faults
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "kit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lifecycle-faults.yml"
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "kit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lifecycle-faults.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifecycle-faults-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle-faults:
+    name: lifecycle-faults (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned toolchain action
+        with:
+          toolchain: 1.98.1
+
+      - name: Install Tauri Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - name: No fixture process before the run
+        shell: bash
+        run: |
+          if pgrep -fl citrate-lcf-; then
+            echo "::error::citrate-lcf- processes exist before the suite ran"
+            exit 1
+          fi
+
+      - name: Run the lifecycle fault-injection suite
+        shell: bash
+        run: cargo test --locked -p citrate-core-kit --test lifecycle_faults -- --nocapture
+
+      - name: No fixture process left behind
+        if: always()
+        shell: bash
+        run: |
+          # Every fixture process carries "citrate-lcf-" in its argv (kit/tests/lifecycle/fixture.rs).
+          sleep 1
+          if pgrep -fl citrate-lcf-; then
+            echo "::error::the lifecycle suite left fixture processes behind"
+            pkill -9 -f citrate-lcf- || true
+            exit 1
+          fi
+          echo "no leftover fixture processes"
