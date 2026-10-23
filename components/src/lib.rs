@@ -18,6 +18,7 @@
 //! Rule 3: nothing here holds a private key or signs. Signing happens offline at the release
 //! ceremony with the minisign tool.
 pub mod bundle;
+pub mod catalog;
 pub mod error;
 pub mod extract;
 pub mod fetch;
