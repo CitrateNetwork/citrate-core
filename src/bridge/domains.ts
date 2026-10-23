@@ -160,8 +160,10 @@ export interface WalletDomain {
   claimWithdrawal(id: string): Promise<CeremonyView>;
   /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
    * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * A fresh wallet honestly returns []. Never fabricated (Rule 1). */
-  pendingWithdrawals(): Promise<PendingWithdrawal[]>;
+   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
+   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
+   * missing and an empty list is not "none". */
+  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -213,6 +215,24 @@ export interface WalletDomain {
 /** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
  * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
  * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
+/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
+ * `complete` = it reached the end of what the node serves and read every withdrawal;
+ * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
+export interface PendingWithdrawalsRead {
+  withdrawals: PendingWithdrawal[];
+  confirmed: boolean;
+  complete: boolean;
+  note: string | null;
+}
+
+/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
+ * when the Wallet reads again; `message` is display only and is never matched. */
+export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
+export interface PendingWithdrawalsError {
+  kind: PendingReadErrorKind;
+  message: string;
+}
+
 export interface PendingWithdrawal {
   id: string;
   saltWei: string;
@@ -847,14 +867,102 @@ export interface PinRow {
   pinState: "pinned" | "pinning" | "challenged" | "unpinned";
   addedAt: number;
 }
+/** K4 — IPFSIncentivesV3 pin-bond PARAMETERS (Rust `storage::PinParams`). Parameters only: the
+ *  contract is deployed but dormant and unfunded, so `bondsLive` is always false in this build.
+ *  A null value means its read failed (unknown is not zero); the reason is in `errors`. */
+export interface PinParams {
+  contract: string;
+  /** `BOND()` in wei, decimal string. */
+  bondWei: string | null;
+  /** `REWARD()` in wei, decimal string, paid over `rounds` rounds. */
+  rewardWei: string | null;
+  rounds: number | null;
+  bondsLive: boolean;
+  /** Where the values came from (shown on screen). */
+  source: string;
+  errors: string[];
+}
+
+/** K4 — a storage part a backup can hold. */
+export type BackupPart = "files" | "memory";
+
+/** K4 — one export/restore progress step (Rust `storage_backup::Progress`). */
+export interface BackupProgress {
+  op: "export" | "restore";
+  phase: "files" | "memory" | "verify" | "daemon" | "done";
+  done: number;
+  total: number;
+  item: string;
+}
+
+/** K4 — one way a backup folder disagrees with its manifest (Rust `storage_backup::Mismatch`). */
+export type BackupMismatch =
+  | { kind: "missing"; path: string }
+  | { kind: "sizeDiffers"; path: string; expected: number; actual: number }
+  | { kind: "hashDiffers"; path: string }
+  | { kind: "unlisted"; path: string }
+  | { kind: "unsafePath"; path: string }
+  | { kind: "notAFile"; path: string }
+  | { kind: "badMode"; path: string }
+  | { kind: "modeDiffers"; path: string; expected: number; actual: number };
+
+export interface BackupExportReport {
+  folder: string;
+  createdAt: number;
+  /** The parts actually written (a skipped part is in `skipped` with item "files" / "memory"). */
+  parts: BackupPart[];
+  files: number;
+  memoryFiles: number;
+  totalBytes: number;
+  entriesSha256: string;
+  skipped: { item: string; reason: string }[];
+  daemonRestarted: boolean;
+  notes: string[];
+}
+
+export interface BackupVerifyReport {
+  folder: string;
+  ok: boolean;
+  createdAt: number | null;
+  parts: BackupPart[];
+  fileCount: number;
+  totalBytes: number;
+  mismatches: BackupMismatch[];
+  /** A problem with the manifest itself (missing, other format, edited). */
+  problem: string | null;
+}
+
+export interface BackupRestoreReport {
+  folder: string;
+  /** The parts actually restored. */
+  parts: BackupPart[];
+  /** Requested parts that were not restored, and why. */
+  skipped: { item: string; reason: string }[];
+  filesRestored: number;
+  cidsChanged: { expected: string; actual: string }[];
+  memoryFilesRestored: number;
+  previousMemoryKeptAt: string | null;
+  daemonRestarted: boolean;
+  notes: string[];
+}
+
 export interface StorageDomain {
   /** Add a local file to IPFS; returns its CID. */
   add(path: string): Promise<{ cid: string; sizeBytes: number }>;
-  /** Pin a CID with a SALT bond — ceremony-gated (D-18). */
-  pin(cid: string, bondSalt: string): Promise<void>;
+  /** K4: keep a CID on this node only ("Local pin · no bond"). No bond, no transaction: pin bonds
+   *  are not live until IPFSIncentivesV3 is funded at genesis. */
+  pinLocal(cid: string): Promise<void>;
   list(): Promise<PinRow[]>;
   retrieve(cid: string): Promise<{ path: string }>;
   unpin(cid: string): Promise<void>;
+  /** K4: the IPFSIncentivesV3 BOND / REWARD / ROUNDS parameters, read from chain 40204. */
+  pinParams(): Promise<PinParams>;
+  /** K4: export Files and/or Memory into a new verified backup folder inside `dest`. */
+  backupExport(dest: string, parts: BackupPart[], onProgress?: (p: BackupProgress) => void): Promise<BackupExportReport>;
+  /** K4: check a backup folder against its manifest (sha256 + size per file). */
+  backupVerify(folder: string): Promise<BackupVerifyReport>;
+  /** K4: restore from a backup folder; Rust refuses on any manifest mismatch before touching anything. */
+  backupRestore(folder: string, parts: BackupPart[], onProgress?: (p: BackupProgress) => void): Promise<BackupRestoreReport>;
 }
 
 // ── C-19 groups: secure 1:1 + group comms, admin RBAC (lane s3) ──
@@ -1957,12 +2065,16 @@ export interface DiagnosticBundle {
   crashTail: string;
   nodeLogTail: string;
   uiErrors: string[];
+  /** 0.5.2 Join: the join step ids reached since the last sent report (bare ids, allowlisted in
+   *  Rust; see src/privacy/joinFunnel.ts). Empty when telemetry is off. */
+  joinSteps: string[];
 }
 
 export interface TelemetryDomain {
   /** WP-T.2/T.3 — assemble the SCRUBBED bundle locally for review. No network. `uiErrors` is
-   *  the frontend error ring. Returns already-scrubbed content the member can inspect. */
-  bundle(uiErrors: string[]): Promise<DiagnosticBundle>;
+   *  the frontend error ring; `joinSteps` the pending join step ids (joinFunnel). Returns
+   *  already-scrubbed content the member can inspect. */
+  bundle(uiErrors: string[], joinSteps?: string[]): Promise<DiagnosticBundle>;
   /** WP-T.4 — the ONE pinned HTTPS POST. Call ONLY after the member reviewed + consented
    *  (ConsentGate, WP-T.1). Sends exactly the reviewed bundle JSON. Honest error if the
    *  ingest service (WP-T.5) isn't live. */
