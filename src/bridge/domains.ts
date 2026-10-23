@@ -279,12 +279,13 @@ export interface NodeDomain {
    */
   lastCrash(): Promise<{ reason: string; atUnixMs: number } | null>;
   /**
-   * W1.4 — the REAL validator rewards: `rewardsOf(proposerPubkey)` on the
-   * ValidatorRegistry, keyed on the node's own proposer key. A not-yet-registered
-   * validator honestly returns zeros. This is the CORRECT source for validator
-   * earnings; `ContributionAccounting.claimable` is a different accrual.
+   * W1.4 — the REAL validator rewards: `ValidatorRegistry.rewardsOf(pubkey)` for the
+   * validator key `pubkey` (`MemberBond.pubkey()` for a deployed bond, #394), or the node's
+   * own proposer key when none is given. `proposerPubkey` in the answer is the key read. A
+   * not-yet-registered key honestly returns zeros. `ContributionAccounting.claimable` is a
+   * different accrual.
    */
-  validatorEarnings(): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }>;
+  validatorEarnings(pubkey?: string): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }>;
   /**
    * W1.x — arm the producer, consensus-gated on being synced. The node runs as a
    * plain follower and never mints its `proposer.key`; arming respawns it with
@@ -372,7 +373,7 @@ export interface AgentDomain {
    * a settled-claim hash (Rule 1). The Tauri impl invokes the `user_claim` command;
    * the sim impl is guarded out of packaged builds and never claims for real.
    */
-  claim(opts?: { validator: boolean }): Promise<ClaimResult>;
+  claim(opts?: { validator: boolean; pubkey?: string | null }): Promise<ClaimResult>;
 }
 
 // The citrate-memories mcp_serve daemon under the SidecarSupervisor (CORE-C3).
