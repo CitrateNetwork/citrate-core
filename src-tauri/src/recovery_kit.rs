@@ -794,13 +794,12 @@ pub async fn recovery_kit_save_file<R: tauri::Runtime>(
 #[tauri::command]
 pub async fn recovery_kit_restore_phrase<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    sheet: String,
+    sheet: SecretString,
     replace: bool,
 ) -> std::result::Result<RestoreReport, String> {
     crate::blocking::off_main(move || {
-        let sheet = Zeroizing::new(sheet);
         let dir = data_dir(&app)?;
-        let keys = parse_sheet(&sheet).map_err(|e| e.to_string())?;
+        let keys = parse_sheet(sheet.expose()).map_err(|e| e.to_string())?;
         let recorded = read_recorded(&dir);
         restore_keys(
             &crate::custody::OsKeyring::legacy(),

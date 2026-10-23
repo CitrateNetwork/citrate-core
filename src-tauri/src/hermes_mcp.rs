@@ -297,15 +297,17 @@ pub struct McpView {
 
 /// The node token in the allowlist file Hermes was last given, if any (so a still-live token is
 /// kept instead of cutting a running Hermes off).
-pub fn current_node_token(dir: &Path) -> Option<String> {
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(config_path(dir)).ok()?).ok()?;
+pub fn current_node_token(dir: &Path) -> Option<SecretString> {
+    // The file holds the token: read it into a wiping buffer.
+    let text = zeroize::Zeroizing::new(std::fs::read_to_string(config_path(dir)).ok()?);
+    let v: Value = serde_json::from_str(&text).ok()?;
     v.get("servers")?
         .as_array()?
         .iter()
         .find(|s| s.get("name").and_then(Value::as_str) == Some(NODE_SERVER_NAME))?
         .pointer(&format!("/env/{NODE_TOKEN_ENV}"))?
         .as_str()
-        .map(str::to_string)
+        .map(|t| SecretString::new(t.to_string()))
 }
 
 pub fn build_view(
@@ -419,11 +421,11 @@ fn node_target<R: tauri::Runtime>(
     }
     let exe = std::env::current_exe().ok()?;
     let current = current_node_token(dir);
-    match node.hermes_token(current.as_deref()) {
+    match node.hermes_token(current.as_ref().map(SecretString::expose)) {
         Ok(token) => Some(NodeTarget {
             exe,
             port: node.bound_port(),
-            token: SecretString::new(token),
+            token,
         }),
         Err(e) => {
             eprintln!("hermes: no connect token for the node entry ({e}); it is left out");

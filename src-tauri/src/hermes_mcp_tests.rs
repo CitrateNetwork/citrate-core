@@ -338,16 +338,16 @@ fn the_node_entry_keeps_its_name_reserved_from_member_servers() {
 #[test]
 fn the_current_node_token_is_read_back_from_the_written_file() {
     let dir = tmp_dir("node-token");
-    assert_eq!(current_node_token(&dir), None);
+    assert!(current_node_token(&dir).is_none());
     sync_config_file(&dir, &node_on(), None, Some(&node_target()))
         .expect("io")
         .expect("written");
     assert_eq!(
-        current_node_token(&dir).as_deref(),
+        current_node_token(&dir).as_ref().map(SecretString::expose),
         Some(node_target().token.expose())
     );
     sync_config_file(&dir, &McpSettings::default(), None, Some(&node_target())).expect("io");
-    assert_eq!(current_node_token(&dir), None);
+    assert!(current_node_token(&dir).is_none());
 }
 
 #[test]
