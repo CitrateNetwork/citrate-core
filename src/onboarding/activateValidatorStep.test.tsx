@@ -113,7 +113,7 @@ describe("S7 · Activate validator", () => {
     expect(renderToStaticMarkup(<S7 store={recent} s={s} />)).not.toContain('data-testid="s7-forget"');
   });
 
-  it("offers Explore free in every state before activation", () => {
+  it("offers the skip in every state before activation", () => {
     expect(view(st())).toContain('data-testid="s7-skip"');
     expect(view(st({ membershipActive: false }))).toContain('data-testid="s7-skip"');
     expect(view(null)).toContain('data-testid="s7-skip"');
