@@ -455,8 +455,9 @@ struct Pending {
 
 /// Join-8: how long a signed, unsent transaction may wait for its send before it is dropped.
 ///
-/// Why 120 s. The only caller sends right after it writes the hash to disk (a synchronous
-/// localStorage write, milliseconds), so a healthy flow uses a tiny fraction of this. A tx still
+/// Why 120 s. The only caller shows the hash and then sends at once; the durable record is
+/// written in Rust by the send itself (`send_signed`, an fsync'd [`crate::submitted_log`] entry,
+/// milliseconds), so a healthy flow uses a tiny fraction of this. A tx still
 /// unsent after 2 minutes means the webview went away mid-flow; keeping it would let a later
 /// `send_prepared` broadcast a signature the member approved long before, against a nonce and
 /// gas price read at signing time.
