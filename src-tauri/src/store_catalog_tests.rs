@@ -1434,3 +1434,29 @@ fn tripwire_every_store_model_verify_runs_under_the_download_lock() {
     let vh = &vh[..vh.find("\n    }\n").expect("ends")];
     assert!(vh.find("guard.path != self.part_path()").expect("checks the guard") < vh.find("self.verify()").expect("verify"));
 }
+
+// ---- #441: a file a Models download left (its marker is there) is never the Store's ------------
+
+/// A Store install crashed before its own file landed, and a Models download of other bytes under
+/// the same name crashed between its rename and its verify: the file, plus the Models screen's
+/// `.download.json` marker (a Store install never writes one). Reconcile and Remove leave that
+/// file and marker alone; only the Store's record can go.
+#[test]
+fn a_file_a_models_download_left_is_never_verified_or_removed_by_the_store() {
+    let fx = interrupted_model("models-marker", &model_bytes());
+    let mut b = model_bytes();
+    b[21] = 6;
+    std::fs::write(fx.models.join("tiny-model.gguf"), &b).unwrap();
+    crate::model_catalog::write_download_marker(&fx.models, "tiny-model.gguf", "some-catalog-model", b.len() as u64)
+        .expect("marker");
+    let marker = fx.models.join("tiny-model.gguf.download.json");
+    let listed = fx.fx_installed();
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b.clone()), "reconcile kept the Models file");
+    assert!(marker.exists(), "and its marker");
+    assert_eq!(listed.len(), 1, "the Store record waits");
+    assert_eq!(listed[0].state, "missing");
+    fx.fx_remove("tiny-model", &Usage(None)).expect("the Store record is removable");
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b), "Remove kept the Models file");
+    assert!(marker.exists(), "and its marker");
+    assert!(read_store_file(&fx.root).expect("state").installs.is_empty());
+}
