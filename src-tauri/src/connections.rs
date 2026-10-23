@@ -1257,16 +1257,16 @@ mod tests {
     #[test]
     fn token_response_debug_and_errors_carry_no_token() {
         let tok: TokenResponse = serde_json::from_str(
-            r#"{"access_token":"gho_live_secret_123","refresh_token":"ghr_refresh_456","scope":"repo"}"#,
+            r#"{"access_token":"FIXTURE-ACCESS-VALUE","refresh_token":"FIXTURE-REFRESH-VALUE","scope":"repo"}"#,
         )
         .unwrap();
         let dbg = format!("{tok:?}");
         assert!(
-            !dbg.contains("gho_live_secret_123"),
+            !dbg.contains("FIXTURE-ACCESS-VALUE"),
             "access token in Debug: {dbg}"
         );
         assert!(
-            !dbg.contains("ghr_refresh_456"),
+            !dbg.contains("FIXTURE-REFRESH-VALUE"),
             "refresh token in Debug: {dbg}"
         );
         assert!(
@@ -1278,7 +1278,7 @@ mod tests {
         let fake = Arc::new(FakeHttp {
             last_url: StdMutex::new(None),
             last_form: StdMutex::new(Vec::new()),
-            response: r#"{"access_token":42,"leak":"gho_live_secret_123"}"#.to_string(),
+            response: r#"{"access_token":42,"leak":"FIXTURE-ACCESS-VALUE"}"#.to_string(),
         });
         let mgr = ConnectionManager::new(Box::new(SharedHttp(fake)), PathBuf::from("unused"));
         let creds = ClientCreds {
@@ -1289,11 +1289,11 @@ mod tests {
             .exchange_and_store(Service::GitHub, &creds, &vault, "c", "v")
             .expect_err("a non-string token is refused");
         assert!(
-            !err.to_string().contains("gho_live"),
+            !err.to_string().contains("FIXTURE-ACCESS"),
             "token in error: {err}"
         );
         assert!(
-            !format!("{err:?}").contains("gho_live"),
+            !format!("{err:?}").contains("FIXTURE-ACCESS"),
             "token in error Debug: {err:?}"
         );
     }
