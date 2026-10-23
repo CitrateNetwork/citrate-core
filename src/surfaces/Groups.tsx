@@ -19,7 +19,7 @@ import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLi
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
 import { RelayStatusChip } from "./RelayStatusChip";
-import { JoinRequests, InviteStateLine } from "./JoinRequests";
+import { JoinRequests, InviteStateLine, pendingInviteStatus } from "./JoinRequests";
 import { rendezvousSlice, startRendezvousFeed, refreshRendezvous, cancelJoin, forgetJoin } from "../shell/slices/rendezvous";
 import {
   groupsSlice,
@@ -948,7 +948,7 @@ export function Groups({ store, s }: SurfaceProps) {
                     <div key={pi.token} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", borderTop: "1px solid var(--line-1)" }}>
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{pi.forHandle}</span>
-                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>invite pending · self-admit · one use</span>
+                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>{pendingInviteStatus(pi)}</span>
                         {pi.lookup && (
                           <InviteStateLine
                             view={rv.invites.find((i) => i.lookup === pi.lookup)}
@@ -959,7 +959,9 @@ export function Groups({ store, s }: SurfaceProps) {
                           />
                         )}
                       </span>
-                      <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(pi.link || `citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them. They tap Join and they're in."); }}>Copy link</button>
+                      {!pi.revoking && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(pi.link || `citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them. They tap Join and they're in."); }}>Copy link</button>
+                      )}
                       <button className="btn btn-ghost btn-sm" style={{ color: "var(--tx-3)" }} onClick={() => void bridge.invites.revoke(pi.group, pi.token).then(refreshInvites)}>Revoke</button>
                     </div>
                   ))}
