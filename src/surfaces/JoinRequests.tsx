@@ -121,6 +121,8 @@ export function pendingInviteStatus(pi: Pick<PendingInvite, "revoking" | "consum
 
 /** Whether the inviter's cached invite list is out of date: a row shown as revoking whose rendezvous
  *  the daemon now reports closed, so the tick has settled (removed) the record. */
-export function revokingRowsSettled(_rows: Pick<PendingInvite, "lookup" | "revoking">[], _views: InviteViewDto[]): boolean {
-  return false;
+export function revokingRowsSettled(rows: Pick<PendingInvite, "lookup" | "revoking">[], views: InviteViewDto[]): boolean {
+  return rows.some(
+    (r) => r.revoking && !!r.lookup && views.some((v) => v.lookup === r.lookup && (v.state === "revoked" || v.state === "expired")),
+  );
 }

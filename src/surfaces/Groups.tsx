@@ -20,7 +20,7 @@ import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
 import { approvalStep } from "./claimApproval";
 import { RelayStatusChip } from "./RelayStatusChip";
-import { JoinRequests, InviteStateLine, pendingInviteStatus } from "./JoinRequests";
+import { JoinRequests, InviteStateLine, pendingInviteStatus, revokingRowsSettled } from "./JoinRequests";
 import { loadOwnerInvites } from "./ownerInvites";
 import { rendezvousSlice, startRendezvousFeed, refreshRendezvous, cancelJoin, forgetJoin } from "../shell/slices/rendezvous";
 import {
@@ -318,6 +318,11 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast(e instanceof Error ? e.message : String(e));
     }
   };
+  // #467 — a tick that confirmed a revoking row's close has settled (removed) its record: reload,
+  // through loadOwnerInvites' stale-answer guard, so the row leaves.
+  useEffect(() => {
+    if (revokingRowsSettled(pendingInvites, rv.invites)) void refreshInvites();
+  }, [rv.invites]);
   useEffect(() => {
     // A group switch never shows the previous group's invites or requests while the new ones load.
     setPendingInvites([]);
