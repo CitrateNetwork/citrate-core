@@ -61,18 +61,31 @@ fn sidecar_candidates_try_exe_suffix_first_on_windows() {
     );
 }
 
+/// How long the console probe may take to report. The probe runs in Windows
+/// PowerShell 5.1, whose `Add-Type` compiles the P/Invoke shim by launching
+/// `csc.exe` out of process. On hosted runners that start-up plus compile has
+/// been measured at 2-9 s when it succeeds, and a 10 s budget timed out in
+/// roughly one run in eight with no output at all. The budget only bounds a
+/// wait for lines that are already expected; it does not relax what is checked.
+const CONSOLE_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
+
 #[test]
 fn windows_child_has_no_console_and_logs_remain_piped() {
     let tmp = TmpDir::new("windows-no-console");
     let crash_file = tmp.path("crashes.jsonl");
+    // CHILD_UP is written before the slow Add-Type step, so a failure report
+    // separates "the child never produced output" from "the probe was slow".
+    // The sleep outlasts CONSOLE_PROBE_TIMEOUT so the first child is the one
+    // observed; `stop()` ends it.
     let script = concat!(
+        "Write-Output 'CHILD_UP'; ",
         "Add-Type -TypeDefinition '",
         "using System; using System.Runtime.InteropServices; ",
         "public static class NativeConsole { ",
         "[DllImport(\"kernel32.dll\")] public static extern IntPtr GetConsoleWindow(); }'; ",
         "Write-Output ('CONSOLE_HANDLE_' + [NativeConsole]::GetConsoleWindow().ToInt64()); ",
         "[Console]::Error.WriteLine('ERR_OOPS'); ",
-        "Start-Sleep -Seconds 60"
+        "Start-Sleep -Seconds 300"
     );
     let spec = SidecarSpec::new(
         "windows-child",
@@ -86,30 +99,41 @@ fn windows_child_has_no_console_and_logs_remain_piped() {
         ],
     );
     let cfg = SupervisorConfig::new(spec, &crash_file);
+    let started = std::time::Instant::now();
     let supervisor = Supervisor::start(cfg).expect("supervisor starts");
 
+    let has = |lines: &[LogLine], text: &str, stream: &str| {
+        lines
+            .iter()
+            .any(|line| line.line == text && line.stream == stream)
+    };
     let logs = wait_for_logs(
         &supervisor,
         |lines| {
+            // Any CONSOLE_HANDLE_ line settles the console question, so stop
+            // waiting on it rather than only on the expected value.
             lines
                 .iter()
-                .any(|line| line.line == "CONSOLE_HANDLE_0" && line.stream == "out")
-                && lines
-                    .iter()
-                    .any(|line| line.line == "ERR_OOPS" && line.stream == "err")
+                .any(|line| line.line.starts_with("CONSOLE_HANDLE_") && line.stream == "out")
+                && has(lines, "ERR_OOPS", "err")
         },
-        Duration::from_secs(10),
+        CONSOLE_PROBE_TIMEOUT,
     );
+    let elapsed = started.elapsed();
+    let status = supervisor.status();
+    eprintln!("console probe settled after {elapsed:?}");
 
     assert!(
-        logs.iter()
-            .any(|line| line.line == "CONSOLE_HANDLE_0" && line.stream == "out"),
-        "Windows child inherited or created a console: {logs:?}"
+        has(&logs, "CHILD_UP", "out"),
+        "the child wrote no stdout within {elapsed:?}; status {status:?}; logs {logs:?}"
     );
     assert!(
-        logs.iter()
-            .any(|line| line.line == "ERR_OOPS" && line.stream == "err"),
-        "stderr was not captured while CREATE_NO_WINDOW was active: {logs:?}"
+        has(&logs, "CONSOLE_HANDLE_0", "out"),
+        "Windows child inherited or created a console (after {elapsed:?}; status {status:?}): {logs:?}"
+    );
+    assert!(
+        has(&logs, "ERR_OOPS", "err"),
+        "stderr was not captured while CREATE_NO_WINDOW was active (after {elapsed:?}; status {status:?}): {logs:?}"
     );
 
     supervisor.stop();
