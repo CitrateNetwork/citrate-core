@@ -189,6 +189,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: 2,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks (~28 h)");
@@ -202,6 +204,8 @@ describe("V6 — durations use the measured block time", () => {
       wTab: "staking",
       blockSecs: null,
       pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
+      // #371 (main): the queue renders only once it has been read.
+      pendingWithdrawalsError: null,
     });
     const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
     expect(html).toContain("50,400 blocks left");

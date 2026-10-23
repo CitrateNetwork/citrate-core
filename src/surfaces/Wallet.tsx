@@ -110,7 +110,9 @@ export function Wallet({ store, s }: SurfaceProps) {
 
   const saltStr = fmt2(s.liquid);
   const stakedStr = staked > 0 ? fmtI(staked) : "0";
-  const wsaltStr = "0.00";
+  // UI truth contract rules 1 and 2: the number catalog has no wSALT entry and nothing reads a
+  // wSALT balance, so the tile shows the unavailable state. Unknown is not zero.
+  const wsaltStr = "—";
   const stakedSub = staked > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
   // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
   const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
@@ -294,7 +296,7 @@ export function Wallet({ store, s }: SurfaceProps) {
                 {wsaltStr}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                wrapped — none held
+                not available yet · no wSALT balance read
               </span>
             </div>
           </div>
@@ -435,12 +437,26 @@ export function Wallet({ store, s }: SurfaceProps) {
                 source · on-chain queue
               </span>
             </div>
-            {pending.length === 0 && (
+            {/* C1-W: an unread, failed or unfinished read is "—" plus why, never an empty queue. */}
+            {s.pendingWithdrawalsError !== null && (
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="LiquidStakingPool WithdrawalRequested logs (citrate_getLogs, 1000-block windows; eth_getLogs where the RPC lacks it) from rpc.citrate.ai">
+                — · pending withdrawals: {s.pendingWithdrawalsError}
+              </p>
+            )}
+            {/* C1-W: the scan can't confirm it reached the chain head (citrate_getLogs not served, or
+                the node is behind): found rows are real, but an empty list is not "none". */}
+            {s.pendingWithdrawalsError === null && s.pendingWithdrawalsUnconfirmed && (
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="citrate_getLogs (citrate-chain#334, #336, #337) is not on the public RPC yet">
+                {pending.length === 0 ? "— · pending withdrawals: " : ""}can&apos;t confirm the scan reached the chain head
+                {s.pendingWithdrawalsNote ? ": " + s.pendingWithdrawalsNote : ""}
+              </p>
+            )}
+            {s.pendingWithdrawalsError === null && !s.pendingWithdrawalsUnconfirmed && pending.length === 0 && (
               <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
                 No pending withdrawals. A requested withdrawal appears here and becomes claimable after a {blocksWithTime(WITHDRAWAL_DELAY_BLOCKS, s.blockSecs)} delay.
               </p>
             )}
-            {pending.map((w) => {
+            {s.pendingWithdrawalsError === null && pending.map((w) => {
               const saltStr = fmt2(Number(BigInt(w.saltWei)) / 1e18);
               // C1-V V6: blocks × the MEASURED block time (contract §2), never an assumed 12 s.
               // With no height reading there is no "blocks left" either.
