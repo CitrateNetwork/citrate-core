@@ -15,7 +15,7 @@ describe("CX bridge contract — invites", () => {
   it("sim is honest — empty lists, verifyConsume rejects, self-admit/create need the desktop (Rule 1)", async () => {
     if (bridge.mode === "sim") {
       expect(await bridge.invites.list("grp")).toEqual([]);
-      expect(await bridge.invites.verifyConsume("grp", "tok")).toBe(false);
+      expect(await bridge.invites.verifyConsume("grp", "tok", "0xa")).toBe("invalid");
       expect(await bridge.invites.referralLog()).toEqual([]);
       expect(await bridge.invites.exportReferralLog()).toBe("[]");
       // No relay/daemon in the web preview: minting and self-admit throw honestly, never a fake success.

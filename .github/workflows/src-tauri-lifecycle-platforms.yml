@@ -48,17 +48,17 @@ jobs:
             runner: windows-latest
             shutdown: 2
             owned: 8
-            comms: 30
+            comms: 37
             cluster: 21
-            total: 61
+            total: 68
             hermes_self_skips: 1
           - platform: macOS-14
             runner: macos-14
             shutdown: 5
             owned: 13
-            comms: 31
+            comms: 38
             cluster: 21
-            total: 70
+            total: 77
             hermes_self_skips: 2
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"

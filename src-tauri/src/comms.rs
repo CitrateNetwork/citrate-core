@@ -591,6 +591,39 @@ enum Request {
     /// read on the daemon side; used by [`CommsMemberManager::relay_status`] so the app can report a
     /// relay DROP instead of showing "healthy" (the UDS socket stays up while every relayed op fails).
     RelayStatus,
+    /// GROW-S2 (§9) — INVITER: open a relay rendezvous for an invite just minted. `token` is hex of
+    /// the token's UTF-8 bytes; `expires_at` (Unix ms) is the same value given to `PublishInvite`.
+    /// The daemon derives and persists `{lookup, group, mac_key, token_hash, expires_at}` and sends
+    /// `OpenRendezvous`. Answer: [`Response::RendezvousOpened`].
+    RendezvousOpen {
+        group: String,
+        token: String,
+        expires_at: u64,
+    },
+    /// GROW-S2 (§9) — INVITEE: ask to join `group` through the rendezvous. The daemon persists the
+    /// join before sending and runs one submit attempt. Answer: [`Response::JoinState`].
+    RendezvousJoin {
+        group: String,
+        token: String,
+        name: String,
+    },
+    /// GROW-S2 (§9) — both sides: one tick (inviter admits / reconciles, invitee polls / joins /
+    /// acks). Answer: [`Response::RendezvousTick`].
+    RendezvousTick,
+    /// GROW-S2 (§9, rev 6) — INVITEE: withdraw a `requesting` / `waiting` join. Answer:
+    /// [`Response::JoinState`].
+    RendezvousCancel {
+        group: String,
+    },
+    /// GROW-S2 (§9) — INVITER: revoke a rendezvous by its lookup (hex). Answer: `ok` (persisted,
+    /// not yet confirmed by the relay).
+    RendezvousClose {
+        lookup: String,
+    },
+    /// GROW-S2 (§9) — INVITEE: clear a terminal join from the list. Answer: `ok`.
+    RendezvousForget {
+        group: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -644,6 +677,20 @@ enum Response {
     RelayStatus {
         connected: bool,
     },
+    /// GROW-S2 (§9) — answer to [`Request::RendezvousOpen`].
+    RendezvousOpened {
+        lookup: String,
+        expires_at: u64,
+    },
+    /// GROW-S2 (§9) — answer to [`Request::RendezvousJoin`] and [`Request::RendezvousCancel`].
+    JoinState {
+        join: crate::rendezvous::JoinView,
+    },
+    /// GROW-S2 (§9) — answer to [`Request::RendezvousTick`].
+    RendezvousTick {
+        joins: Vec<crate::rendezvous::JoinView>,
+        invites: Vec<crate::rendezvous::InviteView>,
+    },
     Error {
         message: String,
     },
@@ -679,6 +726,25 @@ fn connect_with_retry(socket_path: &Path) -> Result<IpcStream> {
 /// `Ipc` error and the surface falls to its empty/error state instead of beachballing.
 const COMMS_IPC_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// GROW-S2 review — the deadline for the rendezvous verbs. These can wait on the networked relay
+/// before the daemon answers (an open is persisted, then sent; a tick runs a Summary, polls, an
+/// admit and its reconciliation), so the 5 s default is too tight. A miss is still an honest,
+/// ambiguous error (I6): the caller never treats it as "nothing happened".
+const RENDEZVOUS_IPC_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The read/write deadline for one request.
+fn ipc_timeout_for(req: &Request) -> Duration {
+    match req {
+        Request::RendezvousOpen { .. }
+        | Request::RendezvousJoin { .. }
+        | Request::RendezvousTick
+        | Request::RendezvousCancel { .. }
+        | Request::RendezvousClose { .. }
+        | Request::RendezvousForget { .. } => RENDEZVOUS_IPC_TIMEOUT,
+        _ => COMMS_IPC_TIMEOUT,
+    }
+}
+
 /// Flag-A — short, single-attempt timeout for the relay-health probe. It must never add UI latency,
 /// so it does NOT use `connect_with_retry` (that window is for first-open races) and caps the whole
 /// round-trip well under a second. A wedged daemon is already the supervisor's job; this probe only
@@ -689,7 +755,7 @@ const RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 /// request, read one response — the normal command path.
 fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
     let stream = connect_with_retry(socket_path)?;
-    ipc_round_trip(stream, COMMS_IPC_TIMEOUT, bearer, req)
+    ipc_round_trip(stream, ipc_timeout_for(req), bearer, req)
 }
 
 /// HUP-S10.5 — the offline matrix probe's seam: one messaging request (list groups) over the
@@ -1204,7 +1270,17 @@ pub async fn groups_add_member(
     group: String,
     member: String,
 ) -> std::result::Result<(), String> {
-    match route(&app, Request::AddMember { group, member })? {
+    add_member(&app, group, member)
+}
+
+/// Add a member (the owner's daemon produces and publishes the MLS welcome). Also used by the
+/// rendezvous tick to complete an approval once the relay confirmed the invite closed.
+pub(crate) fn add_member<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+    member: String,
+) -> std::result::Result<(), String> {
+    match route(app, Request::AddMember { group, member })? {
         Response::Added { .. } => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
@@ -1280,6 +1356,141 @@ pub(crate) fn redeem_invite<R: tauri::Runtime>(
     name: String,
 ) -> std::result::Result<(), String> {
     parse_ok(route(app, Request::RedeemInvite { group, token, name })?)
+}
+
+// ---------------------------------------------------------------------------
+// GROW-S2 — relay rendezvous (§9). Each returns the daemon's view or an `RvError`; the callers in
+// `invites` / `rendezvous` decide what an error means for the user.
+// ---------------------------------------------------------------------------
+
+use crate::rendezvous::{JoinView, RvError, TickViews};
+
+/// True when this session's comms daemon is running. Never starts it.
+pub(crate) fn daemon_running() -> bool {
+    MANAGER.get().map(|m| m.is_running()).unwrap_or(false)
+}
+
+fn rv_route<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    req: Request,
+) -> std::result::Result<Response, RvError> {
+    match route(app, req).map_err(RvError::Ipc)? {
+        Response::Error { message } => Err(crate::rendezvous::classify_daemon_error(&message)),
+        other => Ok(other),
+    }
+}
+
+fn rv_unexpected(other: Response) -> RvError {
+    RvError::Ipc(format!("unexpected response: {other:?}"))
+}
+
+/// The confirmed answer to `rendezvousOpen`: the lookup the daemon registered, and its expiry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RendezvousOpened {
+    pub lookup: String,
+    pub expires_at: u64,
+}
+
+/// Map a daemon answer to `rendezvousOpen` (pure; unit-tested against the §9 shapes).
+fn opened_from(resp: Response) -> std::result::Result<RendezvousOpened, RvError> {
+    match resp {
+        Response::RendezvousOpened { lookup, expires_at } => {
+            Ok(RendezvousOpened { lookup, expires_at })
+        }
+        other => Err(rv_unexpected(other)),
+    }
+}
+
+/// Map a daemon answer to `rendezvousJoin` / `rendezvousCancel`.
+fn join_view_from(resp: Response) -> std::result::Result<JoinView, RvError> {
+    match resp {
+        Response::JoinState { join } => Ok(join),
+        other => Err(rv_unexpected(other)),
+    }
+}
+
+/// Map a daemon answer to `rendezvousTick`.
+fn tick_from(resp: Response) -> std::result::Result<TickViews, RvError> {
+    match resp {
+        Response::RendezvousTick { joins, invites } => Ok(TickViews { joins, invites }),
+        other => Err(rv_unexpected(other)),
+    }
+}
+
+/// Map a daemon `ok` answer (`rendezvousClose`, `rendezvousForget`).
+fn rv_ok_from(resp: Response) -> std::result::Result<(), RvError> {
+    match resp {
+        Response::Ok => Ok(()),
+        other => Err(rv_unexpected(other)),
+    }
+}
+
+/// INVITER — open the rendezvous for an invite just minted (§9). `token_hex` is
+/// [`crate::rendezvous::token_ipc_hex`] of the link token.
+pub(crate) fn rendezvous_open<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+    token_hex: String,
+    expires_at: u64,
+) -> std::result::Result<RendezvousOpened, RvError> {
+    opened_from(rv_route(
+        app,
+        Request::RendezvousOpen {
+            group,
+            token: token_hex,
+            expires_at,
+        },
+    )?)
+}
+
+/// INVITEE — ask to join through the rendezvous (§9). Returns the daemon's view of the join.
+#[allow(dead_code)] // called by the invitee join path (M3, stacked on the v2 invite-link commands)
+pub(crate) fn rendezvous_join<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+    token_hex: String,
+    name: String,
+) -> std::result::Result<JoinView, RvError> {
+    join_view_from(rv_route(
+        app,
+        Request::RendezvousJoin {
+            group,
+            token: token_hex,
+            name,
+        },
+    )?)
+}
+
+/// Both sides — one tick (§9).
+pub(crate) fn rendezvous_tick<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<TickViews, RvError> {
+    tick_from(rv_route(app, Request::RendezvousTick)?)
+}
+
+/// INVITEE — withdraw a pending join (§9, rev 6 answers `joinState`).
+pub(crate) fn rendezvous_cancel<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+) -> std::result::Result<JoinView, RvError> {
+    join_view_from(rv_route(app, Request::RendezvousCancel { group })?)
+}
+
+/// INVITER — revoke a rendezvous by lookup (§9). `ok` = persisted; the `InviteView` says `revoked`
+/// once the relay confirms.
+pub(crate) fn rendezvous_close<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    lookup: String,
+) -> std::result::Result<(), RvError> {
+    rv_ok_from(rv_route(app, Request::RendezvousClose { lookup })?)
+}
+
+/// INVITEE — clear a terminal join (§9).
+pub(crate) fn rendezvous_forget<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+) -> std::result::Result<(), RvError> {
+    rv_ok_from(rv_route(app, Request::RendezvousForget { group })?)
 }
 
 /// **groups_roster** — the (address, role) roster.

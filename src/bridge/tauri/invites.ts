@@ -1,6 +1,6 @@
 // CX bridge impl — group invites (INVITE-S2 self-admit + CONNECT-S1 claim-back), TAURI.
 import { invoke } from "./invoke";
-import type { InviteClaim, InviteMinted, InvitesDomain, PendingInvite, ReferralEvent } from "../domains";
+import type { ConsumeOutcome, InviteClaim, InviteMinted, InvitesDomain, PendingInvite, ReferralEvent } from "../domains";
 
 export const tauriInvites: InvitesDomain = {
   create(group: string, forHandle: string): Promise<InviteMinted> {
@@ -12,8 +12,8 @@ export const tauriInvites: InvitesDomain = {
   list(group: string): Promise<PendingInvite[]> {
     return invoke<PendingInvite[]>("group_invites", { group });
   },
-  verifyConsume(group: string, token: string): Promise<boolean> {
-    return invoke<boolean>("group_invite_verify_consume", { group, token });
+  verifyConsume(group: string, token: string, address: string): Promise<ConsumeOutcome> {
+    return invoke<ConsumeOutcome>("group_invite_verify_consume", { group, token, address });
   },
   async revoke(group: string, token: string): Promise<void> {
     await invoke("group_invite_revoke", { group, token });

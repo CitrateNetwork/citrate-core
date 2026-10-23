@@ -149,13 +149,15 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
-// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
 // GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
 mod join;
 mod model_catalog;
+// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod model_delete;
+// GROW-S2 (Join 9): relay rendezvous join, app side (IPC views, tick, join://state).
+mod rendezvous;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
@@ -340,6 +342,9 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // GROW-S2 (Join 9, M4): tick the relay rendezvous at app start and every 30 s while open
+            // (starts the comms daemon only when this device minted invites or has a join in flight).
+            rendezvous::spawn_ticker(app.handle().clone());
             // v2 invite links: the join client (pending attaches + opened invites, memory only).
             app.manage(join::build_join_state());
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
@@ -521,6 +526,10 @@ pub fn run() {
             invites::group_invite_revoke,
             invites::group_referral_log,
             invites::group_referral_export,
+            // GROW-S2 (Join 9): relay rendezvous views (no secrets cross invoke).
+            rendezvous::rendezvous_tick,
+            rendezvous::rendezvous_cancel,
+            rendezvous::rendezvous_forget,
             // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
             join::join_mint,
             join::join_attach,

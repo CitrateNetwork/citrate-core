@@ -18,6 +18,7 @@ import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
+import { approvalStep } from "./claimApproval";
 import { reachedStep } from "../privacy/joinFunnel";
 import { RelayStatusChip } from "./RelayStatusChip";
 import {
@@ -311,14 +312,9 @@ export function Groups({ store, s }: SurfaceProps) {
   const approveRequest = async (req: { group: string; token: string; address: string }) => {
     if (!selected) return;
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, req.token);
-      if (!ok) {
-        store.toast("That request's invite is invalid or already used.");
-        await refreshInvites();
-        return;
-      }
-      void addMemberToGroup(req.address);
-      store.toast("Request approved — adding them to the group.");
+      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, req.token, req.address));
+      if (step.add) void addMemberToGroup(req.address);
+      store.toast(step.toast);
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
@@ -391,14 +387,10 @@ export function Groups({ store, s }: SurfaceProps) {
       return;
     }
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, claim.token);
-      if (!ok) {
-        store.toast("That invite token is invalid or already used.");
-        return;
-      }
+      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, claim.token, claim.address));
+      if (step.add) void addMemberToGroup(claim.address);
+      store.toast(step.toast);
       if (claimRef.current) claimRef.current.value = "";
-      void addMemberToGroup(claim.address);
-      store.toast("Invite accepted — adding them to the group.");
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
