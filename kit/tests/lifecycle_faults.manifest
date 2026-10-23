@@ -66,3 +66,6 @@ automated_restarts_never_reset_the_budget | regression | SCL-S3.2 | automated re
 an_automated_start_carries_the_budget_over | regression | SCL-S3.2 | an automated start after a Stop counts the failures before the Stop; 1 + max_retries failures in all (INV-17)
 a_probe_answer_after_its_interval_never_counts | regression | SCL-S3.1 | an answer that finishes after the probe interval is discarded even when collected before the timeout is noticed (INV-12, INV-13)
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures
+a_member_start_joining_an_automated_start_gives_a_fresh_budget | regression | SCL-S3 | a member Start that joins a pending automated Start gives the fresh budget, even if the monitor read the automated intent first
+a_flapping_probe_never_earns_credit | regression | SCL-S3 | credit needs fresh successes spanning healthy_after: a probe that flaps per incarnation runs out the budget
+a_hung_probe_slot_counts_as_a_failure_outside_the_grace | regression | SCL-S3 | a probe slot still taken an interval past due, outside the grace, is a failure: the service reaches Failed

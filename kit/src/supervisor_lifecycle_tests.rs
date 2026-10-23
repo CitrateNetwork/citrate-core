@@ -678,3 +678,78 @@ fn ready_is_shown_only_while_fresh() {
         assert_eq!(shown_readiness(r, old, limit), r);
     }
 }
+
+/// A success collected after the freshness limit (the monitor was delayed past two intervals
+/// while an on-time worker finished) is not fresh evidence: it never reads Ready and starts no
+/// window.
+#[test]
+fn a_success_collected_after_the_freshness_limit_is_stale() {
+    let t0 = std::time::Instant::now();
+    let fresh = Duration::from_millis(100);
+    let mut w = Window::default();
+    assert_eq!(
+        w.record_success(t0, t0 + Duration::from_millis(150), fresh, Duration::from_millis(500)),
+        Success::Stale
+    );
+    assert!(w.first_ok.is_none() && w.last_ok.is_none(), "an old sample starts no window");
+}
+
+/// The sample is timed when the probe finished, not when the monitor collected it.
+#[test]
+fn a_success_is_timed_when_the_probe_finished() {
+    let t0 = std::time::Instant::now();
+    let mut w = Window::default();
+    let got = w.record_success(
+        t0,
+        t0 + Duration::from_millis(60),
+        Duration::from_millis(100),
+        Duration::from_millis(500),
+    );
+    assert_eq!(got, Success::Fresh { credit: false });
+    assert_eq!(w.last_ok, Some(t0));
+    assert_eq!(w.first_ok, Some(t0));
+}
+
+/// Successes separated by a gap over the freshness limit are two windows: the later one starts
+/// a new window, so it earns no credit from the earlier success.
+#[test]
+fn a_success_after_a_freshness_gap_starts_a_new_window() {
+    let t0 = std::time::Instant::now();
+    let fresh = Duration::from_millis(100);
+    let healthy_after = Duration::from_millis(500);
+    let mut w = Window::default();
+    assert_eq!(
+        w.record_success(t0, t0, fresh, healthy_after),
+        Success::Fresh { credit: false }
+    );
+    let later = t0 + healthy_after + Duration::from_millis(10);
+    assert_eq!(
+        w.record_success(later, later, fresh, healthy_after),
+        Success::Fresh { credit: false },
+        "no credit across a gap in fresh evidence"
+    );
+    assert_eq!(w.first_ok, Some(later), "the gap started a new window");
+}
+
+/// Fresh successes that span `healthy_after` without a gap earn exactly one credit; a single
+/// success never does.
+#[test]
+fn successes_spanning_healthy_after_earn_one_credit() {
+    let t0 = std::time::Instant::now();
+    let step = Duration::from_millis(50);
+    let fresh = Duration::from_millis(100);
+    let healthy_after = Duration::from_millis(200);
+    let mut w = Window::default();
+    let mut credits = Vec::new();
+    for i in 0..6u32 {
+        let at = t0 + step * i;
+        credits.push(w.record_success(at, at, fresh, healthy_after));
+    }
+    let credited: Vec<usize> = credits
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c == Success::Fresh { credit: true })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(credited, vec![4], "one credit, at the sample that spans healthy_after");
+}

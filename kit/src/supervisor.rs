@@ -1086,6 +1086,10 @@ pub struct SupervisorConfig {
     /// visible to controls. A fault-injection seam: the lifecycle fixtures hold the monitor
     /// there while a Start races the transition. `None` in production.
     pub failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor in a Start's turn after it has read the intent and before it applies
+    /// the retry-budget rule. A fault-injection seam: the lifecycle fixtures hold the monitor
+    /// there while a member Start joins an automated one. `None` in production.
+    pub budget_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SupervisorConfig {
@@ -1102,6 +1106,7 @@ impl SupervisorConfig {
             deadlines: None,
             spawn_barrier: None,
             failed_barrier: None,
+            budget_barrier: None,
         }
     }
 }
@@ -2190,6 +2195,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         deadlines: _deadlines,
         spawn_barrier,
         failed_barrier: _failed_barrier,
+        budget_barrier,
     } = config;
 
     // The CONSECUTIVE-failure counter lives in the cell (`counters.consecutive_failures`) and
@@ -2291,6 +2297,9 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
             release_start_hold(&shared, seq);
             tore_down_child = false;
             late_spawn = false;
+        }
+        if let Some(barrier) = &budget_barrier {
+            barrier();
         }
         // A member Start gives a fresh retry budget; an automated one carries it over.
         if budget_member != member_starts {
@@ -2808,6 +2817,9 @@ struct Finished {
     late: bool,
     /// Its answer. A panicked probe did not attest health (false).
     healthy: bool,
+    /// When the worker finished, on the monotonic clock (taken on the worker thread). The
+    /// sample's time, however late the monitor collects it.
+    finished_at: std::time::Instant,
 }
 
 /// Take a finished worker out of the slot. `None` while it is still running.
@@ -2816,18 +2828,20 @@ fn take_finished(slot: &mut Option<ProbeRunner>, interval: Duration) -> Option<F
         return None;
     }
     let runner = slot.take()?;
-    let (healthy, late) = match runner.handle.join() {
+    let (healthy, late, finished_at) = match runner.handle.join() {
         Ok((healthy, done)) => (
             healthy,
             done.saturating_duration_since(runner.started) >= interval,
+            done,
         ),
-        Err(_) => (false, false),
+        Err(_) => (false, false, std::time::Instant::now()),
     };
     Some(Finished {
         incarnation: runner.incarnation,
         timed_out: runner.timed_out,
         late,
         healthy,
+        finished_at,
     })
 }
 
@@ -2849,6 +2863,36 @@ struct Window {
     first_ok: Option<std::time::Instant>,
     last_ok: Option<std::time::Instant>,
     credited: bool,
+}
+
+/// What one successful sample did to the success window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Success {
+    /// Fresh evidence: the incarnation is Ready; `credit` if this sample completed the window's
+    /// one credit.
+    Fresh { credit: bool },
+    /// Evidence already older than the freshness limit when it was collected: not Ready.
+    Stale,
+}
+
+impl Window {
+    /// Apply a successful sample taken at `at` and collected at `now`.
+    fn record_success(
+        &mut self,
+        at: std::time::Instant,
+        now: std::time::Instant,
+        fresh_limit: Duration,
+        healthy_after: Duration,
+    ) -> Success {
+        let _ = (at, fresh_limit);
+        let first = *self.first_ok.get_or_insert(now);
+        self.last_ok = Some(now);
+        if !self.credited && now.duration_since(first) >= healthy_after {
+            self.credited = true;
+            return Success::Fresh { credit: true };
+        }
+        Success::Fresh { credit: false }
+    }
 }
 
 /// Wait while the child is Running: poll for exit and for a newer intent, and (if configured)
@@ -2945,13 +2989,25 @@ fn supervise_running(
                 sample_failed!();
             } else if counts {
                 if done.healthy {
-                    let first = *window.first_ok.get_or_insert(now);
-                    window.last_ok = Some(now);
-                    shown = Readiness::Ready;
-                    publish(shown, Some(now));
-                    if !window.credited && now.duration_since(first) >= run.healthy_after {
-                        window.credited = true;
-                        grant_credit(shared);
+                    match window.record_success(
+                        done.finished_at,
+                        now,
+                        fresh_limit,
+                        run.healthy_after,
+                    ) {
+                        Success::Fresh { credit } => {
+                            shown = Readiness::Ready;
+                            publish(shown, window.last_ok);
+                            if credit {
+                                grant_credit(shared);
+                            }
+                        }
+                        Success::Stale => {
+                            if shown == Readiness::Ready {
+                                shown = Readiness::Stale;
+                                publish(shown, None);
+                            }
+                        }
                     }
                 } else {
                     sample_failed!();

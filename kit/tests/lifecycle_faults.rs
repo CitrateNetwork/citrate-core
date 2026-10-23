@@ -2702,6 +2702,210 @@ fn a_probe_answer_after_its_interval_never_counts() {
     fx.assert_clean();
 }
 
+/// A gate the test arms: until armed it lets the monitor through; once armed it holds the next
+/// monitor that reaches it until released.
+#[derive(Default)]
+struct ArmedGate {
+    state: std::sync::Mutex<(bool, u32, bool)>, // (armed, times held, released)
+    cv: std::sync::Condvar,
+}
+
+impl ArmedGate {
+    fn hook(gate: &Arc<ArmedGate>) -> Arc<dyn Fn() + Send + Sync> {
+        let g = gate.clone();
+        Arc::new(move || {
+            let mut s = g.state.lock().unwrap_or_else(|p| p.into_inner());
+            if !s.0 || s.2 {
+                return;
+            }
+            s.1 += 1;
+            g.cv.notify_all();
+            while !s.2 {
+                s = g.cv.wait(s).unwrap_or_else(|p| p.into_inner());
+            }
+        })
+    }
+
+    fn arm(&self) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).0 = true;
+    }
+
+    fn wait_held(&self) {
+        let deadline = Deadline::after(ACQUIRE);
+        let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        while s.1 == 0 {
+            if deadline.expired() {
+                panic!("INCONCLUSIVE: the monitor never reached the armed gate");
+            }
+            s = self
+                .cv
+                .wait_timeout(s, deadline.remaining())
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).2 = true;
+        self.cv.notify_all();
+    }
+}
+
+impl Drop for ArmedGate {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// A member Start that joins a pending automated Start is a member Start: it gives the fresh
+/// retry budget, even when the monitor read the automated intent just before the member joined.
+#[test]
+fn a_member_start_joining_an_automated_start_gives_a_fresh_budget() {
+    let fx = OwnedFixture::new("member-joins-auto");
+    let gate = Arc::new(ArmedGate::default());
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_spec("lcf-member-joins-auto", 3),
+        fx.path("crash.jsonl"),
+    );
+    cfg.backoff = fast_backoff(0);
+    cfg.stop_grace = Duration::from_millis(300);
+    cfg.budget_barrier = Some(ArmedGate::hook(&gate));
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
+    assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("INCONCLUSIVE: Stop of a Failed service: {other:?}"),
+    };
+    settle(&sup, stop, ACQUIRE);
+    let stopped = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        sup.lifecycle()
+            .filter(|l| l.phase == Phase::Stopped)
+            .map(|_| ())
+    });
+    assert!(
+        stopped.is_ok(),
+        "INCONCLUSIVE: the service never read Stopped"
+    );
+    let spawned_before = fx.pidfile_pids().len();
+    // The monitor reads the automated intent (budget spent) and is held before it applies the
+    // budget rule; the member Start lands right then and joins it.
+    gate.arm();
+    let auto = match sup.request_auto_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("automated Start of a stopped service: {other:?}"),
+    };
+    gate.wait_held();
+    let member = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("member Start joining the automated one: {other:?}"),
+    };
+    gate.release();
+    assert_eq!(
+        member, auto,
+        "the member Start joined the pending automated Start"
+    );
+    let receipt = settle(&sup, member, SLOW_FAILED);
+    let spawned_after = fx.pidfile_pids().len();
+    if let Receipt::Failed { reason } = &receipt {
+        assert!(
+            !reason.contains("only a member Start"),
+            "a member Start must not be told to make a member Start: {reason}"
+        );
+    }
+    assert_eq!(
+        spawned_after,
+        spawned_before + 1,
+        "the fresh budget spawned one incarnation: {receipt:?}"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A probe that flaps (each incarnation answers success, then failure) never earns credit:
+/// credit needs fresh successes spanning `healthy_after`, so the budget runs out and the
+/// service reaches Failed.
+#[test]
+fn a_flapping_probe_never_earns_credit() {
+    let fx = OwnedFixture::new("flapping");
+    let mut spec = fx.leaf_spec("lcf-flapping");
+    let pidfile = fx.path("pids");
+    // (pids seen, samples of the current incarnation)
+    let seen = Arc::new(std::sync::Mutex::new((0usize, 0u32)));
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(30),
+        grace: Duration::ZERO,
+        probe: Arc::new(move || {
+            let pids = std::fs::read_to_string(&pidfile)
+                .map(|s| s.lines().count())
+                .unwrap_or(0);
+            let mut s = seen.lock().unwrap_or_else(|p| p.into_inner());
+            if s.0 != pids {
+                *s = (pids, 0);
+            }
+            s.1 += 1;
+            s.1 % 2 == 1
+        }),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.healthy_after = Duration::from_millis(500);
+    cfg.backoff = fast_backoff(1);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
+    assert_eq!(
+        st.state,
+        SupervisorState::Failed,
+        "a flapping probe must not keep resetting the budget: {st:?}"
+    );
+    assert_eq!(fx.pidfile_pids().len(), 2, "first run plus one retry");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A probe that never answers keeps the slot taken. Once the slot is still taken a whole
+/// interval past a sample's due time outside the grace, the incarnation could not be sampled:
+/// that is a failure, so the service reaches Failed instead of staying Running unassessed.
+#[test]
+fn a_hung_probe_slot_counts_as_a_failure_outside_the_grace() {
+    let fx = OwnedFixture::new("hung-probe");
+    let mut spec = fx.leaf_spec("lcf-hung-probe");
+    let hold = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let probe_hold = hold.clone();
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(30),
+        grace: Duration::from_millis(300),
+        probe: Arc::new(move || {
+            let (lock, cv) = &*probe_hold;
+            let mut released = lock.lock().unwrap_or_else(|p| p.into_inner());
+            while !*released {
+                released = cv.wait(released).unwrap_or_else(|p| p.into_inner());
+            }
+            true
+        }),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(0);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
+    {
+        let (lock, cv) = &*hold;
+        *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        cv.notify_all();
+    }
+    assert_eq!(
+        st.state,
+        SupervisorState::Failed,
+        "a probe that never answers must fail the service outside the grace: {st:?}"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
 // ---------------------------------------------------------------------------
 // Suite manifest
 // ---------------------------------------------------------------------------
