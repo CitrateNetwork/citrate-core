@@ -85,7 +85,8 @@ afterEach(() => {
 
 describe("#348 review — an exited validator's rewards are read, shown and claimed through the bond", () => {
   it("refreshEarnings reads rewardsOf for an activated bond whose registry stake is 0", async () => {
-    store.setState({ bondedStake: 0, memberBond: bond(true), rewards: null });
+    // #391: the read is shown only for the bond's own validator key (MemberBond.pubkey()).
+    store.setState({ bondedStake: 0, memberBond: { ...bond(true), pubkey: "0x" + "22".repeat(32) }, rewards: null });
     const read = vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: wei(30), claimableWei: wei(20), proposerPubkey: "0x" + "22".repeat(32) });
     await store.refreshEarnings();
     expect(read).toHaveBeenCalled();

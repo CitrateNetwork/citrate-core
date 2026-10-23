@@ -14,7 +14,10 @@ vi.mock("../../bridge", () => ({
 }));
 vi.mock("../../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { Store, earningsKeyCheck } from "../../shell/store";
+import { NodeRewards } from "./NodeRewards";
 import type { MemberBondState } from "../../shell/chainTruth";
 
 const BOND_KEY = "0x" + "aa".repeat(48);
@@ -91,6 +94,18 @@ describe("#391 — rewards are accepted only for the member's validator key", ()
     expect(earningsKeyCheck(bond(BOND_KEY), NODE_KEY)).not.toBeNull();
     expect(earningsKeyCheck(bond(null), NODE_KEY)).not.toBeNull();
     expect(earningsKeyCheck(null, NODE_KEY)).not.toBeNull();
+  });
+});
+
+describe("#391 — Node › Rewards shows the mismatch as unknown, with the reason", () => {
+  it("no figures, no Claim, the error state naming both keys", async () => {
+    const store = await read(bond(BOND_KEY), NODE_KEY);
+    const html = renderToStaticMarkup(createElement(NodeRewards, { store, s: store.state, mode: "tauri" }));
+    expect(html).toContain('data-state="error"');
+    expect(html).toContain("not your bond&#x27;s validator key");
+    expect(html).not.toContain("30.00");
+    expect(html).not.toContain("20.00");
+    expect(html).not.toMatch(/<button[^>]*>\s*Claim/);
   });
 });
 
