@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { HermesMcpCard, HermesMcpPanel } from "./HermesMcpCard";
 import type { HermesMcpView } from "../bridge/domains";
+import { hermesRunningSlice } from "../shell/slices/hermesRunning";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -149,6 +150,63 @@ describe("HermesMcpPanel — read-modify-write", () => {
     });
     await act(async () => await new Promise((r) => setTimeout(r, 0)));
   };
+
+  // Review of #364 (independent reviewer, DGX, pysol-dev): two presses before the first save lands
+  // both re-read the same saved settings, so the second write put back the switch the first had
+  // just changed. Saves now run one at a time under the start-time settings lock.
+  it("two presses before the first save lands: both switches end up saved", async () => {
+    let saved = { mem: false, scan: false, node: false };
+    let release: () => void = () => {};
+    const firstWriteHeld = new Promise<void>((r) => (release = r));
+    let sets = 0;
+    const api = {
+      mcpSettings: vi.fn(async () => view({ settings: { ...saved } })),
+      mcpSet: vi.fn(async (next: typeof saved) => {
+        // Core answers the first write only after the second press has happened.
+        if (++sets === 1) await firstWriteHeld;
+        saved = { ...next };
+        return view({ settings: { ...saved } });
+      }),
+      mcpRuntime: vi.fn(async () => Promise.reject(new Error("not running"))),
+    };
+    const { host, root } = await mountPanel(api);
+    await press(host, "Your memory graph"); // first save in flight
+    await press(host, "CitrateScan explorer"); // second press before the first save lands
+    await act(async () => {
+      release();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await act(async () => await new Promise((r) => setTimeout(r, 0)));
+    expect(api.mcpSet).toHaveBeenCalledTimes(2);
+    expect(saved).toEqual({ mem: true, scan: true, node: false });
+    expect((host.querySelector('[aria-label="Your memory graph"]') as HTMLElement).getAttribute("aria-checked")).toBe("true");
+    expect((host.querySelector('[aria-label="CitrateScan explorer"]') as HTMLElement).getAttribute("aria-checked")).toBe("true");
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  it("a press while Hermes is starting saves nothing and says why (it reads these at start)", async () => {
+    let saved = { mem: false, scan: false, node: false };
+    const api = {
+      mcpSettings: vi.fn(async () => view({ settings: { ...saved } })),
+      mcpSet: vi.fn(async (next: typeof saved) => {
+        saved = { ...next };
+        return view({ settings: { ...saved } });
+      }),
+      mcpRuntime: vi.fn(async () => Promise.reject(new Error("not running"))),
+    };
+    const { host, root } = await mountPanel(api);
+    hermesRunningSlice.set({ starting: 1 });
+    try {
+      await press(host, "Your memory graph");
+      expect(api.mcpSet).not.toHaveBeenCalled();
+      expect(host.textContent).toContain("Hermes is starting");
+    } finally {
+      hermesRunningSlice.set({ starting: 0 });
+    }
+    act(() => root.unmount());
+    host.remove();
+  });
 
   it("keeps a switch another writer turned on after the card loaded", async () => {
     let saved = { mem: false, scan: false, node: false };
