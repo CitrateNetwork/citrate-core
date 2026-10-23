@@ -4,6 +4,9 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { bridge } from "../../bridge";
+
+const steps: string[] = [];
+vi.mock("../../privacy/joinFunnel", () => ({ reachedStep: (s: string) => steps.push(s) }));
 import type { Group, JoinViewDto } from "../../bridge/domains";
 import { groupsSlice, refreshGroups } from "./groups";
 import { cancelJoin, forgetJoin, ingest, rendezvousSlice } from "./rendezvous";
@@ -157,5 +160,23 @@ describe("membership checks after a failed list", () => {
     expect(renderToStaticMarkup(<OnboardingJoins />)).toContain("Joined Aperture");
     groupsSlice.set({ groups: [] });
     expect(renderToStaticMarkup(<OnboardingJoins />)).not.toContain("Joined Aperture");
+  });
+});
+
+// Merge of main (0.5.2 join funnel): a join that completes in the background records join_group,
+// only once the group is listed.
+describe("join funnel", () => {
+  it("records join_group when a later join://state completes the join", async () => {
+    steps.length = 0;
+    vi.spyOn(bridge.groups, "list").mockResolvedValueOnce([]).mockResolvedValue([group("g1")]);
+    ingest({ joins: [join("waiting")], invites: [] });
+    await flush();
+    expect(steps).toEqual([]);
+    ingest({ joins: [join("joined")], invites: [] }); // list still empty: not yet
+    await flush();
+    expect(steps).toEqual([]);
+    ingest({ joins: [join("joined")], invites: [] });
+    await flush();
+    expect(steps).toEqual(["join_group"]);
   });
 });

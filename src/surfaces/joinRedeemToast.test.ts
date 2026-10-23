@@ -4,7 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { keepInviteAfter, redeemToast } from "./joinRedeemToast";
+import { keepInviteAfter, redeemJoined, redeemToast } from "./joinRedeemToast";
 import type { JoinRedeemResult } from "../bridge/domains";
 
 const rv = (state: string, reason: string | null = null): JoinRedeemResult => ({
@@ -63,5 +63,28 @@ describe("keepInviteAfter", () => {
     expect(paste).toMatch(/if \(!keepInviteAfter\(result\)\) \{\s*if \(redeemRef\.current\) redeemRef\.current\.value = "";\s*setRedeemOpen\(false\);/);
     const banner = src.slice(src.indexOf("const result = await bridge.invites.redeem(pi.url);"));
     expect(banner.slice(0, 600)).toContain("if (!keepInviteAfter(result)) store.clearPendingInvite();");
+  });
+});
+
+// Merge of main (0.5.2 join funnel): join_group is recorded only once the member is in the group.
+describe("redeemJoined (funnel join_group)", () => {
+  it("is true for the legacy self-admit, and for joined / taken with the group listed", () => {
+    expect(redeemJoined({ path: "legacy" }, false)).toBe(true);
+    expect(redeemJoined(rv("joined"), true)).toBe(true);
+    expect(redeemJoined(rv("taken"), true)).toBe(true);
+  });
+
+  it("is false for a Waiting / Requesting answer, or a group that isn't listed yet", () => {
+    for (const s of ["requesting", "waiting", "joining", "relay_unreachable", "expired"]) expect(redeemJoined(rv(s), true), s).toBe(false);
+    expect(redeemJoined(rv("joined"), false)).toBe(false);
+    expect(redeemJoined(rv("taken"), false)).toBe(false);
+  });
+
+  it("Groups records join_group only behind redeemJoined", () => {
+    const src = readFileSync(join(__dirname, "Groups.tsx"), "utf8");
+    const all = src.match(/reachedStep\("join_group"\)/g) ?? [];
+    const gated = src.match(/if \(redeemJoined\(result, listed\)\) reachedStep\("join_group"\)/g) ?? [];
+    expect(all.length).toBe(2);
+    expect(gated.length).toBe(all.length);
   });
 });
