@@ -948,14 +948,18 @@ pub async fn media_generate_image(
 /// Whether a remote image may be made now. K2 (owner decision 2026-10-23): Local model only
 /// (or an unreadable route setting) refuses, exactly like chat.
 pub(crate) fn media_remote_allowed(route_dir: &Path) -> Result<(), String> {
-    let _ = route_dir;
-    Ok(())
+    crate::chat_route::remote_chat_allowed(route_dir)
 }
 
 /// Mark every provider route not available, with `blocked` as the reason (the local route is
 /// unchanged). `None` leaves the routes as they are.
-pub(crate) fn with_remote_blocked(routes: Vec<Route>, blocked: Option<String>) -> Vec<Route> {
-    let _ = blocked;
+pub(crate) fn with_remote_blocked(mut routes: Vec<Route>, blocked: Option<String>) -> Vec<Route> {
+    if let Some(why) = blocked {
+        for r in routes.iter_mut().filter(|r| r.id != "local") {
+            r.available = false;
+            r.reason = Some(why.clone());
+        }
+    }
     routes
 }
 

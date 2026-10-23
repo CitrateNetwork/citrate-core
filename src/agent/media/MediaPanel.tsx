@@ -7,7 +7,7 @@
 // build. Every unavailable route says why (Rule 1).
 // =====================================================================
 import { useCallback, useEffect, useState } from "react";
-import { localOnlyDoesNotApply, remoteServiceLine } from "../remoteServices";
+import { LOCAL_ONLY_MEDIA_NOTE, remoteServiceLine } from "../remoteServices";
 import { MEDIA_DESKTOP_ONLY, baseName, errorMessage, usageLine, type GalleryItem, type MediaIo, type MediaOptions, type MediaSettings } from "./media";
 
 export interface MediaPanelProps {
@@ -16,7 +16,8 @@ export interface MediaPanelProps {
   openPlayer: () => void | Promise<void>;
   /** Tell the pop-out something new exists (injected; the app refreshes the media host). */
   onSaved?: () => void;
-  /** K2: Local model only is on (it does not apply here; the panel says so). */
+  /** K2: Local model only is on. It covers provider image routes too (owner decision 2026-10-23):
+   * core shows them as not available, and the panel says so. */
   localOnly?: boolean;
 }
 
@@ -153,7 +154,7 @@ export function MediaPanel({ io, openPlayer, onSaved, localOnly = false }: Media
       </ul>
       {localOnly && [...opts.image, ...opts.video].some((r) => r.id !== "local") && (
         <span style={note} data-testid="media-local-only-note">
-          {localOnlyDoesNotApply("image generation through a provider")}
+          {LOCAL_ONLY_MEDIA_NOTE}
         </span>
       )}
 

@@ -210,6 +210,19 @@ fn every_remote_send_takes_a_permit_from_the_consent_book() {
     let cmd = media.find("pub async fn media_generate_image(").expect("command");
     let cmd_body = &media[cmd..cmd + media[cmd..].find("\n}\n").expect("end")];
     assert!(cmd_body.contains("remote_image_post("));
+    // Local model only (owner decision 2026-10-23): every remote send path checks the route first.
+    let allowed = cmd_body.find("media_remote_allowed(").expect("media route check");
+    assert!(allowed < cmd_body.find("remote_image_post(").expect("post"), "route check first");
+    for (sig, file) in [
+        ("pub async fn ai_chat(", ai),
+        ("pub async fn ai_chat_tools(", ai),
+        ("pub async fn chat_consent_prepare(", include_str!("chat_consent.rs")),
+        ("pub async fn media_consent_prepare(", include_str!("chat_consent.rs")),
+    ] {
+        let at = file.find(sig).expect(sig);
+        let body = &file[at..at + file[at..].find("\n}\n").expect("end")];
+        assert!(body.contains("remote_chat_allowed("), "{sig} must check Local model only");
+    }
     // The commands obtain the permit from the consent book before sending.
     for cmd in ["pub(crate) fn ai_chat_sync(", "pub(crate) fn ai_chat_tools_sync("] {
         let at = ai.find(cmd).expect(cmd);
