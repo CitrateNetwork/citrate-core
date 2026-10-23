@@ -7,6 +7,7 @@
 // build. Every unavailable route says why (Rule 1).
 // =====================================================================
 import { useCallback, useEffect, useState } from "react";
+import { localOnlyDoesNotApply, remoteServiceLine } from "../remoteServices";
 import { MEDIA_DESKTOP_ONLY, baseName, errorMessage, usageLine, type GalleryItem, type MediaIo, type MediaOptions, type MediaSettings } from "./media";
 
 export interface MediaPanelProps {
@@ -15,6 +16,8 @@ export interface MediaPanelProps {
   openPlayer: () => void | Promise<void>;
   /** Tell the pop-out something new exists (injected; the app refreshes the media host). */
   onSaved?: () => void;
+  /** K2: Local model only is on (it does not apply here; the panel says so). */
+  localOnly?: boolean;
 }
 
 const row = { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const };
@@ -26,7 +29,7 @@ const PROVIDERS: [string, string][] = [
   ["custom", "OpenAI-compatible endpoint"],
 ];
 
-export function MediaPanel({ io, openPlayer, onSaved }: MediaPanelProps) {
+export function MediaPanel({ io, openPlayer, onSaved, localOnly = false }: MediaPanelProps) {
   const [x, setX] = useState<MediaIo | null>(null);
   const [opts, setOpts] = useState<MediaOptions | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -130,10 +133,20 @@ export function MediaPanel({ io, openPlayer, onSaved }: MediaPanelProps) {
               {r.model ? ` · model ${r.model}` : ""}
             </span>
             {r.reason && <span style={note}>{r.reason}</span>}
+            {r.id !== "local" && (
+              <span style={note} data-testid={`media-remote-${r.kind}-${r.id}`}>
+                {remoteServiceLine(r.destination)}
+              </span>
+            )}
             <span style={note}>Cost: {r.cost}</span>
           </li>
         ))}
       </ul>
+      {localOnly && [...opts.image, ...opts.video].some((r) => r.id !== "local") && (
+        <span style={note} data-testid="media-local-only-note">
+          {localOnlyDoesNotApply("image generation through a provider")}
+        </span>
+      )}
 
       {editing ? (
         <div data-testid="media-settings" style={{ display: "flex", flexDirection: "column", gap: 6 }}>

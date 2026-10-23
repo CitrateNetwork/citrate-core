@@ -573,7 +573,7 @@ export function Journal({ store, s }: SurfaceProps) {
                 {m.streaming && <span style={{ display: "inline-block", width: 6, height: 12, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
               </span>
               {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
-                <LocalModelAsk compact phase={s.chatRouteHold.phase} onChoose={(c) => store.answerLocalModelAsk(c)} />
+                <LocalModelAsk compact phase={s.chatRouteHold.phase} options={s.chatRouteHold.options} onChoose={(c) => store.answerLocalModelAsk(c)} />
               )}
             </div>
           ))}
