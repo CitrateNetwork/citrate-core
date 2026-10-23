@@ -1,0 +1,156 @@
+//! SCRATCH generator, run inside a v0.5.1 checkout only (never committed there). Every file is
+//! written by the v0.5.1 code that writes it in the app, or by the exact serializer that code
+//! uses on the v0.5.1 type, so the fixtures are what a 0.5.1 install holds on disk.
+use std::path::PathBuf;
+
+fn out() -> PathBuf {
+    PathBuf::from(std::env::var("FIXTURE_OUT").expect("FIXTURE_OUT")).join("app-data")
+}
+
+struct NoKubo(std::sync::Mutex<Vec<String>>);
+impl crate::storage::KuboTransport for NoKubo {
+    fn add(&self, _f: &str, b: &[u8]) -> std::result::Result<crate::storage::AddOutcome, crate::storage::StorageError> {
+        let _ = b;
+        unreachable!("not used")
+    }
+    fn pin_add(&self, cid: &str) -> std::result::Result<(), crate::storage::StorageError> {
+        self.0.lock().expect("lock").push(cid.to_string());
+        Ok(())
+    }
+    fn pin_rm(&self, _cid: &str) -> std::result::Result<(), crate::storage::StorageError> {
+        Ok(())
+    }
+    fn pin_ls(&self) -> std::result::Result<Vec<String>, crate::storage::StorageError> {
+        Ok(self.0.lock().expect("lock").clone())
+    }
+    fn cat(&self, _cid: &str) -> std::result::Result<Vec<u8>, crate::storage::StorageError> {
+        unreachable!("not used")
+    }
+}
+
+struct NoNet;
+impl crate::model::ModelTransport for NoNet {
+    fn total_size(&self) -> std::result::Result<u64, crate::model::ModelError> {
+        unreachable!("not used")
+    }
+    fn get_from(&self, _o: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, crate::model::ModelError> {
+        unreachable!("not used")
+    }
+    fn get_range(
+        &self,
+        _s: u64,
+        _e: u64,
+    ) -> std::result::Result<Box<dyn std::io::Read + Send>, crate::model::ModelError> {
+        unreachable!("not used")
+    }
+}
+
+#[test]
+#[ignore = "fixture generator: run by hand in a v0.5.1 tree"]
+fn write_v051_fixtures() {
+    let data = out();
+    std::fs::create_dir_all(&data).expect("mkdir");
+
+    // invites/pending.json + referral-log.json: group_invite_create's record and write_pending.
+    let inv = data.join("invites");
+    std::fs::create_dir_all(&inv).expect("mkdir");
+    let group = "ab".repeat(16);
+    let token = crate::connections::random_state();
+    let (priv_key, pub_key) = crate::invite_seal::new_invite_keypair();
+    let name_hex = hex::encode("Garden club".as_bytes());
+    let link = format!("citrate://invite?g={group}&t={token}&k={pub_key}&n={name_hex}");
+    let invites = vec![
+        crate::invites::PendingInvite {
+            group: group.clone(),
+            token: token.clone(),
+            for_handle: "@alice".into(),
+            created_at: 1_792_300_000,
+            priv_key,
+            link,
+        },
+        // A pre-CONNECT-S1 record (no key, no link), which 0.5.1 still loads.
+        crate::invites::PendingInvite {
+            group: group.clone(),
+            token: crate::connections::random_state(),
+            for_handle: String::new(),
+            created_at: 1_792_200_000,
+            priv_key: String::new(),
+            link: String::new(),
+        },
+    ];
+    crate::invites::write_pending_for_fixture(&inv.join("pending.json"), &invites);
+    let referrals = vec![crate::invites::ReferralEvent {
+        role: "inviter".into(),
+        event: "invited".into(),
+        group: group.clone(),
+        group_name: "Garden club".into(),
+        token_hash: crate::invites::blake3_token_hash(&token),
+        for_handle: "@alice".into(),
+        ts: 1_792_300_000,
+    }];
+    let bytes = serde_json::to_vec_pretty(&referrals).expect("json");
+    citrate_core_kit::fsutil::write_secret_file(&inv.join("referral-log.json"), &bytes)
+        .expect("write");
+
+    // ipfs/pins.json: StorageManager::pin with the 0.5.1 UI's local marker.
+    let ipfs = data.join("ipfs");
+    std::fs::create_dir_all(&ipfs).expect("mkdir");
+    let mgr = crate::storage::StorageManager::new(
+        Box::new(NoKubo(Default::default())),
+        ipfs.clone(),
+    );
+    mgr.pin("bafybeigdyrztq7v7zv6upgradefixtureupgradefixtureupgradefi", "local")
+        .expect("pin");
+    mgr.pin("bafkreiupgradefixturesecondpinsecondpinsecondpinsecondp", "local")
+        .expect("pin");
+
+    // daemons.json: DaemonBook::save + store_book (app_local_data_dir; same dir as app data on
+    // macOS and Linux).
+    let mut book = crate::daemons::DaemonBook::default();
+    let input: crate::daemons::DaemonInput = serde_json::from_value(serde_json::json!({
+        "name": "Morning brief",
+        "prompt": "Summarise what changed on my node overnight.",
+        "schedule": "0 8 * * *",
+        "budget": {"maxRunsPerDay": 2, "maxTokensPerDay": 20000, "maxTokensPerRun": 8000, "maxSpendSalt": "0"}
+    }))
+    .expect("input");
+    book.save(input, 1_792_300_000_000, -420).expect("save daemon");
+    crate::daemons::store_book(&data.join("daemons.json"), &book).expect("store book");
+
+    // models/<file>.status.json: ModelManager::verify on a file matching its pin.
+    let models = data.join("models");
+    std::fs::create_dir_all(&models).expect("mkdir");
+    let body = b"upgrade fixture model bytes (not a real model)";
+    std::fs::write(models.join(crate::model::MODEL_FILE), body).expect("write model");
+    use sha2::Digest;
+    let hash = hex::encode(sha2::Sha256::digest(body));
+    let mm = crate::model::ModelManager::new(models.clone(), Box::new(NoNet), hash, body.len() as u64);
+    mm.verify().expect("verify");
+
+    // hermes/terminal-settings.json: the member turned terminal commands off.
+    let hermes = data.join("hermes");
+    crate::hermes_terminal::save(
+        &hermes,
+        &crate::hermes_terminal::TerminalSettings {
+            enabled: false,
+            changed_at_ms: Some(1_792_300_000_000),
+        },
+    )
+    .expect("terminal");
+
+    // node data dir: the genesis marker reconcile_genesis writes, next to the chain database.
+    let node = data.join("node");
+    std::fs::create_dir_all(&node).expect("mkdir");
+    let outcome =
+        crate::node_genesis::reconcile_genesis(&node, crate::addresses::genesis_hash(), || false)
+            .expect("reconcile");
+    println!("genesis outcome: {outcome:?}");
+    // The chain database files the node then creates (names only; the bytes are placeholders).
+    for f in ["CURRENT", "IDENTITY", "MANIFEST-000005", "000623.log", "000624.sst"] {
+        std::fs::write(node.join(f), b"placeholder").expect("db file");
+    }
+    let again =
+        crate::node_genesis::reconcile_genesis(&node, crate::addresses::genesis_hash(), || false)
+            .expect("reconcile");
+    println!("second start: {again:?}");
+}
