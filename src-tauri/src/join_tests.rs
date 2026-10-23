@@ -132,7 +132,12 @@ fn production_state_uses_the_redirect_free_client_and_redeem_keeps_on_failure() 
     let prod = src.split("#[cfg(test)]").next().expect("prod part");
     assert!(prod.contains("Box::new(JoinHttp)"));
     assert!(!prod.contains("UreqClient"));
-    // join_redeem goes through redeem_opened (kept on failure), never take_opened (dropped first).
-    assert!(prod.contains("redeem_opened(&code"));
+    // join_redeem goes through redeem_opened_with (kept on failure and while the GROW-S2 join is
+    // still requesting), never take_opened (dropped first).
+    assert!(prod.contains("redeem_opened_with(&code"));
+    // GROW-S2 M3: the rendezvous first; the legacy redeem only inside rendezvous::join_opened.
+    assert!(prod.contains("crate::rendezvous::join_opened("));
+    assert!(!prod.contains("invites::redeem_link(&app"));
+    assert!(prod.contains("crate::rendezvous::tick_soon(&app)"));
     assert!(!prod.contains("take_opened("));
 }

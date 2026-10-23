@@ -149,13 +149,15 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
-// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
 // GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
 mod join;
 mod model_catalog;
+// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod model_delete;
+// GROW-S2 (Join 9): relay rendezvous join, app side (IPC views, tick, join://state).
+mod rendezvous;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
@@ -342,6 +344,9 @@ pub fn run() {
             app.manage(oidc::build_auth_state());
             // v2 invite links: the join client (pending attaches + opened invites, memory only).
             app.manage(join::build_join_state());
+            // GROW-S2 (Join 9, M4): tick the relay rendezvous at app start and every 30 s while open
+            // (starts the comms daemon only when this device minted invites or has a join in flight).
+            rendezvous::spawn_ticker(app.handle().clone());
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -520,6 +525,10 @@ pub fn run() {
             join::join_redeem,
             join::join_revoke,
             join::join_list,
+            // GROW-S2 (Join 9): relay rendezvous views (no secrets cross invoke).
+            rendezvous::rendezvous_tick,
+            rendezvous::rendezvous_cancel,
+            rendezvous::rendezvous_forget,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote

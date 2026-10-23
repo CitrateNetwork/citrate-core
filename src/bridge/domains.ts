@@ -1888,6 +1888,8 @@ export interface SocialDomain {
 // mints a claimable invite + shares its link over the platform DM; the invitee volunteers their
 // address in a claim (consent); the owner verifies the one-time token and adds them the normal way.
 // Citrate never resolves a handle to an address.
+/** The result of approving a claim (`group_invite_verify_consume`). */
+export type ConsumeOutcome = "approved" | "pending" | "invalid";
 export interface PendingInvite {
   group: string;
   token: string;
@@ -1895,6 +1897,12 @@ export interface PendingInvite {
   createdAt: number;
   /** CONNECT-S1 — the full share link (with the sealed-invite key); "" for pre-S1 invites. */
   link?: string;
+  /** GROW-S2 — the relay rendezvous lookup (hex) when one was opened; matches `InviteViewDto.lookup`. */
+  lookup?: string;
+  /** GROW-S2 — revoked or used here; the relay hasn't confirmed the rendezvous closed yet. */
+  revoking?: boolean;
+  /** GROW-S2 — it was used (a claim approved) rather than revoked; set with `revoking`. */
+  consumed?: boolean;
 }
 export interface InviteMinted {
   token: string;
@@ -1923,15 +1931,17 @@ export interface InvitesDomain {
    *  resolution. INVITE-S2: publishes BLAKE3(token) + expiry to the relay so the invitee can
    *  self-admit; fails closed if the relay is unreachable. */
   create(group: string, forHandle: string): Promise<InviteMinted>;
-  /** INVITE-S2 — INVITEE: SELF-ADMIT into the group from an invite link, in one click. Joins by MLS
-   *  external commit with no owner action (even if the owner is offline). Honest error on a spent/
-   *  expired/revoked token or an unreachable relay. */
-  redeem(link: string): Promise<void>;
+  /** INVITEE: join from an invite link, in one click. GROW-S2: through the relay rendezvous
+   *  (`path: "rendezvous"` with the daemon's join view), falling back to the INVITE-S2 self-admit
+   *  (`path: "legacy"`, the group is joined) only when the relay has no rendezvous for it. */
+  redeem(link: string): Promise<JoinRedeemResult>;
   /** The owner's outstanding invites for a group. */
   list(group: string): Promise<PendingInvite[]>;
-  /** Verify + CONSUME a claim's one-time token against an outstanding invite. The caller then adds
-   *  the volunteered address the normal way. Returns whether the token was valid. (Claim-back path.) */
-  verifyConsume(group: string, token: string): Promise<boolean>;
+  /** Verify + CONSUME a claim's one-time token against an outstanding invite (claim-back path).
+   *  "approved": the caller adds `address` now. "pending": the invite's relay rendezvous isn't
+   *  confirmed closed yet, so the app adds `address` itself once it is. "invalid": no outstanding
+   *  invite for that token. */
+  verifyConsume(group: string, token: string, address: string): Promise<ConsumeOutcome>;
   /** Drop an outstanding invite — also revokes it on the relay so a leaked link can no longer redeem. */
   revoke(group: string, token: string): Promise<void>;
   /** CONNECT-S1 — INVITEE: seal + submit a claim for an invite link to the relay's server-blind
@@ -1943,6 +1953,74 @@ export interface InvitesDomain {
   referralLog(): Promise<ReferralEvent[]>;
   /** #73 — the referral ledger as pretty JSON, for the member to save as their audit copy. */
   exportReferralLog(): Promise<string>;
+}
+
+// ── GROW-S2 (Join 9) — relay rendezvous views. Mirror the Rust `rendezvous::JoinView` /
+// `InviteView` (camelCase), which mirror the member daemon's §9 IPC views (GROW-S2 contract,
+// citrate-federation .agentile/planset/2026-10-19-betanet/JOIN_GROW_S2_RELAY.md). No secrets: no
+// relay token, auth or MAC key ever crosses invoke.
+export type JoinStateWord =
+  | "requesting"
+  | "waiting"
+  | "joining"
+  | "joined"
+  | "expired"
+  | "revoked"
+  | "taken"
+  | "dropped"
+  | "withdrawn"
+  | "unknown"
+  | "welcome_expired"
+  | "reply_unverified"
+  | "relay_unreachable"
+  | "relay_unsupported"
+  | "failed";
+/** The invitee's view of one join. `reason` is the daemon's stable code (e.g. `no_rendezvous`). */
+export interface JoinViewDto {
+  group: string;
+  name: string;
+  state: JoinStateWord;
+  reason: string | null;
+  expiresAt: number | null;
+  graceUntil: number | null;
+  updatedAt: number | null;
+}
+export type InviteStateWord =
+  | "open"
+  | "adding"
+  | "added"
+  | "picked_up"
+  | "welcome_expired"
+  | "expired"
+  | "revoked"
+  | "failed"
+  | "relay_unreachable"
+  | "unknown";
+/** The inviter's view of one rendezvous it opened. `joiner` is the full address; shorten it on screen. */
+export interface InviteViewDto {
+  lookup: string;
+  group: string;
+  state: InviteStateWord;
+  joiner: string | null;
+  expiresAt: number;
+  updatedAt: number | null;
+  reason: string | null;
+  dropped: number;
+}
+/** The `rendezvous_tick` answer and the `join://state` event payload. */
+export interface RendezvousViews {
+  joins: JoinViewDto[];
+  invites: InviteViewDto[];
+}
+export interface RendezvousDomain {
+  /** Run one rendezvous tick now (daemon `rendezvousTick`); also emitted on `join://state`. */
+  tick(): Promise<RendezvousViews>;
+  /** Invitee: withdraw a requesting / waiting join. Returns the view after the attempt. */
+  cancel(group: string): Promise<JoinViewDto>;
+  /** Invitee: clear a terminal join from the list. */
+  forget(group: string): Promise<void>;
+  /** Subscribe to `join://state`. Resolves to an unsubscribe. */
+  onState(fn: (views: RendezvousViews) => void): Promise<() => void>;
 }
 
 /** A volunteered claim recovered from the server-blind inbox (owner-side). */
@@ -1999,6 +2077,21 @@ export interface JoinCodeEntry {
   exp: string;
   resolveCount: number;
 }
+/** GROW-S2 (Join 9) — what `join.redeem` did. `join` is the member daemon's view (camelCase), no secrets. */
+export type JoinRedeemResult =
+  | {
+      path: "rendezvous";
+      join: {
+        group: string;
+        name: string;
+        state: string;
+        reason: string | null;
+        expiresAt: number | null;
+        graceUntil: number | null;
+        updatedAt: number | null;
+      };
+    }
+  | { path: "legacy" };
 export interface JoinDomain {
   /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
   mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
@@ -2007,9 +2100,11 @@ export interface JoinDomain {
   /** Resolve + verify a link (or bare code). Each call counts against the code's resolve limit
    *  (direct 1–50, default 50); resolve on the member's action, not on a preview. */
   resolve(link: string): Promise<JoinResolved>;
-  /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
-   *  stays held (until it expires), so calling it again retries. */
-  redeem(code: string): Promise<void>;
+  /** The member's explicit Join for a resolved, actionable direct invite. GROW-S2: joins through
+   *  the relay rendezvous (`path: "rendezvous"`, with the daemon's join view) and falls back to the
+   *  older self-admit (`path: "legacy"`) only when the relay has no rendezvous for it. On failure,
+   *  and while the join is still `requesting`, the invite stays held, so calling it again retries. */
+  redeem(code: string): Promise<JoinRedeemResult>;
   /** Revoke one of the member's codes. */
   revoke(code: string): Promise<void>;
   /** The member's codes, newest first. */
@@ -2443,4 +2538,5 @@ export interface CxBridge {
   social: SocialDomain;
   invites: InvitesDomain;
   components: ComponentsDomain;
+  rendezvous: RendezvousDomain;
 }
