@@ -13,6 +13,8 @@ import { useEffect, useState } from "react";
 import type { AgentHarnessDomain, HermesMcpSettings, HermesMcpView, McpRuntimeView } from "../bridge/domains";
 import { bridge } from "../bridge";
 import { runtimeLine, type RuntimeTone } from "../surfaces/mcpRuntime";
+import { writeStartSettingUnlessStarting } from "../agent/startSettingsWrite";
+import { HELD_DURING_START, hermesStarting } from "../shell/slices/hermesRunning";
 
 const RUNTIME_TONE: Record<RuntimeTone, string> = {
   ok: "var(--ok, var(--tx-2))",
@@ -97,7 +99,8 @@ export type HermesMcpApi = Pick<AgentHarnessDomain, "mcpSettings" | "mcpSet" | "
 /** The card wired to the bridge: loads the view, saves a toggle, reports failures in place.
  *  K2 (0.5.2): a save is read-modify-write (#341/#343): it re-reads what core has saved, changes only
  *  the switches the member pressed, and writes that, so a change saved elsewhere since this card
- *  loaded is kept. A failed re-read writes nothing. */
+ *  loaded is kept. A failed re-read writes nothing. Saves run one at a time under the start-time
+ *  settings lock (agent/startSettingsWrite.ts), and none runs while Hermes is starting. */
 export function HermesMcpPanel({ api = bridge.agentHarness }: { api?: HermesMcpApi } = {}) {
   const [view, setView] = useState<HermesMcpView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -119,13 +122,27 @@ export function HermesMcpPanel({ api = bridge.agentHarness }: { api?: HermesMcpA
   }, [api]);
   const onToggle = (next: HermesMcpSettings) => {
     if (!view) return;
+    if (hermesStarting()) {
+      setError(HELD_DURING_START);
+      return;
+    }
     const keys = (Object.keys(next) as (keyof HermesMcpSettings)[]).filter((k) => next[k] !== view.settings[k]);
     void (async () => {
       try {
-        const fresh = await api.mcpSettings();
-        const merged: HermesMcpSettings = { ...fresh.settings };
-        for (const k of keys) merged[k] = next[k];
-        setView(await api.mcpSet(merged));
+        // One save at a time with every other start-time setting write (the allowlist is read when
+        // Hermes starts): the re-read runs only after the previous save landed, so two quick presses
+        // both stay saved. Held (null) if a Hermes start began while this save waited.
+        const saved = await writeStartSettingUnlessStarting(async () => {
+          const fresh = await api.mcpSettings();
+          const merged: HermesMcpSettings = { ...fresh.settings };
+          for (const k of keys) merged[k] = next[k];
+          return api.mcpSet(merged);
+        });
+        if (!saved) {
+          setError(HELD_DURING_START);
+          return;
+        }
+        setView(saved);
         setError(null);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : String(e));
