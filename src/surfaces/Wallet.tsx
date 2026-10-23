@@ -96,7 +96,9 @@ export function Wallet({ store, s }: SurfaceProps) {
 
   const saltStr = fmt2(s.liquid);
   const stakedStr = staked ? fmtI(staked) : "0";
-  const wsaltStr = "0.00";
+  // UI truth contract rules 1 and 2: the number catalog has no wSALT entry and nothing reads a
+  // wSALT balance, so the tile shows the unavailable state. Unknown is not zero.
+  const wsaltStr = "—";
   const stakedSub = s.hasGrant
     ? grantSaltStr + " grant vaulted" + (s.selfStake ? " + " + fmtI(s.selfStake) + " self" : "")
     : "no grant — join to stake";
@@ -286,7 +288,7 @@ export function Wallet({ store, s }: SurfaceProps) {
                 {wsaltStr}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                wrapped — none held
+                not available yet · no wSALT balance read
               </span>
             </div>
           </div>
