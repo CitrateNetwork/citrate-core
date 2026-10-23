@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { store } from "./store";
 import { bridge } from "../bridge";
 import { STORAGE_KEY } from "./state";
+import { locate } from "./places";
 import type { JoinResolved, PendingJoinView } from "../bridge/domains";
 
 const CODE = "Ab3dE7gh";
@@ -79,7 +80,7 @@ describe("v2 invite deep links (task 12)", () => {
     expect(spies.redeem).not.toHaveBeenCalled();
     expect(store.state.pendingJoin).toMatchObject({ phase: "waiting", hasKey: true, persisted: true });
     expect(store.state.pendingInvite).toBeNull();
-    expect(store.state.route).toBe("groups");
+    expect(locate(store.state.route).place).toBe("groups");
     store.save();
     await new Promise((r) => setTimeout(r, 450));
     assertNoSecretAnywhere();
@@ -180,7 +181,7 @@ describe("v2 invite deep links (task 12)", () => {
     const legacy = "citrate://invite?g=grp_1&t=tok123&k=02ab";
     store.handleDeepLink(legacy);
     expect(store.state.pendingInvite?.url).toBe(legacy);
-    expect(store.state.route).toBe("groups");
+    expect(locate(store.state.route).place).toBe("groups");
     expect(spies.set).not.toHaveBeenCalled();
   });
 
