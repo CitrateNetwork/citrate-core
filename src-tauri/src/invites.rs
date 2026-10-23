@@ -640,7 +640,7 @@ pub(crate) fn consume_at(
     // (single-use, even for two approvals at once).
     let exists = view_pending_at(path)?
         .iter()
-        .any(|i| i.group == group && i.token == token);
+        .any(|i| i.group == group && i.token == token && !i.revoking);
     if !exists {
         return Ok(false);
     }
@@ -699,21 +699,60 @@ fn revoke_and_remove_at(
     let close = lookup.map(close);
     let legacy = legacy(blake3_token_hash(token));
     revoke_outcome(close, legacy)?;
+    // The close is persisted at the daemon, which resends it until the relay confirms. So an invite
+    // with a rendezvous is kept, marked revoking (not claimable, shown as pending, still local work
+    // for the tick after a restart), until a tick reports it revoked (`settle_revocations`). One
+    // without a rendezvous is done once the legacy revoke is confirmed.
     update_pending_at(path, |v| {
-        let before = v.len();
-        v.retain(|i| !(i.group == group && i.token == token));
-        v.len() < before
+        let Some(pos) = v.iter().position(|i| i.group == group && i.token == token) else {
+            return false;
+        };
+        if v[pos].revoking {
+            return false;
+        }
+        if v[pos].lookup.is_empty() {
+            v.retain(|i| !(i.group == group && i.token == token));
+        } else {
+            v[pos].revoking = true;
+        }
+        true
     })
 }
 
 /// GROW-S2 — drop the revoking records the relay has confirmed (pure; `invites` from the daemon's
 /// tick). `now_unix` in seconds.
 pub(crate) fn settle_revocations(
-    records: Vec<PendingInvite>,
-    _invites: &[crate::rendezvous::InviteView],
-    _now_unix: u64,
+    mut records: Vec<PendingInvite>,
+    invites: &[crate::rendezvous::InviteView],
+    now_unix: u64,
 ) -> Vec<PendingInvite> {
+    let ttl_secs = INVITE_TTL_MS / 1000;
+    records.retain(|r| {
+        let confirmed = invites.iter().any(|v| {
+            v.lookup.eq_ignore_ascii_case(&r.lookup)
+                && v.state == crate::rendezvous::InviteState::Revoked
+        });
+        let expired = r.created_at.saturating_add(ttl_secs) <= now_unix;
+        !(r.revoking && (confirmed || expired))
+    });
     records
+}
+
+/// After a tick: drop the revoking records the relay has confirmed. Writes only when there is one.
+pub(crate) fn settle_revocations_after_tick(
+    app: &tauri::AppHandle,
+    views: &crate::rendezvous::TickViews,
+) {
+    let Ok(path) = store_path(app) else {
+        return;
+    };
+    if !view_pending_at(&path).is_ok_and(|v| v.iter().any(|i| i.revoking)) {
+        return;
+    }
+    let now = now_unix();
+    let _ = update_pending_at(&path, |v| {
+        *v = settle_revocations(std::mem::take(v), &views.invites, now);
+    });
 }
 
 #[cfg(test)]
@@ -1333,17 +1372,17 @@ mod tests {
     }
 
     /// Tripwire: an invite record is only ever removed by `revoke_and_remove_at` (close + legacy
-    /// revoke first), behind both revoke and consume.
+    /// revoke first, behind both revoke and consume) or by `settle_revocations` (relay confirmed).
     #[test]
     fn invite_records_are_only_removed_by_revoke_at() {
         let src = include_str!("invites.rs");
         let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("tests")];
-        assert_eq!(prod.matches(".retain(").count(), 1, "one removal site");
-        let body = &prod[prod
-            .find("fn revoke_and_remove_at")
-            .expect("revoke_and_remove_at")..];
-        let body = &body[..body.find("\n}\n").expect("end")];
-        assert!(body.contains(".retain("));
+        assert_eq!(prod.matches(".retain(").count(), 2, "two removal sites");
+        for f in ["fn revoke_and_remove_at", "fn settle_revocations("] {
+            let body = &prod[prod.find(f).expect(f)..];
+            let body = &body[..body.find("\n}\n").expect("end")];
+            assert!(body.contains(".retain("), "{f}");
+        }
     }
 
     // ---- Codex round 5 (P1): a persisted close isn't a relay-confirmed revoke ---------------------

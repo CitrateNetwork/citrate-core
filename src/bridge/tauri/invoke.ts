@@ -50,6 +50,8 @@ const LONG: Record<string, number> = {
   // (15 s) + the legacy revoke (5 s). Cancel / forget answer, then run one tick (15 s).
   group_invite_create: 40_000,
   group_invite_revoke: 30_000,
+  // Approving a claim closes the rendezvous and revokes the legacy record first, like revoke.
+  group_invite_verify_consume: 30_000,
   rendezvous_tick: 20_000,
   rendezvous_cancel: 40_000,
   rendezvous_forget: 40_000,
