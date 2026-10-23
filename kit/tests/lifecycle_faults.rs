@@ -256,7 +256,10 @@ fn pc_fresh_start_creates_exactly_one_incarnation() {
     assert_eq!(fx.pidfile_pids(), vec![pid]);
     assert_eq!(sup.status().restarts, 0);
     drop(sup);
-    assert!(pid_reaped(pid), "dropping the supervisor ends and reaps the child");
+    assert!(
+        pid_reaped(pid),
+        "dropping the supervisor ends and reaps the child"
+    );
     fx.assert_clean();
 }
 
