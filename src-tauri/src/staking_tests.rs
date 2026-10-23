@@ -613,8 +613,10 @@ fn a_failed_window_is_an_error_not_an_empty_list() {
 // "still reading", never a list that claims to be whole.
 #[test]
 fn an_unfinished_scan_is_reported_as_still_reading() {
+    // Virtual clock (#409): each citrate_getLogs answer takes 2 s, so one call's budget covers a
+    // few of the 30 windows and the scan spans several calls.
     let node = Node::new(30_000, vec![(2, 25_000, false)]);
-    node.logs_delay.set(std::time::Duration::from_millis(2));
+    let clock = on_clock(&node, &[("citrate_getLogs", 2.0), ("batch", 0.5), ("citrate_isExecuted", 0.5)]);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
     let past = std::time::Instant::now();
@@ -622,9 +624,10 @@ fn an_unfinished_scan_is_reported_as_still_reading() {
     assert!(matches!(err, StakingError::OutOfBudget), "{err:?}");
     assert!(err.to_string().contains("still reading chain history"), "{err}");
     let mut done = None;
+    let mut calls = 0;
     for _ in 0..100 {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5);
-        let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect("read");
+        let rows = timed_call(&rpc, &clock, &mut scan).expect("read");
+        calls += 1;
         if scan.last_read_complete {
             done = Some(rows);
             break;
@@ -635,6 +638,7 @@ fn an_unfinished_scan_is_reported_as_still_reading() {
         assert!(note.contains("reading chain history") || note.contains("reading withdrawal details"), "{note}");
     }
     assert_eq!(ids_of(&done.expect("finishes")), vec!["2"]);
+    assert!(calls > 2, "the scan is spread over calls ({calls})");
     assert!(scan.last_read_confirmed);
 }
 
@@ -842,12 +846,13 @@ fn a_spent_budget_makes_no_rpc_call() {
 // confirmed, nothing committed, and the note says how far it read.
 #[test]
 fn a_budget_stop_without_citrate_get_logs_returns_what_it_found() {
+    // Virtual clock (#409): 2 s per eth_getLogs answer, so the call stops after a few windows of
+    // a 50 000 000-block history.
     let node = Node::today(50_000_000, vec![(3, 600, false)]);
-    node.logs_delay.set(std::time::Duration::from_millis(2));
+    let clock = on_clock(&node, &[("eth_getLogs", 2.0), ("citrate_getLogs", 0.1), ("batch", 0.5)]);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(30);
-    let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect("rows");
+    let rows = timed_call(&rpc, &clock, &mut scan).expect("rows");
     assert_eq!(ids_of(&rows), vec!["3"]);
     assert!(!scan.last_read_complete && !scan.last_read_confirmed);
     assert!(scan.last_read_note.clone().unwrap_or_default().contains("reading chain history"));
@@ -958,23 +963,24 @@ fn a_node_behind_the_head_is_never_confirmed() {
 #[test]
 fn withdrawal_detail_reads_resume_across_calls() {
     let w: Vec<(u128, u64, bool)> = (1..=251u128).map(|i| (i, 500 + i as u64, false)).collect();
+    // Virtual clock (#409): each batch takes 6 s (the RPC timeout), so the production budget fits
+    // three of the six batches per call.
     let node = Node::new(2_000, w);
-    node.batch_delay.set(std::time::Duration::from_millis(40));
+    let clock = on_clock(&node, &[("batch", 6.0)]);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
     let mut rows = Vec::new();
     let mut calls = 0;
     for _ in 0..20 {
         calls += 1;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(90);
-        rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).unwrap_or_default();
+        rows = timed_call(&rpc, &clock, &mut scan).expect("read");
         if scan.last_read_complete {
             break;
         }
     }
     assert!(scan.last_read_complete, "the detail reads finish");
     assert_eq!(rows.len(), 251);
-    assert!(calls <= 6, "{calls} calls");
+    assert!((2..=6).contains(&calls), "the reads span calls, in a bounded number: {calls}");
     assert_eq!(rpc.transport().batches(), 6, "each id read once: no restart from the first id");
 }
 
@@ -1308,8 +1314,6 @@ struct Node {
     log_read_count: Cell<usize>,
     /// `withdrawals(id)` reads `claimed = false` for these (a claim that was reorged out).
     unclaim: RefCell<std::collections::HashSet<u128>>,
-    logs_delay: Cell<std::time::Duration>,
-    batch_delay: Cell<std::time::Duration>,
     /// A virtual clock the scan reads its deadline from (#371 @66b6fd4): each request advances it
     /// by `vcost` of its method ("batch" for a JSON-RPC batch), the way a slow answer just under
     /// the 6 s RPC timeout would, and its start is recorded. No test sleeps for real.
@@ -1340,8 +1344,6 @@ impl Node {
             fork_at_read: Cell::new(None),
             log_read_count: Cell::new(0),
             unclaim: RefCell::new(Default::default()),
-            logs_delay: Cell::new(std::time::Duration::ZERO),
-            batch_delay: Cell::new(std::time::Duration::ZERO),
             vclock: RefCell::new(None),
             vcost: RefCell::new(Default::default()),
             vstarts: RefCell::new(Vec::new()),
@@ -1457,7 +1459,6 @@ impl Node {
         if let Some(Some(raw)) = self.getlogs_raw.borrow_mut().pop_front() {
             return Ok(raw);
         }
-        std::thread::sleep(self.logs_delay.get());
         let (from, to) = (hex_q(&f["fromBlock"]), hex_q(&f["toBlock"]));
         if let Some(at) = self.fail_at.get() {
             if from <= at && at <= to {
@@ -1512,7 +1513,6 @@ impl Node {
             self.budget_exceeded.set(self.budget_exceeded.get() - 1);
             return Ok(Node::err(-32005, "Method budget exceeded. Reduce call frequency for expensive methods.", JsonValue::Null));
         }
-        std::thread::sleep(self.logs_delay.get());
         let from = hex_q(&f["fromBlock"]);
         let mut to = hex_q(&f["toBlock"]);
         if let Some(at) = self.fail_at.get() {
@@ -1609,7 +1609,6 @@ impl RpcTransport for Node {
             clock.at.set(clock.at.get() + cost);
         }
         if let Some(batch) = body.as_array() {
-            std::thread::sleep(self.batch_delay.get());
             let mut out = Vec::new();
             for b in batch {
                 let mut r = self.one(b.clone())?;
