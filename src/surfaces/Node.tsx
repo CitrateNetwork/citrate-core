@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
@@ -326,7 +326,8 @@ export function Node({ store, s }: SurfaceProps) {
                     isn't active yet (pending, or isActive unread) is already staked: no
                     activation is offered for it (#348 review). */}
                 {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
-                {TAURI && s.node === "synced" && !(s.bondedStake > 0) && s.bondActivated !== true && vWord !== "Exiting" && vWord !== "Slashed" && (
+                {/* #348 review: activation only for a bond that reads not activated (activated() = false). */}
+                {TAURI && s.node === "synced" && canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
@@ -371,7 +372,7 @@ export function Node({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Status</span>
                   <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch, currentEpoch() and stakeOf(pubkey)">
-                    {vWord ?? "— · registry not read yet"}
+                    {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}
                     {vWord === "Validator active" && (
                       <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
                     )}

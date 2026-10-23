@@ -255,8 +255,24 @@ export function validatorWord(stakeSalt: number, activation: ValidatorActivation
   // #348/#349 review: an activated bond with no registered stake (and no Exiting / Slashed status
   // read) has left the registry; it is not "Bond locked", and its state can't be stated: "—".
   if (!(stakeSalt > 0) && bondActivated === true) return null;
-  if (!(stakeSalt > 0)) return hasGrant ? "Bond locked · not staked" : "Not a validator";
+  // #348 review (contract v1.1 §1, rule 2): "Bond locked · not staked" needs activated() = false; an
+  // unread flag with a grant is "—" (bond state not read yet), the same gate as #366's validatorState.
+  if (!(stakeSalt > 0)) return bondActivated === false ? "Bond locked · not staked" : hasGrant ? null : "Not a validator";
   if (!activation) return null;
   if (activation.actEpoch > activation.currentEpoch) return `Registered · active from epoch ${activation.actEpoch}`;
   return isValidatorActive(activation) ? "Validator active" : null;
+}
+
+/** The validator word, or "— · <reason>" when it can't be stated (#348 review). */
+export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null): string {
+  const w = validatorWord(stakeSalt, activation, hasGrant, bondActivated);
+  if (w) return w;
+  if (!(stakeSalt > 0) && hasGrant && bondActivated == null) return "— · bond state not read yet";
+  if (!(stakeSalt > 0) && bondActivated === true && activation) return "— · registry state inconsistent";
+  return "— · registry not read yet";
+}
+
+/** Stake / activate is offered only for a bond that reads not activated, with no registered stake. */
+export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, bondActivated?: boolean | null): boolean {
+  return !(stakeSalt > 0) && bondActivated === false && activation?.status !== 2 && activation?.status !== 3;
 }

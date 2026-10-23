@@ -18,7 +18,7 @@ import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
-import { blocksWithTime, readsValidatorRewards, saltFromWei } from "../shell/chainTruth";
+import { blocksWithTime, readsValidatorRewards, saltFromWei, validatorDash } from "../shell/chainTruth";
 
 /** `LiquidStakingPool.WITHDRAWAL_DELAY` (LiquidStakingPool.sol:26; src-tauri staking.rs). */
 const WITHDRAWAL_DELAY_BLOCKS = 50_400;
@@ -53,7 +53,9 @@ export function Wallet({ store, s }: SurfaceProps) {
   // folded as `bondedStake`. The grant in a locked bond is not staked until the bond is activated,
   // and a LiquidStakingPool deposit (`selfStake`) is not validator stake.
   const staked = s.bondedStake;
-  const bondLockedNotStaked = s.hasGrant && !(staked > 0);
+  // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
+  // validator state gives the word or "— · <reason>".
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
   // C1-V V9: every Wallet read (balance, LiquidStakingPool position, withdrawal queue) goes to the
   // public RPC through the Rust RpcClient, whether or not the local node runs.
   const src = "rpc.citrate.ai";
@@ -109,7 +111,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   const saltStr = fmt2(s.liquid);
   const stakedStr = staked > 0 ? fmtI(staked) : "0";
   const wsaltStr = "0.00";
-  const stakedSub = staked > 0 ? "ValidatorRegistry.stakeOf" : bondLockedNotStaked ? "Bond locked · not staked" : "Not a validator";
+  const stakedSub = staked > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
   // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
   const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
   const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";
@@ -375,7 +377,7 @@ export function Wallet({ store, s }: SurfaceProps) {
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Validator stake · ValidatorRegistry.stakeOf</span>
                 <span className="mono tabular" style={{ fontSize: 13 }}>
-                  {staked > 0 ? fmtI(staked) + " SALT" : bondLockedNotStaked ? "Bond locked · not staked" : "—"}
+                  {staked > 0 ? fmtI(staked) + " SALT" : validatorStateText}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>

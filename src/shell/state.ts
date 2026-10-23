@@ -1028,6 +1028,9 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
+/** Keys earlier builds persisted that are retired (C1-V V8): dropped from a save when it loads. */
+export const RETIRED_PERSISTED_KEYS = ["earnVal", "earnPin", "earnComp", "earnToday"] as const;
+
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
   try {
@@ -1039,6 +1042,9 @@ export function loadState(): AppState {
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
+  // Upgrade review: keys older builds persisted that no longer exist (V8 retired the off-chain
+  // earnings estimates). A 0.5.1 save still carries them; never fold them into state.
+  if (saved) for (const k of RETIRED_PERSISTED_KEYS) delete (saved as Record<string, unknown>)[k];
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // 0.5.2 Join: a telemetry consent stored without a disclosure-version marker was given before
   // `joinSteps` existed. Mark it now (version 1) so the one-time note runs and join steps stay

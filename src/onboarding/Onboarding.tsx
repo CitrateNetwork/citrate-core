@@ -8,7 +8,7 @@ import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
-import { CONSENSUS_LAG_NOTE, validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -977,22 +977,23 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         {/* #348/#349 review: an already-activated bond (MemberBond.activated() = true) with no
             registered stake has exited or been slashed; it can't activate again, so it gets the
             status card (word or "—"), never "Stake my bond". */}
-        {s.node === "synced" && !(s.bondedStake > 0) && (s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3 || s.bondActivated === true) && (
+        {s.node === "synced" && !(s.bondedStake > 0) && !canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) && (s.hasGrant || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated) ?? (s.validatorActivation ? "— · registry state inconsistent" : "— · registry not read yet")}</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 ValidatorRegistry.validatorInfo status for this node&rsquo;s key; no registered stake
               </div>
             </div>
           </div>
         )}
-        {s.node === "synced" && !(s.bondedStake > 0) && !(s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3 || s.bondActivated === true) && (
+        {/* #348 review: "Stake my bond" only for a bond that reads not activated (activated() = false). */}
+        {s.node === "synced" && !(s.bondedStake > 0) && (canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) || (!s.hasGrant && s.validatorActivation?.status !== 2 && s.validatorActivation?.status !== 3)) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {s.hasGrant ? "Bond locked · not staked" : "Not a validator"}</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 stake your membership bond in the ValidatorRegistry; it shows the epoch your validator becomes active
               </div>
