@@ -1270,7 +1270,17 @@ pub async fn groups_add_member(
     group: String,
     member: String,
 ) -> std::result::Result<(), String> {
-    match route(&app, Request::AddMember { group, member })? {
+    add_member(&app, group, member)
+}
+
+/// Add a member (the owner's daemon produces and publishes the MLS welcome). Also used by the
+/// rendezvous tick to complete an approval once the relay confirmed the invite closed.
+pub(crate) fn add_member<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+    member: String,
+) -> std::result::Result<(), String> {
+    match route(app, Request::AddMember { group, member })? {
         Response::Added { .. } => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),

@@ -10,5 +10,7 @@ export interface ApprovalStep {
 
 export function approvalStep(outcome: ConsumeOutcome): ApprovalStep {
   if (outcome === "invalid") return { add: false, toast: "That request's invite is invalid or already used." };
+  // The invite's relay rendezvous isn't confirmed closed yet: the app adds them once it is.
+  if (outcome === "pending") return { add: false, toast: "Approved. They'll be added once the relay confirms the invite is closed." };
   return { add: true, toast: "Request approved — adding them to the group." };
 }

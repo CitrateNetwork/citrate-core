@@ -710,8 +710,8 @@ pub(crate) fn consume_at(
     path: &std::path::Path,
     group: &str,
     token: &str,
-    _member: &str,
-    _view_of: impl FnOnce(&str) -> Option<crate::rendezvous::InviteState>,
+    member: &str,
+    view_of: impl FnOnce(&str) -> Option<crate::rendezvous::InviteState>,
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<ConsumeOutcome, String> {
@@ -719,34 +719,84 @@ pub(crate) fn consume_at(
     // calls as a revoke), so no other holder of the link can still be admitted. A failure keeps the
     // record, so the approval can be retried. Only the call that removes the record returns true
     // (single-use, even for two approvals at once).
-    let exists = view_pending_at(path)?
-        .iter()
-        .any(|i| i.group == group && i.token == token && !i.revoking);
-    if !exists {
+    use crate::rendezvous::InviteState;
+    let Some(record) = view_pending_at(path)?
+        .into_iter()
+        .find(|i| i.group == group && i.token == token && !i.revoking)
+    else {
+        return Ok(ConsumeOutcome::Invalid);
+    };
+    // Another holder of the link is being (or was) admitted through the rendezvous: the invite is
+    // used, so this claim can't be approved. Nothing is sent and the invite is left as it is.
+    if !record.lookup.is_empty()
+        && matches!(
+            view_of(&record.lookup),
+            Some(InviteState::Adding | InviteState::Added | InviteState::PickedUp)
+        )
+    {
+        return Err(
+            "This invite was already used through its link, so this request can't be \
+             approved."
+                .to_string(),
+        );
+    }
+    if !revoke_and_remove_at(path, group, token, Some(member), close, legacy)? {
         return Ok(ConsumeOutcome::Invalid);
     }
-    Ok(
-        if revoke_and_remove_at(path, group, token, true, close, legacy)? {
-            ConsumeOutcome::Approved
-        } else {
-            ConsumeOutcome::Invalid
-        },
-    )
+    // With a rendezvous, the close is only persisted at the daemon: a request already at the relay
+    // could still be admitted until the relay confirms. The claimant is added by the tick once it
+    // does (`approvals_to_complete`); without a rendezvous there is nothing to wait for.
+    Ok(if record.lookup.is_empty() {
+        ConsumeOutcome::Approved
+    } else {
+        ConsumeOutcome::Pending
+    })
 }
 
-/// The `(group, member, token)` approvals the relay has now confirmed (the close is `revoked`).
+fn view_state<'a>(
+    invites: &'a [crate::rendezvous::InviteView],
+    lookup: &str,
+) -> Option<&'a crate::rendezvous::InviteState> {
+    invites
+        .iter()
+        .find(|v| v.lookup.eq_ignore_ascii_case(lookup))
+        .map(|v| &v.state)
+}
+
+/// The `(group, member, token)` approvals the relay has now confirmed: the close is `revoked` (or the
+/// rendezvous `expired`), so no one else can be admitted through the link.
 pub(crate) fn approvals_to_complete(
-    _records: &[PendingInvite],
-    _invites: &[crate::rendezvous::InviteView],
+    records: &[PendingInvite],
+    invites: &[crate::rendezvous::InviteView],
 ) -> Vec<(String, String, String)> {
-    Vec::new()
+    use crate::rendezvous::InviteState;
+    records
+        .iter()
+        .filter(|r| r.revoking && !r.approved_member.is_empty())
+        .filter(|r| {
+            matches!(
+                view_state(invites, &r.lookup),
+                Some(InviteState::Revoked | InviteState::Expired)
+            )
+        })
+        .map(|r| (r.group.clone(), r.approved_member.clone(), r.token.clone()))
+        .collect()
 }
 
-/// Drop pending approvals whose invite another holder already used through the rendezvous.
+/// Drop pending approvals whose invite another holder used through the rendezvous after all.
 pub(crate) fn drop_superseded_approvals(
-    _records: &mut [PendingInvite],
-    _invites: &[crate::rendezvous::InviteView],
+    records: &mut [PendingInvite],
+    invites: &[crate::rendezvous::InviteView],
 ) {
+    use crate::rendezvous::InviteState;
+    for r in records.iter_mut().filter(|r| !r.approved_member.is_empty()) {
+        if matches!(
+            view_state(invites, &r.lookup),
+            Some(InviteState::Adding | InviteState::Added | InviteState::PickedUp)
+        ) {
+            r.approved_member.clear();
+        }
+    }
 }
 
 /// `group_invite_revoke` — drop an outstanding invite the owner no longer wants redeemable. Revokes
@@ -778,7 +828,7 @@ pub(crate) fn revoke_at(
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<(), String> {
-    revoke_and_remove_at(path, group, token, false, close, legacy).map(|_| ())
+    revoke_and_remove_at(path, group, token, None, close, legacy).map(|_| ())
 }
 
 /// [`revoke_at`], returning whether this call removed the record.
@@ -786,7 +836,7 @@ fn revoke_and_remove_at(
     path: &std::path::Path,
     group: &str,
     token: &str,
-    consumed: bool,
+    approved: Option<&str>,
     close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     legacy: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<bool, String> {
@@ -818,7 +868,8 @@ fn revoke_and_remove_at(
         } else {
             // Nothing is opened with the key again: drop it with the claimability.
             v[pos].revoking = true;
-            v[pos].consumed = consumed;
+            v[pos].consumed = approved.is_some();
+            v[pos].approved_member = approved.unwrap_or_default().to_string();
             v[pos].priv_key.clear();
         }
         true
@@ -843,7 +894,8 @@ pub(crate) fn settle_revocations(
                 )
         });
         let expired = r.created_at.saturating_add(ttl_secs) <= now_unix;
-        !(r.revoking && (confirmed || expired))
+        // A record with a pending approval stays until the tick has added the claimant.
+        !(r.revoking && ((confirmed && r.approved_member.is_empty()) || expired))
     });
     records
 }
@@ -858,6 +910,25 @@ pub(crate) fn settle_revocations_after_tick(
     };
     if !view_pending_at(&path).is_ok_and(|v| v.iter().any(|i| i.revoking)) {
         return;
+    }
+    // Pending approvals: drop the ones the link was used for after all, then add the claimants whose
+    // invite the relay has confirmed closed (a failed add is retried on the next tick).
+    let todo = update_pending_at(&path, |v| {
+        drop_superseded_approvals(v, &views.invites);
+        approvals_to_complete(v, &views.invites)
+    })
+    .unwrap_or_default();
+    for (group, member, token) in todo {
+        if crate::comms::add_member(app, group.clone(), member.clone()).is_ok() {
+            let _ = update_pending_at(&path, |v| {
+                for r in v
+                    .iter_mut()
+                    .filter(|r| r.group == group && r.token == token && r.approved_member == member)
+                {
+                    r.approved_member.clear();
+                }
+            });
+        }
     }
     let now = now_unix();
     let _ = update_pending_at(&path, |v| {
@@ -1826,13 +1897,13 @@ mod tests {
         let rec = approval_record("0xclaimant");
         let now = rec.created_at + 60;
         assert!(super::approvals_to_complete(
-            &[rec.clone()],
+            std::slice::from_ref(&rec),
             &[invite_view(LOOKUP, InviteState::Open)]
         )
         .is_empty());
         assert_eq!(
             super::approvals_to_complete(
-                &[rec.clone()],
+                std::slice::from_ref(&rec),
                 &[invite_view(LOOKUP, InviteState::Revoked)]
             ),
             vec![("g".to_string(), "0xclaimant".to_string(), T.to_string())]
