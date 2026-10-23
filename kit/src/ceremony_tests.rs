@@ -2625,3 +2625,21 @@ fn tripwire_first_submission_classification_checks_for_overlapping_attempts() {
     }
     assert!(offenders.is_empty(), "first-submission classification without sole_attempt: {offenders:?}");
 }
+
+// #347 Codex P1 (upgrade): an earlier build submitted a tx with an unknown outcome and kept no
+// record. After the upgrade the same signed bytes are re-sent and the node answers with a
+// definitive-looking error (the first copy was mined). That must be "submitted, outcome unknown".
+#[test]
+fn a_resend_after_upgrading_from_a_build_without_the_record_is_outcome_unknown() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-upgrade-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("existing wallet");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(dir.join("submitted-tx.json")));
+    for msg in ["Insufficient funds: account balance 0 < required 21000", "Failed to submit transaction: Full"] {
+        let (r, hash) = send_once(&c, &v, node_error(msg));
+        assert_eq!(submitted_outcome_unknown(&r), Some(hash), "{msg}: {r:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

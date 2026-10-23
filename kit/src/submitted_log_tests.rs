@@ -461,3 +461,30 @@ fn write_atomic_fsyncs_the_temp_file_before_the_rename() {
     assert!(create < sync && sync < rename, "order must be create temp -> fsync temp -> rename");
     assert!(body[rename..].contains("sync_dir(&dir)"), "the directory is synced after the rename");
 }
+
+// #347 Codex P1 (upgrade): builds before this record never wrote it. A profile that already holds
+// a wallet (the custody envelope sits in the same app data dir) may have submitted transactions
+// with an unknown outcome, so a missing record there is NOT a certain empty history.
+#[test]
+fn a_missing_record_next_to_an_existing_wallet_is_uncertain() {
+    let t = Tmp::new("upgrade-wallet");
+    std::fs::write(t.0.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault");
+    let log = SubmittedTxLog::open(t.file());
+    assert!(log.is_uncertain(), "an existing wallet with no record may have sent before");
+    assert_eq!(log.try_record_for(&h(80_001), A, 7), Ok(false), "never a provable first send");
+    drop(log);
+    assert!(SubmittedTxLog::open(t.file()).is_uncertain(), "the uncertainty is persisted");
+}
+
+// A provably new profile (no wallet yet) starts certain, and the empty record is written at once,
+// so a wallet created later in this run does not make the next launch look like an upgrade.
+#[test]
+fn a_fresh_profile_starts_certain_and_writes_its_record_at_once() {
+    let t = Tmp::new("fresh-profile");
+    let log = SubmittedTxLog::open(t.file());
+    assert!(!log.is_uncertain());
+    assert!(t.file().exists(), "the empty record is written when the profile is new");
+    drop(log);
+    std::fs::write(t.0.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault");
+    assert!(!SubmittedTxLog::open(t.file()).is_uncertain(), "a wallet created after the record is not an upgrade");
+}
