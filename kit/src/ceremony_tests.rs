@@ -3003,3 +3003,87 @@ fn join8_an_unknown_outcome_activation_is_still_recovered() {
     assert_eq!(reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash), Some(hash));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// #347 Codex P1 (concurrency): two ceremonies can sign identical bytes. A records them first (a
+// first submission), B records the same hash and sends it, and the node accepts B. If A's own
+// send then gets a definitive-looking refusal (the bytes are now known / mined), A must report
+// "submitted, outcome unknown" with the hash, never "not sent": another attempt may have sent them.
+//
+// The transport below interleaves deterministically: when A's send reaches the node, B's attempt
+// records the same hash in the shared record (as B would before its own broadcast), and then A's
+// send is refused.
+struct RacedSend {
+    inner: MockRpc,
+    log: std::sync::Arc<crate::submitted_log::SubmittedTxLog>,
+    refusal: &'static str,
+}
+impl RpcTransport for RacedSend {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        if body["method"] == "eth_sendRawTransaction" {
+            use sha3::{Digest, Keccak256};
+            let raw = body["params"][0].as_str().unwrap_or_default().to_string();
+            let bytes = hex::decode(raw.trim_start_matches("0x")).unwrap_or_default();
+            let hash = format!("0x{}", hex::encode(Keccak256::digest(&bytes)));
+            // B: the same signed bytes, recorded by a second attempt before it broadcasts.
+            let b_first = self.log.try_record_for(&hash, &canonical_addr_lower(), 0).expect("record");
+            assert!(!b_first, "B sees A's record: not a first submission");
+            self.inner.requests.borrow_mut().push(body);
+            return Err(RpcError::Node(self.refusal.to_string()));
+        }
+        self.inner.call(body)
+    }
+}
+
+#[test]
+fn a_refusal_after_another_attempt_recorded_the_same_bytes_is_outcome_unknown() {
+    for refusal in ["Failed to submit transaction: Full", "Insufficient funds: account balance 0 < required 21000"] {
+        let (v, _p) = vault_with_wallet();
+        let c = certain_ceremony();
+        let from = canonical_addr_lower();
+        let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+        let t = RacedSend {
+            inner: MockRpc::new(vec![ok(JsonValue::String("0x0".into())), ok(JsonValue::String("0x1".into()))]),
+            log: c.submitted_log(),
+            refusal,
+        };
+        let r = c.approve_and_broadcast(&v, &RpcClient::with_transport(t), &view.id, false, bcfg(1));
+        assert!(submitted_outcome_unknown(&r).is_some(), "{refusal}: {r:?}");
+    }
+}
+
+// The same refusal with no overlapping attempt is still "not sent" (the classifier is unchanged).
+#[test]
+fn a_refusal_with_no_other_attempt_is_still_not_sent() {
+    let (v, _p) = vault_with_wallet();
+    let c = certain_ceremony();
+    let (r, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "{r:?}");
+}
+
+/// Tripwire (#347 Codex P1): any send path that classifies a refusal by first submission must also
+/// require that no other attempt recorded the same bytes (`sole_attempt`). Scans non-test sources.
+#[test]
+fn tripwire_first_submission_classification_checks_for_overlapping_attempts() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut dirs = vec![root.join("src"), root.join("../src-tauri/src")];
+    let mut offenders = Vec::new();
+    while let Some(d) = dirs.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+                continue;
+            }
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap_or_default();
+            if src.contains("first_submission") && !src.contains(".sole_attempt(") {
+                offenders.push(p.display().to_string());
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "first-submission classification without sole_attempt: {offenders:?}");
+}
