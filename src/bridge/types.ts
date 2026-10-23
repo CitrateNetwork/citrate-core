@@ -64,7 +64,6 @@ export interface AppConfig {
   autolock: number;
   channel: "stable" | "beta";
   telemetry: boolean;
-  sigPolicy: "hitl" | "allow";
   /**
    * CORE-D3.C — the core-membership base URL. The S3 onboarding checkout opens
    * `{coreMembershipUrl}/checkout` in an in-app popup (the money + entitlement
@@ -82,7 +81,6 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   autolock: 30,
   channel: "stable",
   telemetry: false,
-  sigPolicy: "hitl",
   coreMembershipUrl: "https://core-membership.vercel.app",
 };
 

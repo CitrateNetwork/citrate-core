@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawalsRead, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import book from "../../../src-tauri/addresses/40204.json";
@@ -186,7 +186,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           autolock: st.autolock,
           channel: st.channel,
           telemetry: st.telemetry,
-          sigPolicy: st.sigPolicy,
           coreMembershipUrl: st.coreMembershipUrl,
         };
       },
@@ -410,12 +409,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async linkReject(): Promise<void> {
         assertSimAllowed("wallet.linkReject");
       },
-      async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
+      async pendingWithdrawals(): Promise<PendingWithdrawalsRead> {
         // The web shim reaches no chain — there is no real pending queue to read.
-        // Return an honest empty list (Rule 1) rather than fabricate rows; the
-        // tauri path reads the real on-chain queue.
+        // No rows, and not confirmed (Rule 1): nothing was read, so it is not "none".
         assertSimAllowed("wallet.pendingWithdrawals");
-        return [];
+        return { withdrawals: [], confirmed: false, complete: true, note: "the web preview reaches no chain" };
       },
     },
 

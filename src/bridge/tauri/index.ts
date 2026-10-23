@@ -29,7 +29,7 @@ import type {
   DocsIngestReport,
   SeedFacts,
   SeedReport,
-  PendingWithdrawal,
+  PendingWithdrawalsRead,
   AiProviderStatus,
   GrantStatus,
   ActivationStatusView,
@@ -213,8 +213,8 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       // CORE WP2 — the wallet's real pending withdrawals from live chain state
       // (getLogs + withdrawals(id) + block_number). A fresh wallet returns [].
-      async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
-        return invoke<PendingWithdrawal[]>("wallet_pending_withdrawals");
+      async pendingWithdrawals(): Promise<PendingWithdrawalsRead> {
+        return invoke<PendingWithdrawalsRead>("wallet_pending_withdrawals");
       },
       // Seamless device provisioning + first-run wallet mint (@rule8). Returns
       // ONLY the public address (never key/seed). Idempotent — the Rust command
