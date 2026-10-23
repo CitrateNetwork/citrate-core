@@ -1720,7 +1720,7 @@ pub fn custody_status_sync(
 #[tauri::command]
 pub async fn custody_init(
     app_h: tauri::AppHandle,
-    passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1734,10 +1734,11 @@ pub async fn custody_init(
 /// Blocking body of [`custody_init`]; reached only through [`crate::blocking::off_main`].
 pub fn custody_init_sync(
     state: State<'_, CustodyState>,
-    mut passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
-    // Operate on the owned String's bytes so we can zeroize the inbound copy.
-    let mut bytes = std::mem::take(&mut passphrase).into_bytes();
+    // The passphrase arrives in a wiping buffer; the byte copy the vault consumes is wiped too.
+    let mut bytes = passphrase.expose().as_bytes().to_vec();
+    drop(passphrase);
     let r = state.0.init(&mut bytes).map_err(err_str);
     bytes.zeroize();
     r
@@ -1746,7 +1747,7 @@ pub fn custody_init_sync(
 #[tauri::command]
 pub async fn custody_unlock(
     app_h: tauri::AppHandle,
-    passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1760,9 +1761,10 @@ pub async fn custody_unlock(
 /// Blocking body of [`custody_unlock`]; reached only through [`crate::blocking::off_main`].
 pub fn custody_unlock_sync(
     state: State<'_, CustodyState>,
-    mut passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
-    let mut bytes = std::mem::take(&mut passphrase).into_bytes();
+    let mut bytes = passphrase.expose().as_bytes().to_vec();
+    drop(passphrase);
     let r = state.0.unlock(&mut bytes).map_err(err_str);
     bytes.zeroize();
     r

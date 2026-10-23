@@ -32,6 +32,7 @@
 //!
 //! Keyless (Rule 3): nothing here holds a key or signs.
 
+use crate::secret::SecretString;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -80,21 +81,12 @@ pub const NODE_PORT_ENV: &str = "CITRATE_NODE_MCP_PORT";
 
 /// Where the node entry runs: this executable as the stdio shim, the node server's loopback port,
 /// and the connect token minted for Hermes.
-#[derive(Clone, PartialEq, Eq)]
+/// The token is a [`SecretString`]: wiped on drop, never printed by `Debug`.
+#[derive(Clone, Debug)]
 pub struct NodeTarget {
     pub exe: PathBuf,
     pub port: u16,
-    pub token: String,
-}
-
-impl std::fmt::Debug for NodeTarget {
-    // Never print the token.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeTarget")
-            .field("exe", &self.exe)
-            .field("port", &self.port)
-            .finish_non_exhaustive()
-    }
+    pub token: SecretString,
 }
 
 /// Where the memory bridge runs: this executable, pointed at the mem-mcp socket.
@@ -146,13 +138,13 @@ pub fn render_config(
         }));
     }
     if settings.node {
-        if let Some(t) = node.filter(|t| t.exe.is_absolute() && !t.token.is_empty()) {
+        if let Some(t) = node.filter(|t| t.exe.is_absolute() && !t.token.expose().is_empty()) {
             servers.push(json!({
                 "name": NODE_SERVER_NAME,
                 "transport": "stdio",
                 "command": t.exe.to_string_lossy(),
                 "args": [crate::node_mcp_http::STDIO_FLAG],
-                "env": { NODE_TOKEN_ENV: t.token, NODE_PORT_ENV: t.port.to_string() },
+                "env": { NODE_TOKEN_ENV: t.token.expose(), NODE_PORT_ENV: t.port.to_string() },
                 "timeout_ms": CALL_TIMEOUT_MS,
                 // PENDING OWNER SIGN-OFF (A24): read tools only today. Writes would only create
                 // requests the member approves, but offering them to Hermes is the owner's call.
@@ -431,7 +423,7 @@ fn node_target<R: tauri::Runtime>(
         Ok(token) => Some(NodeTarget {
             exe,
             port: node.bound_port(),
-            token,
+            token: SecretString::new(token),
         }),
         Err(e) => {
             eprintln!("hermes: no connect token for the node entry ({e}); it is left out");

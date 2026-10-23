@@ -24,6 +24,7 @@
 //! files (opened with the passphrase they were exported with, which nothing here stores).
 //! No signing, no wallet material (Rule 3).
 
+use crate::secret::SecretString;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -776,13 +777,13 @@ pub async fn recovery_kit_save_phrase<R: tauri::Runtime>(
 pub async fn recovery_kit_save_file<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     path: String,
-    passphrase: String,
+    passphrase: SecretString,
 ) -> std::result::Result<usize, String> {
     crate::blocking::off_main(move || {
-        let passphrase = Zeroizing::new(passphrase);
         let dir = data_dir(&app)?;
         let keys = collect_keys(&crate::custody::OsKeyring::legacy()).map_err(|e| e.to_string())?;
-        write_sealed(Path::new(&path), &passphrase, &keys, &today()).map_err(|e| e.to_string())?;
+        write_sealed(Path::new(&path), passphrase.expose(), &keys, &today())
+            .map_err(|e| e.to_string())?;
         record_fingerprints(&dir, &keys).map_err(|e| e.to_string())?;
         Ok(keys.len())
     })
@@ -817,13 +818,12 @@ pub async fn recovery_kit_restore_phrase<R: tauri::Runtime>(
 pub async fn recovery_kit_restore_file<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     path: String,
-    passphrase: String,
+    passphrase: SecretString,
     replace: bool,
 ) -> std::result::Result<RestoreReport, String> {
     crate::blocking::off_main(move || {
-        let passphrase = Zeroizing::new(passphrase);
         let dir = data_dir(&app)?;
-        let keys = read_sealed(Path::new(&path), &passphrase).map_err(|e| e.to_string())?;
+        let keys = read_sealed(Path::new(&path), passphrase.expose()).map_err(|e| e.to_string())?;
         let recorded = read_recorded(&dir);
         restore_keys(
             &crate::custody::OsKeyring::legacy(),

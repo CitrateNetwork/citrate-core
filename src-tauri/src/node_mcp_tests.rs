@@ -3116,7 +3116,11 @@ fn hermes_node_entry_demo() {
         scan: false,
         node: true,
     };
-    let target = crate::hermes_mcp::NodeTarget { exe, port, token };
+    let target = crate::hermes_mcp::NodeTarget {
+        exe,
+        port,
+        token: crate::secret::SecretString::new(token),
+    };
     let cfg = crate::hermes_mcp::render_config(&settings, None, Some(&target)).expect("node entry");
     let out = std::env::var("HERMES_NODE_DEMO_ALLOWLIST").expect("allowlist path");
     crate::node_mcp_token::write_private(
@@ -3124,7 +3128,7 @@ fn hermes_node_entry_demo() {
         serde_json::to_string_pretty(&cfg).expect("json").as_bytes(),
     )
     .expect("write");
-    let redacted = cfg.to_string().replace(&target.token, "cnmcp_<minted for Hermes, elided>");
+    let redacted = cfg.to_string().replace(target.token.expose(), "cnmcp_<minted for Hermes, elided>");
     println!("allowlist core wrote for Hermes: {redacted}");
     println!("serving {} ; tokens: {:?}", crate::node_mcp_http::endpoint_url(port), state.status().tokens.iter().map(|t| t.label.clone()).collect::<Vec<_>>());
     let secs: u64 = std::env::var("HERMES_NODE_DEMO_HOLD_SECS")
