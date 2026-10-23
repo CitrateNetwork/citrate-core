@@ -7,6 +7,9 @@ import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import { JoinRequests } from "../surfaces/JoinRequests";
+import { rendezvousSlice, startRendezvousFeed, cancelJoin, forgetJoin, refreshRendezvous } from "../shell/slices/rendezvous";
+import { groupsSlice } from "../shell/slices/groups";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -141,6 +144,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
         <div style={{ minHeight: 0, overflow: "auto", display: "flex", justifyContent: "center", padding: "56px 32px" }}>
           <div style={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", gap: 22 }}>
             <ClaimBanner store={store} s={s} />
+            <OnboardingJoins />
             {s.stage === "s1" && <S1 store={store} s={s} />}
             {s.stage === "s2" && <S2 store={store} s={s} />}
             {s.stage === "s3" && <S3 store={store} s={s} />}
@@ -280,6 +284,32 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
  * one-tap switch. It is DISPLAY ONLY — it grants nothing; the authority sign-in and the
  * server-side sub↔order reconciler are the sole gates (A8/A2).
  */
+// GROW-S2 (Join 9) — a join through an invite keeps going during setup (the daemon persists it and
+// the tick resumes it). Its state shows here in the contract §11 words; nothing when there is none.
+export function OnboardingJoins() {
+  const rv = rendezvousSlice.use();
+  // The daemon's group list, the same one the slice reloads when a join completes (Joined only once
+  // the group is listed, §11).
+  const groups = groupsSlice.use().groups;
+  useEffect(() => {
+    void startRendezvousFeed();
+    void refreshRendezvous();
+  }, []);
+  return (
+    <JoinRequests
+      joins={rv.joins}
+      lastKnown={rv.lastKnownJoin}
+      listedGroups={groups.map((g) => g.id)}
+      busy={rv.busy}
+      receivedAt={rv.receivedAt}
+      error={rv.error}
+      onRetry={() => void refreshRendezvous()}
+      onCancel={(g) => void cancelJoin(g)}
+      onForget={(g) => void forgetJoin(g)}
+    />
+  );
+}
+
 function ClaimBanner({ store, s }: { store: Store; s: AppState }) {
   const claim = s.pendingClaim;
   if (!claim?.email) return null;
