@@ -792,10 +792,17 @@ fn start_during_held_reader_teardown_waits_for_cleanup() {
 fn stop_without_a_monitor_is_observation_unknown() {
     let fx = OwnedFixture::new("no-monitor");
     let mut spec = fx.leaf_spec("lcf-no-monitor");
-    // A child-watch hook that panics on the monitor thread ends the monitor.
+    // A child-watch hook that panics on the monitor thread ends the monitor. It waits until the
+    // child has recorded its pid, so the fixture knows which child the ended monitor owned.
+    let pidfile = fx.path("pids");
     spec.child_watch = Some(ChildWatch {
         interval: Duration::from_millis(20),
-        observe: std::sync::Arc::new(|_| panic!("deliberate: end the monitor thread")),
+        observe: std::sync::Arc::new(move |_| {
+            let recorded = std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty());
+            if recorded {
+                panic!("deliberate: end the monitor thread");
+            }
+        }),
         ended: std::sync::Arc::new(|| {}),
     });
     let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
