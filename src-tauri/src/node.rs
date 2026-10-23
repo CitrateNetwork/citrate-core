@@ -1421,54 +1421,77 @@ pub fn node_proposer_identity_sync(
     })
 }
 
-/// The node's REAL validator earnings — `(total, claimable)` SALT wei from
-/// `ValidatorRegistry.rewardsOf(proposerPubkey)` on 40204. The block subsidy accrues
-/// HERE, keyed by the proposer pubkey, which is the correct source (W1.4 fix,
-/// replacing the wrong `ContributionAccounting.claimable` read). A not-yet-registered
-/// validator returns `(0, 0)` honestly — never a fabricated number (Rule 1).
+/// The REAL validator earnings — `(total, claimable)` SALT wei from
+/// `ValidatorRegistry.rewardsOf(bytes32 pubkey)` on 40204 (citrate-chain
+/// `contracts/src/ValidatorRegistry.sol:542`, a view keyed by any 32-byte key), read with
+/// `eth_call` on the public RPC. The block subsidy accrues HERE, keyed by the validator
+/// pubkey (W1.4). A key the registry never registered returns `(0, 0)` honestly — never a
+/// fabricated number (Rule 1).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidatorEarnings {
     pub total_wei: String,
     pub claimable_wei: String,
+    /// The key these figures are `rewardsOf` — the requested key, or the node's own
+    /// proposer key when none was requested. The app checks it against the member's
+    /// validator key before showing the figures (#391).
     #[serde(rename = "proposerPubkey")]
     pub proposer_pubkey: String,
 }
 
+/// **Command — node_validator_earnings.** `pubkey` (optional, `0x` + 32 bytes hex) is the
+/// validator key to read: the app passes `MemberBond.pubkey()` for a deployed bond (C1-V5),
+/// which may differ from this node's key (#394). Without it, the node's own `proposer.key`
+/// is read, as before. A malformed key is refused; it never falls back to the node's key.
 #[tauri::command]
 pub async fn node_validator_earnings(
     state: State<'_, NodeState>,
+    pubkey: Option<String>,
 ) -> std::result::Result<ValidatorEarnings, String> {
     let rpc = crate::rpc::RpcClient::citrate();
-    validator_earnings_for(&rpc, node_validator_registry_value(), None, || {
-        state.0.proposer_pubkey()
-    })
+    validator_earnings_for(
+        &rpc,
+        node_validator_registry_value(),
+        pubkey.as_deref(),
+        || state.0.proposer_pubkey(),
+    )
 }
 
-/// #391 — `ValidatorRegistry.rewardsOf(key)` for the validator key to read. (Stub: always the
-/// node's own proposer key, as before.)
-pub fn validator_earnings_for<T: crate::rpc::RpcTransport>(
-    rpc: &crate::rpc::RpcClient<T>,
-    registry: &str,
-    _requested: Option<&str>,
-    node_key: impl FnOnce() -> std::result::Result<String, String>,
-) -> std::result::Result<ValidatorEarnings, String> {
-    let pubkey_hex = node_key()?;
-    let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
-    let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
+/// Parse a validator key: `0x` + exactly 64 hex digits (bytes32).
+fn parse_validator_key(hex_key: &str) -> std::result::Result<[u8; 32], String> {
+    let raw = hex_key
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("validator key {hex_key:?} must start with 0x"))?;
+    let bytes = hex::decode(raw).map_err(|e| format!("bad validator key hex: {e}"))?;
     if bytes.len() != 32 {
         return Err(format!(
-            "proposer pubkey is {} bytes, expected 32",
+            "validator key is {} bytes, expected 32",
             bytes.len()
         ));
     }
-    let mut pubkey = [0u8; 32];
-    pubkey.copy_from_slice(&bytes);
-    let (total, claimable) = crate::validator::read_validator_rewards(rpc, registry, &pubkey)?;
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Ok(key)
+}
+
+/// `ValidatorRegistry.rewardsOf(key)` for the requested validator key, or for the node's own
+/// proposer key (`node_key`, read only when no key is requested).
+pub fn validator_earnings_for<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    registry: &str,
+    requested: Option<&str>,
+    node_key: impl FnOnce() -> std::result::Result<String, String>,
+) -> std::result::Result<ValidatorEarnings, String> {
+    let key_hex = match requested {
+        Some(k) => k.to_string(),
+        None => node_key()?,
+    };
+    let key = parse_validator_key(&key_hex)?;
+    let (total, claimable) = crate::validator::read_validator_rewards(rpc, registry, &key)?;
     Ok(ValidatorEarnings {
         total_wei: total.to_string(),
         claimable_wei: claimable.to_string(),
-        proposer_pubkey: pubkey_hex,
+        proposer_pubkey: format!("0x{}", hex::encode(key)),
     })
 }
 

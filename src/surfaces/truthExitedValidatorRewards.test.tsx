@@ -126,10 +126,12 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
 
   it("claimRewards takes the bond (validator) path for an activated bond with no registry binding", async () => {
     vi.spyOn(store as never, "assertPayoutKyc").mockResolvedValue(true as never);
-    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);
+    // #394: the pre-check reads rewardsOf for the bond's own key, the key MemberBond claims for.
+    const bondKey = "0x" + "22".repeat(32);
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue({ ...exitedGrant, bondPubkey: bondKey });
     const claim = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing", claimableWei: "0" });
     await store.claimRewards();
-    expect(claim).toHaveBeenCalledWith({ validator: true });
+    expect(claim).toHaveBeenCalledWith({ validator: true, pubkey: bondKey });
   });
 
   it("claimRewards keeps the non-validator path for a bond that was never activated, or an unread flag", async () => {

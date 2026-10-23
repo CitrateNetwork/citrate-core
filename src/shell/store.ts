@@ -4444,9 +4444,18 @@ export class Store {
     // Contract rule 2: an empty or malformed figure is unknown, never 0 (BigInt("") is 0n), so only
     // plain decimal wei strings are accepted.
     const dec = (w: unknown): string | null => (typeof w === "string" && /^[0-9]+$/.test(w) ? BigInt(w).toString() : null);
+    // #394: read rewardsOf for the member's validator key: MemberBond.pubkey() for a deployed bond
+    // (C1-V5), the node's own key (no key sent) when no bond exists. An unread bond or bond key
+    // reads nothing.
+    const mb = this.state.memberBond;
+    if (!mb || (mb.deployed && !mb.pubkey)) {
+      this.setState({ rewards: null, rewardsError: earningsKeyCheck(mb, "0x00") });
+      return;
+    }
+    const key = mb.deployed && mb.pubkey ? mb.pubkey : undefined;
     try {
-      const v = await bridge.node.validatorEarnings();
-      // #391: the figures are rewardsOf(this node's key); show them only for the member's validator key.
+      const v = key ? await bridge.node.validatorEarnings(key) : await bridge.node.validatorEarnings();
+      // #391: show the figures only when they are rewardsOf the member's validator key.
       const keyMismatch = earningsKeyCheck(this.state.memberBond, v.proposerPubkey);
       if (keyMismatch) {
         this.setState({ rewards: null, rewardsError: keyMismatch });
@@ -4529,17 +4538,24 @@ export class Store {
     // read 0 / false, yet the activated bond can still claim the key's matured rewards. If the
     // grant status cannot be read, stop with the reason.
     let validator: boolean;
+    let pubkey: string | null = null;
     try {
       const g = await bridge.membership.grantStatus(this.identity().wallet);
       validator = g.bondDeployed && (g.hasValidator || g.bondActivated === true);
+      // #394: the bond claims for MemberBond.pubkey(); the pre-check reads that key's rewardsOf.
+      pubkey = memberBondFromGrant(g).pubkey;
     } catch (err) {
       this.toast("Claim unavailable — could not read your validator status: " + String((err as Error).message ?? err));
       return;
     }
+    if (validator && !pubkey) {
+      this.toast("Claim unavailable — your bond's validator key isn't read yet (MemberBond.pubkey()). Try again in a moment.");
+      return;
+    }
     let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
     try {
-      // A validator's pre-check reads rewardsOf.claimableNow, the figure "Claimable now" shows.
-      res = await bridge.agent.claim({ validator });
+      // A validator's pre-check reads rewardsOf(bond key).claimableNow, the figure "Claimable now" shows.
+      res = await bridge.agent.claim(validator ? { validator, pubkey } : { validator });
     } catch (err) {
       this.toast("Claim unavailable — " + String((err as Error).message ?? err));
       return;
