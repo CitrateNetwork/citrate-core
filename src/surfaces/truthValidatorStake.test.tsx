@@ -217,7 +217,7 @@ describe("V6 — durations use the measured block time", () => {
 
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   it("Wallet: the grant in a locked bond and LSP self-stake are not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500 })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } })} />);
     expect(html).not.toContain("32,500");
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
@@ -237,11 +237,12 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   });
 
   it("Dashboard: Staked is stakeOf, never grant + self-stake, and never 'LiquidStakingPool shares'", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500 })} />);
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } })} />);
     expect(html).not.toContain("LiquidStakingPool shares");
     expect(html).not.toContain("34,500");
     expect(html).not.toContain(">2,500<");
-    expect(html).toContain("bond locked · not staked");
+    // core#407: the word needs MemberBond.activated() = false, not just a grant with stake 0.
+    expect(html).toContain("Bond locked · not staked");
   });
 
   it("the model context's staked is the registry stake only", () => {

@@ -133,7 +133,7 @@ describe("V5 — one grant-custody explanation everywhere", () => {
   });
 
   it("the bond status uses the §1 membership words and says 'staked' only after activation", () => {
-    const base = { bondDeployed: true, unlockBlock: 300_000, isUnlocked: false, isKycVerified: false, hasValidator: false };
+    const base = { bondDeployed: true, unlockBlock: 300_000, isUnlocked: false, isKycVerified: false, hasValidator: false, bondActivated: false };
     expect(describeBond(base)).toBe("Bond locked · not staked · until block 300,000");
     expect(describeBond({ ...base, hasValidator: true })).toBe("Staked · locked until block 300,000");
     expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · verify identity to withdraw");

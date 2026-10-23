@@ -44,12 +44,33 @@ function stubStore(): Store {
   } as unknown as Store;
 }
 
-const bond = (activated: boolean | null) => ({ deployed: true, activated, pubkey: "0x" + "22".repeat(32), unlocked: false });
-const act = (status: number): ValidatorActivation => ({ isActive: false, status, actEpoch: 500, currentEpoch: 546 });
+const bond = (activated: boolean | null) => ({
+  deployed: true,
+  activated,
+  pubkey: "0x" + "22".repeat(32),
+  unlocked: false,
+});
+const act = (status: number): ValidatorActivation => ({
+  isActive: false,
+  status,
+  actEpoch: 500,
+  currentEpoch: 546,
+});
 
 // A granted member whose registry stake reads 0.
 function member(over: Partial<AppState>): AppState {
-  return { ...freshState("p1"), signedIn: true, node: "synced", peers: 3, syncPct: 100, height: 546_000, hasGrant: true, s5StakeWei: (32_000n * WEI).toString(), bondedStake: 0, ...over };
+  return {
+    ...freshState("p1"),
+    signedIn: true,
+    node: "synced",
+    peers: 3,
+    syncPct: 100,
+    height: 546_000,
+    hasGrant: true,
+    s5StakeWei: (32_000n * WEI).toString(),
+    bondedStake: 0,
+    ...over,
+  };
 }
 
 function surfaces(s: AppState): string[] {
@@ -63,14 +84,18 @@ function surfaces(s: AppState): string[] {
 
 describe("core#407 — an activated bond with zero stake is never 'Bond locked · not staked'", () => {
   it("after an exit the Wallet and Dashboard say Exiting", () => {
-    for (const html of surfaces(member({ memberBond: bond(true), validatorActivation: act(2) }))) {
+    for (const html of surfaces(
+      member({ memberBond: bond(true), validatorActivation: act(2) }),
+    )) {
       expect(html).not.toMatch(LOCKED);
       expect(html).toContain("Exiting");
     }
   });
 
   it("after a slash the Wallet and Dashboard say Slashed", () => {
-    for (const html of surfaces(member({ memberBond: bond(true), validatorActivation: act(3) }))) {
+    for (const html of surfaces(
+      member({ memberBond: bond(true), validatorActivation: act(3) }),
+    )) {
       expect(html).not.toMatch(LOCKED);
       expect(html).toContain("Slashed");
     }
@@ -78,7 +103,9 @@ describe("core#407 — an activated bond with zero stake is never 'Bond locked �
 
   it("an activated bond with the registry unread, or reading None, is not the locked word", () => {
     for (const validatorActivation of [null, act(0)]) {
-      for (const html of surfaces(member({ memberBond: bond(true), validatorActivation }))) {
+      for (const html of surfaces(
+        member({ memberBond: bond(true), validatorActivation }),
+      )) {
         expect(html).not.toMatch(LOCKED);
       }
     }
@@ -87,7 +114,9 @@ describe("core#407 — an activated bond with zero stake is never 'Bond locked �
   it("an unread activated() flag (or no bond read) is not the locked word", () => {
     for (const memberBond of [bond(null), null]) {
       for (const validatorActivation of [null, act(0)]) {
-        for (const html of surfaces(member({ memberBond, validatorActivation }))) {
+        for (const html of surfaces(
+          member({ memberBond, validatorActivation }),
+        )) {
           expect(html).not.toMatch(LOCKED);
         }
       }
@@ -96,7 +125,9 @@ describe("core#407 — an activated bond with zero stake is never 'Bond locked �
 
   it("control: a bond that reads not activated, status None, is still 'Bond locked · not staked'", () => {
     for (const validatorActivation of [null, act(0)]) {
-      for (const html of surfaces(member({ memberBond: bond(false), validatorActivation }))) {
+      for (const html of surfaces(
+        member({ memberBond: bond(false), validatorActivation }),
+      )) {
         expect(html).toMatch(LOCKED);
       }
     }
@@ -104,19 +135,31 @@ describe("core#407 — an activated bond with zero stake is never 'Bond locked �
 });
 
 describe("core#407 — the bond status line (describeBond) needs bondActivated === false", () => {
-  const base = { bondDeployed: true, unlockBlock: 300_000, isUnlocked: false, isKycVerified: false, hasValidator: false };
+  const base = {
+    bondDeployed: true,
+    unlockBlock: 300_000,
+    isUnlocked: false,
+    isKycVerified: false,
+    hasValidator: false,
+  };
 
   it("an exited or slashed member's activated bond is locked, not 'not staked'", () => {
-    expect(describeBond({ ...base, bondActivated: true })).toBe("Locked until block 300,000");
+    expect(describeBond({ ...base, bondActivated: true })).toBe(
+      "Locked until block 300,000",
+    );
   });
 
   it("an unread activated() flag is locked, not 'not staked'", () => {
-    expect(describeBond({ ...base, bondActivated: null })).toBe("Locked until block 300,000");
+    expect(describeBond({ ...base, bondActivated: null })).toBe(
+      "Locked until block 300,000",
+    );
     expect(describeBond(base)).toBe("Locked until block 300,000");
   });
 
   it("control: a bond that reads not activated is 'Bond locked · not staked'", () => {
-    expect(describeBond({ ...base, bondActivated: false })).toBe("Bond locked · not staked · until block 300,000");
+    expect(describeBond({ ...base, bondActivated: false })).toBe(
+      "Bond locked · not staked · until block 300,000",
+    );
   });
 });
 
@@ -126,7 +169,10 @@ describe("core#407 — the bond status line (describeBond) needs bondActivated =
 // zero stake). Comparing validatorWord's result with it (`=== "Bond locked · not staked"`) is fine.
 describe("core#407 tripwire — 'Bond locked · not staked' has one derivation", () => {
   const SRC = join(__dirname, "..");
-  const ALLOWED: Record<string, number> = { "shell/chainTruth.ts": 2, "shell/store.ts": 1 };
+  const ALLOWED: Record<string, number> = {
+    "shell/chainTruth.ts": 2,
+    "shell/store.ts": 1,
+  };
 
   function files(dir: string): string[] {
     return readdirSync(dir).flatMap((f) => {
@@ -140,9 +186,12 @@ describe("core#407 tripwire — 'Bond locked · not staked' has one derivation",
     let n = 0;
     for (const raw of text.split("\n")) {
       const t = raw.trim();
-      if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) continue;
+      if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*"))
+        continue;
       // A comparison against validatorWord's result consumes the word; it doesn't produce it.
-      const code = raw.replace(/\s\/\/\s.*$/, "").replace(/===\s*"Bond locked · not staked"/g, "");
+      const code = raw
+        .replace(/\s\/\/\s.*$/, "")
+        .replace(/===\s*"Bond locked · not staked"/g, "");
       n += (code.match(/bond locked · not staked/gi) ?? []).length;
     }
     return n;

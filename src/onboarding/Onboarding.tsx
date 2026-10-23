@@ -998,7 +998,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · Bond locked · not staked</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond)}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 stake your membership bond in the ValidatorRegistry; it shows the epoch your validator becomes active
               </div>

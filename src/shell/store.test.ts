@@ -907,6 +907,7 @@ describe("describeBond — honest about the lock and the KYC gate", () => {
     isUnlocked: false,
     isKycVerified: false,
     hasValidator: false,
+    bondActivated: false,
   };
 
   it("never claims 'staked' for a member whose escrow does not exist", () => {

@@ -19,6 +19,7 @@ const GRANT = {
   isKycVerified: false,
   hasSbt: true,
   hasValidator: false,
+  bondActivated: false,
 } as const;
 
 describe("grant stake surfacing — locked 32k is not '0 staked' (Rule 1)", () => {

@@ -235,14 +235,18 @@ export function describeBond(g: {
   hasValidator: boolean;
   bondActivated?: boolean | null;
 }): string {
-  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
-  // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from
+  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only while the bond clone is
+  // a registry staker (`hasValidator`), "not staked" only for `bondActivated === false`; "Locked until … (block N)" from
   // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
   // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
   if (!g.bondDeployed) return "No bond yet";
   if (!g.isUnlocked) {
     const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
-    return g.hasValidator ? `Staked · locked until block ${at}` : `Bond locked · not staked · until block ${at}`;
+    if (g.hasValidator) return `Staked · locked until block ${at}`;
+    // core#407: "not staked" needs MemberBond.activated() = false. After a full exit or a slash
+    // hasValidator reads false while the bond stays activated, and an unread flag is not evidence
+    // either, so both are the plain §1 lock word.
+    return g.bondActivated === false ? `Bond locked · not staked · until block ${at}` : `Locked until block ${at}`;
   }
   // Unlocked. Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
   // unverified member is NOT told their funds are available.
