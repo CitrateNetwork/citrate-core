@@ -963,9 +963,19 @@ impl Cell {
     /// wake bit. Returns the new token.
     fn commit(&mut self, epoch: u64, desired: Desired, kind: IntentKind) -> ControlToken {
         if let Some((old, _)) = self.active.take() {
+            // DeadlineExpired is final: a control whose deadline already passed stays expired
+            // when a newer intent replaces it.
+            let expired =
+                self.deadlines
+                    .expired_at_settle(self.owner, old.app_epoch, old.intent_sequence);
             self.deadlines
                 .release(self.owner, old.app_epoch, old.intent_sequence);
-            self.settled = Some((old, Receipt::Superseded));
+            let receipt = if expired {
+                Receipt::DeadlineExpired
+            } else {
+                Receipt::Superseded
+            };
+            self.settled = Some((old, receipt));
         }
         self.intent_sequence = self.intent_sequence.saturating_add(1);
         self.desired = desired;
@@ -1005,8 +1015,7 @@ impl Cell {
                 // observed: the caller was promised an answer by then and did not get one.
                 let expired = self
                     .deadlines
-                    .expired(self.owner, token.app_epoch, seq)
-                    .unwrap_or(false);
+                    .expired_at_settle(self.owner, token.app_epoch, seq);
                 self.deadlines.release(self.owner, token.app_epoch, seq);
                 let receipt = if expired {
                     Receipt::DeadlineExpired
@@ -1762,7 +1771,7 @@ impl std::fmt::Debug for PublicationTicket {
 impl PublicationTicket {
     /// Make the published file the active reference, if the ticket's intent is still current.
     /// Otherwise the ticket stays open as a [`StaleTicket`]: remove what it wrote, then call
-    /// [`StaleTicket::cleaned`].
+    /// [`StaleTicket::cleaned`]. Dropping the `StaleTicket` instead keeps the publication open.
     pub fn commit(mut self) -> std::result::Result<(), StaleTicket> {
         let current = {
             let c = self.shared.lock();
@@ -1777,7 +1786,6 @@ impl PublicationTicket {
                 shared: self.shared.clone(),
                 id: self.id,
                 name: std::mem::take(&mut self.name),
-                open: true,
             })
         }
     }
@@ -1797,12 +1805,15 @@ impl Drop for PublicationTicket {
 }
 
 /// A publication whose intent was superseded before it committed. It still holds the service's
-/// Stop open until the caller has removed what it wrote.
+/// Stop open until the caller has removed what it wrote and said so with [`StaleTicket::cleaned`].
+/// Dropping it without that (an ignored error, or an unwind) releases nothing: the file may
+/// still be on disk, so the Stop stays `Incomplete` naming the publication and the service stays
+/// Quarantined.
+#[must_use = "remove what the ticket wrote, then call cleaned(); dropping it keeps the Stop open"]
 pub struct StaleTicket {
     shared: Arc<Shared>,
     id: u64,
     name: String,
-    open: bool,
 }
 
 impl std::fmt::Debug for StaleTicket {
@@ -1821,18 +1832,8 @@ impl StaleTicket {
     }
 
     /// The stale file is gone: release the ticket.
-    pub fn cleaned(mut self) {
-        self.open = false;
+    pub fn cleaned(self) {
         release_publication(&self.shared, self.id);
-    }
-}
-
-impl Drop for StaleTicket {
-    fn drop(&mut self) {
-        if self.open {
-            self.open = false;
-            release_publication(&self.shared, self.id);
-        }
     }
 }
 
@@ -2136,6 +2137,35 @@ pub fn terminate_unsupervised(child: &mut Child, grace: Duration) {
     terminate_child(child, grace, None);
 }
 
+/// The monitor's hold on the current child. Every normal path reaps the child before this goes
+/// out of scope, so the drop finds it reaped and does nothing. If the monitor unwinds instead
+/// (a `ChildWatch` hook panicked), the drop kills and reaps the child, so nothing outlives the
+/// supervisor (the no-orphan guarantee) and no unreaped child is left behind.
+struct OwnedChild(Child);
+
+impl std::ops::Deref for OwnedChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        // `Child` remembers a reaped status, so this never signals a pid that was reused.
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 /// The monitor loop: the sole owner of the child and the sole writer of process state.
 ///
 /// Every turn reads the latest intent from the cell (SC1):
@@ -2290,7 +2320,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         }
         count_attempt(&shared);
         let mut child = match spawn_child(&spec) {
-            Ok(c) => c,
+            Ok(c) => OwnedChild(c),
             Err(e) => {
                 end_spawn_ticket(&shared);
                 // Spawn itself failed (bad path / EACCES). Treat as a crash so the same bounded

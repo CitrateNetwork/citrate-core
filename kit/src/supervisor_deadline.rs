@@ -22,6 +22,9 @@ pub const DEADLINE_RECORDS: usize = 10;
 /// The publisher's longest wait between observations (SPEC-001: initial maximum 50 ms).
 pub const DEADLINE_CADENCE: Duration = Duration::from_millis(50);
 
+/// Bounded re-reads of a torn record before a settlement treats its expiry as passed.
+const SETTLE_READ_ATTEMPTS: u32 = 64;
+
 const REC_FREE: u8 = 0;
 const REC_CLAIMED: u8 = 1;
 const REC_ARMED: u8 = 2;
@@ -61,6 +64,21 @@ enum Lookup {
     Torn,
 }
 
+/// A point inside a record write where a test can suspend the writing thread, to reproduce an
+/// interleaving deterministically.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PausePoint {
+    /// In `release`, right after the record is published free.
+    ReleaseFreed,
+    /// In `arm`, after the record's version went odd and before its fields are written.
+    ArmWriting,
+}
+
+/// What a suspended writer runs at its pause point.
+#[cfg(test)]
+type PauseHook = Box<dyn FnOnce() + Send>;
+
 /// The body a spawner must run on the reserved thread.
 pub type PublisherBody = Box<dyn FnOnce() + Send + 'static>;
 
@@ -72,6 +90,8 @@ pub struct DeadlinePublisher {
     cadence: Duration,
     thread: Mutex<Option<JoinHandle<()>>>,
     init_error: std::sync::OnceLock<String>,
+    #[cfg(test)]
+    pause: Mutex<Option<(PausePoint, PauseHook)>>,
 }
 
 impl std::fmt::Debug for DeadlinePublisher {
@@ -115,6 +135,8 @@ impl DeadlinePublisher {
             cadence: cadence.max(Duration::from_millis(1)),
             thread: Mutex::new(None),
             init_error: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            pause: Mutex::new(None),
         });
         let weak = Arc::downgrade(&publisher);
         match spawn(Box::new(move || publisher_loop(weak))) {
@@ -196,6 +218,8 @@ impl DeadlinePublisher {
                 .is_ok()
             {
                 r.version.fetch_add(1, Ordering::AcqRel); // odd: writing
+                #[cfg(test)]
+                self.pause_at(PausePoint::ArmWriting);
                 r.owner.store(owner, Ordering::Release);
                 r.epoch.store(epoch, Ordering::Release);
                 r.seq.store(seq, Ordering::Release);
@@ -256,12 +280,17 @@ impl DeadlinePublisher {
                 && r.epoch.load(Ordering::Acquire) == epoch
                 && r.seq.load(Ordering::Acquire) == seq
             {
-                r.version.fetch_add(1, Ordering::AcqRel);
+                // The whole rewrite finishes, version even again, before the record is published
+                // free: from then on the next owner's `arm` is its only writer.
+                r.version.fetch_add(1, Ordering::AcqRel); // odd: writing
                 r.owner.store(0, Ordering::Release);
                 r.seq.store(0, Ordering::Release);
                 r.deadline_ns.store(0, Ordering::Release);
+                r.state.store(REC_CLAIMED, Ordering::Release);
+                r.version.fetch_add(1, Ordering::AcqRel); // even: stable, not armed
                 r.state.store(REC_FREE, Ordering::Release);
-                r.version.fetch_add(1, Ordering::AcqRel);
+                #[cfg(test)]
+                self.pause_at(PausePoint::ReleaseFreed);
             }
         }
     }
@@ -315,6 +344,43 @@ impl DeadlinePublisher {
                 deadline_ns,
             } => Some(expired_mark || self.now_ns() >= deadline_ns),
             Lookup::Torn => None,
+        }
+    }
+
+    /// Whether control (owner, epoch, seq) has expired, for a settlement (or a supersession)
+    /// that is about to make its receipt final. A torn read is retried a bounded number of
+    /// times; if it stays indeterminate the control counts as expired, so a late completion is
+    /// never stored as `Complete`.
+    fn expired_at_settle(&self, owner: u64, epoch: u64, seq: u64) -> bool {
+        for _ in 0..SETTLE_READ_ATTEMPTS {
+            if let Some(expired) = self.expired(owner, epoch, seq) {
+                return expired;
+            }
+            std::thread::yield_now();
+        }
+        true
+    }
+
+    /// Suspend the next writer that reaches `point` in `hook` (once).
+    #[cfg(test)]
+    fn pause_once(&self, point: PausePoint, hook: PauseHook) {
+        *self.pause.lock().unwrap_or_else(|e| e.into_inner()) = Some((point, hook));
+    }
+
+    #[cfg(test)]
+    fn pause_at(&self, point: PausePoint) {
+        let hook = {
+            let mut g = self.pause.lock().unwrap_or_else(|e| e.into_inner());
+            match g.take() {
+                Some((p, hook)) if p == point => Some(hook),
+                other => {
+                    *g = other;
+                    None
+                }
+            }
+        };
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
