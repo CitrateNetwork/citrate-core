@@ -280,12 +280,20 @@ fn harness_pgrep_matches_the_marker_as_a_fixed_string() {
     assert_ne!(decoy, fx.marker());
     let leaf = fx.spawn_direct(fx.leaf_args());
     fx.expect_pids(1, ACQUIRE);
-    // The decoy is the guard's own child (reaped at cleanup), and its command line carries the
-    // decoy string but not the marker.
+    // The decoy is one process, the guard's own child (killed and reaped at cleanup): the shell
+    // execs `tail -f` on a file whose path carries the decoy string but not the marker.
+    let decoy_anchor = std::env::temp_dir().join(format!("{decoy}-anchor"));
+    if let Err(e) = std::fs::write(&decoy_anchor, b"") {
+        panic!("INCONCLUSIVE: cannot create the decoy anchor: {e}");
+    }
     let decoy_pid = fx.spawn_direct(vec![
         "-c".into(),
-        format!("{} 30; exit 0", sleep_bin().display()),
+        format!(
+            "exec {} -f \"$1\"",
+            lifecycle::fixture::tail_bin().display()
+        ),
         decoy.clone(),
+        decoy_anchor.display().to_string(),
     ]);
     let seen = wait_for(ACQUIRE, Duration::from_millis(10), || {
         pgrep(&decoy).contains(&decoy_pid).then_some(())
@@ -322,8 +330,13 @@ fn harness_pgrep_matches_the_marker_as_a_fixed_string() {
     for &p in &leaked {
         lifecycle::fixture::kill(p, libc::SIGKILL);
     }
+    let _ = std::fs::remove_file(&decoy_anchor);
     assert!(gone.is_ok(), "the decoy left {leaked:?} behind");
     assert!(pid_reaped(decoy_pid), "the decoy itself was reaped");
+    assert!(
+        pgrep(&decoy).is_empty(),
+        "no process carries the decoy string"
+    );
 }
 
 /// Waits and observation windows are measured on the monotonic clock and never end early.
