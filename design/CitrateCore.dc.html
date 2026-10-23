@@ -3475,7 +3475,7 @@ class Component extends DCLogic {
     this.ORIGIN_COLORS = { 'user wallet action': '#5a8205', 'node-agent': '#1b4965', 'chat agent': '#5d60c9', 'micro-app': '#a8497a' };
     this.cid = 0; this.mid = 0; this.resolvers = {}; this._focusId = null;
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem('citrate-core-proto-v4') || 'null'); } catch (e) { saved = null; }
+    try { saved = JSON.parse(localStorage.getItem('citrate-core-proto-v5') || 'null'); } catch (e) { saved = null; }
     const base = this.freshState((saved && saved.persona) || 'p1');
     if (saved) {
       // stCat resets to the fail-closed default on load: a reviewer always starts on today's Store.
@@ -3558,6 +3558,7 @@ class Component extends DCLogic {
     s.jSel = s.jPages[0].id;
     this.hermesSeed(s, pid);
     this.slice2Seed(s, pid);
+    this.slice3Seed(s, pid);
     if (!P.fresh) {
       s.hasGrant = true; s.hasSbt = true;
       s.pins = [
@@ -3677,8 +3678,8 @@ class Component extends DCLogic {
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => {
       const s = this.state; const keep = {};
-      for (const k of ['persona', 'tier', 'org', 'entitlement', 'stage', 's2', 's3', 's5', 's5n', 'hasGrant', 'hasSbt', 'liquid', 'selfStake', 'earnVal', 'earnPin', 'earnComp', 'earnToday', 'claimable', 'activity', 'node', 'syncPct', 'peers', 'gwKey', 'rpc', 'net', 'cpuCap', 'autolock', 'sigPolicy', 'channel', 'telemetry', 'storageMode', 'coachDone', 'dataDir', 's5hash', 'walletAddr', 'socketPath', 'kycOutcome', 'chatBackend', 'crashes', 'wTab', 'nTab', 'cTab', 'sSec', 'route', 'deviceId', 'pins', 'jPages', 'jSel', 'connections', 'aiKeys', 'aiDefault', 'sponsorUnits', 'blocksProposed', 'hTab', 'cDepth', 'cSec', 'cAud', 'routing', 'webSearch', 'browser', 'reader', 'terminal', 'allPaused', 'learnSessions', 'voice', 'mcp', 'folders', 'annot', 'theme', 'escCap', 'escEndpoints', 'escHistory', 'daemons', 'approvals', 'runLog', 'records', 'proposals', 'learned', 'recordedFiles', 'cp2', 'nPage', 'nStore', 'svcSel', 'svc', 'files', 'localPins', 'valWord', 'stPage', 'stKind', 'stSel', 'stSig', 'stCat', 'installed', 'web', 'joinState', 'inviterVerified', 'os', 'winBuilt', 'invite', 'jStage', 'jSub', 'groupJoined', 'cp1', 'cp3', 'variants']) keep[k] = s[k];
-      try { localStorage.setItem('citrate-core-proto-v4', JSON.stringify(keep)); } catch (e) {}
+      for (const k of ['persona', 'tier', 'org', 'entitlement', 'stage', 's2', 's3', 's5', 's5n', 'hasGrant', 'hasSbt', 'liquid', 'selfStake', 'earnVal', 'earnPin', 'earnComp', 'earnToday', 'claimable', 'activity', 'node', 'syncPct', 'peers', 'gwKey', 'rpc', 'net', 'cpuCap', 'autolock', 'sigPolicy', 'channel', 'telemetry', 'storageMode', 'coachDone', 'dataDir', 's5hash', 'walletAddr', 'socketPath', 'kycOutcome', 'chatBackend', 'crashes', 'wTab', 'nTab', 'cTab', 'sSec', 'route', 'deviceId', 'pins', 'jPages', 'jSel', 'connections', 'aiKeys', 'aiDefault', 'sponsorUnits', 'blocksProposed', 'hTab', 'cDepth', 'cSec', 'cAud', 'routing', 'webSearch', 'browser', 'reader', 'terminal', 'allPaused', 'learnSessions', 'voice', 'mcp', 'folders', 'annot', 'theme', 'escCap', 'escEndpoints', 'escHistory', 'daemons', 'approvals', 'runLog', 'records', 'proposals', 'learned', 'recordedFiles', 'cp2', 'nPage', 'nStore', 'svcSel', 'svc', 'files', 'localPins', 'valWord', 'stPage', 'stKind', 'stSel', 'stSig', 'stCat', 'installed', 'web', 'joinState', 'inviterVerified', 'os', 'winBuilt', 'invite', 'jStage', 'jSub', 'groupJoined', 'cp1', 'cp3', 'variants', 'gTab', 'gSel', 'groups', 'alerts', 'devices', 'alfClaim', 'gxSvc', 'roundsFlag', 'roundsLedger', 'wlBal', 'wlRows', 'priceRead', 'custody']) keep[k] = s[k];
+      try { localStorage.setItem('citrate-core-proto-v5', JSON.stringify(keep)); } catch (e) {}
     }, 400);
   }
 
@@ -4901,7 +4902,7 @@ class Component extends DCLogic {
       go: () => { this.setState({ kycOutcome: id }); this.toast('S2 will resolve to “' + label + '”'); this.save(); },
     }));
     V.onDemoReset = () => {
-      try { localStorage.removeItem('citrate-core-proto-v4'); } catch (e) {}
+      try { localStorage.removeItem('citrate-core-proto-v5'); } catch (e) {}
       const ns = this.freshState('p1'); ns.dataReady = s.dataReady;
       this.setState(ns);
       this.toast('Prototype reset — fresh install');
@@ -4909,6 +4910,7 @@ class Component extends DCLogic {
 
     this.hermesVals(V, s, P);
     this.slice2Vals(V, s, P);
+    this.slice3Vals(V, s, P);
 
     // ----- toast -----
     V.toastShow = !!s.toast;
@@ -6579,7 +6581,7 @@ class Component extends DCLogic {
       ['Sign in, verify, membership, bond, node synced', c1.setup], ['Activate validator', c1.activated], ['Join the inviter’s group', c1.joined], ['Land in Hermes with the group open', c1.landed],
     ].map(([t, done], i) => ({ t: (i + 1) + '. ' + t, c: done ? 'var(--ok)' : 'var(--tx-2)', mark: done ? '✓' : '·' }));
     V.onCp1Start = () => {
-      try { localStorage.removeItem('citrate-core-proto-v4'); } catch (e) {}
+      try { localStorage.removeItem('citrate-core-proto-v5'); } catch (e) {}
       const ns = this.freshState('p1'); ns.dataReady = s.dataReady; ns.theme = s.theme; ns.annot = s.annot;
       ns.web = 'join'; ns.joinState = 'direct'; ns.inviterVerified = true; ns.os = 'mac'; ns.cp1 = Object.assign({}, ns.cp1, { link: true });
       this.setState(ns);
@@ -6601,6 +6603,80 @@ class Component extends DCLogic {
     V.onDemoJoin = () => { this.setState((st) => ({ demoOpen: false, cp1: Object.assign({}, st.cp1, { link: true }) })); this.wgo('join'); };
     V.onDemoDownload = () => { this.setState({ demoOpen: false }); this.wgo('download'); };
     V.onDemoOld = () => { this.setState({ demoOpen: false, web: null, stage: 's0' }); };
+  }
+
+  // =====================================================================
+  // Slice 3 (red): the API the slice-3 tests call, with today's behaviour.
+  // Wallet and Groups are stubs, the validator word follows isActive alone,
+  // and no price is ever shown.
+  // =====================================================================
+  static validatorWord(rec) { return rec && rec.isActive ? 'Validator active' : 'Not a validator'; }
+  static valRecord(word, epoch) {
+    return {
+      none: { status: 0, hasGrant: false },
+      locked: { status: 0, hasGrant: true, bondActivated: false },
+      staked: { status: 1, isActive: true, actEpoch: null },
+      active: { status: 1, isActive: true, actEpoch: epoch },
+      exiting: { status: 2 },
+      slashed: { status: 3 },
+    }[word] || null;
+  }
+  static priceLabel() { return null; }
+  static get PRICING_URL() { return 'https://membership.citrate.ai'; }
+  static get PRICE_SHAPE() { return { currency: '⟨currency⟩', unitAmount: 1, interval: 'year', displayAmount: '⟨displayAmount⟩' }; }
+  static grantCustody() { return 'Your membership comes with a 32,000 SALT grant, locked in your bond until block — (not read yet). It is not staked until you activate the bond.'; }
+  static get GRANT_DISCLAIMER() { return 'The grant is not purchased, and it is not an investment.'; }
+  static get BETANET_LINE() { return 'Betanet. What carries over to mainnet is set in the genesis spec.'; }
+  slice3Seed(s, pid) {
+    const day = (d) => new Date(Date.now() - d * 864e5).toISOString().slice(0, 10);
+    const a = (n) => this.short(this.addr(n));
+    Object.assign(s, {
+      wTab: 'overview', gTab: 'chat', gSel: null, groups: [], alerts: [], devices: [{ name: 'This computer', note: 'this device · comms key sealed here' }],
+      alfClaim: pid === 'p4', gxJoin: null, gxSvc: 'live',
+      roundsFlag: false, roundsLedger: 'none',
+      wlBal: 'unread', wlTx: [], wlRows: 'session', priceRead: false, custody: 'unlocked',
+    });
+    const msg = (who, text, d) => ({ who, text, at: d });
+    const roster = (rows) => rows.map(([name, role]) => ({ addr: a(name + '::comms'), name, role }));
+    if (pid === 'p2') {
+      s.groups = [
+        { id: 'g-orchard', name: 'Orchard Lab', kind: 'channel', role: 'member', goal: 'storage', joinedAt: '2026-10-03', invitedBy: 'Maya R.',
+          msgs: [msg('Maya R.', 'Pinned the field notes for this week on the cluster.', day(2)), msg('Marcus Bell', 'Got them. My node keeps a local copy.', day(2)), msg('Tomas K.', 'New plot photos are up in Cluster.', day(1))],
+          roster: roster([['Maya R.', 'owner'], ['Marcus Bell', 'member'], ['Tomas K.', 'member'], ['Ines V.', 'guest']]),
+          invites: [], cluster: { joined: true, files: [{ name: 'orchard-field-notes.md', size: '14 KB' }, { name: 'plot-photos-oct.zip', size: '22 MB' }] } },
+        { id: 'g-night', name: 'Night shift ops', kind: 'forum', role: 'owner', goal: 'operations', joinedAt: '2026-09-20', invitedBy: null,
+          msgs: [msg('Marcus Bell', 'Pausing daemons before the OS update tonight.', day(0))],
+          roster: roster([['Marcus Bell', 'owner'], ['Ana P.', 'admin'], ['research-runner', 'agent']]),
+          invites: [{ code: 'Q4M8T2KX', state: 'added', who: a('Rae L.::comms'), at: day(1), exp: day(-13) }, { code: 'Z7N3W5PA', state: 'picked_up', who: a('Ana P.::comms'), at: day(9), exp: day(-5) }],
+          cluster: { joined: false, files: [] } },
+      ];
+      s.alerts = [{ actor: 'Maya R.', group: 'Orchard Lab', kind: 'mentioned you', ago: '2 h ago' }, { actor: 'Ana P.', group: 'Night shift ops', kind: 'joined with your invite', ago: '9 d ago' }];
+      s.devices = s.devices.concat([{ name: 'Garage Linux box', note: 'linked 2026-10-02 · co-pins for your groups' }]);
+    } else if (pid === 'p3') {
+      s.groups = [{ id: 'g-lattice', name: 'Lattice builders', kind: 'forum', role: 'owner', goal: 'development', joinedAt: '2026-09-28', invitedBy: null,
+        msgs: [msg('Priya Anand', 'SDK notes for the 0.5.2 bridge calls are in the journal.', day(1))],
+        roster: roster([['Priya Anand', 'owner'], ['Devon M.', 'member']]), invites: [], cluster: { joined: false, files: [] } }];
+      s.alerts = [{ actor: 'Devon M.', group: 'Lattice builders', kind: 'replied in a thread', ago: '1 d ago' }];
+    } else if (pid === 'p4') {
+      s.groups = [{ id: 'g-ba7', name: 'BA-7 program office', kind: 'forum', role: 'admin', goal: 'operations', joinedAt: '2026-09-15', invitedBy: 'org seat',
+        msgs: [msg('Program lead', 'Weekly sync notes are pinned.', day(3))],
+        roster: roster([['Program lead', 'owner'], ['R. Calloway', 'admin'], ['J. Ortiz', 'member']]), invites: [], cluster: { joined: true, files: [{ name: 'sync-notes-w42.pdf', size: '480 KB' }] } }];
+    }
+    s.gSel = s.groups[0] ? s.groups[0].id : null;
+  }
+  walletSend() { return false; }
+  activateFromWallet() { return false; }
+  gxPaste() { return false; }
+  gxJoinNow() { return false; }
+  gxSend() { return false; }
+  gxCreate() { return false; }
+  gxInvite() { return false; }
+  gxRevoke() { return false; }
+  gxRoster() { return false; }
+  gxCluster() { return false; }
+  gxShare() { return false; }
+  slice3Vals(V) {
+    for (const k of ['wlTiles', 'wlTxRows', 'wlCards', 'gxTabs', 'gxSubTabs', 'gxList', 'gxMsgs', 'gxRoster', 'gxInvites', 'gxCards']) V[k] = [];
   }
 
   ob2Activate() {
