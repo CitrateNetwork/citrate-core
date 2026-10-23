@@ -2380,3 +2380,50 @@ fn a_failed_read_carries_a_structured_kind() {
     assert_eq!(wire["message"], StakingError::OutOfBudget.to_string());
     assert_eq!(serde_json::to_value(pending_read_error(&StakingError::Indexing("x".into()))).expect("serializes")["kind"], "indexing");
 }
+
+// ---------------------------------------------------------------------------
+// TRIPWIRE (#409): no staking test runs on wall time. A real-time budget (a deadline in the
+// future of `Instant::now()`) or a real sleep in the test node makes the outcome depend on machine
+// load: probe_5 failed 3 runs in 4 under load with a 12 ms budget. Budgets go on the virtual clock
+// (`on_clock` + `timed_call`); an already spent deadline (`Instant::now()`, or earlier) is fine.
+// ---------------------------------------------------------------------------
+fn wall_time_budgets(src: &str) -> Vec<String> {
+    // Built from pieces so this function's own text does not match.
+    let banned = [
+        ("Instant::now()".to_string() + " +", "a real-time deadline in the future"),
+        ("thread::".to_string() + "sleep(", "a real sleep"),
+        (".elapsed".to_string() + "()", "a wall-clock measurement"),
+    ];
+    let mut bad = Vec::new();
+    for (n, line) in src.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for (pat, why) in &banned {
+            if line.contains(pat.as_str()) {
+                bad.push(format!("staking_tests.rs:{}: {why}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    bad
+}
+
+#[test]
+fn tripwire_no_staking_test_uses_a_real_time_budget() {
+    let bad = wall_time_budgets(include_str!("staking_tests.rs"));
+    assert!(bad.is_empty(), "use the virtual clock (on_clock / timed_call): {bad:#?}");
+}
+
+#[test]
+fn tripwire_catches_a_real_time_budget() {
+    // Negative control: the shapes the tests used before #409.
+    let shapes = [
+        concat!("let deadline = std::time::Instant::now()", " + std::time::Duration::from_millis(5);"),
+        concat!("let budget = || Some(std::time::Instant::now()", " + std::time::Duration::from_millis(12));"),
+        concat!("std::thread::", "sleep(self.logs_delay.get());"),
+    ];
+    for src in shapes {
+        assert_eq!(wall_time_budgets(src).len(), 1, "{src}");
+    }
+    assert!(wall_time_budgets("let past = std::time::Instant::now();").is_empty(), "a spent deadline is fine");
+}
