@@ -941,3 +941,40 @@ describe("slice 3: copy follows the UI truth contract on every Wallet, Groups an
     }
   });
 });
+
+describe("slice 3 review (#387 Codex round 2)", () => {
+  it("with the join service unavailable, Copy link copies the app-only link it shows, not a citrate.ai link", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "members", gSel: "g-night", gxSvc: "down" });
+    const copied = [];
+    c.copy = (text) => copied.push(text);
+    expect(c.gxInvite()).toBe(true);
+    const row = c.renderVals().gxInvites[0];
+    expect(row.code).toMatch(/^citrate:\/\/invite\?/);
+    row.copy();
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toMatch(/^citrate:\/\/invite\?/);
+    expect(copied[0]).not.toMatch(/citrate\.ai\/join/);
+  });
+
+  it("with the join service live, Copy link copies that invite's own citrate.ai link with its key", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "members", gSel: "g-night", gxSvc: "live" });
+    const copied = [];
+    c.copy = (text) => copied.push(text);
+    c.gxInvite();
+    const inv = c.state.groups.find((g) => g.id === "g-night").invites[0];
+    c.renderVals().gxInvites[0].copy();
+    expect(copied[0]).toMatch(new RegExp("^https://citrate\\.ai/join/" + inv.code + "#[A-Za-z0-9_-]{22}$"));
+  });
+
+  it.each(["data", "empty", "error", "unavailable"])("without the ALF claim, the %s variant never shows ALF content", async (variant) => {
+    const c = await mount("p2"); // P2 has no ALF claim
+    c.setState({ route: "groups", gTab: "alf", alfClaim: false, variants: { "gx-alf": variant } });
+    const V = c.renderVals();
+    expect(V.gxCards).toHaveLength(0);
+    expect(JSON.stringify(V.gxCards)).not.toMatch(/present/);
+    expect(V.gxCard).toBe(true);
+    if (variant !== "error") expect(V.gxCardTitle).toBe("ALF members only");
+  });
+});
