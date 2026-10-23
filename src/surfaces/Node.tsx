@@ -3,6 +3,7 @@ import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { activateValidatorLabel } from "../onboarding/activateValidator";
+import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -58,6 +59,12 @@ export function Node({ store, s }: SurfaceProps) {
     if (s.nTab === "earn") void store.refreshEarnings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.nTab]);
+  // #406 — read the activation (and the durable record of a sent one) on mount, so a recorded
+  // activation shows here with its way out (Try again / Forget), as on S7.
+  useEffect(() => {
+    if (TAURI && s.hasGrant) void store.refreshActivation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.hasGrant]);
 
   const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
 
@@ -336,6 +343,8 @@ export function Node({ store, s }: SurfaceProps) {
                           You&rsquo;ll approve a signature that proves you control this wallet. Nothing is spent.
                         </span>
                       </>
+                    ) : hasActivationTxStatus(store, s) ? (
+                      <ActivationTxPanel store={store} s={s} testId="node-activation" />
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>

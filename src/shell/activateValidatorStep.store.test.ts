@@ -971,3 +971,81 @@ describe("Node's Activate reconciles the durable record on every entry (Codex P2
     expect(registerValidatorMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("#405: the fresh read re-runs the FULL gate before any ceremony is built", () => {
+  const blocked: [string, Partial<ActivationStatusView>][] = [
+    ["membership lapsed", { membershipActive: false }],
+    ["membership unread", { membershipActive: null }],
+    ["local node still syncing", { localSyncing: true }],
+    ["local node out of band (behind)", { localBlock: 400_000 }],
+    ["local node out of band (ahead)", { localBlock: 600_000 }],
+    ["local height unread", { localBlock: null }],
+    ["bond not deployed", { bondDeployed: false }],
+    ["bond unread", { bondDeployed: null }],
+    ["key already registered", { registryStatus: 1 }],
+  ];
+  for (const [name, over] of blocked) {
+    it(`a ${name} on the fresh read builds no ceremony, even after an earlier ready read`, async () => {
+      const store = memberStore();
+      await store.refreshActivation(); // the earlier read: ready
+      (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+      chain.current = readyStatus(over);
+      expect(await store.requestValidatorActivation()).toBe(false);
+      expect(registerValidatorMock).not.toHaveBeenCalled();
+      expect(store.state.walletReview).toBeNull();
+    });
+  }
+
+  it("a ready fresh read still builds the ceremony", async () => {
+    const store = memberStore();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.requestValidatorActivation()).toBe(true);
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("no key yet and the producer unarmed: it arms (signs nothing) and builds no ceremony", async () => {
+    const store = memberStore();
+    chain.current = readyStatus({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null });
+    armMiningMock.mockResolvedValueOnce(true);
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(armMiningMock).toHaveBeenCalledTimes(1);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("no key yet but already armed: it waits for the key and builds no ceremony", async () => {
+    const store = memberStore();
+    chain.current = readyStatus({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null });
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(registerValidatorMock).not.toHaveBeenCalled();
+  });
+
+  it("a key-less node whose other checks fail is never armed", async () => {
+    const store = memberStore();
+    chain.current = readyStatus({ nodeKeyReady: false, nodePubkey: null, validatorPubkey: null, membershipActive: false });
+    expect(await store.requestValidatorActivation()).toBe(false);
+    expect(armMiningMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("tripwire (#405): no ceremony build after a fresh read without a gate re-check", () => {
+  it("activateValidator runs activationGate on the fresh read before registerValidator", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(__dirname, "store.ts"), "utf8");
+    // On this branch the one entry is requestValidatorActivation (activateValidator is private):
+    // its fresh read, then the gate on that read, then the arm/build call.
+    expect(src).toMatch(/private async activateValidator\(/);
+    const start = src.search(/async requestValidatorActivation\(/);
+    const body = src.slice(start, src.indexOf("\n  }\n", start));
+    const read = body.indexOf("await this.refreshActivation()");
+    const gate = body.indexOf("activationGate(this.state.activation");
+    const arm = body.indexOf("this.armProducer()");
+    const build = body.indexOf("this.activateValidator(");
+    expect(read).toBeGreaterThan(-1);
+    expect(gate).toBeGreaterThan(read);
+    expect(gate).toBeLessThan(arm);
+    expect(gate).toBeLessThan(build);
+    expect(src.match(/this\.activateValidator\(/g)?.length).toBe(1); // no other entry builds a ceremony
+  });
+});
