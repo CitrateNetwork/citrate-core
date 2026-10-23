@@ -412,8 +412,19 @@ check_page() { # case dir
   ( cd "$W/landing" && env HOME="$JW/landing-home" "$W/bin/node" .join-e2e/page-check.mjs \
       "$W/browser/chrome-headless-shell" "http://127.0.0.1:$LPORT/join/$code#$key" "$d/page.json" ) \
     >>"$W/logs/page-$c.log" 2>&1 || { step_fail "$c" 1 "link -> join page: the browser could not load the page (logs/page-$c.log)"; return 1; }
-  step_pass "$c" 1 "link -> join page (STUB: verdict not implemented yet)"
-  printf '%s\n' "$want_cmd" >"$d/command.txt"
+  local got; got="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["state"], len(p["offOrigin"]), p["command"] == sys.argv[2], p["appLink"] == sys.argv[3])' "$d/page.json" "$want_cmd" "$want_app")"
+  local resolves; resolves="$(psql_q "SELECT resolve_count FROM join_codes WHERE code = '$code'")"
+  local leaked=0
+  grep -qF -- "$key" "$W/logs/landing.log" "$W/logs/shim.log" && leaked=1
+  psql_q "SELECT row_to_json(j)::text FROM join_codes j" | grep -qF -- "$key" && leaked=1
+  if [ "$got" != "offer 0 True True" ]; then
+    step_fail "$c" 1 "link -> join page: the page did not offer this invite (state/off-origin/command/app-link = $got; page: $(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(repr(p["title"]), [a for a in p["alerts"] if a])' "$d/page.json"))"
+    return 1
+  fi
+  if [ "$leaked" -ne 0 ]; then step_fail "$c" 1 "link -> join page: the link key reached the server side (log or database)"; return 1; fi
+  if [ "$resolves" != 0 ]; then step_fail "$c" 1 "link -> join page: viewing the page spent a resolve (resolve_count=$resolves)"; return 1; fi
+  step_pass "$c" 1 "link -> join page: the page read the key from the fragment and offers the one-line install and the citrate://join link for this invite; no request left loopback, the key never reached the service, no resolve spent"
+  python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["command"])' "$d/page.json" >"$d/command.txt"
 }
 
 # Find the running app (the citrate-core binary the AppImage runs) under a parent pid.
@@ -480,7 +491,15 @@ check_install() { # case dir
   argv="$(python3 -I -c 'import sys; print("\n".join(open(f"/proc/{sys.argv[1]}/cmdline","rb").read().decode().split("\0")[1:]))' "$APP_BIN")"
   env_has=0; tr '\0' '\n' <"/proc/$APP_BIN/environ" 2>/dev/null | grep -q '^CITRATE_JOIN=' && env_has=1
   out_has=0; grep -qF -- "$key" "$d/installer.out" && out_has=1
-  step_pass "$c" 2 "installer receives the invite (STUB: verdict not implemented yet)"
+  if ! printf '%s\n' "$argv" | grep -qxF -- "citrate://join/$code#$key"; then
+    step_fail "$c" 2 "installer receives the invite: the first run was started without citrate://join/<code>#<key> (argv: $(printf '%s' "$argv" | sed "s/$key/<key>/g" | tr '\n' ' '))"
+  elif [ "$env_has" -ne 0 ]; then
+    step_fail "$c" 2 "installer receives the invite: CITRATE_JOIN is still in the app's environment"
+  elif [ "$out_has" -ne 0 ]; then
+    step_fail "$c" 2 "installer receives the invite: the installer printed the invite key"
+  else
+    step_pass "$c" 2 "installer receives the invite: the page's command was accepted and the first run got citrate://join/<code>#<key> as argv (pid $APP_BIN); not printed, not left in the app's environment"
+  fi
   # Step 3 observables: files, the app comes up (node sidecar), quit leaves nothing.
   local app="$d/apps/Citrate-Core.AppImage" desk="$HOME_DIR/.local/share/applications/ai.citrate.core.desktop" bad=""
   [ "$(sha256sum <"$app" 2>/dev/null | cut -d' ' -f1)" = "$JE_APPIMAGE_SHA" ] || bad="$bad AppImage-sha"
@@ -529,7 +548,13 @@ check_holds_invite() { # case dir
     found=""; sleep 1
   done
   n="$(psql_q "SELECT resolve_count FROM join_codes WHERE code = '$code'")"
-  HOLDS=(step_pass "first run holds the invite (STUB: verdict not implemented yet)")
+  if [ -z "$found" ]; then
+    HOLDS=(step_fail "first run holds the invite: no pending invite in the keyring 60s after the app came up")
+  elif [ "$n" != 0 ]; then
+    HOLDS=(step_fail "first run holds the invite: a resolve was spent before the member acted (resolve_count=$n)")
+  else
+    HOLDS=(step_pass "first run holds the invite: the cold start took citrate://join from its argv and holds it in the keyring (account join-pending-v1) after ${i}s; no resolve spent before the member acts")
+  fi
 }
 
 # Step 4a: the service's signed resolve, checked the way the app must check it.
@@ -544,7 +569,11 @@ check_resolve() { # case dir
     { step_fail "$c" 4a "resolve: the join service did not answer"; return 1; }
   out="$(python3 -I "$JE/join_crypto.py" verify "$d/resolve.json" "$pin" "$d/key.txt")"
   local n; n="$(psql_q "SELECT resolve_count FROM join_codes WHERE code = '$code'")"
-  step_pass "$c" 4a "resolve (STUB: verdict not implemented yet)"
+  if [ "${out%% *}" = ok ] && [ "$n" = 1 ]; then
+    step_pass "$c" 4a "resolve (service side of the first run): signed answer verifies against the pinned throwaway key, every field matches its claim, envHash matches, the envelope opens under the link key ($out; resolve_count=1)"
+  else
+    step_fail "$c" 4a "resolve (service side of the first run): $out (resolve_count=$n)"
+  fi
 }
 
 run_case() { # case
