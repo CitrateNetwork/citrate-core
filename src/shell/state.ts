@@ -10,6 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
+import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -377,10 +378,13 @@ export interface AppState {
   coachDone: boolean;
   demoOpen: boolean;
   toast: string | null;
+  /**
+   * The local node's `eth_blockNumber`. 0 means no reading yet (UI truth contract §2: the
+   * call returns 0x0 on error, so 0 is never shown as a height). There is no finality-age
+   * field: checkpoint finality is not running on 40204 (contract §4), so nothing may show one.
+   */
   height: number;
   peers: number;
-  lastCp: number;
-  finAge: number;
   node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "stalled" | "error";
   /**
    * What the MEMBER wants the node to do, as distinct from what it is doing.
@@ -401,7 +405,6 @@ export interface AppState {
   /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
   miningHold: string | null;
   syncPct: number;
-  hb: number;
   cpu: number;
   ram: number;
   logs: LogLine[];
@@ -469,7 +472,10 @@ export interface AppState {
    *  its server is not running. `waiting`: the app's own startup start is pending (bounded wait);
    *  `ask`: the member chooses, for this message only, to restart the local model or send it to
    *  the gateway; `restarting`: the member chose restart. Null when nothing is held. */
-  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting" } | null;
+  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting"; options?: RouteAskOptions } | null;
+  /** K2: the member's chat route, read from core (chat_route.rs) and never stored in the browser.
+   *  `ask_first` (default): ask before each message goes to the gateway. `local_only`: never. */
+  chatRoute: ChatRoute;
   chatBackend: "gateway" | "local";
   /** Honest live label for the CURRENT chat provider (set by rebuildProvider from provider.label).
    *  Reflects what actually answers — local llama-server, the gateway, or the built-in demo. */
@@ -574,12 +580,13 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
-  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). On by default (owner
-   * decision 2026-10-04). Every command still needs the member's approval, runs in the OS sandbox,
-   * and only in folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
+  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). Off by default for new
+   * installs (owner decision 2026-10-19, superseding 2026-10-04); an install that stored a value
+   * keeps it. Every command still needs the member's approval, runs in the OS sandbox, and only in
+   * folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
   hermesTerminal: boolean;
-  /** One-time migration marker: the 2026-10-04 default (terminal commands on) has been applied to
-   * this install. After that, the member's own choice is kept. */
+  /** Marker of the retired 2026-10-04 migration (terminal commands switched on once). Kept so
+   * stored states still read; nothing acts on it any more. */
   hermesTerminalDefaultApplied: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
@@ -790,17 +797,15 @@ export function freshState(pid: string): AppState {
     coachDone: !P.fresh,
     demoOpen: false,
     toast: null,
-    height: 131204 + ((Math.random() * 40) | 0),
+    // No reading until the node is polled (contract rule 2): never a seeded height.
+    height: 0,
     peers: 0,
-    lastCp: 131200,
-    finAge: 8,
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
     nodeBlocked: null,
     miningHold: null,
     syncPct: 0,
-    hb: 4,
     cpu: 0,
     ram: 0,
     logs: [],
@@ -831,6 +836,7 @@ export function freshState(pid: string): AppState {
     chatMsgs: [],
     chatStatus: "ready",
     chatRouteHold: null,
+    chatRoute: "ask_first",
     chatBackend: "gateway",
     chatProviderLabel: "starting…",
     chatProviderKind: "demo",
@@ -884,7 +890,7 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: true,
     hermesSidecarLoopDefaultApplied: true,
-    hermesTerminal: true,
+    hermesTerminal: false,
     hermesTerminalDefaultApplied: true,
     hermesBrief: null,
     hermesPersona: null,
@@ -946,7 +952,7 @@ export function freshState(pid: string): AppState {
         pinned: true,
         blocks: [
           "Keep stake ≥ 32,000 — eligibility is a hard floor.",
-          "The heartbeat is slashing protection. Never kill -9 the agent mid-job.",
+          "Stop the node from the Node page rather than killing it mid-job.",
           "Claims batch until ≥ 5 SALT to avoid dust gas.",
           "Pause before OS upgrades; resume re-attests the machine.",
         ],
@@ -995,7 +1001,7 @@ export function freshState(pid: string): AppState {
       s.earnComp = 9.31;
       s.earnToday = 3.86;
       s.selfStake = 2500;
-      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s; heartbeat continuity held." }];
+      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
       s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Add stake|−2,500.00 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
@@ -1034,13 +1040,16 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
-  "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "channel",
+  "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "channel",
   "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
   "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
+
+/** Observed node state: rewritten by every poll, so it is never persisted or restored. */
+export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1050,6 +1059,9 @@ export function loadState(): AppState {
     saved = null;
   }
   const base = freshState((saved && saved.persona) || "p1");
+  // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
+  // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
+  if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // CLAUDE.md Rule 3: there is no signature-policy setting (every signature goes through the
   // ceremony; the one exception is a budgeted web sign-in). An older build persisted one, so drop
@@ -1065,12 +1077,8 @@ export function loadState(): AppState {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
   }
-  // Owner decision 2026-10-04: Hermes may run terminal commands (each one approved by the member,
-  // sandboxed, in shared folders only). Existing installs are switched on once; a member who turns
-  // it off afterwards stays off.
-  if (saved && saved.hermesTerminalDefaultApplied !== true) {
-    base.hermesTerminal = true;
-    base.hermesTerminalDefaultApplied = true;
-  }
+  // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
+  // installs. A stored value is kept as it is (on or off); only an install with no stored value
+  // takes the default from freshState. The old switch-on-once migration is retired.
   return base;
 }

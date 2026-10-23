@@ -28,8 +28,10 @@ import {
   WalletReview,
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
+import { broadcastFailure } from "./broadcastOutcome";
+export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
+import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
@@ -37,8 +39,7 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
-import type { PendingReadErrorKind, PendingWithdrawalsError } from "../bridge/domains";
-import type { FlRoundPlan } from "../bridge/domains";
+import type { ChatRoute, FlRoundPlan, PendingReadErrorKind, PendingWithdrawalsError, RouteAskOptions } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
@@ -48,7 +49,7 @@ import { runContractView } from "../agent/contractView";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
-import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
+import { ESCALATE_TOOL_NAME, escalationApproval, escalationOffered, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
@@ -83,10 +84,12 @@ import {
   verifierReported,
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
+import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
+import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
 
-/** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
+/** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
  * HUP-S2.4 — tools whose handler always stops at a member approval of its own (a ceremony, or the
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
@@ -453,6 +456,9 @@ export const LOCAL_ROUTE_POLL_MS = 1_000;
 
 /** SCL-S7.5a — the error shown on a held message the member cancelled (Retry asks again). */
 export const LOCAL_ASK_NOT_SENT = "not sent; you cancelled before choosing where it goes";
+/** K2: local only is on and there is no local model to start, so the message is not sent. */
+export const LOCAL_ONLY_NOT_SENT =
+  "Local only is on and there is no local model running, so this message was not sent. To chat, start the local model (Models), or turn off Local model only in Hermes › Controls.";
 
 /** SCL-S7.5a — wait `ms`, or less if `signal` aborts first. */
 function sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
@@ -501,17 +507,37 @@ export function pickChatProviderKind(
   aiDefault: string,
   mode: "sim" | "tauri",
   inferenceState?: string,
-): "local" | "ask" | "real" | "demo" {
+  route: ChatRoute = "ask_first",
+): "local" | "ask" | "demo" {
   if (mode !== "tauri") return "demo";
   // 1) LOCAL: only when the real Rust state says the model is ready AND the
   //    llama-server is healthy — any other state falls through (honest).
   if (inferenceState === "ready") return "local";
-  // 1b) SCL-S7.5a: the local model is configured but not running → ask first, never the gateway.
-  if (inferenceState === "local-stopped" || inferenceState === "local-fallback") return "ask";
-  // 2) GATEWAY (real): the default provider id has a sealed key.
-  if (statuses.some((p) => p.id === aiDefault && p.configured)) return "real";
-  // 3) DEMO: the honest built-in agent.
+  const remote = statuses.some((p) => p.id === aiDefault && p.configured);
+  // 2) A local model that is set up but stopped: hold the message and ask (SCL-S7.5a).
+  if (inferenceState !== undefined && LOCAL_STOPPED_STATES.has(inferenceState)) return "ask";
+  // 2b) K2: Local model only with no local model serving. Never the demo agent (its scripted
+  //     replies and tool handlers) and never a remote route: the held message says it was not sent.
+  if (route === "local_only") return "ask";
+  // 3) K2: nothing goes to the gateway without the member's choice for that message. Under
+  //    ask_first a configured remote route asks every time (the old silent "gateway-only" and
+  //    "downloading" routes are closed); under local_only the held message offers nothing remote.
+  if (inferenceState === "ask-gateway" || inferenceState === "local-only" || remote) return "ask";
+  // 4) DEMO: the honest built-in agent.
   return "demo";
+}
+
+/** The states in which a local model is set up but its server is not running. */
+const LOCAL_STOPPED_STATES = new Set(["local-stopped", "local-fallback", "local-only-stopped"]);
+
+/**
+ * K2: what the held-message card offers. Restart only when a local model is set up; the gateway
+ * only under ask_first, never under local_only (and only when a remote route is configured).
+ */
+export function routeAskOptions(inferenceState: string | undefined, route: ChatRoute, remoteConfigured = true): RouteAskOptions {
+  const restart = inferenceState !== undefined && LOCAL_STOPPED_STATES.has(inferenceState);
+  const gateway = route === "ask_first" && remoteConfigured && inferenceState !== "local-only" && inferenceState !== "local-only-stopped";
+  return { restart, gateway };
 }
 
 /**
@@ -554,11 +580,6 @@ export function tickPatch(
   // climbing height + steady ~24 peers a packaged build must never show.
   if (sim) {
     u.height = s.height + (rand() < 0.85 ? 1 : 2);
-    u.finAge = s.finAge + 0.6;
-    if (u.height - s.lastCp >= 50) {
-      u.lastCp = u.height;
-      u.finAge = 0;
-    }
     const target = running ? 24 : 0;
     let peers = s.peers;
     if (peers < target) peers += Math.ceil(rand() * 3);
@@ -592,7 +613,6 @@ export function tickPatch(
       u.claimable = s.claimable + (dv + dp + dc) * 0.85;
     }
     if (running) {
-      u.hb = (s.hb + 0.6) % 30;
       u.cpu = s.node === "paused" ? 2 + rand() * 2 : (s.node === "validating" ? 18 : 11) + rand() * 12;
       u.ram = (s.node === "validating" ? 780 : 540) + rand() * 140;
       if (rand() < 0.55) {
@@ -1041,11 +1061,30 @@ export class Store {
    * chat falls back to the honest built-in demo agent (Rule 1 — never a fabricated
    * "gateway" reply). Web-dev has no keyring, so this always resolves to the demo.
    * Called on launch and after a provider config change (Settings), so the active
-   * provider tracks the config. Never throws — a failed status read keeps the demo.
+   * provider tracks the config. Never throws. A failed status read means no remote route is
+   * known; the chat route and the local model still apply (Local model only never uses the demo).
    */
   async rebuildProvider(): Promise<void> {
+    // K2: the member's chat route, stored in core, is read first and on its own: an unreadable
+    // provider record must never drop Local model only. An unreadable route setting comes back as
+    // local_only from core; a core without the command keeps the current value (default ask_first).
+    let route: ChatRoute = this.state.chatRoute;
     try {
-      const statuses = await bridge.chat.providerStatus();
+      route = (await bridge.chat.route()).route;
+    } catch {
+      /* an older core: keep what the app has */
+    }
+    if (route !== this.state.chatRoute) this.setState({ chatRoute: route });
+    try {
+      // Provider metadata (OS keyring). A failed read (keyring unavailable, an undecodable saved
+      // record, the web shim) means no remote route is known: nothing remote is offered, and the
+      // local model and the route are still honoured.
+      let statuses: { id: string; configured: boolean }[] = [];
+      try {
+        statuses = await bridge.chat.providerStatus();
+      } catch {
+        statuses = [];
+      }
       const def = this.state.aiDefault;
       // BC-3.2 — is a gateway key configured? (used both for the local-fallback
       // routing computed in Rust AND for the gateway leg of the selection here.)
@@ -1060,8 +1099,9 @@ export class Store {
       } catch {
         inferenceState = "demo";
       }
-      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
+      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState, route);
       this.routeKind = kind;
+      this.routeAsk = routeAskOptions(inferenceState, route, gatewayConfigured);
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
@@ -1075,10 +1115,11 @@ export class Store {
           : false;
       if (sidecarUp) {
         const h = bridge.agentHarness;
-        // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint.
+        // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint,
+        // and (K2) never under Local model only.
         const escalationReady = await bridge.escalation
           .endpoints()
-          .then((e) => e.length > 0)
+          .then((e) => escalationOffered(e.length, route))
           .catch(() => false);
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider
@@ -1121,9 +1162,12 @@ export class Store {
         return;
       }
       if (kind === "ask") {
-        // SCL-S7.5a (D-16 extended): the local model is configured but its server is not running.
-        // No provider is chosen for the gateway: sendChat holds each message and asks the member.
-        this.provider = createLocalStoppedProvider();
+        // SCL-S7.5a (D-16 extended) + K2: the local model is not serving and nothing goes to the
+        // gateway by itself. No provider is chosen for the gateway: sendChat holds each message
+        // and asks the member (or, under local only with no local model, says why it is not sent).
+        this.provider = createLocalStoppedProvider(
+          route === "local_only" ? LOCAL_ONLY_LABEL : this.routeAsk.restart ? undefined : ASK_FIRST_NO_LOCAL_LABEL,
+        );
         this.reflectProvider();
         return;
       }
@@ -1135,23 +1179,20 @@ export class Store {
         this.reflectProvider();
         return;
       }
-      if (kind === "real") {
-        // W3.3 — the gateway runs the AGENTIC tool loop (memory recall/search +
-        // navigate + approval-gated writes). Tool calls execute through handleTool.
-        this.provider = createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) =>
-          bridge.chat.inferTools(pid, msgs, tools, ctx),
-        );
-        this.reflectProvider();
-        return;
-      }
       // No local server + no configured default (or web-dev): the honest demo agent.
       this.provider = createDemoProvider(() => this.snapshot());
       this.reflectProvider();
     } catch {
-      // Honest no-op: providerStatus unavailable (web shim / failed read) — keep
-      // the built-in demo agent rather than a fabricated provider.
-      this.routeKind = "demo";
-      this.provider = createDemoProvider(() => this.snapshot());
+      // Any other failure while choosing a provider. Local model only stays held (the message is
+      // not sent, and nothing remote is offered); otherwise the honest built-in demo agent.
+      if (route === "local_only" && BRIDGE_MODE === "tauri") {
+        this.routeKind = "ask";
+        this.routeAsk = { restart: false, gateway: false };
+        this.provider = createLocalStoppedProvider(LOCAL_ONLY_LABEL);
+      } else {
+        this.routeKind = "demo";
+        this.provider = createDemoProvider(() => this.snapshot());
+      }
       this.reflectProvider();
     }
   }
@@ -1213,6 +1254,18 @@ export class Store {
       this.save();
     } catch (err) {
       this.toast("Could not remove the provider — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /** K2: store the member's chat route in core (chat_route_set) and route by it at once. */
+  async setChatRoute(route: ChatRoute): Promise<void> {
+    try {
+      const st = await bridge.chat.setRoute(route);
+      this.setState({ chatRoute: st.route });
+      await this.rebuildProvider();
+      this.toast(st.route === "local_only" ? "Local model only is on: chat never uses the gateway" : "Hermes asks before any message goes to the gateway");
+    } catch (e) {
+      this.toast(`Could not change Local model only: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1448,10 +1501,6 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
-        // There is NO real finality/checkpoint-age source from the node yet
-        // (WO-1 adds citrate_getDagStats). Mark it unavailable (< 0) rather than
-        // leaving the fabricated seed value — displays render "—" (Rule 1).
-        finAge: -1,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
@@ -2073,7 +2122,6 @@ export class Store {
     return {
       height: s.height,
       peers: s.peers,
-      finalityAge: Math.round(s.finAge),
       nodeState: nodeLabelLocal(s.node),
       // "staked" now reflects the locked membership grant (falling back to the validator bond), so the
       // model no longer sees 0 for a granted member.
@@ -2180,9 +2228,13 @@ export class Store {
   }
 
   go(route: string): void {
-    this.setState({ route });
+    // Five-place navigation: an old route id or a moved Settings section opens its new home
+    // (src/shell/places.ts). Unknown ids are kept as given, as before.
+    const r = resolveRoute(route);
+    const target = r ? r.route : route;
+    this.setState({ route: target, ...(r?.patch ?? {}) });
     try {
-      if ((location.hash || "").replace(/^#\//, "") !== route) location.hash = "#/" + route;
+      if ((location.hash || "").replace(/^#\//, "") !== target) location.hash = "#/" + target;
     } catch {
       /* ignore */
     }
@@ -2765,7 +2817,13 @@ export class Store {
     this.setState({ hermesTerminal: on });
     this.save();
     try {
-      const st = await syncTerminalAccess(this.terminalIo(), on);
+      // Core may restart a running Hermes to apply this, and Hermes then reads its other saved
+      // settings: snapshot them before (writes held), commit only when core says it restarted.
+      const st = await withHermesStart(async (snapshot) => {
+        const r = await syncTerminalAccess(this.terminalIo(), on);
+        if (r.restarted) confirmRunning(snapshot);
+        return r;
+      });
       if (st.enabled !== on) {
         this.setState({ hermesTerminal: st.enabled });
         this.save();
@@ -2783,7 +2841,11 @@ export class Store {
    *  (what Settings shows is what applies). Quiet: nothing to report when they already agree. */
   private async syncHermesTerminal(): Promise<void> {
     try {
-      const st = await syncTerminalAccess(this.terminalIo(), this.state.hermesTerminal);
+      const st = await withHermesStart(async (snapshot) => {
+        const r = await syncTerminalAccess(this.terminalIo(), this.state.hermesTerminal);
+        if (r.restarted) confirmRunning(snapshot);
+        return r;
+      });
       if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
     } catch {
       /* core older than this setting, or no Hermes yet: the spawn reads its own default */
@@ -2923,7 +2985,9 @@ export class Store {
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
   private turnAbort: AbortController | null = null;
   /** SCL-S7.5a — the route the last `rebuildProvider` chose ("ask" = local model not running). */
-  private routeKind: "local" | "ask" | "real" | "demo" = "demo";
+  private routeKind: "local" | "ask" | "demo" = "demo";
+  /** K2: what a held message may offer (restart the local model / send to the gateway once). */
+  private routeAsk: RouteAskOptions = { restart: false, gateway: false };
   /** SCL-S7.5a — true from launch until the app's own startup start of the local server settles. */
   private launchLocalStartPending = false;
   /** SCL-S7.5a — resolves the question for the held message (null when nothing is asked). */
@@ -2964,7 +3028,7 @@ export class Store {
     msgId: string,
     signal: AbortSignal,
   ): Promise<{ ok: true; provider: ChatProvider } | { ok: false; error: string }> {
-    const hold = (phase: "waiting" | "ask" | "restarting") => this.setState({ chatRouteHold: { msgId, phase } });
+    const hold = (phase: "waiting" | "ask" | "restarting") => this.setState({ chatRouteHold: { msgId, phase, options: this.routeAsk } });
     const cancelled = { ok: false as const, error: LOCAL_ASK_NOT_SENT };
     const gone = { ok: false as const, error: "the local model is no longer set up, so this message was not sent" };
     const localNow = async (): Promise<ChatProvider | null> => {
@@ -2975,7 +3039,9 @@ export class Store {
       let local = await localNow();
       if (local) return { ok: true, provider: local };
       if (this.routeKind !== "ask") return gone;
-      if (this.launchLocalStartPending) {
+      // K2: local only with no local model to start: nothing to offer, so say why and send nothing.
+      if (!this.routeAsk.restart && !this.routeAsk.gateway) return { ok: false, error: LOCAL_ONLY_NOT_SENT };
+      if (this.launchLocalStartPending && this.routeAsk.restart) {
         hold("waiting");
         const deadline = Date.now() + LOCAL_START_WAIT_MS;
         while (this.launchLocalStartPending && Date.now() < deadline && !signal.aborted) {
@@ -2998,14 +3064,16 @@ export class Store {
       });
       this.localModelChoice = null;
       if (choice === "cancel" || signal.aborted) return cancelled;
-      if (choice === "gateway") {
-        // The member's explicit choice, for this one message only.
+      if (choice === "gateway" && this.routeAsk.gateway) {
+        // The member's explicit choice, for this one message only (never offered under local only).
         const def = this.state.aiDefault;
         return {
           ok: true,
           provider: createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) => bridge.chat.inferTools(pid, msgs, tools, ctx)),
         };
       }
+      // Defensive: a choice that was not offered sends nothing.
+      if (choice === "gateway" || !this.routeAsk.restart) return cancelled;
       hold("restarting");
       const started = await this.restartLocalModel(signal);
       if (signal.aborted) return cancelled;
@@ -3022,7 +3090,12 @@ export class Store {
    *  chat is asking right now. */
   answerLocalModelAsk(choice: LocalModelChoice): void {
     const resolve = this.localModelChoice;
-    if (!resolve || this.state.chatRouteHold?.phase !== "ask") return;
+    const hold = this.state.chatRouteHold;
+    if (!resolve || hold?.phase !== "ask") return;
+    // K2: a choice the card does not offer (the gateway under local only, a restart with no local
+    // model) does nothing.
+    const opts = hold.options;
+    if (opts && ((choice === "gateway" && !opts.gateway) || (choice === "restart" && !opts.restart))) return;
     this.localModelChoice = null;
     resolve(choice);
   }
@@ -3917,7 +3990,7 @@ export class Store {
       this.toast(`Couldn't read the "${skill.name}" skill: ` + (e instanceof Error ? e.message : String(e)));
       return;
     }
-    if (this.state.route !== "dashboard") this.go("dashboard");
+    if (locate(this.state.route).route !== "hermes/chat") this.go("hermes/chat");
     void this.sendChat(runPrompt({ name: skill.name, instruction }));
   }
 
@@ -5198,7 +5271,7 @@ export class Store {
       try {
         await bridge.signing.broadcast(r.view.id, ack);
       } catch (err) {
-        this.toast(WALLET_ACTION_LABELS[r.kind] + " settles only in the desktop app — " + String((err as Error).message ?? err));
+        this.toast(WALLET_ACTION_LABELS[r.kind] + " can only be signed and sent in the desktop app — " + String((err as Error).message ?? err));
       }
       // Release the pending sim ceremony and clear the review (nothing settled).
       try {
@@ -5212,34 +5285,73 @@ export class Store {
       return;
     }
     // Tauri: sign + broadcast the real 40204 tx, then re-read balances from chain.
+    //
+    // C1-V #347 review: the broadcast and the follow-up refreshes are separate steps. "not sent"
+    // is said ONLY when the backend marks the failure as before submission; after the node has (or
+    // may have) accepted the tx, the outcome is unknown and the member gets the tx hash to check
+    // before trying again, so a payment is never reported as not sent when it may have gone out.
+    let result: Awaited<ReturnType<typeof bridge.signing.broadcast>>;
     try {
-      const result = await bridge.signing.broadcast(r.view.id, ack);
-      this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
-      this.toast(r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
-      this.setState({ walletReview: null });
-      if (r.kind === "claim") await this.refreshEarnings();
-      else await this.refreshWallet();
-      // Activating the bond (MemberBond.activate) makes the clone bond its principal
-      // into the ValidatorRegistry — re-read the REAL bond now so the node flips to
-      // "validating" immediately instead of waiting for the next 2s poll.
-      if (r.kind === "stake") await this.refreshNode();
-      if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
-      await this.refreshActivity();
-      this.save();
-      // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
-      await r.onResolved?.(true);
+      result = await bridge.signing.broadcast(r.view.id, ack);
     } catch (err) {
-      // Honest failure — release the pending ceremony so it isn't left dangling.
+      const failure = broadcastFailure(err);
+      // Release the pending ceremony so it isn't left dangling (already consumed once submitted).
       try {
         await bridge.signing.reject(r.view.id);
       } catch {
         /* best-effort cleanup */
       }
       this.setState({ walletReview: null });
-      this.toast(r.label + " not settled — " + String((err as Error).message ?? err));
-      // The tx didn't settle → tell the sidecar to abort, not proceed.
+      if (failure.kind === "not-sent") {
+        // Contract v1.1 §1: a first-send NonceTooLow means the nonce is already used.
+        this.toast(
+          r.label +
+            " not sent — " +
+            (/NonceTooLow/.test(failure.reason)
+              ? "nonce already used; check your recent transactions before sending again (" + failure.reason + ")"
+              : failure.reason),
+        );
+      } else {
+        if (failure.txHash) this.addActivity(r.label + " · outcome unknown", r.view.decoded.cost || r.view.decoded.action, failure.txHash);
+        this.toast(
+          r.label +
+            " sent, outcome unknown — " +
+            (failure.txHash ? "check tx " + failure.txHash + " on the block explorer" : "check your recent transactions on the block explorer") +
+            " before trying again (" +
+            failure.reason +
+            ").",
+        );
+      }
+      // Not confirmed → the sidecar effect does not proceed.
       await r.onResolved?.(false);
+      return;
     }
+    this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
+    // C1-V §1 transaction words: Pending until a receipt names the block, then Included in block N.
+    const sentLine =
+      r.label +
+      " broadcast — tx " +
+      result.txHash.slice(0, 10) +
+      "… · " +
+      (result.blockNumber != null ? "Included in block " + result.blockNumber.toLocaleString("en-US") : "Pending; the balance re-reads once it is included in a block");
+    this.toast(sentLine + ".");
+    this.setState({ walletReview: null });
+    try {
+      if (r.kind === "claim") await this.refreshEarnings();
+      else await this.refreshWallet();
+      // Activating the bond (MemberBond.activate) makes the clone bond its principal
+      // into the ValidatorRegistry — re-read the REAL bond now so the node shows the
+      // registry state immediately instead of waiting for the next 2s poll.
+      if (r.kind === "stake") await this.refreshNode();
+      if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
+      await this.refreshActivity();
+      this.save();
+    } catch (err) {
+      // A failed re-read is NOT a broadcast failure: the tx went out with the hash above.
+      this.toast(sentLine + " · the balance could not be re-read: " + String((err as Error)?.message ?? err));
+    }
+    // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
+    await r.onResolved?.(true);
   }
 
   /**
@@ -5281,13 +5393,13 @@ export class Store {
    * Today this is bonded pinning. (The WITHDRAW leg — LiquidStakingPool
    * `requestWithdrawal` → `claimWithdrawal` — is now wired via
    * walletRequestWithdrawal / walletClaimWithdrawal, WP2.) NEVER fabricates a hash
-   * or mutates a balance (Rule 1/3). Web-dev: settles only in the desktop app.
+   * or mutates a balance (Rule 1/3). Web-dev: can only be signed and sent in the desktop app.
    */
   settleUnwired(action: string): void {
     if (BRIDGE_MODE === "tauri") {
       this.toast(action + " isn't wired to a real 40204 transaction yet — no funds moved. (Grounded contract pending.)");
     } else {
-      this.toast(action + " settles only in the desktop app — no key or chain in web preview.");
+      this.toast(action + " can only be signed and sent in the desktop app — no key or chain in web preview.");
     }
   }
 

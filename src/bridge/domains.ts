@@ -590,6 +590,26 @@ export interface ChatDomain {
    * Tauri impl invokes `model_inference_state`; the sim impl returns `demo`.
    */
   inferenceState(gatewayConfigured: boolean): Promise<string>;
+  /** K2: the member's chat route, stored in core (chat_route.rs). An unreadable setting reads as
+   *  `local_only` with `loadError` set (a read error never widens what may leave the device).
+   *  Tauri invokes `chat_route_get`; sim reports the default. */
+  route(): Promise<ChatRouteStatus>;
+  /** K2: store the chat route. Tauri invokes `chat_route_set`; sim is Unavailable. */
+  setRoute(route: ChatRoute): Promise<ChatRouteStatus>;
+}
+
+/** K2: where chat may go. `ask_first` (default): ask before each message goes to the gateway.
+ *  `local_only`: never to the gateway. Mirrors Rust `chat_route::ChatRoute` (snake_case). */
+export type ChatRoute = "local_only" | "ask_first";
+export interface ChatRouteStatus {
+  route: ChatRoute;
+  loadError: string | null;
+}
+/** K2: what the held-message card may offer: start the local model, and/or send this message to
+ *  the gateway this time. */
+export interface RouteAskOptions {
+  restart: boolean;
+  gateway: boolean;
 }
 
 /**
@@ -2276,6 +2296,9 @@ export interface EscalationQuote {
   costMicros: number;
   costLabel: string;
   withinBudget: boolean;
+  /** K2: core will ask before this escalation runs whatever the budget (the member's route is
+   *  ask first). Absent from an older core. */
+  asksFirst?: boolean;
   remainingMicros: number;
   capMicros: number;
   maxTokens: number;

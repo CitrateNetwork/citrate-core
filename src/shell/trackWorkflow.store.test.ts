@@ -131,7 +131,8 @@ describe("track workflows from chat", () => {
     // The message carries a way there.
     expect(m.toolchainHelp).toBe(true);
     store.openToolchainSettings();
-    expect(store.state.route).toBe("agent");
+    // Five-place navigation: the old "agent" id opens Hermes › Work.
+    expect(store.state.route).toBe("hermes/work");
     expect(store.state.agentTabRequest).toBe("contracts");
     expect(m.error).not.toContain("which is off in this app");
     probe.mockRestore();
