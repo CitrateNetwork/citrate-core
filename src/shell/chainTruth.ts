@@ -288,6 +288,8 @@ export interface MemberBondState {
   pubkey: string | null;
   /** `MemberBond.isUnlocked()` (chain#331 activation window); null / absent = not read. */
   unlocked?: boolean | null;
+  /** `MemberBond.isKycVerified()`, the gate `claimRewards()` checks (MemberBond.sol:207); null / absent = not read. */
+  kycVerified?: boolean | null;
 }
 
 type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" | "activation window closed" };
