@@ -3159,3 +3159,102 @@ fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Rule 3 tripwire: the ONLY path that signs without a per-request approval of a CeremonyId is the
+/// budgeted web sign-in (`request_siwe_budgeted`, ADR-2026-09-30). Every gated-signer call in the
+/// production ceremony code must sit inside `approve`, `approve_and_broadcast` (both consume an
+/// explicit CeremonyId the human approved) or `request_siwe_budgeted`. A new function that reaches
+/// a signer, for example an "allowlisted intent" fast path, fails here.
+#[test]
+fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
+    let calls = [
+        "sign_".to_string() + "message(",
+        "sign_".to_string() + "transaction(",
+        "sign_".to_string() + "personal(",
+    ];
+    // Join-8 (#354): the tx signer lives in the PRIVATE `sign_consumed`, shared by
+    // `approve_and_sign` and `approve_and_broadcast`; both consume a CeremonyId the human approved.
+    // It is allowed only while it stays private and is called from exactly those two.
+    let allowed = ["approve", "approve_and_broadcast", "request_siwe_budgeted", "sign_consumed"];
+    let src = strip_test_module(include_str!("ceremony.rs"));
+    assert!(src.contains("    fn sign_consumed<") && !src.contains("pub fn sign_consumed"), "sign_consumed stays private");
+    let mut callers: Vec<String> = Vec::new();
+    let mut enclosing: Option<String> = None;
+    let mut seen = 0;
+    for line in src.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") {
+            continue;
+        }
+        if let Some(i) = t.find("fn ") {
+            let head = &t[..i];
+            let qualifiers = ["pub", "pub(crate)", "async", "const", "unsafe"];
+            if head.split_whitespace().all(|w| qualifiers.contains(&w)) {
+                let name: String = t[i + 3..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    enclosing = Some(name);
+                }
+            }
+        }
+        if t.contains("self.sign_consumed(") {
+            callers.push(enclosing.clone().unwrap_or_default());
+        }
+        if calls.iter().any(|c| t.contains(c.as_str())) && !t.contains("fn sign_") {
+            seen += 1;
+            let f = enclosing.clone().unwrap_or_default();
+            assert!(
+                allowed.contains(&f.as_str()),
+                "ceremony.rs: `{f}` reaches a gated signer; only {allowed:?} may: `{}`",
+                line.trim()
+            );
+        }
+    }
+    assert!(seen >= 3, "positive control: the sanctioned signer calls were found ({seen})");
+    callers.sort();
+    callers.dedup();
+    assert_eq!(
+        callers,
+        vec!["approve_and_broadcast".to_string(), "approve_and_sign".to_string()],
+        "sign_consumed is reached only from the two approval paths"
+    );
+}
+
+/// Rule 3 tripwire: no stored setting decides whether an intent goes through the ceremony. The
+/// ceremony and the web sign-in budget never read the app config, and the app config carries no
+/// signature-policy field (a 0.5.1 build stored `sigPolicy`; it is dropped on read).
+#[test]
+fn rule3_tripwire_no_config_can_skip_the_ceremony() {
+    let needles = [
+        ["crate::", "config"].concat(),
+        ["App", "Config"].concat(),
+        ["sig_", "policy"].concat(),
+        ["sig", "Policy"].concat(),
+    ];
+    for (name, src) in [
+        ("ceremony.rs", include_str!("ceremony.rs")),
+        ("web_budget.rs", include_str!("web_budget.rs")),
+        ("siwe.rs", include_str!("siwe.rs")),
+    ] {
+        let non_test = strip_test_module(src);
+        for n in &needles {
+            assert!(
+                !non_test
+                    .lines()
+                    .any(|l| l.contains(n.as_str()) && !l.trim_start().starts_with("//")),
+                "{name} must not read app config ({n})"
+            );
+        }
+    }
+    let config = strip_test_module(include_str!("config.rs"));
+    for n in &needles[2..] {
+        assert!(
+            !config
+                .lines()
+                .any(|l| l.contains(n.as_str()) && !l.trim_start().starts_with("//")),
+            "config.rs must carry no signature-policy field ({n})"
+        );
+    }
+}
