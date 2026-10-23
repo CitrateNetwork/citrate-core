@@ -463,3 +463,54 @@ describe("slice 2: onboarding Verify step follows the real gate (Join 3 copy rev
     expect(html).not.toMatch(/[Mm]embership needs a verified identity/);
   });
 });
+
+describe("slice 2 follow-ups (core #393): web join page actions", () => {
+  const joinPage = async (os, extra = {}) => {
+    const c = await mount("p1");
+    c.setState({ web: "join", joinState: "direct", inviterVerified: true, os, wbDl: false, ...extra });
+    c.copied = [];
+    c.copy = (text, note) => { c.copied.push(text); c.toast(note || "Copied"); };
+    return c;
+  };
+
+  it("on Linux, Copy the install command copies the full command with the invite key", async () => {
+    const c = await joinPage("linux");
+    const V = c.renderVals();
+    expect(V.wbPrimary).toBe("Copy the install command");
+    V.onWbPrimary();
+    expect(c.copied).toHaveLength(1);
+    const J = Component.JOIN();
+    expect(c.copied[0]).toBe("curl -fsSL https://citrate.ai/install.sh | CITRATE_JOIN='" + J.code + "#" + J.key + "' sh");
+  });
+
+  it("on Mac, the primary download copies nothing", async () => {
+    const c = await joinPage("mac");
+    c.renderVals().onWbPrimary();
+    expect(c.copied).toHaveLength(0);
+  });
+
+  it.each([["phone", {}], ["windows", { winBuilt: false }]])("on %s with no primary action, the secondary action still has a label", async (os, extra) => {
+    const c = await joinPage(os, extra);
+    const V = c.renderVals();
+    expect(V.wbPrimary).toBe("");
+    expect(V.wbSecondary).toBeTruthy();
+  });
+
+  it("tripwire: the secondary action is not nested inside the primary action's conditional", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    const open = '<sc-if value="{{ wbPrimary }}"';
+    const i = html.indexOf(open);
+    expect(i).toBeGreaterThan(0);
+    // The matching </sc-if>, counting nested sc-if blocks.
+    let depth = 0, j = i;
+    const re = /<sc-if\b|<\/sc-if>/g;
+    re.lastIndex = i;
+    let m;
+    while ((m = re.exec(html))) {
+      depth += m[0] === "</sc-if>" ? -1 : 1;
+      if (depth === 0) { j = m.index; break; }
+    }
+    expect(html.slice(i, j)).not.toContain("wbSecondary");
+    expect(html).toContain('<sc-if value="{{ wbSecondary }}"');
+  });
+});
