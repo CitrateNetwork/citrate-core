@@ -13,7 +13,7 @@
 // (it runs from `Drop`). It signals a pid only after checking that the pid's current command
 // line still carries the marker, so a pid that was reused by an unrelated process is reported
 // as foreign and left alone. After the recorded pids it sweeps once more for any process that
-// carries the marker (pgrep), so nothing the fixture started can
+// carries the marker (pgrep, matched as a fixed string), so nothing the fixture started can
 // outlive the test. A harness control can turn the sweep off ([`OwnedFixture::without_sweep`]),
 // so the suite proves the recorded-pid kill on its own instead of leaning on the sweep.
 
@@ -507,7 +507,10 @@ fn ps_field(pid: u32, field: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Pids whose full command line contains `pattern` (fixed string), excluding this process.
+/// Pids whose full command line contains `pattern` as a fixed string, excluding this process.
+/// `pgrep -f` matches an extended regular expression, so its candidates are filtered by the
+/// command line `ps` reports: a `.` in `pattern` matches only a `.`, and a process that exited
+/// between the two reads is dropped.
 pub fn pgrep(pattern: &str) -> Vec<u32> {
     let out = match Command::new("pgrep")
         .args(["-f", pattern])
@@ -523,6 +526,7 @@ pub fn pgrep(pattern: &str) -> Vec<u32> {
         .lines()
         .filter_map(|l| l.trim().parse::<u32>().ok())
         .filter(|p| *p != me)
+        .filter(|p| command_line(*p).is_some_and(|c| c.contains(pattern)))
         .collect()
 }
 
