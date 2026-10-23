@@ -121,6 +121,13 @@ pub enum RequestState {
     Failed {
         error: String,
     },
+    /// C1-V3: the member approved a payment and it was submitted, but its outcome is unknown (the
+    /// ceremony's `SubmittedOutcomeUnknown`). Not a failure and not a rejection: the client is told
+    /// to check `tx_hash` before retrying.
+    OutcomeUnknown {
+        tx_hash: Option<String>,
+        message: String,
+    },
     Expired,
 }
 
@@ -321,7 +328,13 @@ impl ApprovalInbox {
         }
         r.state = match outcome {
             Ok(result) => RequestState::Approved { result },
-            Err(error) => RequestState::Failed { error },
+            Err(error) => match crate::broadcast_outcome::submitted_tx_hash(&error) {
+                Some(h) => RequestState::OutcomeUnknown {
+                    message: crate::broadcast_outcome::agent_message(Some(&h)),
+                    tx_hash: Some(h),
+                },
+                None => RequestState::Failed { error },
+            },
         };
         r.decided_ms = Some(now_ms);
         let out = r.clone();

@@ -1,6 +1,9 @@
-import { useRef, useEffect } from "react";
+import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
+import { CONSENSUS_LAG_NOTE, activationClosedReason, canOfferActivation, validatorDash, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { grantExplanation } from "../data/grantCopy";
+import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
@@ -39,40 +42,33 @@ const nodeColors: Record<string, string> = {
   error: "#dd7259",
 };
 
-const fmtDur = (sec: number | null): string => {
-  if (sec == null) return "—";
-  const h = Math.floor(sec / 3600),
-    m = Math.floor((sec % 3600) / 60);
-  return h > 0 ? h + "h " + String(m).padStart(2, "0") + "m" : m + "m " + String(Math.floor(sec % 60)).padStart(2, "0") + "s";
-};
-
 /**
  * Node surface — 1:1 from design/CitrateCore.dc.html NODE section.
  * Operations / Earning / Pinning sub-tabs. Every real datum is captioned with
  * its source (node-agent 127.0.0.1:19600). Claims and pins are unsigned
  * node-agent requests surfaced through the SignatureCeremony (store.requestSig);
- * no key ever leaves the ceremony. The Pinning tab is the honest [SEAM] one —
- * the PoSt sealer sidecar is pending upstream, and the copy says so.
+ * no key ever leaves the ceremony. Pin bonds (IPFSIncentivesV3) are deployed but
+ * dormant on 40204, so the Pinning tab says "Pin bonds not live yet" (UI truth
+ * contract §1, §4) instead of drawing bonds, projections or challenge tallies.
  */
 export function Node({ store, s }: SurfaceProps) {
-  const pinCidEl = useRef<HTMLInputElement | null>(null);
-  const pinBondEl = useRef<HTMLInputElement | null>(null);
-
-  // CORE-C2 — when the Earning tab is open, pull the REAL claimable from
-  // ContributionAccounting.claimable(vaultAddress) via eth_call (Rule 11). The
-  // decomposition (Validation/Pinning/Compute) has NO on-chain source and is
-  // labeled as an off-chain estimate below (Rule 1 / I-3).
+  // When the Earning tab is open, read the validator rewards from
+  // ValidatorRegistry.rewardsOf(pubkey) (C1-V V8; UI truth contract §2).
+  // The producer sample (cached 5 min in the store) behind the "Producing" row.
+  useEffect(() => {
+    void store.refreshProducers();
+  }, [store]);
+  // Read again when the reward eligibility changes while the tab is open (the stake or the bond's
+  // activated flag reconciles after mount; #348 review).
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.nTab]);
-
-  const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
+  }, [store, s.nTab, readsRewards]);
 
   // ----- header / tabs -----
   const ntabs: [string, string][] = [
     ["ops", "Operations"],
-    ["earn", "Earning"],
+    ["earn", "Rewards"],
     ["pin", "Pinning"],
   ];
   const nodeStateColor = nodeColors[s.node];
@@ -119,35 +115,51 @@ export function Node({ store, s }: SurfaceProps) {
   // SALT was told they were not a validator (observed 2026-08-06, right after a
   // successful MemberBond.activate).
   //
-  // BLOCKS PROPOSED still has NO source — no RPC exposes a per-proposer count — so
-  // a registered validator honestly reads "—" rather than a fabricated tally. What
-  // changes is that we no longer DENY the registration we can actually see.
-  const isRegisteredValidator = s.bondedStake >= 32000;
-  const blocksProposedStr = TAURI
-    ? isRegisteredValidator
-      ? "—"
-      : "not a registered validator"
-    : s.node === "off"
-      ? "—"
-      : fmtI(s.blocksProposed);
-  const electionStr =
-    !TAURI && s.node === "validating" && staked >= 32000 ? ((staked / 8200000) * 100).toFixed(2) + "% stake share / round" : "—";
+  // PRODUCING (C1-V review): "Producing blocks" only when this node's proposer key is among the
+  // distinct proposerPubkeys sampled over the last 100 blocks (contract §1, §2; chain-team ruling
+  // on the window). Not seen → "Not seen producing in the last 100 blocks", never "not producing".
+  // No sample → "—" plus the reason. There is still no per-proposer COUNT, so none is shown.
+  const isRegisteredValidator = s.bondedStake > 0;
+  // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
+  // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  const vDash = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  // C1-V4: activation is offered only when MemberBond.activated() reads false.
+  const offerActivation = canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
+  // chain#331: why an un-activated bond (no registered stake) is not offered activation.
+  const bondNotActivated = !!s.memberBond?.deployed && s.memberBond.activated === false && !(s.bondedStake > 0);
+  const activationClosed = bondNotActivated ? activationClosedReason(s.memberBond) : null;
+  const pWord = producingWord(s.producers, s.validatorPubkey);
+  const producingStr = !isRegisteredValidator
+    ? "— · not a registered validator"
+    : pWord
+      ? pWord
+      : s.producers && producerShortfall(s.producers)
+        ? "— · producer sample incomplete: " + producerShortfall(s.producers)
+        : s.producersError
+        ? "— · producer sample unavailable: " + s.producersError
+        : !s.validatorPubkey
+          ? "— · validator key not read yet"
+          : "— · not sampled yet";
   const restartsStr = String(s.crashes.length);
 
   // ----- earning -----
-  const earnValStr = fmt2(s.earnVal);
-  const earnPinStr = fmt2(s.earnPin);
-  const earnCompStr = fmt2(s.earnComp);
-  const claimStr = fmt2(s.claimable);
-  const claimSourceStr =
-    s.earnSource === "chain"
-      ? "from ContributionAccounting.claimable() · eth_call 40204"
-      : "prototype value — pending on-chain read";
-  const claimDisabled = s.claimable < 5;
+  // C1-V V8: the three figures are ValidatorRegistry.rewardsOf(pubkey) and nothing else (UI truth
+  // contract §1 Rewards): total, claimableNow, and maturing = total − claimableNow. No per-source
+  // split and no estimates. Not a validator, or not read → "—" with the reason.
+  const rTotal = s.rewards ? saltFromWei(s.rewards.totalWei) : null;
+  const rClaim = s.rewards ? saltFromWei(s.rewards.claimableWei) : null;
+  const rMaturing = rTotal != null && rClaim != null ? Math.max(0, rTotal - rClaim) : null;
+  // An activated bond is read whatever its stake: after a full exit it can still claim (#348 review).
+  const rewardsReason = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null) ? "not read yet" : "Not a validator";
+  const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
+  const claimDisabled = rClaim == null || rClaim < 5;
   const claimNote =
-    s.claimable < 5
-      ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - s.claimable) + " SALT to go."
-      : "Claimable is above the 5 SALT dust threshold.";
+    rClaim == null
+      ? "Validator rewards are paid to the block producer only."
+      : rClaim < 5
+        ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - rClaim) + " SALT to go."
+        : "Claimable now is above the 5 SALT dust threshold.";
   // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL claim path
   // (`store.claimRewards` → `bridge.agent.claim` → the real `claimRewards()`
   // ceremony → B1.4 broadcast in the desktop build; an honest "nothing to claim"
@@ -158,43 +170,8 @@ export function Node({ store, s }: SurfaceProps) {
   const onClaim = () => {
     void store.claimRewards();
   };
-  const hbAge = s.node === "off" ? null : s.hb;
-  const hbStr = hbAge == null ? "—" : "last ack " + hbAge.toFixed(0) + "s ago · 30s window";
-  const hbColor = hbAge == null ? "var(--tx-3)" : hbAge < 20 ? "var(--ok)" : "var(--warn)";
-  const hbBarW = hbAge == null ? "0%" : Math.max(4, 100 - (hbAge / 30) * 100).toFixed(0) + "%";
-
-  // ----- pinning -----
-  const nodeOff = s.node === "off" || s.node === "prov";
-  const pinRows = s.pins.map((p, i) => ({
-    cid: p.cid,
-    bond: p.bond + " SALT",
-    cadence: "every " + p.cadH + " h",
-    next: nodeOff ? "— node off" : "in " + fmtDur(p.nextIn),
-    nextColor: nodeOff ? "var(--tx-3)" : p.nextIn < 900 ? "var(--warn)" : "var(--tx-2)",
-    last: p.last === "pending" ? "proof pending sealer" : "attested · daemon",
-    lastColor: p.last === "pending" ? "var(--warn)" : "var(--ok)",
-    rowClass: i === 0 && s.justSigned === "Pin bond" ? "cc-row-stroke" : "",
-  }));
-  const pinsEmpty = s.pins.length === 0;
-  const bonded = s.pins.reduce((a, p) => a + p.bond, 0);
-  const pinBonded = fmtI(bonded);
-  const pinCount = String(s.pins.length);
-  const pinProjected = fmt2(bonded * 0.0075);
-  const pinPassed = s.pins.length ? String(s.pins.length * 9 + 4) : "—";
-  const nextPin = s.pins.length && !nodeOff ? Math.min.apply(null, s.pins.map((p) => p.nextIn)) : null;
-  const pinNext = nextPin == null ? "—" : fmtDur(nextPin);
-  // Bonded pinning is NOT wired to a real transaction yet — there is no pinning
-  // daemon / PoSt sealer + grounded bond contract in-repo (the surface already
-  // flags the sealer seam separately). Be honest rather than fabricate a bond +
-  // debit the balance (Rule 1/3).
-  const onPinNew = () => {
-    const cid = pinCidEl.current ? pinCidEl.current.value.trim() : "";
-    const bond = parseFloat(pinBondEl.current ? pinBondEl.current.value : "");
-    if (!/^baf[a-z0-9]{6,}/i.test(cid)) return store.toast("Enter a CID (bafy…)");
-    if (!(bond >= 20)) return store.toast("Minimum bond is 20 SALT");
-    if (bond > s.liquid) return store.toast("Bond exceeds your liquid balance");
-    store.settleUnwired("Pin bond");
-  };
+  // C1-V V2: there is no heartbeat source. The node does not report one to the app and no
+  // slashing contract reads one, so the panel shows the unavailable state, never a seeded age.
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -350,11 +327,27 @@ export function Node({ store, s }: SurfaceProps) {
 
               <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
                 <span className="eyebrow">Validator</span>
+                {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
+                {s.hasGrant && (
+                  <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0, lineHeight: 1.5 }}>
+                    {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant })}
+                  </p>
+                )}
                 {/* W1.3 — once the node is synced (proposer.key minted), the member
                     can bond the 32k and become a block producer. staker = the EOA;
                     the tx is approved through the ceremony. Shown only in the
                     packaged app when synced-but-not-yet-validating. */}
-                {TAURI && s.node === "synced" && (
+                {/* C1-V2/C1-V4 and #348 review: only a bond that is not activated, with no registered
+                    stake, is offered activation; an Exiting / Slashed key, a registered stake that
+                    isn't active yet, or an unread status never is (canOfferActivation). */}
+                {TAURI && s.node === "synced" && !offerActivation && activationClosed && (
+                  <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }} title="MemberBond.isUnlocked(); MemberBond.activate reverts ActivationWindowClosed once it is true">
+                    {activationClosed === "activation window closed"
+                      ? "Activation unavailable · activation window closed: the bond is unlocked, so it can no longer be staked."
+                      : "Activation unavailable · bond lock not read yet."}
+                  </p>
+                )}
+                {TAURI && s.node === "synced" && offerActivation && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
@@ -382,33 +375,41 @@ export function Node({ store, s }: SurfaceProps) {
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
-                          Your node is synced and this wallet is linked to your identity. Activate it as a validator to
-                          bond your 32,000 SALT and start producing blocks + earning.
+                          Your node is synced and this wallet is linked to your identity. Activating stakes your membership
+                          bond in the ValidatorRegistry; the registry sets the epoch your validator becomes active, shown here once registered.
                         </p>
                         <button
                           className="btn btn-primary btn-sm"
                           style={{ alignSelf: "flex-start" }}
                           onClick={() => void store.activateValidator()}
                         >
-                          Activate validator · bond 32,000 SALT
+                          Activate validator · stake your bond
                         </button>
                       </>
                     )}
                   </>
                 )}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Registered</span>
-                  <span className="mono tabular" style={{ fontSize: 12, color: isRegisteredValidator ? "var(--ok)" : "var(--tx-3)" }}>
-                    {isRegisteredValidator ? `yes · ${fmtI(s.bondedStake)} SALT bonded` : "no"}
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Status</span>
+                  <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch, currentEpoch() and stakeOf(pubkey)">
+                    {vDash}
+                    {vWord === "Validator active" && (
+                      <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
+                    )}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Blocks proposed</span>
-                  <span className="mono tabular" style={{ fontSize: 12 }}>{blocksProposedStr}</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Your stake</span>
+                  <span className="mono tabular" style={{ fontSize: 12 }} title="ValidatorRegistry.stakeOf(pubkey)">
+                    {isRegisteredValidator ? `${fmtI(s.bondedStake)} SALT` : "—"}
+                  </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Election odds</span>
-                  <span className="mono tabular" style={{ fontSize: 12 }}>{electionStr}</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Producing</span>
+                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title={"distinct proposerPubkey in the " + (s.producers ? s.producers.window + " blocks sampled" : "sampled blocks") + " · rpc.citrate.ai"}>
+                    {producingStr}
+                    {pWord && s.producers && <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{producerWindowLabel(s.producers)}</span>}
+                  </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Supervised restarts</span>
@@ -462,128 +463,56 @@ export function Node({ store, s }: SurfaceProps) {
       {/* ===================== EARNING ===================== */}
       {s.nTab === "earn" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
-              <span className="eyebrow">Validation</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnValStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
-            </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
-              <span className="eyebrow">Pinning</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnPinStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
-            </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
-              <span className="eyebrow">Compute</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnCompStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
-            </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, borderColor: "var(--accent)" }}>
-              <span className="eyebrow" style={{ color: "var(--accent-text)" }}>Claimable</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26, color: "var(--accent-text)" }}>{claimStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: s.earnSource === "chain" ? "var(--ok)" : "var(--tx-3)" }}>{claimSourceStr}</span>
-              <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
-                Claim
-              </button>
-            </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+            {(
+              [
+                ["Validator rewards", rTotal],
+                ["Claimable now", rClaim],
+                ["Maturing", rMaturing],
+              ] as [string, number | null][]
+            ).map(([label, v]) => (
+              <div key={label} className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, borderColor: label === "Claimable now" ? "var(--accent)" : undefined }}>
+                <span className="eyebrow" style={label === "Claimable now" ? { color: "var(--accent-text)" } : undefined}>{label}</span>
+                <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26, color: label === "Claimable now" && v != null ? "var(--accent-text)" : undefined }}>
+                  {v == null ? "—" : fmt2(v)}
+                </span>
+                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>{v == null ? rewardsReason : "SALT · " + rewardsSrc}</span>
+                {label === "Claimable now" && (
+                  <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
+                    Claim
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
           <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0 }}>
-            {claimNote} The single Claimable figure is the on-chain ContributionAccounting.claimable(address) balance; the per-source split above is an off-chain estimate the contract does not expose. Claiming signs the unsigned claimRewards() request through the ceremony.
+            {claimNote} All three figures are read from {rewardsSrc}: rewards for producing blocks, paid to the producer. Maturing rewards stay slashable for 4 epochs before they become claimable. Claiming signs the unsigned claimRewards() request through the ceremony.
           </p>
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <span style={{ fontSize: 13.5, fontWeight: 500 }}>Heartbeat</span>
-              <span className="mono tabular" style={{ fontSize: 12, color: hbColor }}>{hbStr}</span>
-            </div>
-            <div style={{ height: 5, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
-              <div style={{ height: "100%", background: hbColor, width: hbBarW, transition: "width .5s linear" }}></div>
+              <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-3)" }}>—</span>
             </div>
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              The 30-second heartbeat is your slashing protection while jobs run — it proves liveness to NematocystSlashing. The supervisor preserves heartbeat continuity across restarts.
+              no heartbeat reading: the node does not report a heartbeat to this app yet.
             </p>
           </div>
         </div>
       )}
 
-      {/* ===================== PINNING ([SEAM] — PoSt sealer pending) ===================== */}
+      {/* ===================== PINNING (dormant on 40204) ===================== */}
       {s.nTab === "pin" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-2)", padding: "12px 16px" }}>
-            <span style={{ fontSize: 12.5, color: "var(--warn)" }}>
-              Proof submission is not yet available in-app — the PoSt sealer sidecar is pending upstream. Plans, bonds, and challenge state below are live daemon state.
+          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>Pin bonds not live yet</span>
+            <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+              The pin bond contract (IPFSIncentivesV3) is deployed on betanet but not funded, and no pins exist. Bonds, challenges and pin rewards appear here
+              once pin bonds go live. Until then nothing here is bonded.
+            </p>
+            <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+              source · IPFSIncentivesV3 · address book 40204
             </span>
           </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Bonded</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinBonded}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>SALT across {pinCount} pins</span>
-            </div>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Projected</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinProjected}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>SALT / month at current demand</span>
-            </div>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Challenges</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinPassed}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>passed · 0 failed · 0 slashed</span>
-            </div>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Next window</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinNext}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>daemon answers challenges itself</span>
-            </div>
-          </div>
-
-          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 500 }}>Pin a CID</span>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
-              <span>
-                <span className="lbl">Content identifier</span>
-                <input ref={pinCidEl} className="input mono" placeholder="bafy…" />
-              </span>
-              <span>
-                <span className="lbl">Bond · SALT</span>
-                <input ref={pinBondEl} className="input mono" placeholder="120" type="number" />
-              </span>
-              <button className="btn btn-secondary" onClick={onPinNew}>
-                Plan &amp; sign
-              </button>
-            </div>
-            <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
-              The daemon plans the pin (replication, bond sizing, challenge cadence) and surfaces the decision as an unsigned request — bonds never move without your signature. Bonds are slashable on failed challenges.
-            </p>
-          </div>
-
-          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.6fr .7fr .9fr 1fr 1fr", gap: 12, padding: "10px 16px", borderBottom: "1px solid var(--line-strong)" }}>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Pinned CID</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Bond</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Cadence</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Next challenge</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Last proof</span>
-            </div>
-            {pinsEmpty && (
-              <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-                No pins yet. Plan your first pin above — the PIN daemon takes it from bond to challenge, and income lands in Earning.
-              </p>
-            )}
-            {pinRows.map((pn, i) => (
-              <div key={i} className={pn.rowClass} style={{ display: "grid", gridTemplateColumns: "1.6fr .7fr .9fr 1fr 1fr", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "center" }}>
-                <span className="mono" style={{ fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pn.cid}</span>
-                <span className="mono tabular" style={{ fontSize: 12 }}>{pn.bond}</span>
-                <span className="mono" style={{ fontSize: 11, color: "var(--tx-2)" }}>{pn.cadence}</span>
-                <span className="mono tabular" style={{ fontSize: 11, color: pn.nextColor }}>{pn.next}</span>
-                <span className="mono" style={{ fontSize: 11, color: pn.lastColor }}>{pn.last}</span>
-              </div>
-            ))}
-          </div>
-
-          <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0 }}>
-            Every pin action is a plan_pin() decision surfaced for your signature — bonds never move without you. Challenge responses run in the daemon while proofs await the sealer sidecar.
-          </p>
         </div>
       )}
     </div>
