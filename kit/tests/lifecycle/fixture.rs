@@ -69,7 +69,8 @@ pub struct CleanupReport {
     pub foreign: Vec<u32>,
     /// Marked processes found by the final sweep that were not in the record. Killed.
     pub swept: Vec<u32>,
-    /// Marked processes still alive after cleanup (should always be empty).
+    /// Marked processes still alive after cleanup, plus recorded children of this process that
+    /// exited but were never reaped (should always be empty).
     pub leftover: Vec<u32>,
 }
 
@@ -361,8 +362,13 @@ impl OwnedFixture {
             .chain(report.swept.iter())
             .copied()
             .collect();
+        // A recorded pid that exited but is still an unreaped child of this process was never
+        // waited for by its supervisor: that is a leftover too, not a clean exit. Give an owner
+        // that is still running the same window to reap it.
         let _ = wait_for(Duration::from_secs(5), Duration::from_millis(20), || {
-            targets.iter().all(|p| !pid_alive(*p)).then_some(())
+            let running = targets.iter().any(|p| pid_alive(*p));
+            let unreaped = report.recorded.iter().any(|p| unreaped_child(*p));
+            (!running && !unreaped).then_some(())
         });
         // A last sweep for anything that became visible only now (a shell that was mid-exec
         // during the sweep above); it is killed and counted as swept, not left over.
@@ -378,6 +384,11 @@ impl OwnedFixture {
             all.iter().all(|p| !pid_alive(*p)).then_some(())
         });
         report.leftover = all.into_iter().filter(|p| pid_alive(*p)).collect();
+        for &p in &report.recorded {
+            if unreaped_child(p) && !report.leftover.contains(&p) {
+                report.leftover.push(p);
+            }
+        }
         for p in self.live_marked() {
             if !report.leftover.contains(&p) {
                 report.leftover.push(p);
@@ -416,14 +427,33 @@ impl Drop for OwnedFixture {
 
 /// Whether `pid` names a live process. A zombie (exited, not yet reaped) is not alive.
 pub fn pid_alive(pid: u32) -> bool {
+    pid_exists(pid) && !is_zombie(pid)
+}
+
+/// Whether a supervised child is fully gone after a Stop, a Drop or a crash: the supervisor has
+/// reaped it, so it no longer exists even as a zombie. Use this, not `!pid_alive`, to assert
+/// reaping: an exited child that nobody waited for is not alive, but it is not reaped either.
+pub fn pid_reaped(pid: u32) -> bool {
+    !pid_exists(pid)
+}
+
+/// Whether `pid` exists in any state, a zombie (exited, not yet reaped) included.
+pub fn pid_exists(pid: u32) -> bool {
     let Some(target) = positive_pid(pid) else {
         return false;
     };
     // SAFETY: kill(target, 0) on a positive pid checks existence and permission without
     // delivering a signal.
-    let exists = unsafe { libc::kill(target, 0) } == 0
-        || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-    exists && !is_zombie(pid)
+    let rc = unsafe { libc::kill(target, 0) };
+    rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Whether `pid` is an exited child of this test process that nobody has waited for. In this
+/// suite that is a supervised child the supervisor failed to reap (the guard reaps its own).
+pub fn unreaped_child(pid: u32) -> bool {
+    is_zombie(pid)
+        && ps_field(pid, "ppid=").and_then(|s| s.trim().parse::<u32>().ok())
+            == Some(std::process::id())
 }
 
 /// `pid` as a positive `pid_t`, or `None` for 0 (the caller's process group) and values above

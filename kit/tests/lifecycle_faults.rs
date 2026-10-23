@@ -21,7 +21,9 @@ use citrate_core_kit::supervisor::{
     BackoffPolicy, ChildWatch, ControlResult, ControlToken, Desired, HealthCheck, Phase, Receipt,
     Supervisor, SupervisorConfig, SupervisorState,
 };
-use lifecycle::fixture::{pgrep, pid_alive, sleep_bin, OwnedFixture, SUITE_PREFIX};
+use lifecycle::fixture::{
+    pgrep, pid_alive, pid_reaped, sh_bin, sleep_bin, OwnedFixture, SUITE_PREFIX,
+};
 use lifecycle::timing::{hold_for, sample_over, wait_for, Deadline};
 
 /// How long a fixture waits to acquire what it needs before it gives up as INCONCLUSIVE. Long,
@@ -198,6 +200,39 @@ fn harness_never_signals_pid_zero_or_a_wrapping_pid() {
     );
 }
 
+/// An exited child that nobody has waited for is not reaped. The check the supervisor fixtures
+/// use for "Stop, Drop or a crash reaped the child" must fail on it, and cleanup must report it
+/// as left behind; once it is waited for, both pass.
+#[test]
+fn harness_unreaped_child_fails_the_reaped_check() {
+    let fx = OwnedFixture::new("zombie");
+    let mut child = std::process::Command::new(sh_bin())
+        .args(["-c", "exit 0", fx.marker()])
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: cannot spawn the child: {e}"));
+    let pid = child.id();
+    // It exits at once; until we wait for it, it stays a zombie of this process.
+    let exited = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        (!pid_alive(pid)).then_some(())
+    });
+    let reaped_while_unwaited = pid_reaped(pid);
+    fx.record(pid);
+    let report = fx.cleanup();
+    let _ = child.wait();
+    let reaped_after_wait = pid_reaped(pid);
+    assert!(exited.is_ok(), "INCONCLUSIVE: the child never exited");
+    assert!(
+        !reaped_while_unwaited,
+        "an exited, unwaited child is not reported as reaped"
+    );
+    assert!(
+        report.leftover.contains(&pid),
+        "cleanup reports the unreaped child as left behind: {report:?}"
+    );
+    assert!(reaped_after_wait, "once waited for, the child is reaped");
+}
+
 /// Waits and observation windows are measured on the monotonic clock and never end early.
 #[test]
 fn harness_timing_windows_are_monotonic_and_never_short() {
@@ -267,7 +302,10 @@ fn pc_fresh_start_creates_exactly_one_incarnation() {
     assert_eq!(fx.pidfile_pids(), vec![pid]);
     assert_eq!(sup.status().restarts, 0);
     drop(sup);
-    assert!(!pid_alive(pid), "dropping the supervisor ends the child");
+    assert!(
+        pid_reaped(pid),
+        "dropping the supervisor ends and reaps the child"
+    );
     fx.assert_clean();
 }
 
@@ -284,7 +322,7 @@ fn pc_single_stop_ends_the_child_and_stays_off() {
     let st = sup.status();
     assert_eq!(st.state, SupervisorState::Off);
     assert_eq!(st.pid, None);
-    assert!(!pid_alive(pid), "the child is gone after Stop returns");
+    assert!(pid_reaped(pid), "the child is reaped when Stop returns");
     let samples = sample_over(Duration::from_secs(2), Duration::from_millis(100), || {
         (fx.pidfile_pids().len(), sup.status().state)
     });
@@ -320,7 +358,7 @@ fn pc_crash_respawns_a_distinct_incarnation() {
         second.is_ok(),
         "the new incarnation is the one reported Running"
     );
-    assert!(!pid_alive(first));
+    assert!(pid_reaped(first), "the crashed incarnation was reaped");
     assert!(sup.status().restarts >= 1);
     drop(sup);
     fx.assert_clean();
@@ -458,8 +496,8 @@ fn concurrent_stops_during_teardown_never_respawn() {
         let _ = t.join();
     }
     assert!(
-        !pid_alive(pid),
-        "the child is gone after every Stop returned"
+        pid_reaped(pid),
+        "the child is reaped after every Stop returned"
     );
     let samples = sample_over(Duration::from_secs(2), Duration::from_millis(50), || {
         let st = sup.status();
@@ -520,7 +558,7 @@ fn repeated_stop_joins_receipt() {
         matches!(&receipt, Receipt::Complete { scope } if scope.iter().any(|s| s == "child")),
         "{receipt:?}"
     );
-    assert!(!pid_alive(pid));
+    assert!(pid_reaped(pid), "a Complete Stop has reaped the child");
     let snap = sup
         .lifecycle()
         .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
@@ -632,7 +670,7 @@ fn stop_with_a_held_reader_is_incomplete_and_quarantined() {
         Ok((r, _)) => r,
         Err(e) => panic!("INCONCLUSIVE: the Stop never settled within {:?}", e.waited),
     };
-    assert!(!pid_alive(parent), "the direct child is gone");
+    assert!(pid_reaped(parent), "the direct child is reaped");
     assert!(
         pid_alive(descendant),
         "INCONCLUSIVE: the descendant should still hold the pipe"
@@ -705,9 +743,12 @@ fn start_during_held_reader_teardown_waits_for_cleanup() {
         || (fx.pidfile_pids().len(), sup.lifecycle().map(|l| l.phase)),
     );
     let torn_down = wait_for(ACQUIRE, Duration::from_millis(20), || {
-        (!pid_alive(parent)).then_some(())
+        pid_reaped(parent).then_some(())
     });
-    assert!(torn_down.is_ok(), "the old direct child was torn down");
+    assert!(
+        torn_down.is_ok(),
+        "the old direct child was torn down and reaped"
+    );
     assert!(
         pid_alive(descendant),
         "INCONCLUSIVE: the descendant should still hold the pipe"
@@ -917,7 +958,7 @@ fn start_after_shutdown_is_rejected_closing() {
     .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     let pid = running_pid(&sup, &fx);
     sup.shutdown();
-    assert!(!pid_alive(pid));
+    assert!(pid_reaped(pid), "shutdown reaps the child");
     assert_eq!(sup.request_start(), ControlResult::RejectedClosing);
     hold_for(Duration::from_millis(300));
     assert_eq!(fx.pidfile_pids().len(), 1, "no child after Closing");

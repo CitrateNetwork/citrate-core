@@ -9,7 +9,7 @@ import type { SimHost } from "./index";
 
 export function simTelemetry(_host: SimHost): TelemetryDomain {
   return {
-    async bundle(uiErrors: string[]): Promise<DiagnosticBundle> {
+    async bundle(uiErrors: string[], joinSteps: string[] = []): Promise<DiagnosticBundle> {
       return {
         reportId: "rpt_preview",
         appVersion: typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.0.0",
@@ -17,6 +17,7 @@ export function simTelemetry(_host: SimHost): TelemetryDomain {
         crashTail: "",
         nodeLogTail: "",
         uiErrors,
+        joinSteps,
       };
     },
     async send(): Promise<void> {
