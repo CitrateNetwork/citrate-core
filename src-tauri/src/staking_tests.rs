@@ -613,8 +613,10 @@ fn a_failed_window_is_an_error_not_an_empty_list() {
 // "still reading", never a list that claims to be whole.
 #[test]
 fn an_unfinished_scan_is_reported_as_still_reading() {
+    // Virtual clock (#409): each citrate_getLogs answer takes 2 s, so one call's budget covers a
+    // few of the 30 windows and the scan spans several calls.
     let node = Node::new(30_000, vec![(2, 25_000, false)]);
-    node.logs_delay.set(std::time::Duration::from_millis(2));
+    let clock = on_clock(&node, &[("citrate_getLogs", 2.0), ("batch", 0.5), ("citrate_isExecuted", 0.5)]);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
     let past = std::time::Instant::now();
@@ -622,9 +624,10 @@ fn an_unfinished_scan_is_reported_as_still_reading() {
     assert!(matches!(err, StakingError::OutOfBudget), "{err:?}");
     assert!(err.to_string().contains("still reading chain history"), "{err}");
     let mut done = None;
+    let mut calls = 0;
     for _ in 0..100 {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5);
-        let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect("read");
+        let rows = timed_call(&rpc, &clock, &mut scan).expect("read");
+        calls += 1;
         if scan.last_read_complete {
             done = Some(rows);
             break;
@@ -635,6 +638,7 @@ fn an_unfinished_scan_is_reported_as_still_reading() {
         assert!(note.contains("reading chain history") || note.contains("reading withdrawal details"), "{note}");
     }
     assert_eq!(ids_of(&done.expect("finishes")), vec!["2"]);
+    assert!(calls > 2, "the scan is spread over calls ({calls})");
     assert!(scan.last_read_confirmed);
 }
 
@@ -842,12 +846,13 @@ fn a_spent_budget_makes_no_rpc_call() {
 // confirmed, nothing committed, and the note says how far it read.
 #[test]
 fn a_budget_stop_without_citrate_get_logs_returns_what_it_found() {
+    // Virtual clock (#409): 2 s per eth_getLogs answer, so the call stops after a few windows of
+    // a 50 000 000-block history.
     let node = Node::today(50_000_000, vec![(3, 600, false)]);
-    node.logs_delay.set(std::time::Duration::from_millis(2));
+    let clock = on_clock(&node, &[("eth_getLogs", 2.0), ("citrate_getLogs", 0.1), ("batch", 0.5)]);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(30);
-    let rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).expect("rows");
+    let rows = timed_call(&rpc, &clock, &mut scan).expect("rows");
     assert_eq!(ids_of(&rows), vec!["3"]);
     assert!(!scan.last_read_complete && !scan.last_read_confirmed);
     assert!(scan.last_read_note.clone().unwrap_or_default().contains("reading chain history"));
@@ -958,23 +963,24 @@ fn a_node_behind_the_head_is_never_confirmed() {
 #[test]
 fn withdrawal_detail_reads_resume_across_calls() {
     let w: Vec<(u128, u64, bool)> = (1..=251u128).map(|i| (i, 500 + i as u64, false)).collect();
+    // Virtual clock (#409): each batch takes 6 s (the RPC timeout), so the production budget fits
+    // three of the six batches per call.
     let node = Node::new(2_000, w);
-    node.batch_delay.set(std::time::Duration::from_millis(40));
+    let clock = on_clock(&node, &[("batch", 6.0)]);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
     let mut rows = Vec::new();
     let mut calls = 0;
     for _ in 0..20 {
         calls += 1;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(90);
-        rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, Some(deadline)).unwrap_or_default();
+        rows = timed_call(&rpc, &clock, &mut scan).expect("read");
         if scan.last_read_complete {
             break;
         }
     }
     assert!(scan.last_read_complete, "the detail reads finish");
     assert_eq!(rows.len(), 251);
-    assert!(calls <= 6, "{calls} calls");
+    assert!((2..=6).contains(&calls), "the reads span calls, in a bounded number: {calls}");
     assert_eq!(rpc.transport().batches(), 6, "each id read once: no restart from the first id");
 }
 
@@ -983,23 +989,24 @@ fn withdrawal_detail_reads_resume_across_calls() {
 // read forward across calls until it reaches the head.
 #[test]
 fn probe_5_a_session_cursor_reaches_the_head_and_found_rows_are_shown() {
+    // On the virtual clock (no wall time): each eth_getLogs answer takes 3 s, so one call's
+    // budget covers a few windows of the 30 000-block history and the read spans several calls.
     let (dir, file) = scan_file("probe5");
+    let costs = [("eth_getLogs", 3.0), ("citrate_getLogs", 0.1), ("batch", 0.5)];
     let node = Node::today(30_000, vec![(1, 900, false), (2, 29_000, false)]);
-    node.logs_delay.set(std::time::Duration::from_millis(3));
+    let clock = on_clock(&node, &costs);
     let rpc = RpcClient::with_transport(node);
     let mut scan = WithdrawalScan::default();
-    let budget = || Some(std::time::Instant::now() + std::time::Duration::from_millis(12));
-    let first = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, budget()).unwrap_or_default();
+    let first = timed_call(&rpc, &clock, &mut scan).expect("first call");
     assert_eq!(ids_of(&first), vec!["1"], "the row found in the first call is shown");
     assert!(!scan.last_read_confirmed && !scan.last_read_complete);
     let mut starts = vec![rpc.transport().log_reads()[1].1];
     let mut seen = rpc.transport().log_reads().len();
     let mut rows = first;
-    for _ in 0..60 {
-        if scan.last_read_complete {
-            break;
-        }
-        rows = read_pending_withdrawals_with(&rpc, STAKER_ADDR, &mut scan, budget()).unwrap_or_default();
+    let mut calls = 1;
+    while !scan.last_read_complete && calls < 60 {
+        rows = timed_call(&rpc, &clock, &mut scan).expect("an incomplete read is an answer");
+        calls += 1;
         let reads: Vec<_> = rpc.transport().log_reads().into_iter().skip(seen).filter(|r| r.0 == "eth_getLogs").collect();
         if let Some(r) = reads.first() {
             starts.push(r.1);
@@ -1007,13 +1014,16 @@ fn probe_5_a_session_cursor_reaches_the_head_and_found_rows_are_shown() {
         seen = rpc.transport().log_reads().len();
     }
     assert!(scan.last_read_complete, "the session cursor reaches the head");
+    assert!(calls > 2, "the history is read over several calls ({calls})");
     assert_eq!(ids_of(&rows), vec!["1", "2"]);
     assert!(starts.windows(2).all(|w| w[1] > w[0]), "each call starts further on: {starts:?}");
     assert_eq!(scan.cursor(), None, "nothing is committed");
     save_scan(&file, "k", &scan).expect("save");
     let mut relaunched = load_scan(&file, "k");
-    let fresh = RpcClient::with_transport(Node::today(30_000, vec![(1, 900, false), (2, 29_000, false)]));
-    read_pending_withdrawals_with(&fresh, STAKER_ADDR, &mut relaunched, budget()).unwrap_or_default();
+    let fresh_node = Node::today(30_000, vec![(1, 900, false), (2, 29_000, false)]);
+    let fresh_clock = on_clock(&fresh_node, &costs);
+    let fresh = RpcClient::with_transport(fresh_node);
+    timed_call(&fresh, &fresh_clock, &mut relaunched).expect("relaunched read");
     let plain: Vec<_> = fresh.transport().log_reads().into_iter().filter(|r| r.0 == "eth_getLogs").collect();
     assert_eq!(plain[0].1, LIQUID_STAKING_POOL_DEPLOY_BLOCK, "the session cursor is not saved");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1304,8 +1314,6 @@ struct Node {
     log_read_count: Cell<usize>,
     /// `withdrawals(id)` reads `claimed = false` for these (a claim that was reorged out).
     unclaim: RefCell<std::collections::HashSet<u128>>,
-    logs_delay: Cell<std::time::Duration>,
-    batch_delay: Cell<std::time::Duration>,
     /// A virtual clock the scan reads its deadline from (#371 @66b6fd4): each request advances it
     /// by `vcost` of its method ("batch" for a JSON-RPC batch), the way a slow answer just under
     /// the 6 s RPC timeout would, and its start is recorded. No test sleeps for real.
@@ -1336,8 +1344,6 @@ impl Node {
             fork_at_read: Cell::new(None),
             log_read_count: Cell::new(0),
             unclaim: RefCell::new(Default::default()),
-            logs_delay: Cell::new(std::time::Duration::ZERO),
-            batch_delay: Cell::new(std::time::Duration::ZERO),
             vclock: RefCell::new(None),
             vcost: RefCell::new(Default::default()),
             vstarts: RefCell::new(Vec::new()),
@@ -1453,7 +1459,6 @@ impl Node {
         if let Some(Some(raw)) = self.getlogs_raw.borrow_mut().pop_front() {
             return Ok(raw);
         }
-        std::thread::sleep(self.logs_delay.get());
         let (from, to) = (hex_q(&f["fromBlock"]), hex_q(&f["toBlock"]));
         if let Some(at) = self.fail_at.get() {
             if from <= at && at <= to {
@@ -1508,7 +1513,6 @@ impl Node {
             self.budget_exceeded.set(self.budget_exceeded.get() - 1);
             return Ok(Node::err(-32005, "Method budget exceeded. Reduce call frequency for expensive methods.", JsonValue::Null));
         }
-        std::thread::sleep(self.logs_delay.get());
         let from = hex_q(&f["fromBlock"]);
         let mut to = hex_q(&f["toBlock"]);
         if let Some(at) = self.fail_at.get() {
@@ -1605,7 +1609,6 @@ impl RpcTransport for Node {
             clock.at.set(clock.at.get() + cost);
         }
         if let Some(batch) = body.as_array() {
-            std::thread::sleep(self.batch_delay.get());
             let mut out = Vec::new();
             for b in batch {
                 let mut r = self.one(b.clone())?;
@@ -2131,6 +2134,66 @@ fn slow_checkpoint_recovery_ends_the_call_before_the_ipc_deadline_and_resumes() 
     assert_eq!(restarts, 1, "the recovery resumed from the confirmed checkpoint, not the deployment block");
 }
 
+// #401 (Codex round 10): wallet_pending_withdrawals merges each call's scan into the in-memory
+// cache (and save_scan into the file). During a slow recovery both scans have the same generation
+// and no cursor; the merge must keep the one that tried more checkpoints, or every call checks the
+// same newest checkpoints again and never reaches the valid one.
+#[test]
+fn a_slow_recovery_progresses_through_the_command_merges() {
+    for through_file in [false, true] {
+        let (dir, file) = scan_file(if through_file { "rec401f" } else { "rec401m" });
+        let node = Node::new(20_000, vec![(1, 1_000, false), (2, 19_000, false)]);
+        let rpc = RpcClient::with_transport(node);
+        let mut cached = WithdrawalScan::default();
+        read_all(&rpc, &mut cached);
+        save_scan(&file, "k", &cached).expect("save");
+        rpc.transport().fork.set(Some((4_500, 0xB)));
+        let clock = on_clock(rpc.transport(), &[("citrate_isExecuted", 2.0), ("citrate_getLogs", 0.5)]);
+        let mut rows = Vec::new();
+        let mut complete = false;
+        for _ in 0..20 {
+            // What the command does: start from the cache (or, after a relaunch, the file), read,
+            // then merge the result into the cache and the file.
+            let mut scan = if through_file { load_scan(&file, "k") } else { cached.clone() };
+            rows = timed_call(&rpc, &clock, &mut scan).expect("an incomplete read is an answer");
+            complete = scan.last_read_complete;
+            cached = merge_scans(&cached, &scan);
+            save_scan(&file, "k", &scan).expect("save");
+            if complete {
+                break;
+            }
+        }
+        assert!(complete, "through_file={through_file}: the recovery never got past the newest checkpoints");
+        assert_eq!(ids_of(&rows), vec!["1"], "through_file={through_file}");
+        let kept = if through_file { load_scan(&file, "k") } else { cached.clone() };
+        assert_eq!(kept.cursor(), Some((20_000, branch_hash(0xB, 20_000))), "through_file={through_file}");
+        assert!(!kept.recovering, "through_file={through_file}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// Merge order inside one recovery: the scan that tried more checkpoints leads, whichever side.
+#[test]
+fn a_merge_during_recovery_keeps_the_further_recovery() {
+    let cps: Vec<ScanCursor> = [1_426u64, 2_426, 3_426, 4_426].iter().map(|n| ScanCursor { number: *n, hash: stub_hash(*n) }).collect();
+    let recovering = |left: usize| WithdrawalScan {
+        cursor: None,
+        rows: [(1u128, 1_000u64), (2, 4_000)].into_iter().collect(),
+        checkpoints: cps[..left].to_vec(),
+        generation: 3,
+        recovering: true,
+        ..Default::default()
+    };
+    let (behind, ahead) = (recovering(4), recovering(2));
+    assert_eq!(merge_scans(&behind, &ahead).checkpoints.len(), 2);
+    assert_eq!(merge_scans(&ahead, &behind).checkpoints.len(), 2);
+    // A recovery that finished with nothing confirmed (start over, no checkpoints) is further than
+    // one still trying.
+    let restarted = WithdrawalScan { generation: 3, ..Default::default() };
+    assert!(!merge_scans(&behind, &restarted).recovering);
+    assert!(!merge_scans(&restarted, &behind).recovering);
+}
+
 // Codex P2 #2: the plain eth_getLogs read (no citrate_getLogs) is bounded the same way.
 #[test]
 fn a_slow_plain_log_fallback_ends_the_call_before_the_ipc_deadline_and_resumes() {
@@ -2315,4 +2378,51 @@ fn a_failed_read_carries_a_structured_kind() {
     assert_eq!(wire["kind"], "scanning");
     assert_eq!(wire["message"], StakingError::OutOfBudget.to_string());
     assert_eq!(serde_json::to_value(pending_read_error(&StakingError::Indexing("x".into()))).expect("serializes")["kind"], "indexing");
+}
+
+// ---------------------------------------------------------------------------
+// TRIPWIRE (#409): no staking test runs on wall time. A real-time budget (a deadline in the
+// future of `Instant::now()`) or a real sleep in the test node makes the outcome depend on machine
+// load: probe_5 failed 3 runs in 4 under load with a 12 ms budget. Budgets go on the virtual clock
+// (`on_clock` + `timed_call`); an already spent deadline (`Instant::now()`, or earlier) is fine.
+// ---------------------------------------------------------------------------
+fn wall_time_budgets(src: &str) -> Vec<String> {
+    // Built from pieces so this function's own text does not match.
+    let banned = [
+        ("Instant::now()".to_string() + " +", "a real-time deadline in the future"),
+        ("thread::".to_string() + "sleep(", "a real sleep"),
+        (".elapsed".to_string() + "()", "a wall-clock measurement"),
+    ];
+    let mut bad = Vec::new();
+    for (n, line) in src.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for (pat, why) in &banned {
+            if line.contains(pat.as_str()) {
+                bad.push(format!("staking_tests.rs:{}: {why}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    bad
+}
+
+#[test]
+fn tripwire_no_staking_test_uses_a_real_time_budget() {
+    let bad = wall_time_budgets(include_str!("staking_tests.rs"));
+    assert!(bad.is_empty(), "use the virtual clock (on_clock / timed_call): {bad:#?}");
+}
+
+#[test]
+fn tripwire_catches_a_real_time_budget() {
+    // Negative control: the shapes the tests used before #409.
+    let shapes = [
+        concat!("let deadline = std::time::Instant::now()", " + std::time::Duration::from_millis(5);"),
+        concat!("let budget = || Some(std::time::Instant::now()", " + std::time::Duration::from_millis(12));"),
+        concat!("std::thread::", "sleep(self.logs_delay.get());"),
+    ];
+    for src in shapes {
+        assert_eq!(wall_time_budgets(src).len(), 1, "{src}");
+    }
+    assert!(wall_time_budgets("let past = std::time::Instant::now();").is_empty(), "a spent deadline is fine");
 }
