@@ -1134,10 +1134,13 @@ mod tests {
     #[test]
     fn token_response_debug_carries_no_token() {
         let tok: super::TokenResp =
-            serde_json::from_str(r#"{"access_token":"dsc_live_token_789","scope":"identify"}"#)
+            serde_json::from_str(r#"{"access_token":"FIXTURE-SOCIAL-VALUE","scope":"identify"}"#)
                 .unwrap();
         let dbg = format!("{tok:?}");
-        assert!(!dbg.contains("dsc_live_token_789"), "token in Debug: {dbg}");
+        assert!(
+            !dbg.contains("FIXTURE-SOCIAL-VALUE"),
+            "token in Debug: {dbg}"
+        );
     }
 
     use super::*;
