@@ -35,8 +35,26 @@ pub struct AppConfig {
     /// domain. `#[serde(default)]` so a config.json persisted BEFORE this field
     /// existed still deserializes (it takes the prod default) — otherwise a
     /// pre-D3.C on-disk store would fail `config_read`.
-    #[serde(rename = "coreMembershipUrl", default = "default_core_membership_url")]
+    ///
+    /// A stored value is read through the host pin ([`pinned_membership_url`]): one outside
+    /// [`CORE_MEMBERSHIP_HOSTS`] reads back as the default.
+    #[serde(
+        rename = "coreMembershipUrl",
+        default = "default_core_membership_url",
+        deserialize_with = "pinned_membership_url"
+    )]
     pub core_membership_url: String,
+}
+
+/// Deserialize a stored membership URL through the host pin: a value that fails
+/// [`is_valid_core_membership_url`] reads back as the default.
+fn pinned_membership_url<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let v = String::deserialize(d)?;
+    Ok(if is_valid_core_membership_url(&v) {
+        v
+    } else {
+        default_core_membership_url()
+    })
 }
 
 /// The prod core-membership base URL default (also the serde backfill for a
@@ -165,9 +183,14 @@ impl AppConfig {
         format!("{}/api/enterprise/lead", self.membership_base())
     }
 
-    /// The membership base every membership URL is built from (trailing slash trimmed).
-    fn membership_base(&self) -> &str {
-        self.core_membership_url.trim_end_matches('/')
+    /// The membership base every membership URL is built from (trailing slash trimmed). It is
+    /// pinned again here, so a value that reached the struct any other way is never used.
+    fn membership_base(&self) -> String {
+        if is_valid_core_membership_url(&self.core_membership_url) {
+            self.core_membership_url.trim_end_matches('/').to_string()
+        } else {
+            default_core_membership_url()
+        }
     }
 }
 
@@ -463,10 +486,9 @@ mod tests {
             "https://membership.citrate.ai/api/enterprise/lead"
         );
         // A pinned stored value is kept.
-        let ok: AppConfig = serde_json::from_value(serde_json::json!({
-            "coreMembershipUrl": "https://core-membership.vercel.app/"
-        }))
-        .unwrap();
+        let mut stored_ok = serde_json::to_value(AppConfig::default()).unwrap();
+        stored_ok["coreMembershipUrl"] = "https://core-membership.vercel.app/".into();
+        let ok: AppConfig = serde_json::from_value(stored_ok).unwrap();
         assert_eq!(
             ok.checkout_url(),
             "https://core-membership.vercel.app/checkout"
@@ -479,16 +501,23 @@ mod tests {
     fn every_membership_url_goes_through_the_host_pin() {
         let src = include_str!("config.rs");
         let prod = &src[..src.find("#[cfg(test)]").expect("tests")];
-        let reads: Vec<&str> = prod
-            .lines()
-            .filter(|l| l.contains("self.core_membership_url"))
-            .map(str::trim)
-            .collect();
-        assert_eq!(
-            reads.len(),
-            2,
-            "only apply's write and membership_base may touch the field: {reads:?}"
-        );
+        // Outside `apply` (which writes a value it has pinned) and `membership_base` (which pins it
+        // again), nothing reads the stored field.
+        let body_of = |sig: &str| {
+            let at = prod.find(sig).expect(sig);
+            let rest = &prod[at..];
+            at..at + rest.find("\n    }\n").expect("end")
+        };
+        let allowed = [body_of("pub fn apply("), body_of("fn membership_base(")];
+        let mut at = 0;
+        while let Some(i) = prod[at..].find("self.core_membership_url") {
+            let pos = at + i;
+            assert!(
+                allowed.iter().any(|r| r.contains(&pos)),
+                "the stored membership URL is read outside apply/membership_base at byte {pos}"
+            );
+            at = pos + 1;
+        }
         let base = &prod[prod.find("fn membership_base(").expect("membership_base")..];
         let base = &base[..base.find("\n    }\n").expect("end")];
         assert!(
