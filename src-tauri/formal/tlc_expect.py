@@ -123,7 +123,55 @@ def self_test():
     good = cov == {"A": 0, "B": 7}
     ok = ok and good
     print(f"{'ok  ' if good else 'FAIL'} coverage parse: got {cov}")
-    return tla_frame_lint.self_test() and ok
+    return plan_self_test() and tla_frame_lint.self_test() and ok
+
+
+def discover_specs(formal=FORMAL):
+    """Every spec that has at least one config carrying an EXPECT line."""
+    return []
+
+
+def plan(specs, formal=FORMAL):
+    """Spec -> its config paths (green first), plus the errors that stop the run."""
+    plans, errors = {}, []
+    for spec in specs:
+        cfgs = [os.path.join(formal, f"{spec}.cfg")] + sorted(
+            glob.glob(os.path.join(formal, f"{spec}_*.cfg")))
+        plans[spec] = [c for c in cfgs if os.path.exists(c)]
+    return plans, errors
+
+
+def plan_self_test():
+    ok = True
+    want = ["AppExitCoordinator", "SidecarSupervisor"]
+    got = discover_specs()
+    good = got == want
+    ok = ok and good
+    print(f"{'ok  ' if good else 'FAIL'} discover: specs with EXPECT configs: got {got}")
+    plans, errors = plan(["NoSuchSpec"])
+    good = bool(errors)
+    ok = ok and good
+    print(f"{'ok  ' if good else 'FAIL'} plan: a spec with no configs is an error: got {errors}")
+    plans, errors = plan(["SidecarSupervisor"])
+    good = (not errors and plans["SidecarSupervisor"][0].endswith("SidecarSupervisor.cfg")
+            and len(plans["SidecarSupervisor"]) == len(glob.glob(
+                os.path.join(FORMAL, "SidecarSupervisor*.cfg"))))
+    ok = ok and good
+    print(f"{'ok  ' if good else 'FAIL'} plan: every SidecarSupervisor config, green first")
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "M.tla"), "w").write("---- MODULE M ----\n====\n")
+        open(os.path.join(d, "M.cfg"), "w").write("\\* EXPECT: pass\n")
+        open(os.path.join(d, "M_Mut.cfg"), "w").write("INIT Init\n")
+        open(os.path.join(d, "Other.cfg"), "w").write("INIT Init\n")
+        got = discover_specs(d)
+        good = got == ["M"]
+        ok = ok and good
+        print(f"{'ok  ' if good else 'FAIL'} discover: configs without EXPECT lines are not specs: got {got}")
+        _, errors = plan(["M"], d)
+        good = any("M_Mut" in e for e in errors)
+        ok = ok and good
+        print(f"{'ok  ' if good else 'FAIL'} plan: a config of a checked spec with no EXPECT line: got {errors}")
+    return ok
 
 
 def tlc_version():
