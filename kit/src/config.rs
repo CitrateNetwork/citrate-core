@@ -275,13 +275,15 @@ mod tests {
             "https://membership.citrate.ai/checkout"
         );
         let preview = AppConfig::default().apply(AppConfigPatch {
-            core_membership_url: Some("https://core-membership-preview.vercel.app/".into()),
+            core_membership_url: Some(
+                "https://core-membership-git-main-saulbuilds-projects.vercel.app/".into(),
+            ),
             ..Default::default()
         });
         // Trailing slash on the base does not produce a doubled `//checkout`.
         assert_eq!(
             preview.checkout_url(),
-            "https://core-membership-preview.vercel.app/checkout"
+            "https://core-membership-git-main-saulbuilds-projects.vercel.app/checkout"
         );
     }
 
@@ -366,14 +368,42 @@ mod tests {
         }
     }
 
+    /// Only the exact membership hosts are accepted. A host anyone can register on Vercel by naming
+    /// a project `core-membership-…` (a per-deployment URL, another team's branch alias, a look-alike
+    /// with our team slug in the name) is refused, and the previous value kept.
+    #[test]
+    fn registrable_vercel_hosts_are_rejected() {
+        let prev = AppConfig::default().core_membership_url;
+        for hostile in [
+            "https://core-membership-preview.vercel.app",
+            "https://core-membership-evil.vercel.app",
+            "https://core-membership-git-main-citrate.vercel.app",
+            "https://core-membership-git-main-attacker.vercel.app",
+            "https://core-membership-x-saulbuilds-projects.vercel.app",
+            "https://core-membership-6afvzy0qh-saulbuilds-projects.vercel.app",
+            "https://core-membership.vercel.app.evil.com",
+            "https://membership.citrate.ai.evil.com",
+            "https://evil-membership.citrate.ai",
+        ] {
+            let merged = AppConfig::default().apply(AppConfigPatch {
+                core_membership_url: Some(hostile.to_string()),
+                ..Default::default()
+            });
+            assert_eq!(
+                merged.core_membership_url, prev,
+                "{hostile:?} must be rejected"
+            );
+        }
+    }
+
     /// CORE-B-004: legitimate prod + Vercel preview hosts are still accepted, and
     /// the derived checkout URL always starts with `https://`.
     #[test]
     fn allowlisted_core_membership_urls_are_accepted_and_checkout_is_https() {
         for ok in [
+            "https://membership.citrate.ai",
             "https://core-membership.vercel.app",
-            "https://core-membership-preview.vercel.app",
-            "https://core-membership-git-main-citrate.vercel.app",
+            "https://core-membership-git-main-saulbuilds-projects.vercel.app",
         ] {
             let merged = AppConfig::default().apply(AppConfigPatch {
                 core_membership_url: Some(ok.to_string()),

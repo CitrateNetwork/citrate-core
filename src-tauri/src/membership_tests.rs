@@ -22,12 +22,12 @@ fn checkout_url_is_base_plus_checkout_path() {
     );
     // Override to a preview domain — the popup would navigate there instead.
     let preview = AppConfig::default().apply(AppConfigPatch {
-        core_membership_url: Some("https://core-membership-git-preview.vercel.app".into()),
+        core_membership_url: Some("https://core-membership-git-main-saulbuilds-projects.vercel.app".into()),
         ..Default::default()
     });
     assert_eq!(
         preview.checkout_url(),
-        "https://core-membership-git-preview.vercel.app/checkout"
+        "https://core-membership-git-main-saulbuilds-projects.vercel.app/checkout"
     );
 }
 
