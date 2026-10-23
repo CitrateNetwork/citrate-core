@@ -2135,6 +2135,66 @@ fn slow_checkpoint_recovery_ends_the_call_before_the_ipc_deadline_and_resumes() 
     assert_eq!(restarts, 1, "the recovery resumed from the confirmed checkpoint, not the deployment block");
 }
 
+// #401 (Codex round 10): wallet_pending_withdrawals merges each call's scan into the in-memory
+// cache (and save_scan into the file). During a slow recovery both scans have the same generation
+// and no cursor; the merge must keep the one that tried more checkpoints, or every call checks the
+// same newest checkpoints again and never reaches the valid one.
+#[test]
+fn a_slow_recovery_progresses_through_the_command_merges() {
+    for through_file in [false, true] {
+        let (dir, file) = scan_file(if through_file { "rec401f" } else { "rec401m" });
+        let node = Node::new(20_000, vec![(1, 1_000, false), (2, 19_000, false)]);
+        let rpc = RpcClient::with_transport(node);
+        let mut cached = WithdrawalScan::default();
+        read_all(&rpc, &mut cached);
+        save_scan(&file, "k", &cached).expect("save");
+        rpc.transport().fork.set(Some((4_500, 0xB)));
+        let clock = on_clock(rpc.transport(), &[("citrate_isExecuted", 2.0), ("citrate_getLogs", 0.5)]);
+        let mut rows = Vec::new();
+        let mut complete = false;
+        for _ in 0..20 {
+            // What the command does: start from the cache (or, after a relaunch, the file), read,
+            // then merge the result into the cache and the file.
+            let mut scan = if through_file { load_scan(&file, "k") } else { cached.clone() };
+            rows = timed_call(&rpc, &clock, &mut scan).expect("an incomplete read is an answer");
+            complete = scan.last_read_complete;
+            cached = merge_scans(&cached, &scan);
+            save_scan(&file, "k", &scan).expect("save");
+            if complete {
+                break;
+            }
+        }
+        assert!(complete, "through_file={through_file}: the recovery never got past the newest checkpoints");
+        assert_eq!(ids_of(&rows), vec!["1"], "through_file={through_file}");
+        let kept = if through_file { load_scan(&file, "k") } else { cached.clone() };
+        assert_eq!(kept.cursor(), Some((20_000, branch_hash(0xB, 20_000))), "through_file={through_file}");
+        assert!(!kept.recovering, "through_file={through_file}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// Merge order inside one recovery: the scan that tried more checkpoints leads, whichever side.
+#[test]
+fn a_merge_during_recovery_keeps_the_further_recovery() {
+    let cps: Vec<ScanCursor> = [1_426u64, 2_426, 3_426, 4_426].iter().map(|n| ScanCursor { number: *n, hash: stub_hash(*n) }).collect();
+    let recovering = |left: usize| WithdrawalScan {
+        cursor: None,
+        rows: [(1u128, 1_000u64), (2, 4_000)].into_iter().collect(),
+        checkpoints: cps[..left].to_vec(),
+        generation: 3,
+        recovering: true,
+        ..Default::default()
+    };
+    let (behind, ahead) = (recovering(4), recovering(2));
+    assert_eq!(merge_scans(&behind, &ahead).checkpoints.len(), 2);
+    assert_eq!(merge_scans(&ahead, &behind).checkpoints.len(), 2);
+    // A recovery that finished with nothing confirmed (start over, no checkpoints) is further than
+    // one still trying.
+    let restarted = WithdrawalScan { generation: 3, ..Default::default() };
+    assert!(!merge_scans(&behind, &restarted).recovering);
+    assert!(!merge_scans(&restarted, &behind).recovering);
+}
+
 // Codex P2 #2: the plain eth_getLogs read (no citrate_getLogs) is bounded the same way.
 #[test]
 fn a_slow_plain_log_fallback_ends_the_call_before_the_ipc_deadline_and_resumes() {
