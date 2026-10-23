@@ -72,7 +72,11 @@ export function needsMembershipRefresh(prev: JoinViewDto[], next: JoinViewDto[],
 /** Whether the last group-list read this slice asked for failed. */
 let lastListFailed = false;
 
+/** Counts the views ingested, so an action's answer can tell whether a newer event arrived. */
+let ingested = 0;
+
 export function ingest(v: RendezvousViews): void {
+  ingested += 1;
   const prev = rendezvousSlice.get().joins;
   rendezvousSlice.set((s) => applyViews(s, v));
   const listed = groupsSlice.get().groups.map((g) => g.id);
@@ -118,7 +122,11 @@ function upsertJoin(view: JoinViewDto): void {
 export async function cancelJoin(group: string): Promise<void> {
   rendezvousSlice.set({ busy: group, error: null });
   try {
-    upsertJoin(await bridge.rendezvous.cancel(group));
+    const before = ingested;
+    const view = await bridge.rendezvous.cancel(group);
+    // #390 — rendezvous_cancel runs a tick before it answers, so a join://state event that arrived
+    // during the call is at least as new as this answer: keep it.
+    if (ingested === before) upsertJoin(view);
   } catch (e) {
     // Not confirmed is not withdrawn: keep the last confirmed state and say the request may still go
     // through (the daemon may have the cancel persisted, or never got it).
