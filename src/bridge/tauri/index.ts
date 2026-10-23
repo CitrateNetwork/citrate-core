@@ -319,12 +319,18 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // `user_claim`, which bridges the real claimRewards() intent into a PENDING
       // ceremony (returned here). The human then approves it via signing.broadcast
       // (B1.4 → a real 40204 tx). No local balance mutation, no faked hash (Rule 1).
-      async claim(): Promise<ClaimResult> {
-        const snap = await invoke<{ claimableWei: string; walletAddress: string; contract: string }>(
-          "agent_earnings",
-        );
-        if (BigInt(snap.claimableWei) === 0n) {
-          return { kind: "nothing", claimableWei: snap.claimableWei };
+      //
+      // C1-V review (#348): the pre-check reads the SAME source `user_claim` will claim from. For a
+      // validator (the member's bond is a registry staker) that is ValidatorRegistry.rewardsOf(pubkey)
+      // .claimableNow via node_validator_earnings; only a non-validator is checked against
+      // ContributionAccounting. Checking ContributionAccounting for a validator told a member with
+      // claimable validator rewards that there was nothing to claim.
+      async claim(opts?: { validator: boolean }): Promise<ClaimResult> {
+        const claimableWei = opts?.validator
+          ? (await invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>("node_validator_earnings")).claimableWei
+          : (await invoke<{ claimableWei: string; walletAddress: string; contract: string }>("agent_earnings")).claimableWei;
+        if (BigInt(claimableWei) === 0n) {
+          return { kind: "nothing", claimableWei };
         }
         const view = await invoke<CeremonyView>("user_claim");
         return { kind: "ceremony", view };

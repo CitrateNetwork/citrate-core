@@ -67,7 +67,7 @@ export const CATALOG = {
     { id: 'citrate-sdk-marketplace', name: 'Marketplace SDK', registry: 'npm', install: 'npm i @citratelabs/marketplace-sdk@0.1.0', desc: 'x402 marketplace bidding and settlement.', minTier: 'free', docs: 'atlas/sdk/marketplace' },
   ],
   docs: [
-    { id: 'd1', name: 'Validator operations handbook', tier: 'member', minTier: 'pilot', desc: 'Sync, heartbeat, slashing protection, claim batching.' },
+    { id: 'd1', name: 'Validator operations handbook', tier: 'member', minTier: 'pilot', desc: 'Sync, validator activation, rewards and claim batching.' },
     { id: 'd2', name: 'Network primer — GhostDAG on chain 40204', tier: 'public', minTier: 'free', desc: 'Consensus, checkpoints, finality for operators.' },
     { id: 'd3', name: 'Memory graph — agent integration guide', tier: 'member', minTier: 'pilot', desc: 'MCP socket, capability grants, assert/recall semantics.' },
     { id: 'd4', name: 'LVM precompile reference', tier: 'commercial', minTier: 'pilot', desc: 'The 10 precompiles: 7 AI, 3 x402.' },
@@ -87,7 +87,7 @@ export const CATALOG = {
 export const TUTORIALS = [
   { id: 't1', title: 'Run your first validator', minutes: 8, minTier: 'free', path: 'atlas/tutorials/first-validator' },
   { id: 't2', title: 'Point Claude at your memory graph', minutes: 5, minTier: 'pilot', path: 'atlas/tutorials/mcp-claude' },
-  { id: 't3', title: 'How claims batch — earnings mechanics', minutes: 4, minTier: 'pilot', path: 'atlas/tutorials/claims' },
+  { id: 't3', title: 'How claims batch — rewards mechanics', minutes: 4, minTier: 'pilot', path: 'atlas/tutorials/claims' },
   { id: 't4', title: 'x402 marketplace primer', minutes: 12, minTier: 'pilot', path: 'atlas/tutorials/x402' },
 ];
 
@@ -104,12 +104,9 @@ export const NODE_LOG_TEMPLATES = [
   'ghostdag: accepted block {h} · blue score {h} · anticone 3/18',
   'net: peer handshake ok · {peers} active',
   'exec: lvm batch applied · 14 txs · 0 reverts',
-  'finality: checkpoint vote cast · committee round {r}',
-  'heartbeat: node-agent ack · 127.0.0.1:19600 · 84ms',
   'storage: rocksdb compaction L1 · 213 MB',
   'ecvrf: election lost round {r} · next eligibility in 4 blocks',
   'ghostdag: merged 2 parallel parents at {h}',
-  'pin: challenge window open · cid bafy…kq4e',
   'mempool: 41 pending · 3 priority',
 ];
 
@@ -122,14 +119,14 @@ export const GRAPH = {
     { id: 'n4', label: 'prefers reduced telemetry', tenant: 'personal', kind: 'preference', x: 250, y: 330, z: 0.8, detail: 'Asserted via chat 2026-07-08. Approved by you.' },
     { id: 'n5', label: 'node data dir — ~/.citrate/core', tenant: 'personal', kind: 'fact', x: 420, y: 360, z: 1.0, detail: 'Encrypted at rest. Master key in OS keyring.' },
     { id: 'n6', label: 'agent: research-runner', tenant: 'personal', kind: 'agent', x: 560, y: 400, z: 1.15, detail: 'External agent connected over the MCP socket. Write scope: your grant only.' },
-    { id: 'c1', label: 'chain 40204 params', tenant: 'chain-facts', kind: 'fact', x: 760, y: 180, z: 1.2, detail: 'GhostDAG k=18 · BFT committee 100 · checkpoint every 50 blocks (~25s).' },
-    { id: 'c2', label: 'LiquidStakingPool', tenant: 'chain-facts', kind: 'contract', x: 880, y: 260, z: 1.0, detail: '0xfd27…685e · min validator stake 32,000 SALT · 7-day unstake lockup.' },
+    { id: 'c1', label: 'chain 40204 params', tenant: 'chain-facts', kind: 'fact', x: 760, y: 180, z: 1.2, detail: 'GhostDAG BlockDAG. Checkpoint finality is specified but not running on betanet yet.' },
+    { id: 'c2', label: 'LiquidStakingPool', tenant: 'chain-facts', kind: 'contract', x: 880, y: 260, z: 1.0, detail: 'Fixture. Deposits here are not validator stake; the withdrawal delay is shown in blocks on the Wallet page.' },
     { id: 'c3', label: 'CitratePaymaster', tenant: 'chain-facts', kind: 'contract', x: 800, y: 360, z: 0.85, detail: '0x884c…d28 · category budgets: first-op, standard daily, recovery.' },
     { id: 'c4', label: 'EntryPoint v0.7', tenant: 'chain-facts', kind: 'contract', x: 930, y: 150, z: 0.9, detail: '0x077F…54Ef · ERC-4337 UserOp entry.' },
-    { id: 'c5', label: 'your grant + stake · S5', tenant: 'chain-facts', kind: 'event', x: 700, y: 300, z: 1.3, detail: '32,000 SALT → MembershipStakeVault → staked. Vaulted until mainnet release.' },
-    { id: 'c6', label: 'MembershipStakeVault', tenant: 'chain-facts', kind: 'contract', x: 980, y: 330, z: 1.05, detail: '0x5b21…e90a · principal locked for membership term; rewards flow to you.' },
-    { id: 'c7', label: 'enhanced rewards pools', tenant: 'chain-facts', kind: 'fact', x: 860, y: 430, z: 0.8, detail: 'performance 30% · AI 25% · network-health 20% · staking 25%.' },
-    { id: 'n7', label: 'first claim — 12.41 SALT', tenant: 'personal', kind: 'event', x: 500, y: 280, z: 0.95, detail: 'claimRewards() signed 2026-07-09. Tx witnessed on 40204.' },
+    { id: 'c5', label: 'your grant + stake · S5', tenant: 'chain-facts', kind: 'event', x: 700, y: 300, z: 1.3, detail: 'The membership grant: 32,000 SALT locked in your MemberBond for about a year. Staked only once you activate the bond. The grant is not purchased, and it is not an investment.' },
+    { id: 'c6', label: 'MembershipStakeVault', tenant: 'chain-facts', kind: 'contract', x: 980, y: 330, z: 1.05, detail: 'Pays each grant into the member\u2019s MemberBond (bondOf). Address from the bundled address book.' },
+    { id: 'c7', label: 'enhanced rewards pools', tenant: 'chain-facts', kind: 'fact', x: 860, y: 430, z: 0.8, detail: 'Fixture. No reward-pool split is read from chain; validator rewards come from ValidatorRegistry.rewardsOf.' },
+    { id: 'n7', label: 'fixture · first claim', tenant: 'personal', kind: 'event', x: 500, y: 280, z: 0.95, detail: 'claimRewards() signed 2026-07-09. Tx witnessed on 40204.' },
   ],
   links: [
     ['n1', 'n2'], ['n2', 'c5'], ['c5', 'c2'], ['c5', 'c6'], ['c2', 'c1'], ['c3', 'c4'],
@@ -143,7 +140,9 @@ export const GRAPH = {
 // A step may carry an optional `cta` that navigates to a surface (store.go(route)).
 export type CoachStep = { id: string; title: string; body: string; cta?: { label: string; route: string } };
 export const COACH_STEPS: CoachStep[] = [
-  { id: 'earn', title: 'Your node earns while this window is closed', body: 'The vitals strip is chain truth from your local node — height, peers, finality, and today\u2019s earnings, decomposed honestly on the Node page.' },
+  // C1-V V1: the coach describes only what runs today. Finality is not running on 40204, and a
+  // node that is not producing blocks does not earn (UI truth contract rule 3, §5.5).
+  { id: 'earn', title: 'The vitals strip names its sources', body: 'Height, peers, the active validator set and your stake are read from your node or the public RPC, and each tile says which. A tile with no reading shows \u2014 and says why.' },
   { id: 'groups', title: 'Start a Group — you already have a model running', body: 'Your Groups are private and end-to-end encrypted. Create one to message people 1:1 or together, share files across a private mesh, and put your running model to work with the people you trust.', cta: { label: 'Open your Groups', route: 'groups' } },
   { id: 'chat', title: 'The agent is grounded in your machine', body: 'It reads your memory graph and local chain state. Anything it wants to write comes back to you for approval — every time.' },
   { id: 'commissary', title: 'The Commissary is your tier\u2019s store-room', body: 'Apps, SDKs, docs, and services. Locked cards name the one action that unlocks them. Downloads are signed and checksum-verified.' },

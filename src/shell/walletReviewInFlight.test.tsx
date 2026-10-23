@@ -94,9 +94,9 @@ describe("Feature: a decline cannot claim nothing was signed once signing has st
     vi.spyOn(bridge.signing, "broadcast").mockReturnValue(d.promise);
     const approving = store.approveWalletReview(false);
     await store.rejectWalletReview();
-    d.reject(new Error("rpc unreachable"));
+    d.reject(new Error("not submitted: ceremony: broadcast failed: rpc unreachable"));
     await approving;
-    expect(lastToast()).toMatch(/not settled/i);
+    expect(lastToast()).toMatch(/not sent/i);
     expect(onResolved).toHaveBeenCalledTimes(1);
     expect(onResolved).toHaveBeenCalledWith(false);
   });
@@ -139,5 +139,143 @@ describe("Feature: the review modal shows the signing state", () => {
     const html = renderToStaticMarkup(<WalletReviewModal store={store} s={s} />);
     expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Reject<\/button>/);
     expect(html).toContain("nothing has been signed yet");
+  });
+});
+
+// C1-V review round 2 (#347): wallet transaction toasts use the UI truth contract §1 words
+// (Pending / Included in block N), never "settled".
+describe("C1-V §1 — wallet transaction toasts use the transaction words", () => {
+  beforeEach(() => {
+    vi.spyOn(bridge.signing, "reject").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshActivity").mockResolvedValue(undefined);
+    vi.spyOn(store, "save").mockImplementation(() => {});
+    store.setState({ walletReview: { kind: "send", label: "Send", view, rawAck: false } });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ walletReview: null });
+  });
+
+  it("a broadcast with no receipt yet says Pending", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xfeedbeef00", blockNumber: null });
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("Pending");
+    expect(lastToast()).not.toMatch(/settle/i);
+  });
+
+  it("a broadcast with a receipt says Included in block N", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xfeedbeef00", blockNumber: 501_234 });
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("Included in block 501,234");
+    expect(lastToast()).not.toMatch(/settle/i);
+  });
+
+  it("a failed broadcast says not sent, never 'not settled'", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(new Error("not submitted: ceremony: broadcast failed: rpc unreachable"));
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("not sent");
+    expect(lastToast()).not.toMatch(/settle/i);
+  });
+});
+
+// C1-V #347 review: "not sent" only when the failure is established BEFORE submission. After the
+// node accepted the tx (or may have), the outcome is unknown and the member gets the tx hash.
+describe("C1-V #347 — a broadcast failure after submission is an unknown outcome", () => {
+  const HASH = "0x" + "ab".repeat(32);
+  let onResolved: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    vi.spyOn(bridge.signing, "reject").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshActivity").mockResolvedValue(undefined);
+    vi.spyOn(store, "save").mockImplementation(() => {});
+    onResolved = vi.fn();
+    store.setState({ walletReview: { kind: "send", label: "Send", view, rawAck: false, onResolved } });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ walletReview: null });
+  });
+
+  it("a receipt error after acceptance shows the tx hash and an unknown outcome, never 'not sent'", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    // Tauri rejects a command with the plain error string.
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(`ceremony: submitted, outcome unknown (tx ${HASH}): rpc transport error: down`);
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("outcome unknown");
+    expect(lastToast()).toContain(HASH);
+    expect(lastToast()).toContain("block explorer");
+    expect(lastToast()).not.toMatch(/not sent/i);
+    // C1-V3: not confirmed, and typed as an unknown outcome with the hash (never a plain rejection).
+    expect(onResolved).toHaveBeenCalledWith(false, { kind: "outcome-unknown", txHash: HASH, reason: "rpc transport error: down" });
+  });
+
+  it("an error with no pre-submission marker (e.g. the IPC deadline) is never 'not sent'", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(new Error("sign_and_broadcast timed out after 120000 ms"));
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("outcome unknown");
+    expect(lastToast()).not.toMatch(/not sent/i);
+  });
+
+  it("a refresh error after a successful broadcast is not a broadcast failure", async () => {
+    vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xfeedbeef00", blockNumber: null });
+    vi.spyOn(store, "refreshWallet").mockRejectedValue(new Error("balance read failed"));
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("0xfeedbeef");
+    expect(lastToast()).toContain("balance read failed");
+    expect(lastToast()).not.toMatch(/not sent|outcome unknown/i);
+    expect(onResolved).toHaveBeenCalledWith(true);
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  // Contract v1.1 §1: a NonceTooLow on a first send means the nonce is already used; say so and
+  // point the member at their recent transactions before offering another send.
+  it("a first-send NonceTooLow says 'nonce already used'", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue(
+      "not submitted: ceremony: broadcast failed: rpc node error: Failed to submit transaction: NonceTooLow { expected: 3, got: 0 }",
+    );
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("not sent — nonce already used");
+    expect(lastToast()).toContain("check your recent transactions");
+  });
+
+  it("a genuine pre-submission rejection says not sent", async () => {
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(bridge.signing, "broadcast").mockRejectedValue("not submitted: ceremony: broadcast failed: rpc node error: nonce too low");
+    await store.approveWalletReview(false);
+    expect(lastToast()).toContain("not sent");
+    expect(lastToast()).toContain("nonce too low");
+    expect(lastToast()).not.toContain("not submitted:");
+    expect(onResolved).toHaveBeenCalledWith(false);
+  });
+});
+
+// #366 review F2 (Codex P2): the earlier-payment warning and the spend summary handed to the review
+// must actually be on screen, not only in state.
+describe("#366 F2 — the wallet review renders its warning and spend summary", () => {
+  it("shows the earlier-payment warning as an alert", () => {
+    const HASH = "0x" + "cd".repeat(32);
+    const s = {
+      ...freshState("p1"),
+      walletReview: {
+        kind: "agent" as const,
+        label: "pay the router",
+        view,
+        rawAck: false,
+        warning: "an identical payment was submitted earlier, outcome unknown (tx " + HASH + "): check it on the block explorer before approving this one",
+      },
+    };
+    const html = renderToStaticMarkup(<WalletReviewModal store={store} s={s} />);
+    expect(html).toContain("an identical payment was submitted earlier, outcome unknown");
+    expect(html).toContain(HASH);
+    expect(html).toMatch(/role="alert"[^>]*>[\s\S]*identical payment/);
+  });
+
+  it("shows the spend summary, and no warning box when there is none", () => {
+    const s = { ...freshState("p1"), walletReview: { kind: "stake" as const, label: "Activate", view, rawAck: false, spendSummary: "32,000 SALT bond principal · no value sent" } };
+    const html = renderToStaticMarkup(<WalletReviewModal store={store} s={s} />);
+    expect(html).toContain("32,000 SALT bond principal · no value sent");
+    expect(html).not.toContain('role="alert"');
   });
 });

@@ -594,6 +594,61 @@ fn resolve_head_posts_to_the_right_endpoint() {
         .ends_with("/approvals/reject"));
 }
 
+// C1-V3: the member approved an agent payment and it was submitted with an unknown outcome. The
+// call is released as submitted (never through /approvals/reject, which the capsule reads as
+// "rejected by operator"), carrying the hash and the words the agent must see.
+#[test]
+fn an_unknown_outcome_releases_the_call_as_submitted_never_rejected() {
+    let shared = std::sync::Arc::new(chain_effect_mock());
+    let dir = tmp_dir("resolve-unknown");
+    let mgr = HermesManager::new(sleep_bin(), dir.join("t"), dir.join("c"))
+        .with_control(Box::new(ArcControl(shared.clone())));
+    mgr.set_token_for_test("deadbeef");
+    let hash = format!("0x{}", "cd".repeat(32));
+
+    mgr.resolve_head_outcome_unknown("cap::eth-send", Some(&hash))
+        .expect("released");
+    let url = shared.last_post_url.lock().unwrap().clone().unwrap();
+    assert!(url.ends_with("/approvals/approve"), "{url}");
+    let body: serde_json::Value =
+        serde_json::from_str(&shared.last_post_body.lock().unwrap().clone().unwrap()).unwrap();
+    assert_eq!(body["id"], "cap::eth-send");
+    assert_eq!(body["outcome"], "submitted_outcome_unknown");
+    assert_eq!(body["txHash"], serde_json::json!(hash));
+    assert_eq!(
+        body["message"],
+        serde_json::json!(format!("submitted, outcome unknown, tx {hash}, check before retrying"))
+    );
+    assert!(!body.to_string().to_lowercase().contains("reject"));
+
+    // No hash: still submitted, never rejected.
+    mgr.resolve_head_outcome_unknown("cap::eth-send", None)
+        .expect("released");
+    let url = shared.last_post_url.lock().unwrap().clone().unwrap();
+    assert!(url.ends_with("/approvals/approve"), "{url}");
+    let body: serde_json::Value =
+        serde_json::from_str(&shared.last_post_body.lock().unwrap().clone().unwrap()).unwrap();
+    assert_eq!(body["txHash"], serde_json::Value::Null);
+    assert_eq!(
+        body["message"],
+        "submitted, outcome unknown, check recent transactions before retrying"
+    );
+}
+
+#[test]
+fn an_unknown_outcome_with_a_malformed_hash_or_no_call_id_resolves_nothing() {
+    let shared = std::sync::Arc::new(chain_effect_mock());
+    let dir = tmp_dir("resolve-unknown-bad");
+    let mgr = HermesManager::new(sleep_bin(), dir.join("t"), dir.join("c"))
+        .with_control(Box::new(ArcControl(shared.clone())));
+    mgr.set_token_for_test("deadbeef");
+    assert!(mgr.resolve_head_outcome_unknown("cap::eth-send", Some("0x1234")).is_err());
+    assert!(mgr
+        .resolve_head_outcome_unknown("", Some(&format!("0x{}", "cd".repeat(32))))
+        .is_err());
+    assert!(shared.last_post_url.lock().unwrap().is_none(), "nothing was posted");
+}
+
 #[test]
 fn shutdown_is_a_safe_noop_when_never_started() {
     // HERMES singleton uninitialized in tests → graceful-teardown shutdown() is a clean no-op.

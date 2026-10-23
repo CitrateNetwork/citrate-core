@@ -116,17 +116,28 @@ describe("Node", () => {
     expect(tabs(h, "place-tabs")).toEqual(["Status", "Services", "Storage", "Rewards", "Advanced"]);
     expect(selected(h)).toEqual(["Status"]);
     expect(h).toContain('data-surface="node/status"');
+    expect(h).toContain('data-node-tab="status"');
   });
 
-  it("Services and Rewards are honest not-available-yet states", () => {
-    expect(html("node/services")).toContain('data-not-available="node/services"');
-    expect(html("node/rewards")).toContain('data-not-available="node/rewards"');
+  it("K3: Status, Services, Rewards and Advanced are the Node page tabs, not placeholders", () => {
+    for (const t of ["status", "services", "rewards", "advanced"]) {
+      const h = html("node/" + t);
+      expect(h, t).toContain(`data-node-tab="${t}"`);
+      expect(h, t).not.toContain(`data-not-available="node/${t}"`);
+    }
+  });
+
+  it("K3: no tab of the Node page shows the 0.5.1 Operations / Earning / Pinning switch", () => {
+    for (const t of ["status", "services", "rewards", "advanced"]) {
+      const h = html("node/" + t);
+      for (const label of [">Operations<", ">Earning<", ">Pinning<"]) expect(h, t + label).not.toContain(label);
+    }
   });
 
   it("the earlier node/earnings route opens Rewards", () => {
     const h = html("node/earnings");
     expect(selected(h)).toEqual(["Rewards"]);
-    expect(h).toContain('data-not-available="node/rewards"');
+    expect(h).toContain('data-node-tab="rewards"');
     expect(h).not.toContain(">Earnings<");
   });
 
@@ -142,6 +153,13 @@ describe("Node", () => {
     const h = html("node/advanced", { sSec: "account" });
     expect(h).toContain("Node configuration");
     expect(h).not.toContain("Account &amp; RBAC");
+  });
+
+  it("K3: Pins stays an honest not-available state and no longer points at the 0.5.1 Pinning view", () => {
+    const h = html("node/storage/pins");
+    expect(h).toContain('data-not-available="node/storage/pins"');
+    expect(h).not.toContain("Open the Pinning view");
+    expect(h).toContain("Pin bonds not live yet");
   });
 });
 

@@ -994,7 +994,7 @@ pub async fn user_claim(
     let grant = crate::grant_status::read_grant_status(&rpc, &wallet.address).ok();
     let is_validator = grant
         .as_ref()
-        .map(|g| g.bond_deployed && g.has_validator)
+        .map(crate::grant_status::claims_through_bond)
         .unwrap_or(false);
 
     let (to, claimable_wei) = if is_validator {

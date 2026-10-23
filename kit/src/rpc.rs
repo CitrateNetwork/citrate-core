@@ -46,6 +46,8 @@ pub enum RpcError {
     MissingField(String),
     /// The receipt did not appear within the poll budget.
     ReceiptTimeout,
+    /// The node's rate limiter answered HTTP 429 before the request reached a handler.
+    RateLimited,
 }
 
 impl std::fmt::Display for RpcError {
@@ -56,6 +58,7 @@ impl std::fmt::Display for RpcError {
             RpcError::Node(m) => write!(f, "rpc node error: {m}"),
             RpcError::MissingField(m) => write!(f, "rpc missing/invalid field: {m}"),
             RpcError::ReceiptTimeout => write!(f, "rpc receipt not found within poll budget"),
+            RpcError::RateLimited => write!(f, "rpc rate limited (HTTP 429)"),
         }
     }
 }
@@ -108,6 +111,15 @@ impl HttpTransport {
 /// On timeout the call returns `RpcError::Transport` and the surface falls to its honest state.
 const RPC_TIMEOUT_SECS: u64 = 6;
 
+/// Map a transport failure. HTTP 429 is the node's rate limiter refusing the request before any
+/// handler ran (UI truth contract v1.1 §1), so it stays distinct; everything else is Transport.
+pub(crate) fn map_ureq_error(e: ureq::Error) -> RpcError {
+    match e {
+        ureq::Error::StatusCode(429) => RpcError::RateLimited,
+        other => RpcError::Transport(other.to_string()),
+    }
+}
+
 impl RpcTransport for HttpTransport {
     fn call(&self, body: Value) -> Result<Value, RpcError> {
         // Never follow a redirect: a loopback fork target checked by URL must not be able to send
@@ -118,7 +130,7 @@ impl RpcTransport for HttpTransport {
             .max_redirects(0)
             .build()
             .send_json(&body)
-            .map_err(|e| RpcError::Transport(e.to_string()))?;
+            .map_err(map_ureq_error)?;
         let mut resp = resp;
         resp.body_mut()
             .read_json::<Value>()

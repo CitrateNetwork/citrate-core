@@ -101,9 +101,8 @@ surface unchanged:
 | Hermes › Controls | The Controls panel (`src/surfaces/hermes/ControlsPanel.tsx`) at the top, then the five moved Settings sections, unchanged, under a "Controls" heading. They write the same config as before. The panel is not repeated in the section list, so `settings/hermes` opens the tab with the panel on top and AI providers below. |
 | Groups › Chat, Alerts, Rounds, Members, Cluster, ALF | Groups, Comms, Train, People, Cluster, ALF surfaces |
 | Wallet | Wallet surface |
-| Node › Status | Node surface (its Operations, Rewards and Pinning views) |
+| Node › Status, Services, Rewards, Advanced | The K3 Node page (`src/surfaces/node/`): status sentence, the nine supervised services, validator rewards, and network identity, withdrawn-branch notice, crash record and full log above the Node configuration Settings section. The 0.5.1 Node surface (`Node.tsx`) is removed; its truth tests run against this page (`src/surfaces/node/nodePagePorts.test.tsx`). |
 | Node › Storage › Files, Memory | StorageFiles and Storage surfaces |
-| Node › Advanced | The Node configuration Settings section |
 | Store › Apps, Models | Commissary and Models surfaces |
 | Settings, Settings › Connections | Settings (account-level sections) and Connections surfaces |
 
@@ -112,9 +111,7 @@ says what is missing and, where one exists, links to what this build has
 today. They show no data:
 
 - **Hermes › Learn**: points to Hermes › Work, where learned-skill proposals are reviewed today.
-- **Node › Services**: points to Node › Status.
-- **Node › Storage › Pins**: opens the Pinning view on Node › Status.
-- **Node › Rewards**: opens the Rewards view on Node › Status.
+- **Node › Storage › Pins**: says pin bonds are not live yet and links to Files (K4 builds Pins).
 
 ## Follow-ups
 
