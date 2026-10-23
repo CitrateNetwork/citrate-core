@@ -16,6 +16,7 @@ Policy, verification steps, the publishing runbook and the CVE SLA are in
 |---|---|
 | `src/key.rs` | The pinned component key. The production slot is **empty** until the key ceremony, so every update is refused |
 | `src/manifest.rs` | Manifest types, signature checks, field rules, anti-rollback |
+| `src/catalog.rs` | K5a: the signed Store catalog (schema v1, its own key slot and signature domain). The production catalog key slot is **empty** until the genesis key ceremony, so the Store lists nothing |
 | `src/install.rs` | Staging, verify, unpack, health check, swap, rollback, recovery |
 | `src/extract.rs` | raw / tar.gz / tar.xz unpacking with path and link checks (zip is refused for now) |
 | `src/policy.rs` | Client side of the CVE SLA (stale and expired manifests) |
