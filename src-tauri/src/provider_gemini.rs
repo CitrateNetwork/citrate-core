@@ -26,9 +26,9 @@
 //! - An invalid key is a 400 with reason `API_KEY_INVALID` (mapped to "the key was rejected").
 
 use crate::model_provider::{
-    basic_key_shape, read_sse, status_error, ApiKey, AuthPlacement, ChatRequest, ChatResponse,
-    FinishReason, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx,
-    ProviderError, ProviderId, Role, ToolCall, Usage, Vendor,
+    read_sse, status_error, AuthPlacement, ChatRequest, ChatResponse, FinishReason, KeyFormat,
+    KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx, ProviderError,
+    ProviderId, Role, ToolCall, Usage, Vendor,
 };
 use crate::provider_anthropic::arguments_object;
 use crate::provider_openai_compat::{MAX_LISTED_MODELS, MAX_MODEL_ID_LEN};
@@ -453,9 +453,9 @@ impl ModelProvider for GeminiAdapter {
     }
 
     /// Gemini documents no key prefix, and its newer authorization keys have their own format,
-    /// so only the basic shape is checked; the live key test decides.
-    fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)
+    /// so only the shape is checked; the live key test decides.
+    fn key_format(&self) -> KeyFormat {
+        KeyFormat::ANY
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {

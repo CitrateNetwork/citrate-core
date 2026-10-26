@@ -99,7 +99,11 @@ fn usage_summary_comes_from_the_signed_log() {
     let o = u.providers.iter().find(|p| p.id == "openai").unwrap();
     assert_eq!(o.today.calls, 2);
     assert_eq!(o.today.tokens, 2 * (12 + 5));
-    assert_eq!(o.today.unpriced_calls, 2, "no price known: spend is unknown, not zero");
+    assert_eq!(o.today.unpriced_calls, 0);
+    let one = crate::model_proxy::tests::RIG_PRICE.cost(12, 5);
+    assert_eq!(o.today.spend_micros, 2 * one, "spend is the vendor's usage at the price");
+    assert_eq!(o.caps, Caps::default());
+    assert_eq!(o.caps.daily_micros, Some(5_000_000));
     assert_eq!(o.unsettled_calls, 0);
     // The log is intact, so it is not reset.
     assert!(usage_log_reset(&rig.proxy).is_err());

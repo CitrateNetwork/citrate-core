@@ -26,9 +26,9 @@
 //!   `cache_read_input_tokens`; output = `output_tokens`.
 
 use crate::model_provider::{
-    basic_key_shape, read_sse, status_error, ApiKey, AuthPlacement, ChatMessage, ChatRequest,
-    ChatResponse, FinishReason, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest,
-    ProviderCtx, ProviderError, ProviderId, Role, ToolCall, Usage, Vendor,
+    read_sse, status_error, AuthPlacement, ChatMessage, ChatRequest, ChatResponse, FinishReason,
+    KeyCharset, KeyFormat, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx,
+    ProviderError, ProviderId, Role, ToolCall, Usage, Vendor,
 };
 use crate::provider_openai_compat::listed_models;
 use serde_json::{json, Map, Value};
@@ -439,14 +439,12 @@ impl ModelProvider for AnthropicAdapter {
         catalog()
     }
 
-    fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)?;
-        if !key.starts_with(KEY_PREFIX) {
-            return Err(ProviderError::KeyFormat(
-                "an Anthropic API key starts with sk-ant-api (check you picked the right provider)",
-            ));
+    fn key_format(&self) -> KeyFormat {
+        KeyFormat {
+            prefixes: &[KEY_PREFIX],
+            charset: KeyCharset::UrlSafe,
+            ..KeyFormat::ANY
         }
-        Ok(())
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {

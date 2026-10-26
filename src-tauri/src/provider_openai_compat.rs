@@ -7,9 +7,9 @@
 //! by core ([`ProviderCtx::send`]).
 
 use crate::model_provider::{
-    basic_key_shape, read_sse, status_error, ApiKey, AuthPlacement, ChatRequest, ChatResponse,
-    FinishReason, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx,
-    ProviderError, ProviderId, Role, ToolCall, Usage,
+    read_sse, status_error, AuthPlacement, ChatRequest, ChatResponse, FinishReason, KeyFormat,
+    KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx, ProviderError,
+    ProviderId, Role, ToolCall, Usage,
 };
 use serde_json::{json, Value};
 
@@ -325,8 +325,8 @@ impl ModelProvider for OpenAiCompatAdapter {
         self.models.clone()
     }
 
-    fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)
+    fn key_format(&self) -> KeyFormat {
+        KeyFormat::ANY
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {

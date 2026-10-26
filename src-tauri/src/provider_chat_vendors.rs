@@ -5,7 +5,7 @@
 //!
 //! | | xAI | DeepSeek | Meta Model API |
 //! |---|---|---|---|
-//! | base | `https://api.x.ai/v1` | `https://api.deepseek.com` | `https://api.meta.ai/v1` |
+//! | base | `https://api.x.ai/v1` | `https://api.deepseek.com/v1` (the docs show the bare host) | `https://api.meta.ai/v1` |
 //! | output cap field | `max_completion_tokens` (`max_tokens` deprecated) | `max_tokens` | `max_completion_tokens` (`max_tokens` a deprecated alias) |
 //! | reasoning tokens | NOT in `completion_tokens` (added here) | in `completion_tokens` | in `completion_tokens` |
 //! | streamed usage | running total on every chunk | on the last chunk | final chunk with `include_usage` |
@@ -38,9 +38,9 @@
 //!   <https://dev.meta.ai/docs/error-handling>, prices <https://dev.meta.ai/docs/pricing-rate-limits>.
 
 use crate::model_provider::{
-    basic_key_shape, status_error, ApiKey, AuthPlacement, ChatRequest, ChatResponse, KeyTest,
-    Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx, ProviderError, ProviderId,
-    Usage, Vendor,
+    status_error, AuthPlacement, ChatRequest, ChatResponse, KeyCharset, KeyFormat, KeyTest, Method,
+    ModelInfo, ModelProvider, OutboundRequest, ProviderCtx, ProviderError, ProviderId, Usage,
+    Vendor,
 };
 use crate::provider_openai_compat::{
     listed_models, parse_response_with, read_stream_with, to_wire as compat_wire, usage_from,
@@ -54,8 +54,8 @@ const MTOK: u64 = 1_000_000;
 #[derive(Debug, Clone, Copy)]
 struct Dialect {
     vendor: Vendor,
-    key_prefix: &'static str,
-    key_hint: &'static str,
+    key_prefixes: &'static [&'static str],
+    key_charset: KeyCharset,
     /// `max_completion_tokens` or `max_tokens`.
     max_field: &'static str,
     usage: UsageFn,
@@ -78,24 +78,24 @@ pub fn xai_usage(v: &Value) -> Option<Usage> {
 
 const XAI: Dialect = Dialect {
     vendor: Vendor::Xai,
-    key_prefix: "xai-",
-    key_hint: "an xAI API key starts with xai- (check you picked the right provider)",
+    key_prefixes: &["xai-"],
+    key_charset: KeyCharset::UrlSafe,
     max_field: "max_completion_tokens",
     usage: xai_usage,
 };
 
 const DEEPSEEK: Dialect = Dialect {
     vendor: Vendor::DeepSeek,
-    key_prefix: "sk-",
-    key_hint: "a DeepSeek API key starts with sk- (check you picked the right provider)",
+    key_prefixes: &["sk-"],
+    key_charset: KeyCharset::UrlSafe,
     max_field: "max_tokens",
     usage: usage_from,
 };
 
 const META: Dialect = Dialect {
     vendor: Vendor::Meta,
-    key_prefix: "LLM_",
-    key_hint: "a Meta Model API key starts with LLM_ (check you picked the right provider)",
+    key_prefixes: &["LLM_"],
+    key_charset: KeyCharset::Printable,
     max_field: "max_completion_tokens",
     usage: usage_from,
 };
@@ -216,12 +216,12 @@ impl ModelProvider for ChatVendorAdapter {
         catalog(self.d.vendor)
     }
 
-    fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)?;
-        if !key.starts_with(self.d.key_prefix) {
-            return Err(ProviderError::KeyFormat(self.d.key_hint));
+    fn key_format(&self) -> KeyFormat {
+        KeyFormat {
+            prefixes: self.d.key_prefixes,
+            charset: self.d.key_charset,
+            ..KeyFormat::ANY
         }
-        Ok(())
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {

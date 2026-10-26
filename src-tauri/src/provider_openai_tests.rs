@@ -129,11 +129,11 @@ fn key_test_lists_models_and_the_key_format_wants_sk() {
         })
     );
     assert_eq!(http.sent().url, "https://api.openai.com/v1/models");
-    let key = |s: String| ApiKey::from_secret(crate::secret::SecretString::new(s));
+    let key = |s: String| crate::model_provider::ApiKey::from_secret(crate::secret::SecretString::new(s));
     let fake = crate::provider_fixtures_tests::fake_key;
-    assert!(OpenAiAdapter.check_key_format(&key(fake("sk-proj-"))).is_ok());
+    assert!(OpenAiAdapter.key_format().check(&key(fake("sk-proj-"))).is_ok());
     assert!(matches!(
-        OpenAiAdapter.check_key_format(&key(fake("xai-"))),
+        OpenAiAdapter.key_format().check(&key(fake("xai-"))),
         Err(ProviderError::KeyFormat(_))
     ));
 }

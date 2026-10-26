@@ -164,12 +164,12 @@ fn key_test_keeps_text_models_only_and_the_key_format_is_shape_only() {
         http.sent().url,
         "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
     );
-    let key = |s: &str| ApiKey::from_secret(crate::secret::SecretString::new(s.into()));
+    let key = |s: &str| crate::model_provider::ApiKey::from_secret(crate::secret::SecretString::new(s.into()));
     let fake = crate::provider_fixtures_tests::fake_key;
-    assert!(GeminiAdapter.check_key_format(&key(&fake("AIza"))).is_ok());
-    assert!(GeminiAdapter.check_key_format(&key(&fake("AQ."))).is_ok(), "no documented prefix");
+    assert!(GeminiAdapter.key_format().check(&key(&fake("AIza"))).is_ok());
+    assert!(GeminiAdapter.key_format().check(&key(&fake("AQ."))).is_ok(), "no documented prefix");
     assert!(matches!(
-        GeminiAdapter.check_key_format(&key("AIza short")),
+        GeminiAdapter.key_format().check(&key("AIza short")),
         Err(ProviderError::KeyFormat(_))
     ));
 }

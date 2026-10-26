@@ -149,13 +149,13 @@ fn key_test_lists_models_and_key_format_wants_the_documented_prefix() {
     let sent = http.sent();
     assert_eq!(sent.url, "https://api.anthropic.com/v1/models?limit=1000");
     assert_eq!(sent.method, Method::Get);
-    let key = |s: String| ApiKey::from_secret(crate::secret::SecretString::new(s));
+    let key = |s: String| crate::model_provider::ApiKey::from_secret(crate::secret::SecretString::new(s));
     let fake = crate::provider_fixtures_tests::fake_key;
-    assert!(AnthropicAdapter.check_key_format(&key(fake("sk-ant-api03-"))).is_ok());
+    assert!(AnthropicAdapter.key_format().check(&key(fake("sk-ant-api03-"))).is_ok());
     for wrong in ["sk-proj-", "xai-", "AIza", "LLM_"] {
         assert!(
             matches!(
-                AnthropicAdapter.check_key_format(&key(fake(wrong))),
+                AnthropicAdapter.key_format().check(&key(fake(wrong))),
                 Err(ProviderError::KeyFormat(_))
             ),
             "{wrong}"
