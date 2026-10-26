@@ -598,16 +598,22 @@ scenario_restart() { # kind
   line="$(sidecars_of "$APP_PID" | awk -v t="$K1L_RESTART_TARGET" '$1 == t {print; exit}')"
   [ -n "$line" ] || { fail "$kind restart: no '$K1L_RESTART_TARGET' sidecar to kill"; return 1; }
   old="$(echo "$line" | awk '{print $2}')"; exe="$(echo "$line" | awk '{print $3}')"
+  # Every process running the target binary before the kill, anywhere in the namespace: only a
+  # pid outside this set counts as the restart (another instance that was already running is not).
+  local -a before=() ; local d
+  for d in /proc/[0-9]*; do
+    [ "$(readlink "$d/exe" 2>/dev/null)" = "$exe" ] && before+=("${d#/proc/}")
+  done
   kill -KILL "$old"
   for i in $(seq 1 "$K1L_RESTART_TIMEOUT"); do
-    new="$(sidecars_of "$APP_PID" | awk -v e="$exe" -v o="$old" '$3 == e && $2 != o {print $2; exit}')"
+    new="$(sidecars_of "$APP_PID" | awk -v e="$exe" -v b=" ${before[*]} " '$3 == e && !index(b, " " $2 " ") {print $2; exit}')"
     [ -n "$new" ] && ! alive "$old" && break
     sleep 1
   done
   if [ -n "$new" ] && ! alive "$old"; then
-    pass "$kind restart: $K1L_RESTART_TARGET killed (pid $old), started again as pid $new in ${i}s"
+    pass "$kind restart: $K1L_RESTART_TARGET killed (pid $old), started again as pid $new in ${i}s (new pid; ${#before[@]} instance(s) before the kill)"
   else
-    fail "$kind restart: $K1L_RESTART_TARGET (pid $old) not started again within ${K1L_RESTART_TIMEOUT}s"
+    fail "$kind restart: $K1L_RESTART_TARGET (pid $old) not started again within ${K1L_RESTART_TIMEOUT}s (pids before the kill: ${before[*]})"
     return 1
   fi
 }
