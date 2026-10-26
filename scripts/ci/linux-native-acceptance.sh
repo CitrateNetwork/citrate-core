@@ -324,9 +324,11 @@ seal() {
   mkdir /mnt/work && mount --bind "$K1L_RUN" /mnt/work || return 1
   mount_attr rw /mnt/work || return 1
   # The staged packages may be hard links to the caller's files, and PID 1 runs the harness copy:
-  # both stay read-only inside the writable run dir.
+  # both stay read-only inside the writable run dir. (Callers that reuse seal, such as join-e2e.sh,
+  # may stage no pkgs dir.)
   local ro
   for ro in pkgs harness; do
+    [ -d "/mnt/work/$ro" ] || continue
     mount --bind "/mnt/work/$ro" "/mnt/work/$ro" && mount_attr ro "/mnt/work/$ro" || return 1
   done
   local d
