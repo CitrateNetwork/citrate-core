@@ -1468,6 +1468,9 @@ fn err_str(e: CeremonyError) -> String {
 /// the `eth_sendRawTransaction` errors that prove the node did not accept the tx. Every handler
 /// error uses code -32602, so the MESSAGE decides, matched exactly or by its fixed prefix. Only
 /// meaningful on the first submission of the signed bytes; the caller checks that.
+///
+/// K6: a network-gate refusal is raised before `eth_sendRawTransaction` is called, so it is
+/// definitive as well.
 fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
     const EXACT: &[&str] = &[
         "Rate limit exceeded. Try again later.",
@@ -1487,7 +1490,7 @@ fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
         "Failed to submit transaction: NonceTooLow {",
     ];
     match e {
-        crate::rpc::RpcError::RateLimited => true,
+        crate::rpc::RpcError::RateLimited | crate::rpc::RpcError::WrongNetwork(_) => true,
         crate::rpc::RpcError::Node(m) => {
             EXACT.contains(&m.as_str()) || PREFIX.iter().any(|p| m.starts_with(p))
         }
