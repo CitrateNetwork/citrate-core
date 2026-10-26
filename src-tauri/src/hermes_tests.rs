@@ -981,3 +981,41 @@ fn the_child_is_told_where_the_saved_mcp_server_list_is() {
         )
     );
 }
+
+/// #457 tripwire helper: a source that asks the ceremony whether a request expired (to tell
+/// "expired" from "decided") must open its requests with `request_watched`, which keeps that
+/// answer however many other requests expire.
+fn expiry_reader_without_watch(src: &str) -> bool {
+    src.contains("ceremony.is_expired(")
+        && (!src.contains("ceremony.request_watched(") || src.contains("ceremony.request("))
+}
+
+#[test]
+fn tripwire_every_ceremony_expiry_reader_opens_watched_requests() {
+    // Negative controls: the scan flags a reader that opens ordinary requests.
+    assert!(expiry_reader_without_watch(
+        "let v = ceremony.request(i); if ceremony.is_expired(&v.id) {}"
+    ));
+    assert!(!expiry_reader_without_watch(
+        "let v = ceremony.request_watched(i); if ceremony.is_expired(&v.id) {}"
+    ));
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut readers = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("src dir") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).expect("read source");
+        let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+        if prod.contains("ceremony.is_expired(") {
+            readers.push(name.clone());
+        }
+        assert!(
+            !expiry_reader_without_watch(prod),
+            "{name} reads ceremony.is_expired but opens requests that are not watched"
+        );
+    }
+    assert_eq!(readers, ["hermes.rs"], "the set of expiry readers changed");
+}
