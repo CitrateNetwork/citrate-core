@@ -24,8 +24,6 @@ use std::sync::Mutex;
 pub const FILE: &str = "preferred.json";
 /// The chat provider id that means "the preferred cloud model".
 pub const PREFERRED_ID: &str = "preferred";
-/// The usage-log session label of webview chat on the preferred model.
-pub const CHAT_SESSION: &str = "webview-chat";
 
 /// The member's choice.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,14 +100,44 @@ pub fn set(
     proxy: &ModelProxy,
     choice: Option<PreferredModel>,
 ) -> Result<PreferredView, String> {
-    let _ = (proxy, choice, &WRITE);
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = &choice {
+        let pid = validate(p)?;
+        if !proxy.resolves(&pid) {
+            return Err(
+                "that provider cannot take calls now (not available in this build, or a custom endpoint not confirmed yet)"
+                    .into(),
+            );
+        }
+        if !proxy.key_configured(&pid) {
+            return Err(
+                "that provider is not connected yet. Connect it in Settings › Models, then choose it here."
+                    .into(),
+            );
+        }
+        proxy
+            .approve_model(&pid, &p.model)
+            .map_err(|e| e.to_string())?;
+    }
+    let bytes = serde_json::to_vec(&choice).map_err(|e| e.to_string())?;
+    crate::provider_guard::write_atomic(&path(dir), &bytes)?;
     Ok(load(dir))
 }
 
 /// The proxy route for the preferred model (`session_id` names the caller in the usage log).
 pub fn route(dir: &Path, session_id: &str) -> Result<ProxyRoute, String> {
-    let _ = (dir, session_id);
-    Err("RED stub".into())
+    let v = load(dir);
+    let p = v.preferred.ok_or_else(|| {
+        v.load_error.unwrap_or_else(|| {
+            "no cloud model is chosen for Hermes; choose one in Settings › App › Hermes".into()
+        })
+    })?;
+    let provider = validate(&p)?;
+    Ok(ProxyRoute {
+        provider,
+        model: p.model,
+        session_id: session_id.to_string(),
+    })
 }
 
 #[cfg(test)]

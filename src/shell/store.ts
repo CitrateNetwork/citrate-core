@@ -544,7 +544,12 @@ export function pickChatProviderKind(
 /** D-11: core's preferred cloud model (`providers_preferred_get`), or null when there is none or
  *  it cannot be read (a read error never sends anything to a cloud model). */
 async function readPreferredModel(): Promise<{ providerId: string; model: string } | null> {
-  return null;
+  if (BRIDGE_MODE !== "tauri") return null;
+  try {
+    return (await bridge.providers.preferredGet()).preferred ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** D-11: the chat provider id core reads as "the member's preferred cloud model". */
