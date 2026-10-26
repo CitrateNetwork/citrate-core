@@ -2,7 +2,7 @@
 // install that stored it has it dropped on load, from state and from storage, and no persisted key
 // may name a secret again (tripwire).
 import { beforeEach, describe, expect, it } from "vitest";
-import { PERSIST_KEYS, STORAGE_KEY, freshState, loadState } from "./state";
+import { PERSIST_KEYS, RETIRED_KEYS, STORAGE_KEY, freshState, loadState } from "./state";
 
 beforeEach(() => localStorage.clear());
 
@@ -10,6 +10,11 @@ describe("legacy gwKey is not persisted (P-9d)", () => {
   it("PERSIST_KEYS no longer lists gwKey", () => {
     expect(PERSIST_KEYS as string[]).not.toContain("gwKey");
     expect(PERSIST_KEYS as string[]).not.toContain("gwKeyFull");
+  });
+
+  it("gwKey and gwKeyFull are retired keys, dropped on load like the other retired fields", () => {
+    expect(RETIRED_KEYS).toContain("gwKey");
+    expect(RETIRED_KEYS).toContain("gwKeyFull");
   });
 
   it("an install that stored gwKey loses it on load, in state and in storage", () => {

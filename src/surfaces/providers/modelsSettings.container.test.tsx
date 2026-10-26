@@ -208,4 +208,49 @@ describe("Settings › Models container", () => {
     });
     expect(providers.setCaps).toHaveBeenCalledWith("xai", { ...caps, dailyMicros: 7_000_000 });
   });
+
+  it("after a successful connect the key is gone from state: remove, and the empty box comes back", async () => {
+    providers.status.mockResolvedValue([vendor()]);
+    providers.setKey.mockResolvedValue({ ok: true, listedModels: 1 });
+    await mount();
+    await type(q<HTMLInputElement>('input[aria-label="OpenAI API key"]'), "test-key-not-real-0123456789");
+    providers.status.mockResolvedValue([vendor({ keyConfigured: true, keySetMs: NOW })]);
+    await act(async () => {
+      button("Connect")?.click();
+    });
+    providers.status.mockResolvedValue([vendor()]);
+    await act(async () => {
+      button("Remove key here")?.click();
+    });
+    expect(q<HTMLInputElement>('input[aria-label="OpenAI API key"]')?.value).toBe("");
+    expect(host.innerHTML).not.toContain("test-key-not-real");
+  });
+
+  it("a key test leaves the key's stored date and the rotation reminder as core reports them", async () => {
+    const old = NOW - 120 * 86_400_000;
+    providers.status.mockResolvedValue([vendor({ keyConfigured: true, keySetMs: old })]);
+    providers.testKey.mockResolvedValue({ ok: true, listedModels: 2 });
+    await mount();
+    await act(async () => {
+      button("Test key")?.click();
+    });
+    expect(providers.setKey).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("stored " + new Date(old).toISOString().slice(0, 10));
+    expect(q('[data-testid="rotation-reminder"]')).toBeTruthy();
+  });
+
+  it("a connect that times out says the result is unknown, not that the key was not stored, and re-reads status", async () => {
+    const { InvokeTimeout } = await import("../../bridge/tauri/invoke");
+    providers.status.mockResolvedValue([vendor()]);
+    providers.setKey.mockRejectedValue(new InvokeTimeout("providers_key_set", 12_000));
+    await mount();
+    await type(q<HTMLInputElement>('input[aria-label="OpenAI API key"]'), "test-key-not-real-0123456789");
+    const reads = providers.status.mock.calls.length;
+    await act(async () => {
+      button("Connect")?.click();
+    });
+    expect(host.textContent).not.toContain("The key was not stored");
+    expect(host.textContent).toContain("No answer from core yet, so whether the key was stored is unknown");
+    expect(providers.status.mock.calls.length).toBeGreaterThan(reads);
+  });
 });

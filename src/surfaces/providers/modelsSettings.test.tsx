@@ -408,3 +408,23 @@ describe("Settings › Models: a large reservation per call (xAI)", () => {
     expect(card(render({ statuses: [small] }), "openai")).not.toContain("reserve-note-");
   });
 });
+
+describe("Settings › Models: review fixes (#531)", () => {
+  it("the key box asks password managers not to fill or save it", () => {
+    expect(card(render(), "openai")).toMatch(/<input[^>]*type="password"[^>]*autocomplete="new-password"|<input[^>]*autocomplete="new-password"[^>]*type="password"/i);
+  });
+
+  it("the settings-reset acknowledge lists everything that resets", () => {
+    const unreadable = { kind: "guardUnreadable", message: "paused: the spend settings file could not be verified; check your caps and resume", atMs: 0 };
+    const html = render({ statuses: [vendor({ keyConfigured: true, halt: unreadable })] });
+    expect(html).toContain("caps, model prices, pauses, approved and listed models, custom endpoints, and the dates your keys were stored");
+    expect(html).toContain("Your keys stay in the keychain");
+  });
+
+  it("a halt reads once as paused, with its time", () => {
+    const halt = { kind: "burst", message: "paused automatically: 31 calls in 60 seconds", atMs: NOW };
+    const html = render({ statuses: [vendor({ keyConfigured: true, halt })] });
+    expect(html).not.toMatch(/Paused[^<]*: paused/i);
+    expect(html).toContain("Paused automatically: 31 calls in 60 seconds (since 2026-10-26 01:00 UTC)");
+  });
+});
