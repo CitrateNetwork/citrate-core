@@ -307,6 +307,7 @@ pub fn spawn_file_watch(
                 let _ = std::fs::remove_file(&path);
             }
         }),
+        prepare: None,
     }
 }
 

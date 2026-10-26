@@ -305,11 +305,14 @@ pub struct SidecarSpec {
 /// - `ended()` runs on the monitor thread after the child has ended and been reaped, on every path
 ///   (stop, shutdown, crash, health failure, kill after the grace), before the supervisor reports
 ///   the stop as done or starts a new child.
+/// - `prepare()` (optional) runs on the monitor thread right before each spawn attempt, the first
+///   one and every automatic restart.
 #[derive(Clone)]
 pub struct ChildWatch {
     pub interval: Duration,
     pub observe: Arc<dyn Fn(u32) + Send + Sync>,
     pub ended: Arc<dyn Fn() + Send + Sync>,
+    pub prepare: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl std::fmt::Debug for ChildWatch {

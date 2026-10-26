@@ -1003,12 +1003,19 @@ fn the_probe_file_holds_the_entry_only_during_the_probe() {
 #[test]
 fn leftover_spawn_and_probe_files_are_swept() {
     let dir = tmp_dir("sweep");
-    for f in [crate::hermes_mcp::EFFECTIVE_FILE, PROBE_FILE, REGISTRY_FILE] {
+    let swept = [
+        crate::hermes_mcp::EFFECTIVE_FILE,
+        PROBE_FILE,
+        "mcp-effective.json.tmp",
+        "mcp-probe.json.tmp",
+    ];
+    for f in swept.iter().chain([REGISTRY_FILE].iter()) {
         std::fs::write(dir.join(f), "{}").expect("write");
     }
     sweep_runtime_files(&dir);
-    assert!(!dir.join(crate::hermes_mcp::EFFECTIVE_FILE).exists());
-    assert!(!dir.join(PROBE_FILE).exists());
+    for f in swept {
+        assert!(!dir.join(f).exists(), "{f} is swept (a kill mid-write can leave a temp file)");
+    }
     assert!(dir.join(REGISTRY_FILE).exists(), "the server list is kept");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1068,15 +1075,77 @@ fn the_spawn_allowlist_lives_only_until_the_child_has_loaded_it() {
     let watch = spec.child_watch.expect("a watch for the spawn-time file");
     (watch.observe)(childless_pid());
     assert!(!path.exists(), "removed once the child answers /health");
-    (watch.ended)();
+    // Before a restart it is written again; when that child ends (crash, failed spawn, the
+    // supervisor giving up, or a stop) it is removed.
+    assert!(watch.prepare.is_some(), "the file is written again right before each spawn");
+    let prepare = watch.prepare.clone().expect("checked above");
+    prepare();
     assert!(
         std::fs::read_to_string(&path)
             .expect("written for the restart")
             .contains("tok-abc-123")
     );
+    (watch.ended)();
+    assert!(!path.exists(), "removed when the child ends");
+    prepare();
     mgr.stop();
     assert!(!path.exists(), "removed when Hermes stops");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs the Hermes spec under a real supervisor with `bin` and a fast retry budget, until it gives
+/// up. Returns whether the spawn-time file still exists then.
+fn spawn_file_after_giving_up(tag: &str, bin: impl Fn(&Path) -> PathBuf) -> bool {
+    let (store, _secrets, dir) = store_with(tag);
+    let mut reg = Registry::default();
+    let fx = apply_save(&mut reg, stdio_input("notes"), store.secrets()).expect("save");
+    enable_reviewed(&mut reg, "notes");
+    store.commit(&reg, &fx).expect("commit");
+    let mgr = crate::hermes::HermesManager::new(
+        dir.join("bin"),
+        dir.join("token"),
+        dir.join("crash.jsonl"),
+    )
+    .with_mcp_servers(store.clone());
+    let mut spec = mgr.spec_for_test();
+    spec.bin = bin(&dir);
+    spec.args = Vec::new();
+    spec.health_check = None;
+    let mut cfg = crate::supervisor::SupervisorConfig::new(spec, dir.join("crash.jsonl"));
+    cfg.backoff = crate::supervisor::BackoffPolicy {
+        base_delay: std::time::Duration::from_millis(10),
+        multiplier: 1,
+        max_delay: std::time::Duration::from_millis(10),
+        max_retries: 2,
+    };
+    let sup = crate::supervisor::Supervisor::start(cfg).expect("start");
+    sup.wait_until(
+        |s| *s == crate::supervisor::SupervisorState::Failed,
+        std::time::Duration::from_secs(10),
+    );
+    let left = dir.join(crate::hermes_mcp::EFFECTIVE_FILE).exists();
+    drop(sup);
+    let _ = std::fs::remove_dir_all(&dir);
+    left
+}
+
+#[cfg(unix)]
+#[test]
+fn the_spawn_allowlist_is_gone_once_the_supervisor_gives_up_on_a_crashing_child() {
+    let gone = !spawn_file_after_giving_up("kc-giveup", |_| {
+        ["/usr/bin/false", "/bin/false"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.exists())
+            .expect("false")
+    });
+    assert!(gone, "no member value is left on disk after the last allowed crash");
+}
+
+#[test]
+fn the_spawn_allowlist_is_gone_when_every_spawn_fails() {
+    let gone = !spawn_file_after_giving_up("kc-spawnfail", |d| d.join("no-such-hermes"));
+    assert!(gone, "no member value is left on disk when the binary cannot start");
 }
 
 #[test]
@@ -1103,4 +1172,35 @@ fn an_unanswered_health_check_keeps_the_spawn_allowlist_for_the_child() {
     assert!(dir.join(crate::hermes_mcp::EFFECTIVE_FILE).exists());
     mgr.stop();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An atomic write that fails after creating its temp file (here: the rename, onto a folder)
+/// removes the temp file, which may hold values.
+#[test]
+fn a_failed_private_write_leaves_no_temp_file() {
+    let dir = tmp_dir("tmpfail");
+    let dest = dir.join(PROBE_FILE);
+    std::fs::create_dir_all(dest.join("occupied")).expect("a folder in the way");
+    assert!(crate::hermes_mcp::write_private(&dest, b"{\"v\":\"secret\"}").is_err());
+    assert!(
+        !dir.join("mcp-probe.json.tmp").exists(),
+        "the temp file is removed on the error path"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The secret JSON is built in one allocation, sized exactly, so no reallocation leaves an unwiped
+/// copy behind, even for values whose JSON escape is six times their size (control characters).
+#[test]
+fn secret_json_is_built_in_one_exact_allocation() {
+    let mut env = BTreeMap::new();
+    env.insert("K".to_string(), Zeroizing::new("\u{1}".repeat(100_000)));
+    let s: StoredServer = serde_json::from_value(serde_json::json!({
+        "name": "a", "transport": "stdio", "command": "/bin/x",
+        "args": vec!["y".repeat(4000); 64]
+    }))
+    .expect("entry");
+    let text = to_secret_json(&runtime_entry(&s, &env), values_len(&env)).expect("json");
+    assert!(text.len() > 600_000);
+    assert_eq!(text.capacity(), text.len(), "sized exactly, never grown");
 }
