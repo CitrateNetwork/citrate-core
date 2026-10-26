@@ -227,9 +227,11 @@ const E2E_SIG_A: &str = include_str!("../../fixtures/updater-e2e/update-payload.
 const E2E_SIG_B: &str = include_str!("../../fixtures/updater-e2e/update-payload.bin.b.sig");
 const E2E_FEED: &str = include_str!("../../fixtures/updater-e2e/latest.json");
 
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
 /// The platform key a Linux x86_64 AppImage build looks up first (`{os}-{arch}-{installer}`).
 const E2E_TARGET: &str = "linux-x86_64-appimage";
 
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
 /// A loopback HTTP/1.1 server for one test: answers GET `path` with its body (404 otherwise) and
 /// records every requested path. The thread ends with the test process.
 struct LoopbackFeed {
@@ -237,6 +239,7 @@ struct LoopbackFeed {
     hits: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
 impl LoopbackFeed {
     fn serve(routes: Vec<(&'static str, Vec<u8>)>) -> Self {
         use std::io::{Read, Write};
@@ -295,6 +298,7 @@ impl LoopbackFeed {
     }
 }
 
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
 /// The golden feed with the artifact URL moved to `base`, and optionally another version or
 /// another signature in every platform entry.
 fn e2e_feed(base: &str, version: Option<&str>, signature: Option<&str>) -> Vec<u8> {
@@ -330,6 +334,7 @@ fn e2e_altered_signature(sig_b64: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(format!("{}\n", lines.join("\n")))
 }
 
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
 #[derive(Debug, PartialEq)]
 enum E2eOutcome {
     /// `check()` found nothing newer.
@@ -340,6 +345,7 @@ enum E2eOutcome {
     Refused(String),
 }
 
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
 /// A mock app at `current` that pins `pubkey` and polls `feed_url`, running the plugin's own
 /// check, then download (download verifies; install is never called).
 fn e2e_run(pubkey: &str, current: &str, feed_url: &str) -> E2eOutcome {
@@ -383,6 +389,7 @@ fn e2e_run(pubkey: &str, current: &str, feed_url: &str) -> E2eOutcome {
     })
 }
 
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
 /// Serve `feed` and `payload`, run the mock app at 0.5.1 pinning key A.
 fn e2e_case(
     feed_version: Option<&str>,
@@ -457,6 +464,7 @@ fn the_golden_signature_verifies_over_the_artifact_as_minisign_v_checks_it() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn the_updater_offers_and_verifies_a_newer_update_signed_by_the_pinned_key() {
     let (out, hits) = e2e_case(None, None, E2E_PAYLOAD.to_vec());
     assert_eq!(
@@ -470,6 +478,7 @@ fn the_updater_offers_and_verifies_a_newer_update_signed_by_the_pinned_key() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn the_updater_refuses_an_update_whose_signature_was_altered() {
     let bad = e2e_altered_signature(E2E_SIG_A);
     let (out, _) = e2e_case(None, Some(&bad), E2E_PAYLOAD.to_vec());
@@ -480,6 +489,7 @@ fn the_updater_refuses_an_update_whose_signature_was_altered() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn the_updater_refuses_an_update_signed_by_another_key() {
     let (out, _) = e2e_case(None, Some(E2E_SIG_B.trim()), E2E_PAYLOAD.to_vec());
     assert_eq!(
@@ -491,6 +501,7 @@ fn the_updater_refuses_an_update_signed_by_another_key() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn the_updater_refuses_an_artifact_altered_after_signing() {
     let mut altered = E2E_PAYLOAD.to_vec();
     altered[0] ^= 0x01;
@@ -502,6 +513,7 @@ fn the_updater_refuses_an_artifact_altered_after_signing() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn the_updater_offers_nothing_when_the_feed_is_not_newer() {
     for v in ["0.5.1", "0.5.0", "0.4.2"] {
         let (out, hits) = e2e_case(Some(v), None, E2E_PAYLOAD.to_vec());
