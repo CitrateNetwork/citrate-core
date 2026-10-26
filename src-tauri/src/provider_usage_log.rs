@@ -143,6 +143,28 @@ impl CallAgg {
     }
 }
 
+/// How many recent calls the usage view lists.
+pub const RECENT_MAX: usize = 20;
+
+/// One recent model call, as the usage view shows it: metadata only (the log has no content).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentCall {
+    pub at_ms: u64,
+    pub provider: String,
+    pub model: String,
+    pub verified: bool,
+    /// `ok` or a coarse code; `None` while the call has no end record.
+    pub outcome: Option<String>,
+    /// Refused before anything was sent.
+    pub refused: bool,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub cost_micros: Option<u64>,
+    #[serde(skip)]
+    call: String,
+}
+
 pub struct UsageLog {
     path: PathBuf,
     key: Option<Zeroizing<Vec<u8>>>,
@@ -151,6 +173,8 @@ pub struct UsageLog {
     next_seq: u64,
     calls: BTreeMap<String, CallAgg>,
     records: u64,
+    /// The latest begun or refused calls, oldest first, at most [`RECENT_MAX`].
+    recent: std::collections::VecDeque<RecentCall>,
 }
 
 impl std::fmt::Debug for UsageLog {
@@ -179,6 +203,7 @@ impl UsageLog {
             next_seq: 1,
             calls: BTreeMap::new(),
             records: 0,
+            recent: std::collections::VecDeque::new(),
         };
         let Ok(key) = crate::provider_guard::mac_key(keyring, LOG_MAC_ACCOUNT) else {
             return log;
@@ -229,7 +254,15 @@ impl UsageLog {
         }
     }
 
+    fn note_recent(&mut self, _r: &Record) {}
+
+    /// The latest model calls, newest first (metadata only).
+    pub fn recent(&self) -> Vec<RecentCall> {
+        Vec::new()
+    }
+
     fn apply(&mut self, r: &Record) {
+        self.note_recent(r);
         match r.kind {
             Kind::Begin => {
                 self.calls.insert(
@@ -400,6 +433,7 @@ impl UsageLog {
         self.head = GENESIS_PREV.into();
         self.next_seq = 1;
         self.calls.clear();
+        self.recent.clear();
         self.records = 0;
         self.append(Record {
             v: RECORD_VERSION,

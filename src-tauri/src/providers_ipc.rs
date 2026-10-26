@@ -8,7 +8,7 @@
 //! | Command | Source |
 //! |---|---|
 //! | `providers_status` | pinned vendor table (`provider_egress::VENDORS`), keychain presence of `provider-key:<id>`, the sealed guard file (caps, halt, approved/listed models, prices, custom endpoints, key-set time) |
-//! | `providers_usage_summary` | the signed usage log (`providers/usage.jsonl`): calls, tokens and spend per provider for the UTC day and month, unsettled calls, chain status |
+//! | `providers_usage_summary` | the signed usage log (`providers/usage.jsonl`): calls, tokens and spend per provider for the UTC day and month, unsettled calls, the latest calls (metadata only), chain status |
 //! | `providers_caps_set`, `providers_price_set`, `providers_halt`, `providers_resume` | the sealed guard file (written) |
 //! | `providers_key_set`, `providers_key_test` | the vendor's own free endpoint (`GET /models`), live, through the pinned transport; the keychain (written on success only) |
 //! | `providers_key_remove` | the keychain (deleted) |
@@ -104,6 +104,8 @@ pub struct UsageSummaryView {
     pub records: u64,
     pub as_of_ms: u64,
     pub providers: Vec<ProviderUsageView>,
+    /// The latest calls, newest first: metadata only (no content, no session or call ids).
+    pub recent_calls: Vec<crate::provider_usage_log::RecentCall>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,6 +251,7 @@ pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummary
         records: log.records(),
         as_of_ms: now,
         providers,
+        recent_calls: log.recent(),
     }
 }
 

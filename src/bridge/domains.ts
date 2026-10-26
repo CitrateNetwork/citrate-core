@@ -2778,6 +2778,22 @@ export interface ProviderUsage {
   unsettledCalls: number;
   caps: ProviderCaps;
 }
+/** One recent cloud call from the signed usage log. Metadata only: the log has no field for content. */
+export interface ProviderRecentCall {
+  atMs: number;
+  provider: string;
+  model: string;
+  /** False for a custom (unverified) endpoint. */
+  verified: boolean;
+  /** `ok`, a coarse failure or refusal code, or null while unsettled (in flight, or cut off by a crash). */
+  outcome: string | null;
+  /** True when the call was refused before anything was sent. */
+  refused: boolean;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  /** null = unknown (no price, or not reported), never zero. */
+  costMicros: number | null;
+}
 export interface ProviderUsageSummary {
   /** The signed usage log verified; when false every cloud call is refused. */
   logIntact: boolean;
@@ -2785,6 +2801,8 @@ export interface ProviderUsageSummary {
   records: number;
   asOfMs: number;
   providers: ProviderUsage[];
+  /** The latest calls, newest first (bounded in core). */
+  recentCalls: ProviderRecentCall[];
 }
 export interface ProviderKeyTest {
   ok: boolean;

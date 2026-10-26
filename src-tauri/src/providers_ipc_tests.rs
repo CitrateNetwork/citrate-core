@@ -102,3 +102,22 @@ fn usage_summary_comes_from_the_signed_log() {
     // The log is intact, so it is not reset.
     assert!(usage_log_reset(&rig.proxy).is_err());
 }
+
+#[test]
+fn usage_summary_lists_recent_calls_as_metadata_only() {
+    let rig = Rig::new("ipc-recent");
+    for _ in 0..2 {
+        rig.proxy
+            .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+            .unwrap();
+    }
+    let u = rig.proxy.with_state(|g, l| usage_summary_of(g, l, now_ms()));
+    assert_eq!(u.recent_calls.len(), 2);
+    let c = &u.recent_calls[0];
+    assert_eq!((c.provider.as_str(), c.model.as_str(), c.outcome.as_deref()), ("openai", "gpt-known", Some("ok")));
+    assert_eq!((c.tokens_in, c.tokens_out, c.cost_micros), (Some(12), Some(5), None), "no price: cost unknown");
+    let json = serde_json::to_string(&u).unwrap();
+    assert!(json.contains("\"recentCalls\""));
+    assert!(!json.contains(&rig.key));
+    assert!(!json.contains("sess-1"), "no session id in the view");
+}
