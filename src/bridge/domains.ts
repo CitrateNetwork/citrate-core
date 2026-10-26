@@ -2681,6 +2681,39 @@ export interface StoreDomain {
   remove(listingId: string): Promise<StoreOutcome<string>>;
 }
 
+// ---- services: the K1a-2 registry snapshot (Rust `services.rs`, `services_snapshot`) ----
+// Each row is read from that service's kit supervisor (SPEC-001 lifecycle cell). `observation`
+// says whether a supervisor was read at all; `phase` and everything after it are null unless it
+// was. Readiness is its own axis (SC2): Alive never implies Ready.
+export type ServiceId = "node" | "nodeAgent" | "memory" | "llamaChat" | "llamaEmbed" | "ipfs" | "hermes" | "comms" | "cluster";
+export type ServicePhase = "stopped" | "starting" | "alive" | "backoff" | "failed" | "stopping" | "quarantined";
+export type ServiceReadiness = "notAssessed" | "awaiting" | "ready" | "stale" | "unavailable";
+export interface ServiceEntry {
+  id: ServiceId;
+  label: string;
+  owner: string;
+  prerequisites: string[];
+  probe: string;
+  readySignal: string;
+  logBudgetLines: number;
+  logsCommand: string | null;
+  controls: boolean;
+  observation: "observed" | "notSupervised" | "busy";
+  phase: ServicePhase | null;
+  readiness: ServiceReadiness | null;
+  lastTransition: { from: ServicePhase | null; to: ServicePhase; atUnixMs: number } | null;
+  restarts: number | null;
+  lastCrash: { atUnixMs: number; exit: string; restartAttempt: number } | null;
+  quarantine: string | null;
+}
+export interface ServicesSnapshot {
+  takenAtUnixMs: number;
+  services: ServiceEntry[];
+}
+export interface ServicesDomain {
+  snapshot(): Promise<ServicesSnapshot>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2700,4 +2733,5 @@ export interface CxBridge {
   join: JoinDomain;
   components: ComponentsDomain;
   store: StoreDomain;
+  services: ServicesDomain;
 }

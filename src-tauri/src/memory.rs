@@ -591,6 +591,11 @@ fn map_state(state: &SupervisorState) -> &'static str {
 }
 
 impl MemoryManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over explicit paths + a socket transport. Production uses
     /// [`build_memory_state`]; tests inject a fake keyring + a stub daemon + a
     /// stub transport.
