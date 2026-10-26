@@ -16,8 +16,9 @@
 #
 # SAFETY. Launching Citrate Core on the DGX desktop session has ended that session before
 # (core#318). This script never does that. It re-runs itself as PID 1 of fresh user, PID, mount,
-# network, IPC and UTS namespaces (`unshare ... setsid`), hides /home, /tmp, /var/tmp, /run,
-# /dev/shm, /sys/fs/cgroup and the GPU device nodes behind private mounts, gives the app its own
+# network, IPC and UTS namespaces (`unshare ... setsid`), makes every mount it inherited from the
+# host read-only, hides /home, /tmp, /var/tmp, /run, /dev/shm, /sys/fs/cgroup and the GPU device
+# nodes behind private mounts, gives the app its own
 # loopback-only network, its own session bus, keyring and Xvfb display, and checks all of that
 # (with negative controls) BEFORE the first launch. If any check fails it exits 2 and never
 # launches the app. Every signal it sends goes to a pid inside the namespace.
@@ -183,6 +184,10 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
   for d in "$ROOT" "$ROOT/src" "$ROOT/scripts" "$ROOT/.git" "$PWD" "$HOME"; do
     [ -e "$d" ] && echo "$(stat -L -c '%d:%i' -- "$d") $d"
   done >"$RUN/logs/host-dir-ids.txt"
+  # Paths outside the namespace the caller can write (their own files, world-writable ones), on
+  # every real filesystem to a small depth, plus the checkout, cwd, HOME and the package sources.
+  # Inside, none of them may be writable.
+  host_writable_paths "$DEB" "$DEB_FROM" "$AI" "$AI_FROM" >"$RUN/logs/host-writable.txt"
   echo "▶ enter: unshare --user --map-root-user --pid --fork --mount-proc --net --ipc --uts setsid"
   unshare --user --map-root-user --pid --fork --mount-proc --net --ipc --uts \
     setsid env -i PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin LANG=C.UTF-8 \
@@ -197,6 +202,26 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
   local rc=$?
   [ -f "$RUN/logs/summary.txt" ] && cat "$RUN/logs/summary.txt"
   return "$rc"
+}
+
+host_writable_paths() { # extra-path ...
+  local p mp fstype
+  {
+    for p in "$ROOT" "$ROOT/src" "$ROOT/.git" "$PWD" "$HOME" "$@"; do
+      [ -n "$p" ] && [ -e "$p" ] && [ -w "$p" ] && echo "$p"
+    done
+    # Pseudo and network filesystems are skipped (autofs would mount on lookup); /home, /tmp,
+    # /var/tmp, /run and /root are covered by the hidden-directory probes.
+    while read -r mp fstype; do
+      case "$fstype" in
+        proc|sysfs|cgroup|cgroup2|devtmpfs|devpts|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs) continue ;;
+        fusectl|binfmt_misc|hugetlbfs|autofs|efivarfs|rpc_pipefs|nsfs|nfs|nfs4|cifs|smb3|fuse.*) continue ;;
+      esac
+      case "$mp" in /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/home|/home/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*|/run|/run/*|/root|/root/*) continue ;; esac
+      find "$mp" -xdev -maxdepth 3 \( -path /home -o -path /tmp -o -path /var/tmp -o -path /run -o -path /root \) -prune \
+        -o \( -type d -o -type f \) -writable -print 2>/dev/null | head -n 2000
+    done < <(findmnt -rn -o TARGET,FSTYPE)
+  } | sort -u
 }
 
 # --------------------------------------------------------------------------------------------
@@ -265,11 +290,47 @@ say() { echo "$*" | tee -a "$SUMMARY"; }
 pass() { say "PASS $*"; }
 fail() { say "FAIL $*"; FAILED=1; }
 
+# Set (ro) or clear (rw) the read-only flag of the mount at an absolute path, with -r for the
+# whole subtree, through mount_setattr(2). Unlike a remount it leaves every other mount flag as it
+# is, so it also works on the mounts this user namespace inherited with locked flags.
+mount_attr() { # ro|rw path [-r]
+  python3 -I - "$@" <<'PY'
+import ctypes, os, sys
+mode, path = sys.argv[1], sys.argv[2]
+recursive = sys.argv[3:] == ["-r"]
+class MountAttr(ctypes.Structure):
+    _fields_ = [("attr_set", ctypes.c_uint64), ("attr_clr", ctypes.c_uint64),
+                ("propagation", ctypes.c_uint64), ("userns_fd", ctypes.c_uint64)]
+MOUNT_ATTR_RDONLY, AT_RECURSIVE, AT_FDCWD, SYS_MOUNT_SETATTR = 0x1, 0x8000, -100, 442  # 442 on x86_64 and aarch64
+attr = MountAttr(MOUNT_ATTR_RDONLY, 0, 0, 0) if mode == "ro" else MountAttr(0, MOUNT_ATTR_RDONLY, 0, 0)
+libc = ctypes.CDLL(None, use_errno=True)
+rc = libc.syscall(ctypes.c_long(SYS_MOUNT_SETATTR), ctypes.c_int(AT_FDCWD), path.encode(),
+                  ctypes.c_uint(AT_RECURSIVE if recursive else 0), ctypes.byref(attr), ctypes.c_size_t(ctypes.sizeof(attr)))
+if mode not in ("ro", "rw") or not path.startswith("/") or rc != 0:
+    sys.exit(f"mount_setattr {mode} {path}: {os.strerror(ctypes.get_errno())}")
+PY
+}
+
 seal() {
   # Private mounts only: unshare --mount-proc made this mount namespace with private propagation,
   # so nothing here reaches the host's mount table.
+  INHERITED_MOUNT_IDS=" $(awk '{print $1}' /proc/self/mountinfo | tr '\n' ' ')"
+  # In the user namespace the caller's own files are owned by the mapped root, so every mount
+  # inherited from the host is made read-only first (the whole tree, in one call); the namespace's
+  # own /proc stays writable. What the seal mounts below is the only writable space.
+  mount_attr ro / -r || return 1
+  mount_attr rw /proc || return 1
   mount -t tmpfs -o mode=0755 tmpfs /mnt || return 1
   mkdir /mnt/work && mount --bind "$K1L_RUN" /mnt/work || return 1
+  mount_attr rw /mnt/work || return 1
+  # The staged packages may be hard links to the caller's files, and PID 1 runs the harness copy:
+  # both stay read-only inside the writable run dir. (Callers that reuse seal, such as join-e2e.sh,
+  # may stage no pkgs dir.)
+  local ro
+  for ro in pkgs harness; do
+    [ -d "/mnt/work/$ro" ] || continue
+    mount --bind "/mnt/work/$ro" "/mnt/work/$ro" && mount_attr ro "/mnt/work/$ro" || return 1
+  done
   local d
   for d in /tmp /var/tmp /run /home /root /sys/fs/cgroup; do
     [ -d "$d" ] || continue
@@ -421,6 +482,53 @@ p_checkout_unreachable() {
   local hits; hits="$(reaches_host .)"
   [ -n "$hits" ] && echo "reachable from the working directory ($(readlink /proc/1/cwd)):" && echo "$hits"
   [ -z "$hits" ]
+}
+# Paths the scan reads on stdin that are writable here: access(W_OK) for any path, and for an
+# existing regular file also an actual open for appending (O_WRONLY|O_APPEND, nothing written,
+# so the file is left as it was).
+writable_of() {
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] && [ -e "$p" ] || continue
+    if [ -w "$p" ] || { [ -f "$p" ] && [ ! -L "$p" ] && { : >>"$p"; } 2>/dev/null; }; then echo "$p"; fi
+  done
+}
+p_writable_scan_control() {
+  # Negative control: the scan must flag a directory and a file that are writable here (the run
+  # dir's logs), and the append-open alone must succeed on that file.
+  local f="$W/logs/probes.log"
+  [ "$(printf '%s\n' "$W/logs" "$f" | writable_of | paste -sd' ')" = "$W/logs $f" ] && { : >>"$f"; } 2>/dev/null
+}
+p_host_paths_readonly() {
+  local hits
+  hits="$(writable_of <"$W/logs/host-writable.txt")"
+  echo "caller-writable host paths recorded: $(grep -c . "$W/logs/host-writable.txt"), writable here: $(grep -c . <<<"$hits")"
+  [ -n "$hits" ] && echo "$hits" | head -n 50
+  [ -z "$hits" ]
+}
+p_inherited_readonly() {
+  # Every mount the namespace inherited from the host is read-only here, except the namespace's
+  # own /proc; the seal's own tmpfs mounts and the run dir are the only writable places.
+  local id mp opts procid bad=0
+  # The mount id of the /proc this namespace sees (the topmost of the stacked /proc mounts).
+  local fd; exec {fd}</proc
+  procid="$(awk '$1 == "mnt_id:" {print $2}' "/proc/self/fdinfo/$fd")"; exec {fd}<&-
+  [ -n "$procid" ] || { echo "cannot read the mount id of /proc"; return 1; }
+  while read -r id _ _ _ mp opts _; do
+    [[ "$INHERITED_MOUNT_IDS" == *" $id "* ]] || continue
+    [ "$id" = "$procid" ] && continue
+    case ",$opts," in *,ro,*) ;; *) echo "writable inherited mount: $mp ($opts)"; bad=1 ;; esac
+  done </proc/self/mountinfo
+  [ "$bad" -eq 0 ]
+}
+p_staged_readonly() {
+  # The staged packages may be hard links to the caller's files, and the harness copy is what PID 1
+  # is running: neither may be writable from inside.
+  local f bad=0
+  for f in "$W/pkgs" "$W/pkgs/"* "$W/harness" "$W/harness/scripts/ci/linux-native-acceptance.sh"; do
+    [ -e "$f" ] && [ -w "$f" ] && { echo "writable: $f"; bad=1; }
+  done
+  [ "$bad" -eq 0 ]
 }
 p_socket_scan_control() {
   local before after
@@ -808,6 +916,10 @@ inner_main() {
   drop_preseal_handles
   probe "working directory inside the run dir; no process holds a hidden directory" p_cwd_sealed || ok=0
   probe "caller's checkout, cwd and HOME unreachable by relative path or symlink" p_checkout_unreachable || ok=0
+  probe "writable-path scan sees a writable path (negative control)" p_writable_scan_control || ok=0
+  probe "every mount inherited from the host is read-only" p_inherited_readonly || ok=0
+  probe "no caller-writable host path is writable here" p_host_paths_readonly || ok=0
+  probe "staged packages and the harness copy are read-only" p_staged_readonly || ok=0
   probe "stray-process scan sees a leaked sleep (negative control)" p_stray_scan_control || ok=0
   probe "listening-socket scan sees a new listener (negative control)" p_socket_scan_control || ok=0
   if [ "$ok" -ne 1 ]; then
