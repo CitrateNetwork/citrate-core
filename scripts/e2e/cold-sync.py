@@ -75,6 +75,8 @@ NETWORK_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 RPC_TIMEOUT_S = 10
 # Reads of one scheduled height before it counts as missing (a block below both heads).
 CHECK_ATTEMPTS = 3
+# How long the cleanup waits to see whether a node it did not stop is exiting on its own.
+EXIT_GRACE_S = 1.0
 # Signals that stop a run the way SIGTERM does: the node is stopped, the temp dir (with the
 # storage key) removed and a verdict written. SIGHUP is a closed terminal or a dropped SSH session.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
@@ -464,6 +466,12 @@ def run(a, v):
         # Whether the node was still running when the harness came to stop it: a node that exited
         # on its own, even after the last check, did not survive the run (#524).
         exited = proc.poll() if proc is not None else None
+        if exited is None and proc is not None and v.rules["node_alive"][0] == "skip":
+            # A node that is exiting has not always been reaped yet: give it a moment (#526 review).
+            try:
+                exited = proc.wait(timeout=EXIT_GRACE_S)
+            except subprocess.TimeoutExpired:
+                exited = None
         stop(proc)
         if proc is not None and v.rules["node_alive"][0] == "skip":
             if exited is None:
