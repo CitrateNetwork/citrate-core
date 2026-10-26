@@ -24,7 +24,6 @@
 // Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
 // `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
-
 // K6: no `unsafe` in this crate except the reviewed blocks that carry their own
 // `#[allow(unsafe_code)]` and a SAFETY note (today: the two libc calls in `supervisor`, plus one
 // in its tests). Privacy-based capabilities such as `wallet::WalletKeyAccess` rely on it: only
