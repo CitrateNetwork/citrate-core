@@ -526,3 +526,106 @@ fn a_token_is_only_answered_by_the_supervisor_that_issued_it() {
     let _ = a2.request_stop();
     assert_eq!(a2.receipt(ta), Receipt::Expired, "a replacement never answers for the old one");
 }
+
+/// Tripwire (core#397): every spawn, automatic retries included, is preceded by the full reader
+/// reconcile. `run_monitor` has exactly one spawn admission, and the reconcile
+/// (`drain_readers(&mut readers, READER_DRAIN)`) runs at loop level on the path to it, not
+/// inside a branch that only some spawns take (a "first spawn for a new intent" condition was
+/// the defect).
+#[test]
+fn every_spawn_reconciles_held_readers_first_source_check() {
+    let src = include_str!("supervisor.rs");
+    let start = src
+        .find("fn run_monitor(")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor not found"));
+    let body = &src[start..];
+    let end = body
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor has no end"));
+    let body = &body[..end];
+    assert_eq!(
+        body.matches("admit_spawn(").count(),
+        1,
+        "run_monitor must have exactly one spawn admission"
+    );
+    assert_eq!(
+        src.matches("spawn_child(&").count(),
+        1,
+        "the supervisor must have exactly one spawn call"
+    );
+    let admit = body
+        .find("admit_spawn(")
+        .unwrap_or_else(|| panic!("tripwire: no spawn admission"));
+    let running = body
+        .find("// desired == Running")
+        .unwrap_or_else(|| panic!("tripwire: no Running branch marker"));
+    let path = &body[running..admit];
+    let reconcile = path
+        .lines()
+        .find(|l| l.contains("drain_readers(&mut readers, READER_DRAIN)"))
+        .unwrap_or_else(|| panic!("tripwire: no reader reconcile before the spawn admission"));
+    let indent = reconcile.len() - reconcile.trim_start().len();
+    assert_eq!(
+        indent, 8,
+        "the reader reconcile must run at loop level, for every spawn: {reconcile:?}"
+    );
+}
+
+/// The source text of the function whose signature starts with `sig`, up to its closing brace
+/// at `indent` (a structural tripwire helper; the module source is `include_str!`-ed).
+fn fn_source<'a>(src: &'a str, sig: &str, indent: &str) -> &'a str {
+    let start = src
+        .find(sig)
+        .unwrap_or_else(|| panic!("tripwire: `{sig}` not found in supervisor.rs"));
+    let close = format!("\n{indent}}}\n");
+    let len = src[start..]
+        .find(&close)
+        .unwrap_or_else(|| panic!("tripwire: no closing brace for `{sig}`"));
+    &src[start..start + len]
+}
+
+/// Tripwire (core#398): a running service is only "already satisfied" while a monitor
+/// supervises it, and the monitor marks the cell when it ends abnormally. Every
+/// `AlreadySatisfied` that `request_start` returns sits behind a `monitor_running()` check, and
+/// `run_monitor` installs its exit guard before its loop, so a new early return or a new
+/// satisfied answer cannot quietly drop either.
+#[test]
+fn already_satisfied_start_requires_a_running_monitor_source_check() {
+    let src = include_str!("supervisor.rs");
+    let start = fn_source(src, "pub fn request_start(&self)", "    ");
+    let lines: Vec<&str> = start.lines().collect();
+    let mut found = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if !line.contains("ControlResult::AlreadySatisfied") {
+            continue;
+        }
+        found += 1;
+        // The guarding `if` is the nearest preceding line that opens a condition.
+        let guard = lines[..i]
+            .iter()
+            .rev()
+            .find(|l| l.trim_start().starts_with("if ") || l.trim_start().starts_with("&&"))
+            .unwrap_or_else(|| panic!("tripwire: AlreadySatisfied at line {i} has no guard"));
+        let cond: String = lines[..i]
+            .iter()
+            .skip_while(|l| *l != guard)
+            .copied()
+            .collect();
+        assert!(
+            cond.contains("self.monitor_running()"),
+            "request_start answers AlreadySatisfied without checking the monitor: {cond}"
+        );
+    }
+    assert!(found > 0, "tripwire: request_start has no AlreadySatisfied answer to check");
+    let monitor = fn_source(src, "fn run_monitor(", "");
+    let guard_at = monitor
+        .find("MonitorExit(")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor installs no MonitorExit guard"));
+    let loop_at = monitor
+        .find("\n    loop {")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor has no main loop"));
+    assert!(
+        guard_at < loop_at,
+        "run_monitor must install its exit guard before the loop"
+    );
+}

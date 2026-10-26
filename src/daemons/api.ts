@@ -80,6 +80,9 @@ export interface Claim {
   prompt: string;
   tokensAllowed: number;
   startedMs: number;
+  /** K5a: the only tools this run may be offered and call (a Store daemon's approved
+   *  permissions; empty = none). null/absent = a daemon the member wrote here. */
+  allowedTools?: string[] | null;
 }
 
 export interface DaemonsApi {

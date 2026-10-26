@@ -1,85 +1,71 @@
-# SidecarSupervisor formal model (CORE-C1.0b)
+# SidecarSupervisor and AppExitCoordinator (SCL gate0)
 
-TLA+ model of the `SidecarSupervisor` state machine
-(`src-tauri/src/supervisor.rs`), written for CORE-C1.0b to pin the C1.0b fixes
-(F-1 consecutive-not-lifetime counter, the fork-bomb bound) and to cover the
-transitions the Rule-8 review (`citrate-security`
-`reviews/2026-07-13-rule8-c1-0-supervisor`) flagged as untested. The supervisor
-is the substrate for every Phase-C sidecar, and the example-based tests MISSED
-F-1 — so this model checks the counter-reset semantics exhaustively.
+Two models of the owned sidecar lifecycle, the formal half of SCL gate0 (planset
+`.agentile/planset/2026-10-05-sidecar-lifecycle/`, 03_TLA_SPECS.md sections 1 and 2, with the
+S1.7 corrections). The design they model is ADR-0001 / SPEC-001, adopted by
+`docs/adr/ADR-2026-10-05-owned-sidecar-lifecycle.md`. Results, the decisions taken while writing
+them, and the OwnedContainment decision are in
+`.agentile/sprints/active/sprint-scl-s1-theory/EVIDENCE.md`; this section only says what the
+files are and how to run them.
 
-## Files
+- `SidecarSupervisor.tla`: one lifecycle cell (`kit/src/supervisor.rs`, `run_monitor` and
+  `supervise_running`). CORE-C1.0b wrote the first version (F-1 consecutive counter, fork-bomb
+  bound); SCL-S1.1 extends it with intents, spawn tickets, generations and incarnations, the
+  probe permit and its in-flight workers, attested retry credit, readiness and quarantine.
+  INV-1 to INV-17 (INV-16: Stopped owns nothing; INV-17: the crash bound holds between member
+  Starts, with automated starts and restarts carrying the budget). Each action names the Rust arm
+  it models today and the WP that changes it.
+- `AppExitCoordinator.tla`: the app exit coordinator (SCL-S12, not yet in code): several owners,
+  the app gate, one absolute deadline, every exit trigger, the final action, and the Hermes
+  runtime as a nested owner with its own admission gate. X-1 to X-12, L-1.
 
-- `SidecarSupervisor.tla` — the model (states, transitions, invariants).
-- `SidecarSupervisor.cfg` — RECOVERING-child config (`CanHealthy = TRUE`):
-  pins INV-1 (never permanently Failed while recovering) + the safety invariants.
-- `SidecarSupervisor_ForkBomb.cfg` — CRASH-LOOP-ONLY config
-  (`CanHealthy = FALSE`, never stopped): pins INV-2 (the fork-bomb bound) as both
-  a safety invariant AND a liveness property (the run actually reaches Failed).
+Mutants live in the modules, selected by the constant `Mutant`, so they cannot drift from the
+model. Each config's first line states what TLC must report:
 
-## States and transitions
-
-States `{Off, Starting, Running, Backoff, Failed}` mirror `SupervisorState`.
-Transitions map 1:1 to `run_monitor` arms: `SpawnOk`, `SpawnFail`,
-`BecomeHealthy` (the F-1 reset), `Crash`, `Unhealthy`, `TryWaitError`,
-`RetryFromBackoff`, `Stop`, `StopInBackoff` (cancels a pending restart),
-`Shutdown`.
-
-Modeling fidelity for F-1: in the recovering config a `Crash` can only occur
-AFTER the episode became sustained-healthy (`healthyRun` = TRUE), which is the
-real distinction — a long-lived daemon runs past `healthy_after` between crashes
-(resetting the counter), while a fast crash-loop exits before it (never resets).
-
-## Invariants and the Rust tests they mirror
-
-| Invariant | Meaning | Rust test(s) (`supervisor_tests.rs`) |
+| Kind | Files | `EXPECT` |
 |---|---|---|
-| **INV-1** `INV_NeverFailedWhenRecovering` | An intermittently-crashing-but-recovering child is NEVER permanently Failed (the F-1 property). | `intermittent_crashes_with_healthy_runs_never_permanently_fail` |
-| **INV-2** `INV_CounterBounded` + `EventuallyFailedIfNeverHealthy` | A crash-loop-only child (no healthy interval) reaches Failed within `max_retries` (the fork-bomb bound). | `crash_loop_without_healthy_interval_still_hits_cap_after_reset_fix`, `fork_bomb_is_bounded_and_backoff_increases`, `fork_bomb_bound_is_load_bearing`, `spawn_failure_reaches_failed_within_bound` |
-| **INV-3** `INV_StopIsNotACrash` (+ Stop/StopInBackoff/Shutdown keep `crashes` UNCHANGED) | An intentional stop never triggers a restart and never records a crash. | `graceful_stop_kills_child_and_does_not_restart`, `stop_during_backoff_cancels_pending_restart` |
-| **INV-4** `INV_NoOrphan` | Off/Failed implies no live child (no orphan). | `drop_kills_child_no_orphan`, `drop_with_bounded_join_returns_promptly` |
-
-F-2 (the non-blocking health probe + bounded teardown) is a liveness property of
-the implementation rather than a state-machine invariant; it is pinned by the
-Rust tests `hanging_health_probe_does_not_stall_crash_detection_or_stop` and
-`drop_with_bounded_join_returns_promptly`. The model captures the related
-transition faithfully: the probe is an event that cannot pre-empt the crash/stop
-transitions.
+| Green | `SidecarSupervisor.cfg`, `_Probed`, `_ForkBomb`, `_ProbedForkBomb`, `_ForkBombAutoRestart`, `_ProbedForkBombAutoRestart`; `AppExitCoordinator.cfg` | `pass` |
+| Mutant | `*_Mut*.cfg`, one per reintroduced defect | `violated <the named invariant>` |
+| Reachability witness (RT-17) | `*_Reach*.cfg`: at least one per mutant (on that mutant's green constants, or on the mutant itself where stated), plus action-reachability witnesses that no mutant owns | `violated <W_ invariant>` |
 
 ## Running TLC
 
-Requires Java + `tla2tools.jar`. On the build machine these were at
-`/opt/homebrew/opt/openjdk/bin/java` and `~/.local/share/tla/tla2tools.jar`.
+`scripts/run-tlc.sh <Spec> [<cfg>]` runs one config. To check every config of a spec against its
+`EXPECT` line (green passes, each mutant fails on its named property, each witness is violated):
 
 ```sh
-JAR=~/.local/share/tla/tla2tools.jar
-JAVA=/opt/homebrew/opt/openjdk/bin/java   # or `java` if on PATH
-cd src-tauri/formal
-
-# INV-1 + safety (recovering child)
-"$JAVA" -cp "$JAR" tlc2.TLC -config SidecarSupervisor.cfg SidecarSupervisor.tla
-
-# INV-2 fork-bomb bound (safety + liveness, crash-loop-only child)
-"$JAVA" -cp "$JAR" tlc2.TLC -config SidecarSupervisor_ForkBomb.cfg SidecarSupervisor.tla
+python3 src-tauri/formal/tlc_expect.py SidecarSupervisor AppExitCoordinator            # text
+python3 src-tauri/formal/tlc_expect.py SidecarSupervisor AppExitCoordinator --markdown # table
 ```
 
-## Run result (2026-07-13)
+Before TLC, `tlc_expect.py` runs the frame lint (`tla_frame_lint.py`: no action assigns a variable
+that a sibling conjunct keeps `UNCHANGED`). It runs the green configs with `-coverage` and fails if a
+named action is never taken, unless the module marks it `\* COVERAGE-EXEMPT:`.
+`python3 src-tauri/formal/tlc_expect.py --self-test` checks both scripts. Set `TLA_JAR_SHA256` to
+pin the jar.
 
-Both configs were run headless with TLC 2026.05.26:
+CI (`.github/workflows/tla-models.yml`, SCL-S13.4) runs `tlc_expect.py --all`: every spec with a
+config that carries an `EXPECT` line, on tla2tools.jar v1.7.4 (TLC 2.19) pinned by SHA-256. A named
+spec with no configs, or a config of a checked spec without an `EXPECT` line, fails before TLC runs.
+The job also runs the self-tests and the frame lint over every module here. To bump TLC, change
+`TLA_VERSION` and `TLA_JAR_SHA256` together after a local run of the full suite.
 
-- `SidecarSupervisor.cfg` — **No error found** (52 distinct states; INV-1..4 +
-  TypeOK hold).
-- `SidecarSupervisor_ForkBomb.cfg` — **No error found** (12 distinct states;
-  INV-2 + INV-4 + the `<>Failed` liveness property hold).
+`scripts/run-tlc.sh <Spec> all` exits non-zero for these two specs by design (mutants and
+witnesses fail); use `tlc_expect.py` for them.
 
-Negative control (model has teeth): removing the counter reset in `BecomeHealthy`
-(re-introducing the F-1 lifetime-counter bug) makes TLC report
-`Invariant INV_NeverFailedWhenRecovering is violated` with a concrete
-counterexample trace reaching Failed — the exact bug the example tests missed.
+## C1.0b invariants and the Rust tests they mirror
 
-Note: the `crashes` counter is bounded by `MaxCrashes` (a `CONSTRAINT` in the
-primary cfg) purely to keep the state space finite; it does not weaken the
-invariants (INV-1..4 are inductive on `state`/`failures`).
+| Invariant | Rust test(s) (`kit/src/supervisor_tests.rs`) |
+|---|---|
+| INV-1 `INV_NeverFailedWhenRecovering` | `intermittent_crashes_with_healthy_runs_never_permanently_fail` |
+| INV-2 `INV_CounterBounded` + `EventuallyFailedIfNeverHealthy` | `crash_loop_without_healthy_interval_still_hits_cap_after_reset_fix`, `fork_bomb_is_bounded_and_backoff_increases`, `fork_bomb_bound_is_load_bearing`, `spawn_failure_reaches_failed_within_bound` |
+| INV-3 `INV_StopIsNotACrash` + `StopNeverCounts` | `graceful_stop_kills_child_and_does_not_restart`, `stop_during_backoff_cancels_pending_restart` |
+| INV-4 `INV_NoOrphan` | `drop_kills_child_no_orphan`, `drop_with_bounded_join_returns_promptly` |
+
+INV-5 to INV-17 pin behaviour that does not exist in code yet (SCL-S2 to S4); their regression
+tests land with those WPs. Negative control kept from C1.0b: removing the counter reset in
+`ResetCredit` makes TLC report `INV_NeverFailedWhenRecovering` violated, on both the
+LivenessOnly and the Probed recovering configs.
 
 ---
 

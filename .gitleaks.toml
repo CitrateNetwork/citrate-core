@@ -1,0 +1,8 @@
+# gitleaks config for the merge-gate secret-scan (merge-gate.yml picks this file up).
+# The default rules apply. Exceptions are test fixtures whose values are provably not credentials.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "0.5.1 upgrade fixtures: test-only vault keys, invite tokens and their hashes, minted for the fixture by the v0.5.1 code (fixtures/upgrade-v0.5.1/GENERATOR.md); none is used on the network"
+paths = ['''^fixtures/upgrade-v0\.5\.1/''']

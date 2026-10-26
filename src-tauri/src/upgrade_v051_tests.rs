@@ -1,0 +1,353 @@
+//! 0.5.1 -> 0.5.2 upgrade: the app data dir (UPGRADE_051_052 §2).
+//!
+//! Every fixture under fixtures/upgrade-v0.5.1/app-data was written by the v0.5.1 code that
+//! writes it in the app (b521d98e; generator in fixtures/upgrade-v0.5.1/GENERATOR.md). These tests
+//! load each one with this build's loader and assert what a 0.5.1 member keeps: no data loss, and a
+//! refusal (never a silent empty state) where a file can't be read.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+fn fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/upgrade-v0.5.1/app-data")
+}
+
+/// A private copy of the 0.5.1 app data dir for one test.
+fn copy_of_v051(tag: &str) -> PathBuf {
+    let dst = std::env::temp_dir().join(format!(
+        "citrate-upgrade-v051-app-{tag}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dst);
+    copy_dir(&fixtures(), &dst);
+    dst
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap_or_else(|e| panic!("mkdir {}: {e}", dst.display()));
+    let entries = std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let to = dst.join(entry.file_name());
+        if p.is_dir() {
+            copy_dir(&p, &to);
+        } else {
+            std::fs::copy(&p, &to).unwrap_or_else(|e| panic!("copy {}: {e}", p.display()));
+        }
+    }
+}
+
+fn read(p: &Path) -> Vec<u8> {
+    std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+}
+
+/// An in-memory kubo holding the pins the 0.5.1 node holds.
+#[derive(Clone, Default)]
+struct Kubo(Arc<Mutex<std::collections::BTreeSet<String>>>);
+impl crate::storage::KuboTransport for Kubo {
+    fn add(
+        &self,
+        _filename: &str,
+        bytes: &[u8],
+    ) -> Result<crate::storage::AddOutcome, crate::storage::StorageError> {
+        let cid = format!("bafkreiupgradeadded{}", bytes.len());
+        Ok(crate::storage::AddOutcome {
+            cid,
+            size_bytes: bytes.len() as u64,
+        })
+    }
+    fn pin_add(&self, cid: &str) -> Result<(), crate::storage::StorageError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(cid.to_string());
+        Ok(())
+    }
+    fn pin_rm(&self, cid: &str) -> Result<(), crate::storage::StorageError> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).remove(cid);
+        Ok(())
+    }
+    fn pin_ls(&self) -> Result<Vec<String>, crate::storage::StorageError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .cloned()
+            .collect())
+    }
+    fn cat(&self, cid: &str) -> Result<Vec<u8>, crate::storage::StorageError> {
+        Err(crate::storage::StorageError::Transport(format!(
+            "no such object: {cid}"
+        )))
+    }
+}
+
+fn pins_of_v051(dir: &Path) -> Vec<String> {
+    let idx: serde_json::Value = serde_json::from_slice(&read(&dir.join("ipfs/pins.json")))
+        .unwrap_or_else(|e| panic!("pins.json: {e}"));
+    idx["records"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no records"))
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn v051_pins_keep_their_size_bond_and_date() {
+    let dir = copy_of_v051("pins");
+    let cids = pins_of_v051(&dir);
+    assert_eq!(cids.len(), 2, "the fixture holds two local pins");
+    let kubo = Kubo::default();
+    for c in &cids {
+        kubo.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(c.clone());
+    }
+    let mgr = crate::storage::StorageManager::new(Box::new(kubo), dir.join("ipfs"));
+    let rows = mgr.list().unwrap_or_else(|e| panic!("list: {e}"));
+    assert_eq!(rows.len(), 2);
+    for r in &rows {
+        assert_eq!(r.bond_salt, crate::storage::LOCAL_PIN_MARKER, "{}", r.cid);
+        assert!(r.added_at > 0, "{}: the 0.5.1 date is kept", r.cid);
+        assert_eq!(r.pin_state, crate::storage::PinState::Pinned);
+    }
+    // A pin made after the upgrade keeps the 0.5.1 records beside it.
+    mgr.pin_local("bafkreiupgradeafterupgradeafterupgradeafterupgradeaf")
+        .unwrap_or_else(|e| panic!("pin: {e}"));
+    let after = pins_of_v051(&dir);
+    for c in &cids {
+        assert!(after.contains(c), "{c} survived the first 0.5.2 write");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_damaged_pin_index_is_kept_not_overwritten_by_the_next_pin() {
+    // 0.5.1 wrote pins.json with a plain truncating write, so a crash mid-write leaves a cut file.
+    // The first 0.5.2 pin must not silently replace it with a one-entry index: the bytes are kept
+    // beside it for recovery, and the new pin is still recorded.
+    let dir = copy_of_v051("damaged-pins");
+    let path = dir.join("ipfs/pins.json");
+    let full = read(&path);
+    let cut = &full[..full.len() / 2];
+    std::fs::write(&path, cut).unwrap_or_else(|e| panic!("cut: {e}"));
+    let mgr = crate::storage::StorageManager::new(Box::new(Kubo::default()), dir.join("ipfs"));
+    mgr.pin_local("bafkreiupgradeafterupgradeafterupgradeafterupgradeaf")
+        .unwrap_or_else(|e| panic!("pin: {e}"));
+    let kept: Vec<PathBuf> = std::fs::read_dir(dir.join("ipfs"))
+        .unwrap_or_else(|e| panic!("read ipfs: {e}"))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("pins.json.damaged-"))
+        })
+        .collect();
+    assert_eq!(
+        kept.len(),
+        1,
+        "the damaged index is set aside, not overwritten"
+    );
+    assert_eq!(read(&kept[0]), cut, "byte for byte");
+    let now: serde_json::Value =
+        serde_json::from_slice(&read(&path)).unwrap_or_else(|e| panic!("new index: {e}"));
+    assert!(now["records"]
+        .get("bafkreiupgradeafterupgradeafterupgradeafterupgradeaf")
+        .is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v051_invites_load_with_their_keys_and_links() {
+    let dir = copy_of_v051("invites");
+    // invites.rs `load`: serde_json::from_slice::<Vec<PendingInvite>> of invites/pending.json.
+    let v: Vec<crate::invites::PendingInvite> =
+        serde_json::from_slice(&read(&dir.join("invites/pending.json")))
+            .unwrap_or_else(|e| panic!("a 0.5.1 pending.json must load: {e}"));
+    assert_eq!(v.len(), 2);
+    // Compared through the serialized form, so the check holds whatever in-memory type holds the
+    // key: written back, every 0.5.1 field is there with its 0.5.1 value.
+    let back = serde_json::to_value(&v).unwrap_or_else(|e| panic!("serialize: {e}"));
+    let orig: serde_json::Value = serde_json::from_slice(&read(&dir.join("invites/pending.json")))
+        .unwrap_or_else(|e| panic!("{e}"));
+    for (i, rec) in orig
+        .as_array()
+        .unwrap_or_else(|| panic!("not a list"))
+        .iter()
+        .enumerate()
+    {
+        for (k, val) in rec.as_object().unwrap_or_else(|| panic!("not an object")) {
+            assert_eq!(&back[i][k], val, "invite {i} field {k}");
+        }
+    }
+    assert_eq!(back[0]["forHandle"], "@alice");
+    assert_eq!(
+        back[0]["privKey"].as_str().map(str::len),
+        Some(64),
+        "the invite key is kept"
+    );
+    assert!(
+        back[1].get("privKey").is_none(),
+        "the pre-S1 record has no key"
+    );
+    let referrals: Vec<crate::invites::ReferralEvent> =
+        serde_json::from_slice(&read(&dir.join("invites/referral-log.json")))
+            .unwrap_or_else(|e| panic!("a 0.5.1 referral-log.json must load: {e}"));
+    assert_eq!(referrals.len(), 1);
+    assert_eq!(
+        referrals[0].token_hash,
+        crate::invites::blake3_token_hash(back[0]["token"].as_str().unwrap_or_default())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v051_daemons_load_with_schedule_and_budget() {
+    let dir = copy_of_v051("daemons");
+    let book = crate::daemons::load_book(&dir.join("daemons.json"))
+        .unwrap_or_else(|e| panic!("a 0.5.1 daemons.json must load: {e}"));
+    let list = book.list(1_792_300_000_000, -420);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "Morning brief");
+    assert_eq!(list[0].schedule, "0 8 * * *");
+    assert_eq!(list[0].budget.max_runs_per_day, 2);
+    // Written back, it loads again unchanged (the first 0.5.2 write keeps the member's daemon).
+    crate::daemons::store_book(&dir.join("daemons.json"), &book)
+        .unwrap_or_else(|e| panic!("store: {e}"));
+    let again = crate::daemons::load_book(&dir.join("daemons.json"))
+        .unwrap_or_else(|e| panic!("reload: {e}"));
+    assert_eq!(again.list(1_792_300_000_000, -420)[0].id, list[0].id);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_damaged_v051_daemons_file_is_refused_not_emptied() {
+    let dir = copy_of_v051("daemons-damaged");
+    let p = dir.join("daemons.json");
+    let full = read(&p);
+    std::fs::write(&p, &full[..full.len() / 2]).unwrap_or_else(|e| panic!("cut: {e}"));
+    assert!(crate::daemons::load_book(&p).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_model_v051_verified_is_still_ready() {
+    let dir = copy_of_v051("model");
+    let models = dir.join("models");
+    let body = read(&models.join(crate::model::MODEL_FILE));
+    use sha2::Digest;
+    let hash = hex::encode(sha2::Sha256::digest(&body));
+    struct NoNet;
+    impl crate::model::ModelTransport for NoNet {
+        fn total_size(&self) -> Result<u64, crate::model::ModelError> {
+            Err(crate::model::ModelError::NotPresent)
+        }
+        fn get_from(
+            &self,
+            _o: u64,
+        ) -> Result<Box<dyn std::io::Read + Send>, crate::model::ModelError> {
+            Err(crate::model::ModelError::NotPresent)
+        }
+    }
+    let mm = crate::model::ModelManager::new(models, Box::new(NoNet), hash, body.len() as u64);
+    assert_eq!(mm.status(), crate::model::ModelStatus::Ready);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v051_terminal_choice_off_stays_off() {
+    let dir = copy_of_v051("terminal");
+    let s = crate::hermes_terminal::load(&dir.join("hermes"))
+        .unwrap_or_else(|e| panic!("a 0.5.1 terminal-settings.json must load: {e}"));
+    assert!(!s.enabled);
+    assert!(!crate::hermes_terminal::enabled(&dir.join("hermes")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_v051_node_data_dir_on_the_same_genesis_is_kept() {
+    let dir = copy_of_v051("node");
+    let node = dir.join("node");
+    let before: Vec<String> = {
+        let mut v: Vec<String> = std::fs::read_dir(&node)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    let out =
+        crate::node_genesis::reconcile_genesis(&node, crate::addresses::genesis_hash(), || {
+            panic!("a kept data dir never needs the running-node probe")
+        })
+        .unwrap_or_else(|e| panic!("reconcile: {e:?}"));
+    assert_eq!(out, crate::node_genesis::GenesisOutcome::Kept);
+    let mut after: Vec<String> = std::fs::read_dir(&node)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    after.sort();
+    assert_eq!(after, before, "nothing in the 0.5.1 node dir is touched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_v051_install_has_no_withdrawal_scan_and_starts_from_the_pool_deployment() {
+    let dir = copy_of_v051("scan");
+    let file = dir.join("withdrawal-scans.json");
+    assert!(!file.exists(), "0.5.1 never wrote a scan file");
+    let scan = crate::staking::load_scan(&file, "any-key");
+    assert_eq!(scan, crate::staking::WithdrawalScan::default());
+    assert!(scan.cursor.is_none() && scan.rows.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pin_index_writers_never_load_the_index_leniently() {
+    // Tripwire for the bug class above: only the read-only `list` may read the index leniently
+    // (a damaged file shown as empty). A writer that did the same would save over the damaged
+    // file again, and an index written in place could be cut by a crash.
+    let src = include_str!("storage.rs");
+    let body = src
+        .split("#[cfg(test)]\nmod tests")
+        .next()
+        .unwrap_or_else(|| panic!("storage.rs has no body"));
+    let lenient: Vec<&str> = body
+        .lines()
+        .filter(|l| l.contains("PinIndex::load_for_display("))
+        .collect();
+    assert_eq!(
+        lenient.len(),
+        1,
+        "only list reads the index leniently: {lenient:?}"
+    );
+    let list_at = body
+        .find("pub fn list(&self)")
+        .unwrap_or_else(|| panic!("no list"));
+    let lenient_at = body
+        .find("PinIndex::load_for_display(")
+        .unwrap_or_else(|| panic!("no lenient read"));
+    assert!(lenient_at > list_at, "the lenient read is inside list");
+    for needle in ["PinIndex::load(", "serde_json::from_str(&s).ok()"] {
+        assert!(!body.contains(needle), "{needle} reads the index leniently");
+    }
+    let impl_at = body
+        .find("impl PinIndex {")
+        .unwrap_or_else(|| panic!("no impl PinIndex"));
+    let impl_end = body[impl_at..]
+        .find("\n}\n")
+        .map(|i| impl_at + i)
+        .unwrap_or(body.len());
+    let imp = &body[impl_at..impl_end];
+    assert!(
+        !imp.contains("std::fs::write("),
+        "the index is saved through a temp file"
+    );
+    assert!(imp.contains("sync_all()") && imp.contains("std::fs::rename("));
+}
