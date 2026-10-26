@@ -4,9 +4,10 @@
 // The local model, or a cloud model from a provider the member connected in Settings › Models.
 // A cloud model runs the same loop (the same tools, approvals and taint rules) through the core
 // model proxy: the key stays in this computer's keychain, the agent only gets a one-session route,
-// and the provider's caps, halt and usage log apply. Data source (Rule 7): `providers_status`
-// (connected providers, their listed and approved models). The view is a pure function of its
-// props (render-tested); the container loads the status.
+// and the provider's caps, halt and usage log apply. Data sources (Rule 7): `providers_status`
+// (connected providers, their listed and approved models) and `providers_preferred_get/set` (the
+// stored choice, `<app data>/providers/preferred.json`). The view is a pure function of its props
+// (render-tested); the container loads the status.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { bridge } from "../bridge";
@@ -97,10 +98,12 @@ export function HermesModelPickerView(p: HermesModelPickerViewProps) {
   );
 }
 
-/** The container: reads the connected providers once. */
-export function HermesModelPicker(props: { value: CloudModelChoice; route: ChatRoute; onChoose(choice: CloudModelChoice): void }) {
+/** The container: reads the connected providers once; a choice is saved in core
+ *  (`providers_preferred_set`), and core's refusal is shown. */
+export function HermesModelPicker(props: { value: CloudModelChoice; route: ChatRoute; onChoose(choice: CloudModelChoice): Promise<string | null> }) {
   const [options, setOptions] = useState<CloudModelOption[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refused, setRefused] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     bridge.providers
@@ -111,5 +114,19 @@ export function HermesModelPicker(props: { value: CloudModelChoice; route: ChatR
       live = false;
     };
   }, []);
-  return <HermesModelPickerView value={props.value} options={options} error={error} route={props.route} onChoose={props.onChoose} />;
+  return (
+    <>
+      <HermesModelPickerView
+        value={props.value}
+        options={options}
+        error={error}
+        route={props.route}
+        onChoose={(c) => {
+          setRefused(null);
+          void props.onChoose(c).then(setRefused);
+        }}
+      />
+      {refused && <span style={{ fontSize: 11.5, color: "var(--warn)" }}>Not saved: {refused}</span>}
+    </>
+  );
 }

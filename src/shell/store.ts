@@ -541,6 +541,15 @@ export function pickChatProviderKind(
   return "demo";
 }
 
+/** D-11: core's preferred cloud model (`providers_preferred_get`), or null when there is none or
+ *  it cannot be read (a read error never sends anything to a cloud model). */
+async function readPreferredModel(): Promise<{ providerId: string; model: string } | null> {
+  return null;
+}
+
+/** D-11: the chat provider id core reads as "the member's preferred cloud model". */
+export const PREFERRED_CHAT_ID = "preferred";
+
 /** D-11: the cloud model Hermes runs on, when one is chosen and allowed (the sidecar loop on, the
  *  desktop app, and not Local model only); null = the local model. */
 export function cloudModelFor(
@@ -1114,10 +1123,16 @@ export class Store {
       } catch {
         statuses = [];
       }
-      const def = this.state.aiDefault;
+      // D-11 (P-5): the member's preferred cloud model, stored in core (`providers_preferred_get`).
+      // When set, it is the remote choice a held message offers (the app's own loop sends there
+      // through the core proxy) and the model the sidecar loop runs on. A failed read is none.
+      const preferred = await readPreferredModel();
+      if (JSON.stringify(preferred) !== JSON.stringify(this.state.hermesCloudModel)) this.setState({ hermesCloudModel: preferred });
+      const def = preferred ? PREFERRED_CHAT_ID : this.state.aiDefault;
+      this.remoteChatId = def;
       // BC-3.2 — is a gateway key configured? (used both for the local-fallback
       // routing computed in Rust AND for the gateway leg of the selection here.)
-      const gatewayConfigured = statuses.some((p) => p.id === def && p.configured);
+      const gatewayConfigured = !!preferred || statuses.some((p) => p.id === def && p.configured);
       // BC-3.2 — the HONEST local-vs-gateway routing state, computed in Rust from
       // the real model status + serve health. Only "ready" means the local server
       // is actually serving. A failed read (web shim) resolves to "demo" — never a
@@ -1128,16 +1143,17 @@ export class Store {
       } catch {
         inferenceState = "demo";
       }
-      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState, route);
+      const kind = pickChatProviderKind(preferred ? [{ id: def, configured: true }, ...statuses] : statuses, def, BRIDGE_MODE, inferenceState, route);
       this.routeKind = kind;
       this.routeAsk = routeAskOptions(inferenceState, route, gatewayConfigured);
+      if (preferred && this.routeAsk.gateway) this.routeAsk = { ...this.routeAsk, remoteLabel: `${preferred.providerId} · ${preferred.model}` };
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
       // (same local model, same approvals), so chat never depends on the sidecar being up.
       // D-11 (ADR P-5): the cloud model the member chose for Hermes, through the core proxy. Never
       // under Local model only (core refuses it there too); it needs the sidecar loop.
-      const cloudChoice = cloudModelFor(this.state.hermesCloudModel, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
+      const cloudChoice = cloudModelFor(preferred, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
       const sidecarUp =
         (kind === "local" || cloudChoice) && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
           ? await bridge.agentHarness
@@ -1155,7 +1171,13 @@ export class Store {
           .catch(() => false);
         // D-11 (P-8): the Devin delegation tools only with a connected Devin key, never under Local
         // model only. A failed read offers none.
-        const providerStatuses = await bridge.providers.status().catch(() => []);
+        const providerStatuses = await (async () => {
+          try {
+            return await bridge.providers.status();
+          } catch {
+            return [];
+          }
+        })();
         const delegationReady = delegationOffered(cognitionConnected(providerStatuses), route);
         const cloudName = cloudChoice ? providerStatuses.find((p) => p.id === cloudChoice.providerId)?.name ?? cloudChoice.providerId : null;
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
@@ -1171,7 +1193,7 @@ export class Store {
             // skill allowlist and tool emphasis. None = the session body is unchanged.
             open: (p, t, persona) =>
               cloudChoice
-                ? h.sessionOpenCloud(p, t, cloudChoice.providerId, cloudChoice.model, persona ?? null)
+                ? h.sessionOpenCloud(p, t, persona ?? null)
                 : persona
                   ? h.sessionOpen(p, t, persona)
                   : h.sessionOpen(p, t),
@@ -3038,10 +3060,15 @@ export class Store {
   /** D-11 (ADR P-5) — the model Hermes's loop runs on: a cloud model from a provider connected in
    *  Settings › Models, or null for the local model. A running session keeps its model, so the
    *  provider is rebuilt to open a fresh one. */
-  setHermesCloudModel(choice: { providerId: string; model: string } | null): void {
-    this.setState({ hermesCloudModel: choice });
-    this.save();
+  async setHermesCloudModel(choice: { providerId: string; model: string } | null): Promise<string | null> {
+    try {
+      const v = await bridge.providers.preferredSet(choice);
+      this.setState({ hermesCloudModel: v.preferred });
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
     void this.rebuildProvider();
+    return null;
   }
 
   chooseHermesPersona(p: HermesPersona | null): void {
@@ -3177,6 +3204,8 @@ export class Store {
   private routeKind: "local" | "ask" | "demo" = "demo";
   /** K2: what a held message may offer (restart the local model / send to the gateway once). */
   private routeAsk: RouteAskOptions = { restart: false, gateway: false };
+  /** The remote chat id a held message offers: the preferred cloud model (D-11) or the preset. */
+  private remoteChatId = "gateway";
   /** SCL-S7.5a — true from launch until the app's own startup start of the local server settles. */
   private launchLocalStartPending = false;
   /** SCL-S7.5a — resolves the question for the held message (null when nothing is asked). */
@@ -3252,7 +3281,7 @@ export class Store {
       // K2: core mints the one-time consent for this message when the question opens. Core sends
       // nothing to the gateway without it, so a failed mint offers no gateway send.
       if (this.routeAsk.gateway) {
-        consent = await bridge.chat.consentPrepare(this.state.aiDefault, text).catch(() => null);
+        consent = await bridge.chat.consentPrepare(this.remoteChatId, text).catch(() => null);
       }
       hold("ask");
       const choice = await new Promise<LocalModelChoice>((resolve) => {

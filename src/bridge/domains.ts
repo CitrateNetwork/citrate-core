@@ -712,6 +712,9 @@ export interface ChatRouteStatus {
 export interface RouteAskOptions {
   restart: boolean;
   gateway: boolean;
+  /** D-11: the remote the held message offers, when it is the preferred cloud model (absent = the
+   *  gateway preset). */
+  remoteLabel?: string;
 }
 
 /**
@@ -1605,16 +1608,11 @@ export interface AgentHarnessDomain {
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */
   sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
-  /** D-11 (ADR P-5/P-6) — the same session on a cloud model the member chose. The sidecar gets a
-   *  loopback route to the core model proxy, never a key; refused under Local model only and when
-   *  the provider is not connected in Settings › Models. Returns the session id. */
-  sessionOpenCloud(
-    systemPrompt: string,
-    toolsJson: string,
-    providerId: string,
-    model: string,
-    persona?: SessionPersonaChoice | null,
-  ): Promise<string>;
+  /** D-11 (ADR P-5/P-6) — the same session on the member's preferred cloud model (core reads it
+   *  from its own setting, `providers.preferredGet`). The sidecar gets a loopback route to the core
+   *  model proxy, never a key; refused under Local model only, with no preferred model, and when the
+   *  provider is not connected in Settings › Models. Returns the session id. */
+  sessionOpenCloud(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
   sessionSend(id: string, text: string): Promise<void>;
   /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
@@ -2827,6 +2825,20 @@ export interface ProvidersDomain {
   removeCustom(id: string): Promise<void>;
   /** Only a broken log is reset (archived aside, a new chain started). */
   resetUsageLog(): Promise<ProviderUsageSummary>;
+  /** D-11 (P-5) — the member's preferred cloud model for Hermes (null = the local model). */
+  preferredGet(): Promise<ProviderPreferredView>;
+  /** The provider must be connected and able to take calls; the model is approved for the anomaly
+   *  halt. `null` clears it. */
+  preferredSet(choice: ProviderPreferredModel | null): Promise<ProviderPreferredView>;
+}
+export interface ProviderPreferredModel {
+  providerId: string;
+  model: string;
+}
+export interface ProviderPreferredView {
+  preferred: ProviderPreferredModel | null;
+  /** The stored setting could not be read (Hermes then uses the local model). */
+  loadError: string | null;
 }
 
 // ---- D-11 (RC52, ADR P-8) — the Cognition (Devin) delegate. Mirrors Rust `cognition.rs`. ----

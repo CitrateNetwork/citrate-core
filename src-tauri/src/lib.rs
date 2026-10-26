@@ -117,8 +117,10 @@ pub(crate) mod provider_egress;
 mod provider_fixtures_tests;
 pub(crate) mod provider_gemini;
 pub(crate) mod provider_guard;
+// D-11 (P-5) — the member's preferred cloud model for Hermes (agent loop and chat).
 pub(crate) mod provider_openai;
 pub(crate) mod provider_openai_compat;
+pub(crate) mod provider_preferred;
 #[cfg(test)]
 mod provider_tripwire_tests;
 pub(crate) mod provider_usage_log;
@@ -697,6 +699,8 @@ pub fn run() {
             providers_ipc::providers_custom_confirm,
             providers_ipc::providers_custom_remove,
             providers_ipc::providers_usage_log_reset,
+            providers_ipc::providers_preferred_get,
+            providers_ipc::providers_preferred_set,
             // D-11 (P-8) — the Cognition delegate: per-task approval of the exact scope.
             cognition::delegation_prepare,
             cognition::delegation_decline,

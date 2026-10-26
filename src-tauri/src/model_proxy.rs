@@ -1260,6 +1260,11 @@ impl ModelProxy {
 
     // ---- routes ----------------------------------------------------------------------------
 
+    /// The proxy's settings folder (`<app data>/providers`).
+    pub(crate) fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     pub fn set_port(&self, port: u16) {
         self.port.store(port, std::sync::atomic::Ordering::SeqCst);
     }

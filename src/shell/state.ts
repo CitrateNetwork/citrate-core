@@ -591,9 +591,9 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
-  /** D-11 (ADR P-5): the cloud model Hermes's sidecar loop runs on, chosen by the member from a
-   *  provider connected in Settings › Models; null = the local model. Non-secret ids only: the key
-   *  stays in core's keychain and the loop reaches the model through the core proxy. */
+  /** D-11 (ADR P-5): the member's preferred cloud model, a mirror of core's setting
+   *  (`providers_preferred_get`, `<app data>/providers/preferred.json`); null = the local model.
+   *  Never persisted here: core is the source. */
   hermesCloudModel: { providerId: string; model: string } | null;
   /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). Off by default for new
    * installs (owner decision 2026-10-19, superseding 2026-10-04); an install that stored a value
@@ -1079,19 +1079,11 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesCloudModel", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
-
-/** D-11: a stored `hermesCloudModel` (two short, non-empty ids), or null. */
-export function validCloudModel(v: unknown): AppState["hermesCloudModel"] {
-  if (!v || typeof v !== "object") return null;
-  const { providerId, model } = v as { providerId?: unknown; model?: unknown };
-  const ok = (x: unknown, max: number): x is string => typeof x === "string" && x.trim().length > 0 && x.length <= max;
-  return ok(providerId, 64) && ok(model, 200) && providerId !== "cognition" ? { providerId, model } : null;
-}
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1119,8 +1111,8 @@ export function loadState(): AppState {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
   }
-  // D-11: a stored Hermes cloud model must be two non-empty ids; anything else is the local model.
-  base.hermesCloudModel = validCloudModel(base.hermesCloudModel);
+  // D-11: the preferred cloud model is core's setting; a value an older build stored is ignored.
+  base.hermesCloudModel = null;
   // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
   // installs. A stored value is kept as it is (on or off); only an install with no stored value
   // takes the default from freshState. The old switch-on-once migration is retired.

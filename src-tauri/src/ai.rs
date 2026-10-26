@@ -674,6 +674,10 @@ impl AiManager {
         proxy: &ModelProxy,
         provider_id: &str,
     ) -> std::result::Result<crate::model_proxy::ProxyRoute, String> {
+        // D-11: the member's preferred cloud model (`provider_preferred`), set in Settings.
+        if provider_id == crate::provider_preferred::PREFERRED_ID {
+            return crate::provider_preferred::route(proxy.dir(), CHAT_SESSION);
+        }
         self.migrate_key(proxy, provider_id)?;
         let cfg = self.read_config(provider_id).map_err(|e| e.to_string())?;
         let provider = proxy

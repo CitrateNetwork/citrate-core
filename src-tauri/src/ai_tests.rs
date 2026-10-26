@@ -1262,3 +1262,36 @@ fn a_media_consent_minted_before_local_model_only_posts_nothing() {
     assert_eq!(images(&r), 0, "nothing may reach the provider");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// D-11 (P-5): the app's own loop can send a member-chosen message to the preferred cloud model.
+#[test]
+fn chat_on_the_preferred_id_goes_to_the_members_preferred_model_through_the_proxy() {
+    let r = Remote::new("ai-preferred", "from the preferred model");
+    let mgr = mgr_no_http();
+    // Nothing chosen: refused, nothing sent.
+    let err = mgr
+        .chat(&r.proxy, &permit_for("preferred"), "preferred", &convo("q"), "{}")
+        .unwrap_err();
+    assert!(err.contains("no cloud model is chosen"), "{err}");
+    let key = gw_key();
+    mgr.set_provider(&r.proxy, "gateway", GATEWAY_BASE, "citrate-1", &key).unwrap();
+    crate::provider_preferred::set(
+        r.proxy.dir(),
+        &r.proxy,
+        Some(crate::provider_preferred::PreferredModel { provider_id: "gateway".into(), model: "citrate-1".into() }),
+    )
+    .unwrap();
+    let out = mgr
+        .chat(&r.proxy, &permit_for("preferred"), "preferred", &convo("q"), "{}")
+        .expect("preferred");
+    assert_eq!(out, "from the preferred model");
+    let (url, auth, body) = r.chats().pop().unwrap();
+    assert_eq!(url, "https://infer.citrate.ai/v1/chat/completions");
+    assert_eq!(auth, format!("authorization: Bearer {key}"));
+    assert_eq!(body["model"], "citrate-1");
+    // A permit for another provider cannot send there.
+    assert_eq!(
+        mgr.chat(&r.proxy, &permit_for("gateway"), "preferred", &convo("q"), "{}"),
+        Err(AiError::NotConfirmed.to_string())
+    );
+}

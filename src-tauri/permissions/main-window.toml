@@ -157,6 +157,8 @@ commands.allow = [
   "providers_custom_confirm",
   "providers_custom_remove",
   "providers_usage_log_reset",
+  "providers_preferred_get",
+  "providers_preferred_set",
   "delegation_prepare",
   "delegation_decline",
   "delegation_approve",

@@ -2585,22 +2585,25 @@ pub async fn hermes_session_close(
     .await
 }
 
-/// **hermes_session_open_cloud** — open a sidecar agent session on a cloud model the member chose
-/// (D-11, ADR P-5/P-6). The sidecar gets a loopback route to the core model proxy, never a key.
-/// Refused under Local model only and when the provider is not connected in Settings › Models.
+/// **hermes_session_open_cloud** — open a sidecar agent session on the member's preferred cloud
+/// model (D-11, ADR P-5/P-6; source: `<app data>/providers/preferred.json`). The sidecar gets a
+/// loopback route to the core model proxy, never a key. Refused under Local model only, with no
+/// preferred model, and when the provider is not connected in Settings › Models.
 #[tauri::command]
 pub async fn hermes_session_open_cloud(
     app: tauri::AppHandle,
     system_prompt: String,
     tools_json: String,
-    provider_id: String,
-    model: String,
     persona: Option<String>,
     custom_persona: Option<personas::CustomPersonaInput>,
 ) -> std::result::Result<String, String> {
     let route_dir = crate::chat_route::route_dir(&app)?;
     crate::blocking::off_main(move || {
         let proxy = crate::ai::proxy_for_app(&app)?;
+        // The provider and model are the member's stored choice (`provider_preferred`), never an
+        // argument from the webview.
+        let pref = crate::provider_preferred::route(proxy.dir(), cloud::CLOUD_ROUTE_PREFIX)?;
+        let (provider_id, model) = (pref.provider.to_string(), pref.model);
         let store = crate::agent_grants::GrantStore::for_app(&app)?;
         let m = manager(&app)?;
         cloud::open_cloud_session(

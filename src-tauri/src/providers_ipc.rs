@@ -566,6 +566,28 @@ pub async fn providers_custom_remove(app: tauri::AppHandle, id: String) -> Resul
     .await
 }
 
+/// D-11 (P-5) — the member's preferred cloud model for Hermes. Source:
+/// `<app data>/providers/preferred.json` (`provider_preferred`). `preferred: null` = the local model.
+#[tauri::command]
+pub async fn providers_preferred_get(
+    app: tauri::AppHandle,
+) -> Result<crate::provider_preferred::PreferredView, String> {
+    with_proxy(app, |p| Ok(crate::provider_preferred::load(p.dir()))).await
+}
+
+/// Source: `<app data>/providers/preferred.json` (written). The provider must be connected and able
+/// to take calls; the model is approved for the anomaly halt. `choice: null` clears it.
+#[tauri::command]
+pub async fn providers_preferred_set(
+    app: tauri::AppHandle,
+    choice: Option<crate::provider_preferred::PreferredModel>,
+) -> Result<crate::provider_preferred::PreferredView, String> {
+    with_proxy(app, move |p| {
+        crate::provider_preferred::set(p.dir(), p, choice)
+    })
+    .await
+}
+
 /// Source: the usage log. Only a broken log is reset (archived aside, a new chain started).
 #[tauri::command]
 pub async fn providers_usage_log_reset(app: tauri::AppHandle) -> Result<UsageSummaryView, String> {
