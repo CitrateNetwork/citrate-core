@@ -405,7 +405,7 @@
           "escrowUnlockEpoch": "0",
           "escrowWei": "0",
           "exitEpoch": "0",
-          "isActive": false,
+          "isActive": true,
           "pubkeyOfStaker(bond)": "<nodePubkey>",
           "stakeOfWei": "32000000000000000000000",
           "status": "Active"
