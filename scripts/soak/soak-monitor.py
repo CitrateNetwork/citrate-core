@@ -49,7 +49,7 @@ import urllib.request
 from pathlib import Path
 
 TOOL = "citrate-core soak-monitor"
-SAMPLE_FORMAT = 1
+SAMPLE_FORMAT = 2
 CRITERIA_SCHEMA = "citrate-core/soak-criteria"
 CRITERIA_VERSION = 1
 DEFAULT_CRITERIA = Path(__file__).resolve().parent / "soak-criteria.json"
@@ -366,9 +366,9 @@ def evaluate(header, samples, problems, criteria, explained):
             checked += 1
             if len({(h or "").lower() for h in hashes.values()}) > 1 or any(not h for h in hashes.values()):
                 bad.append(f"seq {s['seq']} block {fc.get('height')}: {hashes}")
-        rc = fc.get("recheck") or {}
-        if rc.get("changed"):
-            bad.append(f"seq {s['seq']} block {rc.get('height')} hash changed on {rc['changed']} (reorg)")
+        for e in fc.get("recheck") or []:
+            if e.get("result") == "changed":
+                bad.append(f"seq {s['seq']} block {e.get('height')} hash changed on {e.get('label')} (reorg)")
     put(
         "no_fork",
         "FAIL" if bad or checked == 0 else "ok",
@@ -654,7 +654,7 @@ def fork_check(endpoints, readings, lag, prev):
     """endpoints: {label: url}. readings: the rpc rows of this sample. prev: the previous
     sample's fork_check (or None)."""
     ok = [r for r in readings if r["ok"]]
-    out = {"height": None, "hashes": {}, "recheck": None}
+    out = {"height": None, "hashes": {}, "recheck": [], "unverified": {}}
     if not ok:
         return out
     h = max(min(r["head"] for r in ok) - lag, 0)
@@ -666,7 +666,6 @@ def fork_check(endpoints, readings, lag, prev):
             out["hashes"][r["label"]] = None
     if prev and prev.get("hashes") and prev.get("height") is not None:
         ph = prev["height"]
-        changed = []
         for r in ok:
             before = prev["hashes"].get(r["label"])
             if not before:
@@ -675,9 +674,7 @@ def fork_check(endpoints, readings, lag, prev):
                 now = _block_hash(endpoints[r["label"]], ph)
             except (OSError, ValueError, RuntimeError, urllib.error.URLError):
                 continue
-            if now != before:
-                changed.append(r["label"])
-        out["recheck"] = {"height": ph, "changed": changed}
+            out["recheck"].append({"label": r["label"], "height": ph, "result": "changed" if now != before else "same"})
     return out
 
 

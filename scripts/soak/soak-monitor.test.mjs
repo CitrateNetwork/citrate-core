@@ -14,7 +14,7 @@
 // 4. The sampler against local JSON-RPC stand-ins and a real process tree: fork, reorg on one
 //    endpoint, unreachable endpoint, finalized tag refused, URL secrets kept out of the samples,
 //    child processes, crash records written after the start.
-import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { execFile, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -28,6 +28,8 @@ const script = path.join(here, "soak-monitor.py");
 const fixtures = path.join(here, "fixtures");
 const shipped = JSON.parse(fs.readFileSync(path.join(here, "soak-criteria.json"), "utf8"));
 const PY = process.env.SOAK_PYTHON || "python3";
+// Each verdict case starts Python once or twice; the 5 s default is too tight on a loaded host.
+vi.setConfig({ testTimeout: 60_000 });
 
 function py(args, opts = {}) {
   return new Promise((resolve) => {
@@ -74,11 +76,14 @@ describe("golden fixtures", () => {
     "no-finality": [],
     fork: ["no_fork"],
     reorg: ["no_fork"],
+    "reread-errored": ["no_fork"],
+    "reread-carried-reorg": ["no_fork"],
     "stalled-head": ["finality", "head_advances"],
     "finality-stall": ["finality"],
     leak: ["rss_growth"],
     "restart-storm": ["sidecar_restarts"],
     "restart-once": ["sidecar_restarts"],
+    "sidecar-vanished": ["sidecar_restarts"],
     "genesis-mismatch": ["chain_identity", "rpcs_agree"],
     "wrong-chain": ["chain_identity"],
     "rpc-down": ["rpc_reachable"],
@@ -97,6 +102,22 @@ describe("golden fixtures", () => {
       for (const rule of want) expect(r.v.reasons.some((x) => x.startsWith(`${rule}: `))).toBe(true);
     });
   }
+
+  it("a re-read that failed and was never retried successfully is not a pass", async () => {
+    const { v } = await verdict("reread-errored");
+    expect(v.reasons.join(" ")).toMatch(/block \d+ on rpc-a was never re-read/);
+  });
+
+  it("a failed re-read is carried forward: the healthy run's deferred check is verified", async () => {
+    const { v } = await verdict("pass");
+    expect(v.rules.find((r) => r.rule === "no_fork").detail).toContain("1 re-read deferred and later verified");
+  });
+
+  it("a sidecar that disappears after the warm-up without a crash record counts as a restart", async () => {
+    const { v } = await verdict("sidecar-vanished");
+    expect(v.reasons.join(" ")).toContain("'hermes-agent': 1");
+    expect(v.reasons.join(" ")).toContain("vanished");
+  });
 
   it("a chain-only run skips the app rules instead of passing them", async () => {
     const { v } = await verdict("chain-only");
@@ -118,6 +139,10 @@ describe("golden fixtures", () => {
     const out = path.join(dir, "regen");
     const r = await py([path.join(fixtures, "make_fixtures.py"), out]);
     expect(r.code, r.stderr).toBe(0);
+    const help = await py([path.join(fixtures, "make_fixtures.py"), "--help"], { cwd: dir });
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain("usage");
+    expect(fs.existsSync(path.join(dir, "--help"))).toBe(false);
     const committed = fs.readdirSync(fixtures).filter((f) => f.endsWith(".jsonl")).sort();
     expect(fs.readdirSync(out).sort()).toEqual(committed);
     for (const f of committed) {
@@ -152,6 +177,13 @@ describe("restart explanations", () => {
     const r = await verdict("restart-storm", { explanations: one });
     expect(failed(r.v)).toEqual(["sidecar_restarts"]);
     expect(r.v.reasons[0]).toContain("'citrate-node': 26");
+  });
+
+  it("a vanished sidecar can be explained like any restart", async () => {
+    const r = await verdict("sidecar-vanished", {
+      explanations: { restarts: [{ sidecar: "hermes-agent", count: 1, reason: "Hermes turned off by the operator (logged)" }] },
+    });
+    expect(r.v.verdict).toBe("PASS");
   });
 
   it("an explanation needs a reason", async () => {
@@ -269,7 +301,10 @@ function standIn(state) {
       if (method === "eth_chainId") {
         state.calls += 1;
         result = "0x" + state.chainId.toString(16);
-      } else if (method === "eth_blockNumber") result = "0x" + state.head.toString(16);
+      } else if (method === "eth_blockNumber") {
+        const head = typeof state.head === "function" ? state.head(state.calls) : state.head;
+        result = "0x" + head.toString(16);
+      }
       else if (method === "net_peerCount") result = "0x" + state.peers.toString(16);
       else if (method === "eth_getBlockByNumber") {
         if (params[0] === "finalized") {
@@ -277,7 +312,8 @@ function standIn(state) {
           else result = { number: "0x" + state.finalized.toString(16), hash: bhash("main", state.finalized) };
         } else {
           const h = parseInt(params[0], 16);
-          result = { number: params[0], hash: h === 0 ? state.genesis : bhash(state.tag(h, state.calls), h) };
+          if (state.fail && state.fail(h, state.calls)) error = { code: -32000, message: "header not found" };
+          else result = { number: params[0], hash: h === 0 ? state.genesis : bhash(state.tag(h, state.calls), h) };
         }
       } else error = { code: -32601, message: "Method not found" };
       res.setHeader("content-type", "application/json");
@@ -302,8 +338,8 @@ beforeAll(async () => {
 });
 afterAll(() => Promise.all(servers.map((s) => new Promise((r) => s.close(r)))));
 beforeEach(() => {
-  Object.assign(A, { chainId: 40204, genesis: GENESIS, head: 900, finalized: 880, peers: 4, tag: () => "main", calls: 0 });
-  Object.assign(B, { chainId: 40204, genesis: GENESIS, head: 902, finalized: 880, peers: 4, tag: () => "main", calls: 0 });
+  Object.assign(A, { chainId: 40204, genesis: GENESIS, head: 900, finalized: 880, peers: 4, tag: () => "main", fail: null, calls: 0 });
+  Object.assign(B, { chainId: 40204, genesis: GENESIS, head: 902, finalized: 880, peers: 4, tag: () => "main", fail: null, calls: 0 });
 });
 
 async function runMonitor(extra, { duration = "0", interval = "1" } = {}) {
@@ -346,8 +382,33 @@ describe("sampler", () => {
     A.tag = (_h, calls) => (calls >= 2 ? "reorged" : "main");
     const r = await runMonitor(["--rpc", `a=${urlA}`], { duration: "1", interval: "1" });
     expect(r.samples).toHaveLength(2);
-    expect(r.samples[1].fork_check.recheck).toEqual({ height: 894, changed: ["a"] });
+    expect(r.samples[1].fork_check.recheck).toEqual([{ label: "a", height: 894, result: "changed" }]);
     expect(r.v.reasons.join(" ")).toContain("reorg");
+  });
+
+  // The review probe: the re-read of the previous height fails once, and the chain reorgs
+  // under it. The height stays the reference until a re-read succeeds, so the reorg is seen.
+  it("carries a failed re-read forward and sees the reorg under it", async () => {
+    A.head = (calls) => 900 + 10 * calls;
+    A.fail = (h, calls) => calls === 2 && h === 904;
+    A.tag = (h, calls) => (calls >= 2 && h <= 930 ? "reorged" : "main");
+    const r = await runMonitor(["--rpc", `a=${urlA}`], { duration: "2", interval: "1" });
+    expect(r.samples).toHaveLength(3);
+    expect(r.samples[1].fork_check.recheck).toEqual([{ label: "a", height: 904, result: "unchecked" }]);
+    expect(r.samples[1].fork_check.unverified).toEqual({ a: 904 });
+    expect(r.samples[2].fork_check.recheck).toEqual([{ label: "a", height: 904, result: "changed" }]);
+    expect(r.v.rules.find((x) => x.rule === "no_fork").status).toBe("FAIL");
+    expect(r.v.reasons.join(" ")).toContain("reorg");
+  });
+
+  it("fails no_fork when the last re-read failed and nothing verified it", async () => {
+    A.head = (calls) => 900 + 10 * calls;
+    A.fail = (h, calls) => calls === 2 && h === 904;
+    const r = await runMonitor(["--rpc", `a=${urlA}`], { duration: "1", interval: "1" });
+    expect(r.samples).toHaveLength(2);
+    expect(r.samples[1].fork_check.unverified).toEqual({ a: 904 });
+    expect(r.v.rules.find((x) => x.rule === "no_fork").status).toBe("FAIL");
+    expect(r.v.reasons.join(" ")).toContain("never re-read");
   });
 
   it("reports a wrong genesis and chain id as a chain_identity FAIL", async () => {
