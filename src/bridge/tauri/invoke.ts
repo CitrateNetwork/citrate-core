@@ -61,9 +61,6 @@ const LONG: Record<string, number> = {
   hermes_pending_approvals: 45_000,
   hermes_bridge_pending: 45_000,
   hermes_resolve: 45_000,
-  // C1-W: the paged withdrawal scan starts no request after SCAN_BUDGET (15 s), so it answers by
-  // 15 s plus one 6 s RPC request (staking.rs the_scan_budget_plus_one_request_fits_the_ipc_deadline).
-  wallet_pending_withdrawals: 30_000,
   hermes_stop: 45_000,
   // The terminal-commands switch restarts a running Hermes: a stop (~10 s grace) plus a start.
   hermes_terminal_set: 60_000,
@@ -96,9 +93,10 @@ const LONG: Record<string, number> = {
   // reserve + attach and resolve is resolve + JWKS (two calls each).
   join_mint: 35_000,
   join_attach: 20_000,
-  join_resolve: 35_000,
   join_revoke: 20_000,
   join_list: 20_000,
+  // Task 12: resolve of the waiting invite (resolve + JWKS, 15 s each Rust-side).
+  pending_join_resolve: 35_000,
   // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.
   gsheets_read: 20_000,
   gsheets_append: 20_000,

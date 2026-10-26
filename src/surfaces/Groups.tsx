@@ -4,9 +4,10 @@
 // The social spine, built 1:1 from design/CitrateCore.dc.html. A left rail (create / join / list)
 // and a selected group with three tabs: Conversation, Roster, Cluster. RBAC is enforced at the
 // RELAY, not the client (ADR-001) — the surface offers controls and shows the relay's honest error
-// if you are not authorized; it never fakes success (Rule 1). Role changes and offboard stop at the
-// Signature Ceremony. The Cluster tab shares FILES (drag / Browse / pick from your files), never a
-// hand-typed CID — normal people don't have a CID to paste.
+// if you are not authorized; it never fakes success (Rule 1). Offboard stops at the Signature
+// Ceremony. Role changes are not available until role grants are signed (#495, groupRoles.ts).
+// The Cluster tab shares FILES (drag / Browse / pick from your files), never a hand-typed CID —
+// normal people don't have a CID to paste.
 // =====================================================================
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
@@ -17,11 +18,13 @@ import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
-import { buildJoinLink } from "./referral";
+import { InviteLinks, YourInviteLinks } from "./InviteLinks";
+import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
 import { reachedStep } from "../privacy/joinFunnel";
 import { RelayStatusChip } from "./RelayStatusChip";
 import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
 import { GroupRoundsCard } from "../fl/GroupRoundsCard";
+import { ROLE_CHANGES_AVAILABLE, ROLE_CHANGES_NOT_AVAILABLE } from "./groupRoles";
 import {
   groupsSlice,
   refreshGroups,
@@ -82,6 +85,8 @@ export function Groups({ store, s }: SurfaceProps) {
   const st = groupsSlice.use();
   const cl = clusterSlice.use();
   const [tab, setTab] = useState<Tab>("chat");
+  // Bumped when the inviter panel makes or revokes a link, so "Your invite links" reloads.
+  const [linksVersion, setLinksVersion] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [kind, setKind] = useState<Group["kind"]>("channel");
   const nameRef = useRef<HTMLInputElement>(null);
@@ -94,7 +99,6 @@ export function Groups({ store, s }: SurfaceProps) {
   // D4 claimable invites
   const inviteHandleRef = useRef<HTMLInputElement>(null);
   const claimRef = useRef<HTMLInputElement>(null);
-  const redeemRef = useRef<HTMLInputElement>(null);
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [requests, setRequests] = useState<InviteClaim[]>([]);
   const [redeemOpen, setRedeemOpen] = useState(false);
@@ -333,30 +337,6 @@ export function Groups({ store, s }: SurfaceProps) {
     } else setPendingInvites([]);
   }, [tab, selected?.id, canManage]);
 
-  // #57 — mint a one-time SEALABLE invite link (citrate://invite?g=&t=&k=) that isn't tied to a
-  // specific @handle. Whoever opens it gets a real "Request to join" (server-blind claim → owner
-  // approves) — unlike the tokenless public referral link, which dead-ends at "Dismiss" until the
-  // GROW-S1 web join page is live. `for_handle` is a display label only; "shared link" marks it.
-  const [minting, setMinting] = useState(false);
-  const doCreateShareLink = async () => {
-    if (!selected || minting) return;
-    setMinting(true);
-    try {
-      const { link } = await bridge.invites.create(selected.id, "shared link");
-      try {
-        await navigator.clipboard?.writeText(link);
-        store.toast("Invite link copied — send it to someone. They open it, tap Join, and they're in. One-time link; you can be offline.");
-      } catch {
-        store.toast("Invite link: " + link);
-      }
-      if (canManage) await refreshInvites();
-    } catch (e) {
-      store.toast("Couldn't create an invite link — " + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      setMinting(false);
-    }
-  };
-
   const doMintInvite = async () => {
     if (!selected) return;
     const h = (inviteHandleRef.current?.value.trim() ?? "").replace(/^@/, "");
@@ -410,8 +390,7 @@ export function Groups({ store, s }: SurfaceProps) {
   // Join, and you're in, in one click (external commit; no owner approval, even if the owner is
   // offline). If self-admit fails (an older invite, or the invite wasn't published), fall back to the
   // CONNECT-S1 claim-back path (seal a request to the owner) so older links still work.
-  const doRedeemLink = async () => {
-    const link = redeemRef.current?.value.trim() ?? "";
+  const doRedeemLink = async (link: string) => {
     if (!link) return;
     const g = /[?&]g=([^&]*)/.exec(link)?.[1];
     const t = /[?&]t=([^&]*)/.exec(link)?.[1];
@@ -425,7 +404,6 @@ export function Groups({ store, s }: SurfaceProps) {
     try {
       await bridge.invites.redeem(link);
       reachedStep("join_group");
-      if (redeemRef.current) redeemRef.current.value = "";
       setRedeemOpen(false);
       await refreshGroups();
       store.toast("You're in — welcome to the group.");
@@ -441,12 +419,24 @@ export function Groups({ store, s }: SurfaceProps) {
     // Fallback (older link with a claims key): seal + submit a request to the owner.
     try {
       await bridge.invites.submitClaim(link);
-      if (redeemRef.current) redeemRef.current.value = "";
       setRedeemOpen(false);
       store.toast("Request sent — the person who invited you will see it and approve you.");
     } catch (e) {
       store.toast("Couldn't join or request — " + (e instanceof Error ? e.message : String(e)));
     }
+  };
+  // GROW-S1 task 12 — the paste field: a v2 link or code goes to Rust (held, then reviewed, since
+  // pasting is the member acting); an app-only `citrate://invite` link keeps the redeem path above.
+  const doPasteInvite = async (text: string) => {
+    if (await store.acceptInviteInput(text)) {
+      setRedeemOpen(false);
+      return;
+    }
+    if (/^citrate:\/\/invite\?/i.test(text.trim())) {
+      await doRedeemLink(text.trim());
+      return;
+    }
+    store.toast("That doesn't look like an invite link or code.");
   };
   const doRole = (address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
@@ -457,10 +447,10 @@ export function Groups({ store, s }: SurfaceProps) {
       rows: [
         { k: "Member", v: shortAddr(address) },
         { k: "New role", v: next },
-        { k: "Effect", v: "a signed RoleAssertion, enforced at the relay" },
+        { k: "Effect", v: "the member's role in this group changes" },
       ],
       cost: "—",
-      sponsor: "you approve · one assertion",
+      sponsor: "you approve · one role change",
       sponsorColor: "var(--ok)",
       chainless: true,
       apply: () => void assignRole(address, next),
@@ -522,37 +512,24 @@ export function Groups({ store, s }: SurfaceProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100%", boxSizing: "border-box" }}>
-      {/* GROW-S1 — the deep-link invite banner: a `citrate://join/...` link opened the app and handed
-          us this invite (from the web join page). Show who invited you + to what; a full invite-token
-          link gets a one-click "Request to join" (server-blind claim → owner approves). A token-less
-          referral shows context only (joining still needs the owner to add you — no fake action). */}
+      {/* GROW-S1 task 12 — a v2 invite waiting for the member (held in Rust): Review, then Join. */}
+      {s.pendingJoin && (
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--line-1)" }}>
+          <PendingJoinCard store={store} s={s} />
+        </div>
+      )}
+      {/* An app-only `citrate://invite?…` link (one-click Join) or a legacy display link (context only)
+          that the OS handed the app. */}
       {s.pendingInvite && (() => {
         const pi = s.pendingInvite;
         // INVITE-S2 — a token (`t=`) is all a one-click self-admit needs; a `k=` claims key only
         // matters for the older claim-back fallback. A tokenless (public referral) link shows context only.
         const hasToken = /[?&]t=/.test(pi.url);
         const hasClaimsKey = /[?&]k=/.test(pi.url);
-        // GROW-S1b states: resolving a short code, or it failed to verify — show honestly, no fake invite.
-        if (pi.resolving) {
-          return (
-            <div style={{ gridColumn: "1 / -1", background: "var(--srf-2)", borderBottom: "1px solid var(--line-1)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14 }}>
-              <span style={{ fontSize: 13 }}>Resolving your invite…</span>
-              <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto", color: "var(--tx-3)" }} onClick={() => store.clearPendingInvite()}>Dismiss</button>
-            </div>
-          );
-        }
-        if (pi.unresolved) {
-          return (
-            <div style={{ gridColumn: "1 / -1", background: "var(--warn-bg)", borderBottom: "1px solid var(--warn)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14 }}>
-              <span style={{ fontSize: 13 }}>That invite link couldn't be verified — it may be expired or the invite service is unavailable. Ask for a fresh link.</span>
-              <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto", color: "var(--tx-3)" }} onClick={() => store.clearPendingInvite()}>Dismiss</button>
-            </div>
-          );
-        }
         return (
           <div style={{ gridColumn: "1 / -1", background: "var(--accent-wash)", borderBottom: "1px solid var(--accent)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13.5 }}>
-              {pi.inviterHandle ? <strong>@{pi.inviterHandle}</strong> : "Someone"} invited you to <strong>{pi.clusterName || pi.clusterId || "a cluster"}</strong>
+              {pi.inviterHandle ? <strong>@{pi.inviterHandle}</strong> : "Someone"} invited you to <strong>{pi.clusterName || (hasToken ? "a group" : pi.clusterId) || "a cluster"}</strong>
               {pi.goal ? <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", marginLeft: 8 }}>· {pi.goal}</span> : null}
               {/* #57 — a tokenless (public referral) link only shows context; it can't request access on
                   its own. Say so honestly instead of dead-ending at Dismiss (Rule 1). */}
@@ -663,15 +640,12 @@ export function Groups({ store, s }: SurfaceProps) {
           </div>
         )}
 
-        {/* D4 (invitee) — turn an invite link you were DM'd into a claim to send back. */}
+        {/* GROW-S1 task 12 — paste an invite: a citrate.ai/join link or code, or an app-only
+            citrate://invite link. */}
         {redeemOpen && (
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 8, border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 12, background: "#fff" }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: "1 1 260px", minWidth: 200 }}>
-              <span className="lbl">Redeem an invite</span>
-              <input ref={redeemRef} className="input mono" placeholder="citrate://invite?…" onKeyDown={(e) => e.key === "Enter" && doRedeemLink()} />
-            </label>
-            <button className="btn btn-secondary btn-sm" onClick={doRedeemLink} style={{ flexShrink: 0 }}>Accept &amp; copy my claim</button>
-            <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)", lineHeight: 1.5, flexBasis: "100%" }}>copies a claim with your address to DM back — nobody looks up your address</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 12, background: "#fff" }}>
+            <InvitePasteField onSubmit={doPasteInvite} />
+            <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)", lineHeight: 1.5 }}>you'll see who it's from and which group before anything joins</span>
           </div>
         )}
 
@@ -783,63 +757,34 @@ export function Groups({ store, s }: SurfaceProps) {
                       </div>
                     )}
                     <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 12, color: "var(--tx-2)" }}>Someone new?</span>
-                      <button className="btn btn-primary btn-sm" onClick={doCreateShareLink} disabled={minting}>{minting ? "Creating…" : "Create an invite link"}</button>
-                      <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)" }}>one-time link · they tap Request to join · you approve</span>
-                    </div>
+                    <span style={{ fontSize: 12, color: "var(--tx-2)" }}>Someone new? Create a one-time invite link under <strong>Grow this cluster</strong> below.</span>
                   </div>
                 );
               })()}
-              {/* GROW-S0 — "Grow this cluster": the shareable web invite link. Any member can share it
-                  (the join still needs owner/admin approval at the relay). The link carries display data
-                  + your address for referral credit (name, cluster, address) — never a key or sealed
-                  token — the dignity rule (D-7). */}
-              {selected && (() => {
-                const face = faceOf(myAddr);
-                const link = buildJoinLink({
-                  clusterId: selected.id,
-                  clusterName: groupLabel(st, selected),
-                  inviter: myAddr,
-                  inviterHandle: face ? face.handle : undefined,
-                });
-                return (
-                  <div className="surface" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "14px 16px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 13.5, fontWeight: 500 }}>Grow this cluster</span>
-                      <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>invite people</span>
-                    </div>
-                    <p style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 }}>
-                      Send someone an invite link they can act on: they open it, tap <strong>Request to join</strong>, and you approve them. This is how you build your cluster to work on the network together: storage, training, inference, or shipping Dapps.
-                    </p>
-                    {/* #57 — the acceptable path: a one-time sealable invite the receiver can actually
-                        request-to-join with, no web page required. */}
-                    <button className="btn btn-primary btn-sm" onClick={doCreateShareLink} disabled={minting} style={{ alignSelf: "flex-start" }}>
-                      {minting ? "Creating…" : "Create an invite link"}
-                    </button>
-                    <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
-                      one-time, sealable link — whoever opens it gets a Request-to-join button and you approve them (server-blind)
-                    </span>
-                    <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
-                    <span style={{ fontSize: 11.5, fontWeight: 500, color: "var(--tx-2)" }}>Or post a public referral link</span>
-                    <p style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.6, margin: 0 }}>
-                      Post this anywhere for referral credit. It carries only your name, this cluster, and your address — no token — so acting on it needs the web join page (GROW-S1), coming soon.
-                    </p>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", background: "var(--srf-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{link}</span>
-                      <button className="btn btn-secondary btn-sm" onClick={() => { const p = navigator.clipboard?.writeText(link); if (p) { p.then(() => store.toast("Invite link copied — post it to bring people into this cluster.")).catch(() => store.toast("Couldn't copy — the link is " + link)); } else { store.toast("Couldn't copy — the link is " + link); } }}>Copy link</button>
-                    </div>
-                    <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
-                      the web join page + one-tap install-and-join land with the join service (GROW-S1); the link carries your name, this cluster, and your address for referral credit — nothing more
-                    </span>
+              {/* GROW-S1 task 11 — "Grow this cluster": a one-time direct invite (short link + QR) and a
+                  public link, both made in Rust. No link carries the group id or a wallet address. */}
+              {selected && (
+                <div className="surface" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "14px 16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 13.5, fontWeight: 500 }}>Grow this cluster</span>
+                    <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>invite people</span>
                   </div>
-                );
-              })()}
+                  <p style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 }}>
+                    Send someone a one-time invite link: they open it, install Citrate if they need to, and join in one click. This is how you build your cluster to work on the network together: storage, training, inference, or shipping Dapps.
+                  </p>
+                  <InviteLinks key={selected.id} store={store} groupId={selected.id} groupName={groupLabel(st, selected)} onChanged={() => { setLinksVersion((n) => n + 1); if (canManage) void refreshInvites(); }} />
+                  <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
+                  <YourInviteLinks store={store} version={linksVersion} />
+                </div>
+              )}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>Who's here</span>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>{st.roster.length} member{st.roster.length === 1 ? "" : "s"}</span>
                 </div>
+                {canManage && !ROLE_CHANGES_AVAILABLE && st.roster.length > 0 && (
+                  <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "8px 16px", borderBottom: "1px solid var(--line-1)" }}>{ROLE_CHANGES_NOT_AVAILABLE}</p>
+                )}
                 {st.roster.length === 0 ? (
                   <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>Just you so far. Add someone by their address below.</p>
                 ) : (
@@ -865,9 +810,15 @@ export function Groups({ store, s }: SurfaceProps) {
                         <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + tone.bd, color: tone.fg, background: tone.bg }}>{r.role}</span>
                         {canManage && r.role !== "owner" && !you && !isAgent && (
                           <>
-                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doRole(r.address, r.role)} title="Signed RoleAssertion — stops at the ceremony">
-                              {r.role === "admin" ? "Make member" : "Make admin"}
-                            </button>
+                            {ROLE_CHANGES_AVAILABLE ? (
+                              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doRole(r.address, r.role)}>
+                                {r.role === "admin" ? "Make member" : "Make admin"}
+                              </button>
+                            ) : (
+                              <button className="btn btn-ghost btn-sm" disabled aria-disabled="true" title={ROLE_CHANGES_NOT_AVAILABLE} style={{ opacity: 0.5, cursor: "not-allowed" }}>
+                                {r.role === "admin" ? "Make member" : "Make admin"}
+                              </button>
+                            )}
                             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doOffboard(r.address)} style={{ color: "var(--danger)" }}>Offboard</button>
                           </>
                         )}

@@ -140,7 +140,9 @@ export interface SigningDomain {
 }
 
 export interface WalletDomain {
-  balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
+  /** Native liquid SALT (eth_getBalance) and claimable (ContributionAccounting). No self-stake:
+   * staking is through the validator bond (D-9 retired the liquid staking pool). */
+  balances(): Promise<{ liquid: number; claimable: number; address: string }>;
   /** Q-E.2 (C-5) — the indexed tx history. `status` (1 ok / 0 reverted / null
    * pending) + `direction` are passed through from the indexer so a failed tx can
    * be marked (they used to be stripped, making a revert look like a success). */
@@ -150,28 +152,6 @@ export interface WalletDomain {
    * `signing.broadcast(view.id)` (B1.4 → a real 40204 tx). `amountWei` is a
    * decimal wei string. Mirrors `agent.claim` for the claimRewards() path. */
   send(to: string, amountWei: string): Promise<CeremonyView>;
-  /** CORE (@rule8) — submit a LiquidStakingPool `deposit()` stake as a PENDING
-   * ceremony and return the decoded view. Signs NOTHING; the human approves via
-   * `signing.broadcast(view.id)` (B1.4 → a real 40204 deposit tx). `amountWei` is
-   * a decimal wei string. Mirrors `send` for the transfer path. */
-  stake(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `requestWithdrawal(shares)`
-   * as a PENDING ceremony (burns stSALT shares into the ~7-day queue). The
-   * SALT→shares conversion is done in Rust from LIVE reads (shares()+balanceOf()),
-   * so `amountWei` is the SALT the user wants to withdraw. Signs NOTHING; approved
-   * via `signing.broadcast`. Mirrors `stake`. */
-  requestWithdrawal(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `claimWithdrawal(id)` for a
-   * matured request as a PENDING ceremony. The ~7-day (50,400-block) delay is
-   * enforced on-chain; a too-early claim reverts. Signs NOTHING; approved via
-   * `signing.broadcast`. `id` is the decimal request id from `pendingWithdrawals`. */
-  claimWithdrawal(id: string): Promise<CeremonyView>;
-  /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
-   * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
-   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
-   * missing and an empty list is not "none". */
-  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -218,35 +198,6 @@ export interface WalletDomain {
   linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean; canonical: boolean }>;
   /** Decline a pending link: release the ceremony + drop the one-time nonce. */
   linkReject(id: string): Promise<void>;
-}
-
-/** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
- * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
- * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
-/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
- * `complete` = it reached the end of what the node serves and read every withdrawal;
- * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
-export interface PendingWithdrawalsRead {
-  withdrawals: PendingWithdrawal[];
-  confirmed: boolean;
-  complete: boolean;
-  note: string | null;
-}
-
-/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
- * when the Wallet reads again; `message` is display only and is never matched. */
-export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
-export interface PendingWithdrawalsError {
-  kind: PendingReadErrorKind;
-  message: string;
-}
-
-export interface PendingWithdrawal {
-  id: string;
-  saltWei: string;
-  requestBlock: number;
-  claimableAtBlock: number;
-  claimable: boolean;
 }
 
 /**
@@ -645,6 +596,13 @@ export interface ChatDomain {
    */
   consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
+   * K2 — the question for a held message closed without "Send this message to the gateway this
+   * time" (cancelled, stopped, or the local model answers instead). Core drops the consent it
+   * minted for it (`chat_consent_drop`), so it cannot be used later. An id that is no longer open
+   * is not an error. The sim impl has nothing to drop.
+   */
+  consentDrop(consentId: string): Promise<void>;
+  /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
    * the frontend runs the tool loop. Rust reads the STORED baseURL + sealed key
@@ -718,7 +676,7 @@ export interface GrantStatus {
   attributedStakeWei: string;
   /**
    * `MembershipStakeVault.attributedPrincipal(member)`. M-2 replaced
-   * `attributedShares` (an stSALT share count) with raw bonded principal —
+   * `attributedShares` (a pool share count) with raw bonded principal —
    * there are no shares under bonding.
    */
   attributedPrincipalWei: string;
@@ -1113,7 +1071,8 @@ export interface GroupsDomain {
    */
   addMember(groupId: string, address: string): Promise<void>;
   roster(groupId: string): Promise<GroupMember[]>;
-  /** Grant/change a role — a signed RoleAssertion enforced at the relay. */
+  /** Change a member's role. Not available yet (#495): the daemon needs a signed role grant and
+   *  nothing signs one, so this rejects with the not-available reason. */
   assignRole(groupId: string, address: string, role: GroupRole): Promise<void>;
   /** Atomic offboard — drops all four planes in one epoch (ADR-001). */
   offboard(groupId: string, address: string): Promise<void>;
@@ -1605,8 +1564,9 @@ export interface AgentHarnessDomain {
   sessionStop(id: string): Promise<void>;
   /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
    *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
-  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first. */
-  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string): Promise<string>;
+  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first;
+   *  `runId` is the claimed run, which core checks is in flight for that daemon. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string, runId?: string): Promise<string>;
   /** HUP-S10.3 — close a session (a finished daemon run). */
   sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
@@ -2052,7 +2012,8 @@ export interface InviteClaim {
 // the share link opens. Mirrors the Rust `citrate_core_kit::join` views. The webview never sees the
 // link key, the envelope, the relay token or the session bearer: the only value carrying the key is
 // `JoinMinted.shareUrl` (`https://citrate.ai/join/<code>#<key>`), meant to be copied and shared.
-// Not yet registered on CxBridge: the inviter UI (task 11) and invitee path (task 12) wire it.
+// Registered on CxBridge as `join` (tasks 11/12). The pending invite an invitee has not acted on yet
+// is held only in Rust (keyring), and its view carries neither the code nor the key.
 export type JoinKind = "direct" | "referral";
 export type JoinGoal = "storage" | "training" | "inference" | "dapps" | "general";
 export interface JoinMintRequest {
@@ -2095,21 +2056,47 @@ export interface JoinCodeEntry {
   exp: string;
   resolveCount: number;
 }
+/** What `join.revoke` closed. `relayInviteClosed`: the relay invite sealed inside a direct code
+ *  this device minted was closed at the relay; false when there is no such record (a public link,
+ *  or a code minted elsewhere). */
+export interface JoinRevoked {
+  relayInviteClosed: boolean;
+}
 export interface JoinDomain {
   /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
   mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
   /** Retry attaching a pending direct code's envelope (idempotent). */
   attach(code: string): Promise<JoinMinted>;
-  /** Resolve + verify a link (or bare code). Each call counts against the code's resolve limit
-   *  (direct 1–50, default 50); resolve on the member's action, not on a preview. */
-  resolve(link: string): Promise<JoinResolved>;
   /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
    *  stays held (until it expires), so calling it again retries. */
   redeem(code: string): Promise<void>;
   /** Revoke one of the member's codes. */
-  revoke(code: string): Promise<void>;
+  revoke(code: string): Promise<JoinRevoked>;
   /** The member's codes, newest first. */
   list(): Promise<JoinCodeEntry[]>;
+  /** Task 12: hand an arrived/pasted invite link to Rust to hold (keyring). Not resolved. */
+  pendingSet(link: string): Promise<PendingJoinView>;
+  /** Whether an invite is waiting (no code, no key). */
+  pendingGet(): Promise<PendingJoinView | null>;
+  /** Wipe the waiting invite (cancel). */
+  pendingClear(): Promise<void>;
+  /** The member chose to look at it: resolve + verify the waiting invite in Rust. */
+  pendingResolve(): Promise<JoinResolved>;
+  /** QR modules for a share link (rendered as SVG by the webview). */
+  shareQr(link: string): Promise<JoinQr>;
+}
+/** The waiting invite as the webview sees it (mirrors Rust `PendingJoinView`). */
+export interface PendingJoinView {
+  hasKey: boolean;
+  storedAt: number;
+  expiresAt: number;
+  /** false = the keyring was unreachable; held in memory only until the app quits. */
+  persisted: boolean;
+}
+/** A QR code as rows of '1' (dark) / '0' (light) modules, without the quiet zone. */
+export interface JoinQr {
+  size: number;
+  rows: string[];
 }
 
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
@@ -2652,6 +2639,39 @@ export interface StoreDomain {
   remove(listingId: string): Promise<StoreOutcome<string>>;
 }
 
+// ---- services: the K1a-2 registry snapshot (Rust `services.rs`, `services_snapshot`) ----
+// Each row is read from that service's kit supervisor (SPEC-001 lifecycle cell). `observation`
+// says whether a supervisor was read at all; `phase` and everything after it are null unless it
+// was. Readiness is its own axis (SC2): Alive never implies Ready.
+export type ServiceId = "node" | "nodeAgent" | "memory" | "llamaChat" | "llamaEmbed" | "ipfs" | "hermes" | "comms" | "cluster";
+export type ServicePhase = "stopped" | "starting" | "alive" | "backoff" | "failed" | "stopping" | "quarantined";
+export type ServiceReadiness = "notAssessed" | "awaiting" | "ready" | "stale" | "unavailable";
+export interface ServiceEntry {
+  id: ServiceId;
+  label: string;
+  owner: string;
+  prerequisites: string[];
+  probe: string;
+  readySignal: string;
+  logBudgetLines: number;
+  logsCommand: string | null;
+  controls: boolean;
+  observation: "observed" | "notSupervised" | "busy";
+  phase: ServicePhase | null;
+  readiness: ServiceReadiness | null;
+  lastTransition: { from: ServicePhase | null; to: ServicePhase; atUnixMs: number } | null;
+  restarts: number | null;
+  lastCrash: { atUnixMs: number; exit: string; restartAttempt: number } | null;
+  quarantine: string | null;
+}
+export interface ServicesSnapshot {
+  takenAtUnixMs: number;
+  services: ServiceEntry[];
+}
+export interface ServicesDomain {
+  snapshot(): Promise<ServicesSnapshot>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2667,6 +2687,9 @@ export interface CxBridge {
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
+  /** GROW-S1 v2 invite links (short code + sealed envelope), all through Rust. */
+  join: JoinDomain;
   components: ComponentsDomain;
   store: StoreDomain;
+  services: ServicesDomain;
 }

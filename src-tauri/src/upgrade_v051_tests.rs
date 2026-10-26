@@ -297,15 +297,40 @@ fn a_v051_node_data_dir_on_the_same_genesis_is_kept() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// D-9 (2026-10-26): the liquid staking pool is retired. A 0.5.1 install holds no pool state in its
+/// app data (no file names or carries a pool address, selector, event or field), so the only pool
+/// value an upgrade meets is the webview's saved self-stake, which loadState drops
+/// (src/shell/upgradeV051.test.ts).
 #[test]
-fn a_v051_install_has_no_withdrawal_scan_and_starts_from_the_pool_deployment() {
-    let dir = copy_of_v051("scan");
-    let file = dir.join("withdrawal-scans.json");
-    assert!(!file.exists(), "0.5.1 never wrote a scan file");
-    let scan = crate::staking::load_scan(&file, "any-key");
-    assert_eq!(scan, crate::staking::WithdrawalScan::default());
-    assert!(scan.cursor.is_none() && scan.rows.is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
+fn a_v051_install_holds_no_pool_state_in_its_app_data() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .flatten()
+        {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut all = Vec::new();
+    walk(&fixtures(), &mut all);
+    assert!(all.len() > 10, "the 0.5.1 app data fixture is missing");
+    let mut found = Vec::new();
+    for p in all {
+        let name = p.to_string_lossy().to_string();
+        let body = String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()).to_string();
+        for h in crate::lsp_retired_tests::retired_hits(&format!("{name}\n{body}")) {
+            found.push(format!("{name}: {h}"));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "0.5.1 app data with pool state: {found:?}"
+    );
 }
 
 #[test]
