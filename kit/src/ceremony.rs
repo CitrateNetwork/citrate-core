@@ -572,6 +572,8 @@ struct Prepared {
     /// The signer's address (lower-case hex) and the tx nonce, for the submitted-tx record.
     sender: String,
     nonce: u64,
+    /// Whether the app read `nonce` from the node for this send or the requester supplied it.
+    nonce_source: crate::submitted_log::NonceSource,
     /// What the tx calls (`to` + selector) when it has calldata, so its record can be found
     /// again (Join-8: the Activate step after a restart).
     call: Option<crate::submitted_log::CallMeta>,
@@ -1018,11 +1020,13 @@ impl SignatureCeremony {
         // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
         // `from` the dApp names sources the pending nonce; absent a `from` we
         // cannot fetch a nonce, so the dApp must have supplied one.
-        let fetched_nonce = match (&parsed.nonce, &parsed.from) {
-            (Some(n), _) => *n,
-            (None, Some(from)) => rpc
-                .pending_nonce(from)
-                .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+        let (fetched_nonce, nonce_source) = match (&parsed.nonce, &parsed.from) {
+            (Some(n), _) => (*n, crate::submitted_log::NonceSource::Supplied),
+            (None, Some(from)) => (
+                rpc.pending_nonce(from)
+                    .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+                crate::submitted_log::NonceSource::Fetched,
+            ),
             (None, None) => return Err(CeremonyError::UndecodableTransaction),
         };
         let fetched_gas_price = match &parsed.gas_price {
@@ -1050,6 +1054,7 @@ impl SignatureCeremony {
                 raw: signed.raw,
                 sender,
                 nonce: fields.nonce,
+                nonce_source,
                 call: match (parsed.to, parsed.data.get(..4)) {
                     (Some(to), Some(sel)) => Some(crate::submitted_log::CallMeta {
                         to: format!("0x{}", hex::encode(to)),
@@ -1109,6 +1114,7 @@ impl SignatureCeremony {
                 &local_hash,
                 &prepared.sender,
                 prepared.nonce,
+                prepared.nonce_source,
                 prepared.call.as_ref(),
             )
             .map_err(|e| {
