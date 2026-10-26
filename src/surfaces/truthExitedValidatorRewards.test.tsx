@@ -42,6 +42,8 @@ function stubStore(over: Record<string, unknown> = {}): Store {
   return {
     walletIsLinked: () => true,
     refreshEarnings: vi.fn(async () => {}),
+    // #408: Node reads the activation (and any recorded activation tx) on mount.
+    refreshActivation: vi.fn(async () => true),
     refreshWallet: () => {},
     refreshPendingWithdrawals: () => {},
     refreshActivity: () => {},

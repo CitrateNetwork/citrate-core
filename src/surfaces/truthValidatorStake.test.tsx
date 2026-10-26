@@ -396,9 +396,38 @@ describe("#348 review — the activation ceremony states the bond principal, not
   it("labels the review from the bond's principal read", async () => {
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     vi.spyOn(store, "refreshActivation").mockImplementation(async () => {
-      store.setState({ activation: { bondActivated: false, principalWei: wei(33_500) } as never, s7TxHash: null as never });
+      // A read that passes #408's full activation gate (contract §1), with a 33,500 principal.
+      store.setState({
+        activation: {
+          bondAddress: "0x2222222222222222222222222222222222222222",
+          bondDeployed: true,
+          bondActivated: false,
+          principalWei: wei(33_500),
+          unlockBlock: 16_200_000,
+          unlockTimestamp: 1_822_000_000,
+          memberTokenId: "4",
+          membershipActive: true,
+          validatorPubkey: "0x" + "07".repeat(32),
+          pubkeySource: "node",
+          nodeKeyReady: true,
+          nodePubkey: "0x" + "07".repeat(32),
+          bondPubkey: null,
+          registryStatus: 0,
+          activationEpoch: 0,
+          registryActive: false,
+          currentEpoch: 500,
+          epochBlocks: 1000,
+          headBlock: 500_000,
+          blockTimeMs: 2000,
+          localBlock: 499_999,
+          localSyncing: false,
+          tx: null,
+        } as never,
+        s7TxHash: null as never,
+      });
       return true;
     });
+    vi.spyOn(store, "walletIsLinked").mockReturnValue(true);
     store.setState({ walletReview: null });
     vi.spyOn(bridge.node, "registerValidator").mockResolvedValue({ id: "c1", decoded: { action: "MemberBond.activate", cost: "0", destination: "0x" } } as never);
     await store.activateValidator();

@@ -333,8 +333,12 @@ export function Node({ store, s }: SurfaceProps) {
                     isn't active yet (pending, or isActive unread) is already staked: no
                     activation is offered for it (#348 review). */}
                 {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
-                {/* #348 review: activation only for a bond that reads not activated (activated() = false). */}
-                {TAURI && s.node === "synced" && canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) && (
+                {/* #348 review: activation only for a bond that reads not activated (activated() = false).
+                    MemberBond.activated() comes from the grant read or, since #408, from the activation
+                    read (refreshActivation on mount); either read counts, an unread one offers nothing.
+                    #406: a recorded activation tx shows its status panel (Try again / Forget) whatever
+                    the offer gate says, so a sent activation is never hidden. */}
+                {TAURI && s.node === "synced" && (hasActivationTxStatus(store, s) || canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated ?? s.activation?.bondActivated ?? null)) && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
