@@ -138,8 +138,8 @@ impl RpcTransport for HttpTransport {
     }
 }
 
-/// A single `eth_getLogs` log entry, decoded to the facts the withdraw
-/// enumeration needs (WP2). `topics` are the indexed event params (topic0 = the
+/// A single `eth_getLogs` log entry, decoded to the facts a log reader needs
+/// (e.g. the AgentSBT mint lookup). `topics` are the indexed event params (topic0 = the
 /// event signature hash, topic1/2 = indexed args, `0x…` hex words); `data` is
 /// the ABI-encoded non-indexed params (`0x…` hex); `block_number` is the block
 /// the log was emitted in (decoded from the `blockNumber` hex quantity). Rule 1:
@@ -285,12 +285,12 @@ impl<T: RpcTransport> RpcClient<T> {
     }
 
     /// `eth_getLogs([filter])` → the matching log entries (real values from the
-    /// live 40204 RPC; CORE WP2 withdraw enumeration). `filter` is the pre-built
-    /// filter object (caller-shaped so we stay transport-only), e.g.
-    /// `{address, topics:[topic0, null, staker_padded], fromBlock, toBlock}`. Each
+    /// live 40204 RPC). `filter` is the pre-built filter object (caller-shaped so we
+    /// stay transport-only), e.g.
+    /// `{address, topics:[topic0, null, owner_padded], fromBlock, toBlock}`. Each
     /// entry is decoded to a [`LogEntry`] (topics + data + block number). A
     /// malformed entry (missing/short field) errors rather than silently drops
-    /// (Rule 1 — no fabricated or partial withdrawal list).
+    /// (Rule 1 — no fabricated or partial list).
     pub fn get_logs(&self, filter: Value) -> Result<Vec<LogEntry>, RpcError> {
         let result = self.request("eth_getLogs", json!([filter]))?;
         parse_logs(&result)

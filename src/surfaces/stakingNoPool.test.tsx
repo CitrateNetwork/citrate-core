@@ -1,4 +1,4 @@
-// Owner decision D-9 (2026-10-26): the LiquidStakingPool is retired at the r1006 reroll and is not
+// Owner decision D-9 (2026-10-26): the liquid staking pool is retired at the r1006 reroll and is not
 // in the genesis contract set. The Wallet offers no pool self-stake: no add-stake or withdraw form,
 // no pending-withdrawal queue, no self-stake figure, and a staked total that never counts pool
 // shares. Where the pool content was, the Staking tab says how staking works now: through the

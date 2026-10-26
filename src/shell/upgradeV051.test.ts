@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { loadState, freshState, PERSIST_KEYS, STORAGE_KEY, type AppState } from "./state";
 import { store } from "./store";
 
-// D-9 (2026-10-26): the keys a 0.5.1 save used for the retired LiquidStakingPool self-stake.
+// D-9 (2026-10-26): the keys a 0.5.1 save used for the retired liquid staking pool self-stake.
 const RETIRED_POOL_KEYS: string[] = JSON.parse(
   readFileSync(join(__dirname, "../../fixtures/retired/liquid-staking-pool.json"), "utf8"),
 ).persistedKeys;

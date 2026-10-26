@@ -187,14 +187,14 @@ fn receipt_poll_times_out_when_never_mined() {
 
 #[test]
 fn get_logs_is_well_formed_and_decodes_entries() {
-    // The node returns one WithdrawalRequested log: topic0 = event sig hash,
-    // topic1 = id (indexed), topic2 = staker (indexed), data = the two
-    // non-indexed uints, blockNumber = 0x64 (100).
+    // The node returns one log with two indexed args: topic0 = event sig hash,
+    // topic1 = id (indexed), topic2 = owner (indexed), data = one non-indexed
+    // uint, blockNumber = 0x64 (100).
     let topic0 = "0x1111111111111111111111111111111111111111111111111111111111111111";
     let topic1 = "0x0000000000000000000000000000000000000000000000000000000000000007"; // id 7
     let topic2 = "0x0000000000000000000000009858effd232b4033e47d90003d41ec34ecaeda94";
     let log = serde_json::json!({
-        "address": "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e",
+        "address": "0x2222222222222222222222222222222222222222",
         "topics": [topic0, topic1, topic2],
         "data": "0x00000000000000000000000000000000000000000000000000000000000000ff",
         "blockNumber": "0x64",
@@ -203,7 +203,7 @@ fn get_logs_is_well_formed_and_decodes_entries() {
     let client = RpcClient::with_transport(mock);
 
     let filter = serde_json::json!({
-        "address": "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e",
+        "address": "0x2222222222222222222222222222222222222222",
         "topics": [topic0, Value::Null, topic2],
         "fromBlock": "earliest",
         "toBlock": "latest",
@@ -221,8 +221,8 @@ fn get_logs_is_well_formed_and_decodes_entries() {
 
 #[test]
 fn get_logs_empty_is_an_honest_empty_list() {
-    // A fresh wallet with no WithdrawalRequested events → an empty array, decoded
-    // to an empty Vec (honest, not an error — Rule 1).
+    // An address with no matching events → an empty array, decoded to an empty
+    // Vec (honest, not an error — Rule 1).
     let mock = MockTransport::new(vec![ok_result(Value::Array(vec![]))]);
     let client = RpcClient::with_transport(mock);
     let logs = client.get_logs(serde_json::json!({})).expect("empty logs");
@@ -232,7 +232,7 @@ fn get_logs_empty_is_an_honest_empty_list() {
 #[test]
 fn get_logs_malformed_blocknumber_is_a_field_error() {
     // A log missing its blockNumber must error, never silently produce a
-    // block-0 entry (which would mislead the claimable-delay math).
+    // block-0 entry.
     let log = serde_json::json!({
         "topics": ["0x00"],
         "data": "0x",

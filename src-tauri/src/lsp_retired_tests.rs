@@ -1,4 +1,4 @@
-// Tripwire, owner decision D-9 (2026-10-26): the LiquidStakingPool is retired at the r1006 reroll
+// Tripwire, owner decision D-9 (2026-10-26): the liquid staking pool is retired at the r1006 reroll
 // and is not in the genesis contract set. The core crate, its address book and the kit make no pool
 // call: no pool address, selector, event, command or self-stake read may come back.
 //
@@ -30,7 +30,7 @@ fn retired() -> Retired {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
-/// `9ee679e8` as a pinned selector const writes it: `0x9e, 0xe6, 0x79, 0xe8`.
+/// `a1b2c3d4` as a pinned selector const writes it: `0xa1, 0xb2, 0xc3, 0xd4`.
 fn byte_form(hex: &str) -> String {
     hex.as_bytes()
         .chunks(2)
@@ -71,11 +71,16 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
             files(&p, out);
         } else if matches!(
             p.extension().and_then(|x| x.to_str()),
-            Some("rs" | "json" | "toml" | "ts" | "tsx" | "md" | "txt")
+            Some("rs" | "json" | "toml" | "ts" | "tsx" | "md" | "txt" | "sh")
         ) {
             out.push(p);
         }
     }
+}
+
+/// Every banned string in `text` (no allowance): for fixtures and data outside the scanned trees.
+pub(crate) fn retired_hits(text: &str) -> Vec<String> {
+    hits(&retired(), text, &[])
 }
 
 #[test]

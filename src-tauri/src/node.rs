@@ -1476,7 +1476,7 @@ const VALIDATOR_STAKE_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
 const REGISTER_GAS: u64 = 600_000;
 
 /// Build the `{from,to,value,data,gas,chainId}` JSON the ceremony's `Transaction`
-/// intent consumes for `MemberBond.activate` (same shape as `staking::encode_stake_json`).
+/// intent consumes for `MemberBond.activate` (the shape `transfer.rs` builds for a send).
 /// `to` is the member's bond CLONE; `value` is 0 — the clone forwards its OWN principal
 /// (the 32k is already inside it), so the member EOA only pays gas.
 fn encode_activate_json(from: &str, bond: &str, calldata: &[u8]) -> String {

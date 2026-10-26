@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// Tripwire, owner decision D-9 (2026-10-26): the LiquidStakingPool is retired at the r1006 reroll
+// Tripwire, owner decision D-9 (2026-10-26): the liquid staking pool is retired at the r1006 reroll
 // and is not in the genesis contract set. Citrate Core makes no pool calls and offers no pool
 // self-stake. No pool address, selector, event, command or self-stake field may come back in the
 // webview (src/), the core crate (src-tauri/src), its address book or the kit (kit/src).
@@ -25,7 +25,7 @@ interface Retired {
 
 export const RETIRED: Retired = JSON.parse(readFileSync(join(REPO, "fixtures/retired/liquid-staking-pool.json"), "utf8"));
 
-const TEXT = /\.(ts|tsx|js|mjs|cjs|rs|json|toml|css|html|md|txt)$/;
+const TEXT = /\.(ts|tsx|js|mjs|cjs|rs|json|toml|css|html|md|txt|sh)$/;
 
 function files(dir: string): string[] {
   const out: string[] = [];
@@ -37,7 +37,7 @@ function files(dir: string): string[] {
   return out;
 }
 
-/** `9ee679e8` as Rust writes a pinned selector: `0x9e, 0xe6, 0x79, 0xe8`. */
+/** `a1b2c3d4` as Rust writes a pinned selector: `0xa1, 0xb2, 0xc3, 0xd4`. */
 const byteForm = (hex: string) => (hex.match(/../g) ?? []).map((b) => "0x" + b).join(", ");
 
 /** Every banned string in `text`, except those `allowed` for this file. */
@@ -54,7 +54,7 @@ export function retiredHits(text: string, allowed: readonly string[] = []): stri
 
 const self = relative(REPO, __filename).split(sep).join("/");
 
-describe("D-9: the LiquidStakingPool is gone from core", () => {
+describe("D-9: the liquid staking pool is gone from core", () => {
   it("the scanner finds each kind of reference (control)", () => {
     expect(retiredHits("to: " + RETIRED.addresses[0].toUpperCase().replace("0X", "0x"))).toHaveLength(1);
     expect(retiredHits("const S: [u8; 4] = [" + byteForm(RETIRED.selectors[0]) + "];")).toEqual([RETIRED.selectors[0]]);

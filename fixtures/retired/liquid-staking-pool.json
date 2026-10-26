@@ -4,6 +4,9 @@
     "src",
     "src-tauri/src",
     "src-tauri/addresses",
+    "src-tauri/permissions",
+    "src-tauri/capabilities",
+    "src-tauri/scripts",
     "kit/src"
   ],
   "addresses": [

@@ -250,7 +250,7 @@ fn member_agent_sbt_mint_is_a_known_call_and_the_owner_mint_is_not() {
     assert!(!d.action.contains("mintAgent"), "{}", d.action);
 }
 
-// Owner decision D-9 (2026-10-26): the LiquidStakingPool is retired, and core builds none of its
+// Owner decision D-9 (2026-10-26): the liquid staking pool is retired, and core builds none of its
 // calls. Its stake, withdrawal and read selectors (fixtures/retired/liquid-staking-pool.json) and the
 // pool's `deposit()` are no longer known calls: one sent to the ceremony needs the raw-mode ack.
 #[test]
