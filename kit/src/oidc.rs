@@ -860,6 +860,12 @@ pub trait HttpClient: Send + Sync {
     fn delete_json(&self, _url: &str, _bearer: Option<&str>, _body: &str) -> Result<String> {
         Err(AuthError::Network)
     }
+    /// `PUT url` with a JSON body and an optional bearer → body string. Used by the v2 invite-link
+    /// attach (`PUT /api/join/<code>`, [`crate::join`]). Default-implemented as unsupported so
+    /// existing fakes keep compiling and fail LOUDLY rather than silently succeeding.
+    fn put_json(&self, _url: &str, _bearer: Option<&str>, _body: &str) -> Result<String> {
+        Err(AuthError::Network)
+    }
 }
 
 /// Classify a `ureq` failure, PRESERVING what the authority actually said.
@@ -961,6 +967,33 @@ impl HttpClient for UreqClient {
             .read_to_string()
             .map_err(|_| AuthError::Network)
     }
+
+    fn put_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String> {
+        let mut req = ureq::put(url)
+            .config()
+            .timeout_global(Some(OIDC_HTTP_TIMEOUT))
+            .build()
+            .header("Content-Type", "application/json");
+        if let Some(tok) = bearer {
+            req = req.header("Authorization", &format!("Bearer {tok}"));
+        }
+        // Same classification as post_json: a 409 (a different envelope is already attached) must
+        // stay distinguishable from a 404 or an outage.
+        let mut resp = req.send(body).map_err(|e| classify_ureq(&e))?;
+        resp.body_mut()
+            .read_to_string()
+            .map_err(|_| AuthError::Network)
+    }
+}
+
+/// Where an authenticated first-party resource call gets its bearer: the live session's access
+/// token. Implemented by [`AuthManager`]; the v2 invite-link client ([`crate::join`]) takes a
+/// `&dyn BearerSource` so it reuses this session plumbing instead of forking it, and tests can
+/// supply a fixed token. The token is handed only to kit code (never to a caller across `invoke`)
+/// and is `Zeroizing`, so it is wiped when the request is done.
+pub trait BearerSource: Send + Sync {
+    /// The current access token. `NotSignedIn` when there is no session.
+    fn bearer(&self) -> Result<Zeroizing<String>>;
 }
 
 /// A one-time wallet-link challenge from `/identity/:sub/wallets/challenge`.
@@ -1797,6 +1830,18 @@ impl AuthManager {
             .collect())
     }
 
+    /// The live access token for a first-party resource call ([`BearerSource`]). An empty token
+    /// reads as signed-out. Expiry is NOT pre-judged here (same as the registry calls above): the
+    /// resource answers 401 and the caller refreshes, so a clock skew can't block a valid token.
+    fn session_access_token(&self) -> Result<Zeroizing<String>> {
+        let guard = self.lock();
+        let sess = guard.as_ref().ok_or(AuthError::NotSignedIn)?;
+        if sess.access_token.is_empty() {
+            return Err(AuthError::NotSignedIn);
+        }
+        Ok(Zeroizing::new(sess.access_token.to_string()))
+    }
+
     /// The signed-in sub plus its access token. Both come from the live session;
     /// `NotSignedIn` when there is none.
     fn session_sub_and_token(&self) -> Result<(String, String)> {
@@ -1935,6 +1980,12 @@ impl AuthManager {
         if let Some(sess) = self.lock().as_mut() {
             sess.claims = claims;
         }
+    }
+}
+
+impl BearerSource for AuthManager {
+    fn bearer(&self) -> Result<Zeroizing<String>> {
+        self.session_access_token()
     }
 }
 
