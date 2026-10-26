@@ -12,6 +12,8 @@
 #   leak-on-quit  like good, but leaves mem-mcp running on SIGTERM
 #   no-restart    like good, but does not restart a sidecar that dies
 #   no-sweep      like good, but does not stop an earlier run's orphaned sidecars at start
+#   dup-no-restart  starts a second citrate sidecar and restarts none: killing one citrate
+#                 leaves the other running, which must not count as a restart
 set -u
 BIN="$(cd "$(dirname "$0")" && pwd)"
 MODE="$(cat "$BIN/../lib/citrate-core-fake/mode" 2>/dev/null || echo good)"
@@ -54,11 +56,16 @@ stop_all() {
 [ "$MODE" = no-sweep ] || sweep
 trap stop_all TERM INT
 for s in "${SIDECARS[@]}"; do spawn "$s"; done
+if [ "$MODE" = dup-no-restart ]; then
+  "$BIN/citrate" 100000 </dev/null >/dev/null 2>&1 &
+  EXTRA=$!
+  trap 'kill -TERM "$EXTRA" 2>/dev/null; wait "$EXTRA" 2>/dev/null; stop_all' TERM INT
+fi
 while :; do
   wait -n 2>/dev/null
   for s in "${SIDECARS[@]}"; do
     if ! kill -0 "${PIDS[$s]}" 2>/dev/null; then
-      [ "$MODE" = no-restart ] || spawn "$s"
+      case "$MODE" in no-restart|dup-no-restart) ;; *) spawn "$s" ;; esac
     fi
   done
   sleep 0.2

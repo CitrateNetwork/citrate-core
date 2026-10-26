@@ -30,7 +30,7 @@
 #        download the packages pinned in linux-native-acceptance/pins.txt (sha256-checked);
 #        add --fetch-only to download and stop
 #   scripts/ci/linux-native-acceptance.sh --self-test [--log-dir DIR]
-#        run the scenarios against a stand-in app in four modes (one good, three broken) and
+#        run the scenarios against a stand-in app in five modes (one good, four broken) and
 #        require PASS for the good one and the matching FAIL for each broken one
 # Env:
 #   K1L_LAUNCH_TIMEOUT   seconds for the required sidecars to come up (default 180)
@@ -226,7 +226,7 @@ self_test() { # work logdir
   mkdir -p "$logdir"
   : >"$logdir/self-test.txt"
   # mode → the scenario that must fail ("" = everything passes)
-  for spec in "good:" "leak-on-quit:quit" "no-restart:restart" "no-sweep:reap"; do
+  for spec in "good:" "leak-on-quit:quit" "no-restart:restart" "no-sweep:reap" "dup-no-restart:restart"; do
     mode="${spec%%:*}"; want="${spec#*:}"
     run="$(mktemp -d "$work/run.XXXXXX")" || return 2
     mkdir -p "$run/src"
