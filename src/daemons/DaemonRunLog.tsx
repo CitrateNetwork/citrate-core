@@ -32,6 +32,8 @@ export const OUTCOME_LABEL: Record<RunOutcome, { text: string; color: string }> 
   stopped: { text: "stopped", color: "var(--tx-2)" },
   timed_out: { text: "timed out", color: "var(--warn)" },
   over_budget: { text: "over budget", color: "var(--warn)" },
+  // The session never opened (refused before any turn ran): not a failure of the run, and 0 tokens.
+  not_started: { text: "not started", color: "var(--tx-3)" },
 };
 
 export const outcomeLabel = (o: string) => OUTCOME_LABEL[o as RunOutcome] ?? { text: o.replace(/_/g, " "), color: "var(--tx-2)" };
