@@ -5,9 +5,13 @@
 //! bytes: a re-send of bytes that were accepted and mined comes back with `NonceTooLow` or a
 //! balance error, which look definitive. So the first-ness of a send must survive an app restart.
 //! This keeps the keccak256 hashes of the last [`CAPACITY`] submissions in a small JSON file,
-//! `{"entries": [{hash, sender, nonce}], "evicted": {sender: nonce}, "uncertain": bool}`, rewritten
-//! atomically and durably (temp file in the same directory, fsync, rename, fsync of the directory)
-//! BEFORE each broadcast.
+//! rewritten atomically and durably (temp file in the same directory, fsync, rename, fsync of the
+//! directory) BEFORE each broadcast:
+//!
+//! ```text
+//! {"genesis": G, "entries": [{hash, sender, nonce, genesis: G}], "evicted": {sender: nonce},
+//!  "uncertain": bool, "sent_on_previous_networks": [{genesis, entries, evicted, uncertain}]}
+//! ```
 //!
 //! The rule: when the history can't prove an absent hash was never sent, the send is a
 //! re-submission ("outcome unknown"), never a first send ("not sent").
@@ -31,8 +35,19 @@
 //! uncertain. Either way it is written at once. A hash whose record can't be made durable is
 //! refused ([`SubmittedTxLog::try_record`] returns `Err`) and not kept: the caller must not send.
 //! Hashes are public transaction ids, not key material.
+//!
+//! # Keyed to the genesis (#511)
+//!
+//! The record is opened with the genesis of the network every send is gated to, and each entry is
+//! written with the genesis it was sent on. A record written before this ([`LEGACY_GENESIS`]) is
+//! r1005's. Entries, nonce marks and uncertainty of another genesis are moved, when the record
+//! opens, to `sent_on_previous_networks` (written at once, in the same atomic write): history that
+//! is never looked up and takes no part in this network's nonce marks or uncertainty. Opening on an
+//! archived genesis again makes its section live again. One thing still crosses networks: the
+//! chain id stays the same across a genesis switch, so bytes broadcast on the previous network are
+//! valid bytes on this one, and a send of byte-identical bytes is never a first submission.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -45,26 +60,26 @@ pub const CAPACITY: usize = 256;
 pub const LEGACY_GENESIS: &str =
     "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1";
 
-/// One submitted transaction: its hash, and its sender and nonce when known.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// One submitted transaction: its hash, and its sender and nonce when known. Its genesis is the
+/// one of the [`Section`] that holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
     hash: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     sender: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     nonce: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
-struct Inner {
+/// The submissions on one network (one genesis).
+#[derive(Debug, Clone, Default)]
+struct Section {
     entries: VecDeque<Entry>,
     /// Per sender (lower case): the highest nonce among evicted entries.
-    evicted: std::collections::BTreeMap<String, u64>,
+    evicted: BTreeMap<String, u64>,
     /// The history can't prove any absent hash was never sent (see the module docs).
     uncertain: bool,
 }
 
-impl Inner {
+impl Section {
     fn contains(&self, hash: &str) -> bool {
         self.entries.iter().any(|e| e.hash == hash)
     }
@@ -96,12 +111,55 @@ impl Inner {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct OnDisk {
-    entries: Vec<Entry>,
+#[derive(Debug, Clone, Default)]
+struct Inner {
+    /// The network the record was opened on.
+    live: Section,
+    /// Sent on previous networks, by genesis: history only (see the module docs).
+    previous: BTreeMap<String, Section>,
+}
+
+impl Inner {
+    /// Whether these bytes were recorded, on this network or a previous one.
+    fn contains(&self, hash: &str) -> bool {
+        self.live.contains(hash) || self.previous.values().any(|s| s.contains(hash))
+    }
+}
+
+/// An entry as read. `genesis` is absent in records written before #511.
+#[derive(serde::Deserialize)]
+struct EntryIn {
+    hash: String,
     #[serde(default)]
-    evicted: std::collections::BTreeMap<String, u64>,
+    sender: Option<String>,
+    #[serde(default)]
+    nonce: Option<u64>,
+    #[serde(default)]
+    genesis: Option<String>,
+}
+
+/// An archived section as read: its genesis is required.
+#[derive(serde::Deserialize)]
+struct SectionIn {
+    genesis: String,
+    entries: Vec<EntryIn>,
+    #[serde(default)]
+    evicted: BTreeMap<String, u64>,
+    #[serde(default)]
     uncertain: bool,
+}
+
+/// The record as read. `genesis` is absent in records written before #511 ([`LEGACY_GENESIS`]).
+#[derive(serde::Deserialize)]
+struct OnDisk {
+    #[serde(default)]
+    genesis: Option<String>,
+    entries: Vec<EntryIn>,
+    #[serde(default)]
+    evicted: BTreeMap<String, u64>,
+    uncertain: bool,
+    #[serde(default)]
+    sent_on_previous_networks: Vec<SectionIn>,
 }
 
 /// The format before sender/nonce were kept: `{hashes, uncertain}`.
@@ -111,20 +169,182 @@ struct OnDiskV2 {
     uncertain: bool,
 }
 
+/// An entry as written: it always names its genesis.
+#[derive(serde::Serialize)]
+struct EntryOut<'a> {
+    hash: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sender: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<u64>,
+    genesis: &'a str,
+}
+
+/// An archived section as written.
+#[derive(serde::Serialize)]
+struct SectionOut<'a> {
+    genesis: &'a str,
+    entries: Vec<EntryOut<'a>>,
+    evicted: &'a BTreeMap<String, u64>,
+    uncertain: bool,
+}
+
+/// The record as written.
+#[derive(serde::Serialize)]
+struct OnDiskOut<'a> {
+    genesis: &'a str,
+    entries: Vec<EntryOut<'a>>,
+    evicted: &'a BTreeMap<String, u64>,
+    uncertain: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sent_on_previous_networks: Vec<SectionOut<'a>>,
+}
+
+fn entries_out<'a>(s: &'a Section, genesis: &'a str) -> Vec<EntryOut<'a>> {
+    s.entries
+        .iter()
+        .map(|e| EntryOut {
+            hash: &e.hash,
+            sender: e.sender.as_deref(),
+            nonce: e.nonce,
+            genesis,
+        })
+        .collect()
+}
+
+impl Inner {
+    /// The on-disk form of this record, opened on `genesis`.
+    fn to_disk<'a>(&'a self, genesis: &'a str) -> OnDiskOut<'a> {
+        OnDiskOut {
+            genesis,
+            entries: entries_out(&self.live, genesis),
+            evicted: &self.live.evicted,
+            uncertain: self.live.uncertain,
+            sent_on_previous_networks: self
+                .previous
+                .iter()
+                .map(|(g, s)| SectionOut {
+                    genesis: g,
+                    entries: entries_out(s, g),
+                    evicted: &s.evicted,
+                    uncertain: s.uncertain,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The sections a record file holds, by genesis, before they are sorted into live and previous.
+#[derive(Default)]
+struct Loaded {
+    sections: BTreeMap<String, Section>,
+    /// The genesis of the file's live section (`None`: no file, or not readable).
+    record: Option<String>,
+    /// The genesis hashes of the file's archived sections.
+    archived: std::collections::BTreeSet<String>,
+}
+
+impl Loaded {
+    fn section(&mut self, genesis: &str) -> &mut Section {
+        self.sections
+            .entry(genesis.to_ascii_lowercase())
+            .or_default()
+    }
+
+    fn push(&mut self, genesis: &str, e: EntryIn) {
+        self.section(genesis).entries.push_back(Entry {
+            hash: e.hash.to_ascii_lowercase(),
+            sender: e.sender.map(|s| s.to_ascii_lowercase()),
+            nonce: e.nonce,
+        });
+    }
+
+    fn marks(&mut self, genesis: &str, evicted: BTreeMap<String, u64>, uncertain: bool) {
+        let s = self.section(genesis);
+        for (sender, n) in evicted {
+            let hw = s.evicted.entry(sender.to_ascii_lowercase()).or_insert(n);
+            *hw = (*hw).max(n);
+        }
+        s.uncertain |= uncertain;
+    }
+
+    /// The sections of a record in the current format. An entry with no genesis is its record's;
+    /// a record with no genesis is r1005's.
+    fn from_disk(d: OnDisk) -> Self {
+        let mut l = Loaded::default();
+        let record = d
+            .genesis
+            .unwrap_or_else(|| LEGACY_GENESIS.to_string())
+            .to_ascii_lowercase();
+        l.section(&record);
+        l.record = Some(record.clone());
+        for e in d.entries {
+            let g = e.genesis.clone().unwrap_or_else(|| record.clone());
+            l.push(&g, e);
+        }
+        l.marks(&record, d.evicted, d.uncertain);
+        for p in d.sent_on_previous_networks {
+            l.section(&p.genesis);
+            l.archived.insert(p.genesis.to_ascii_lowercase());
+            for e in p.entries {
+                let g = e.genesis.clone().unwrap_or_else(|| p.genesis.clone());
+                l.push(&g, e);
+            }
+            l.marks(&p.genesis, p.evicted, p.uncertain);
+        }
+        l
+    }
+
+    /// A record in an earlier format (hashes only), which is r1005's.
+    fn legacy(hashes: Vec<String>, uncertain: bool) -> Self {
+        let mut l = Loaded {
+            record: Some(LEGACY_GENESIS.to_string()),
+            ..Loaded::default()
+        };
+        for hash in hashes {
+            l.push(
+                LEGACY_GENESIS,
+                EntryIn {
+                    hash,
+                    sender: None,
+                    nonce: None,
+                    genesis: None,
+                },
+            );
+        }
+        l.marks(LEGACY_GENESIS, BTreeMap::new(), uncertain);
+        l
+    }
+
+    /// An empty record on `genesis`.
+    fn empty(genesis: &str, uncertain: bool) -> Self {
+        let mut l = Loaded::default();
+        l.marks(genesis, BTreeMap::new(), uncertain);
+        l
+    }
+}
+
 /// Makes a rename inside `dir` durable (see [`sync_dir`]). A parameter so tests can observe the
 /// order of the write and make the sync fail.
 type SyncDir = fn(&std::path::Path) -> std::io::Result<()>;
 
-/// The submitted-transaction record. `path` = None keeps it in memory only (tests, and any
-/// ceremony built without an app data dir).
+/// Where a persisted record lives, and the genesis it was opened on.
+#[derive(Debug)]
+struct Store {
+    path: PathBuf,
+    genesis: String,
+}
+
+/// The submitted-transaction record. `store` = None keeps it in memory only (tests, and any
+/// ceremony built without an app data dir or a network genesis).
 #[derive(Debug)]
 pub struct SubmittedTxLog {
-    path: Option<PathBuf>,
+    store: Option<Store>,
     inner: Mutex<Inner>,
     sync_dir: SyncDir,
     /// How many attempts in this process recorded each hash (#347 Codex P1). Not persisted: it
     /// tells an attempt whether another one may have sent the same bytes while it was sending.
-    attempts: Mutex<std::collections::BTreeMap<String, u32>>,
+    attempts: Mutex<BTreeMap<String, u32>>,
 }
 
 impl SubmittedTxLog {
@@ -135,12 +355,8 @@ impl SubmittedTxLog {
     #[cfg(test)]
     pub(crate) fn in_memory() -> Self {
         SubmittedTxLog {
-            path: None,
-            inner: Mutex::new(Inner {
-                entries: VecDeque::new(),
-                evicted: Default::default(),
-                uncertain: false,
-            }),
+            store: None,
+            inner: Mutex::new(Inner::default()),
             sync_dir,
             attempts: Default::default(),
         }
@@ -152,48 +368,42 @@ impl SubmittedTxLog {
     /// ("outcome unknown" on any error, never "not sent").
     pub fn unpersisted() -> Self {
         SubmittedTxLog {
-            path: None,
+            store: None,
             inner: Mutex::new(Inner {
-                entries: VecDeque::new(),
-                evicted: Default::default(),
-                uncertain: true,
+                live: Section {
+                    uncertain: true,
+                    ..Section::default()
+                },
+                previous: BTreeMap::new(),
             }),
             sync_dir,
             attempts: Default::default(),
         }
     }
 
-    /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt
-    /// one is empty and uncertain.
+    /// Load the record at `path` for the network whose block-0 hash is `genesis`. A missing file
+    /// is empty and certain (uncertain next to an existing wallet); an unreadable or corrupt one is
+    /// empty and uncertain. Sections of other genesis hashes become history (see the module docs).
     pub fn open(path: PathBuf, genesis: &str) -> Self {
         Self::open_with(path, genesis, sync_dir)
     }
 
     /// [`Self::open`] with the directory sync given.
-    fn open_with(path: PathBuf, _genesis: &str, sync_dir: SyncDir) -> Self {
-        let bare = |hashes: Vec<String>| -> Vec<Entry> {
-            hashes
-                .into_iter()
-                .map(|hash| Entry {
-                    hash,
-                    sender: None,
-                    nonce: None,
-                })
-                .collect()
-        };
+    fn open_with(path: PathBuf, genesis: &str, sync_dir: SyncDir) -> Self {
+        let genesis = genesis.to_ascii_lowercase();
         let mut missing = false;
-        let (entries, evicted, uncertain) = match std::fs::read(&path) {
+        let loaded = match std::fs::read(&path) {
             Ok(bytes) => {
                 if let Ok(d) = serde_json::from_slice::<OnDisk>(&bytes) {
-                    (d.entries, d.evicted, d.uncertain)
+                    Loaded::from_disk(d)
                 } else if let Ok(d) = serde_json::from_slice::<OnDiskV2>(&bytes) {
-                    (bare(d.hashes), Default::default(), d.uncertain)
+                    Loaded::legacy(d.hashes, d.uncertain)
                 } else if let Ok(list) = serde_json::from_slice::<Vec<String>>(&bytes) {
                     // The bare-list format from before the flag: at capacity it may have evicted.
                     let full = list.len() >= CAPACITY;
-                    (bare(list), Default::default(), full)
+                    Loaded::legacy(list, full)
                 } else {
-                    (Vec::new(), Default::default(), true)
+                    Loaded::empty(&genesis, true)
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -206,41 +416,49 @@ impl SubmittedTxLog {
                     .parent()
                     .map(|d| d.join(crate::custody::ENVELOPE_FILE))
                     .is_some_and(|p| p.exists());
-                (Vec::new(), Default::default(), wallet_exists)
+                Loaded::empty(&genesis, wallet_exists)
             }
-            Err(_) => (Vec::new(), Default::default(), true),
+            Err(_) => Loaded::empty(&genesis, true),
         };
+        // Sections of another genesis than `genesis` were moved to history, or back from it, when
+        // the file's layout differs from the one it is written in now.
+        let Loaded {
+            mut sections,
+            record,
+            archived,
+        } = loaded;
+        let mut live = sections.remove(&genesis).unwrap_or_default();
+        live.evict_to_capacity();
+        for s in sections.values_mut() {
+            s.evict_to_capacity();
+        }
+        let moved = record.is_some_and(|r| r != genesis)
+            || archived.contains(&genesis)
+            || !sections.keys().eq(archived.iter());
         let mut inner = Inner {
-            entries: entries
-                .into_iter()
-                .map(|e| Entry {
-                    hash: e.hash.to_ascii_lowercase(),
-                    sender: e.sender.map(|s| s.to_ascii_lowercase()),
-                    nonce: e.nonce,
-                })
-                .collect(),
-            evicted: evicted
-                .into_iter()
-                .map(|(k, v)| (k.to_ascii_lowercase(), v))
-                .collect(),
-            uncertain,
+            live,
+            previous: sections,
         };
-        inner.evict_to_capacity();
+        let store = Store { path, genesis };
         // A missing record is written at once (certain for a new profile, uncertain for an
         // upgraded one), so a wallet created later in this run never makes the next launch look
         // like an upgrade. If it can't be written, nothing proves the history: uncertain.
-        if missing {
-            let disk = OnDisk {
-                entries: Vec::new(),
-                evicted: Default::default(),
-                uncertain: inner.uncertain,
-            };
-            if write_atomic(&path, &disk, sync_dir).is_err() {
-                inner.uncertain = true;
+        // Moved sections are written at once too, in the same atomic write. If that fails, the
+        // next record writes them (every record write carries the whole record).
+        if missing || moved {
+            if let Err(e) = write_atomic(&store.path, &inner.to_disk(&store.genesis), sync_dir) {
+                if missing {
+                    inner.live.uncertain = true;
+                } else {
+                    eprintln!(
+                        "[submitted-tx] could not write {} after a network switch: {e}",
+                        store.path.display()
+                    );
+                }
             }
         }
         SubmittedTxLog {
-            path: Some(path),
+            store: Some(store),
             inner: Mutex::new(inner),
             sync_dir,
             attempts: Default::default(),
@@ -269,23 +487,20 @@ impl SubmittedTxLog {
             self.count_attempt(&hash);
             return Ok(false);
         }
-        let first = g.absent_is_first(origin.as_ref().map(|(s, n)| (s.as_str(), *n)));
+        let first = g
+            .live
+            .absent_is_first(origin.as_ref().map(|(s, n)| (s.as_str(), *n)));
         let hash_key = hash.clone();
         let mut next = g.clone();
-        next.entries.push_back(Entry {
+        next.live.entries.push_back(Entry {
             hash,
             sender: origin.as_ref().map(|(s, _)| s.clone()),
             nonce: origin.as_ref().map(|(_, n)| *n),
         });
-        next.evict_to_capacity();
-        if let Some(path) = &self.path {
-            let disk = OnDisk {
-                entries: next.entries.iter().cloned().collect(),
-                evicted: next.evicted.clone(),
-                uncertain: next.uncertain,
-            };
-            write_atomic(path, &disk, self.sync_dir)
-                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        next.live.evict_to_capacity();
+        if let Some(store) = &self.store {
+            write_atomic(&store.path, &next.to_disk(&store.genesis), self.sync_dir)
+                .map_err(|e| format!("could not write {}: {e}", store.path.display()))?;
         }
         *g = next;
         self.count_attempt(&hash_key);
@@ -312,26 +527,28 @@ impl SubmittedTxLog {
         self.try_record(hash).unwrap_or(false)
     }
 
-    /// How many hashes the record holds.
+    /// How many hashes the record holds for the network it was opened on.
     pub fn len(&self) -> usize {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .live
             .entries
             .len()
     }
 
-    /// True when the record holds no hashes.
+    /// True when the record holds no hashes for the network it was opened on.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// True when the history can't prove an absent hash was never sent: every send is then a
-    /// re-submission.
+    /// True when the history on the network the record was opened on can't prove an absent hash
+    /// was never sent: every send is then a re-submission.
     pub fn is_uncertain(&self) -> bool {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .live
             .uncertain
     }
 }
@@ -339,7 +556,11 @@ impl SubmittedTxLog {
 /// Write `disk` as JSON to `path` via a temp file in the same directory, fsync, rename, then fsync
 /// the directory so the rename itself survives a power loss. Any failure is an error: the caller
 /// must not broadcast on a record that isn't durable.
-fn write_atomic(path: &std::path::Path, disk: &OnDisk, sync_dir: SyncDir) -> std::io::Result<()> {
+fn write_atomic(
+    path: &std::path::Path,
+    disk: &OnDiskOut,
+    sync_dir: SyncDir,
+) -> std::io::Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

@@ -601,7 +601,8 @@ fn nonce_marks_of_the_previous_genesis_do_not_apply_on_the_new_one() {
             "new-chain nonce {n} is not bounded by r1005's evicted nonces"
         );
     }
-    assert_eq!(disk(&t)["sent_on_previous_networks"][0]["evicted"][A], 9);
+    // The probe at nonce 9 evicted one more r1005 entry (nonce 10).
+    assert_eq!(disk(&t)["sent_on_previous_networks"][0]["evicted"][A], 10);
 }
 
 // The chain id is the same on both networks, so bytes broadcast on r1005 are valid bytes on the new
