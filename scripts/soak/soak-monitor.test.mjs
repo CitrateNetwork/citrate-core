@@ -126,6 +126,20 @@ describe("golden fixtures", () => {
   });
 });
 
+describe("live self-check example (r1005, 2026-10-26)", () => {
+  // Samples from a real 5-minute read-only run against https://rpc.citrate.ai: the verdict
+  // recomputed from them matches the committed verdict, rule by rule.
+  it("recomputes the committed verdict from the committed samples", async () => {
+    const ex = path.join(here, "examples", "selfcheck-r1005");
+    const r = await verdict(path.join(ex, "samples.jsonl"), { criteria: clone(shipped) });
+    const committed = JSON.parse(fs.readFileSync(path.join(ex, "verdict.json"), "utf8"));
+    expect(r.v.rules).toEqual(committed.rules);
+    expect(failed(r.v)).toEqual(["duration", "head_advances"]);
+    expect(status(r.v, "no_fork")).toBe("ok");
+    expect(status(r.v, "chain_identity")).toBe("ok");
+  });
+});
+
 describe("restart explanations", () => {
   const one = { restarts: [{ sidecar: "citrate-node", count: 1, reason: "operator restarted the node to rotate logs" }] };
 
