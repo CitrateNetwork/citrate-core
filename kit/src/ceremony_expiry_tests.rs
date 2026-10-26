@@ -586,9 +586,11 @@ fn tripwire_every_signer_call_is_preceded_by_the_expiry_and_chain_checks() {
         checked.push(name);
     }
     checked.sort();
+    // Join-8 (#354): the tx signer moved into the private `sign_consumed`, shared by
+    // `approve_and_sign` and `approve_and_broadcast`; it passes the same checks above.
     assert_eq!(
         checked,
-        ["approve", "approve_and_broadcast", "request_siwe_budgeted"],
+        ["approve", "request_siwe_budgeted", "sign_consumed"],
         "the set of signing functions changed; a new one must pass the checks above"
     );
     // The checks themselves: `ready_to_sign` re-reads the clock and binds the chain.
