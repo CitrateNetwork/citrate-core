@@ -21,6 +21,7 @@
 // `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 pub mod bundle;
+pub mod catalog;
 pub mod error;
 pub mod extract;
 pub mod fetch;

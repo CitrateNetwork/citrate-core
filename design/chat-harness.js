@@ -202,7 +202,7 @@ function routeIntent(t, getContext) {
     };
   }
   if (has('stake', 'staked', 'bond', 'grant', 'position', 'validator status')) {
-    // The one grant explanation (core src/data/grantCopy.ts, PR #349; contract §5.4, §5.6, §5.7).
+    // The one grant explanation (core src/data/grantCopy.ts, planned in PR #349; contract §5.4, §5.6, §5.7).
     const DISCLAIMER = 'The grant is not purchased, and it is not an investment.';
     const BETANET = 'Betanet. What carries over to mainnet is set in the genesis spec.';
     return {
@@ -216,7 +216,7 @@ function routeIntent(t, getContext) {
     // Contract §1 Rewards: no "today", no estimates, no projections. Fixture numbers are labelled inline (ruling 3).
     return {
       toolCalls: [tc('chain_read', { query: 'validator.rewards' })],
-      compose: (c) => 'Fixture (40204, heads ' + fmt(c.fx.block) + '–' + fmt(c.fx.blockEnd) + ', not live): registered validators ' + c.fx.registeredValidators + '; eligible validators (live registry) ' + c.fx.eligibleValidators + '; producing validators ' + c.fx.producing.count + ' over blocks ' + fmt(c.fx.producing.from) + '–' + fmt(c.fx.producing.to) + '. Only a validator that produces blocks receives validator rewards. Your rewards come only from ValidatorRegistry.rewardsOf for your validator key. This prototype has no read of it, so your rewards are unknown, not zero. No projections.',
+      compose: (c) => 'Fixture (40204, head ' + fmt(c.fx.block) + ', ' + c.fx.capturedAt + ', not live): ' + c.fx.registered + ' validators are registered and ' + c.fx.eligible + ' eligible in the live registry; ' + c.fx.producing + ' produced blocks over blocks ' + fmt(c.fx.prodFrom) + '–' + fmt(c.fx.prodTo) + '. Only a validator that produces blocks receives validator rewards. Your rewards come only from ValidatorRegistry.rewardsOf for your validator key. This prototype has no read of it, so your rewards are unknown, not zero. No projections.',
     };
   }
   if (has('balance', 'wallet', 'how much salt')) {
@@ -230,7 +230,7 @@ function routeIntent(t, getContext) {
       toolCalls: [tc('chain_read', { query: 'network.fixture' })],
       compose: (c) => {
         const f = c.fx;
-        return 'Fixture (40204, heads ' + fmt(f.block) + '–' + fmt(f.blockEnd) + ', ' + f.capturedAt + ', not live): Citrate betanet, chain 40204, blocks every ~' + f.blockTime + ' s. Registered validators: ' + f.registeredValidators + '. Eligible validators (live registry): ' + f.eligibleValidators + '. Producing validators: ' + f.producing.count + ' over blocks ' + fmt(f.producing.from) + '–' + fmt(f.producing.to) + '. Checkpoint finality is not running yet, so I count confirmations, not finality. Your node: ' + c.nodeState + '.';
+        return 'Fixture (40204, head ' + fmt(f.block) + ', ' + f.capturedAt + ', not live): Citrate betanet, chain 40204, blocks every ~' + f.blockTime + ' s. ' + f.registered + ' validators are registered and ' + f.eligible + ' eligible in the live registry; ' + f.producing + ' produced blocks over blocks ' + fmt(f.prodFrom) + '–' + fmt(f.prodTo) + '. The consensus set isn’t readable until a snapshot RPC exists. Checkpoint finality is not running yet, so I count confirmations, not finality. Your node: ' + c.nodeState + '.';
       },
     };
   }

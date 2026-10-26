@@ -16,6 +16,7 @@
 // `runDaemonTurn`; this file is kept free of the store so its paths are testable.
 // =====================================================================
 import { TurnStopped } from "../agent/harness";
+import { DaemonNotStarted, DaemonNotTerminated } from "./turn";
 import { TokenMeter } from "./tokenMeter";
 import type { Claim, DaemonRunEntry, DaemonsApi, RunOutcome } from "./api";
 
@@ -49,6 +50,9 @@ export interface DaemonRunner {
   tick(): Promise<void>;
   /** Pause a daemon; stops its run if one is going. */
   pause(id: string): Promise<void>;
+  /** Before a daemon is removed: pause it, stop its run and any claim of it still queued in this
+   *  tick, and resolve only once each of those has ended and its end was recorded. */
+  cancel(id: string): Promise<void>;
   /** Stop the running run (the Activity monitor's Stop for a daemon run) without pausing. */
   stopRunning(): void;
   /** "Pause all": stop the running run and every claim of this tick that has not started yet. */
@@ -76,6 +80,22 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
   // Claims of the current tick that must not start: daemons paused mid-tick, or all after "pause all".
   const held = new Set<string>();
   let holdAll = false;
+  // Claims of the current tick that have not ended yet (daemon id -> count), and who waits on them.
+  const unsettled = new Map<string, number>();
+  // Runs of this tick whose sidecar session did not confirm it stopped (daemon id -> why): a
+  // cancel waiting on one is refused, so the Store does not remove a daemon that may still run.
+  const unconfirmed = new Map<string, string>();
+  const waiters = new Map<string, (() => void)[]>();
+  const settle = (id: string) => {
+    const n = (unsettled.get(id) ?? 1) - 1;
+    if (n > 0) {
+      unsettled.set(id, n);
+      return;
+    }
+    unsettled.delete(id);
+    for (const w of waiters.get(id) ?? []) w();
+    waiters.delete(id);
+  };
 
   const stop = (reason: StopReason) => {
     if (!current || current.ac.signal.aborted) return;
@@ -102,6 +122,7 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
     const timer = setTimeout(() => stop("timeout"), deps.runTimeoutMs);
     let outcome: RunOutcome = "answered";
     let note = "";
+    let notTerminated: string | null = null;
     try {
       const reply = await deps.runTurn(claim, ac.signal, meter);
       if (current?.reason) {
@@ -111,9 +132,15 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
         note = firstLine(reply);
       }
     } catch (e) {
+      if (e instanceof DaemonNotTerminated) notTerminated = e.message;
       const reason = current?.reason ?? null;
       if (reason) ({ outcome, note } = NOTES[reason]);
       else if (e instanceof TurnStopped) ({ outcome, note } = NOTES.stopped);
+      // Core refused to open the run's session (DGX R5): it never started.
+      else if (e instanceof DaemonNotStarted) {
+        outcome = "not_started";
+        note = e.message;
+      }
       else {
         outcome = "failed";
         note = e instanceof Error ? e.message : String(e);
@@ -121,18 +148,35 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
     } finally {
       clearTimeout(timer);
     }
-    const tokens = meter.tokens();
+    if (notTerminated !== null) {
+      // Not over: no end is recorded (core keeps the run in flight, so the daemon is not deleted
+      // under it), and the member sees why.
+      unconfirmed.set(claim.daemonId, notTerminated);
+      st.error = notTerminated;
+      current = null;
+      st.running = null;
+      deps.onChange();
+      return;
+    }
+    // A run that never started (core refused its session open) ran no inference: it charges
+    // nothing, whatever the meter estimated before the open.
+    const tokens = outcome === "not_started" ? 0 : meter.tokens();
     const tokenSource = meter.source();
     const endedMs = deps.now();
+    let recorded = false;
     try {
       await deps.api.finishRun(claim.daemonId, claim.runId, tokens, outcome, note, endedMs, tokenSource);
+      recorded = true;
     } catch (e) {
       st.error = "could not record a daemon run's end: " + (e instanceof Error ? e.message : String(e));
     }
-    try {
-      deps.onFinished?.({ daemonId: claim.daemonId, runId: claim.runId, name: claim.name, outcome, tokens, tokenSource, endedMs });
-    } catch (e) {
-      st.error = "could not write a daemon run to the journal: " + (e instanceof Error ? e.message : String(e));
+    // A run core did not accept (for example its daemon was removed) is not written anywhere else.
+    if (recorded) {
+      try {
+        deps.onFinished?.({ daemonId: claim.daemonId, runId: claim.runId, name: claim.name, outcome, tokens, tokenSource, endedMs });
+      } catch (e) {
+        st.error = "could not write a daemon run to the journal: " + (e instanceof Error ? e.message : String(e));
+      }
     }
     current = null;
     st.running = null;
@@ -151,6 +195,8 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
           return;
         }
         st.blockedReason = null;
+        // A refusal is reported to the cancel of the tick it happened in; a later tick starts over.
+        unconfirmed.clear();
         let claims: Claim[];
         try {
           claims = await deps.api.claimDue(deps.now(), deps.offsetMinutes());
@@ -160,7 +206,14 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
           deps.onChange();
           return;
         }
-        for (const c of claims) await runOne(c);
+        for (const c of claims) unsettled.set(c.daemonId, (unsettled.get(c.daemonId) ?? 0) + 1);
+        for (const c of claims) {
+          try {
+            await runOne(c);
+          } finally {
+            settle(c.daemonId);
+          }
+        }
       } finally {
         ticking = false;
         held.clear();
@@ -172,6 +225,19 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
       if (ticking) held.add(id);
       if (current?.claim.daemonId === id) stop("paused");
       deps.onChange();
+    },
+    async cancel(id) {
+      await deps.api.setPaused(id, true, deps.now());
+      const done = unsettled.has(id) ? new Promise<void>((res) => waiters.set(id, [...(waiters.get(id) ?? []), res])) : null;
+      if (ticking) held.add(id);
+      if (current?.claim.daemonId === id) stop("paused");
+      deps.onChange();
+      if (done) await done;
+      const why = unconfirmed.get(id);
+      if (why !== undefined) {
+        unconfirmed.delete(id);
+        throw new Error(why);
+      }
     },
     stopRunning() {
       stop("stopped");

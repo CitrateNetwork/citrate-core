@@ -46,6 +46,8 @@ mod components;
 mod connections;
 mod contract_deploy;
 mod daemons;
+// Join-13: deep links delivered to the running app on Linux/Windows; URL fragments never logged.
+mod deep_link_delivery;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
@@ -66,6 +68,8 @@ mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod chat_consent;
+mod chat_route;
 mod device_link;
 mod device_link_share;
 mod docs_ingest;
@@ -135,6 +139,7 @@ mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
+mod validator_activation;
 mod verified_source;
 mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
@@ -155,12 +160,17 @@ mod hermes_terminal;
 // Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
+// GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
+mod join;
 mod model_catalog;
 mod model_delete;
+// GROW-S1 task 12: the pending v2 invite, held in the keyring until the member acts on it.
+mod pending_join;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
 mod storage_backup;
+mod store_catalog;
 mod training;
 
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
@@ -183,6 +193,11 @@ mod shutdown_coverage_tests;
 // SCL-S0.7: the Windows installer's pre-install hook (inputs checked on every OS).
 #[cfg(test)]
 mod windows_installer_hook_tests;
+// 0.5.1 -> 0.5.2: the app data a 0.5.1 install holds, and the updater feed it trusts.
+#[cfg(test)]
+mod upgrade_updater_feed_tests;
+#[cfg(test)]
+mod upgrade_v051_tests;
 
 use tauri::Manager;
 
@@ -253,8 +268,11 @@ pub fn run() {
     tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
         // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // Join-13: on Linux/Windows a clicked `citrate://` link arrives as that second launch's
+        // argv; its accepted links go to the deep-link plugin's own path (see deep_link_delivery).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::Manager;
+            deep_link_delivery::deliver_second_instance_argv(app, &argv);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
@@ -266,6 +284,7 @@ pub fn run() {
         // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
         // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).
         // The frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → parseJoinLink → Groups.
+        // Links clicked while the app runs on Linux/Windows reach it via single-instance above.
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         // W2.1 — in-app auto-updates (signed GitHub Releases feed; pubkey pinned in
@@ -292,6 +311,9 @@ pub fn run() {
             // (NodeManager::start waits on it) until the cleanup has returned; a panicking
             // cleanup leaves it closed. The barrier does not depend on what the cleanup does.
             let handle = app.handle();
+            // Join-13: an AppImage has no .desktop install to register `citrate://`; do it here.
+            #[cfg(target_os = "linux")]
+            deep_link_delivery::register_appimage_schemes(handle);
             startup_barrier::StartupBarrier::global().run_cleanup(|| sweep_orphan_sidecars(handle));
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
@@ -339,13 +361,25 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // v2 invite links: the join client (pending attaches + opened invites, memory only).
+            app.manage(join::build_join_state());
+            // The pending invite (code + link key) waiting for the member's Join: keyring only.
+            app.manage(pending_join::build_pending_join_state(app.handle().clone()));
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
             // `wallet::sign_message` is reachable ONLY from `approve`. @rule8:
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
-            app.manage(ceremony::build_ceremony_state());
+            // Contract v1.1 §1: the first-submission record persists under the app data dir, so
+            // a re-send after a restart is never mistaken for a first submission.
+            app.manage(match app.path().app_data_dir() {
+                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
+                Err(e) => {
+                    eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+            });
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
             app.manage(popout_contract::ContractInbox::default());
@@ -404,6 +438,8 @@ pub fn run() {
             // https baseURL at set-time and ai_chat calls the STORED baseURL only —
             // the webview picks WHICH provider id, never the URL (exfil-binding).
             app.manage(ai::build_ai_state());
+            // K2: the one-time consents remote chat sends need (in memory only).
+            app.manage(chat_consent::ChatConsentState::default());
             // CORE-BC-3.1 — the ModelManager: the local Gemma GGUF download +
             // SHA-256 verify. model_status is honest (Ready ONLY after a real
             // verify — never mere presence, Rule 1); model_download is STREAMED +
@@ -510,6 +546,17 @@ pub fn run() {
             invites::group_invite_revoke,
             invites::group_referral_log,
             invites::group_referral_export,
+            // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
+            join::join_mint,
+            join::join_attach,
+            join::join_redeem,
+            join::join_revoke,
+            join::join_list,
+            join::join_share_qr,
+            pending_join::pending_join_set,
+            pending_join::pending_join_get,
+            pending_join::pending_join_clear,
+            pending_join::pending_join_resolve,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
@@ -540,6 +587,9 @@ pub fn run() {
             ceremony::sign_request,
             ceremony::sign_approve,
             ceremony::sign_and_broadcast,
+            // Join-8 — sign without sending (returns the tx hash), then send.
+            ceremony::sign_prepare,
+            ceremony::sign_send_prepared,
             ceremony::sign_reject,
             wallet_link::wallet_link_request,
             wallet_link::wallet_link_approve,
@@ -736,6 +786,10 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            chat_consent::chat_consent_prepare,
+            chat_consent::media_consent_prepare,
+            chat_route::chat_route_get,
+            chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
             model_delete::model_delete_states,
@@ -758,6 +812,10 @@ pub fn run() {
             // ceremony sends MemberBond.activate to the funded clone; the clone (=
             // staker) forwards its principal to registerValidator.
             node::node_register_validator,
+            // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
+            validator_activation::validator_activation_status,
+            // Join-8 — Forget an unseen activation send in the durable submitted-tx record.
+            validator_activation::validator_activation_forget,
             // W1.x — arm the producer once synced (consensus-gated); the respawn
             // mints proposer.key, the validator identity the bond activation needs.
             node::node_arm_mining,
@@ -920,6 +978,13 @@ pub fn run() {
             components::components_status,
             components::components_update,
             components::components_rollback,
+            // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
+            // removal. Every catalog command refuses until the catalog key is issued.
+            store_catalog::store_catalog,
+            store_catalog::store_stage,
+            store_catalog::store_install,
+            store_catalog::store_installed,
+            store_catalog::store_remove,
             // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
             // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
             mcp_servers::mcp_servers_list,
@@ -1283,6 +1348,8 @@ mod tests {
             "sign_request",
             "sign_approve",
             "sign_and_broadcast",
+            "sign_prepare",
+            "sign_send_prepared",
             "sign_reject",
         ] {
             assert!(

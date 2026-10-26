@@ -1,7 +1,8 @@
-import { useRef, useEffect } from "react";
+import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -39,25 +40,16 @@ const nodeColors: Record<string, string> = {
   error: "#dd7259",
 };
 
-const fmtDur = (sec: number | null): string => {
-  if (sec == null) return "—";
-  const h = Math.floor(sec / 3600),
-    m = Math.floor((sec % 3600) / 60);
-  return h > 0 ? h + "h " + String(m).padStart(2, "0") + "m" : m + "m " + String(Math.floor(sec % 60)).padStart(2, "0") + "s";
-};
-
 /**
  * Node surface — 1:1 from design/CitrateCore.dc.html NODE section.
  * Operations / Earning / Pinning sub-tabs. Every real datum is captioned with
  * its source (node-agent 127.0.0.1:19600). Claims and pins are unsigned
  * node-agent requests surfaced through the SignatureCeremony (store.requestSig);
- * no key ever leaves the ceremony. The Pinning tab is the honest [SEAM] one —
- * the PoSt sealer sidecar is pending upstream, and the copy says so.
+ * no key ever leaves the ceremony. Pin bonds (IPFSIncentivesV3) are deployed but
+ * dormant on 40204, so the Pinning tab says "Pin bonds not live yet" (UI truth
+ * contract §1, §4) instead of drawing bonds, projections or challenge tallies.
  */
 export function Node({ store, s }: SurfaceProps) {
-  const pinCidEl = useRef<HTMLInputElement | null>(null);
-  const pinBondEl = useRef<HTMLInputElement | null>(null);
-
   // CORE-C2 — when the Earning tab is open, pull the REAL claimable from
   // ContributionAccounting.claimable(vaultAddress) via eth_call (Rule 11). The
   // decomposition (Validation/Pinning/Compute) has NO on-chain source and is
@@ -66,6 +58,12 @@ export function Node({ store, s }: SurfaceProps) {
     if (s.nTab === "earn") void store.refreshEarnings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.nTab]);
+  // #406 — read the activation (and the durable record of a sent one) on mount, so a recorded
+  // activation shows here with its way out (Try again / Forget), as on S7.
+  useEffect(() => {
+    if (TAURI && s.hasGrant) void store.refreshActivation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.hasGrant]);
 
   const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
 
@@ -158,43 +156,8 @@ export function Node({ store, s }: SurfaceProps) {
   const onClaim = () => {
     void store.claimRewards();
   };
-  const hbAge = s.node === "off" ? null : s.hb;
-  const hbStr = hbAge == null ? "—" : "last ack " + hbAge.toFixed(0) + "s ago · 30s window";
-  const hbColor = hbAge == null ? "var(--tx-3)" : hbAge < 20 ? "var(--ok)" : "var(--warn)";
-  const hbBarW = hbAge == null ? "0%" : Math.max(4, 100 - (hbAge / 30) * 100).toFixed(0) + "%";
-
-  // ----- pinning -----
-  const nodeOff = s.node === "off" || s.node === "prov";
-  const pinRows = s.pins.map((p, i) => ({
-    cid: p.cid,
-    bond: p.bond + " SALT",
-    cadence: "every " + p.cadH + " h",
-    next: nodeOff ? "— node off" : "in " + fmtDur(p.nextIn),
-    nextColor: nodeOff ? "var(--tx-3)" : p.nextIn < 900 ? "var(--warn)" : "var(--tx-2)",
-    last: p.last === "pending" ? "proof pending sealer" : "attested · daemon",
-    lastColor: p.last === "pending" ? "var(--warn)" : "var(--ok)",
-    rowClass: i === 0 && s.justSigned === "Pin bond" ? "cc-row-stroke" : "",
-  }));
-  const pinsEmpty = s.pins.length === 0;
-  const bonded = s.pins.reduce((a, p) => a + p.bond, 0);
-  const pinBonded = fmtI(bonded);
-  const pinCount = String(s.pins.length);
-  const pinProjected = fmt2(bonded * 0.0075);
-  const pinPassed = s.pins.length ? String(s.pins.length * 9 + 4) : "—";
-  const nextPin = s.pins.length && !nodeOff ? Math.min.apply(null, s.pins.map((p) => p.nextIn)) : null;
-  const pinNext = nextPin == null ? "—" : fmtDur(nextPin);
-  // Bonded pinning is NOT wired to a real transaction yet — there is no pinning
-  // daemon / PoSt sealer + grounded bond contract in-repo (the surface already
-  // flags the sealer seam separately). Be honest rather than fabricate a bond +
-  // debit the balance (Rule 1/3).
-  const onPinNew = () => {
-    const cid = pinCidEl.current ? pinCidEl.current.value.trim() : "";
-    const bond = parseFloat(pinBondEl.current ? pinBondEl.current.value : "");
-    if (!/^baf[a-z0-9]{6,}/i.test(cid)) return store.toast("Enter a CID (bafy…)");
-    if (!(bond >= 20)) return store.toast("Minimum bond is 20 SALT");
-    if (bond > s.liquid) return store.toast("Bond exceeds your liquid balance");
-    store.settleUnwired("Pin bond");
-  };
+  // C1-V V2: there is no heartbeat source. The node does not report one to the app and no
+  // slashing contract reads one, so the panel shows the unavailable state, never a seeded age.
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -379,6 +342,8 @@ export function Node({ store, s }: SurfaceProps) {
                           You&rsquo;ll approve a signature that proves you control this wallet. Nothing is spent.
                         </span>
                       </>
+                    ) : hasActivationTxStatus(store, s) ? (
+                      <ActivationTxPanel store={store} s={s} testId="node-activation" />
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
@@ -493,97 +458,28 @@ export function Node({ store, s }: SurfaceProps) {
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <span style={{ fontSize: 13.5, fontWeight: 500 }}>Heartbeat</span>
-              <span className="mono tabular" style={{ fontSize: 12, color: hbColor }}>{hbStr}</span>
-            </div>
-            <div style={{ height: 5, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
-              <div style={{ height: "100%", background: hbColor, width: hbBarW, transition: "width .5s linear" }}></div>
+              <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-3)" }}>—</span>
             </div>
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              The 30-second heartbeat is your slashing protection while jobs run — it proves liveness to NematocystSlashing. The supervisor preserves heartbeat continuity across restarts.
+              no heartbeat reading: the node does not report a heartbeat to this app yet.
             </p>
           </div>
         </div>
       )}
 
-      {/* ===================== PINNING ([SEAM] — PoSt sealer pending) ===================== */}
+      {/* ===================== PINNING (dormant on 40204) ===================== */}
       {s.nTab === "pin" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-2)", padding: "12px 16px" }}>
-            <span style={{ fontSize: 12.5, color: "var(--warn)" }}>
-              Proof submission is not yet available in-app — the PoSt sealer sidecar is pending upstream. Plans, bonds, and challenge state below are live daemon state.
+          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>Pin bonds not live yet</span>
+            <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+              The pin bond contract (IPFSIncentivesV3) is deployed on betanet but not funded, and no pins exist. Bonds, challenges and pin rewards appear here
+              once pin bonds go live. Until then nothing here is bonded.
+            </p>
+            <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+              source · IPFSIncentivesV3 · address book 40204
             </span>
           </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Bonded</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinBonded}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>SALT across {pinCount} pins</span>
-            </div>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Projected</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinProjected}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>SALT / month at current demand</span>
-            </div>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Challenges</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinPassed}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>passed · 0 failed · 0 slashed</span>
-            </div>
-            <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 3 }}>
-              <span className="eyebrow">Next window</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 22 }}>{pinNext}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>daemon answers challenges itself</span>
-            </div>
-          </div>
-
-          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 500 }}>Pin a CID</span>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
-              <span>
-                <span className="lbl">Content identifier</span>
-                <input ref={pinCidEl} className="input mono" placeholder="bafy…" />
-              </span>
-              <span>
-                <span className="lbl">Bond · SALT</span>
-                <input ref={pinBondEl} className="input mono" placeholder="120" type="number" />
-              </span>
-              <button className="btn btn-secondary" onClick={onPinNew}>
-                Plan &amp; sign
-              </button>
-            </div>
-            <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
-              The daemon plans the pin (replication, bond sizing, challenge cadence) and surfaces the decision as an unsigned request — bonds never move without your signature. Bonds are slashable on failed challenges.
-            </p>
-          </div>
-
-          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.6fr .7fr .9fr 1fr 1fr", gap: 12, padding: "10px 16px", borderBottom: "1px solid var(--line-strong)" }}>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Pinned CID</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Bond</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Cadence</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Next challenge</span>
-              <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>Last proof</span>
-            </div>
-            {pinsEmpty && (
-              <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-                No pins yet. Plan your first pin above — the PIN daemon takes it from bond to challenge, and income lands in Earning.
-              </p>
-            )}
-            {pinRows.map((pn, i) => (
-              <div key={i} className={pn.rowClass} style={{ display: "grid", gridTemplateColumns: "1.6fr .7fr .9fr 1fr 1fr", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "center" }}>
-                <span className="mono" style={{ fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pn.cid}</span>
-                <span className="mono tabular" style={{ fontSize: 12 }}>{pn.bond}</span>
-                <span className="mono" style={{ fontSize: 11, color: "var(--tx-2)" }}>{pn.cadence}</span>
-                <span className="mono tabular" style={{ fontSize: 11, color: pn.nextColor }}>{pn.next}</span>
-                <span className="mono" style={{ fontSize: 11, color: pn.lastColor }}>{pn.last}</span>
-              </div>
-            ))}
-          </div>
-
-          <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0 }}>
-            Every pin action is a plan_pin() decision surfaced for your signature — bonds never move without you. Challenge responses run in the daemon while proofs await the sealer sidecar.
-          </p>
         </div>
       )}
     </div>

@@ -32,12 +32,15 @@ const stubStore = {
 const SECTIONS: AppState["sSec"][] = [
   "account",
   "connections",
+  "hermes",
   "ai",
   "mcp",
   "node",
   "api",
   "keys",
+  "terminal",
   "budgets",
+  "personas",
   "billing",
   "privacy",
   "app",
@@ -97,16 +100,16 @@ describe("Settings honesty pass — no fabricated excuses or hardcoded facts ren
     expect(html).toContain("checking");
   });
 
-  it("the smart-wallet pill shows the real derived address (or '—'), never a fake 'ADDRESS SET'", () => {
+  it("the wallet key pill shows the device key's real address (or '—'), never a fake 'ADDRESS SET'", () => {
     const withAddr = renderToStaticMarkup(
-      <Settings store={stubStore} s={sectionState("keys", { walletAddr: "0xABCdef0000000000000000000000000000001234" })} />,
+      <Settings store={stubStore} s={sectionState("keys", { custodyAddr: "0xABCdef0000000000000000000000000000001234" })} />,
     );
     expect(withAddr).not.toContain("ADDRESS SET");
     // A truncated form of the real address is shown.
     expect(withAddr).toContain("0xABCd");
 
     const noAddr = renderToStaticMarkup(
-      <Settings store={stubStore} s={sectionState("keys", { walletAddr: "" })} />,
+      <Settings store={stubStore} s={sectionState("keys", { custodyAddr: "" })} />,
     );
     expect(noAddr).not.toContain("ADDRESS SET");
   });
