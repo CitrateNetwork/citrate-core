@@ -188,6 +188,27 @@ describe("B1.3 ceremony connector — signing routes through the bridge only", (
     expect(rejectSpy).toHaveBeenCalledWith("ceremony-1");
   });
 
+  // C1-V #347 review: once the node may have the tx, a dApp gets the tx hash (so it tracks the
+  // tx instead of asking again); only a pre-submission failure is an error.
+  it("eth_sendTransaction returns the hash when the outcome after submission is unknown", async () => {
+    const HASH = "0x" + "ab".repeat(32);
+    const { domain } = mockSigning();
+    domain.broadcast = vi.fn(async () => {
+      throw `ceremony: submitted, outcome unknown (tx ${HASH}): rpc transport error: down`;
+    }) as never;
+    const provider = createCeremonyProvider(deps({ signing: domain }));
+    await expect(provider.request({ method: "eth_sendTransaction", params: [{ to: "0xdead", value: "0x1" }] })).resolves.toBe(HASH);
+  });
+
+  it("eth_sendTransaction still throws on a pre-submission failure", async () => {
+    const { domain } = mockSigning();
+    domain.broadcast = vi.fn(async () => {
+      throw "not submitted: ceremony: broadcast failed: rpc node error: nonce too low";
+    }) as never;
+    const provider = createCeremonyProvider(deps({ signing: domain }));
+    await expect(provider.request({ method: "eth_sendTransaction", params: [{ to: "0xdead", value: "0x1" }] })).rejects.toBeTruthy();
+  });
+
   // B1.3-INT: request → view → approve → the caller receives the ceremony sig.
   it("B1.3-INT: request → ceremony view → approve → returns the ceremony's signature", async () => {
     const { domain, requestSpy, approveSpy } = mockSigning({ sigHex: "0xfeedface" });

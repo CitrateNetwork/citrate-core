@@ -19,6 +19,9 @@
 //! toolchain sidecar (both Rust), the renderer writes files on the user's disk and
 //! so sits on a trust boundary where the workspace's no-`unwrap` rule and typed
 //! errors apply, and it needs no Node runtime to run.
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod budget;
 pub mod params;

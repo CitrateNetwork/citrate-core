@@ -183,7 +183,7 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
 // ack that must be ticked before Approve enables. On Approve → store broadcasts;
 // on Reject → nothing is signed. Once Approve is pressed the review shows a signing
 // state (Reject / Escape disabled) until the signer returns the real outcome. In web-dev the modal still shows (truthful flow)
-// but approving honestly reports "settles only in the desktop app".
+// but approving honestly reports "can only be signed and sent in the desktop app".
 export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
   const r = s.walletReview;
   if (!r) return null;
@@ -266,7 +266,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
           {BRIDGE_MODE !== "tauri" && (
             <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-1)", padding: "10px 14px" }}>
               <span style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)" }}>
-                Web preview: this settles only in the desktop app (no key or chain here). Approving will not move funds.
+                Web preview: this can only be signed and sent in the desktop app (no key or chain here). Approving will not move funds.
               </span>
             </div>
           )}
@@ -414,32 +414,6 @@ export function DemoPanel({ store, s }: { store: Store; s: AppState }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span className="lbl">Trigger a signature request</span>
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => {
-                    store.setState({ demoOpen: false });
-                    store.requestSig({
-                      origin: "node-agent",
-                      requester: "node-agent · PIN planner 127.0.0.1:19600",
-                      title: "Bond 120 SALT to pin a CID",
-                      rows: [
-                        { k: "Action", v: "plan_pin(bafybeigd4x…kq4e) → bond" },
-                        { k: "Bond", v: "120 SALT · slashable on failed challenge" },
-                        { k: "Projected", v: "~0.9 SALT / month at current demand" },
-                      ],
-                      cost: "est. gas 0.0019 SALT",
-                      sponsor: "gas sponsored — standard daily budget",
-                      sponsorColor: "var(--ok)",
-                      apply: (h) => {
-                        store.addActivity("Pin bond", "−120.00 SALT", h);
-                        store.setState((st) => ({ liquid: Math.max(0, st.liquid - 120), pins: [{ cid: "bafybeigd4x…kq4e", bond: 120, cadH: 6, nextIn: 6 * 3600, last: "attested" }].concat(st.pins) }));
-                        store.toast("Bond posted — challenges begin next window");
-                      },
-                    });
-                  }}
-                >
-                  node-agent · pin bond
-                </button>
                 <button
                   className="btn btn-ghost btn-sm"
                   onClick={() => {
