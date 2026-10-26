@@ -99,10 +99,15 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+// D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
+// internal format, and the pinned egress table.
+pub(crate) mod model_provider;
 mod node;
 mod node_genesis;
 mod node_holder;
 mod node_withdrawn;
+pub(crate) mod provider_egress;
+pub(crate) mod provider_openai_compat;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
