@@ -69,17 +69,45 @@ shasum -a 256 <each asset file> >> src-tauri/runtime-deps.sha256   # "<hex>  <na
 CI's `release pin tripwire` step (`scripts/ci/check-release-pins.sh`) fails if
 release.yml ever downloads an asset that bypasses this check.
 
-The ~4.3 GB Gemma model, the llama runtime dylibs, and the three sidecars
-(`citrate`, `mem-mcp`, `node-agent`) are **not in git**. Upload them once to a
-GitHub prerelease tagged `runtime-deps`; the release workflow pulls them each build:
+The sidecars, the llama runtime dylibs, the BGE models and the knowledge corpus are **not in
+git**. Each sidecar is pinned in [`release/components.json`](../release/components.json) (source
+repo, exact rev, toolchain, build command, sha256 per target). On the release Mac, build each one
+at its pin; the scripts install it only if its sha256 matches:
 
 ```bash
-gh release create runtime-deps --prerelease --title "Runtime deps (bundle inputs)" \
-  src-tauri/binaries/citrate-aarch64-apple-darwin \
-  src-tauri/binaries/mem-mcp-aarch64-apple-darwin \
-  src-tauri/binaries/node-agent-aarch64-apple-darwin \
-  src-tauri/models/gemma-4-E4B-it-Q4_0.gguf
+scripts/build-sidecar.sh --target aarch64-apple-darwin          # citrate-node (lineage gates)
+scripts/build-component.sh node-agent --target aarch64-apple-darwin
+scripts/build-component.sh mem-mcp --target aarch64-apple-darwin
+scripts/build-comms-daemon.sh --target aarch64-apple-darwin
+scripts/build-cluster-daemon.sh --target aarch64-apple-darwin
+scripts/build-hermes.sh --target aarch64-apple-darwin           # stripped; the pin is of the stripped bytes
+scripts/build-component.sh kubo --target aarch64-apple-darwin   # upstream Kubo, archive + binary checked
 ```
+
+Upload the six cargo sidecars under their pinned asset names (`<bin>-aarch64-apple-darwin-<rev12>`,
+the `runtime_deps_asset` of each component), which release.yml downloads and verifies:
+
+```bash
+mkdir -p /tmp/rd
+for f in citrate-aarch64-apple-darwin-c384fc982882 node-agent-aarch64-apple-darwin-1d8cb8e4e24a \
+  mem-mcp-aarch64-apple-darwin-5aeda3172369 comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c \
+  cluster-daemon-aarch64-apple-darwin-755cf2172260 hermes-aarch64-apple-darwin-626486b8a7db; do
+  cp "src-tauri/binaries/${f%-*}" "/tmp/rd/$f"
+done
+grep -E 'aarch64-apple-darwin-[0-9a-f]{12}$' src-tauri/runtime-deps.sha256 | (cd /tmp/rd && shasum -a 256 -c --strict)
+gh release upload runtime-deps /tmp/rd/* -R CitrateNetwork/citrate-core
+```
+
+To move a pin: build with `--print-digest`, put the digest in `src-tauri/runtime-deps.sha256` (a new
+asset name per rev) or the artifact's `sha256`, and open a PR; `node scripts/component-pins.mjs
+check` fails CI if the manifest, the scripts, the overlays, these pins and release.yml disagree.
+macOS digests reproduce only on the machine and build root that recorded them (the linker derives
+the Mach-O UUID from the output path), so the release Mac records the macOS pins.
+
+The Gemma model is **not bundled**: macOS ships `bundle-lite`, and the app downloads Gemma on first
+run and refuses it unless it matches `MODEL_SHA256` and `MODEL_SIZE_BYTES` in
+`src-tauri/src/model.rs`. `release/components.json` records the same digest with a
+revision-pinned Hugging Face URL, and the check keeps the two equal.
 
 #### The llama runtime (`llama-server` + dylibs), built with the web UI off (v0.5.0-rc.4)
 
@@ -143,8 +171,9 @@ llama-server never loads; the rc.4 tarball is already the closure. Before a buil
 `node scripts/prune-llama-runtime.mjs --dir src-tauri/llama` keeps only llama-server's dependency
 closure (read with `otool -L`; it refuses if a needed library is missing) and saves about 34 MB.
 release.yml runs it after extracting the tarball; run it on a local staging too (HUP-S11.0).
-`scripts/build-hermes.sh` installs the Hermes sidecar with `strip -x` (about 4 MB; `--no-strip`
-keeps the symbols for debugging).
+`scripts/build-hermes.sh` installs the Hermes sidecar with `strip -x` (about 4 MB). The pin is of
+the stripped bytes; for a debuggable build run cargo in citrate-agent-runtime and point
+`CITRATE_HERMES_BIN` at it.
 Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
 
 #### The BGE embedding GGUF (`bge-base-en-v1.5-f16.gguf`, HUP-S1.2 / US-1.4)
@@ -301,8 +330,20 @@ Put `[critical]` (or a leading `critical:`) in the release body/notes. The app t
 **auto-downloads** that update (still an explicit **Restart now** — the app is never
 force-quit under the user).
 
+## Dry run
+Dispatch `release` with `dry_run: true` from any branch (the `tag` input is only a label then). It
+builds the six cargo sidecars from their pinned revs on a clean runner with the scripts above,
+stages the pinned llama runtime, BGE models, corpus and Kubo, bundles the app **unsigned** with no
+updater artifacts, and writes the sidecar digests (against their pins), the bundle checksums and
+the size report to the run summary. It reads no secret, signs, notarizes, uploads and publishes
+nothing, and creates no tag or release; `component-pins.mjs check` fails CI if a signing or
+publishing step loses its `env.DRY_RUN != 'true'` guard. The runner's sidecar digests differ from
+the pins (another build root), so a dry run proves the sources build and bundle, not the pinned
+bytes.
+
 ## First-run caveat (honest)
-This pipeline has not yet had a first live tagged run. The Apple signing +
-notarization legs and the `runtime-deps` staging must be proven by the first `v*`
-tag with the secrets in place. The app-side updater (plugin, config, key, UX) is
-built and unit-tested; producing a signed feed is what the first tag validates.
+Every tag run of this workflow so far (v0.4.2 to v0.5.1, and the Windows tags) failed at staging,
+before any build: v0.5.0-rc.1 found no skills bundle on `runtime-deps`, the later runs no Gemma GGUF
+("no assets match the file pattern"). The repository also has no signing secrets. macOS releases are cut by the local ceremony on the release Mac. A tag run needs,
+in order: the six pinned sidecar assets uploaded to `runtime-deps`, then the secrets above. The
+Apple signing + notarization legs and the signed feed are what the first green tag run proves.
