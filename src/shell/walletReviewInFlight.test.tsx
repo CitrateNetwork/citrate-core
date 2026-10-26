@@ -86,7 +86,8 @@ describe("Feature: a decline cannot claim nothing was signed once signing has st
     expect(lastToast()).not.toMatch(/nothing was signed/i);
     expect(store.state.walletReview).toBeNull();
     expect(onResolved).toHaveBeenCalledTimes(1);
-    expect(onResolved).toHaveBeenCalledWith(true);
+    // Join-8: the resolve also carries the broadcast tx hash (S7 resumes to "Pending" from it).
+    expect(onResolved).toHaveBeenCalledWith(true, "0xfeedbeef00");
   });
 
   it("Given a broadcast in flight that then fails, then the outcome reported is the failure, once", async () => {
@@ -223,7 +224,7 @@ describe("C1-V #347 — a broadcast failure after submission is an unknown outco
     expect(lastToast()).toContain("0xfeedbeef");
     expect(lastToast()).toContain("balance read failed");
     expect(lastToast()).not.toMatch(/not sent|outcome unknown/i);
-    expect(onResolved).toHaveBeenCalledWith(true);
+    expect(onResolved).toHaveBeenCalledWith(true, "0xfeedbeef00"); // Join-8: the hash goes with the release
     expect(store.state.walletReview).toBeNull();
   });
 
