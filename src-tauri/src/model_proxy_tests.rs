@@ -4,8 +4,13 @@
 use super::*;
 use crate::model_provider::{ChatMessage, Role};
 use crate::provider_fixtures_tests::{fake_key, MemKeyring, ScriptedVendor, TmpDir};
-use crate::provider_guard::{Caps, HaltReason};
+use crate::provider_guard::{Caps, HaltReason, Price};
 use crate::provider_usage_log::log_path;
+
+pub(crate) const RIG_PRICE: Price = Price {
+    input_micros_per_mtok: 2_000_000,
+    output_micros_per_mtok: 8_000_000,
+};
 
 pub(crate) const PROMPT: &str = "a distinctive prompt that must never reach the log";
 
@@ -31,6 +36,11 @@ impl Rig {
         proxy
             .set_key("openai", SecretString::new(key.clone()), now_ms())
             .unwrap();
+        // The default currency caps need a price ($2 / $8 per million tokens, member-entered).
+        proxy.with_state(|g, _| {
+            g.set_price("openai", "gpt-known", Some(RIG_PRICE)).unwrap();
+            proxy.save_guard(g).unwrap();
+        });
         Rig {
             dir,
             kr,
@@ -265,6 +275,7 @@ fn an_unconfirmed_custom_endpoint_is_refused() {
     rig.proxy
         .set_key(&c.id, SecretString::new(fake_key("ck-")), 2)
         .unwrap();
+    rig.proxy.with_state(|g, _| g.set_price(&c.id, "box-model", Some(RIG_PRICE)).unwrap());
     let r = rig.proxy.call(&route, req("box-model", false), None, &mut |_| {});
     assert!(r.is_ok(), "{r:?}");
     let seen = rig.vendor.seen.lock().unwrap();
@@ -326,4 +337,26 @@ fn routes_bind_one_provider_model_and_session_and_are_not_keys() {
     for v in rig.kr.values() {
         assert!(!v.contains("cmp_"));
     }
+}
+
+#[test]
+fn under_the_default_currency_caps_an_unpriced_model_is_refused_with_nothing_sent() {
+    let rig = Rig::new("proxy-unpriced");
+    rig.proxy.with_state(|g, _| g.set_price("openai", "gpt-known", None).unwrap());
+    let before = rig.vendor.calls();
+    let r = rig
+        .proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {});
+    assert_eq!(r.err(), Some(ProxyError::Refused(Refusal::PriceUnknown)));
+    assert_eq!(rig.vendor.calls(), before, "an unknown price never bypasses the cap");
+    assert!(rig.log_text().contains("price_unknown"), "the refusal is recorded");
+    // Priced again: the call goes, and its cost is the vendor's usage at that price.
+    rig.proxy
+        .with_state(|g, _| g.set_price("openai", "gpt-known", Some(RIG_PRICE)).unwrap());
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    let last: serde_json::Value =
+        serde_json::from_str(rig.log_text().lines().last().unwrap()).unwrap();
+    assert_eq!(last["r"]["costMicros"], RIG_PRICE.cost(12, 5));
 }

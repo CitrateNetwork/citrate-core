@@ -13,7 +13,11 @@ fn plan(model: &str, input: u64, output: u64) -> CallPlan {
         model: model.into(),
         reserve_in: input,
         reserve_out: output,
-        price: None,
+        // Priced, so the default currency caps can be checked ($1 / $2 per million tokens).
+        price: Some(Price {
+            input_micros_per_mtok: 1_000_000,
+            output_micros_per_mtok: 2_000_000,
+        }),
     }
 }
 
@@ -115,7 +119,9 @@ fn currency_caps_need_a_price_and_stop_over_the_cap() {
     )
     .unwrap();
     // No price: refused rather than counted as free.
-    let r = g.admit(&plan("gpt-known", 10, 10), &known(), used(0, 0), used(0, 0), T0);
+    let mut unpriced = plan("gpt-known", 10, 10);
+    unpriced.price = None;
+    let r = g.admit(&unpriced, &known(), used(0, 0), used(0, 0), T0);
     assert_eq!(r, Err(Refusal::PriceUnknown));
     let mut p = plan("gpt-known", 100_000, 10_000);
     p.price = Some(Price {
@@ -263,4 +269,32 @@ fn an_unreadable_keyring_fails_closed() {
     assert!(g
         .admit(&plan("gpt-known", 1, 1), &known(), used(0, 0), used(0, 0), T0)
         .is_err());
+}
+
+#[test]
+fn owner_default_caps_include_currency_and_an_unknown_price_is_refused() {
+    // Owner sign-off (ADR P-7a, fed#394): $5/day and $50/month per provider, plus 1M/10M tokens.
+    let d = Caps::default();
+    assert_eq!(d.daily_tokens, Some(1_000_000));
+    assert_eq!(d.monthly_tokens, Some(10_000_000));
+    assert_eq!(d.daily_micros, Some(5_000_000));
+    assert_eq!(d.monthly_micros, Some(50_000_000));
+    let mut g = GuardBook::default();
+    // A provider never configured: an unpriced model is refused, never counted as free.
+    let mut unpriced = plan("gpt-known", 10, 10);
+    unpriced.price = None;
+    let r = g.admit(&unpriced, &known(), used(0, 0), used(0, 0), T0);
+    assert_eq!(r, Err(Refusal::PriceUnknown));
+    // Priced: the $5 daily default is a hard stop.
+    let mut p = plan("gpt-known", 100_000, 10_000);
+    p.price = Some(Price {
+        input_micros_per_mtok: 5_000_000,
+        output_micros_per_mtok: 15_000_000,
+    }); // this call costs up to $0.65
+    assert!(g.admit(&p, &known(), used(0, 4_350_000), used(0, 4_350_000), T0).is_ok());
+    let r = g.admit(&p, &known(), used(0, 4_350_001), used(0, 4_350_001), T0);
+    assert!(matches!(r, Err(Refusal::CapExceeded { which: "daily spend", cap: 5_000_000, .. })), "{r:?}");
+    // And the $50 monthly default.
+    let r = g.admit(&p, &known(), used(0, 0), used(0, 49_500_000), T0);
+    assert!(matches!(r, Err(Refusal::CapExceeded { which: "monthly spend", cap: 50_000_000, .. })), "{r:?}");
 }

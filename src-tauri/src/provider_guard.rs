@@ -1,7 +1,7 @@
 //! D-11 (RC52) — the spend guard for cloud model calls. ADR-2026-10-26 P-7 (a) and (b).
 //!
-//! **Caps (P-7a).** Per provider: daily and monthly token caps and, when the member sets them,
-//! daily and monthly currency caps (micro-USD). They are checked **before every call** against what
+//! **Caps (P-7a).** Per provider: daily and monthly token caps and daily and monthly currency caps
+//! (micro-USD), on by default ([`Caps::default`]: 1M / 10M tokens, $5 / $50). They are checked **before every call** against what
 //! the signed usage log ([`crate::provider_usage_log`]) already holds for the current UTC day and
 //! UTC month, plus this call's worst case (an upper bound on its input tokens and its full output
 //! ceiling). Over a cap the call is refused with nothing sent: a hard stop, not a prompt. A currency
@@ -27,9 +27,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
-/// Out-of-the-box caps. Pending owner sign-off (ADR P-7 names the mechanism, not the numbers).
+/// Out-of-the-box caps per provider, a hard stop. Owner sign-off 2026-10-26 (ADR P-7a, fed#394):
+/// 1M tokens a day, 10M a month, $5 a day, $50 a month.
 pub const DEFAULT_DAILY_TOKENS: u64 = 1_000_000;
 pub const DEFAULT_MONTHLY_TOKENS: u64 = 10_000_000;
+pub const DEFAULT_DAILY_MICROS: u64 = 5_000_000;
+pub const DEFAULT_MONTHLY_MICROS: u64 = 50_000_000;
 /// The highest cap a member can set.
 pub const MAX_TOKEN_CAP: u64 = 10_000_000_000;
 pub const MAX_MICROS_CAP: u64 = 10_000_000_000; // 10,000 USD
@@ -71,8 +74,8 @@ impl Default for Caps {
         Caps {
             daily_tokens: Some(DEFAULT_DAILY_TOKENS),
             monthly_tokens: Some(DEFAULT_MONTHLY_TOKENS),
-            daily_micros: None,
-            monthly_micros: None,
+            daily_micros: Some(DEFAULT_DAILY_MICROS),
+            monthly_micros: Some(DEFAULT_MONTHLY_MICROS),
         }
     }
 }
