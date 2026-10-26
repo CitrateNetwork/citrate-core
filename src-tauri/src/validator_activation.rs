@@ -16,6 +16,8 @@
 //! | `validatorPubkey`         | `MemberBond.pubkey()` once activated, else this node's key    |
 //! | `registryStatus`          | `ValidatorRegistry.validatorInfo(pubkey).status` (0..3)       |
 //! | `activationEpoch`         | `ValidatorRegistry.validatorInfo(pubkey).actEpoch`            |
+//! | `registryBondedWei`       | `ValidatorRegistry.validatorInfo(pubkey).bonded`              |
+//! | `registryEscrowWei`       | `ValidatorRegistry.validatorInfo(pubkey).escrow`              |
 //! | `registryActive`          | `ValidatorRegistry.isActive(pubkey)`                          |
 //! | `epochBlocks`             | `ValidatorRegistry.EPOCH()`                                   |
 //! | `currentEpoch`            | `ValidatorRegistry.currentEpoch()`                            |
@@ -110,6 +112,11 @@ pub struct ActivationStatus {
     /// `MemberBond.pubkey()`: the key the bond registered with, once activated (zero = none).
     pub bond_pubkey: Option<String>,
     pub registry_status: Option<u8>,
+    /// `validatorInfo(pubkey).bonded`: stake still bonded under the key (wei).
+    pub registry_bonded_wei: Option<String>,
+    /// `validatorInfo(pubkey).escrow`: unbonded stake the registry still holds until the exit
+    /// lock ends (wei). Bonded and escrow both zero on an Exiting key means the exit paid out.
+    pub registry_escrow_wei: Option<String>,
     pub activation_epoch: Option<u64>,
     pub registry_active: Option<bool>,
     pub epoch_blocks: Option<u64>,

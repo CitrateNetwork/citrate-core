@@ -370,3 +370,27 @@ fn tripwire_the_command_reads_the_record_from_the_ceremonys_submitted_log() {
     assert!(body.contains("latest_call("), "it looks up the activation call");
     assert!(!body.contains("&|_| None"), "the command never skips the record");
 }
+
+/// After a full exit the key stays `Exiting` in the registry for good, so the status word alone
+/// cannot tell an exit still in its lock from one that paid out. The read carries what the
+/// registry still holds under the key (bonded and escrow), so the step can say which.
+#[test]
+fn an_exiting_key_reports_what_the_registry_still_holds_bonded_and_escrow() {
+    let exiting = |bonded: u128, escrow: u128| {
+        let words = [addr_word(BOND), w(bonded), w(0), w(escrow), w(32_000), w(1), w(1), w(7), w(2), w(0)];
+        granted(true, Some(BOND_KEY)).call(REGISTRY, VALIDATOR_INFO, ret(&words))
+    };
+    let st = read(&exiting(0, PRINCIPAL_WEI), None, Some(NODE_KEY), None);
+    assert_eq!(st.registry_status, Some(2));
+    assert_eq!(st.registry_bonded_wei.as_deref(), Some("0"));
+    assert_eq!(st.registry_escrow_wei, Some(PRINCIPAL_WEI.to_string()), "in the exit lock");
+
+    let st = read(&exiting(0, 0), None, Some(NODE_KEY), None);
+    assert_eq!(st.registry_status, Some(2), "the key stays Exiting after the payout");
+    assert_eq!(st.registry_bonded_wei.as_deref(), Some("0"));
+    assert_eq!(st.registry_escrow_wei.as_deref(), Some("0"), "paid out");
+
+    // Unknown is not zero: no validatorInfo read, nothing reported.
+    let st = read(&granted(true, Some(BOND_KEY)), None, Some(NODE_KEY), None);
+    assert_eq!((st.registry_bonded_wei, st.registry_escrow_wei), (None, None));
+}

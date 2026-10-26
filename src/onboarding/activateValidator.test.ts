@@ -36,6 +36,8 @@ function ready(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
     nodePubkey: "0x" + "07".repeat(32),
     bondPubkey: null,
     registryStatus: 0,
+    registryBondedWei: null,
+    registryEscrowWei: null,
     activationEpoch: 0,
     registryActive: false,
     currentEpoch: 500,
@@ -147,6 +149,26 @@ describe("state mapping (contract §1 Validators)", () => {
   it("Exiting / Slashed from registry status 2 / 3", () => {
     expect(validatorState(ready({ bondActivated: true, registryStatus: 2 })).word).toBe("Exiting");
     expect(validatorState(ready({ bondActivated: true, registryStatus: 3 })).word).toBe("Slashed");
+  });
+  // The key stays Exiting in the registry after the exit paid out (validatorInfo.status never
+  // moves on), so the word follows what the registry still holds under the key.
+  const exited = { bondActivated: true, pubkeySource: "bond" as const, registryStatus: 2 as const, registryBondedWei: "0", registryEscrowWei: "0" };
+  it("after the exit paid out (bonded and escrow both 0): Bond returned, not Exiting", () => {
+    const v = validatorState(ready(exited));
+    expect(v.word).toBe("Bond returned");
+    expect(v.detail).toContain("validatorInfo");
+    expect(activationPhase(ready(exited), true)).toBe("exited");
+  });
+  it("still Exiting while the registry holds the escrow, or while bonded or escrow is unread", () => {
+    for (const over of [{ registryEscrowWei: WEI_32K }, { registryEscrowWei: null }, { registryBondedWei: null }, { registryBondedWei: "1" }]) {
+      expect(validatorState(ready({ ...exited, ...over })).word).toBe("Exiting");
+      expect(activationPhase(ready({ ...exited, ...over }), true)).toBe("exiting");
+    }
+  });
+  it("the grant copy does not say staked once the bond is returned", () => {
+    const copy = activationGrantCopy(ready(exited));
+    expect(copy).not.toContain("so the grant is staked");
+    expect(copy).toContain("returned");
   });
   it("unknown reads map to no word (shown as —), never a guessed state", () => {
     expect(validatorState(null).word).toBeNull();

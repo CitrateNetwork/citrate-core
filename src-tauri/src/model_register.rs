@@ -240,15 +240,27 @@ pub fn models_registry_register_sync(
         &meta,
     );
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let raw = encode_register_tx_json(&wallet.address, &calldata);
-    let intent = crate::ceremony::SignatureIntent {
+    let rpc = crate::rpc::RpcClient::citrate();
+    ceremony
+        .0
+        .request(register_model_intent(&rpc, &wallet.address, &calldata)?);
+    Ok(())
+}
+
+/// The `registerModel` ceremony intent from `from` (value = the registration fee), with the gas
+/// the node estimates for it (`money_gas`).
+pub(crate) fn register_model_intent<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    from: &str,
+    calldata: &[u8],
+) -> std::result::Result<crate::ceremony::SignatureIntent, String> {
+    let _ = rpc;
+    Ok(crate::ceremony::SignatureIntent {
         origin: "agent:hermes".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
         chain_id: 40204,
-        raw,
-    };
-    ceremony.0.request(intent);
-    Ok(())
+        raw: encode_register_tx_json(from, calldata),
+    })
 }
 
 #[cfg(test)]

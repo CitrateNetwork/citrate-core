@@ -98,6 +98,7 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+mod money_gas;
 mod node;
 mod node_genesis;
 mod node_holder;

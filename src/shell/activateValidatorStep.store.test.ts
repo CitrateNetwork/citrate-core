@@ -23,6 +23,8 @@ function readyStatus(over: Partial<ActivationStatusView> = {}): ActivationStatus
     nodePubkey: "0x" + "07".repeat(32),
     bondPubkey: null,
     registryStatus: 0,
+    registryBondedWei: null,
+    registryEscrowWei: null,
     activationEpoch: 0,
     registryActive: false,
     currentEpoch: 500,

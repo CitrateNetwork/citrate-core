@@ -34,6 +34,7 @@ export type ValidatorWord =
   | `Registered · active from epoch ${number}`
   | "Validator active"
   | "Exiting"
+  | "Bond returned"
   | "Slashed";
 
 export type GateKey = "wallet" | "membership" | "bond" | "synced" | "notValidator" | "key";
@@ -46,7 +47,7 @@ export interface GateCheck {
   detail: string;
 }
 
-export type ActivationPhase = "reading" | "blocked" | "ready" | "pending" | "failed" | "registered" | "active" | "exiting" | "slashed";
+export type ActivationPhase = "reading" | "blocked" | "ready" | "pending" | "failed" | "registered" | "active" | "exiting" | "exited" | "slashed";
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h.length > 12 ? h.slice(0, 6) + "…" + h.slice(-4) : h);

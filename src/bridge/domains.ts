@@ -322,6 +322,14 @@ export interface ActivationStatusView {
   bondPubkey: string | null;
   /** `ValidatorRegistry.validatorInfo(pubkey).status`: 0 None, 1 Active, 2 Exiting, 3 Slashed. */
   registryStatus: 0 | 1 | 2 | 3 | null;
+  /** `validatorInfo(pubkey).bonded`: stake still bonded under the key (wei). */
+  registryBondedWei: string | null;
+  /**
+   * `validatorInfo(pubkey).escrow`: unbonded stake the registry holds until the exit lock ends
+   * (wei). The key stays Exiting after the payout, so bonded and escrow both "0" is what says
+   * the exit paid out.
+   */
+  registryEscrowWei: string | null;
   /** `validatorInfo(pubkey).actEpoch`. */
   activationEpoch: number | null;
   /** `ValidatorRegistry.isActive(pubkey)`. */

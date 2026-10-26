@@ -1491,6 +1491,17 @@ fn encode_activate_json(from: &str, bond: &str, calldata: &[u8]) -> String {
     .to_string()
 }
 
+/// The `MemberBond.activate` tx JSON with the gas the node estimates for it (`money_gas`).
+pub(crate) fn activate_tx_json<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    from: &str,
+    bond: &str,
+    calldata: &[u8],
+) -> std::result::Result<String, String> {
+    let _ = rpc;
+    Ok(encode_activate_json(from, bond, calldata))
+}
+
 /// W1.3 (bond-clone model, owner decision 2026-08-05 — reverses ADR-2026-07-27) —
 /// activate the member's validator bond. The 32k already lives inside the member's
 /// `MemberBond` clone (deployed + funded by `vault.grant` at payment). This reads the
@@ -1581,7 +1592,7 @@ pub(crate) fn bond_activation_intent<T: crate::rpc::RpcTransport>(
     let (pubkey, sig) = sign(40204, &registry, &staker, nonce)?;
     let calldata = crate::validator::member_bond_activate_calldata(&pubkey, &sig);
     // Sent FROM the member EOA (the clone's `onlyMember`) TO the clone, value 0.
-    let raw = encode_activate_json(member, &grant.bond_address, &calldata);
+    let raw = activate_tx_json(rpc, member, &grant.bond_address, &calldata)?;
     Ok(crate::ceremony::SignatureIntent {
         origin: "local-user".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,

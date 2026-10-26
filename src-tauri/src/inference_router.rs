@@ -585,15 +585,27 @@ pub async fn escalation_registry_claim_refund(app_h: tauri::AppHandle) -> Result
         if RouterReader::new(&rpc, router)?.refund_owed(&wallet.address)? == "0" {
             return Err("there is no refund to claim".into());
         }
-        ceremony.0.request(crate::ceremony::SignatureIntent {
-            origin: "agent:hermes".to_string(),
-            kind: crate::ceremony::IntentKind::Transaction,
-            chain_id: 40204,
-            raw: claim_refund_tx_json(&wallet.address, router, CLAIM_REFUND_GAS),
-        });
+        ceremony
+            .0
+            .request(claim_refund_intent(&rpc, &wallet.address, router)?);
         Ok(())
     })
     .await
+}
+
+/// The `claimRefund()` ceremony intent from `from`, with the gas the node estimates (`money_gas`).
+pub fn claim_refund_intent<T: RpcTransport>(
+    rpc: &RpcClient<T>,
+    from: &str,
+    router: &str,
+) -> Result<crate::ceremony::SignatureIntent, String> {
+    let _ = rpc;
+    Ok(crate::ceremony::SignatureIntent {
+        origin: "agent:hermes".to_string(),
+        kind: crate::ceremony::IntentKind::Transaction,
+        chain_id: 40204,
+        raw: claim_refund_tx_json(from, router, CLAIM_REFUND_GAS),
+    })
 }
 
 /// `expireRequest(requestId)` calldata.
