@@ -38,6 +38,7 @@ mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
+mod atomic_file;
 mod benchmark_share;
 mod blocking;
 mod capsule_pins;
