@@ -58,7 +58,7 @@ export function resumeEffect(kind: string): { label: string; note: string } {
     case "unknownModel":
       return { label: "Resume and approve this model", note: "Resuming approves the model named above for this provider, so it will not pause for it again." };
     case "guardUnreadable":
-      return { label: "Resume and reset settings", note: "Resuming resets caps, prices and pauses for every provider to the defaults, and removes custom endpoints." };
+      return { label: "Resume and reset settings", note: "Resuming resets, for every provider: caps, model prices, pauses, approved and listed models, custom endpoints, and the dates your keys were stored. Keys stay in the keychain." };
     default:
       return { label: "Resume", note: "Resuming lets calls to this provider run again within your caps." };
   }

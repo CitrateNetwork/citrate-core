@@ -1048,9 +1048,13 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
+/** D-11 (P-9d): an older build persisted a gateway key display. Provider keys live only in the OS
+ *  keychain, so these are retired, and a save that still holds them is rewritten without them. */
+const LEGACY_GATEWAY_KEYS = ["gwKey", "gwKeyFull"] as const;
+
 /** D-9 (2026-10-26): the liquid staking pool is retired. A 0.5.1 save may still carry its
  *  self-stake figure; it is not current, so it is dropped on load and never reaches AppState. */
-export const RETIRED_KEYS: readonly string[] = ["selfStake"];
+export const RETIRED_KEYS: readonly string[] = ["selfStake", ...LEGACY_GATEWAY_KEYS];
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1063,17 +1067,14 @@ export function loadState(): AppState {
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
+  // D-11 (P-9d): a save holding a gateway key display is rewritten at once, not at the next save.
+  const hadGatewayKey = !!saved && LEGACY_GATEWAY_KEYS.some((k) => k in (saved as object));
   if (saved) for (const k of RETIRED_KEYS) delete (saved as Record<string, unknown>)[k];
-  // D-11 (P-9d): older builds persisted a gateway key display (`gwKey`, `gwKeyFull`). Provider keys
-  // live only in the OS keychain, so drop both from the loaded state and rewrite storage without them.
-  if (saved && ("gwKey" in saved || "gwKeyFull" in saved)) {
-    const legacy = saved as Record<string, unknown>;
-    delete legacy.gwKey;
-    delete legacy.gwKeyFull;
+  if (saved && hadGatewayKey) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
     } catch {
-      /* storage unavailable: the next save writes PERSIST_KEYS only, which no longer include it */
+      /* storage unavailable: the next save writes PERSIST_KEYS only, which never include them */
     }
   }
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });

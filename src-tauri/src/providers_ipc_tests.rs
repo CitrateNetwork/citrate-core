@@ -2,6 +2,7 @@
 // that persist, and no key in any result.
 
 use super::*;
+use crate::model_provider::ModelInfo;
 use crate::model_proxy::tests::{req, Rig};
 
 fn all_views_json(rig: &Rig) -> String {
@@ -129,44 +130,91 @@ fn usage_summary_lists_recent_calls_as_metadata_only() {
     assert!(!json.contains("sess-1"), "no session id in the view");
 }
 
+/// A test-only adapter that serves a fixed model list (prices included).
+struct ListedModels(Vec<ModelInfo>);
+
+impl ModelProvider for ListedModels {
+    fn id(&self) -> ProviderId {
+        ProviderId::Vendor(Vendor::OpenAi)
+    }
+    fn models(&self) -> Vec<ModelInfo> {
+        self.0.clone()
+    }
+    fn key_format(&self) -> crate::model_provider::KeyFormat {
+        crate::model_provider::KeyFormat::ANY
+    }
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        u64::from(req.max_tokens)
+    }
+    fn test_key(
+        &self,
+        _ctx: &crate::model_provider::ProviderCtx<'_>,
+    ) -> Result<crate::model_provider::KeyTest, crate::model_provider::ProviderError> {
+        unreachable!("not called by model_prices")
+    }
+    fn complete(
+        &self,
+        _ctx: &crate::model_provider::ProviderCtx<'_>,
+        _req: &ChatRequest,
+        _on_text: &mut dyn FnMut(&str),
+    ) -> Result<crate::model_provider::ChatResponse, crate::model_provider::ProviderError> {
+        unreachable!("not called by model_prices")
+    }
+}
+
 #[test]
 fn model_prices_say_where_each_price_came_from() {
-    let published = vec![
-        ModelInfo {
-            id: "pub-m".into(),
-            display_name: "Pub".into(),
-            supports_tools: true,
-            input_micros_per_mtok: Some(1_000_000),
-            output_micros_per_mtok: Some(4_000_000),
-        },
-        ModelInfo {
-            id: "half-priced".into(),
-            display_name: "Half".into(),
-            supports_tools: true,
-            input_micros_per_mtok: Some(1),
-            output_micros_per_mtok: None,
-        },
-    ];
-    let member = Price { input_micros_per_mtok: 7, output_micros_per_mtok: 9 };
-    let mut pg = ProviderGuard {
-        listed_models: vec!["pub-m".into(), "listed-only".into()],
-        approved_models: ["approved-only".to_string()].into_iter().collect(),
-        prices: [("member-m".to_string(), member)].into_iter().collect(),
-        ..ProviderGuard::default()
+    let info = |id: &str, i: Option<u64>, o: Option<u64>| ModelInfo {
+        id: id.into(),
+        display_name: id.into(),
+        supports_tools: true,
+        input_micros_per_mtok: i,
+        output_micros_per_mtok: o,
     };
-    let v = model_prices(None, &published, &["custom-m".into()], &pg);
-    let by = |id: &str| v.iter().find(|m| m.id == id).cloned().unwrap();
-    assert_eq!(v.len(), 6, "each model once: {v:?}");
-    assert_eq!(by("pub-m").source, Some("published"));
-    assert_eq!(by("pub-m").price.unwrap().output_micros_per_mtok, 4_000_000);
-    assert_eq!((by("half-priced").source, by("half-priced").price), (None, None), "half a price is no price");
-    assert_eq!((by("listed-only").source, by("approved-only").source, by("custom-m").source), (None, None, None));
-    assert_eq!((by("member-m").source, by("member-m").price), (Some("member"), Some(member)));
+    let adapter = ListedModels(vec![
+        info("pub-m", Some(1_000_000), Some(4_000_000)),
+        info("half-priced", Some(1), None),
+    ]);
+    let member = Price { input_micros_per_mtok: 7, output_micros_per_mtok: 9 };
+    let mut g = GuardBook::default();
+    g.key_set("openai", vec!["pub-m".into(), "listed-only".into()], 1);
+    g.set_price("openai", "member-m", Some(member)).unwrap();
+    let v = model_prices(&g, "openai", Some(&adapter), &["custom-m".into()]);
+    let by = |v: &[ModelPriceView], id: &str| v.iter().find(|m| m.id == id).cloned().unwrap();
+    assert_eq!(v.len(), 5, "each model once: {v:?}");
+    assert_eq!(by(&v, "pub-m").source, Some("published"));
+    assert_eq!(by(&v, "pub-m").price.unwrap().output_micros_per_mtok, 4_000_000);
+    assert_eq!((by(&v, "half-priced").source, by(&v, "half-priced").price), (None, None), "half a price is no price");
+    assert_eq!((by(&v, "listed-only").source, by(&v, "custom-m").source), (None, None));
+    assert_eq!((by(&v, "member-m").source, by(&v, "member-m").price), (Some("member"), Some(member)));
     // The member's price wins over the published one, as it does when a call is charged.
-    pg.prices.insert("pub-m".into(), member);
-    let v = model_prices(None, &published, &[], &pg);
-    let p = v.iter().find(|m| m.id == "pub-m").unwrap();
+    g.set_price("openai", "pub-m", Some(member)).unwrap();
+    let v = model_prices(&g, "openai", Some(&adapter), &[]);
+    let p = by(&v, "pub-m");
     assert_eq!((p.source, p.price), (Some("member"), Some(member)));
+    // Every shown price is the one the guard charges with.
+    for m in &v {
+        let adapter_price = ModelProxy::adapter_price(&adapter, &m.id);
+        assert_eq!(m.price, g.price_for("openai", &m.id, adapter_price), "{}", m.id);
+    }
+}
+
+#[test]
+fn the_price_shown_is_the_price_a_call_is_charged() {
+    let rig = Rig::new("ipc-shown-is-charged");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    let shown = status(&rig.proxy)[0]
+        .models
+        .iter()
+        .find(|m| m.id == "gpt-known")
+        .and_then(|m| m.price)
+        .expect("the rig's model shows a price");
+    let u = rig.proxy.with_state(|g, l| usage_summary_of(g, l, now_ms()));
+    let c = &u.recent_calls[0];
+    let (tin, tout) = (c.tokens_in.unwrap(), c.tokens_out.unwrap());
+    assert_eq!(c.cost_micros, Some(shown.cost(tin, tout)), "the charge used the price the card shows");
 }
 
 #[test]

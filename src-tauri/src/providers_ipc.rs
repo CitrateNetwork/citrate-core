@@ -15,12 +15,10 @@
 //! | `providers_custom_add`, `providers_custom_confirm`, `providers_custom_remove` | the sealed guard file (custom endpoints), the keychain on remove |
 //! | `providers_usage_log_reset` | the usage log (a broken file is archived, a new chain starts) |
 
-use crate::model_provider::{
-    ChatMessage, ChatRequest, ModelInfo, ModelProvider, ProviderId, Role, Vendor,
-};
+use crate::model_provider::{ChatMessage, ChatRequest, ModelProvider, ProviderId, Role, Vendor};
 use crate::model_proxy::{now_ms, ModelProxy, ProxyError};
 use crate::provider_egress::{vendor_spec, CustomEndpoint};
-use crate::provider_guard::{Caps, GuardBook, Halt, Price, ProviderGuard};
+use crate::provider_guard::{Caps, GuardBook, Halt, Price};
 use crate::provider_usage_log::UsageLog;
 use crate::secret::SecretString;
 use serde::Serialize;
@@ -165,8 +163,6 @@ impl From<&CustomEndpoint> for CustomEndpointView {
 // Pure builders (tested without Tauri)
 // ---------------------------------------------------------------------------
 
-/// The models to show for a provider, each with its price and source. The member's price wins over
-/// the adapter's published one (the same order the guard uses to charge a call).
 /// The least the guard reserves for one call to `model`: an empty prompt, no tools, the adapter's
 /// output bound (the same `input_token_bound` + `output_bound` the proxy reserves with).
 fn min_reserve(
@@ -191,12 +187,17 @@ fn min_reserve(
     Some(price.cost(crate::model_proxy::input_token_bound(&probe), out))
 }
 
+/// The models to show for a provider, each with its price and source. The price is the one a
+/// call is charged with: `GuardBook::price_for` over `ModelProxy::adapter_price`, the same pair
+/// `ModelProxy::call` uses, so the view cannot drift from the charge.
 pub fn model_prices(
+    g: &GuardBook,
+    provider: &str,
     adapter: Option<&dyn ModelProvider>,
-    published: &[ModelInfo],
     extra: &[String],
-    pg: &ProviderGuard,
 ) -> Vec<ModelPriceView> {
+    let pg = g.get(provider);
+    let published = adapter.map(|a| a.models()).unwrap_or_default();
     let mut ids: Vec<String> = Vec::new();
     let names = published
         .iter()
@@ -212,17 +213,12 @@ pub fn model_prices(
     }
     ids.into_iter()
         .map(|id| {
-            let member = pg.prices.get(&id).copied();
-            let published = published.iter().find(|m| m.id == id).and_then(|m| {
-                Some(Price {
-                    input_micros_per_mtok: m.input_micros_per_mtok?,
-                    output_micros_per_mtok: m.output_micros_per_mtok?,
-                })
-            });
-            let (price, source) = match (member, published) {
-                (Some(p), _) => (Some(p), Some("member")),
-                (None, Some(p)) => (Some(p), Some("published")),
-                (None, None) => (None, None),
+            let adapter_price = adapter.and_then(|a| ModelProxy::adapter_price(a, &id));
+            let price = g.price_for(provider, &id, adapter_price);
+            let source = match price {
+                None => None,
+                Some(_) if pg.prices.contains_key(&id) => Some("member"),
+                Some(_) => Some("published"),
             };
             ModelPriceView {
                 min_reserve_micros: min_reserve(adapter, &id, price),
@@ -241,15 +237,38 @@ fn all_ids(g: &GuardBook) -> Vec<ProviderId> {
     ids
 }
 
+/// One provider's model list with prices. A custom endpoint is served by the OpenAI-compatible
+/// adapter, whose output bound is the request's own `max_tokens` (the `None` case in
+/// `min_reserve`); its models are the ones the member listed.
+fn models_for(g: &GuardBook, id: &ProviderId) -> Vec<ModelPriceView> {
+    match id {
+        ProviderId::Vendor(v) => {
+            let a = crate::model_proxy::vendor_adapter(*v).0;
+            model_prices(g, id.as_str(), Some(a.as_ref()), &[])
+        }
+        ProviderId::Custom(cid) => {
+            let extra = g
+                .customs
+                .iter()
+                .find(|c| &c.id == cid)
+                .map(|c| c.models.clone())
+                .unwrap_or_default();
+            model_prices(g, id.as_str(), None, &extra)
+        }
+    }
+}
+
 pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
-    let (ids, customs, guards) = proxy.with_state(|g, _| {
+    let (ids, customs, guards, model_lists) = proxy.with_state(|g, _| {
         let ids = all_ids(g);
         let guards: Vec<_> = ids.iter().map(|id| g.get(id.as_str())).collect();
-        (ids, g.customs.clone(), guards)
+        let model_lists: Vec<_> = ids.iter().map(|id| models_for(g, id)).collect();
+        (ids, g.customs.clone(), guards, model_lists)
     });
     ids.into_iter()
         .zip(guards)
-        .map(|(id, pg)| {
+        .zip(model_lists)
+        .map(|((id, pg), models)| {
             let key_configured = proxy.key_configured(&id);
             let adapter = proxy.kind_for(&id).map(|k| k.as_str());
             let (name, kind, verified, base_url, key_page, revoke_page, confirmed) = match &id {
@@ -278,25 +297,6 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                     )
                 }
             };
-            // A custom endpoint is served by the OpenAI-compatible adapter, whose bound is the
-            // request's own `max_tokens` (the `None` case in `min_reserve`).
-            let (model_adapter, published, extra) = match &id {
-                ProviderId::Vendor(v) => {
-                    let a = crate::model_proxy::vendor_adapter(*v).0;
-                    let m = a.models();
-                    (Some(a), m, Vec::new())
-                }
-                ProviderId::Custom(cid) => (
-                    None,
-                    Vec::new(),
-                    customs
-                        .iter()
-                        .find(|c| &c.id == cid)
-                        .map(|c| c.models.clone())
-                        .unwrap_or_default(),
-                ),
-            };
-            let models = model_prices(model_adapter.as_deref(), &published, &extra, &pg);
             let host = url::Url::parse(&base_url)
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_string))

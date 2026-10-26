@@ -20,6 +20,7 @@
 import { useEffect, useState } from "react";
 import { bridge } from "../../bridge";
 import { BRIDGE_MODE } from "../../bridge/mode";
+import { InvokeTimeout } from "../../bridge/tauri/invoke";
 import type { ProviderModelPrice, ProviderRecentCall, ProviderStatus, ProviderUsage, ProviderUsageSummary } from "../../bridge/domains";
 import { formatMicros, parseUsdToMicros } from "../../agent/escalation";
 import {
@@ -153,8 +154,10 @@ function outcomeText(c: ProviderRecentCall, providerName: string): string {
   return prefix + (OUTCOME_WORDS[c.outcome] ?? c.outcome.replace(/_/g, " "));
 }
 
-/** "Paused 2026-10-26 01:00 UTC" or just "Paused" when core recorded no time. */
-const pausedAt = (atMs: number) => (atMs > 0 ? `Paused ${fmtWhen(atMs)}` : "Paused");
+/** Core's halt message (it already says "paused ..."), capitalised, with the time when core
+ *  recorded one: "Paused automatically: 31 calls in 60 seconds (since 2026-10-26 01:00 UTC)". */
+const haltLine = (h: { message: string; atMs: number }) =>
+  h.message.charAt(0).toUpperCase() + h.message.slice(1) + (h.atMs > 0 ? ` (since ${fmtWhen(h.atMs)})` : "");
 
 const priceText = (m: ProviderModelPrice) =>
   m.price
@@ -227,7 +230,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
 
       {p.halt && (
         <span data-testid="provider-halt-line" style={{ fontSize: 12, color: "var(--warn)" }}>
-          {pausedAt(p.halt.atMs)}: {p.halt.message}. Resume it under Spend and usage.
+          {haltLine(p.halt)}. Resume it under Spend and usage.
         </span>
       )}
       {st === "capped" && (
@@ -300,7 +303,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
             <input
               className="input mono"
               type="password"
-              autoComplete="off"
+              autoComplete="new-password"
               aria-label={`${p.name} API key`}
               placeholder="paste the API key"
               value={draft}
@@ -454,7 +457,7 @@ function UsageRow(props: { p: ProviderStatus; u: ProviderUsage | undefined; v: M
       {p.halt && resume ? (
         <div data-testid="halt-block" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <span style={{ fontSize: 12, color: "var(--warn)" }}>
-            {pausedAt(p.halt.atMs)}: {p.halt.message}.
+            {haltLine(p.halt)}.
           </span>
           <span className="mono" style={small}>
             {resume.note}
@@ -538,7 +541,7 @@ export function ModelsSettingsView(v: ModelsViewProps) {
         <div data-testid="failclosed-guard" role="alert" style={banner}>
           <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--danger)" }}>Every provider is paused: the spend settings file could not be verified.</span>
           <span style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
-            The file that holds your caps, prices, pauses and custom endpoints is unreadable, was edited, or is an older copy than the one last saved. Nothing is sent to any provider until you acknowledge. Acknowledging resets caps, prices, pauses and custom endpoints for every provider to the defaults, so check them afterwards.
+            The file that holds your Models settings is unreadable, was edited, or is an older copy than the one last saved. Nothing is sent to any provider until you acknowledge. Acknowledging resets, for every provider: caps, model prices, pauses, approved and listed models, custom endpoints, and the dates your keys were stored. Your keys stay in the keychain; run Test key to list each provider's models again, and check your caps afterwards.
           </span>
           <span>
             <button className="btn btn-secondary btn-sm" onClick={() => v.on.onResume(guardHalt.id)} disabled={v.busy !== null || !v.desktop}>
@@ -785,6 +788,8 @@ export function ModelsSettings({ onOpen }: { onOpen(url: string): void }) {
               const t = await bridge.providers.setKey(id, key);
               setNotice(id, `Connected. The key passed a live test (${listed(t.listedModels)}).`);
             } catch (e) {
+              // A timeout is not a refusal: core may still finish the test and store the key.
+              if (e instanceof InvokeTimeout) throw new Error("No answer from core yet, so whether the key was stored is unknown. This card shows what core reports; check it before pasting the key again.");
               throw new Error(`The key was not stored: ${message(e)}`);
             }
           });

@@ -132,7 +132,7 @@ describe("Settings › Models: the vendor cards", () => {
     const halt = { kind: "burst", message: "paused automatically: 31 calls in 60 seconds", atMs: NOW };
     const html = render({ statuses: [vendor({ keyConfigured: true, halt })] });
     expect(stateOf(html, "openai")).toBe("halted");
-    expect(card(html, "openai")).toContain("paused automatically: 31 calls in 60 seconds");
+    expect(card(html, "openai")).toContain("Paused automatically: 31 calls in 60 seconds");
   });
 
   it("capped: the card says which cap is reached", () => {
@@ -332,7 +332,7 @@ describe("Settings › Models: fail-closed states pause every provider", () => {
     expect(html).toContain("Every provider is paused");
     expect(html).toContain("an older copy than the one last saved");
     expect(html).toContain("Acknowledge and reset settings");
-    expect(html).toContain("resets caps, prices, pauses and custom endpoints for every provider to the defaults");
+    expect(html).toContain("Acknowledging resets, for every provider");
     expect(html.match(/data-testid="failclosed-guard"/g)?.length).toBe(1);
   });
 
