@@ -88,10 +88,11 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     await expect(bridge.signing.broadcast(send.id, false)).rejects.toThrow(/desktop|web shim|no key/i);
   });
 
-  it("wallet.pendingWithdrawals returns an honest empty queue in sim (no chain)", async () => {
+  it("wallet.pendingWithdrawals returns no rows and an unconfirmed read in sim (no chain)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);
-    expect(await bridge.wallet.pendingWithdrawals()).toEqual([]);
+    // C1-W: nothing was read, so it is not "none".
+    expect(await bridge.wallet.pendingWithdrawals()).toEqual({ withdrawals: [], confirmed: false, complete: true, note: "the web preview reaches no chain" });
   });
 
   // No custody vault/key exists in web-dev, so ensureReady provisions nothing: it
@@ -253,7 +254,7 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
       (e: unknown) => isUnavailable(e),
     );
     await expect(bridge.chat.clearProvider("openai")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
-    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    await expect(bridge.chat.infer("openai", "[]", "{}", "cc_x")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("inferLocal is honestly Unavailable and inferenceState is 'demo' in sim (no llama-server, no local model)", async () => {
@@ -265,6 +266,14 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
     await expect(bridge.chat.inferLocal("[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
     expect(await bridge.chat.inferenceState(true)).toBe("demo");
     expect(await bridge.chat.inferenceState(false)).toBe("demo");
+  });
+
+  it("chat route: the preview reports the default (ask first) and cannot change it", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const { isUnavailable } = await import("./types");
+    expect(await bridge.chat.route()).toEqual({ route: "ask_first", loadError: null });
+    await expect(bridge.chat.setRoute("local_only")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("backend is the honest built-in demo agent (Rule 1 — no gateway label)", async () => {

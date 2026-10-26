@@ -8,7 +8,7 @@ import { createDaemonRunner, type RunnerDeps } from "./runner";
 import type { Claim, DaemonsApi } from "./api";
 
 const claim: Claim = { daemonId: "d1", runId: "r1", name: "Node digest", prompt: "Summarise my node.", tokensAllowed: 100_000, startedMs: 0 };
-const ctx = { height: 1, peers: 2, finalityAge: 3, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" };
+const ctx = { height: 1, peers: 2, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" };
 
 describe("TokenMeter: measured beats estimated only when every call reported", () => {
   it("sums each call's prompt and written tokens", () => {

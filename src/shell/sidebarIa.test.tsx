@@ -1,57 +1,63 @@
-// HUP-S0.8 (D-34, owner-approved 2026-09-30) — the consolidated sidebar. Supersedes the CX-S7.1
-// "You / Your Groups" IA test: the owner found the sidebar too long (18 items, 6 overlapping social
-// entries). Sub-surfaces stay routable (deep links keep working) but live as TABS under a parent.
+// Five-place navigation (0.5.2) supersedes the HUP-S0.8 sectioned sidebar (D-34). The sidebar is
+// Hermes, Groups, Wallet, Node, Store, then Settings. Every surface the old sidebar reached is still
+// reachable: as a tab, a sub-tab, or (Community) a routable hidden leaf. The redirect table itself is
+// tested in places.test.ts; this file keeps the structural invariants the HUP-S0.8 test held.
 import { describe, it, expect } from "vitest";
-import { NAVI, SECTIONS, NESTED, HUBS, HIDDEN, ROUTES } from "./Sidebar";
-import { REGISTER } from "../App";
+import { ROUTES, navParent } from "./Sidebar";
+import { CANONICAL_ROUTES, HIDDEN_ROUTES, LEGACY_ROUTES, PLACES, locate, registerFor } from "./places";
 
-const naviIds = NAVI.map(([id]) => id);
-const topLevel = SECTIONS.flatMap((s) => s.ids);
+// Every route id the HUP-S0.8 sidebar knew (its NAVI registry, plus ALF).
+const OLD_IDS = [
+  "dashboard", "wallet", "node", "storage", "journal", "comms", "commissary", "settings", "models",
+  "files", "people", "groups", "cluster", "train", "agent", "connections", "community", "alf",
+];
 
-describe("HUP-S0.8 consolidated sidebar (D-34)", () => {
+const tabRoutes = PLACES.flatMap((p) => p.tabs.flatMap((t) => [t.route, ...(t.sub ?? []).map((x) => x.route)]));
+
+describe("five-place sidebar", () => {
   it("leads with Hermes (the home: chat + widgets)", () => {
-    expect(SECTIONS[0].ids).toEqual(["dashboard"]);
-    expect(NAVI.find(([id]) => id === "dashboard")?.[1]).toBe("Hermes");
+    expect(PLACES[0].id).toBe("hermes");
+    expect(PLACES[0].tabs[0].route).toBe("hermes/chat");
+    expect(locate("dashboard").place).toBe("hermes");
   });
 
-  it("has at most 11 top-level items (was 18)", () => {
-    expect(topLevel.length).toBeLessThanOrEqual(11);
+  it("has five places plus Settings (was 11 top-level items)", () => {
+    expect(PLACES.length).toBe(6);
+    expect(PLACES[PLACES.length - 1].id).toBe("settings");
   });
 
-  it("places every surface exactly once: top-level, nested under a top-level parent, or hidden", () => {
-    for (const id of naviIds) {
-      const places = [topLevel.includes(id), id in NESTED, HIDDEN.includes(id)].filter(Boolean).length;
-      expect(places, `surface ${id}`).toBe(1);
-    }
-    for (const [child, parent] of Object.entries(NESTED)) {
-      expect(topLevel, `${child}'s parent ${parent}`).toContain(parent);
-    }
-  });
-
-  it("folds the social section into one Groups item with tabs", () => {
-    for (const id of ["people", "cluster", "train", "comms"]) expect(NESTED[id]).toBe("groups");
-    expect(HUBS.groups.map((t) => t.label)).toEqual(["Chat", "Members", "Cluster", "Training", "Alerts"]);
-    expect(topLevel).not.toContain("people");
-    expect(HIDDEN).toContain("community");
-  });
-
-  it("merges memory into Files and Connections into Settings", () => {
-    expect(NESTED.storage).toBe("files");
-    expect(NESTED.connections).toBe("settings");
-  });
-
-  it("every hub's first tab is the parent itself and it lists all of its nested surfaces", () => {
-    for (const [parent, tabs] of Object.entries(HUBS)) {
-      expect(tabs[0].id).toBe(parent);
-      const nested = Object.entries(NESTED).filter(([, p]) => p === parent).map(([c]) => c);
-      for (const c of nested) expect(tabs.map((t) => t.id)).toContain(c);
+  it("places every old surface exactly once: in one tab or sub-tab, or hidden", () => {
+    for (const id of OLD_IDS) {
+      const leaf = LEGACY_ROUTES[id]?.route;
+      expect(leaf, id).toBeDefined();
+      if (!leaf) continue;
+      const inTabs = tabRoutes.filter((r) => r === leaf).length > 0;
+      const hidden = leaf in HIDDEN_ROUTES;
+      expect([inTabs, hidden].filter(Boolean).length, id).toBe(1);
     }
   });
 
-  it("every surface (and ALF) is a routable deep link with a theme register", () => {
-    for (const id of [...naviIds, "alf"]) {
+  it("no two old surfaces share a home", () => {
+    const leaves = OLD_IDS.map((id) => LEGACY_ROUTES[id]?.route);
+    expect(new Set(leaves).size).toBe(leaves.length);
+  });
+
+  it("every tab with sub-tabs opens on its first sub-tab", () => {
+    for (const p of PLACES) for (const t of p.tabs) if (t.sub) expect(t.route, t.label).toBe(t.sub[0].route);
+  });
+
+  it("every old id and every canonical route is a routable deep link with a theme register", () => {
+    for (const id of [...OLD_IDS, ...CANONICAL_ROUTES]) {
       expect(ROUTES, `route ${id}`).toContain(id);
-      expect(REGISTER[id], `register ${id}`).toBeDefined();
+      expect(["instrument", "charter"], `register ${id}`).toContain(registerFor(id));
     }
+  });
+
+  it("an old id highlights the place that now holds it", () => {
+    expect(navParent("agent")).toBe("hermes");
+    expect(navParent("train")).toBe("groups");
+    expect(navParent("files")).toBe("node");
+    expect(navParent("models")).toBe("store");
+    expect(navParent("connections")).toBe("settings");
   });
 });

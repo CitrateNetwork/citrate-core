@@ -8,8 +8,8 @@ import { invoke } from "./invoke";
 import type { DiagnosticBundle, TelemetryDomain } from "../domains";
 
 export const tauriTelemetry: TelemetryDomain = {
-  bundle(uiErrors: string[]): Promise<DiagnosticBundle> {
-    return invoke<DiagnosticBundle>("diagnostics_bundle", { uiErrors });
+  bundle(uiErrors: string[], joinSteps: string[] = []): Promise<DiagnosticBundle> {
+    return invoke<DiagnosticBundle>("diagnostics_bundle", { uiErrors, joinSteps });
   },
   async send(bundleJson: string): Promise<void> {
     await invoke("telemetry_send", { bundleJson });
