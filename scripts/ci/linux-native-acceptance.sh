@@ -132,7 +132,7 @@ cleanup_run() {
   case "$run" in "$work"/run.*) ;; *) echo "not removing $run (outside $work)"; return 0 ;; esac
   [ -d "$run" ] && [ ! -L "$run" ] || return 0
   # The namespace made files owned by subordinate ids only if it used them; it maps root to us.
-  rm -rf -- "${run:?}/root-deb" "${run:?}/home-"* "${run:?}/apps" "${run:?}/pkgs" "${run:?}/ref-"* 2>/dev/null
+  rm -rf -- "${run:?}/root-deb" "${run:?}/home-"* "${run:?}/apps" "${run:?}/pkgs" "${run:?}/ref-"* "${run:?}/feed" "${run:?}/ue-sigs" 2>/dev/null
   echo "logs: $run/logs"
 }
 
@@ -1048,7 +1048,8 @@ run_update_e2e() {
   cp "$W/pkgs/ue-to.AppImage" "$W/feed/to.AppImage" && cp "$W/pkgs/ue-to.AppImage" "$W/feed/to-altered.AppImage" &&
     python3 -I -c 'import sys; f=open(sys.argv[1],"r+b"); f.seek(-1,2); b=f.read(1); f.seek(-1,2); f.write(bytes([b[0]^1]))' \
       "$W/feed/to-altered.AppImage" || { fail "update-e2e: could not stage the feed"; return 1; }
-  ue_alter_sig "$W/pkgs/ue-to.AppImage.sig" "$W/pkgs/ue-to.AppImage.altered.sig" ||
+  # pkgs/ is read-only inside the namespace; derived inputs live next to the feed.
+  mkdir -p "$W/ue-sigs" && ue_alter_sig "$W/pkgs/ue-to.AppImage.sig" "$W/ue-sigs/to.AppImage.altered.sig" ||
     { fail "update-e2e: could not make the altered signature"; return 1; }
   start_session_services update-e2e || { fail "update-e2e session: could not start the private bus/keyring"; return 1; }
   # The loopback feed server is part of the test session, like the bus: not counted as a stray.
@@ -1065,7 +1066,7 @@ run_update_e2e() {
   local c
   for c in "same-version|$UE_FROM|$sig|to.AppImage|no-update" \
            "older-version|0.0.1|$sig|to.AppImage|no-update" \
-           "altered-signature|$UE_TO|$W/pkgs/ue-to.AppImage.altered.sig|to.AppImage|refused:The signature verification failed" \
+           "altered-signature|$UE_TO|$W/ue-sigs/to.AppImage.altered.sig|to.AppImage|refused:The signature verification failed" \
            "other-key|$UE_TO|$W/pkgs/ue-to.AppImage.other.sig|to.AppImage|refused:The signature was created with a different key than the one provided" \
            "altered-artifact|$UE_TO|$sig|to-altered.AppImage|refused:The signature verification failed" \
            "signed-update|$UE_TO|$sig|to.AppImage|install"; do
