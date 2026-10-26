@@ -684,3 +684,52 @@ fn run_with_deadline_maps_a_worker_panic_to_an_error() {
     );
     assert!(matches!(r, Err(CommsError::Ipc(m)) if m.contains("without a result")));
 }
+
+// #495 — the pinned comms-member-daemon's `assignRole` requires `{group, assertion: RoleAssertion}`
+// and nothing here signs one, so the old `{group, member, role}` request was always refused
+// ("bad request: missing field `assertion`"). Until a signer exists the command refuses with a typed
+// not-available error and never contacts the daemon.
+#[test]
+fn role_grants_are_not_available_until_a_signer_exists() {
+    assert_eq!(role_grants_available(), Err(RoleGrantError::NotAvailable));
+    assert_eq!(
+        RoleGrantError::NotAvailable.to_string(),
+        "Role changes aren't available yet: signed role grants aren't built."
+    );
+    assert_eq!(
+        RoleGrantError::NotAvailable.to_string(),
+        ROLE_GRANTS_NOT_AVAILABLE
+    );
+}
+
+/// The source of one `pub async fn <name>` in comms.rs, up to its closing brace.
+fn command_body<'a>(src: &'a str, name: &str) -> &'a str {
+    let start = src
+        .find(&format!("pub async fn {name}("))
+        .unwrap_or_else(|| panic!("{name} is a command in comms.rs"));
+    let len = src[start..].find("\n}\n").expect("closing brace");
+    &src[start..start + len]
+}
+
+// Tripwire: the command gates on `role_grants_available()` before anything else and does not route
+// to the daemon, and no request of the refused shape exists to send. A signer lands together with a
+// request that carries the assertion; only then may this test (and groupsAssignRole.test.tsx) change.
+#[test]
+fn groups_assign_role_never_sends_the_daemon_a_request() {
+    let src = include_str!("comms.rs");
+    let body = command_body(src, "groups_assign_role");
+    assert!(
+        body.contains("role_grants_available()"),
+        "groups_assign_role must check role_grants_available():\n{body}"
+    );
+    assert!(
+        !body.contains("route("),
+        "groups_assign_role must not contact the daemon while role grants are not available:\n{body}"
+    );
+    let request_enum = &src[src.find("enum Request {").expect("Request enum")..];
+    let request_enum = &request_enum[..request_enum.find("\n}\n").expect("enum end")];
+    assert!(
+        !request_enum.contains("AssignRole"),
+        "the daemon refuses an assignRole without a signed assertion; no such request may exist"
+    );
+}

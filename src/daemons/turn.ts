@@ -48,8 +48,9 @@ export const DAEMON_PREAMBLE =
   "\n\nThis is a SCHEDULED DAEMON RUN: the member set this task to run on a timer and is not watching. Do the task, then answer in a few short lines. Prefer reading over changing anything. Any change you propose (a journal entry, a memory, a group action, a transaction) waits for the member's explicit approval, so say what you proposed. Never claim something was done unless a tool result says so.";
 
 export interface SidecarDaemonApi {
-  /** `daemonId`: core re-checks a Store daemon against Hermes's current tools before opening. */
-  openUnattended(systemPrompt: string, toolsJson: string, daemonId?: string): Promise<string>;
+  /** `daemonId`: core re-checks a Store daemon against Hermes's current tools before opening;
+   *  `runId`: the claimed run, which core checks is in flight for that daemon. */
+  openUnattended(systemPrompt: string, toolsJson: string, daemonId?: string, runId?: string): Promise<string>;
   send: SidecarSessionApi["send"];
   events: SidecarSessionApi["events"];
   toolResult: SidecarSessionApi["toolResult"];
@@ -116,6 +117,14 @@ async function terminateSession(sc: SidecarDaemonApi, id: string, cfg: { deadlin
   }
 }
 
+/** A daemon run core refused to open (an open-time check): recorded as `not_started`. */
+export class DaemonNotStarted extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DaemonNotStarted";
+  }
+}
+
 /** HUP-S1.1: why a daemon waits while the local model serves but the Hermes sidecar is down. */
 export const DAEMON_NEEDS_HERMES = "daemons run in Hermes on the local model, and Hermes is not running right now";
 
@@ -161,6 +170,10 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   const task = `Scheduled daemon "${claim.name}". Task:\n\n${claim.prompt}`;
   const toolsJson = JSON.stringify(daemonToolsFor(allowed));
   const opened: string[] = [];
+  // An open core refused (an open-time check) means the run never started (DGX R5).
+  let openRefused: string | null = null;
+  const baseChars = system.length + toolsJson.length + (allowed != null ? 0 : JSON.stringify(deps.context()).length);
+  let metered = false;
   let pendingOpen: Promise<string> | null = null;
   let provider: ChatProvider;
   if (deps.providerKind === "sidecar" && deps.sidecar) {
@@ -168,12 +181,24 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
     provider = createSidecarProvider(
       {
         open: async (p, t) => {
-          pendingOpen = sc.openUnattended(p, t, claim.daemonId);
-          const id = await pendingOpen;
+          let id: string;
+          try {
+            pendingOpen = sc.openUnattended(p, t, claim.daemonId, claim.runId);
+            id = await pendingOpen;
+          } catch (e) {
+            openRefused = e instanceof Error ? e.message : String(e);
+            throw e;
+          }
           opened.push(id);
-          // Stopped while the open was pending: nothing is sent in this session (the run's end
-          // below stops and closes it).
+          // Stopped or paused while the open was pending: nothing is sent in this session (the
+          // run's end below stops and closes it, with confirmation).
           throwIfStopped(signal);
+          // The meter starts at the first open: a run that never got a session charges nothing,
+          // whatever ended it (a refusal, a stop, a pause).
+          if (!metered) {
+            metered = true;
+            meter.begin(baseChars, task.length);
+          }
           return id;
         },
         send: sc.send,
@@ -189,7 +214,6 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   } else {
     throw new Error("daemons run only on the local model, which is not serving right now");
   }
-  meter.begin(system.length + toolsJson.length + (allowed != null ? 0 : JSON.stringify(deps.context()).length), task.length);
   const messages = [{ role: "user", content: task }];
   let answered = false;
   try {
@@ -215,6 +239,9 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
     });
     answered = true;
     return reply.content;
+  } catch (e) {
+    if (openRefused !== null) throw new DaemonNotStarted(openRefused);
+    throw e;
   } finally {
     const sc = deps.sidecar;
     if (answered) {
