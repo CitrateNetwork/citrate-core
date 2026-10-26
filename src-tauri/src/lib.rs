@@ -45,6 +45,8 @@ mod components;
 mod connections;
 mod contract_deploy;
 mod daemons;
+// Join-13: deep links delivered to the running app on Linux/Windows; URL fragments never logged.
+mod deep_link_delivery;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
@@ -161,6 +163,8 @@ mod invites;
 mod join;
 mod model_catalog;
 mod model_delete;
+// GROW-S1 task 12: the pending v2 invite, held in the keyring until the member acts on it.
+mod pending_join;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
@@ -263,8 +267,11 @@ pub fn run() {
     tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
         // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // Join-13: on Linux/Windows a clicked `citrate://` link arrives as that second launch's
+        // argv; its accepted links go to the deep-link plugin's own path (see deep_link_delivery).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::Manager;
+            deep_link_delivery::deliver_second_instance_argv(app, &argv);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
@@ -276,6 +283,7 @@ pub fn run() {
         // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
         // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).
         // The frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → parseJoinLink → Groups.
+        // Links clicked while the app runs on Linux/Windows reach it via single-instance above.
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         // W2.1 — in-app auto-updates (signed GitHub Releases feed; pubkey pinned in
@@ -302,6 +310,9 @@ pub fn run() {
             // (NodeManager::start waits on it) until the cleanup has returned; a panicking
             // cleanup leaves it closed. The barrier does not depend on what the cleanup does.
             let handle = app.handle();
+            // Join-13: an AppImage has no .desktop install to register `citrate://`; do it here.
+            #[cfg(target_os = "linux")]
+            deep_link_delivery::register_appimage_schemes(handle);
             startup_barrier::StartupBarrier::global().run_cleanup(|| sweep_orphan_sidecars(handle));
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
@@ -351,6 +362,8 @@ pub fn run() {
             app.manage(oidc::build_auth_state());
             // v2 invite links: the join client (pending attaches + opened invites, memory only).
             app.manage(join::build_join_state());
+            // The pending invite (code + link key) waiting for the member's Join: keyring only.
+            app.manage(pending_join::build_pending_join_state(app.handle().clone()));
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -535,10 +548,14 @@ pub fn run() {
             // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
             join::join_mint,
             join::join_attach,
-            join::join_resolve,
             join::join_redeem,
             join::join_revoke,
             join::join_list,
+            join::join_share_qr,
+            pending_join::pending_join_set,
+            pending_join::pending_join_get,
+            pending_join::pending_join_clear,
+            pending_join::pending_join_resolve,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
