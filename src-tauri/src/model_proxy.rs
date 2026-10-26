@@ -644,13 +644,13 @@ impl ModelProxy {
     }
 
     /// Test the stored key live.
-    pub fn test_key(&self, id: &str, now: u64) -> Result<KeyTest, ProxyError> {
+    pub fn test_key(&self, id: &str) -> Result<KeyTest, ProxyError> {
         let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
         let (adapter, _, ep) = self.resolve(&pid)?;
         let key = self.read_key(&pid, &ep)?;
         let t = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key, true)?;
         let mut inner = self.inner();
-        inner.guard.key_set(pid.as_str(), t.models.clone(), now);
+        inner.guard.key_tested(pid.as_str(), t.models.clone());
         let _ = crate::provider_guard::save(&self.dir, &mut inner.guard);
         Ok(t)
     }

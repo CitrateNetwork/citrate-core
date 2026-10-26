@@ -33,6 +33,10 @@ pub const DEFAULT_DAILY_TOKENS: u64 = 1_000_000;
 pub const DEFAULT_MONTHLY_TOKENS: u64 = 10_000_000;
 pub const DEFAULT_DAILY_MICROS: u64 = 5_000_000;
 pub const DEFAULT_MONTHLY_MICROS: u64 = 50_000_000;
+/// Per-vendor overrides of the default currency caps: `(provider id, daily, monthly)` micro-USD.
+/// Owner decision amending P-7a: xAI reserves its full context window (about $6 per call), so its
+/// day is $20; its month stays $50. Token caps are the same for every provider.
+pub const DEFAULT_CURRENCY_CAPS: &[(&str, u64, u64)] = &[("xai", 20_000_000, 50_000_000)];
 /// The highest cap a member can set.
 pub const MAX_TOKEN_CAP: u64 = 10_000_000_000;
 pub const MAX_MICROS_CAP: u64 = 10_000_000_000; // 10,000 USD
@@ -81,6 +85,22 @@ impl Default for Caps {
 }
 
 impl Caps {
+    /// The out-of-the-box caps for `provider`.
+    pub fn default_for(provider: &str) -> Caps {
+        let base = Caps::default();
+        match DEFAULT_CURRENCY_CAPS
+            .iter()
+            .find(|(p, _, _)| *p == provider)
+        {
+            Some(&(_, daily, monthly)) => Caps {
+                daily_micros: Some(daily),
+                monthly_micros: Some(monthly),
+                ..base
+            },
+            None => base,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for t in [self.daily_tokens, self.monthly_tokens]
             .into_iter()
@@ -210,6 +230,16 @@ pub struct ProviderGuard {
     pub recent_calls: VecDeque<u64>,
 }
 
+impl ProviderGuard {
+    /// A provider seen for the first time: its vendor's default caps.
+    pub fn new_for(provider: &str) -> ProviderGuard {
+        ProviderGuard {
+            caps: Caps::default_for(provider),
+            ..ProviderGuard::default()
+        }
+    }
+}
+
 /// What the log already holds for a period.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PeriodUse {
@@ -331,7 +361,11 @@ pub struct GuardBook {
 
 impl GuardBook {
     pub fn get(&self, provider: &str) -> ProviderGuard {
-        let mut g = self.providers.get(provider).cloned().unwrap_or_default();
+        let mut g = self
+            .providers
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| ProviderGuard::new_for(provider));
         if self.unreadable && g.halt.is_none() {
             g.halt = Some(Halt {
                 reason: HaltReason::GuardUnreadable,
@@ -342,7 +376,9 @@ impl GuardBook {
     }
 
     fn entry(&mut self, provider: &str) -> &mut ProviderGuard {
-        self.providers.entry(provider.to_string()).or_default()
+        self.providers
+            .entry(provider.to_string())
+            .or_insert_with(|| ProviderGuard::new_for(provider))
     }
 
     fn halt(&mut self, provider: &str, reason: HaltReason, now_ms: u64) -> Halt {
@@ -592,6 +628,12 @@ impl GuardBook {
         let e = self.entry(provider);
         e.listed_models = listed;
         e.key_set_ms = Some(now_ms);
+    }
+
+    /// The stored key passed a live test: refresh the listed models. The date the key was set is
+    /// kept (it drives the rotation reminder).
+    pub fn key_tested(&mut self, provider: &str, listed: Vec<String>) {
+        self.entry(provider).listed_models = listed;
     }
 
     /// The key was removed.

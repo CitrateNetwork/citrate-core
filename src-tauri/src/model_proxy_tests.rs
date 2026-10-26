@@ -366,14 +366,14 @@ fn key_tests_respect_a_halt_and_count_toward_the_burst() {
     let rig = Rig::new("proxy-kt-halt");
     rig.proxy.with_state(|g, _| g.member_halt("openai", now_ms()));
     let before = rig.vendor.seen.lock().unwrap().len();
-    let r = rig.proxy.test_key("openai", now_ms());
+    let r = rig.proxy.test_key("openai");
     assert!(matches!(r, Err(ProxyError::Refused(Refusal::Halted(_)))), "{r:?}");
     assert_eq!(rig.vendor.seen.lock().unwrap().len(), before, "nothing sent while halted");
     rig.proxy.with_state(|g, _| g.member_resume("openai").unwrap());
     for _ in 0..crate::provider_guard::BURST_MAX_CALLS {
-        let _ = rig.proxy.test_key("openai", now_ms());
+        let _ = rig.proxy.test_key("openai");
     }
-    let r = rig.proxy.test_key("openai", now_ms());
+    let r = rig.proxy.test_key("openai");
     assert!(matches!(r, Err(ProxyError::Refused(Refusal::Halted(_)))), "{r:?}");
 }
 
@@ -383,4 +383,25 @@ fn custom_endpoints_with_ip_or_local_hosts_are_refused_at_add() {
     for bad in ["https://169.254.169.254/v1", "https://localhost/v1", "https://llm.example.org./v1"] {
         assert!(rig.proxy.add_custom("x", bad, vec!["m".into()], 1).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn a_key_test_keeps_the_date_the_key_was_set() {
+    // The rotation reminder reads `key_set_ms`; only setting a key may move it.
+    let rig = Rig::new("proxy-kt-date");
+    let set_at = rig.proxy.with_state(|g, _| g.get("openai").key_set_ms).unwrap();
+    rig.proxy.test_key("openai").unwrap();
+    assert_eq!(
+        rig.proxy.with_state(|g, _| g.get("openai").key_set_ms),
+        Some(set_at),
+        "a key test must not reset the key's date"
+    );
+    // A real key set does.
+    rig.proxy
+        .set_key("openai", SecretString::new(fake_key("sk-")), set_at + 31 * 86_400_000)
+        .unwrap();
+    assert_eq!(
+        rig.proxy.with_state(|g, _| g.get("openai").key_set_ms),
+        Some(set_at + 31 * 86_400_000)
+    );
 }
