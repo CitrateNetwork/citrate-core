@@ -2748,8 +2748,8 @@ fn a_resend_after_upgrading_from_a_build_without_the_record_is_outcome_unknown()
 
 /// Rule 3 tripwire: the ONLY path that signs without a per-request approval of a CeremonyId is the
 /// budgeted web sign-in (`request_siwe_budgeted`, ADR-2026-09-30). Every gated-signer call in the
-/// production ceremony code must sit inside `approve`, `approve_and_broadcast` (both consume an
-/// explicit CeremonyId the human approved) or `request_siwe_budgeted`. A new function that reaches
+/// production ceremony code must sit inside `approve`, `approve_and_broadcast_gated` (both consume
+/// an explicit CeremonyId the human approved; `approve_and_broadcast` delegates to the latter) or `request_siwe_budgeted`. A new function that reaches
 /// a signer, for example an "allowlisted intent" fast path, fails here.
 #[test]
 fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
@@ -2758,7 +2758,7 @@ fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
         "sign_".to_string() + "transaction(",
         "sign_".to_string() + "personal(",
     ];
-    let allowed = ["approve", "approve_and_broadcast", "request_siwe_budgeted"];
+    let allowed = ["approve", "approve_and_broadcast_gated", "request_siwe_budgeted"];
     let src = strip_test_module(include_str!("ceremony.rs"));
     let mut enclosing: Option<String> = None;
     let mut seen = 0;

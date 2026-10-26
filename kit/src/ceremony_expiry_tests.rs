@@ -588,7 +588,7 @@ fn tripwire_every_signer_call_is_preceded_by_the_expiry_and_chain_checks() {
     checked.sort();
     assert_eq!(
         checked,
-        ["approve", "approve_and_broadcast", "request_siwe_budgeted"],
+        ["approve", "approve_and_broadcast_gated", "request_siwe_budgeted"],
         "the set of signing functions changed; a new one must pass the checks above"
     );
     // The checks themselves: `ready_to_sign` re-reads the clock and binds the chain.

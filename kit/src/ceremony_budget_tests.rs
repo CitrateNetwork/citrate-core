@@ -510,11 +510,15 @@ fn k6_transaction_signing_refuses_when_no_network_is_set_even_without_an_rpc_gat
 fn k6_transaction_for_another_chain_id_is_refused_on_a_set_network() {
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
-    let view = c.request(tx_intent(
+    // The card and the signer both name chain 1, so the card/signer chain check passes and the
+    // refusal under test is the network gate's (this build targets 40204).
+    let mut intent = tx_intent(
         &canonical_addr_lower(),
         "0x3535353535353535353535353535353535353535",
         "0x1",
-    ));
+    );
+    intent.chain_id = 1;
+    let view = c.request(intent);
     let client = RpcClient::with_transport(MockRpc::new(vec![
         ok(JsonValue::String("0x7".into())),
         ok(JsonValue::String("0x77359400".into())),
