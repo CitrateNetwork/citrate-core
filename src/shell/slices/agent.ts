@@ -137,28 +137,31 @@ export async function refreshRegistrySkills(): Promise<void> {
  *  `AlreadyRunning` guard is treated as success (the sidecar is up), and we POLL status until it
  *  reports running rather than reading once — the sidecar needs a beat to boot, so a single immediate
  *  read used to show "off" until the user left and came back. */
-export async function startRuntime(id: RuntimeId): Promise<void> {
+export async function startRuntime(id: RuntimeId): Promise<string | null> {
   const rt = agentSlice.get().attached.find((r) => r.id === id);
-  if (!rt) return;
+  if (!rt) return `no ${id} runtime is attached`;
   if (!rt.wired) {
     agentSlice.set((s) => ({
       attached: s.attached.map((r) =>
         r.id === id ? { ...r, state: "error", error: `The ${rt.label} adapter isn't available in this build yet — Hermes is the wired runtime. This is where its error + Retry would live.` } : r,
       ),
     }));
-    return;
+    return `the ${rt.label} adapter isn't available in this build yet`;
   }
   // Idempotent: ignore a tap while a spawn is in flight or it is already up.
-  if (agentSlice.get().busy || rt.state === "starting" || rt.state === "running") return;
+  if (agentSlice.get().busy || rt.state === "starting" || rt.state === "running") {
+    return `the app already has ${rt.label} starting or running`;
+  }
   // Claim the start BEFORE any await, so a second tap during the snapshot read is a no-op.
   agentSlice.set({ busy: true });
   setHermes({ state: "starting", error: null });
   // Hermes reads the saved web search and learning settings when it starts: snapshot them first
   // (writes are held from here on) and commit the snapshot only once the start is confirmed.
-  await withHermesStart((snapshot) => spawnHermes(snapshot));
+  return withHermesStart((snapshot) => spawnHermes(snapshot));
 }
 
-async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Promise<void> {
+/** Resolves to the reason the start was refused or didn't come up, or null once Hermes runs. */
+async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Promise<string | null> {
   // Whether this call started a new Hermes (not one that was already running).
   let spawned = true;
   try {
@@ -169,7 +172,7 @@ async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Prom
     if (!/already running/i.test(message(e))) {
       agentSlice.set({ busy: false, error: message(e) });
       setHermes({ state: "error", error: message(e) });
-      return;
+      return message(e);
     }
   }
   // Poll until the sidecar actually reports running (boot takes a beat), then load skills/approvals.
@@ -181,7 +184,7 @@ async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Prom
         // A new Hermes read the saved sidecar settings at start (K2: the Controls restart notice).
         if (spawned) confirmRunning(snapshot);
         await refreshAgent();
-        return;
+        return null;
       }
     } catch {
       /* transient during boot — keep polling */
@@ -191,23 +194,27 @@ async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Prom
   // Never came up within the window — honest soft state, leave it retryable.
   agentSlice.set({ busy: false });
   setHermes({ state: "off", error: "Hermes did not report running — tap Start to retry." });
+  return "Hermes did not report running";
 }
 
-/** Stop the Hermes harness. Pending approvals stay unexecuted (surfaced by the UI). */
-export async function stopRuntime(id: RuntimeId): Promise<void> {
+/** Stop the Hermes harness. Pending approvals stay unexecuted (surfaced by the UI). Resolves to the
+ *  reason the stop was refused, or null. */
+export async function stopRuntime(id: RuntimeId): Promise<string | null> {
   const rt = agentSlice.get().attached.find((r) => r.id === id);
   if (!rt || !rt.wired) {
     agentSlice.set((s) => ({ attached: s.attached.map((r) => (r.id === id ? { ...r, state: "off", error: null } : r)) }));
-    return;
+    return null;
   }
   agentSlice.set({ busy: true });
   try {
     await bridge.agentHarness.stop();
-    agentSlice.set({ busy: false });
-    await refreshAgent();
   } catch (e) {
     agentSlice.set({ busy: false, error: message(e) });
+    return message(e);
   }
+  agentSlice.set({ busy: false });
+  await refreshAgent();
+  return null;
 }
 
 /** The outcome of a Hermes restart, confirmed against the harness status. */
