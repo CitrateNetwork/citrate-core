@@ -243,6 +243,11 @@ pub struct CommsMemberManager {
 }
 
 impl CommsMemberManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over an explicit binary + socket/bearer/data paths + seed + domain.
     pub fn new(
         bin: PathBuf,
@@ -888,6 +893,12 @@ static MANAGER: OnceLock<CommsMemberManager> = OnceLock::new();
 /// daemons and overwriting `member.bearer`; `get_or_init` then commits one manager whose in-memory
 /// bearer no longer matches the surviving daemon's file → the IPC handshake is rejected "unauthorized".
 static MANAGER_INIT: Mutex<()> = Mutex::new(());
+
+/// The manager if this session built one, without building or starting it (the services registry,
+/// K1a-2).
+pub(crate) fn existing_manager() -> Option<&'static CommsMemberManager> {
+    MANAGER.get()
+}
 
 /// Stop the comms member-daemon if this session started it (called on graceful app teardown). Releases
 /// the MLS store LOCK so the next launch reopens cleanly instead of racing an orphan. Idempotent and a

@@ -680,6 +680,28 @@ pub struct LifecycleSnapshot {
     pub quarantine: Option<String>,
 }
 
+/// The most recent change of a service's [`Phase`] (K1a-2, the services registry). `from` is
+/// `None` only for the first phase a supervisor publishes (`Starting`, when it is created). The
+/// time is read from the supervisor's injected [`Clock`] at the moment the phase changed, never at
+/// the moment it was observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseTransition {
+    pub from: Option<Phase>,
+    pub to: Phase,
+    pub at_unix_ms: u64,
+}
+
+/// One bounded read of everything the services registry reports for a service: the lifecycle
+/// cell, its last phase transition and its last crash, all taken under the same lock so they
+/// agree with each other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Observation {
+    pub lifecycle: LifecycleSnapshot,
+    pub last_transition: PhaseTransition,
+    pub last_crash: Option<CrashRecord>,
+}
+
 fn decimal_u64<S: serde::Serializer>(v: &u64, s: S) -> std::result::Result<S::Ok, S::Error> {
     s.serialize_str(&v.to_string())
 }
@@ -1042,6 +1064,24 @@ impl Supervisor {
         self.shared
             .lock_bounded()
             .map(|c| c.snapshot(self.shared.epoch))
+    }
+
+    /// The services registry read (K1a-2): the lifecycle cell, its last phase transition and its
+    /// last crash, under one bounded lock. `None` means the cell was contended and nothing is
+    /// claimed.
+    pub fn observe(&self) -> Option<Observation> {
+        self.shared.lock_bounded().map(|c| {
+            let lifecycle = c.snapshot(self.shared.epoch);
+            Observation {
+                last_transition: PhaseTransition {
+                    from: None,
+                    to: lifecycle.phase,
+                    at_unix_ms: 0,
+                },
+                last_crash: c.status.last_crash.clone(),
+                lifecycle,
+            }
+        })
     }
 
     /// A snapshot of the recent captured stdout/stderr lines (oldest→newest, bounded at
@@ -2286,4 +2326,7 @@ mod tests {
 
     // The lifecycle cell (SC1): platform-neutral, so it runs on every OS lane.
     include!("supervisor_lifecycle_tests.rs");
+
+    // The services registry read (K1a-2): platform-neutral.
+    include!("supervisor_registry_tests.rs");
 }

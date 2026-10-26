@@ -348,6 +348,7 @@ commands.allow = [
   "components_status",
   "components_update",
   "components_rollback",
+  "services_snapshot",
   "store_catalog",
   "store_stage",
   "store_install",

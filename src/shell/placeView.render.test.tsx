@@ -172,8 +172,10 @@ describe("Node", () => {
     expect(h).toContain('data-surface="node/status"');
   });
 
-  it("Services and Rewards are honest not-available-yet states", () => {
-    expect(html("node/services")).toContain('data-not-available="node/services"');
+  it("Services renders the services registry snapshot (K1a-2); Rewards is an honest not-available-yet state", () => {
+    const services = html("node/services");
+    expect(services).not.toContain("data-not-available");
+    expect(services).toContain('data-testid="node-services"');
     expect(html("node/rewards")).toContain('data-not-available="node/rewards"');
   });
 

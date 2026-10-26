@@ -25,6 +25,7 @@ import { tauriSocial } from "./tauri/social";
 import { tauriInvites } from "./tauri/invites";
 import { tauriComponents } from "./tauri/components";
 import { tauriStore } from "./tauri/store";
+import { tauriServices } from "./tauri/services";
 
 import { simModelsCatalog } from "./sim/models";
 import { simTier } from "./sim/tier";
@@ -41,6 +42,7 @@ import { simSocial } from "./sim/social";
 import { simInvites } from "./sim/invites";
 import { simComponents } from "./sim/components";
 import { simStore } from "./sim/store";
+import { simServices } from "./sim/services";
 
 /** CX domains, tauri (real) side. */
 export function cxTauri(): CxBridge {
@@ -61,6 +63,7 @@ export function cxTauri(): CxBridge {
     invites: tauriInvites,
     components: tauriComponents,
     store: tauriStore,
+    services: tauriServices,
   };
 }
 
@@ -83,5 +86,6 @@ export function cxSim(host: SimHost): CxBridge {
     invites: simInvites(host),
     components: simComponents(host),
     store: simStore(host),
+    services: simServices(host),
   };
 }
