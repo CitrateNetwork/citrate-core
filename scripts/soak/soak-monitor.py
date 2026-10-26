@@ -356,9 +356,11 @@ def evaluate(header, samples, problems, criteria, explained):
         "; ".join(bad[:5]) if bad else f"largest head spread {max_spread} blocks",
     )
 
-    # no fork: the hash at the common height agrees everywhere, and no re-read changed.
+    # no fork: the hash at the common height agrees everywhere, no re-read changed, and every
+    # reference height was re-read in the end (a failed re-read is carried, never assumed same).
     bad = []
     checked = 0
+    deferred = 0
     for s in samples:
         fc = s.get("fork_check") or {}
         hashes = fc.get("hashes") or {}
@@ -367,12 +369,29 @@ def evaluate(header, samples, problems, criteria, explained):
             if len({(h or "").lower() for h in hashes.values()}) > 1 or any(not h for h in hashes.values()):
                 bad.append(f"seq {s['seq']} block {fc.get('height')}: {hashes}")
         for e in fc.get("recheck") or []:
-            if e.get("result") == "changed":
+            result = e.get("result")
+            if result == "changed":
                 bad.append(f"seq {s['seq']} block {e.get('height')} hash changed on {e.get('label')} (reorg)")
+            elif result == "unchecked":
+                deferred += 1
+            elif result != "same":
+                bad.append(f"seq {s['seq']} re-read result {result!r} on {e.get('label')}")
+    last_fc = samples[-1].get("fork_check") or {}
+    for label, h in sorted((last_fc.get("unverified") or {}).items()):
+        bad.append(f"block {h} on {label} was never re-read after a failed or missed re-read (unverified)")
     put(
         "no_fork",
         "FAIL" if bad or checked == 0 else "ok",
-        ("; ".join(bad[:5]) if bad else (f"{checked} fork checks agreed" if checked else "no fork check completed")),
+        (
+            "; ".join(bad[:5])
+            if bad
+            else (
+                f"{checked} fork checks agreed"
+                + (f"; {deferred} re-read deferred and later verified" if deferred else "")
+                if checked
+                else "no fork check completed"
+            )
+        ),
     )
 
     # head advances: on every endpoint, every full window gains >= min blocks.
@@ -513,11 +532,17 @@ def evaluate(header, samples, problems, criteria, explained):
     growth("rss_growth", "rss_kb", app_c["max_rss_growth_pct_per_hour"], "RSS")
     growth("fd_growth", "fds", app_c["max_fd_growth_pct_per_hour"], "open-fd")
 
-    # sidecar restarts: crash records since the run began, and child processes replaced.
+    # sidecar restarts: crash records since the run began, child processes replaced, and
+    # sidecars that vanished. The expected set is the children at the first sample after the
+    # warm-up; each later disappearance of one of them counts as a restart (the stopped
+    # supervisor case leaves no crash record and no new pid).
     crash = {}
     replaced = {}
+    vanished = {}
+    expected = None
+    present = set()
     prev = None
-    for _t, a in app_rows:
+    for t, a in app_rows:
         if not a or not a.get("alive"):
             continue
         for name, n in (a.get("crash_records") or {}).items():
@@ -530,8 +555,16 @@ def evaluate(header, samples, problems, criteria, explained):
                 if name in cur and pids - cur[name]:
                     replaced[name] = replaced.get(name, 0) + len(pids - cur[name])
         prev = cur
-    names = set(crash) | set(replaced)
-    per = {n: max(crash.get(n, 0), replaced.get(n, 0)) for n in names}
+        if expected is None and t >= warm_end:
+            expected = set(cur)
+            present = set(cur)
+        elif expected is not None:
+            for name in expected:
+                if name in present and name not in cur:
+                    vanished[name] = vanished.get(name, 0) + 1
+            present = expected & set(cur)
+    names = set(crash) | set(replaced) | set(vanished)
+    per = {n: max(crash.get(n, 0), replaced.get(n, 0) + vanished.get(n, 0)) for n in names}
     per = {n: v for n, v in per.items() if v > 0}
     unexplained = {n: v - explained.get(n, 0) for n, v in per.items() if v - explained.get(n, 0) > 0}
     total_unexplained = sum(unexplained.values())
@@ -541,6 +574,7 @@ def evaluate(header, samples, problems, criteria, explained):
         "ok" if total_unexplained <= limit else "FAIL",
         (
             f"restarts {per or 'none'}; unexplained {unexplained or 'none'} (limit {limit})"
+            + (f"; vanished after warm-up {vanished}" if vanished else "")
         ),
     )
     return _finish(rules, header, samples, criteria)
@@ -650,31 +684,40 @@ def _short_error(e):
     return s[:200]
 
 
-def fork_check(endpoints, readings, lag, prev):
-    """endpoints: {label: url}. readings: the rpc rows of this sample. prev: the previous
-    sample's fork_check (or None)."""
+def fork_check(endpoints, readings, lag, refs):
+    """endpoints: {label: url}. readings: the rpc rows of this sample. refs: {label: (height,
+    hash)}, each endpoint's reference from an earlier sample, updated in place.
+
+    Each reachable endpoint re-reads its reference height. A re-read that fails is recorded as
+    "unchecked" and the reference is KEPT (listed in "unverified"), so a later sample re-reads
+    the same height; an unknown is never read as "same". Only a verified (or changed)
+    reference moves on to this sample's common height."""
     ok = [r for r in readings if r["ok"]]
     out = {"height": None, "hashes": {}, "recheck": [], "unverified": {}}
-    if not ok:
-        return out
-    h = max(min(r["head"] for r in ok) - lag, 0)
-    out["height"] = h
-    for r in ok:
-        try:
-            out["hashes"][r["label"]] = _block_hash(endpoints[r["label"]], h)
-        except (OSError, ValueError, RuntimeError, urllib.error.URLError):
-            out["hashes"][r["label"]] = None
-    if prev and prev.get("hashes") and prev.get("height") is not None:
-        ph = prev["height"]
+    if ok:
+        h = max(min(r["head"] for r in ok) - lag, 0)
+        out["height"] = h
         for r in ok:
-            before = prev["hashes"].get(r["label"])
-            if not before:
-                continue
             try:
-                now = _block_hash(endpoints[r["label"]], ph)
+                out["hashes"][r["label"]] = _block_hash(endpoints[r["label"]], h)
             except (OSError, ValueError, RuntimeError, urllib.error.URLError):
-                continue
-            out["recheck"].append({"label": r["label"], "height": ph, "result": "changed" if now != before else "same"})
+                out["hashes"][r["label"]] = None
+    for r in ok:
+        label = r["label"]
+        if label not in refs:
+            continue
+        ph, before = refs[label]
+        try:
+            now = _block_hash(endpoints[label], ph)
+        except (OSError, ValueError, RuntimeError, urllib.error.URLError):
+            out["recheck"].append({"label": label, "height": ph, "result": "unchecked"})
+            continue
+        out["recheck"].append({"label": label, "height": ph, "result": "changed" if now != before else "same"})
+        del refs[label]
+    out["unverified"] = {label: ref[0] for label, ref in sorted(refs.items())}
+    for label, hsh in out["hashes"].items():
+        if hsh and label not in refs:
+            refs[label] = (out["height"], hsh)
     return out
 
 
@@ -845,7 +888,7 @@ def cmd_run(a):
         "app": None if a.pid is None else {"pid": a.pid, "data_dirs": len(a.data_dir)},
         "host": {"os": platform.system().lower(), "arch": platform.machine()},
     }
-    prev_fc = None
+    refs = {}
     seq = 0
     with samples_path.open("a") as f:
         f.write(json.dumps(header) + "\n")
@@ -853,9 +896,7 @@ def cmd_run(a):
         while not stop["now"]:
             t = time.time()
             readings = [sample_rpc(label, url) for label, url in endpoints.items()]
-            fc = fork_check(endpoints, readings, a.lag, prev_fc)
-            if fc["hashes"]:
-                prev_fc = fc
+            fc = fork_check(endpoints, readings, a.lag, refs)
             row = {
                 "kind": "sample",
                 "seq": seq,

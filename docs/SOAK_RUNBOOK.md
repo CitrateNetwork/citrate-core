@@ -121,14 +121,14 @@ reports a peer count fails `peers`, and too little data after warm-up fails `rss
 | `chain_identity` | every answer's chain id and block-0 hash match `--chain-id` / `--genesis-hash` | exact | A wrong genesis is the r1005-era failure mode |
 | `rpc_reachable` | an endpoint unreachable N samples in a row | ≤ 2 | Allows for a network blip, but not an outage |
 | `rpcs_agree` | same block-0 hash across endpoints; head spread | ≤ 120 blocks | Same spread as `fleet_agree.sh` `MAX_SPREAD` |
-| `no_fork` | block hash at (lowest head − 6) equal on every endpoint; the previous check height re-read unchanged | none allowed | `fleet_agree.sh` method; the re-read catches a reorg deeper than the lag |
+| `no_fork` | block hash at (lowest head − 6) equal on every endpoint; each endpoint re-reads its previous check height and finds it unchanged. A failed re-read is never read as unchanged: the height is kept and re-read at the next sample, and a height still unverified at the end of the run FAILs | none allowed | `fleet_agree.sh` method. The re-read catches a reorg that reaches the previous check height, which is about lag + one interval of blocks deep (about 36 at r1005's ~30 blocks/min with lag 6 and 60 s sampling). The re-read does not see a shallower reorg; the cross-endpoint comparison catches one only while the endpoints disagree |
 | `head_advances` | per endpoint, blocks gained in every 10-min window | ≥ 100 | r1005 made ~300 per 10 min in the self-check (section 8). 100 leaves room for load and still catches a stall |
 | `finality` | the finalized height rises at least every N min; never goes back; never above head | stall ≤ 10 min | Mode `auto`: checked only once an endpoint reports a finalized height above 0. r1005 reports 0. **If the new genesis turns finality on, set the mode to `required`** |
 | `peers` | `net_peerCount` ≥ min; below the minimum for at most N min | ≥ 3 for ≤ 10 min | 4 producers means each sees at least 3 peers |
 | `app_alive` | the app PID is running at every sample | always | |
 | `rss_growth` | least-squares RSS slope after a 60-min warm-up, as a % of mean RSS per hour | ≤ 1.0 %/h, with ≥ 60 min of data after warm-up | Over 72 h, 1 %/h is roughly a 70 % rise: the most a soak should allow |
 | `fd_growth` | the same for open file descriptors | ≤ 2.0 %/h | Catches socket and file-handle leaks |
-| `sidecar_restarts` | sidecar restarts from supervisor crash records written since the start, or a child process replaced (counted per name; the larger wins), minus the explained ones | 0 unexplained | Every restart is either a bug or has a written reason |
+| `sidecar_restarts` | sidecar restarts from supervisor crash records written since the start, or child processes replaced or vanished (counted per name; the larger wins), minus the explained ones. The expected sidecars are the app's children at the first sample after warm-up; each later disappearance of one counts as a restart, even with no crash record | 0 unexplained | Every restart is either a bug or has a written reason. A sidecar that stops with no crash record (a stopped supervisor monitor) must not pass silently |
 
 A chain-only monitor (no `--pid`) reports the four app rules as `skip`. The fleet's PASS means
 the chain rules passed. Each app machine's PASS adds the app rules.
@@ -223,5 +223,5 @@ The trimmed output is in `scripts/soak/examples/selfcheck-r1005/`. The chain rul
 - finality `ok`, not active (r1005 reports a finalized height of 0).
 
 `duration` and `head_advances` FAIL by design: 5 minutes is shorter than both the 24-hour minimum
-and one 10-minute window. Unknown evidence fails closed. The head gained 149 blocks in 5 minutes
+and one 10-minute window. Unknown evidence fails closed. The head gained about 150 blocks in 5 minutes
 (about 30 a minute).
