@@ -306,7 +306,9 @@ pub struct SidecarSpec {
 ///   (stop, shutdown, crash, health failure, kill after the grace), before the supervisor reports
 ///   the stop as done or starts a new child.
 /// - `prepare()` (optional) runs on the monitor thread right before each spawn attempt, the first
-///   one and every automatic restart.
+///   one and every automatic restart. A spawn attempt that fails is an end too: `ended()` runs
+///   after it, so whatever `prepare()` set up for the child is undone on every path, including
+///   when the supervisor gives up.
 #[derive(Clone)]
 pub struct ChildWatch {
     pub interval: Duration,
@@ -1765,9 +1767,13 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         if !admit_spawn(&shared, seq) {
             continue;
         }
+        if let Some(prepare) = watch.as_ref().and_then(|w| w.prepare.as_ref()) {
+            prepare();
+        }
         let mut child = match spawn_child(&spec) {
             Ok(c) => OwnedChild(c),
             Err(e) => {
+                ended(&watch);
                 // Spawn itself failed (bad path / EACCES). Treat as a crash so the same bounded
                 // backoff applies — a bad binary path cannot fork-bomb either.
                 let record = CrashRecord {

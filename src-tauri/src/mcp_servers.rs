@@ -1120,10 +1120,27 @@ fn runtime_entry<'a>(
     }
 }
 
-/// Serialize into a buffer that is wiped on drop. The buffer is sized up front so it is not
-/// reallocated (which would leave an unwiped copy behind).
-fn to_secret_json<T: Serialize>(v: &T, values_len: usize) -> Result<Zeroizing<String>, String> {
-    let mut buf = Zeroizing::new(Vec::with_capacity(2 * values_len + 64 * 1024));
+/// Counts the bytes serialization would write, storing none.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0 += b.len();
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Serialize into a buffer that is wiped on drop. The exact size is counted first (escapes
+/// included: a control character becomes six bytes), so the buffer is allocated once and never
+/// reallocated, which would leave an unwiped copy behind.
+fn to_secret_json<T: Serialize>(v: &T) -> Result<Zeroizing<String>, String> {
+    let mut count = ByteCount(0);
+    serde_json::to_writer(&mut count, v)
+        .map_err(|_| "the MCP entry could not be encoded".to_string())?;
+    let mut buf = Zeroizing::new(Vec::with_capacity(count.0));
     serde_json::to_writer(&mut *buf, v)
         .map_err(|_| "the MCP entry could not be encoded".to_string())?;
     match String::from_utf8(std::mem::take(&mut *buf)) {
@@ -1135,10 +1152,6 @@ fn to_secret_json<T: Serialize>(v: &T, values_len: usize) -> Result<Zeroizing<St
     }
 }
 
-fn values_len(env: &BTreeMap<String, Zeroizing<String>>) -> usize {
-    env.values().map(|v| v.len()).sum()
-}
-
 /// `s` in the runtime shape with its env values from the keychain: the probe request body and the
 /// content of [`PROBE_FILE`].
 pub fn runtime_entry_json(
@@ -1146,7 +1159,7 @@ pub fn runtime_entry_json(
     secrets: &dyn SecretStore,
 ) -> Result<Zeroizing<String>, String> {
     let env = resolve_env(s, secrets)?;
-    to_secret_json(&runtime_entry(s, &env), values_len(&env))
+    to_secret_json(&runtime_entry(s, &env))
 }
 
 /// The members' entries the sidecar may start: enabled, with a review that still matches.
@@ -1193,9 +1206,7 @@ pub fn runtime_allowlist_json(
             )
             .collect(),
     };
-    let len = envs.iter().map(values_len).sum::<usize>()
-        + builtin.iter().map(|b| b.to_string().len()).sum::<usize>();
-    to_secret_json(&file, len).map(Some)
+    to_secret_json(&file).map(Some)
 }
 
 fn quote_arg(a: &str) -> String {
@@ -1257,8 +1268,16 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
 /// leaves them behind for long.
 pub fn sweep_runtime_files(dir: &Path) {
     for f in [crate::hermes_mcp::EFFECTIVE_FILE, PROBE_FILE] {
-        if let Err(e) = remove_if_present(&dir.join(f)) {
-            eprintln!("mcp servers: could not remove {f}: {}", e.kind());
+        let path = dir.join(f);
+        // The temp file of an atomic write a kill interrupted holds the same values.
+        for p in [crate::hermes_mcp::temp_path(&path), path] {
+            if let Err(e) = remove_if_present(&p) {
+                eprintln!(
+                    "mcp servers: could not remove {}: {}",
+                    p.display(),
+                    e.kind()
+                );
+            }
         }
     }
 }

@@ -1200,7 +1200,7 @@ fn secret_json_is_built_in_one_exact_allocation() {
         "args": vec!["y".repeat(4000); 64]
     }))
     .expect("entry");
-    let text = to_secret_json(&runtime_entry(&s, &env), values_len(&env)).expect("json");
+    let text = to_secret_json(&runtime_entry(&s, &env)).expect("json");
     assert!(text.len() > 600_000);
     assert_eq!(text.capacity(), text.len(), "sized exactly, never grown");
 }

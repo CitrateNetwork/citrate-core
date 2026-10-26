@@ -72,8 +72,10 @@ renamed over the old one):
 - `mcp-effective.json`: the one allowlist the sidecar loads (built-in servers first, then
   the member's enabled, reviewed servers with their env values from the keychain). Written
   right before Hermes is spawned; removed as soon as the sidecar answers `/health` (it
-  loads the allowlist before it serves), written again before a supervisor restart,
-  removed when Hermes stops, and swept at app start. With only built-in servers on, the
+  loads the allowlist before it serves). It is written again right before each
+  supervisor restart and removed whenever a child ends, including a failed spawn and the
+  last crash before the supervisor gives up, when Hermes stops, and at app start (with the
+  `.tmp` file an interrupted atomic write can leave). With only built-in servers on, the
   built-in file is passed as is.
 - `mcp-probe.json`: exactly the entry being checked, with its values, for the length of
   one check (`CITRATE_HERMES_MCP_REGISTRY` names it; the sidecar starts only an entry that
@@ -89,6 +91,13 @@ keychain write or the rewrite fails, the items that attempt wrote are removed an
 file is left as it was, so the next read tries again; a rerun after success changes
 nothing. A server that was on and reviewed stays on. "Delete my local data" lists and
 deletes these keychain items.
+
+**Uninstalling by dragging the app to the Trash does not remove keychain items.** Use
+Settings > "Delete my local data" first, or remove the `ai.citrate.core` items whose
+account starts with `mcp-server-env:` in Keychain Access. An item written just before the
+app was killed, and never referenced by the saved list, is not listed by "Delete my local
+data" (the keychain library cannot enumerate items by prefix); it is never read, and can
+be removed the same way.
 
 ## Commands
 

@@ -163,9 +163,17 @@ pub fn render_config(
     (!servers.is_empty()).then(|| json!({ "servers": servers }))
 }
 
+/// The temp file [`write_private`] writes before renaming it over `path`.
+pub(crate) fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension("json.tmp")
+}
+
+/// Write `bytes` to `path` atomically: a `0600` temp file, synced, renamed over it. The temp file
+/// may hold secrets, so it is removed on every error path after it was created (a kill in between
+/// is covered by the sweeps of `mcp_servers::sweep_runtime_files`).
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = temp_path(path);
     let _ = std::fs::remove_file(&tmp);
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -175,10 +183,17 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts.open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
+    let written = f
+        .write_all(bytes)
+        .and_then(|()| f.sync_all())
+        .and_then(|()| {
+            drop(f);
+            std::fs::rename(&tmp, path)
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// HUP-S4.3 + S4.4: the allowlist the child gets when the member has servers on (joined with the
@@ -269,12 +284,17 @@ pub fn write_spawn_file(
     write_private(dest, text.as_bytes()).map_err(|e| e.kind().to_string())
 }
 
-/// RC52 P-9a: the child watch for a spawn-time allowlist at `path`. The sidecar loads its MCP
-/// allowlist before it binds its control port, so once `/health` answers the file has been read:
-/// `observe` (on the supervisor's monitor thread, while the child runs) then removes it. `ended`
-/// (on the same thread, after the child ended and before any restart) writes it again, so a
-/// supervisor restart still gets the member's servers; `HermesManager::stop` removes it after the
-/// last child. `browser` (the managed-browser watch) keeps its own hooks.
+/// RC52 P-9a: the child watch for a spawn-time allowlist at `path`. All three hooks run on the
+/// supervisor's monitor thread, so they never race each other:
+/// - `prepare` (right before every spawn attempt) writes it, so a restart still gets the member's
+///   servers;
+/// - `observe` (while the child runs) removes it once `/health` answers: the sidecar loads its MCP
+///   allowlist before it binds its control port, so by then it has been read;
+/// - `ended` (after every end, including a failed spawn and the last crash before the supervisor
+///   gives up) removes it.
+///
+/// `HermesManager::stop` and the app-start sweep remove it too. `browser` (the managed-browser
+/// watch) keeps its own hooks.
 pub fn spawn_file_watch(
     browser: Option<crate::supervisor::ChildWatch>,
     path: PathBuf,
@@ -288,6 +308,7 @@ pub fn spawn_file_watch(
         None => (None, None),
     };
     let observe_path = path.clone();
+    let ended_path = path.clone();
     crate::supervisor::ChildWatch {
         interval,
         observe: std::sync::Arc::new(move |pid| {
@@ -302,12 +323,14 @@ pub fn spawn_file_watch(
             if let Some(e) = &b_ended {
                 e();
             }
+            let _ = std::fs::remove_file(&ended_path);
+        }),
+        prepare: Some(std::sync::Arc::new(move || {
             if let Err(e) = write_spawn_file(builtin.as_deref(), &store, &path) {
-                eprintln!("hermes: could not write the MCP allowlist for the restart ({e}); it starts without MCP servers");
+                eprintln!("hermes: could not write the MCP allowlist ({e}); Hermes starts without MCP servers");
                 let _ = std::fs::remove_file(&path);
             }
-        }),
-        prepare: None,
+        })),
     }
 }
 
