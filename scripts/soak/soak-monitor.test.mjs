@@ -15,7 +15,7 @@
 //    endpoint, unreachable endpoint, finalized tag refused, URL secrets kept out of the samples,
 //    child processes, crash records written after the start.
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import { execFile, spawn, spawnSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -288,8 +288,8 @@ beforeAll(async () => {
 });
 afterAll(() => Promise.all(servers.map((s) => new Promise((r) => s.close(r)))));
 beforeEach(() => {
-  Object.assign(A, { chainId: 40204, genesis: GENESIS, head: 900, finalized: 880, peers: 4, tag: () => "main" });
-  Object.assign(B, { chainId: 40204, genesis: GENESIS, head: 902, finalized: 880, peers: 4, tag: () => "main" });
+  Object.assign(A, { chainId: 40204, genesis: GENESIS, head: 900, finalized: 880, peers: 4, tag: () => "main", calls: 0 });
+  Object.assign(B, { chainId: 40204, genesis: GENESIS, head: 902, finalized: 880, peers: 4, tag: () => "main", calls: 0 });
 });
 
 async function runMonitor(extra, { duration = "0", interval = "1" } = {}) {
@@ -389,20 +389,22 @@ describe("sampler", () => {
 
 describe("sampler: the app side (a real process tree)", () => {
   let parent;
+  let childPid;
   beforeEach(async () => {
-    // A stand-in "app": a process whose one child is a long sleep, like a supervised sidecar.
-    parent = spawn(PY, ["-c", "import subprocess,time; p=subprocess.Popen(['sleep','120']); print('up', flush=True); time.sleep(120)"], {
+    // A stand-in "app": a process whose one child is a sleep, like a supervised sidecar.
+    parent = spawn(PY, ["-c", "import subprocess,time; p=subprocess.Popen(['sleep','60']); print(p.pid, flush=True); time.sleep(60)"], {
       stdio: ["ignore", "pipe", "ignore"],
     });
-    await new Promise((r) => parent.stdout.once("data", r));
+    childPid = Number(String(await new Promise((r) => parent.stdout.once("data", r))).trim());
   });
   afterEach(() => {
-    // The sleep first (by its parent's pid), then the parent: the sleep must not outlive the test.
-    spawnSync("pkill", ["-P", String(parent.pid)]);
-    try {
-      process.kill(parent.pid, "SIGKILL");
-    } catch {
-      /* already gone */
+    // Both by pid: the sleep must not outlive the test, even when the test killed its parent.
+    for (const pid of [childPid, parent.pid]) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
     }
   });
 
