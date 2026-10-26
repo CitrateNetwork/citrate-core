@@ -1,0 +1,27 @@
+{
+  "version": "0.5.1",
+  "notes": "Critical update: keeps your node on the network's history and makes block production safer. Update to stay in sync; keys and wallet stay.",
+  "pub_date": "2026-10-18T20:31:14Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVURkNIOFEzWUxEam9SVDZ2VUVUZGxaUXM4RGNKNndEWFpVeHBoOUZrK0hUVUJMM0hBUlhIWUtadWI4QjcrWDJva2dqaUhSbGl6ZTBFS3N1eTJ6KzFVRndCNmI2VTN4NVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjk1MTk5CWZpbGU6Q2l0cmF0ZSBDb3JlLmFwcC50YXIuZ3oKVkUvYkgrelF4UW8rSW5WSEU0eGlnc2hJNUV3YklYQWFMaTY2ODBzUlVkaHFLb0U4L3diRVZrbFUxRFZXaVd0N0d4SFpXNjdHRTFOMmRnbU9oOXVxRFE9PQo=",
+      "url": "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core.app.tar.gz"
+    },
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVURkNIOFEzWUxEamwrbUhXTk9ZU3JpN28yRzBtN0VQU1NQWDFaT2wvODgrMHc1Q0FidWJMbDZjeUhEZHNHbmUzbWJlOTZYRnlSYmpyZlJaVHBMTm12RkZDZHExVkp2RVFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMzU1NDA3CWZpbGU6Q2l0cmF0ZS1Db3JlLWxpbnV4LXg4Nl82NC5BcHBJbWFnZQpLTHNxWXhoeU5lWlhJMldaOE8relZQZStQUHNoVTJONzVvT2VCb1Q2bkxraldKd3E4ZVZDYjJWLzFWbERiQUhVd2t0ajNCVGVhcFJOWmFFeVlWNGlBUT09Cg==",
+      "url": "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-x86_64.AppImage"
+    },
+    "linux-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVURkNIOFEzWUxEamhmdmR5U0E0TEtkVkdQWVF5WUx6RHZBNVhEaWs1ZU1MaTFhQXBPYXlHL1NqekN2c3pNVW9DTk9aMGxWQmd3MzJrMEphU2d3M01RRnhoUHpnWlVET3c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMzU1NDA2CWZpbGU6Q2l0cmF0ZS1Db3JlLWxpbnV4LWFhcmNoNjQuQXBwSW1hZ2UKSzlRbjhyK2phdGpCdmhla29CQUJxY0paREtTNGw5a2M3bkZjZmIrN21BZU4xTVVua1AramdKcGFrWjdzMThneEVXT1ZMVS9jL1MrS2Ivc2dlb1U5RFE9PQo=",
+      "url": "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-aarch64.AppImage"
+    },
+    "linux-x86_64-deb": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVURkNIOFEzWUxEanFVZGE0YlVJL0R2bi9wUkYzcWJLbUFuU1NQaVUyNjRmc1NmcFViTDJ5ajJYb2YyR2wrYWdIaFpjbXAwMCsxdWpuMldRalpUekdFRE52VkxMZWZXNEEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMzU1NDEwCWZpbGU6Q2l0cmF0ZS1Db3JlLWxpbnV4LXg4Nl82NC5kZWIKZjFITWFLL3AxcUVRUnlCMWtUSngyMjJEVmhOZUh6dEY0UGF2U2pIWHpFdVk0UUY3WnlrSFVSVVdjWXBDb0IvaDBmQzVacnRVcnlkVUZ1VHFuaFBOQVE9PQo=",
+      "url": "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-x86_64.deb"
+    },
+    "linux-aarch64-deb": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVURkNIOFEzWUxEam5OWWJMRHJnTUtoakcwOHlJalhqU0tVZ3BsSnVNVExJU0tuUEZ3eW90Zm9qeTg4VE5YNEN3TWhCQ3grZjdobGJ1Wlg2SmV6N2lkRGRjTlJSQmY0YVFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMzU1NDA5CWZpbGU6Q2l0cmF0ZS1Db3JlLWxpbnV4LWFhcmNoNjQuZGViCndxSVZxTFBJSEEydTdzZkdVbUVFT3I0STNqZlBxby9CdDBlK0FQTGRuRlE1SlAvU0tMVHZDZjRTczFSbkJiaGdaMkx6endFZjBxU0pzZlNVY09FVkNnPT0K",
+      "url": "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-aarch64.deb"
+    }
+  }
+}

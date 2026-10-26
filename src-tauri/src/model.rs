@@ -217,6 +217,8 @@ pub enum ModelError {
     /// HUP-S0.3b: a Hugging Face origin answered `401`/`403`: the repo is gated or private and
     /// needs a token with access. Final (not retried); the message says where to add the token.
     Gated { token_sent: bool },
+    /// A different model is already saved under this file name; nothing was changed.
+    Occupied,
 }
 
 impl std::fmt::Display for ModelError {
@@ -243,6 +245,10 @@ impl std::fmt::Display for ModelError {
                 }
             ),
             ModelError::BadMagic => write!(f, "model download is not a GGUF file (bad magic)"),
+            ModelError::Occupied => write!(
+                f,
+                "a different model is already saved under this file name; nothing was changed"
+            ),
             ModelError::ShortStream { got, want } => {
                 write!(f, "model download ended short: {got} of {want} bytes")
             }
@@ -305,6 +311,10 @@ pub enum ModelStatus {
 struct StatusFile {
     /// True iff a real `verify()` matched the pinned hash for the current file.
     verified: bool,
+    /// The SHA-256 that `verify()` matched (lowercase hex). Absent when not verified, and in a
+    /// status file written before the hash was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
 }
 
 /// Whether `<dir>/<file>` is a verified-Ready model, WITHOUT needing a transport or the pinned
@@ -321,6 +331,20 @@ pub fn is_file_ready(dir: &std::path::Path, file: &str) -> bool {
         .and_then(|s| serde_json::from_str::<StatusFile>(&s).ok())
         .map(|s| s.verified)
         .unwrap_or(false)
+}
+
+/// The SHA-256 a verified-Ready `<dir>/<file>` was verified against, or `None` when the file is
+/// not verified-Ready or its status names no hash. Tells which bytes a ready file holds without
+/// hashing it again (the Store uses it to recognise its own install).
+pub fn verified_sha256(dir: &std::path::Path, file: &str) -> Option<String> {
+    if !dir.join(file).exists() {
+        return None;
+    }
+    std::fs::read_to_string(dir.join(format!("{file}.status.json")))
+        .ok()
+        .and_then(|s| serde_json::from_str::<StatusFile>(&s).ok())
+        .filter(|s| s.verified)
+        .and_then(|s| s.sha256)
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +398,15 @@ pub fn check_range_status(start: u64, status: u16) -> Result<()> {
             "unexpected HTTP status {other}"
         ))),
     }
+}
+
+/// What [`ModelManager::download_and_verify`] does with a file already at the final path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingFile {
+    /// Refuse it: the caller is installing a new file under this name (the Store).
+    Refuse,
+    /// Finish it: an unverified file is this name's own interrupted download (the Models screen).
+    ResumeUnverified,
 }
 
 /// HUP-S0.3 — single-flight guard: at most one download per `.part` path in this process.
@@ -660,8 +693,11 @@ impl ModelManager {
 
     /// Write the verified flag (the ONLY writer sets it true from `verify`).
     fn write_verified(&self, verified: bool) -> Result<()> {
-        let blob = serde_json::to_vec(&StatusFile { verified })
-            .map_err(|e| ModelError::Io(e.to_string()))?;
+        let blob = serde_json::to_vec(&StatusFile {
+            verified,
+            sha256: verified.then(|| self.expected_hash.clone()),
+        })
+        .map_err(|e| ModelError::Io(e.to_string()))?;
         std::fs::write(self.status_path(), blob).map_err(|e| ModelError::Io(e.to_string()))
     }
 
@@ -706,6 +742,71 @@ impl ModelManager {
     ///
     /// A fresh download starts a NEW `.part` (any bad-magic body aborts before a
     /// final file exists). A resume of an existing `.part` continues its bytes.
+    /// Download (unless a complete file is already here) and verify, as one operation on this
+    /// file name. `existing` says what a file already at the final path means.
+    ///
+    /// The whole operation holds this file's [`DownloadGuard`] (the Store and the Models screen
+    /// share it), so no other download can create or replace the file between the check, the
+    /// download and the verify. A file already here that is verified against ANOTHER hash is
+    /// never re-verified against this one (that would quarantine a different model): it is
+    /// refused with [`ModelError::Occupied`].
+    pub fn download_and_verify(
+        &self,
+        existing: ExistingFile,
+        mut on_progress: impl FnMut(u64, u64),
+    ) -> Result<()> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| ModelError::Io(e.to_string()))?;
+        let _guard = DownloadGuard::acquire(&self.part_path())?;
+        if self.final_path().exists() {
+            if existing == ExistingFile::Refuse {
+                return Err(ModelError::Occupied);
+            }
+            if self.read_verified() {
+                // Verified already: this model when the recorded hash is ours, another one when
+                // it is not (or none is recorded and the bytes differ). Never quarantined here.
+                let ours = match verified_sha256(&self.dir, &self.file) {
+                    Some(h) => h.eq_ignore_ascii_case(&self.expected_hash),
+                    None => self.matches_pinned()?,
+                };
+                if !ours {
+                    return Err(ModelError::Occupied);
+                }
+                on_progress(self.expected_size, self.expected_size);
+                return self.write_verified(true);
+            }
+            // An unverified file under the lock is this name's own interrupted download.
+            on_progress(self.expected_size, self.expected_size);
+            return self.verify();
+        }
+        self.download_locked(&mut on_progress)?;
+        self.verify()
+    }
+
+    /// Whether the final file has the pinned size and SHA-256 (no side effects).
+    fn matches_pinned(&self) -> Result<bool> {
+        use sha2::{Digest, Sha256};
+        let path = self.final_path();
+        let size = std::fs::metadata(&path)
+            .map_err(|e| ModelError::Io(e.to_string()))?
+            .len();
+        if size != self.expected_size {
+            return Ok(false);
+        }
+        let mut file = std::fs::File::open(&path).map_err(|e| ModelError::Io(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; DOWNLOAD_CHUNK];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| ModelError::Io(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        Ok(hex::encode(hasher.finalize()) == self.expected_hash)
+    }
+
     pub fn download(&self) -> Result<Vec<u64>> {
         self.download_with_progress(|_, _| {})
     }
@@ -729,7 +830,12 @@ impl ModelManager {
         }
         // HUP-S0.3: exactly one writer per `.part` (a second appender corrupts it).
         let _guard = DownloadGuard::acquire(&part)?;
+        self.download_locked(&mut on_progress)
+    }
 
+    /// The download itself, run while the caller holds this file's [`DownloadGuard`].
+    fn download_locked(&self, on_progress: &mut dyn FnMut(u64, u64)) -> Result<Vec<u64>> {
+        let part = self.part_path();
         // Resume from the current partial size, if any.
         let mut have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
         // Never resume past what we expect (a corrupt oversized part → restart).
