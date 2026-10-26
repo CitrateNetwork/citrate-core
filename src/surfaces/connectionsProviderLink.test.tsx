@@ -32,7 +32,7 @@ async function mount() {
 const providerLink = () => host?.querySelector('[data-testid="cloud-providers-link"]') as HTMLAnchorElement | null;
 
 describe("Connections › Cloud providers link", () => {
-  it("opens Hermes › Controls on the AI providers section", async () => {
+  it("opens Hermes › Controls › Details on the providers section", async () => {
     store.setState({ route: "settings/connections", sSec: "account" });
     await mount();
     const a = providerLink();
@@ -40,7 +40,7 @@ describe("Connections › Cloud providers link", () => {
     await act(async () => {
       a?.click();
     });
-    expect(store.state.route).toBe("hermes/controls");
+    expect(store.state.route).toBe("hermes/controls/details");
     expect(store.state.sSec).toBe("ai");
   });
 
@@ -48,7 +48,7 @@ describe("Connections › Cloud providers link", () => {
     await mount();
     const a = providerLink();
     expect(a?.getAttribute("href")).toBe("#/settings/ai");
-    expect(a?.textContent).toContain("Hermes › Controls");
+    expect(a?.textContent).toContain("Hermes › Controls › Details");
     expect(host?.querySelector('a[href="#/settings"]')).toBeNull();
   });
 });

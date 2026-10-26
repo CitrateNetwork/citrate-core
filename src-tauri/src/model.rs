@@ -782,6 +782,18 @@ impl ModelManager {
         self.verify()
     }
 
+    /// [`Self::verify`] while the caller holds this file's [`DownloadGuard`] (the one the Store and
+    /// the Models screen share), so no download can rename other bytes in under the verify. A
+    /// guard for another file is refused.
+    pub fn verify_held(&self, guard: &DownloadGuard) -> Result<()> {
+        if guard.path != self.part_path() {
+            return Err(ModelError::Io(
+                "the download lock held is not this file's".into(),
+            ));
+        }
+        self.verify()
+    }
+
     /// Whether the final file has the pinned size and SHA-256 (no side effects).
     fn matches_pinned(&self) -> Result<bool> {
         use sha2::{Digest, Sha256};

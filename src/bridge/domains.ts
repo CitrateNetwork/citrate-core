@@ -127,6 +127,14 @@ export interface SigningDomain {
    * real tx hash + block (never key material). Same explicit-id / raw-ack /
    * single-use / fail-closed invariants as `approve`. */
   broadcast(id: string, rawAck: boolean): Promise<BroadcastResult>;
+  /**
+   * Join-8 — the same approval as `broadcast`, split in two so the caller learns the tx hash
+   * BEFORE anything is sent: `prepare` approves + signs (sends nothing) and returns the hash
+   * (keccak256 of the signed raw); `sendPrepared` sends that signed tx once and polls its receipt.
+   * One approval, one signature, at most one send. Tauri → `sign_prepare` / `sign_send_prepared`.
+   */
+  prepare(id: string, rawAck: boolean): Promise<{ txHash: string }>;
+  sendPrepared(id: string): Promise<BroadcastResult>;
   /** Reject a pending ceremony — consumes it, produces no signature. */
   reject(id: string): Promise<void>;
 }
@@ -282,6 +290,66 @@ export interface NodeStatusView {
   miningHold?: string;
 }
 
+/**
+ * Join-8 — everything the "Activate validator" onboarding step reads, in one call. Each field
+ * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
+ * Wei as decimal strings. Mirrors the Rust `validator_activation::ActivationStatus`.
+ */
+export interface ActivationStatusView {
+  /** `MembershipStakeVault.bondOf(member)` (CREATE2: present even before the bond exists). */
+  bondAddress: string | null;
+  /** Code at `bondAddress`. */
+  bondDeployed: boolean | null;
+  /** `MemberBond.activated()`. */
+  bondActivated: boolean | null;
+  /** `MemberBond.principal()`. */
+  principalWei: string | null;
+  /** `MemberBond.unlockBlock()` / `unlockTimestamp()` (unix seconds). */
+  unlockBlock: number | null;
+  unlockTimestamp: number | null;
+  /** `MemberBond.memberTokenId()`. */
+  memberTokenId: string | null;
+  /** `CitrateMemberSBT.isActive(memberTokenId)`. */
+  membershipActive: boolean | null;
+  /** The key the registry reads use: the bond's registered key once activated, else this node's. */
+  validatorPubkey: string | null;
+  pubkeySource: "bond" | "node" | null;
+  /** This node has a proposer key on disk. */
+  nodeKeyReady: boolean;
+  /** This node's proposer key, when it has one. */
+  nodePubkey: string | null;
+  /** `MemberBond.pubkey()`: the key the bond registered with (null before activation). */
+  bondPubkey: string | null;
+  /** `ValidatorRegistry.validatorInfo(pubkey).status`: 0 None, 1 Active, 2 Exiting, 3 Slashed. */
+  registryStatus: 0 | 1 | 2 | 3 | null;
+  /** `validatorInfo(pubkey).actEpoch`. */
+  activationEpoch: number | null;
+  /** `ValidatorRegistry.isActive(pubkey)`. */
+  registryActive: boolean | null;
+  /** `ValidatorRegistry.EPOCH()`. */
+  epochBlocks: number | null;
+  /**
+   * `ValidatorRegistry.currentEpoch()`. `isActive` is already true at registration (chain#319), so
+   * "Validator active" also needs `activationEpoch <= currentEpoch`.
+   */
+  currentEpoch: number | null;
+  /** Public `eth_blockNumber` (`0x0` is read as unknown). */
+  headBlock: number | null;
+  /** Measured: timestamp delta over the last 100 public blocks, in ms per block. */
+  blockTimeMs: number | null;
+  /** This node's `eth_blockNumber` / `eth_syncing` (true while it returns an object). */
+  localBlock: number | null;
+  localSyncing: boolean | null;
+  /** `eth_getTransactionReceipt` for a sent activation (null when none was sent). */
+  tx: { hash: string; included: boolean | null; blockNumber: number | null; success: boolean | null } | null;
+  /**
+   * The member's latest activation send to this bond as the durable submitted-tx record names it
+   * (written and fsync'd in Rust BEFORE the send; #347). Null when none is recorded, or it was
+   * forgotten. This, not localStorage, is how the step resumes to Pending after a restart.
+   */
+  recordedTx: { hash: string; atMs: number | null } | null;
+}
+
 export interface NodeDomain {
   status(): Promise<NodeStatusView>;
   start(): Promise<void>;
@@ -293,6 +361,19 @@ export interface NodeDomain {
    * `node_register_validator`; the sim shim is honestly Unavailable (no node/key).
    */
   registerValidator(): Promise<CeremonyView>;
+  /**
+   * Join-8 — the Activate-validator step's one read (pure; signs nothing). `memberAddress` is the
+   * member wallet the bond was granted to; `txHash` a sent activation to look up. Tauri →
+   * `validator_activation_status`; the sim shim is honestly Unavailable (no chain, no node).
+   */
+  activationStatus(memberAddress: string, txHash?: string | null): Promise<ActivationStatusView>;
+  /**
+   * Join-8 — Forget a recorded activation send (S7's Forget after 10 minutes unseen, or Try again
+   * after a revert): marks it forgotten in the durable record so a restart does not bring it back.
+   * Resolves true when the record held it; rejects when the write fails. Tauri →
+   * `validator_activation_forget`; the sim shim is honestly Unavailable.
+   */
+  activationForget(txHash: string): Promise<boolean>;
   /**
    * The most recent supervised-node crash, or null if it has never crashed.
    * Used by the liveness watchdog to name the REAL reason a node stopped.
@@ -1972,7 +2053,8 @@ export interface InviteClaim {
 // the share link opens. Mirrors the Rust `citrate_core_kit::join` views. The webview never sees the
 // link key, the envelope, the relay token or the session bearer: the only value carrying the key is
 // `JoinMinted.shareUrl` (`https://citrate.ai/join/<code>#<key>`), meant to be copied and shared.
-// Not yet registered on CxBridge: the inviter UI (task 11) and invitee path (task 12) wire it.
+// Registered on CxBridge as `join` (tasks 11/12). The pending invite an invitee has not acted on yet
+// is held only in Rust (keyring), and its view carries neither the code nor the key.
 export type JoinKind = "direct" | "referral";
 export type JoinGoal = "storage" | "training" | "inference" | "dapps" | "general";
 export interface JoinMintRequest {
@@ -2015,21 +2097,47 @@ export interface JoinCodeEntry {
   exp: string;
   resolveCount: number;
 }
+/** What `join.revoke` closed. `relayInviteClosed`: the relay invite sealed inside a direct code
+ *  this device minted was closed at the relay; false when there is no such record (a public link,
+ *  or a code minted elsewhere). */
+export interface JoinRevoked {
+  relayInviteClosed: boolean;
+}
 export interface JoinDomain {
   /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
   mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
   /** Retry attaching a pending direct code's envelope (idempotent). */
   attach(code: string): Promise<JoinMinted>;
-  /** Resolve + verify a link (or bare code). Each call counts against the code's resolve limit
-   *  (direct 1–50, default 50); resolve on the member's action, not on a preview. */
-  resolve(link: string): Promise<JoinResolved>;
   /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
    *  stays held (until it expires), so calling it again retries. */
   redeem(code: string): Promise<void>;
   /** Revoke one of the member's codes. */
-  revoke(code: string): Promise<void>;
+  revoke(code: string): Promise<JoinRevoked>;
   /** The member's codes, newest first. */
   list(): Promise<JoinCodeEntry[]>;
+  /** Task 12: hand an arrived/pasted invite link to Rust to hold (keyring). Not resolved. */
+  pendingSet(link: string): Promise<PendingJoinView>;
+  /** Whether an invite is waiting (no code, no key). */
+  pendingGet(): Promise<PendingJoinView | null>;
+  /** Wipe the waiting invite (cancel). */
+  pendingClear(): Promise<void>;
+  /** The member chose to look at it: resolve + verify the waiting invite in Rust. */
+  pendingResolve(): Promise<JoinResolved>;
+  /** QR modules for a share link (rendered as SVG by the webview). */
+  shareQr(link: string): Promise<JoinQr>;
+}
+/** The waiting invite as the webview sees it (mirrors Rust `PendingJoinView`). */
+export interface PendingJoinView {
+  hasKey: boolean;
+  storedAt: number;
+  expiresAt: number;
+  /** false = the keyring was unreachable; held in memory only until the app quits. */
+  persisted: boolean;
+}
+/** A QR code as rows of '1' (dark) / '0' (light) modules, without the quiet zone. */
+export interface JoinQr {
+  size: number;
+  rows: string[];
 }
 
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
@@ -2587,6 +2695,8 @@ export interface CxBridge {
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
+  /** GROW-S1 v2 invite links (short code + sealed envelope), all through Rust. */
+  join: JoinDomain;
   components: ComponentsDomain;
   store: StoreDomain;
 }
