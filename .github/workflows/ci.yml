@@ -68,16 +68,12 @@ jobs:
           # updater key (download() verifies before any install path sees the bytes). The guard
           # below fails if anything else ever pulls a zip older than 9. Remove these ignores
           # when the updater moves to zip >= 9.
-          # RUSTSEC-2026-0387 (crypto-bigint < 0.7.6: operations meant to be constant-time could
-          # branch, depending on compiler and target). EXPIRES 2026-11-09. Fixed only in 0.7.6.
-          # crypto-bigint 0.5.5 comes in only through elliptic-curve 0.13 (k256 / p256 0.13, used
-          # by kit, src-tauri, and citrate-wallet-core at the chain pin). No 0.13.x release takes
-          # crypto-bigint 0.7, so the lockfile cannot move it; the fix is the k256 0.14 line, which
-          # needs bip32 0.6 here and the chain's wallet-core to move first. The items the advisory
-          # names (UintRef equality, BoxedMontyForm::invert, the 0.7 borrowing_sub) are not in
-          # 0.5.x; the 0.13 curve crates call only 0.5.x's fixed-width add/sub/compare/select.
-          # The guard below fails if another crate pulls a crypto-bigint < 0.7.6, if none is left
-          # (stale ignore), or after the expiry date.
+          python3 scripts/check-zip-users.py
+          # RUSTSEC-2026-0387 (crypto-bigint < 0.7.6): multiple timing variability issues in
+          # operations intended to be constant-time. EXPIRES 2026-11-09. elliptic-curve 0.13
+          # requires crypto-bigint ^0.5; the fix is in the 0.14 curve line, held back upstream
+          # (revm-precompile, openmls_rust_crypto and bip32 still require the 0.13 line).
+          # Guard: scripts/check-crypto-bigint-users.py.
           python3 scripts/check-crypto-bigint-users.py --self-test
           python3 scripts/check-crypto-bigint-users.py
           cargo audit --ignore RUSTSEC-2025-0055 \
