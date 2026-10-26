@@ -9,13 +9,12 @@ import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
-import { Sidebar, HUBS, NESTED, ROUTES } from "./shell/Sidebar";
+import { Sidebar, ROUTES } from "./shell/Sidebar";
+import { PlaceView } from "./shell/PlaceView";
+import { registerFor } from "./shell/places";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { NetworkCompatGate } from "./shell/NetworkCompatGate";
-import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
-// CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
-import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
 import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, setTelemetryConsent } from "./privacy/joinFunnel";
@@ -23,68 +22,8 @@ import { JoinStepsNote } from "./privacy/JoinStepsNote";
 
 const queryClient = new QueryClient();
 
-// register-per-route map — verbatim from the design (REG). Instrument = dark
-// live telemetry; Charter = light civic/document.
-export const REGISTER: Record<string, "instrument" | "charter"> = {
-  dashboard: "instrument",
-  node: "instrument",
-  wallet: "instrument",
-  storage: "instrument",
-  journal: "charter",
-  comms: "charter",
-  commissary: "charter",
-  settings: "charter",
-  // CX surfaces (CX-S0.4)
-  models: "instrument",
-  files: "instrument",
-  groups: "charter",
-  cluster: "instrument",
-  train: "instrument",
-  agent: "charter",
-  connections: "charter",
-  community: "charter",
-  // HUP-S0.8: these routed but had no register (fell back silently).
-  people: "charter",
-  alf: "charter",
-};
-
-/** HUP-S0.8 — the tab strip on a hub parent and its nested surfaces (e.g. Groups: Chat · Members ·
- *  Cluster · Training · Alerts). Each tab is a real route, so deep links keep working. */
-function HubTabs({ route }: { route: string }) {
-  const tabs = HUBS[NESTED[route] ?? route];
-  if (!tabs) return null;
-  return (
-    <div role="tablist" style={{ display: "flex", gap: 4, padding: "10px 26px 0", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
-      {tabs.map((t) => {
-        const on = t.id === route;
-        return (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={on}
-            onClick={() => store.go(t.id)}
-            className="mono"
-            style={{
-              fontSize: 11,
-              letterSpacing: ".06em",
-              padding: "7px 12px",
-              border: "none",
-              borderBottom: on ? "2px solid var(--accent)" : "2px solid transparent",
-              background: "transparent",
-              color: on ? "var(--tx-1)" : "var(--tx-3)",
-              cursor: "pointer",
-            }}
-          >
-            {t.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function Shell({ s }: { s: AppState }) {
-  const reg = REGISTER[s.route] || "charter";
+  const reg = registerFor(s.route);
 
   // banner (entitlement): copy + tone are a pure, tested function (entitlementBanner.ts).
   const banner = entitlementBanner(s);
@@ -92,50 +31,6 @@ function Shell({ s }: { s: AppState }) {
   const { bg: bannerBg, bd: bannerBd, fg: bannerFg } = BANNER_TONE_TOKENS[banner.tone];
   const bannerText = banner.text;
   const bannerCta = banner.cta;
-
-  const surface = (() => {
-    switch (s.route) {
-      case "dashboard":
-        return <Dashboard store={store} s={s} />;
-      case "wallet":
-        return <Wallet store={store} s={s} />;
-      case "node":
-        return <Node store={store} s={s} />;
-      case "storage":
-        return <Storage store={store} s={s} />;
-      case "comms":
-        return <Comms store={store} s={s} />;
-      case "commissary":
-        return <Commissary store={store} s={s} />;
-      case "settings":
-        return <Settings store={store} s={s} />;
-      case "journal":
-        return <Journal store={store} s={s} />;
-      case "alf":
-        return <ALF store={store} s={s} />;
-      // CX surfaces (CX-S0.4 shells; lanes fill them in their own files)
-      case "models":
-        return <Models store={store} s={s} />;
-      case "files":
-        return <StorageFiles store={store} s={s} />;
-      case "people":
-        return <People store={store} s={s} />;
-      case "groups":
-        return <Groups store={store} s={s} />;
-      case "cluster":
-        return <Cluster store={store} s={s} />;
-      case "train":
-        return <Train store={store} s={s} />;
-      case "agent":
-        return <Agent store={store} s={s} />;
-      case "connections":
-        return <Connections store={store} s={s} />;
-      case "community":
-        return <Community store={store} s={s} />;
-      default:
-        return <Dashboard store={store} s={s} />;
-    }
-  })();
 
   return (
     <div style={{ height: "100vh", display: "grid", gridTemplateColumns: "226px 1fr", overflow: "hidden" }}>
@@ -152,8 +47,8 @@ function Shell({ s }: { s: AppState }) {
             )}
           </div>
         )}
-        <HubTabs route={s.route} />
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{surface}</div>
+        {/* Five-place navigation (0.5.2): the place's tabs, then the surface for the tab. */}
+        <PlaceView store={store} s={s} />
       </main>
     </div>
   );
@@ -262,9 +157,10 @@ function Root() {
     }
     const onHash = () => {
       const r = (location.hash || "").replace(/^#\//, "");
-      // HUP-S0.8: the allowlist is derived from the nav registry (it used to omit `people`).
+      // Five-place navigation: an old route id (or a moved Settings section, `#/settings/ai`) opens
+      // its new home; store.go rewrites the hash to the canonical route. Unknown ids are ignored.
       if (r && r !== store.state.route && ROUTES.indexOf(r) >= 0) {
-        store.setState({ route: r });
+        store.go(r);
       }
     };
     window.addEventListener("hashchange", onHash);

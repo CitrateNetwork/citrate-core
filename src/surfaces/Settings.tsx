@@ -1,9 +1,9 @@
 // =====================================================================
 // citrate-core — Settings surface (1:1 from design/CitrateCore.dc.html
 // SETTINGS section). Nine sections behind a left sub-nav (sSec):
-// Account & RBAC, Connections, AI providers, MCP servers (HUP-S4.4), Node configuration,
-// API endpoints & keys, Keys & security, Budgets (HUP-S2.3), Memberships & billing,
-// Privacy & recovery (HUP-S10.5), App.
+// Account & RBAC, Connections, Providers & keys, MCP servers (HUP-S4.4), Node configuration,
+// API endpoints & keys, Keys & security, Terminal & folders, Budgets (HUP-S2.3), Personas & voice,
+// Memberships & billing, Privacy & recovery (HUP-S10.5), App.
 //
 // Honesty rule (Rule 1 / I-3 · Q-A.1): EVERY control is ONE of —
 //   (a) a REAL working action (config toggles, AI-provider keyring flow,
@@ -43,6 +43,7 @@ import { EscalationSettings } from "./EscalationSettings";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
 import { FaucetPanel } from "../faucet/FaucetPanel";
 import { McpServersPanel } from "./McpServersPanel";
+import { HermesMcpPanel } from "../components/HermesMcpCard";
 import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
 import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
@@ -52,6 +53,7 @@ import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { setTelemetryConsent } from "../privacy/joinFunnel";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
+import { ControlsPanel } from "./hermes/ControlsPanel";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -153,14 +155,17 @@ const AI_PRESETS: AiPreset[] = [
 const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
-  ["ai", "AI providers"],
-  ["escalation", "Escalation & spend"],
+  ["hermes", "Hermes controls"],
+  ["ai", "Providers & keys"],
+  ["escalation", "Escalation & spend caps"],
   ["mcp", "MCP servers"],
   ["web", "Web search & decisions"],
+  ["terminal", "Terminal & folders"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
   ["budgets", "Budgets"],
+  ["personas", "Personas & voice"],
   ["billing", "Memberships & billing"],
   ["privacy", "Privacy & recovery"],
   ["app", "App"],
@@ -168,7 +173,13 @@ const SECS: [string, string][] = [
 
 const btnCls = (active: boolean) => "btn btn-sm " + (active ? "btn-secondary" : "btn-ghost");
 
-export function Settings({ store, s }: { store: Store; s: AppState }) {
+/**
+ * Five-place navigation (0.5.2): Settings is composed into three homes. Settings itself shows the
+ * account-level sections; Hermes › Controls and Node › Advanced show the sections that moved there.
+ * `sections` limits the sub-nav to those ids (all sections when omitted); `heading` titles it.
+ */
+export function Settings({ store, s, sections, heading = "Settings" }: { store: Store; s: AppState; sections?: readonly string[]; heading?: string }) {
+  const secs = sections ? SECS.filter(([sid]) => sections.includes(sid)) : SECS;
   // Account & RBAC render the REAL signed-in identity (live /userinfo claims)
   // when signed in, falling back to the sim persona only in web-dev.
   const id = store.identity();
@@ -426,10 +437,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       store.save();
     },
   }));
-  const polNote =
-    s.sigPolicy === "hitl"
-      ? "every signature stops at the ceremony — the default"
-      : "allowlisted intents skip the ceremony; everything else still stops";
+  // The wallet is this device's EVM signing key in the custody vault (custodyAddr). It is linked when
+  // the identity's wallet_address claim is that same address. An unread key address is "—".
+  const deviceKey = s.custodyAddr || "";
+  const deviceKeyLinked = deviceKey !== "" && (s.walletAddr || "").toLowerCase() === deviceKey.toLowerCase();
+  const deviceKeyNote =
+    deviceKey === ""
+      ? "device key not read yet"
+      : deviceKeyLinked
+        ? "linked to your identity"
+        : "not linked to your identity yet";
 
   // ---------- memberships & billing ----------
   const memPlanLabel =
@@ -491,14 +508,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     <div style={{ padding: "20px 26px 24px", display: "grid", gridTemplateColumns: "196px minmax(0,1fr)", gap: 22, maxWidth: 1000 }}>
       {/* left sub-nav */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, marginBottom: 12 }}>Settings</span>
-        {SECS.map(([id, label]) => {
+        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, marginBottom: 12 }}>{heading}</span>
+        {secs.map(([id, label]) => {
           const active = s.sSec === id;
           return (
             <button
               key={id}
-              // HUP-S0.8: Connections has one home — the Connections tab of the Settings hub.
-              onClick={() => (id === "connections" ? store.go("connections") : setSec(id))}
+              // Five-place navigation (0.5.2): every section listed here opens here, Connections
+              // included (its Google services and connection status). The Settings › Connections
+              // tab is the separate Connections page (social identity, MCP, models).
+              onClick={() => setSec(id)}
               style={{
                 fontFamily: "var(--font-sans)",
                 textAlign: "left",
@@ -751,7 +770,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {s.sSec === "escalation" && <EscalationSettings />}
 
         {/* ---------- Web search & decisions (HUP-S5.2 / S5.3) ---------- */}
-        {s.sSec === "web" && <WebSearchSettings />}
+        {s.sSec === "web" && <WebSearchSettings localOnly={s.chatRoute === "local_only"} />}
 
         {/* ---------- Node configuration ---------- */}
         {s.sSec === "node" && (
@@ -946,16 +965,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <span className="eyebrow">Keystore</span>
               <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 10 }}>
                 <span style={{ flex: 1 }}>
-                  <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Smart wallet · passkey validator</span>
+                  <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Wallet key on this device</span>
                   <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
-                    WebAuthn P-256 · address derived from identity · deploys lazily on first tx
+                    EVM signing key · sealed in the custody vault · signs only through the signature ceremony · {deviceKeyNote}
                   </span>
                 </span>
-                {/* Q-A.1 (Rule 1) — show the REAL derived smart-wallet address
-                    (s.walletAddr, truncated) or an honest "—", never a fabricated
-                    "ADDRESS SET" pill that asserts a set address unconditionally. */}
-                <span className="mono" style={{ fontSize: 11, color: s.walletAddr ? "var(--accent-text)" : "var(--tx-3)" }}>
-                  {short(s.walletAddr)}
+                {/* The device key's own address (custodyAddr), or "—" while unread. The identity
+                    claim address is not shown here: until the wallet is linked it is a different
+                    address that this key cannot sign for. */}
+                <span className="mono" style={{ fontSize: 11, color: deviceKey ? "var(--accent-text)" : "var(--tx-3)" }}>
+                  {short(deviceKey)}
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 10 }}>
@@ -998,33 +1017,18 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               </span>
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
-              <span className="eyebrow">Signature approval policy</span>
-              <span style={{ display: "flex", gap: 8 }}>
-                <button
-                  className={btnCls(s.sigPolicy === "hitl")}
-                  onClick={() => {
-                    writeConfig(store, { sigPolicy: "hitl" });
-                    store.save();
-                  }}
-                >
-                  Approve every signature
-                </button>
-                <button
-                  className={btnCls(s.sigPolicy === "allow")}
-                  onClick={() => {
-                    writeConfig(store, { sigPolicy: "allow" });
-                    store.save();
-                  }}
-                >
-                  Allowlisted intents skip the ceremony
-                </button>
+              <span className="eyebrow">Signatures</span>
+              {/* CLAUDE.md Rule 3 and ADR-2026-09-30: there is no signature-policy setting. Every
+                  signature goes through the ceremony; the one exception is the budgeted web
+                  sign-in, which the member grants, caps and revokes in Budgets. */}
+              <span style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)" }}>
+                Every signature stops at the signature ceremony: one approval, one signature. The one exception is a web sign-in (SIWE) inside a budget you grant, cap
+                and can revoke in Budgets.
               </span>
-              {/* The policy toggle above is a REAL config write. The per-origin
-                  allowlist RULE EDITOR has no backend yet — honest DISABLED state
-                  (Q-A.1), not a toast excuse. */}
-              {s.sigPolicy === "allow" && <DisabledControl label="Edit allowlist rules…" note="rule editor not available in this build" />}
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                {polNote}
+              <span>
+                <button className="btn btn-ghost btn-sm" onClick={() => store.setState({ sSec: "budgets" })}>
+                  Open Budgets
+                </button>
               </span>
             </div>
           </div>
@@ -1125,10 +1129,64 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
+        {/* ---------- K2 (0.5.2): Hermes controls, first depth (same settings as the cards here) ---------- */}
+        {s.sSec === "hermes" && <ControlsPanel store={store} s={s} />}
         {/* ---------- MCP servers (HUP-S4.4) ---------- */}
-        {s.sSec === "mcp" && <McpServersPanel io={desktopMcpIo} />}
+        {/* K2: Hermes's connected tools (memory graph, CitrateScan, this node) moved here from the Agent page. */}
+        {s.sSec === "mcp" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <HermesMcpPanel />
+            <McpServersPanel io={desktopMcpIo} />
+          </div>
+        )}
         {/* ---------- Privacy & recovery (HUP-S10.5) ---------- */}
         {s.sSec === "privacy" && <PrivacySection io={desktopPrivacyIo} now={() => new Date()} toast={(m) => store.toast(m)} />}
+
+        {/* ---------- Terminal & folders (K2: from App to Hermes › Controls › Details) ---------- */}
+        {s.sSec === "terminal" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* Hermes terminal commands (the sidecar's shell_run). On by default since the owner decision of 2026-10-04. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-terminal-access">
+              <span className="eyebrow">Hermes · terminal commands</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <input
+                  id="hermes-terminal"
+                  type="checkbox"
+                  checked={!!s.hermesTerminal}
+                  onChange={(e) => void store.setHermesTerminal(e.target.checked)}
+                />
+                {TERMINAL_ACCESS_LABEL}
+              </label>
+              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
+            </div>
+            {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
+              <span className="eyebrow">Hermes · folder access</span>
+              <GrantsPanel io={desktopGrantsIo} />
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Personas & voice (K2: from App to Hermes › Controls › Details) ---------- */}
+        {s.sSec === "personas" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* HUP-S3.3 + S3.7 — Hermes persona (voice). Default: Hermes's own voice, nothing changes. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              <span className="eyebrow">Hermes · persona</span>
+              <PersonaPicker
+                api={bridge.agentHarness}
+                chosen={s.hermesPersona}
+                custom={s.customPersonas}
+                onChoose={(p) => store.chooseHermesPersona(p)}
+                onAddCustom={(p) => store.addCustomPersona(p)}
+                onRemoveCustom={(id) => store.removeCustomPersona(id)}
+                readAloud={s.hermesReadAloud}
+                onReadAloud={(on) => store.setHermesReadAloud(on)}
+                speechVoices={browserSpeech().voices()}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
@@ -1152,40 +1210,6 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
                 On by default. Uses your local model, and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop instead.
               </span>
-            </div>
-            {/* Hermes terminal commands (the sidecar's shell_run). On by default since the owner decision of 2026-10-04. */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-terminal-access">
-              <span className="eyebrow">Hermes · terminal commands</span>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-                <input
-                  id="hermes-terminal"
-                  type="checkbox"
-                  checked={!!s.hermesTerminal}
-                  onChange={(e) => void store.setHermesTerminal(e.target.checked)}
-                />
-                {TERMINAL_ACCESS_LABEL}
-              </label>
-              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
-            </div>
-            {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
-              <span className="eyebrow">Hermes · folder access</span>
-              <GrantsPanel io={desktopGrantsIo} />
-            </div>
-            {/* HUP-S3.3 + S3.7 — Hermes persona (voice). Default: Hermes's own voice, nothing changes. */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-              <span className="eyebrow">Hermes · persona</span>
-              <PersonaPicker
-                api={bridge.agentHarness}
-                chosen={s.hermesPersona}
-                custom={s.customPersonas}
-                onChoose={(p) => store.chooseHermesPersona(p)}
-                onAddCustom={(p) => store.addCustomPersona(p)}
-                onRemoveCustom={(id) => store.removeCustomPersona(id)}
-                readAloud={s.hermesReadAloud}
-                onReadAloud={(on) => store.setHermesReadAloud(on)}
-                speechVoices={browserSpeech().voices()}
-              />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>
