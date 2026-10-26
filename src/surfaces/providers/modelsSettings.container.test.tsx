@@ -167,7 +167,7 @@ describe("Settings › Models container", () => {
   });
 
   it("Enter price opens the editor on that model and sends the member's price to core", async () => {
-    providers.status.mockResolvedValue([vendor({ keyConfigured: true, models: [{ id: "gpt-c", price: null, source: null }] })]);
+    providers.status.mockResolvedValue([vendor({ keyConfigured: true, models: [{ id: "gpt-c", price: null, source: null, minReserveMicros: null }] })]);
     await mount();
     await act(async () => {
       (q<HTMLButtonElement>('[data-testid="enter-price-gpt-c"]') as HTMLButtonElement).click();
@@ -190,5 +190,22 @@ describe("Settings › Models container", () => {
       button("Check again")?.click();
     });
     expect(providers.usageSummary.mock.calls.length).toBe(before + 1);
+  });
+
+  it("Raise the daily cap opens the caps editor with a daily cap that covers one call", async () => {
+    const grok = { id: "grok-4.7", price: { inputMicrosPerMtok: 3_000_000, outputMicrosPerMtok: 12_000_000 }, source: "published" as const, minReserveMicros: 6_000_050 };
+    const caps = { dailyTokens: 1_000_000, monthlyTokens: 10_000_000, dailyMicros: 5_000_000, monthlyMicros: 50_000_000 };
+    providers.status.mockResolvedValue([vendor({ id: "xai", name: "xAI", keyConfigured: true, models: [grok], caps })]);
+    await mount();
+    await act(async () => {
+      button("Raise the xAI daily cap")?.click();
+    });
+    expect(q<HTMLInputElement>('input[aria-label="daily spending cap"]')?.value).toBe("7.00");
+    expect(q<HTMLInputElement>('input[aria-label="monthly spending cap"]')?.value).toBe("50.00");
+    expect(providers.setCaps).not.toHaveBeenCalled();
+    await act(async () => {
+      button("Save caps")?.click();
+    });
+    expect(providers.setCaps).toHaveBeenCalledWith("xai", { ...caps, dailyMicros: 7_000_000 });
   });
 });

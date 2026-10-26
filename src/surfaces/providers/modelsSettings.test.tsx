@@ -246,7 +246,7 @@ describe("Settings › Models: spend and usage", () => {
     ];
     const html = render({ statuses: [connected], usage: summary({ recentCalls }) });
     expect(html).toContain("no prompts or replies");
-    expect(html).toContain("refused: a cap was reached");
+    expect(html).toContain("refused: the call&#x27;s reservation would pass one of your caps; nothing was sent");
     expect(html).toContain("not finished");
     expect(html).toContain("12 in / 5 out · $0.0015 · ok");
     expect(html).toContain("tokens not reported · cost unknown");
@@ -277,9 +277,9 @@ describe("Settings › Models: model prices under the default spending caps", ()
     keyConfigured: true,
     listedModels: ["gpt-a", "gpt-b", "gpt-c"],
     models: [
-      { id: "gpt-a", price: { inputMicrosPerMtok: 2_000_000, outputMicrosPerMtok: 8_000_000 }, source: "published" },
-      { id: "gpt-b", price: { inputMicrosPerMtok: 150_000, outputMicrosPerMtok: 600_000 }, source: "member" },
-      { id: "gpt-c", price: null, source: null },
+      { id: "gpt-a", price: { inputMicrosPerMtok: 2_000_000, outputMicrosPerMtok: 8_000_000 }, source: "published", minReserveMicros: null },
+      { id: "gpt-b", price: { inputMicrosPerMtok: 150_000, outputMicrosPerMtok: 600_000 }, source: "member", minReserveMicros: null },
+      { id: "gpt-c", price: null, source: null, minReserveMicros: null },
     ],
   });
 
@@ -316,7 +316,7 @@ describe("Settings › Models: model prices under the default spending caps", ()
   it("other refusal and failure codes read as plain words", () => {
     const mk = (outcome: string, refused: boolean) => ({ atMs: NOW, provider: "openai", model: "m", verified: true, outcome, refused, tokensIn: null, tokensOut: null, costMicros: null });
     const html = render({ statuses: [priced], usage: summary({ recentCalls: [mk("cap_exceeded", true), mk("halted", true), mk("key_rejected", false), mk("log_unavailable", true)] }) });
-    expect(html).toContain("refused: a cap was reached");
+    expect(html).toContain("refused: the call&#x27;s reservation would pass one of your caps; nothing was sent");
     expect(html).toContain("refused: the provider was paused");
     expect(html).toContain("failed: the vendor rejected the key");
     expect(html).toContain("refused: the usage log could not be used");
@@ -373,5 +373,38 @@ describe("Settings › Models: vendor-specific key guidance (core #530)", () => 
     const c = card(render({ statuses: [vendor({ id: "gemini", name: "Google Gemini", host: "generativelanguage.googleapis.com", adapter: "native" })] }), "gemini");
     expect(c).toContain("no fixed key format");
     expect(c).toContain("the live test with Google decides");
+  });
+});
+
+describe("Settings › Models: a large reservation per call (xAI)", () => {
+  const grok = { id: "grok-4.7", price: { inputMicrosPerMtok: 3_000_000, outputMicrosPerMtok: 12_000_000 }, source: "published" as const, minReserveMicros: 6_000_050 };
+  const xai = (dailyMicros: number | null, keyConfigured = false) =>
+    vendor({ id: "xai", name: "xAI", host: "api.x.ai", adapter: "native", keyConfigured, models: [grok], caps: { dailyTokens: 1_000_000, monthlyTokens: 10_000_000, dailyMicros, monthlyMicros: 50_000_000 } });
+
+  it("before connecting, the card says why the reservation is large and roughly what one call reserves", () => {
+    const c = card(render({ statuses: [xai(20_000_000)] }), "xai");
+    expect(c).toContain('data-testid="reserve-note-grok-4.7"');
+    expect(c).toContain("Each grok-4.7 call reserves about $6.00 against your caps before it is sent");
+    expect(c).toContain("xAI documents no limit on reasoning output, so core reserves the model&#x27;s full context window");
+    expect(c).toContain("settles to the vendor&#x27;s real charge when the call returns");
+    expect(c).toContain("key-hygiene");
+  });
+
+  it("with the daily cap above the reservation there is no refusal warning and no raise action", () => {
+    const c = card(render({ statuses: [xai(20_000_000)] }), "xai");
+    expect(c).not.toContain("reserve-refused");
+    expect(c).not.toContain("Raise the xAI daily cap");
+  });
+
+  it("with the daily cap below the reservation, it says every call is refused and offers to raise the cap", () => {
+    const c = card(render({ statuses: [xai(5_000_000, true)] }), "xai");
+    expect(c).toContain('data-testid="reserve-refused-grok-4.7"');
+    expect(c).toContain("That is above your $5.00 daily cap, so every grok-4.7 call is refused and nothing is sent");
+    expect(c).toContain("Raise the xAI daily cap");
+  });
+
+  it("a small reservation is not called out", () => {
+    const small = vendor({ keyConfigured: true, models: [{ id: "gpt-a", price: { inputMicrosPerMtok: 1, outputMicrosPerMtok: 1 }, source: "published", minReserveMicros: 900 }] });
+    expect(card(render({ statuses: [small] }), "openai")).not.toContain("reserve-note-");
   });
 });

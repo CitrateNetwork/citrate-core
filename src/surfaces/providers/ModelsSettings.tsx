@@ -169,7 +169,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
   const draft = v.keyDrafts[p.id] ?? "";
   // Core's model list with price sources; models it listed but did not price yet are added unpriced.
   const priced: ProviderModelPrice[] = [...p.models];
-  for (const id of [...p.listedModels, ...p.approvedModels]) if (!priced.some((m) => m.id === id)) priced.push({ id, price: null, source: null });
+  for (const id of [...p.listedModels, ...p.approvedModels]) if (!priced.some((m) => m.id === id)) priced.push({ id, price: null, source: null, minReserveMicros: null });
   const unpriced = priced.filter((m) => m.price === null).length;
   const moneyCap = p.caps.dailyMicros !== null || p.caps.monthlyMicros !== null;
   const pe = v.priceEdit && v.priceEdit.id === p.id ? v.priceEdit.form : null;

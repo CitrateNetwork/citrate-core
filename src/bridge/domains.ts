@@ -2693,6 +2693,9 @@ export interface ProviderModelPrice {
   price: ProviderPrice | null;
   /** `member` (entered in Settings, wins), `published` (the vendor's cited price), or null (unknown). */
   source: "member" | "published" | null;
+  /** The least core reserves against the caps before one call is sent (empty prompt, the adapter's
+   *  output bound), micro-USD; null when the model has no price. */
+  minReserveMicros: number | null;
 }
 export interface ProviderHalt {
   /** `member`, `burst`, `unknownModel`, `tokenSpike` or `guardUnreadable`. */

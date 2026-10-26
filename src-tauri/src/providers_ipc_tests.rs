@@ -197,3 +197,23 @@ fn usage_summary_reports_a_clock_moved_back() {
     assert!(behind.clock_problem.as_deref().unwrap_or("").contains("clock"), "{:?}", behind.clock_problem);
     assert!(serde_json::to_string(&behind).unwrap().contains("\"clockProblem\""));
 }
+
+#[test]
+fn status_reports_the_least_reservation_per_call_from_the_adapter_bound() {
+    let rig = Rig::new("ipc-reserve");
+    let s = status(&rig.proxy);
+    let xai = s.iter().find(|v| v.id == "xai").unwrap();
+    let grok = xai.models.iter().find(|m| m.id == "grok-4.7").expect("grok-4.7 is a published xAI model");
+    let price = grok.price.expect("grok-4.7 ships a published price");
+    // xAI documents no reasoning cap, so one call reserves the full 500k context window as output.
+    let floor = price.cost(0, 500_000);
+    let r = grok.min_reserve_micros.expect("a priced model reports its reservation");
+    assert!(r >= floor, "reserve {r} below the output-bound cost {floor}");
+    assert!(r > 5_000_000, "a grok-4.7 call reserves more than the $5 default daily cap: {r}");
+    // Every reported reservation equals what the proxy would reserve for an empty prompt.
+    for v in &s {
+        for m in &v.models {
+            assert_eq!(m.min_reserve_micros.is_some(), m.price.is_some(), "{}/{}", v.id, m.id);
+        }
+    }
+}

@@ -60,6 +60,9 @@ pub struct ModelPriceView {
     /// `member` (entered in Settings, wins), `published` (the adapter's cited vendor price), or
     /// `None` (unknown: refused while a spending cap is set).
     pub source: Option<&'static str>,
+    /// The least core reserves against the caps before one call to this model is sent (an empty
+    /// prompt, the adapter's output bound), in micro-USD. `None` when the model has no price.
+    pub min_reserve_micros: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,7 +197,12 @@ pub fn model_prices(
                 (None, Some(p)) => (Some(p), Some("published")),
                 (None, None) => (None, None),
             };
-            ModelPriceView { id, price, source }
+            ModelPriceView {
+                id,
+                price,
+                source,
+                min_reserve_micros: None,
+            }
         })
         .collect()
 }
