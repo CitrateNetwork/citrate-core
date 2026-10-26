@@ -18,7 +18,10 @@ import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
+import { reachedStep } from "../privacy/joinFunnel";
 import { RelayStatusChip } from "./RelayStatusChip";
+import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
+import { GroupRoundsCard } from "../fl/GroupRoundsCard";
 import {
   groupsSlice,
   refreshGroups,
@@ -417,9 +420,11 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast("That doesn't look like an invite link.");
       return;
     }
+    reachedStep("arrive"); // 0.5.2 Join funnel: an invite arrived by paste (step id only)
     // Primary: one-click self-admit.
     try {
       await bridge.invites.redeem(link);
+      reachedStep("join_group");
       if (redeemRef.current) redeemRef.current.value = "";
       setRedeemOpen(false);
       await refreshGroups();
@@ -566,6 +571,7 @@ export function Groups({ store, s }: SurfaceProps) {
                     // older link (with a `k=` key) whose self-admit didn't take.
                     try {
                       await bridge.invites.redeem(pi.url);
+                      reachedStep("join_group");
                       await refreshGroups();
                       store.toast("You're in — welcome to the group.");
                       store.clearPendingInvite();
@@ -705,6 +711,7 @@ export function Groups({ store, s }: SurfaceProps) {
           {/* ---- Conversation ---- */}
           {tab === "chat" && (
             <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "14px 24px 20px", gap: 12 }}>
+              {flRoundCardsEnabled() && <GroupRoundsCard variant="chat" />}
               <div className="surface" style={{ flex: 1, minHeight: 280, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
                 {visibleMessages.length === 0 ? (
                   <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: "auto", textAlign: "center", maxWidth: 340 }}>

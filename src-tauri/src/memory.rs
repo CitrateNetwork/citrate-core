@@ -40,9 +40,12 @@
 //! 1. The store lives in a **per-user app-data dir** (`memory/store.bge.memdag`)
 //!    — one graph per user, never shared.
 //! 2. citrate-core mints/holds a per-user **store wrapping key** in the OS
-//!    keyring (the C1.1 storage-key pattern, never on disk in clear) and passes
-//!    it to the daemon via [`MEM_STORE_KEY_ENV`] — honoured IFF/when the daemon
-//!    grows a key intake (forward-compatible seam).
+//!    keyring (the C1.1 storage-key pattern) and hands it to the daemon in an
+//!    owner-only key file whose PATH is in [`MEM_STORE_KEY_FILE_ENV`], the same
+//!    hand-off as the node storage key: the file sits in the per-user runtime
+//!    directory, is written at start and removed at stop, and the key itself is
+//!    never in the daemon's environment or argv. The daemon derives its signing
+//!    identity from it; it does not encrypt the store with it.
 //! 3. The ciphertext-at-rest guarantee we can prove TODAY comes from the store's
 //!    own per-tenant seal: node text is XChaCha20 ciphertext on disk (the
 //!    tripwire grep finds no plaintext node title).
@@ -86,10 +89,11 @@ const KEYRING_MEM_STORE_ACCOUNT: &str = "memory-store-key";
 /// per-tenant key length so a future external-KEK intake lines up).
 const STORE_KEY_LEN: usize = 32;
 
-/// The env var the daemon would read its 32-byte store wrapping key from (hex),
-/// once mem-store grows an external-KEK intake. Passed today for forward-compat;
-/// the grounded daemon ignores it (see the module doc / sprint Concern 1).
-const MEM_STORE_KEY_ENV: &str = "CITRATE_MEM_STORE_KEY";
+/// The env var naming the owner-only file the daemon reads its store key from (hex).
+const MEM_STORE_KEY_FILE_ENV: &str = "CITRATE_MEM_STORE_KEY_FILE";
+
+/// The store key file's name, inside an owner-only per-install directory.
+const MEM_STORE_KEY_FILE: &str = "mem-store.key";
 
 /// The reserved chain-state tenant (grounded: `mem-ingest` `CHAIN_STATE_TENANT`).
 /// The UI labels this "chain-facts"; the REAL ingest tenant is `chain-state`
@@ -479,6 +483,47 @@ pub fn parse_neighbors(text: &str) -> Vec<MemoryNeighbor> {
 // The memory manager: keyring + supervisor + socket transport.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// K4: the memory store lock (backup / restore)
+// ---------------------------------------------------------------------------
+
+/// Stores a backup or restore is working on (keyed by the store path).
+static STORE_LOCKS: Mutex<std::collections::BTreeSet<PathBuf>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+/// Held by a storage backup or restore (`storage_backup.rs`) from before it stops the daemon until
+/// its copy or swap is done. While held, [`MemoryManager::start`] refuses, so no start path (the
+/// Start control, a seed, a knowledge-import restart) can open the store mid-restore. The
+/// supervisor itself never restarts a daemon it no longer owns: the backup stops (and drops) the
+/// supervisor before it takes the store.
+pub(crate) struct MemoryStoreLock(PathBuf);
+
+impl MemoryStoreLock {
+    /// Take the lock for `store_path`; `None` if another backup/restore holds it.
+    pub(crate) fn acquire(store_path: &std::path::Path) -> Option<Self> {
+        let mut set = STORE_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(store_path.to_path_buf())
+            .then(|| MemoryStoreLock(store_path.to_path_buf()))
+    }
+}
+
+impl Drop for MemoryStoreLock {
+    fn drop(&mut self) {
+        STORE_LOCKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Whether a backup or restore holds `store_path`.
+pub(crate) fn memory_store_locked(store_path: &std::path::Path) -> bool {
+    STORE_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(store_path)
+}
+
 /// The memory manager. Owns the keyring seam, the resolved daemon binary + store
 /// dir + socket path, the injectable socket transport, and (while running) a
 /// live [`Supervisor`]. Managed as Tauri state; `start`/`status`/`stop` drive
@@ -497,6 +542,10 @@ pub struct MemoryManager {
     transport: Box<dyn MemoryTransport>,
     /// The live supervisor, present only while the daemon is running.
     sup: Mutex<Option<Supervisor>>,
+    /// Held by [`MemoryManager::stop`] from taking the supervisor until the child has exited, and
+    /// by [`MemoryManager::start`], so a second stop (a backup's or an import's pause) returns only
+    /// once the store is free and a start never overlaps a stop.
+    lifecycle: Mutex<()>,
     /// W3.2/BGE — the bundled BGE model dir (`config.json` + `tokenizer.json` +
     /// `model.safetensors`). When present, the daemon is spawned with
     /// `CITRATE_BGE_MODEL_DIR` (load offline, pinned) + `CITRATE_MEM_EMBED=bge`
@@ -506,6 +555,13 @@ pub struct MemoryManager {
     /// HUP-S3.4 (fan-out 7): the learned-memory ledger. Recall and search leave out learned
     /// memories with an unresolved contradiction (`hermes_learn::RecallHide`).
     learned_ledger: Option<PathBuf>,
+    /// The per-user runtime directory the store key file is written in; `None` falls back to an
+    /// owner-only directory next to the memory dir (same rule as the node storage key file).
+    key_runtime_dir: Option<PathBuf>,
+    /// Tests only: runs inside [`MemoryManager::stop`] after the supervisor is taken and before
+    /// the child is terminated (holds a stop in that window).
+    #[cfg(test)]
+    stop_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// The bridge status shape surfaced to the MemoryDomain seam. PUBLIC facts only —
@@ -547,7 +603,7 @@ impl MemoryManager {
         crash_record_path: PathBuf,
         transport: Box<dyn MemoryTransport>,
     ) -> Self {
-        MemoryManager {
+        let mgr = MemoryManager {
             keyring,
             bin,
             store_path,
@@ -555,9 +611,30 @@ impl MemoryManager {
             crash_record_path,
             transport,
             sup: Mutex::new(None),
+            lifecycle: Mutex::new(()),
             model_dir: None,
             learned_ledger: None,
+            key_runtime_dir: crate::node::key_runtime_dir(),
+            #[cfg(test)]
+            stop_hook: Mutex::new(None),
+        };
+        // K4 (N2): roll back an interrupted restore at init. A failure here is reported by
+        // `start`, which runs the same check and refuses (fail closed, no empty store).
+        if let Err(e) = mgr.recover_interrupted_restore() {
+            eprintln!("[memory] {e}");
         }
+        mgr
+    }
+
+    /// K4 (N2): roll back a restore that was interrupted between its two renames (see
+    /// [`crate::storage_backup::recover_interrupted_restore`]). Run at init and before every start.
+    fn recover_interrupted_restore(&self) -> Result<()> {
+        let Some(mem_dir) = self.store_path.parent() else {
+            return Ok(());
+        };
+        crate::storage_backup::recover_interrupted_restore(mem_dir)
+            .map(|_| ())
+            .map_err(MemoryError::Spawn)
     }
 
     /// HUP-S3.4 (fan-out 7): the learned-memory ledger recall and search read to leave out
@@ -565,6 +642,64 @@ impl MemoryManager {
     pub fn with_learned_ledger(mut self, ledger: Option<PathBuf>) -> Self {
         self.learned_ledger = ledger;
         self
+    }
+
+    /// Tests: use this runtime directory for the store key file (`None` = the fallback).
+    #[cfg(test)]
+    pub(crate) fn with_key_runtime_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.key_runtime_dir = dir;
+        self
+    }
+
+    /// The owner-only file the store key is handed to the daemon in:
+    /// `<runtime dir>/citrate-core-<install id>/mem-store.key`, the install id derived from the
+    /// memory dir so two installs never share it; without a usable runtime directory,
+    /// `<app data>/memory.secrets/mem-store.key` for the memory dir `<app data>/memory`.
+    pub(crate) fn store_key_path(&self) -> PathBuf {
+        let mem_dir = self
+            .store_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.store_path.clone());
+        if let Some(rt) = &self.key_runtime_dir {
+            return rt
+                .join(format!(
+                    "citrate-core-{}",
+                    crate::node::install_key_id(&mem_dir)
+                ))
+                .join(MEM_STORE_KEY_FILE);
+        }
+        let name = mem_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "memory".to_string());
+        mem_dir
+            .with_file_name(format!("{name}.secrets"))
+            .join(MEM_STORE_KEY_FILE)
+    }
+
+    /// Load the store key, write it to the owner-only key file, and build the daemon's spawn
+    /// spec (which names only the file's path). Whatever sits at the key file's path (a stale
+    /// file, or a symbolic link) is removed first, so the key always goes into a new regular file.
+    fn spawn_spec(&self) -> Result<SidecarSpec> {
+        let key_hex = self.store_key_hex()?;
+        let path = self.store_key_path();
+        self.remove_store_key_file();
+        citrate_core_kit::fsutil::write_secret_file(&path, key_hex.as_bytes()).map_err(|e| {
+            MemoryError::Keyring(format!("cannot write the memory store key file: {e}"))
+        })?;
+        drop(key_hex);
+        Ok(self.build_spec())
+    }
+
+    /// Remove the store key file (best-effort; absent is fine).
+    fn remove_store_key_file(&self) {
+        let path = self.store_key_path();
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[memory] cannot remove {}: {e}", path.display());
+            }
+        }
     }
 
     /// Leave out learned memories with an unresolved contradiction (when a ledger is set).
@@ -588,8 +723,8 @@ impl MemoryManager {
     }
 
     /// Load the 32-byte store wrapping key from the OS keyring, minting it on
-    /// first use (@rule8). Returned as a hex [`Zeroizing`] string ready to hand
-    /// to the child via env. An unreachable keyring is a HARD FAULT — we never
+    /// first use (@rule8). Returned as a hex [`Zeroizing`] string ready to write
+    /// to the owner-only key file. An unreachable keyring is a HARD FAULT — we never
     /// spawn the daemon without a key (fail closed).
     fn store_key_hex(&self) -> Result<Zeroizing<String>> {
         match self
@@ -623,11 +758,11 @@ impl MemoryManager {
     }
 
     /// Build the [`SidecarSpec`] for the daemon: explicit binary, positional
-    /// `<store-path> <sock-path>` (grounded CLI), and the store wrapping key in
-    /// the ENV (never argv — argv leaks to `ps`). The daemon owns its own
-    /// singleton lock (RocksDB) and stale-socket cleanup, so we pass no lock/
-    /// socket flags beyond the two positionals.
-    fn build_spec(&self, store_key_hex: &str) -> SidecarSpec {
+    /// `<store-path> <sock-path>` (grounded CLI), and the PATH of the store key
+    /// file in the env (never the key itself, and nothing secret in argv). The
+    /// daemon owns its own singleton lock (RocksDB) and stale-socket cleanup, so
+    /// we pass no lock/socket flags beyond the two positionals.
+    fn build_spec(&self) -> SidecarSpec {
         let mut spec = SidecarSpec::new(
             "mem-mcp",
             self.bin.clone(),
@@ -636,7 +771,10 @@ impl MemoryManager {
                 self.socket_path.to_string_lossy().to_string(),
             ],
         );
-        spec.env = vec![(MEM_STORE_KEY_ENV.to_string(), store_key_hex.to_string())];
+        spec.env = vec![(
+            MEM_STORE_KEY_FILE_ENV.to_string(),
+            self.store_key_path().to_string_lossy().to_string(),
+        )];
         // BGE — when the bundled model dir is present, tell the daemon to load the
         // embedder offline from it (CITRATE_BGE_MODEL_DIR) and to bootstrap a fresh
         // store to BGE (CITRATE_MEM_EMBED=bge) so semantic recall is real, not
@@ -680,9 +818,12 @@ impl MemoryManager {
 
     /// Start the daemon under the supervisor. Idempotent-ish: `AlreadyRunning`
     /// if a supervisor is already live. @rule8: the store wrapping key is
-    /// minted/loaded from the keyring and handed to the child via env. Fails
+    /// minted/loaded from the keyring and handed to the child in an owner-only key file. Fails
     /// CLOSED if the binary is missing or the keyring is unreachable.
     pub fn start(&self) -> Result<()> {
+        // A stop in progress has taken the supervisor but its child may still hold the store:
+        // wait for it (same lock order as `stop`: lifecycle, then supervisor).
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(MemoryError::AlreadyRunning);
@@ -695,19 +836,33 @@ impl MemoryManager {
                 "the knowledge import is still writing the memory store; the memory daemon starts when it finishes".into(),
             ));
         }
+        // K4: a storage backup or restore is copying or swapping the store.
+        if memory_store_locked(&self.store_path) {
+            return Err(MemoryError::Spawn(
+                "a memory backup or restore is in progress; the memory daemon starts when it finishes".into(),
+            ));
+        }
+        // K4 (N2): a restore interrupted between its two renames left no live memory dir. Put the
+        // previous store back before anything can create an empty one; fail closed if that fails.
+        self.recover_interrupted_restore()?;
         if !self.bin.exists() {
             return Err(MemoryError::BinaryNotFound(self.bin.display().to_string()));
         }
-        // Ensure the store parent dir exists before the daemon opens RocksDB.
+        // Ensure the store parent dir exists before the daemon opens RocksDB, through the shared
+        // guard (rolls back an interrupted restore first; never an empty dir in its place).
         if let Some(parent) = self.store_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| MemoryError::Spawn(format!("mkdir store parent: {e}")))?;
+            crate::storage_backup::ensure_memory_dir(parent).map_err(MemoryError::Spawn)?;
         }
-        let key_hex = self.store_key_hex()?;
-        let spec = self.build_spec(&key_hex);
+        let spec = self.spawn_spec()?;
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         config.backoff = BackoffPolicy::new();
-        let sup = Supervisor::start(config).map_err(|e| MemoryError::Spawn(e.to_string()))?;
+        let sup = match Supervisor::start(config) {
+            Ok(sup) => sup,
+            Err(e) => {
+                self.remove_store_key_file();
+                return Err(MemoryError::Spawn(e.to_string()));
+            }
+        };
         *guard = Some(sup);
         Ok(())
     }
@@ -715,16 +870,41 @@ impl MemoryManager {
     /// Stop the daemon: graceful supervisor release (SIGTERM → grace → SIGKILL,
     /// no orphan). The daemon removes its own socket on a clean exit; a killed
     /// daemon's stale socket is reclaimed on the next start (it holds the DB
-    /// lock, which proves the socket stale). Idempotent.
-    pub fn stop(&self) {
+    /// lock, which proves the socket stale). Idempotent. Returns whether this call stopped a
+    /// daemon; when it returns, no daemon this manager started is still running (a concurrent
+    /// stop is waited for).
+    pub fn stop(&self) -> bool {
+        // A stop already in progress has taken the supervisor but its child may still be running:
+        // wait for it, so no caller sees "not running" while the store is still open.
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let sup = {
             let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
         };
+        #[cfg(test)]
+        if let Some(hook) = self
+            .stop_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            hook();
+        }
+        let was_running = sup.is_some();
         if let Some(sup) = sup {
             sup.stop();
             drop(sup);
         }
+        // The daemon has exited: its store key file is no longer needed.
+        self.remove_store_key_file();
+        was_running
+    }
+
+    /// Tests only: hold every later [`MemoryManager::stop`] in `hook` between taking the
+    /// supervisor and terminating the child.
+    #[cfg(test)]
+    pub(crate) fn set_stop_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self.stop_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
     /// The current supervisor state + socket path + semantic-model presence.

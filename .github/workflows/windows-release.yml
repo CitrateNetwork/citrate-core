@@ -332,10 +332,39 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          ../control/scripts/build-sidecar.sh \
+          # The reviewed controls build the node through the pinned engine
+          # (scripts/build-component.sh) at the citrate-node rev in release/components.json,
+          # which must be this release's CHAIN_SHA.
+          pinned_rev="$(node ../control/scripts/component-pins.mjs field citrate-node source.rev)"
+          if [ "$pinned_rev" != "$CHAIN_SHA" ]; then
+            printf 'release/components.json pins citrate-node %s, this release builds %s\n' "$pinned_rev" "$CHAIN_SHA" >&2
+            exit 1
+          fi
+          # release/components.json records no Windows digest for the node, so the engine runs
+          # with --print-digest: it builds the pinned rev in a fresh tree, checks the lineage and
+          # the required interfaces, and installs nothing. This step installs exactly the bytes
+          # it printed; the payload manifest records their sha256.
+          out="$(../control/scripts/build-sidecar.sh \
             --chain "$GITHUB_WORKSPACE/citrate-chain" \
             --target "$TARGET_TRIPLE" \
-            --output "$PWD/src-tauri/binaries/citrate-$TARGET_TRIPLE.exe"
+            --print-digest)"
+          printf '%s\n' "$out"
+          read -r id triple digest staged <<<"$(printf '%s\n' "$out" | tail -n 1)"
+          if [ "$id" != citrate-node ] || [ "$triple" != "$TARGET_TRIPLE" ]; then
+            printf 'unexpected engine result: %s %s\n' "$id" "$triple" >&2
+            exit 1
+          fi
+          if ! [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || [ ! -f "$staged" ]; then
+            printf 'engine printed no digest and staged file\n' >&2
+            exit 1
+          fi
+          actual="$(sha256sum "$staged" | cut -d' ' -f1)"
+          if [ "$actual" != "$digest" ]; then
+            printf 'staged node digest %s != printed %s\n' "$actual" "$digest" >&2
+            exit 1
+          fi
+          mkdir -p src-tauri/binaries
+          install -m 755 "$staged" "src-tauri/binaries/citrate-$TARGET_TRIPLE.exe"
 
       - name: Build node-agent sidecar
         shell: pwsh

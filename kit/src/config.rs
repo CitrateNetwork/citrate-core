@@ -25,16 +25,36 @@ pub struct AppConfig {
     pub autolock: u32,
     pub channel: String,
     pub telemetry: bool,
-    #[serde(rename = "sigPolicy")]
-    pub sig_policy: String,
+    // There is no signature-policy field (CLAUDE.md Rule 3: every signature goes through the
+    // ceremony; the one exception is a budgeted web sign-in). A config.json written by 0.5.1 or
+    // earlier may still hold `sigPolicy`: serde ignores the unknown key on read, and the next
+    // write drops it.
     /// CORE-D3.C — the core-membership base URL. The S3 onboarding checkout
     /// opens `{core_membership_url}/checkout` in an in-app popup (the money +
     /// entitlement grant happen server-side). Overridable to a preview/prod
     /// domain. `#[serde(default)]` so a config.json persisted BEFORE this field
     /// existed still deserializes (it takes the prod default) — otherwise a
     /// pre-D3.C on-disk store would fail `config_read`.
-    #[serde(rename = "coreMembershipUrl", default = "default_core_membership_url")]
+    ///
+    /// A stored value is read through the host pin ([`pinned_membership_url`]): one outside
+    /// [`CORE_MEMBERSHIP_HOSTS`] reads back as the default.
+    #[serde(
+        rename = "coreMembershipUrl",
+        default = "default_core_membership_url",
+        deserialize_with = "pinned_membership_url"
+    )]
     pub core_membership_url: String,
+}
+
+/// Deserialize a stored membership URL through the host pin: a value that fails
+/// [`is_valid_core_membership_url`] reads back as the default.
+fn pinned_membership_url<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let v = String::deserialize(d)?;
+    Ok(if is_valid_core_membership_url(&v) {
+        v
+    } else {
+        default_core_membership_url()
+    })
 }
 
 /// The prod core-membership base URL default (also the serde backfill for a
@@ -55,12 +75,21 @@ fn default_core_membership_url() -> String {
 /// PERSISTENTLY. We require:
 ///   * the `https` scheme (never `http`/`file`/`javascript:` — mirrors
 ///     `shell::open_external` and `ai::validate_https_base_url`), and
-///   * a host on the core-membership allowlist: exactly `core-membership.vercel.app`
-///     (prod) OR a `core-membership-*.vercel.app` Vercel preview deploy.
+///   * a host in [`CORE_MEMBERSHIP_HOSTS`], compared exactly. A `core-membership-*` pattern
+///     would also match hosts anyone can register on Vercel (a project named
+///     `core-membership-…` gets `<name>.vercel.app`), so previews are pinned by name too.
 ///
 /// Any other value is rejected so `apply` keeps the previous (trusted) value
 /// rather than persisting a hostile one. The OIDC authority uses the same
 /// pin-don't-trust discipline (`oidc::AuthorityConfig::production`).
+/// The membership hosts the app may open: production (the custom domain and the project's own
+/// Vercel domain) and the preview alias of the project's `main` branch.
+pub(crate) const CORE_MEMBERSHIP_HOSTS: &[&str] = &[
+    "membership.citrate.ai",
+    "core-membership.vercel.app",
+    "core-membership-git-main-saulbuilds-projects.vercel.app",
+];
+
 pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
     let Ok(parsed) = url::Url::parse(candidate) else {
         return false;
@@ -69,11 +98,7 @@ pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
         return false;
     }
     match parsed.host_str() {
-        Some(host) => {
-            host == "membership.citrate.ai"
-                || host == "core-membership.vercel.app"
-                || (host.starts_with("core-membership-") && host.ends_with(".vercel.app"))
-        }
+        Some(host) => CORE_MEMBERSHIP_HOSTS.contains(&host),
         None => false,
     }
 }
@@ -88,7 +113,6 @@ impl Default for AppConfig {
             autolock: 30,
             channel: "stable".into(),
             telemetry: false,
-            sig_policy: "hitl".into(),
             core_membership_url: default_core_membership_url(),
         }
     }
@@ -107,8 +131,6 @@ pub struct AppConfigPatch {
     pub autolock: Option<u32>,
     pub channel: Option<String>,
     pub telemetry: Option<bool>,
-    #[serde(rename = "sigPolicy")]
-    pub sig_policy: Option<String>,
     #[serde(rename = "coreMembershipUrl")]
     pub core_membership_url: Option<String>,
 }
@@ -137,9 +159,6 @@ impl AppConfig {
         if let Some(v) = p.telemetry {
             self.telemetry = v;
         }
-        if let Some(v) = p.sig_policy {
-            self.sig_policy = v;
-        }
         if let Some(v) = p.core_membership_url {
             // CORE-B-004: only accept an https URL on the core-membership allowlist.
             // A rejected value leaves the previous (trusted) URL in place rather
@@ -155,19 +174,23 @@ impl AppConfig {
     /// the popup navigates to. Trims a trailing slash on the base so we never
     /// emit a doubled `//checkout`.
     pub fn checkout_url(&self) -> String {
-        format!(
-            "{}/checkout",
-            self.core_membership_url.trim_end_matches('/')
-        )
+        format!("{}/checkout", self.membership_base())
     }
 
     /// The enterprise-lead capture endpoint (`{core_membership_url}/api/enterprise/lead`) — where the
     /// step-3 "Enterprise · Contact us" form POSTs a qualified sales lead. Same base as checkout.
     pub fn enterprise_lead_url(&self) -> String {
-        format!(
-            "{}/api/enterprise/lead",
-            self.core_membership_url.trim_end_matches('/')
-        )
+        format!("{}/api/enterprise/lead", self.membership_base())
+    }
+
+    /// The membership base every membership URL is built from (trailing slash trimmed). It is
+    /// pinned again here, so a value that reached the struct any other way is never used.
+    fn membership_base(&self) -> String {
+        if is_valid_core_membership_url(&self.core_membership_url) {
+            self.core_membership_url.trim_end_matches('/').to_string()
+        } else {
+            default_core_membership_url()
+        }
     }
 }
 
@@ -264,7 +287,6 @@ mod tests {
         assert_eq!(d.autolock, 30);
         assert_eq!(d.channel, "stable");
         assert!(!d.telemetry);
-        assert_eq!(d.sig_policy, "hitl");
         // CORE-D3.C — the core-membership base URL default (prod). PHONEPAY moved this to the
         // canonical host membership.citrate.ai (not the raw vercel domain).
         assert_eq!(d.core_membership_url, "https://membership.citrate.ai");
@@ -280,13 +302,15 @@ mod tests {
             "https://membership.citrate.ai/checkout"
         );
         let preview = AppConfig::default().apply(AppConfigPatch {
-            core_membership_url: Some("https://core-membership-preview.vercel.app/".into()),
+            core_membership_url: Some(
+                "https://core-membership-git-main-saulbuilds-projects.vercel.app/".into(),
+            ),
             ..Default::default()
         });
         // Trailing slash on the base does not produce a doubled `//checkout`.
         assert_eq!(
             preview.checkout_url(),
-            "https://core-membership-preview.vercel.app/checkout"
+            "https://core-membership-git-main-saulbuilds-projects.vercel.app/checkout"
         );
     }
 
@@ -327,7 +351,6 @@ mod tests {
         // untouched fields keep their defaults
         assert_eq!(merged.rpc, "local");
         assert_eq!(merged.channel, "stable");
-        assert_eq!(merged.sig_policy, "hitl");
     }
 
     /// The config JSON must (de)serialize with the camelCase keys the TS bridge
@@ -338,7 +361,6 @@ mod tests {
         let json = serde_json::to_value(&cfg).unwrap();
         assert!(json.get("dataDir").is_some());
         assert!(json.get("cpuCap").is_some());
-        assert!(json.get("sigPolicy").is_some());
         assert!(json.get("coreMembershipUrl").is_some());
         // round-trips back to an equal value
         let back: AppConfig = serde_json::from_value(json).unwrap();
@@ -373,14 +395,42 @@ mod tests {
         }
     }
 
+    /// Only the exact membership hosts are accepted. A host anyone can register on Vercel by naming
+    /// a project `core-membership-…` (a per-deployment URL, another team's branch alias, a look-alike
+    /// with our team slug in the name) is refused, and the previous value kept.
+    #[test]
+    fn registrable_vercel_hosts_are_rejected() {
+        let prev = AppConfig::default().core_membership_url;
+        for hostile in [
+            "https://core-membership-preview.vercel.app",
+            "https://core-membership-evil.vercel.app",
+            "https://core-membership-git-main-citrate.vercel.app",
+            "https://core-membership-git-main-attacker.vercel.app",
+            "https://core-membership-x-saulbuilds-projects.vercel.app",
+            "https://core-membership-6afvzy0qh-saulbuilds-projects.vercel.app",
+            "https://core-membership.vercel.app.evil.com",
+            "https://membership.citrate.ai.evil.com",
+            "https://evil-membership.citrate.ai",
+        ] {
+            let merged = AppConfig::default().apply(AppConfigPatch {
+                core_membership_url: Some(hostile.to_string()),
+                ..Default::default()
+            });
+            assert_eq!(
+                merged.core_membership_url, prev,
+                "{hostile:?} must be rejected"
+            );
+        }
+    }
+
     /// CORE-B-004: legitimate prod + Vercel preview hosts are still accepted, and
     /// the derived checkout URL always starts with `https://`.
     #[test]
     fn allowlisted_core_membership_urls_are_accepted_and_checkout_is_https() {
         for ok in [
+            "https://membership.citrate.ai",
             "https://core-membership.vercel.app",
-            "https://core-membership-preview.vercel.app",
-            "https://core-membership-git-main-citrate.vercel.app",
+            "https://core-membership-git-main-saulbuilds-projects.vercel.app",
         ] {
             let merged = AppConfig::default().apply(AppConfigPatch {
                 core_membership_url: Some(ok.to_string()),
@@ -395,5 +445,151 @@ mod tests {
                 "checkout url must always be https"
             );
         }
+    }
+
+    /// A membership URL already in config.json (stored by an earlier build, or edited on disk) goes
+    /// through the same host pin when it is loaded and when it is used: an unpinned host reads back
+    /// as the default, and no membership URL is ever built from it.
+    #[test]
+    fn a_stored_unpinned_membership_url_is_never_used() {
+        let stored = serde_json::json!({
+            "net": "testnet",
+            "rpc": "local",
+            "dataDir": "~/.citrate/core",
+            "cpuCap": 50,
+            "autolock": 30,
+            "channel": "stable",
+            "telemetry": false,
+            "coreMembershipUrl": "https://core-membership-evil.vercel.app"
+        });
+        let cfg: AppConfig = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            cfg.core_membership_url, "https://membership.citrate.ai",
+            "loaded value"
+        );
+        assert_eq!(cfg.checkout_url(), "https://membership.citrate.ai/checkout");
+        assert_eq!(
+            cfg.enterprise_lead_url(),
+            "https://membership.citrate.ai/api/enterprise/lead"
+        );
+        // A value set in code without `apply` is pinned at use too.
+        let direct = AppConfig {
+            core_membership_url: "http://core-membership.vercel.app".into(),
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            direct.checkout_url(),
+            "https://membership.citrate.ai/checkout"
+        );
+        assert_eq!(
+            direct.enterprise_lead_url(),
+            "https://membership.citrate.ai/api/enterprise/lead"
+        );
+        // A pinned stored value is kept.
+        let mut stored_ok = serde_json::to_value(AppConfig::default()).unwrap();
+        stored_ok["coreMembershipUrl"] = "https://core-membership.vercel.app/".into();
+        let ok: AppConfig = serde_json::from_value(stored_ok).unwrap();
+        assert_eq!(
+            ok.checkout_url(),
+            "https://core-membership.vercel.app/checkout"
+        );
+    }
+
+    /// Tripwire: every membership URL is built through `membership_base` (which pins the host), and
+    /// no code outside `config.rs` reads the stored field directly.
+    #[test]
+    fn every_membership_url_goes_through_the_host_pin() {
+        let src = include_str!("config.rs");
+        let prod = &src[..src.find("#[cfg(test)]").expect("tests")];
+        // Outside `apply` (which writes a value it has pinned) and `membership_base` (which pins it
+        // again), nothing reads the stored field.
+        let body_of = |sig: &str| {
+            let at = prod.find(sig).expect(sig);
+            let rest = &prod[at..];
+            at..at + rest.find("\n    }\n").expect("end")
+        };
+        let allowed = [body_of("pub fn apply("), body_of("fn membership_base(")];
+        let mut at = 0;
+        while let Some(i) = prod[at..].find("self.core_membership_url") {
+            let pos = at + i;
+            assert!(
+                allowed.iter().any(|r| r.contains(&pos)),
+                "the stored membership URL is read outside apply/membership_base at byte {pos}"
+            );
+            at = pos + 1;
+        }
+        let base = &prod[prod.find("fn membership_base(").expect("membership_base")..];
+        let base = &base[..base.find("\n    }\n").expect("end")];
+        assert!(
+            base.contains("is_valid_core_membership_url("),
+            "the base must pin the host"
+        );
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for dir in [manifest.join("src"), manifest.join("../src-tauri/src")] {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "config.rs" {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap_or_default();
+                let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+                assert!(
+                    !prod.contains(".core_membership_url"),
+                    "{name} reads the stored membership URL directly; use checkout_url / enterprise_lead_url"
+                );
+            }
+        }
+    }
+
+    /// Rule 3: every signature goes through the ceremony; the one exception is a budgeted web
+    /// sign-in (`request_siwe_budgeted`). There is no signature-policy setting, so a value an older
+    /// build stored in config.json (`"sigPolicy": "allow"`, or anything else) is dropped on read
+    /// and never written back, and a patch that carries one changes nothing.
+    #[test]
+    fn stored_signature_policy_is_dropped_and_never_written_back() {
+        for v in [
+            serde_json::json!("allow"),
+            serde_json::json!("hitl"),
+            serde_json::json!("ALLOW"),
+            serde_json::json!(""),
+            serde_json::json!(true),
+            serde_json::json!({"allow": ["*"]}),
+        ] {
+            let legacy = serde_json::json!({
+                "net": "testnet",
+                "rpc": "local",
+                "dataDir": "~/.citrate/core",
+                "cpuCap": 50,
+                "autolock": 15,
+                "channel": "stable",
+                "telemetry": false,
+                "sigPolicy": v,
+                "coreMembershipUrl": "https://membership.citrate.ai"
+            });
+            let cfg: AppConfig = serde_json::from_value(legacy).unwrap_or_else(|e| {
+                panic!("a stored sigPolicy {v} must not break config_read: {e}")
+            });
+            // The rest of the stored config still loads.
+            assert_eq!(cfg.autolock, 15);
+            let out = serde_json::to_value(&cfg).unwrap_or_else(|e| panic!("serialize: {e}"));
+            assert!(
+                out.get("sigPolicy").is_none(),
+                "a stored sigPolicy {v} must not be written back: {out}"
+            );
+        }
+        let patch: AppConfigPatch =
+            serde_json::from_value(serde_json::json!({ "sigPolicy": "allow" }))
+                .unwrap_or_else(|e| panic!("a patch with sigPolicy must still parse: {e}"));
+        let merged = AppConfig::default().apply(patch);
+        let out = serde_json::to_value(&merged).unwrap_or_else(|e| panic!("serialize: {e}"));
+        assert!(
+            out.get("sigPolicy").is_none(),
+            "a sigPolicy patch must change nothing: {out}"
+        );
     }
 }

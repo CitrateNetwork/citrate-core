@@ -3,7 +3,8 @@
 // HUP-S11.0 / gate g5-size: the installer size gate is wired into .github/workflows/release.yml
 // as a MANUAL-ONLY step. A tag push builds and publishes exactly as before; only a manual
 // dispatch with `size_gate: true` runs scripts/size-budget.mjs, and then the release is created
-// as a draft and published only after the gate passes (an over-budget build stays a draft).
+// as a draft and published only after the gate passes (an over-budget build stays a draft). A dry
+// run (`dry_run: true`) also runs the gate on its unsigned bundle, and never publishes.
 //
 // Structural checks in plain JS (no YAML dependency), plus a full parse through python3 + PyYAML
 // when present (skipped, and says so, when it is not).
@@ -46,7 +47,8 @@ function pyYaml(file) {
 
 const wf = pyYaml(FILE);
 const windowsWf = pyYaml(WINDOWS_FILE);
-const GATE = "${{ github.event_name == 'workflow_dispatch' && inputs.size_gate }}";
+const GATE = "${{ env.DRY_RUN == 'true' || (github.event_name == 'workflow_dispatch' && inputs.size_gate) }}";
+const PUBLISH = "${{ env.DRY_RUN != 'true' && github.event_name == 'workflow_dispatch' && inputs.size_gate }}";
 
 function steps() {
   if (!wf) return null;
@@ -104,7 +106,7 @@ describe("release.yml size gate (manual only)", () => {
     expect(s[reject].run).not.toMatch(/\$\{\{/);
   });
 
-  it("runs size-budget.mjs only on a manual dispatch with size_gate, after the build, on the build's bundle dir", () => {
+  it("runs size-budget.mjs only on a manual dispatch with size_gate or a dry run, after the build, on the build's bundle dir", () => {
     const calls = src.split("\n").filter((l) => !/^\s*#/.test(l) && l.includes("scripts/size-budget.mjs"));
     expect(calls.length).toBe(1);
     expect(calls[0]).toMatch(/--bundle-dir target\/aarch64-apple-darwin\/release\/bundle/);
@@ -112,9 +114,12 @@ describe("release.yml size gate (manual only)", () => {
     const s = steps();
     if (!s) return console.warn("PyYAML not available: step order not checked");
     const build = s.findIndex((x) => (x.uses ?? "").startsWith("tauri-apps/tauri-action@"));
+    const dryBuild = s.findIndex((x) => (x.run ?? "").includes("npx tauri build"));
     const gate = s.findIndex((x) => (x.run ?? "").includes("scripts/size-budget.mjs"));
     expect(build).toBeGreaterThanOrEqual(0);
+    expect(dryBuild).toBeGreaterThanOrEqual(0);
     expect(gate).toBeGreaterThan(build);
+    expect(gate).toBeGreaterThan(dryBuild);
     expect(s[gate].if).toBe(GATE);
   });
 
@@ -126,7 +131,8 @@ describe("release.yml size gate (manual only)", () => {
     const gate = s.findIndex((x) => (x.run ?? "").includes("scripts/size-budget.mjs"));
     const publish = s.findIndex((x) => /gh release edit "\$TAG" --draft=false/.test(x.run ?? ""));
     expect(publish).toBe(gate + 1);
-    expect(s[publish].if).toBe(GATE);
+    // A dry run reaches the gate but never the publish step.
+    expect(s[publish].if).toBe(PUBLISH);
     // The tag comes in through env, never spliced into the shell line.
     expect(s[publish].env.TAG).toBe("${{ github.event.inputs.tag }}");
     expect(s[publish].run).not.toMatch(/\$\{\{/);
@@ -161,6 +167,24 @@ describe("windows release staging controls", () => {
     expect(job.steps[verify].run).toMatch(/cargo -V/);
     expect(job.steps[verify].run).toMatch(/rustc 1\\\.96\\\.0/);
     expect(job.steps[verify].run).toMatch(/cargo 1\\\.96\\\.0/);
+  });
+
+  it("builds the node through the pinned engine at this release's chain rev", () => {
+    expect(windowsSrc).not.toMatch(/build-sidecar\.sh[^\n]*\n(?:[^\n]*\\\n)*[^\n]*--output/);
+    if (!windowsWf) return console.warn("PyYAML not available: Windows node build step not parsed");
+    const step = windowsWf.jobs.build_windows.steps.find((x) => (x.run ?? "").includes("build-sidecar.sh"));
+    expect(step).toBeDefined();
+    expect(step.run).toContain("component-pins.mjs field citrate-node source.rev");
+    expect(step.run).toContain('[ "$pinned_rev" != "$CHAIN_SHA" ]');
+    expect(step.run).toContain("--print-digest");
+    expect(step.run).not.toContain("--output");
+    expect(step.run).toContain('actual="$(sha256sum "$staged" | cut -d\' \' -f1)"');
+    expect(step.run).toContain('install -m 755 "$staged" "src-tauri/binaries/citrate-$TARGET_TRIPLE.exe"');
+    const pinFirst = step.run.indexOf("$CHAIN_SHA");
+    const build = step.run.indexOf("build-sidecar.sh");
+    const install = step.run.indexOf("install -m 755");
+    expect(pinFirst).toBeLessThan(build);
+    expect(build).toBeLessThan(install);
   });
 
   it("stages the unique BGE model directory directly without nesting", () => {
