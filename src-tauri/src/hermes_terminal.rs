@@ -73,14 +73,11 @@ pub fn enabled(dir: &Path) -> bool {
     load(dir).map(|s| s.enabled).unwrap_or(false)
 }
 
-/// Store settings (written to a temp file, then renamed).
+/// Store settings (written to a temp file unique to this write, then renamed).
 pub fn save(dir: &Path, s: &TerminalSettings) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|_| "cannot create the Hermes data folder".to_string())?;
     let text = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("{SETTINGS_FILE}.tmp"));
-    std::fs::write(&tmp, text)
-        .map_err(|_| "cannot write the terminal-commands setting".to_string())?;
-    std::fs::rename(&tmp, dir.join(SETTINGS_FILE))
+    crate::atomic_file::replace(&dir.join(SETTINGS_FILE), text.as_bytes())
         .map_err(|_| "cannot write the terminal-commands setting".to_string())
 }
 

@@ -140,7 +140,9 @@ export interface SigningDomain {
 }
 
 export interface WalletDomain {
-  balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
+  /** Native liquid SALT (eth_getBalance) and claimable (ContributionAccounting). No self-stake:
+   * staking is through the validator bond (D-9 retired the liquid staking pool). */
+  balances(): Promise<{ liquid: number; claimable: number; address: string }>;
   /** Q-E.2 (C-5) — the indexed tx history. `status` (1 ok / 0 reverted / null
    * pending) + `direction` are passed through from the indexer so a failed tx can
    * be marked (they used to be stripped, making a revert look like a success). */
@@ -150,28 +152,6 @@ export interface WalletDomain {
    * `signing.broadcast(view.id)` (B1.4 → a real 40204 tx). `amountWei` is a
    * decimal wei string. Mirrors `agent.claim` for the claimRewards() path. */
   send(to: string, amountWei: string): Promise<CeremonyView>;
-  /** CORE (@rule8) — submit a LiquidStakingPool `deposit()` stake as a PENDING
-   * ceremony and return the decoded view. Signs NOTHING; the human approves via
-   * `signing.broadcast(view.id)` (B1.4 → a real 40204 deposit tx). `amountWei` is
-   * a decimal wei string. Mirrors `send` for the transfer path. */
-  stake(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `requestWithdrawal(shares)`
-   * as a PENDING ceremony (burns stSALT shares into the ~7-day queue). The
-   * SALT→shares conversion is done in Rust from LIVE reads (shares()+balanceOf()),
-   * so `amountWei` is the SALT the user wants to withdraw. Signs NOTHING; approved
-   * via `signing.broadcast`. Mirrors `stake`. */
-  requestWithdrawal(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `claimWithdrawal(id)` for a
-   * matured request as a PENDING ceremony. The ~7-day (50,400-block) delay is
-   * enforced on-chain; a too-early claim reverts. Signs NOTHING; approved via
-   * `signing.broadcast`. `id` is the decimal request id from `pendingWithdrawals`. */
-  claimWithdrawal(id: string): Promise<CeremonyView>;
-  /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
-   * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
-   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
-   * missing and an empty list is not "none". */
-  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -218,35 +198,6 @@ export interface WalletDomain {
   linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean; canonical: boolean }>;
   /** Decline a pending link: release the ceremony + drop the one-time nonce. */
   linkReject(id: string): Promise<void>;
-}
-
-/** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
- * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
- * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
-/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
- * `complete` = it reached the end of what the node serves and read every withdrawal;
- * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
-export interface PendingWithdrawalsRead {
-  withdrawals: PendingWithdrawal[];
-  confirmed: boolean;
-  complete: boolean;
-  note: string | null;
-}
-
-/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
- * when the Wallet reads again; `message` is display only and is never matched. */
-export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
-export interface PendingWithdrawalsError {
-  kind: PendingReadErrorKind;
-  message: string;
-}
-
-export interface PendingWithdrawal {
-  id: string;
-  saltWei: string;
-  requestBlock: number;
-  claimableAtBlock: number;
-  claimable: boolean;
 }
 
 /**
@@ -645,6 +596,13 @@ export interface ChatDomain {
    */
   consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
+   * K2 — the question for a held message closed without "Send this message to the gateway this
+   * time" (cancelled, stopped, or the local model answers instead). Core drops the consent it
+   * minted for it (`chat_consent_drop`), so it cannot be used later. An id that is no longer open
+   * is not an error. The sim impl has nothing to drop.
+   */
+  consentDrop(consentId: string): Promise<void>;
+  /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
    * the frontend runs the tool loop. Rust reads the STORED baseURL + sealed key
@@ -718,7 +676,7 @@ export interface GrantStatus {
   attributedStakeWei: string;
   /**
    * `MembershipStakeVault.attributedPrincipal(member)`. M-2 replaced
-   * `attributedShares` (an stSALT share count) with raw bonded principal —
+   * `attributedShares` (a pool share count) with raw bonded principal —
    * there are no shares under bonding.
    */
   attributedPrincipalWei: string;
@@ -2681,6 +2639,39 @@ export interface StoreDomain {
   remove(listingId: string): Promise<StoreOutcome<string>>;
 }
 
+// ---- services: the K1a-2 registry snapshot (Rust `services.rs`, `services_snapshot`) ----
+// Each row is read from that service's kit supervisor (SPEC-001 lifecycle cell). `observation`
+// says whether a supervisor was read at all; `phase` and everything after it are null unless it
+// was. Readiness is its own axis (SC2): Alive never implies Ready.
+export type ServiceId = "node" | "nodeAgent" | "memory" | "llamaChat" | "llamaEmbed" | "ipfs" | "hermes" | "comms" | "cluster";
+export type ServicePhase = "stopped" | "starting" | "alive" | "backoff" | "failed" | "stopping" | "quarantined";
+export type ServiceReadiness = "notAssessed" | "awaiting" | "ready" | "stale" | "unavailable";
+export interface ServiceEntry {
+  id: ServiceId;
+  label: string;
+  owner: string;
+  prerequisites: string[];
+  probe: string;
+  readySignal: string;
+  logBudgetLines: number;
+  logsCommand: string | null;
+  controls: boolean;
+  observation: "observed" | "notSupervised" | "busy";
+  phase: ServicePhase | null;
+  readiness: ServiceReadiness | null;
+  lastTransition: { from: ServicePhase | null; to: ServicePhase; atUnixMs: number } | null;
+  restarts: number | null;
+  lastCrash: { atUnixMs: number; exit: string; restartAttempt: number } | null;
+  quarantine: string | null;
+}
+export interface ServicesSnapshot {
+  takenAtUnixMs: number;
+  services: ServiceEntry[];
+}
+export interface ServicesDomain {
+  snapshot(): Promise<ServicesSnapshot>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2700,4 +2691,5 @@ export interface CxBridge {
   join: JoinDomain;
   components: ComponentsDomain;
   store: StoreDomain;
+  services: ServicesDomain;
 }
