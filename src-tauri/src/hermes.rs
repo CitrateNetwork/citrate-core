@@ -459,6 +459,11 @@ pub struct GrantsPushOutcome {
 }
 
 impl HermesManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over an explicit binary + token file + crash path (default control addr).
     pub fn new(bin: PathBuf, token_path: PathBuf, crash_record_path: PathBuf) -> Self {
         HermesManager {
@@ -552,6 +557,11 @@ impl HermesManager {
     pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
         self.mcp_allowlist = Some(path);
         self
+    }
+
+    /// The embedding server this sidecar starts, if it has one (the services registry, K1a-2).
+    pub(crate) fn embed_server(&self) -> Option<&crate::embed_serve::EmbedServer> {
+        self.embed.as_ref()
     }
 
     /// HUP-S1.2 / US-1.4: start this embedding server with the sidecar and pass its URL and key
@@ -1631,6 +1641,11 @@ use std::sync::OnceLock;
 /// The process-wide Hermes manager. Built lazily on first command from the app (resolve the bundled
 /// binary + the 0600 bearer/crash paths); one instance for the process lifetime.
 static HERMES: OnceLock<HermesManager> = OnceLock::new();
+
+/// The manager if this session built one, without building it (the services registry, K1a-2).
+pub(crate) fn existing_manager() -> Option<&'static HermesManager> {
+    HERMES.get()
+}
 
 /// HUP-S4.3: whether this session's Hermes sidecar is running (false if never started).
 pub fn sidecar_running() -> bool {
