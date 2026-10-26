@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "allPaused": false,
+  "daemons": [
+    {
+      "id": "d8382c9f7038585f0",
+      "name": "Morning brief",
+      "prompt": "Summarise what changed on my node overnight.",
+      "schedule": "0 8 * * *",
+      "budget": {
+        "maxRunsPerDay": 2,
+        "maxTokensPerDay": 20000,
+        "maxTokensPerRun": 8000,
+        "maxSpendSalt": "0"
+      },
+      "paused": false,
+      "createdMs": 1792300000000,
+      "anchorMs": 1792300000000,
+      "day": "2026-10-17",
+      "runsToday": 0,
+      "tokensToday": 0,
+      "skippedToday": 0,
+      "lastRunMs": null,
+      "lastOutcome": null,
+      "lastNote": null,
+      "lastTokenSource": null,
+      "running": null
+    }
+  ]
+}

@@ -294,7 +294,7 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 /// The three MCP services, for status enumeration.
-const ALL_SERVICES: [Service; 6] = [
+pub(crate) const ALL_SERVICES: [Service; 6] = [
     Service::GitHub,
     Service::GoogleDrive,
     Service::Notion,
@@ -365,7 +365,7 @@ fn now_unix() -> u64 {
 /// The custody vault slot a service's token record lives under. Not `\0`-prefixed
 /// and outside the backend-reserved `oidc-`/`wallet-` prefixes, so it is a valid
 /// user slot.
-fn slot(service: Service) -> String {
+pub(crate) fn slot(service: Service) -> String {
     format!("connection-{}", service.id())
 }
 
@@ -1252,9 +1252,10 @@ mod tests {
     }
 
     #[test]
-    fn slot_is_namespaced_and_not_backend_reserved() {
+    fn slot_is_namespaced_and_backend_reserved() {
         assert_eq!(slot(Service::Notion), "connection-notion");
-        assert!(!crate::custody::is_backend_reserved_slot(&slot(
+        // Only the backend token exchange writes it; the webview's custody_put refuses it.
+        assert!(crate::custody::is_backend_reserved_slot(&slot(
             Service::Notion
         )));
         assert!(!slot(Service::GitHub).starts_with('\0'));

@@ -98,3 +98,7 @@ handoffs/
 src-tauri/knowledge-corpus/*
 !src-tauri/knowledge-corpus/README.md
 src-tauri/knowledge-corpus.staged.json
+
+# Python bytecode (src-tauri/formal scripts)
+__pycache__/
+*.pyc

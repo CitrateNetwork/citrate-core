@@ -9,6 +9,7 @@ import { store } from "../shell/store";
 import { daemonsApi, localOffsetMinutes, type DaemonInput } from "./api";
 import { createDaemonRunner, type DaemonRunner } from "./runner";
 import { daemonsSlice } from "./slice";
+import { registerDaemonCanceller } from "../shell/slices/store";
 
 /** How often the runner asks Rust which daemons are due. */
 export const DAEMON_TICK_MS = 30_000;
@@ -62,6 +63,9 @@ export function startDaemonRunner(): void {
     // HUP-S10.3: each finished run also goes into its day's journal entry.
     onFinished: (run) => store.recordDaemonRunInJournal(run),
   });
+  // K5a: the Store's Remove stops a daemon's run (and waits) before core deletes it.
+  const r = runner;
+  registerDaemonCanceller((id) => r.cancel(id));
   void refreshDaemons();
   const tick = () => {
     void runner?.tick().catch((e) => daemonsSlice.set({ error: message(e) }));
@@ -113,8 +117,9 @@ export function deleteDaemon(id: string): Promise<string | null> {
   const api = daemonsApi();
   if (!api) return Promise.resolve("daemons need the desktop app");
   return act(async () => {
-    // Pausing first also keeps a claim of this tick that has not started from running.
-    if (runner) await runner.pause(id);
+    // Stop and wait first: the run in flight and any claim of this tick end (and are recorded)
+    // before the daemon is deleted.
+    if (runner) await runner.cancel(id);
     await api.remove(id);
   });
 }
