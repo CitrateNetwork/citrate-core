@@ -11,8 +11,9 @@ starts it (src-tauri/src/node.rs), on the network a K6 profile names, and proves
   node_chain_id      the node reports the profile's chain id;
   reaches_target     the head reaches the target within --timeout: --blocks N (bounded), or the
                      network RPC's head less --tip-slack (to tip, the default);
-  agrees             block 0, every K-th block and the last checked height have the same hash on
-                     the node and the network RPC (heights at least --lag below both heads);
+  agrees             block 0, every K-th block and the last safe height (at least --lag below both
+                     heads) have the same hash on the node and the network RPC. Every one of those
+                     heights must be compared: a block either side cannot serve fails the rule;
   peers              the node had at least --min-peers peers;
   at_rest            the data dir is encrypted at rest (encryption.meta);
   node_alive         the node did not exit during the run;
@@ -30,6 +31,7 @@ What the node is given, and where it comes from (Rule 7):
            port a free one, and nothing else of the caller's environment except PATH reaches it.
 
 There is no option to use an existing data dir: every run is a cold start in a new temp dir.
+SIGTERM, SIGHUP and SIGINT stop the node, remove the temp dir and write a FAIL verdict.
 
 Usage
   cold-sync.py --node-bin <citrate> --out <dir> [--profiles src-tauri/network/profiles.json
@@ -71,6 +73,11 @@ ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 BOOTNODE_RE = re.compile(r"^[A-Za-z0-9_]+@[A-Za-z0-9.\-]+:[0-9]{1,5}$")
 NETWORK_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 RPC_TIMEOUT_S = 10
+# Reads of one scheduled height before it counts as missing (a block below both heads).
+CHECK_ATTEMPTS = 3
+# Signals that stop a run the way SIGTERM does: the node is stopped, the temp dir (with the
+# storage key) removed and a verdict written. SIGHUP is a closed terminal or a dropped SSH session.
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 RULES = ["profile", "launch", "node_binary", "endpoint_identity", "local_genesis", "node_chain_id",
          "reaches_target", "agrees", "peers", "at_rest", "node_alive", "cleanup"]
 
@@ -380,12 +387,16 @@ def run(a, v):
                            f"{len(prof['bootnodes'])} bootnodes, book genesis matches")
 
     consts = launch_constants(a.node_rs)
-    template = Path(a.member_config).read_text()
+    try:
+        template = Path(a.member_config).read_text()
+    except OSError as e:
+        raise Refused("launch", f"cannot read the member config {a.member_config}: {e}") from None
     ports = pick_ports(a.rpc_port)
     v.set("launch", True, f"node.rs launch constants and member-node.toml read; ports rpc {ports['rpc']} "
                           f"ws {ports['ws']} p2p {ports['p2p']} metrics {ports['metrics']}")
 
-    binp = Path(a.node_bin)
+    # Absolute: the node runs with the temp dir as its working directory.
+    binp = Path(os.path.abspath(a.node_bin))
     if not binp.is_file() or not os.access(binp, os.X_OK):
         raise Refused("node_binary", f"{binp} is not an executable file")
     digest = sha256_file(binp)
@@ -408,11 +419,11 @@ def run(a, v):
     except RpcError as e:
         v.set("endpoint_identity", False, f"{public_url(remote)} unreachable: {e}")
 
-    tmp = Path(tempfile.mkdtemp(prefix="citrate-cold-sync-", dir=a.work_root))
-    data, home = tmp / "node", tmp / "home"
-    v.doc["data_dir"] = str(data)
-    proc = None
+    proc = tmp = None
     try:
+        tmp = Path(tempfile.mkdtemp(prefix="citrate-cold-sync-", dir=a.work_root))
+        data, home = tmp / "node", tmp / "home"
+        v.doc["data_dir"] = str(data)
         data.mkdir(mode=0o700)
         home.mkdir(mode=0o700)
         key_path = data / consts["key_file"]
@@ -438,24 +449,32 @@ def run(a, v):
         local = f"http://127.0.0.1:{ports['rpc']}"
         logf = open(tmp / "node.log", "wb")
         log(f"starting the node: {' '.join(args)}")
-        proc = subprocess.Popen(args, env=env, cwd=str(tmp), stdout=logf, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            proc = subprocess.Popen(args, env=env, cwd=str(tmp), stdout=logf, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError as e:
+            v.set("node_alive", False, f"the node could not be started: {e}")
+            return
         v.doc["node"]["pid"] = proc.pid
         sync_node(a, v, prof, remote, local, proc, endpoint_ok, data)
     finally:
+        # A second signal must not cut the cleanup short.
+        for s in STOP_SIGNALS:
+            signal.signal(s, signal.SIG_IGN)
         stop(proc)
         if proc is not None and "node_alive" in v.rules and v.rules["node_alive"][0] == "skip":
             v.set("node_alive", True, "stopped by the harness")
-        try:
-            lines = (tmp / "node.log").read_bytes().decode("utf-8", "replace").splitlines()[-200:]
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "node.log.tail").write_text("\n".join(lines) + "\n")
-        except OSError:
-            pass
-        shutil.rmtree(tmp, ignore_errors=True)
-        gone = not tmp.exists()
-        v.doc["data_dir_removed"] = gone
-        v.set("cleanup", gone, f"temp dir {tmp} " + ("removed" if gone else "could NOT be removed"))
+        if tmp is not None:
+            try:
+                lines = (tmp / "node.log").read_bytes().decode("utf-8", "replace").splitlines()[-200:]
+                out.mkdir(parents=True, exist_ok=True)
+                (out / "node.log.tail").write_text("\n".join(lines) + "\n")
+            except OSError:
+                pass
+            shutil.rmtree(tmp, ignore_errors=True)
+            gone = not tmp.exists()
+            v.doc["data_dir_removed"] = gone
+            v.set("cleanup", gone, f"temp dir {tmp} " + ("removed" if gone else "could NOT be removed"))
 
 
 def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
@@ -500,7 +519,7 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
     deadline = start + a.timeout
     head = remote_head = start_head = None
     max_peers = 0
-    checked, mismatches = [], []
+    checked, mismatches, missing = [], [], []
     next_check = 0
     last_log = 0.0
     reached = False
@@ -547,16 +566,30 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
             break
         time.sleep(a.poll)
 
-    # Finish the agreement checks up to the last safe height, then that height itself.
+    # Finish the agreement checks: every scheduled height (every K-th) up to the last safe height,
+    # then that height itself. A height either side cannot serve is retried, then listed as
+    # missing, and fails `agrees`: a pass means every scheduled height was compared.
     if not mismatches and head is not None and remote_head is not None and proc.poll() is None:
         safe = min(head, remote_head) - a.lag
+        schedule = list(range(next_check, safe + 1, a.every)) if safe >= 0 else []
+        if safe >= 0 and (schedule[-1:] or checked[-1:]) != [safe]:
+            schedule.append(safe)
         try:
-            if check_upto(safe, 10 ** 9) and safe >= 0 and (not checked or checked[-1] != safe):
-                lh, rh = block_hash(local, safe), block_hash(remote, safe)
-                if lh and rh:
-                    checked.append(safe)
-                    if lh != rh:
-                        mismatches.append({"height": safe, "local": lh, "remote": rh})
+            for h in schedule:
+                lh = rh = None
+                for attempt in range(CHECK_ATTEMPTS):
+                    lh, rh = block_hash(local, h), block_hash(remote, h)
+                    if lh is not None and rh is not None:
+                        break
+                    if attempt + 1 < CHECK_ATTEMPTS:
+                        time.sleep(min(a.poll, 1.0))
+                if lh is None or rh is None:
+                    missing.append(h)
+                    continue
+                checked.append(h)
+                if lh != rh:
+                    mismatches.append({"height": h, "local": lh, "remote": rh})
+                    break
         except RpcError as e:
             v.set("agrees", False, f"agreement check could not read a block: {e}")
     elapsed = time.time() - start
@@ -565,10 +598,14 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
                      "remote_head": remote_head, "elapsed_s": round(elapsed, 1),
                      "blocks_per_min": round((head - (start_head or 0)) / elapsed * 60, 1) if head and elapsed > 0 else None,
                      "every": a.every, "lag": a.lag, "checked_heights": checked, "mismatches": mismatches,
+                     "missing": missing,
                      "max_peers": max_peers}
     if mismatches:
         m = mismatches[0]
         v.set("agrees", False, f"height {m['height']}: node {m['local']}, network {m['remote']}")
+    elif missing:
+        v.set("agrees", False, f"{len(missing)} scheduled heights could not be compared (no block on the node "
+                               f"or the network): {missing[:10]}{' ...' if len(missing) > 10 else ''}")
     elif v.rules["agrees"][0] != "FAIL":
         v.set("agrees", bool(checked), f"{len(checked)} heights agree (every {a.every}, up to {checked[-1] if checked else '-'})"
               if checked else "no height could be compared")
@@ -614,7 +651,11 @@ def main(argv=None):
         p.error("--every and --blocks must be >= 1, --lag and --tip-slack >= 0")
 
     v = Verdict()
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    def interrupted(*_):
+        raise KeyboardInterrupt()
+
+    for s in STOP_SIGNALS:
+        signal.signal(s, interrupted)
     code = 0
     try:
         run(a, v)
@@ -623,6 +664,9 @@ def main(argv=None):
         code = 2
     except KeyboardInterrupt:
         v.set("node_alive", False, "the harness was interrupted")
+        code = 1
+    except Exception as e:  # noqa: BLE001 - any harness error still ends in a FAIL verdict
+        v.set("launch", False, f"harness error: {type(e).__name__}: {e}")
         code = 1
     doc = v.write(Path(a.out))
     return code or (0 if doc["verdict"] == "PASS" else 1)
