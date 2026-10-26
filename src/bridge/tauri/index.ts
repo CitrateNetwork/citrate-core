@@ -417,6 +417,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async consentPrepare(providerId: string, message: string): Promise<ChatConsent> {
         return invoke<ChatConsent>("chat_consent_prepare", { providerId, message });
       },
+      // K2 — drop the consent of a held message the member did not send (core's in-memory book).
+      async consentDrop(consentId: string): Promise<void> {
+        await invoke("chat_consent_drop", { consentId });
+      },
       // W3.3 — one agentic turn (tools attached; returns the assistant message
       // JSON with any tool_calls). The webview runs the loop; Rust holds the key.
       async inferTools(

@@ -1141,9 +1141,9 @@ pub async fn ai_chat(
     consent_id: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider.
+    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider:
+    // the permit (`chat_consent::authorize`) checks the route before the consent.
     let route_dir = crate::chat_route::route_dir(&app_h)?;
-    crate::blocking::off_main(move || crate::chat_route::remote_chat_allowed(&route_dir)).await?;
     crate::blocking::off_main(move || {
         let st3 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
@@ -1152,7 +1152,8 @@ pub async fn ai_chat(
         ai_chat_sync(
             &st3.0,
             &consents,
-            crate::chat_consent::now_ms(),
+            &route_dir,
+            crate::ceremony::system_clock(),
             &consent_id,
             &provider_id,
             &messages_json,
@@ -1163,18 +1164,27 @@ pub async fn ai_chat(
 }
 
 /// Blocking body of [`ai_chat`]; reached only through [`crate::blocking::off_main`]. K2: the send
-/// goes out only with the member's consent for this message, minted by core (`chat_consent`).
+/// goes out only with the member's consent for this message, minted by core (`chat_consent`), and
+/// never under Local model only (`route_dir`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ai_chat_sync(
     ai: &AiManager,
     consents: &ChatConsentState,
-    now_ms: u64,
+    route_dir: &std::path::Path,
+    now: crate::ceremony::ClockReading,
     consent_id: &str,
     provider_id: &str,
     messages_json: &str,
     context_json: &str,
 ) -> std::result::Result<String, String> {
-    let permit =
-        crate::chat_consent::authorize(consents, consent_id, provider_id, messages_json, now_ms)?;
+    let permit = crate::chat_consent::authorize(
+        consents,
+        route_dir,
+        consent_id,
+        provider_id,
+        messages_json,
+        now,
+    )?;
     ai.chat(&permit, provider_id, messages_json, context_json)
         .map_err(|e| e.to_string())
 }
@@ -1195,9 +1205,9 @@ pub async fn ai_chat_tools(
     consent_id: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider.
+    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider:
+    // the permit (`chat_consent::authorize`) checks the route before the consent.
     let route_dir = crate::chat_route::route_dir(&app_h)?;
-    crate::blocking::off_main(move || crate::chat_route::remote_chat_allowed(&route_dir)).await?;
     crate::blocking::off_main(move || {
         let st4 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
@@ -1206,7 +1216,8 @@ pub async fn ai_chat_tools(
         ai_chat_tools_sync(
             &st4.0,
             &consents,
-            crate::chat_consent::now_ms(),
+            &route_dir,
+            crate::ceremony::system_clock(),
             &consent_id,
             &provider_id,
             &messages_json,
@@ -1223,15 +1234,22 @@ pub async fn ai_chat_tools(
 pub(crate) fn ai_chat_tools_sync(
     ai: &AiManager,
     consents: &ChatConsentState,
-    now_ms: u64,
+    route_dir: &std::path::Path,
+    now: crate::ceremony::ClockReading,
     consent_id: &str,
     provider_id: &str,
     messages_json: &str,
     tools_json: &str,
     context_json: &str,
 ) -> std::result::Result<String, String> {
-    let permit =
-        crate::chat_consent::authorize(consents, consent_id, provider_id, messages_json, now_ms)?;
+    let permit = crate::chat_consent::authorize(
+        consents,
+        route_dir,
+        consent_id,
+        provider_id,
+        messages_json,
+        now,
+    )?;
     ai.chat_tools(
         &permit,
         provider_id,
