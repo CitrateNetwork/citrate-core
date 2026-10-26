@@ -26,7 +26,8 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    abi_book, ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
+    abi_book, ceremony, config, custody, oidc, rpc, secret, supervisor, txdecode, wallet,
+    wallet_link,
 };
 
 mod activity;
@@ -37,6 +38,7 @@ mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
+mod atomic_file;
 mod benchmark_share;
 mod blocking;
 mod capsule_pins;
@@ -128,10 +130,10 @@ mod sbt_art;
 mod seam;
 mod serve;
 mod serve_plan;
+mod services;
 mod shell;
 mod skill_registry;
 mod skills_local;
-mod staking;
 mod telemetry;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
@@ -199,6 +201,9 @@ mod windows_installer_hook_tests;
 mod upgrade_updater_feed_tests;
 #[cfg(test)]
 mod upgrade_v051_tests;
+// D-9: the liquid staking pool is retired; no pool reference in the crate, its book or the kit.
+#[cfg(test)]
+mod lsp_retired_tests;
 
 use tauri::Manager;
 
@@ -795,6 +800,7 @@ pub fn run() {
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
             chat_consent::chat_consent_prepare,
+            chat_consent::chat_consent_drop,
             chat_consent::media_consent_prepare,
             chat_route::chat_route_get,
             chat_route::chat_route_set,
@@ -901,20 +907,6 @@ pub fn run() {
             // wallet send — a native SALT transfer bridged into a PENDING ceremony
             // (@rule8; signs nothing — the human approves via sign_and_broadcast).
             transfer::wallet_send,
-            // wallet stake — a LiquidStakingPool deposit() bridged into a PENDING
-            // ceremony (@rule8; signs nothing — approved via sign_and_broadcast).
-            // The self-stake balance is read within wallet_balances (balanceOf).
-            staking::wallet_stake,
-            // wallet withdraw (WP2, @rule8) — the two-step, ~7-day-queued withdraw
-            // of self-added stake. request_withdrawal burns stSALT shares (the
-            // SALT→shares conversion is done from LIVE shares()+balanceOf() reads,
-            // never fabricated); claim_withdrawal pays out a matured request. Both
-            // sign NOTHING — the human approves via sign_and_broadcast (B1.4).
-            // pending_withdrawals enumerates the wallet's real on-chain queue
-            // (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-            staking::wallet_request_withdrawal,
-            staking::wallet_claim_withdrawal,
-            staking::wallet_pending_withdrawals,
             // ai — real OpenAI-compatible inference (AI1, @rule8). The provider key
             // is sealed in the OS keyring, BOUND to its https baseURL at set-time;
             // ai_provider_status returns only {id,baseURL,model,configured} (never
@@ -986,6 +978,8 @@ pub fn run() {
             components::components_status,
             components::components_update,
             components::components_rollback,
+            // K1a-2 — the services registry snapshot Node › Services reads (read-only).
+            services::services_snapshot,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
@@ -1227,7 +1221,6 @@ mod tests {
             ("grant_status.rs", include_str!("grant_status.rs")),
             ("node.rs", include_str!("node.rs")),
             ("sbt_art.rs", include_str!("sbt_art.rs")),
-            ("staking.rs", include_str!("staking.rs")),
             ("transfer.rs", include_str!("transfer.rs")),
             ("validator.rs", include_str!("validator.rs")),
         ];
@@ -1274,7 +1267,6 @@ mod tests {
                     || code.contains("remote_network_tip(")
                     || code.contains("arm_mining_if_synced(")
                     || code.contains("recheck_mining(")
-                    || code.contains("read_self_stake(")
                     || code.contains("read_claimable(");
                 if touches_network {
                     let fn_name = sig

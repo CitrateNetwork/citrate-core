@@ -121,12 +121,8 @@ pub fn decode_transaction(raw: &str) -> Option<(ParsedTx, TxDisplay)> {
 /// `approve(attacker, 2^256-1)` read as a routine "68 bytes calldata" one-click.
 /// Selectors are DERIVED by keccak from the canonical signatures (see
 /// [`selector_of`]) so this table cannot drift from the on-chain ABI — it mirrors
-/// the pinned selector consts proven in `staking.rs` / `earnings.rs` /
-/// `validator.rs`. Anything NOT on this list is raw-ack gated.
+/// the pinned selector consts proven in `earnings.rs` / `validator.rs`. Anything NOT on this list is raw-ack gated.
 const KNOWN_CALL_SIGNATURES: &[(&str, &str)] = &[
-    ("deposit()", "deposit"),
-    ("requestWithdrawal(uint256)", "requestWithdrawal"),
-    ("claimWithdrawal(uint256)", "claimWithdrawal"),
     ("claimRewards()", "claimRewards"),
     (
         "registerModel(bytes32,bytes32,bytes32,bytes32,string)",
