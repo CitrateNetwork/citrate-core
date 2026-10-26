@@ -1933,6 +1933,9 @@ export class Store {
    * its own OIDC login today; a real signed-in handoff (shared-authority SSO) is
    * work-order WO-6. Honest toast on failure — never a silent dead click.
    */
+  /** RC52: dismiss the genesis-switch notice on Node. */
+  dismissNetworkNotice(): void {}
+
   async openExternal(url: string): Promise<void> {
     try {
       await bridge.shell.openExternal(url);

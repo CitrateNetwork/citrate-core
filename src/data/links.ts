@@ -6,6 +6,8 @@
 // destination RP runs its own OIDC login today; a real signed-in handoff
 // (shared-authority SSO) is work-order WO-6.
 
+import { ACTIVE_PROFILE, type NetworkProfile } from "../network/profile";
+
 /** Atlas docs base — the canonical federation docs host. */
 export const ATLAS_BASE = "https://docs.citrate.ai";
 /** CitrateScan explorer base (canonical host). */
@@ -25,6 +27,6 @@ export function federationUrl(pathOrHost: string): string {
 }
 
 /** A CitrateScan transaction link for a tx hash. */
-export const scanTxUrl = (hash: string): string => `${SCAN_BASE}/tx/${hash}`;
+export const scanTxUrl = (hash: string, _p: NetworkProfile | null = ACTIVE_PROFILE): string | null => `${SCAN_BASE}/tx/${hash}`;
 /** A CitrateScan address link for a wallet address. */
-export const scanAddrUrl = (addr: string): string => `${SCAN_BASE}/address/${addr}`;
+export const scanAddrUrl = (addr: string, _p: NetworkProfile | null = ACTIVE_PROFILE): string | null => `${SCAN_BASE}/address/${addr}`;

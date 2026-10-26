@@ -19,6 +19,7 @@ import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { currentNetKey, type ArchivedNetwork, type NetRead, type NetworkNotice } from "./netScope";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
@@ -420,6 +421,12 @@ export interface AppState {
   pendingWithdrawalsUnconfirmed: boolean;
   /** C1-W — why the last read is not confirmed, in words from the scan (null when confirmed). */
   pendingWithdrawalsNote: string | null;
+  /** RC52: the chain reads network-scoped values still wait for after a genesis switch. */
+  netUnread: NetRead[];
+  /** RC52: the genesis-switch notice, shown on Node until dismissed. */
+  networkNotice: NetworkNotice | null;
+  /** RC52: previous networks' archived values (read from the archive at load, not persisted). */
+  netArchived: ArchivedNetwork[];
   hasGrant: boolean;
   hasSbt: boolean;
   earnVal: number;
@@ -794,6 +801,9 @@ export function freshState(pid: string): AppState {
     pendingWithdrawalsError: "not read yet",
     pendingWithdrawalsUnconfirmed: false,
     pendingWithdrawalsNote: null,
+    netUnread: [],
+    networkNotice: null,
+    netArchived: [],
     hasGrant: false,
     hasSbt: false,
     earnVal: 0,
@@ -1026,7 +1036,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
-export function loadState(): AppState {
+export function loadState(_netKey: string = currentNetKey()): AppState {
   let saved: Partial<AppState> | null = null;
   try {
     saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");

@@ -509,7 +509,10 @@ export function Wallet({ store, s }: SurfaceProps) {
               </span>
               <button
                 className="mono"
-                onClick={() => void store.openExternal(scanTxUrl(tx.hash))}
+                onClick={() => {
+                  const url = scanTxUrl(tx.hash);
+                  if (url) void store.openExternal(url);
+                }}
                 title="Open on CitrateScan"
                 style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0, textAlign: "left" }}
               >
@@ -551,7 +554,10 @@ export function Wallet({ store, s }: SurfaceProps) {
               </span>
               <button
                 className="mono"
-                onClick={() => void store.openExternal(scanAddrUrl(s.walletAddr))}
+                onClick={() => {
+                  const url = scanAddrUrl(s.walletAddr);
+                  if (url) void store.openExternal(url);
+                }}
                 title="Open your address on CitrateScan"
                 style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0 }}
               >
