@@ -393,7 +393,9 @@ fn a_record_rearmed_while_its_release_is_still_returning_reads_armed() {
 }
 
 /// A settlement whose expiry read stays indeterminate (a record mid-write through every bounded
-/// retry) counts the control as expired: a late completion is never stored as Complete.
+/// retry) counts the control as expired: a late completion is never stored as Complete. The cell
+/// asks this only for a control that armed its own record (see
+/// `a_plain_control_never_reads_another_owners_torn_record_as_expiry`).
 #[test]
 fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
     let p = idle_publisher();
@@ -415,6 +417,77 @@ fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
     assert!(
         !p.expired_at_settle(4, 1, 2),
         "once readable, a control without a record has not expired"
+    );
+}
+
+/// Controls that never armed a deadline settle on what was observed, even while another owner's
+/// record stays mid-write in the shared publisher for the whole settlement. Only a control with
+/// a record of its own can be `DeadlineExpired`; an unrelated torn record must not fabricate one,
+/// neither at settlement (the Stop) nor at supersession (the Start the Stop replaced).
+#[test]
+fn a_plain_control_never_reads_another_owners_torn_record_as_expiry() {
+    let publisher = idle_publisher();
+    let mut cfg = missing_bin_config("torn-other", 0);
+    cfg.deadlines = Some(publisher.clone());
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+
+    // Another supervisor (owner 900 001) is descheduled in the middle of arming its record.
+    let (hook, at, go) = pause_hook();
+    publisher.pause_once(PausePoint::ArmWriting, hook);
+    let armer = {
+        let p = publisher.clone();
+        std::thread::spawn(move || p.arm(900_001, 1, 1, Duration::from_secs(60)))
+    };
+    if at.recv_timeout(Duration::from_secs(10)).is_err() {
+        panic!("INCONCLUSIVE: the other owner's arm never reached its pause point");
+    }
+    assert_eq!(
+        publisher.expired(900_002, 1, 1),
+        None,
+        "INCONCLUSIVE: the paused write did not make reads torn"
+    );
+
+    let start = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start after Failed: {other:?}"),
+    };
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    // Answered while the other owner's record is still mid-write.
+    let start_receipt = wait_receipt(&sup, start);
+    let stop_receipt = wait_receipt(&sup, stop);
+    let _ = go.send(());
+    let _ = armer.join();
+    // What was stored at settlement, read once that write has finished.
+    let stored_start = sup.receipt(start);
+    let stored_stop = sup.receipt(stop);
+
+    assert!(
+        matches!(stored_stop, Receipt::Complete { .. }),
+        "a plain Stop is stored as what was observed, not as another owner's torn record: \
+         {stored_stop:?}"
+    );
+    assert!(
+        matches!(
+            stored_start,
+            Receipt::Superseded | Receipt::Failed { .. } | Receipt::Expired
+        ),
+        "a Start without a deadline is never stored DeadlineExpired: {stored_start:?}"
+    );
+    assert!(
+        matches!(stop_receipt, Receipt::Complete { .. }),
+        "the receipt of a control without a record answers while another owner writes: \
+         {stop_receipt:?}"
+    );
+    assert!(
+        matches!(
+            start_receipt,
+            Receipt::Superseded | Receipt::Failed { .. } | Receipt::Expired
+        ),
+        "{start_receipt:?}"
     );
 }
 
