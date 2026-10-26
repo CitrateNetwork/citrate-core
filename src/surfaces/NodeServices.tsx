@@ -12,9 +12,11 @@
 //   doesn't know reads "Unknown" too. Nothing comes from app state, seeds or earlier reads: a failed
 //   read clears the rows and says why.
 // - Readiness is its own line (SC2). Alive never reads Ready unless the snapshot says Ready.
-// - Start and Stop appear only for the services the registry marks `controls` (their owner's own
-//   start/stop path), and only in a phase they apply to. A control in flight says "requested"
-//   until the next snapshot shows what happened; the state word never moves ahead of it.
+// - Start, Stop and Reset appear only for the services the registry marks `controls` (their owner's
+//   own start/stop path), and only in a phase they apply to: a Failed or still-held Stopped service
+//   offers Reset (the owner's stop, which releases the slot), and Start appears once the slot is
+//   empty. A control in flight says "requested" until the next snapshot shows what happened; the
+//   state word never moves ahead of it. A refused control shows the owner's reason on its row.
 // - Logs: only the node has a log read (`node_logs`, on Node › Advanced). The other eight say
 //   "not available yet" (N-8, SC4).
 // =====================================================================
@@ -63,25 +65,38 @@ export interface Refusal {
  * The owner paths Node › Services drives, for exactly the registry rows marked `controls: true`
  * (a test holds the two lists equal). Each goes through the same path the rest of the app uses, so
  * the owner's own checks and side effects (node intent, memory import, Hermes settings snapshot)
- * still apply.
+ * still apply. Each resolves to the owner's refusal reason, or null when nothing refused it.
+ *
+ * Reset is the owner's stop. An owner refuses a Start while any supervisor holds its slot, including
+ * a Failed one, and its stop is what releases the slot. So a Failed (or a still-held Stopped) row
+ * offers Reset, and Start appears once the snapshot shows the slot empty.
  */
-export const SERVICE_CONTROLS: Partial<Record<ServiceId, (store: Store) => Partial<Record<ControlAction, () => Promise<string | null | void>>>>> = {
+export const SERVICE_CONTROLS: Partial<Record<ServiceId, (store: Store) => Record<ControlAction, () => Promise<string | null>>>> = {
   node: (store) => ({
-    start: async () => store.startNode(),
-    stop: async () => store.stopNode(),
+    start: () => store.startNode(),
+    stop: () => store.stopNode(),
+    reset: () => store.stopNode(),
   }),
-  memory: (store) => ({
-    start: () => store.startMemoryDaemon(),
-    stop: async () => {
-      await bridge.memory.stop();
+  memory: (store) => {
+    const stop = async (): Promise<string | null> => {
+      try {
+        await bridge.memory.stop();
+      } catch (e) {
+        return errorText(e);
+      }
       await store.refreshMemoryStatus();
-    },
-  }),
+      return null;
+    };
+    return { start: () => store.startMemoryDaemon(), stop, reset: stop };
+  },
   hermes: () => ({
     start: () => startRuntime("hermes"),
     stop: () => stopRuntime("hermes"),
+    reset: () => stopRuntime("hermes"),
   }),
 };
+
+const ACTION_LABEL: Record<ControlAction, string> = { start: "Start", stop: "Stop", reset: "Reset" };
 
 /** The state word for a row: the reported phase, or what the read was when there is none. */
 function stateWord(e: ServiceEntry): string {
@@ -125,9 +140,10 @@ function controlFor(e: ServiceEntry): ControlAction | null {
   if (e.observation === "notSupervised") return "start";
   if (e.observation !== "observed") return null;
   switch (e.phase) {
+    // A supervisor still holds the slot: its owner refuses a Start until its stop releases it.
     case "stopped":
     case "failed":
-      return "start";
+      return "reset";
     case "starting":
     case "alive":
     case "backoff":
@@ -143,12 +159,14 @@ function ServiceRow({
   e,
   takenAt,
   pending,
+  refusal,
   onControl,
   onOpenLogs,
 }: {
   e: ServiceEntry;
   takenAt: number;
   pending: ControlAction | undefined;
+  refusal: Refusal | undefined;
   onControl: (id: ServiceId, action: ControlAction) => void;
   onOpenLogs: () => void;
 }) {
@@ -172,7 +190,7 @@ function ServiceRow({
         <span style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           {pending && (
             <span className="mono" style={mono}>
-              {pending === "start" ? "Start requested" : "Stop requested"}
+              {ACTION_LABEL[pending]} requested
             </span>
           )}
           {action && (
@@ -182,11 +200,16 @@ function ServiceRow({
               disabled={pending !== undefined}
               onClick={() => onControl(e.id, action)}
             >
-              {action === "start" ? "Start" : "Stop"}
+              {ACTION_LABEL[action]}
             </button>
           )}
         </span>
       </div>
+      {refusal && (
+        <span role="alert" style={{ fontSize: 12, color: "var(--warn, var(--tx-2))" }}>
+          {ACTION_LABEL[refusal.action]} refused: {refusal.reason}
+        </span>
+      )}
       {e.observation === "notSupervised" && (
         <span style={{ fontSize: 12, color: "var(--tx-3)" }}>
           No supervisor holds it in this session: it hasn&apos;t been started, or its owner stopped it.
@@ -245,13 +268,14 @@ export function ServicesView({
   snapshot,
   error,
   pending,
+  refusals,
   onControl,
   onOpenLogs,
 }: {
   snapshot: ServicesSnapshot | null;
   error: string | null;
   pending: Partial<Record<ServiceId, ControlAction>>;
-  refusals?: Partial<Record<ServiceId, Refusal>>;
+  refusals: Partial<Record<ServiceId, Refusal>>;
   onControl: (id: ServiceId, action: ControlAction) => void;
   onOpenLogs: () => void;
 }) {
@@ -272,7 +296,7 @@ export function ServicesView({
           <div style={{ padding: 16, fontSize: 12.5, color: "var(--tx-3)" }}>Reading services…</div>
         ) : (
           snapshot.services.map((e) => (
-            <ServiceRow key={e.id} e={e} takenAt={snapshot.takenAtUnixMs} pending={pending[e.id]} onControl={onControl} onOpenLogs={onOpenLogs} />
+            <ServiceRow key={e.id} e={e} takenAt={snapshot.takenAtUnixMs} pending={pending[e.id]} refusal={refusals[e.id]} onControl={onControl} onOpenLogs={onOpenLogs} />
           ))
         )}
       </div>
@@ -290,6 +314,7 @@ export function NodeServices({ store }: SurfaceProps) {
   const [snapshot, setSnapshot] = useState<ServicesSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<Partial<Record<ServiceId, ControlAction>>>({});
+  const [refusals, setRefusals] = useState<Partial<Record<ServiceId, Refusal>>>({});
   const live = useRef(true);
 
   const read = useCallback(async () => {
@@ -321,15 +346,20 @@ export function NodeServices({ store }: SurfaceProps) {
       const control = SERVICE_CONTROLS[id];
       if (!control) return;
       setPending((p) => ({ ...p, [id]: action }));
-      void (control(store)[action] ?? (async () => {}))()
-        .catch((e: unknown) => store.toast(`${action === "start" ? "Start" : "Stop"} failed: ${errorText(e)}`))
-        .finally(() => {
-          if (live.current) setPending((p) => ({ ...p, [id]: undefined }));
+      setRefusals((r) => ({ ...r, [id]: undefined }));
+      void control(store)
+        [action]()
+        .catch((e: unknown) => errorText(e))
+        .then((reason) => {
+          if (!live.current) return;
+          setPending((p) => ({ ...p, [id]: undefined }));
+          // The owner's refusal stays on the row until the next control on it.
+          if (reason) setRefusals((r) => ({ ...r, [id]: { action, reason } }));
           void read();
         });
     },
     [store, read],
   );
 
-  return <ServicesView snapshot={snapshot} error={error} pending={pending} onControl={onControl} onOpenLogs={() => store.go("node/advanced")} />;
+  return <ServicesView snapshot={snapshot} error={error} pending={pending} refusals={refusals} onControl={onControl} onOpenLogs={() => store.go("node/advanced")} />;
 }
