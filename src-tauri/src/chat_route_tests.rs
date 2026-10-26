@@ -297,3 +297,56 @@ fn tripwire_local_only_never_yields_a_demo_or_remote_state() {
         }
     }
 }
+
+/// #420: overlapping `chat_route_set` calls each write their own temp file, so none fails with a
+/// spurious error and the stored route is exactly one of the values written, never a mix.
+#[test]
+fn concurrent_sets_never_fail_and_leave_one_written_value() {
+    const THREADS: u64 = 8;
+    const SETS: u64 = 30;
+    let d = tmp("concurrent");
+    let route_of = |t: u64| {
+        if t % 2 == 0 {
+            ChatRoute::LocalOnly
+        } else {
+            ChatRoute::AskFirst
+        }
+    };
+    let errors: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let d = d.clone();
+                s.spawn(move || {
+                    (0..SETS)
+                        .filter_map(|i| set(&d, route_of(t), t * 1000 + i).err())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("set thread"))
+            .collect()
+    });
+    assert!(
+        errors.is_empty(),
+        "no set fails; {} of {} failed, first: {:?}",
+        errors.len(),
+        THREADS * SETS,
+        errors.first()
+    );
+    let back = load(&d).expect("the stored route parses");
+    let at = back.changed_at_ms.expect("a written value carries its time");
+    assert!(
+        at / 1000 < THREADS && at % 1000 < SETS && back.route == route_of(at / 1000),
+        "the stored route is one of the values written: {back:?}"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(&d)
+        .expect("dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n != ROUTE_FILE)
+        .collect();
+    assert!(leftovers.is_empty(), "no temp file is left: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(d);
+}

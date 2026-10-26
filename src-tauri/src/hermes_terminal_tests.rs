@@ -231,3 +231,55 @@ fn the_commands_are_registered_and_in_the_main_window_acl() {
         );
     }
 }
+
+/// #420 (same pattern): overlapping saves each write their own temp file, so none fails with a
+/// spurious error and the stored switch is exactly one of the values written.
+#[test]
+fn concurrent_saves_never_fail_and_leave_one_written_value() {
+    const THREADS: u64 = 8;
+    const SAVES: u64 = 30;
+    let d = tmp("concurrent");
+    let errors: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let d = d.clone();
+                s.spawn(move || {
+                    (0..SAVES)
+                        .filter_map(|i| {
+                            let st = TerminalSettings {
+                                enabled: t % 2 == 0,
+                                changed_at_ms: Some(t * 1000 + i),
+                            };
+                            save(&d, &st).err()
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("save thread"))
+            .collect()
+    });
+    assert!(
+        errors.is_empty(),
+        "no save fails; {} of {} failed, first: {:?}",
+        errors.len(),
+        THREADS * SAVES,
+        errors.first()
+    );
+    let back = load(&d).expect("the stored setting parses");
+    let at = back.changed_at_ms.expect("a written value carries its time");
+    assert!(
+        at / 1000 < THREADS && at % 1000 < SAVES && back.enabled == ((at / 1000) % 2 == 0),
+        "the stored setting is one of the values written: {back:?}"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(&d)
+        .expect("dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n != SETTINGS_FILE)
+        .collect();
+    assert!(leftovers.is_empty(), "no temp file is left: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(d);
+}
