@@ -216,6 +216,7 @@ export function providerClass(kind: string): ProviderClass {
   if (kind === "local" || kind === "sidecar") return "local";
   if (kind === "real" || kind === "agent") return "gateway";
   // D-11: the Hermes loop on a member-chosen cloud model, through the core model proxy.
+  if (kind === "sidecar-cloud") return "cloud";
   if (kind === "demo") return "demo";
   return "unknown";
 }

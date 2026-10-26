@@ -584,19 +584,48 @@ impl AiManager {
         model: &str,
         api_key: &str,
     ) -> std::result::Result<(), String> {
-        let _ = proxy;
         validate_provider_id(provider_id).map_err(|e| e.to_string())?;
         let base_url = validate_https_base_url(base_url).map_err(|e| e.to_string())?;
-        if api_key.trim().is_empty() || model.trim().is_empty() {
+        // A key is required and must not be trivially empty/whitespace.
+        if api_key.trim().is_empty() {
             return Err(AiError::BadKey.to_string());
         }
-        let blob = json!({"baseURL": base_url, "model": model.trim(), "apiKey": api_key}).to_string();
-        self.keyring.set(&account_for(provider_id), &blob).map_err(|e| e.to_string())?;
-        if self.keyring.get(KEYRING_DEFAULT_ACCOUNT).map_err(|e| e.to_string())?.is_none() {
-            self.keyring.set(KEYRING_DEFAULT_ACCOUNT, provider_id).map_err(|e| e.to_string())?;
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(AiError::BadKey.to_string());
+        }
+        // D-11: the key goes into the model proxy's store (tested live where the endpoint is
+        // pinned or confirmed); only {baseURL, model} stays here.
+        let pid = proxy_provider_for(proxy, provider_id, &base_url, model)?;
+        let key = SecretString::new(api_key.to_string());
+        if proxy.resolves(&pid) {
+            proxy
+                .set_key(pid.as_str(), key, crate::model_proxy::now_ms())
+                .map_err(|e| e.to_string())?;
+        } else {
+            // An endpoint the member has not confirmed yet: stored without a live test (no call
+            // may go there before the confirmation); a key entered now replaces an older one.
+            proxy
+                .import_key(&pid, key, true)
+                .map_err(|e| e.to_string())?;
+        }
+        proxy
+            .approve_model(&pid, model)
+            .map_err(|e| e.to_string())?;
+        self.write_config(provider_id, &base_url, model)
+            .map_err(|e| e.to_string())?;
+        // First-configured provider becomes the default route (non-secret id).
+        let default = self
+            .keyring
+            .get(KEYRING_DEFAULT_ACCOUNT)
+            .map_err(|e| e.to_string())?;
+        if default.is_none() {
+            self.keyring
+                .set(KEYRING_DEFAULT_ACCOUNT, provider_id)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
-}
+    }
 
     /// Write the member's chat choice (no key).
     fn write_config(&self, provider_id: &str, base_url: &str, model: &str) -> Result<()> {
@@ -620,9 +649,24 @@ impl AiManager {
         proxy: &ModelProxy,
         provider_id: &str,
     ) -> std::result::Result<(), String> {
-        let _ = (proxy, provider_id);
-        Ok(())
-}
+        let cfg = match self.read_config(provider_id) {
+            Ok(c) => c,
+            Err(AiError::NotConfigured) => return Ok(()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let Some(key) = cfg.api_key else {
+            return Ok(());
+        };
+        let pid = proxy_provider_for(proxy, provider_id, &cfg.base_url, &cfg.model)?;
+        proxy
+            .import_key(&pid, key, false)
+            .map_err(|e| e.to_string())?;
+        proxy
+            .approve_model(&pid, &cfg.model)
+            .map_err(|e| e.to_string())?;
+        self.write_config(provider_id, &cfg.base_url, &cfg.model)
+            .map_err(|e| e.to_string())
+    }
 
     /// The proxy provider and model a preset's sends go to (after migrating its key).
     fn route_for(
@@ -675,14 +719,19 @@ impl AiManager {
         path: &'static str,
         body: &Value,
     ) -> std::result::Result<String, String> {
-        let _ = proxy;
         if permit.provider_id() != provider_id {
             return Err(AiError::NotConfirmed.to_string());
         }
-        let cfg = self.read_config(provider_id).map_err(|e| e.to_string())?;
-        let key = cfg.api_key.as_ref().map(|k| k.expose().to_string()).unwrap_or_default();
-        self.http.post_json(&format!("{}{path}", cfg.base_url), &key, body).map_err(|e| e.to_string())
-}
+        let route = self.route_for(proxy, provider_id)?;
+        let model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(&route.model)
+            .to_string();
+        proxy
+            .post_fixed(&route.provider, &model, MEDIA_SESSION, path, body)
+            .map_err(|e| e.to_string())
+    }
 
     /// The current default provider id, if one is set.
     fn default_provider(&self) -> Result<Option<String>> {
@@ -706,8 +755,11 @@ impl AiManager {
                         serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
                     // Configured = a key is ready for this preset's provider (in the proxy's store,
                     // or still here waiting to be moved there on first use).
-                    let _ = proxy;
-                    let configured = true;
+                    let configured = cfg.api_key.is_some()
+                        || proxy
+                            .provider_for_base(&cfg.base_url)
+                            .or_else(|_| proxy.custom_for_base(&cfg.base_url))
+                            .is_ok_and(|pid| proxy.key_configured(&pid));
                     out.push(ProviderStatus {
                         id: id.to_string(),
                         base_url: cfg.base_url.clone(),
@@ -753,16 +805,16 @@ impl AiManager {
         messages_json: &str,
         context_json: &str,
     ) -> std::result::Result<String, String> {
-        let _ = proxy;
         if permit.provider_id() != provider_id {
             return Err(AiError::NotConfirmed.to_string());
         }
-        let cfg = self.read_config(provider_id).map_err(|e| e.to_string())?;
-        let key = cfg.api_key.as_ref().map(|k| k.expose().to_string()).unwrap_or_default();
-        let body = build_chat_body(&cfg.model, messages_json, context_json).map_err(|e| e.to_string())?;
-        let resp = self.http.post_json(&format!("{}/chat/completions", cfg.base_url), &key, &body).map_err(|e| e.to_string())?;
+        // INVARIANT 3: the endpoint comes from the STORED config, never the caller.
+        let route = self.route_for(proxy, provider_id)?;
+        let body = build_chat_body(&route.model, messages_json, context_json)
+            .map_err(|e| e.to_string())?;
+        let resp = proxy_send(proxy, &route, &body)?;
         parse_completion(&resp).map_err(|e| e.to_string())
-}
+    }
 
     /// W3.3 — one turn of the agentic loop: POST the tool-enabled body to the
     /// stored endpoint and return the assistant MESSAGE (content and/or tool_calls)
@@ -778,16 +830,16 @@ impl AiManager {
         tools_json: &str,
         context_json: &str,
     ) -> std::result::Result<String, String> {
-        let _ = proxy;
         if permit.provider_id() != provider_id {
             return Err(AiError::NotConfirmed.to_string());
         }
-        let cfg = self.read_config(provider_id).map_err(|e| e.to_string())?;
-        let key = cfg.api_key.as_ref().map(|k| k.expose().to_string()).unwrap_or_default();
-        let body = build_chat_body_with_tools(&cfg.model, messages_json, tools_json, context_json).map_err(|e| e.to_string())?;
-        let resp = self.http.post_json(&format!("{}/chat/completions", cfg.base_url), &key, &body).map_err(|e| e.to_string())?;
+        let route = self.route_for(proxy, provider_id)?;
+        let body =
+            build_chat_body_with_tools(&route.model, messages_json, tools_json, context_json)
+                .map_err(|e| e.to_string())?;
+        let resp = proxy_send(proxy, &route, &body)?;
         parse_chat_message(&resp).map_err(|e| e.to_string())
-}
+    }
 
     /// **BC-3.2 — LOCAL inference (F-1 hardened).** POST the OpenAI chat body to
     /// the LOCAL `llama-server` on the loopback endpoint, presenting the serve

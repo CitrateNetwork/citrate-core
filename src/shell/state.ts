@@ -1087,7 +1087,10 @@ export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "p
 
 /** D-11: a stored `hermesCloudModel` (two short, non-empty ids), or null. */
 export function validCloudModel(v: unknown): AppState["hermesCloudModel"] {
-  return (v ?? null) as AppState["hermesCloudModel"];
+  if (!v || typeof v !== "object") return null;
+  const { providerId, model } = v as { providerId?: unknown; model?: unknown };
+  const ok = (x: unknown, max: number): x is string => typeof x === "string" && x.trim().length > 0 && x.length <= max;
+  return ok(providerId, 64) && ok(model, 200) && providerId !== "cognition" ? { providerId, model } : null;
 }
 
 export function loadState(): AppState {

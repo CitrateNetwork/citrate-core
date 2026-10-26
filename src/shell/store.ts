@@ -549,11 +549,8 @@ export function cloudModelFor(
   sidecarLoop: boolean,
   mode: "sim" | "tauri",
 ): { providerId: string; model: string } | null {
-  void choice;
-  void route;
-  void sidecarLoop;
-  void mode;
-  return null;
+  if (!choice || route === "local_only" || !sidecarLoop || mode !== "tauri") return null;
+  return choice;
 }
 
 /** The states in which a local model is set up but its server is not running. */

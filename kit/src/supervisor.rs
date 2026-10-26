@@ -381,6 +381,9 @@ impl SidecarSpec {
     fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.args(&self.args);
+        for k in &self.env_remove {
+            cmd.env_remove(k);
+        }
         for (k, v) in &self.env {
             cmd.env(k, v);
         }

@@ -71,7 +71,11 @@ pub(crate) fn new_route_label() -> String {
 /// shaped like a vendor key (`telemetry::has_vendor_key_shape`; the proxy's own route token is
 /// not one). `what` names the crossing in the error.
 pub fn ensure_keyless(what: &str, text: &str) -> Result<(), String> {
-    let _ = (what, text);
+    if crate::telemetry::has_vendor_key_shape(text) {
+        return Err(format!(
+            "refused: the {what} for the Hermes agent carries something shaped like an API key, and keys never leave core"
+        ));
+    }
     Ok(())
 }
 
@@ -93,8 +97,13 @@ pub const VENDOR_KEY_ENV: &[&str] = &[
 /// The inherited variables the sidecar must not see: a vendor SDK's key variable, or any value
 /// shaped like a vendor key.
 pub fn inherited_key_vars(inherited: impl Iterator<Item = (String, String)>) -> Vec<String> {
-    inherited.for_each(drop);
-    Vec::new()
+    inherited
+        .filter(|(k, v)| {
+            VENDOR_KEY_ENV.iter().any(|n| n.eq_ignore_ascii_case(k))
+                || crate::telemetry::has_vendor_key_shape(v)
+        })
+        .map(|(k, _)| k)
+        .collect()
 }
 
 /// The session body for a cloud model: the local body with the proxy's endpoint, plus
@@ -117,7 +126,7 @@ pub fn build_cloud_session_body(
     )?;
     let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     if let Some(llm) = v.get_mut("llm").and_then(|l| l.as_object_mut()) {
-        let _ = llm;
+        llm.insert("proxied".into(), serde_json::Value::Bool(true));
     }
     let out = v.to_string();
     ensure_keyless("session", &out)?;
@@ -135,6 +144,9 @@ pub fn mint_cloud_route(
     label: &str,
 ) -> Result<ProxyGrant, String> {
     let provider = ProviderId::parse(provider_id).ok_or("unknown provider")?;
+    if provider.is_delegate() {
+        return Err("Cognition runs delegated tasks; choose a chat model for Hermes".into());
+    }
     let model = model.trim();
     if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
         return Err("choose the model Hermes should use".into());
@@ -145,6 +157,9 @@ pub fn mint_cloud_route(
                 .into(),
         );
     }
+    proxy
+        .approve_model(&provider, model)
+        .map_err(|e| e.to_string())?;
     proxy
         .mint_route(
             ProxyRoute {
@@ -194,20 +209,27 @@ pub fn check_send(
     session_id: &str,
     route_dir: &std::path::Path,
 ) -> Result<(), String> {
-    let _ = (manager, session_id, route_dir);
+    if manager.cloud.is_cloud(session_id) {
+        crate::chat_route::remote_chat_allowed(route_dir)?;
+    }
     Ok(())
 }
 
 /// The session closed: revoke its route.
 pub fn on_close(manager: &HermesManager, proxy: Option<&ModelProxy>, session_id: &str) {
-    let _ = proxy;
-    manager.cloud.forget(session_id);
+    if let Some(label) = manager.cloud.forget(session_id) {
+        if let Some(p) = proxy {
+            p.revoke_session(&label);
+        }
+    }
 }
 
 /// The sidecar stopped (`HermesManager::stop` forgot its cloud sessions): every cloud route is
 /// revoked.
 pub fn on_stop(proxy: Option<&ModelProxy>) {
-    let _ = proxy;
+    if let Some(p) = proxy {
+        p.revoke_sessions_with_prefix(CLOUD_ROUTE_PREFIX);
+    }
 }
 
 #[cfg(test)]

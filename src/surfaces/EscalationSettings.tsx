@@ -133,7 +133,7 @@ export function EscalationSettingsView(p: EscalationViewProps) {
               <span style={{ flex: 1, minWidth: 160 }}>
                 <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{e.destination}</span>
                 <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 1 }}>
-                  {e.model} · {formatMicros(e.inputMicrosPerMtok)} in / {formatMicros(e.outputMicrosPerMtok)} out per 1M tokens · key sealed
+                  {e.model} · {formatMicros(e.inputMicrosPerMtok)} in / {formatMicros(e.outputMicrosPerMtok)} out per 1M tokens · key kept on this computer
                 </span>
               </span>
               <button className="btn btn-danger btn-sm" onClick={() => p.onRemove(e.id)} disabled={p.busy}>

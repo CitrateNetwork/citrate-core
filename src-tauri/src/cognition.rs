@@ -90,8 +90,14 @@ impl ModelProvider for CognitionAdapter {
     }
 
     fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)
-}
+        basic_key_shape(key)?;
+        if !key.starts_with("cog_") {
+            return Err(ProviderError::KeyFormat(
+                "a Devin API key starts with cog_ (a service user key or personal access token from Devin's Settings › Devin API)",
+            ));
+        }
+        Ok(())
+    }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {
         let v = get_json(ctx, "/self")?;
@@ -187,7 +193,58 @@ fn clean(s: &str) -> String {
 
 /// Check and normalize a proposed scope.
 pub fn validate_scope(s: &DelegationScope) -> Result<DelegationScope, String> {
-        Ok(s.clone())
+    let task = clean(&s.task);
+    if task.is_empty() || task.chars().count() > MAX_TASK_CHARS {
+        return Err(format!(
+            "describe the task in 1 to {MAX_TASK_CHARS} characters"
+        ));
+    }
+    let repo = s.repo.trim().to_string();
+    let parts: Vec<&str> = repo.split('/').collect();
+    let seg_ok = |p: &str| {
+        !p.is_empty()
+            && p.len() <= 100
+            && p != "."
+            && p != ".."
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    if parts.len() != 2 || !parts.iter().all(|p| seg_ok(p)) {
+        return Err("name one repository as owner/name".into());
+    }
+    if s.files.len() > MAX_FILES {
+        return Err(format!("name at most {MAX_FILES} files"));
+    }
+    let mut files = Vec::with_capacity(s.files.len());
+    for f in &s.files {
+        let f = f.trim();
+        let bad = f.is_empty()
+            || f.chars().count() > MAX_PATH_CHARS
+            || f.starts_with('/')
+            || f.contains('\\')
+            || f.chars().any(char::is_control)
+            || f.split('/').any(|seg| seg == ".." || seg.is_empty());
+        if bad {
+            return Err(format!(
+                "{f:?} is not a file path inside the repository (relative, no ..)"
+            ));
+        }
+        if !files.iter().any(|x: &String| x == f) {
+            files.push(f.to_string());
+        }
+    }
+    let context = clean(&s.context);
+    if context.chars().count() > MAX_CONTEXT_CHARS {
+        return Err(format!(
+            "keep the context under {MAX_CONTEXT_CHARS} characters"
+        ));
+    }
+    Ok(DelegationScope {
+        task,
+        repo,
+        files,
+        context,
+    })
 }
 
 /// The exact prompt sent for a scope. Deterministic: the card shows this text.
@@ -323,10 +380,21 @@ impl DelegationBook {
 
     /// The member approved `id` with the hash the card showed: hand out that stored scope once.
     pub fn take_approved(&mut self, id: &str, hash: &str, now_ms: u64) -> Result<Pending, String> {
-        let _ = (hash, now_ms);
-        let i = self.pending.iter().position(|p| p.id == id).ok_or("unknown")?;
-        Ok(self.pending.remove(i))
-}
+        let i =
+            self.pending.iter().position(|p| p.id == id).ok_or(
+                "that delegation was already used, declined or is unknown; nothing was sent",
+            )?;
+        let p = self.pending.remove(i);
+        if now_ms.saturating_sub(p.minted_ms) >= APPROVAL_TTL_MS || now_ms < p.minted_ms {
+            return Err("that approval expired; nothing was sent".into());
+        }
+        if p.hash != hash {
+            return Err(
+                "the approval does not match the task that was shown; nothing was sent".into(),
+            );
+        }
+        Ok(p)
+    }
 
     /// The member declined (or the card closed): forget the proposal.
     pub fn decline(&mut self, id: &str) -> bool {
@@ -388,7 +456,11 @@ fn clip(s: &str, n: usize) -> String {
 
 /// A Devin session URL is shown only when it is on Devin's own web app.
 pub fn safe_session_url(u: Option<&str>) -> Option<String> {
-        u.map(str::to_string)
+    let u = u?;
+    let parsed = url::Url::parse(u).ok()?;
+    let host = parsed.host_str()?;
+    (parsed.scheme() == "https" && (host == "app.devin.ai" || host.ends_with(".devin.ai")))
+        .then(|| u.to_string())
 }
 
 /// Build the view from `GET …/sessions/{id}` and `GET …/messages`.

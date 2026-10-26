@@ -99,7 +99,11 @@ impl ProviderId {
         if let Some(v) = Vendor::from_id(id) {
             return Some(ProviderId::Vendor(v));
         }
-
+        match id {
+            GATEWAY_ID => return Some(ProviderId::Gateway),
+            COGNITION_ID => return Some(ProviderId::Cognition),
+            _ => {}
+        }
         let slug = id.strip_prefix(CUSTOM_PREFIX)?;
         let ok = !slug.is_empty()
             && slug.len() <= 40

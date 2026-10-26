@@ -29,8 +29,14 @@ export const MAX_MODELS_PER_PROVIDER = 60;
 /** The models Hermes can run on: providers with a stored key, an adapter in this build, no halt,
  *  and (custom endpoints) the member's confirmation. Cognition is a delegate, never a chat model. */
 export function cloudModelOptions(statuses: readonly ProviderStatus[]): CloudModelOption[] {
-  void statuses;
-  return [];
+  const out: CloudModelOption[] = [];
+  for (const p of statuses) {
+    if (!p.keyConfigured || !p.adapter || p.halt || p.kind === "delegate" || p.kind === "gateway") continue;
+    if (p.kind === "custom" && !p.confirmed) continue;
+    const models = [...new Set([...p.approvedModels, ...p.listedModels])].slice(0, MAX_MODELS_PER_PROVIDER);
+    for (const model of models) out.push({ providerId: p.id, providerName: p.name, model, unverified: p.kind === "custom" });
+  }
+  return out;
 }
 
 const key = (c: { providerId: string; model: string }) => `${c.providerId}::${c.model}`;

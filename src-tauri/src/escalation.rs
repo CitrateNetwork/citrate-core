@@ -901,6 +901,11 @@ pub fn add_endpoint_with_key(
     now_ms: u64,
 ) -> Result<EndpointView, EscError> {
     validate_endpoint_input(input).map_err(EscError::Invalid)?;
+    if !is_local_endpoint(input.base_url.trim()) {
+        return Err(EscError::Invalid(
+            "only an endpoint on this computer keeps its key here".into(),
+        ));
+    }
     if !valid_key(api_key) {
         return Err(EscError::Invalid(
             "the API key is empty, too long, or has spaces or control characters".into(),
@@ -932,8 +937,30 @@ pub fn store_proxied_key(
     input: &EndpointInput,
     api_key: SecretString,
 ) -> Result<crate::model_provider::ProviderId, EscError> {
-    let _ = (proxy, input, api_key);
-    Err(EscError::Invalid("RED stub".into()))
+    validate_endpoint_input(input).map_err(EscError::Invalid)?;
+    if !valid_key(api_key.expose()) {
+        return Err(EscError::Invalid(
+            "the API key is empty, too long, or has spaces or control characters".into(),
+        ));
+    }
+    let base = input.base_url.trim();
+    let model = input.model.trim();
+    let pid = proxy
+        .provider_or_custom(input.label.trim(), base, model)
+        .map_err(|e| EscError::Invalid(e.to_string()))?;
+    if proxy.resolves(&pid) {
+        proxy
+            .set_key(pid.as_str(), api_key, crate::model_proxy::now_ms())
+            .map_err(|e| EscError::Invalid(e.to_string()))?;
+    } else {
+        proxy
+            .import_key(&pid, api_key, true)
+            .map_err(|e| EscError::Invalid(e.to_string()))?;
+    }
+    proxy
+        .approve_model(&pid, model)
+        .map_err(|e| EscError::Invalid(e.to_string()))?;
+    Ok(pid)
 }
 
 /// D-11: the proxy provider an https endpoint's requests go to, ready to call. A key stored here
@@ -945,8 +972,36 @@ pub fn proxied_provider(
     keyring: &dyn AiKeyring,
     e: &Endpoint,
 ) -> Result<crate::model_provider::ProviderId, EscError> {
-    let _ = (proxy, keyring, e);
-    Err(EscError::Invalid("RED stub".into()))
+    let legacy = keyring
+        .get(&key_account(&e.id))
+        .map_err(|_| EscError::Storage("the OS keyring is unavailable".into()))?;
+    if let Some(key) = legacy {
+        let pid = proxy
+            .provider_or_custom(&e.label, &e.base_url, &e.model)
+            .map_err(|x| EscError::Invalid(x.to_string()))?;
+        proxy
+            .import_key(&pid, SecretString::new(key), false)
+            .map_err(|x| EscError::Invalid(x.to_string()))?;
+        keyring
+            .delete(&key_account(&e.id))
+            .map_err(|_| EscError::Storage("the OS keyring is unavailable".into()))?;
+    }
+    let pid = proxy.provider_for_base(&e.base_url).map_err(|x| {
+        EscError::Invalid(format!(
+            "{x}. Escalation to {} goes through Settings › Models now; nothing was sent",
+            e.destination()
+        ))
+    })?;
+    if !proxy.key_configured(&pid) {
+        return Err(EscError::Invalid(format!(
+            "no key is connected for {}; connect it in Settings › Models. Nothing was sent",
+            e.destination()
+        )));
+    }
+    proxy
+        .approve_model(&pid, &e.model)
+        .map_err(|x| EscError::Invalid(x.to_string()))?;
+    Ok(pid)
 }
 
 /// Delete the key, then the record (and its quotes).
