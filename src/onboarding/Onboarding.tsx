@@ -7,6 +7,8 @@ import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import { PendingJoinCard, InvitePasteField } from "../surfaces/PendingJoinCard";
+import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -45,7 +47,7 @@ const checkBig = (w: number) => (
 );
 
 export function Onboarding({ store, s }: { store: Store; s: AppState }) {
-  const stageOrder = ["s1", "s2", "s3", "s4", "s5", "s6"];
+  const stageOrder = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"];
   const cur = stageOrder.indexOf(s.stage);
   const stages: [string, string][] = [
     ["s1", "Sign in"],
@@ -54,6 +56,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
     ["s4", "Wallet ready"],
     ["s5", "Grant + stake"],
     ["s6", "Node ignition"],
+    ["s7", "Activate validator"],
   ];
 
   // S0
@@ -85,6 +88,11 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
+          {s.pendingJoin && (
+            <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
+              <PendingJoinCard store={store} s={s} />
+            </div>
+          )}
           <div style={eyebrow}>Chain 40204 · testnet-beta</div>
         </div>
       </div>
@@ -141,12 +149,14 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
         <div style={{ minHeight: 0, overflow: "auto", display: "flex", justifyContent: "center", padding: "56px 32px" }}>
           <div style={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", gap: 22 }}>
             <ClaimBanner store={store} s={s} />
+            <OnboardingInvite store={store} s={s} />
             {s.stage === "s1" && <S1 store={store} s={s} />}
             {s.stage === "s2" && <S2 store={store} s={s} />}
             {s.stage === "s3" && <S3 store={store} s={s} />}
             {s.stage === "s4" && <S4 store={store} s={s} />}
             {s.stage === "s5" && <S5 store={store} s={s} />}
             {s.stage === "s6" && <S6 store={store} s={s} />}
+            {s.stage === "s7" && <S7 store={store} s={s} />}
           </div>
         </div>
       </div>
@@ -280,6 +290,31 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
  * one-tap switch. It is DISPLAY ONLY — it grants nothing; the authority sign-in and the
  * server-side sub↔order reconciler are the sole gates (A8/A2).
  */
+// GROW-S1 task 12 — an invite that arrived (deep link) or was pasted waits here through setup. Before
+// sign-in + wallet the card says the join comes after setup; from the wallet step on it offers
+// Review, then one explicit "Join <cluster>". Never a silent join.
+function OnboardingInvite({ store, s }: { store: Store; s: AppState }) {
+  if (s.pendingJoin) return <PendingJoinCard store={store} s={s} />;
+  return (
+    <details className="surface" style={{ padding: "10px 14px" }} data-testid="onboarding-invite-paste">
+      <summary style={{ fontSize: 12.5, color: "var(--tx-2)", cursor: "pointer" }}>Have an invite?</summary>
+      <div style={{ paddingTop: 10 }}>
+        <InvitePasteField
+          onSubmit={async (text) => {
+            if (await store.acceptInviteInput(text)) return;
+            if (/^citrate:\/\/invite\?/i.test(text)) {
+              store.setState({ pendingInvite: { url: text } });
+              store.toast("Got it. You can join that group from Groups once setup finishes.");
+              return;
+            }
+            store.toast("That doesn't look like an invite link or code.");
+          }}
+        />
+      </div>
+    </details>
+  );
+}
+
 function ClaimBanner({ store, s }: { store: Store; s: AppState }) {
   const claim = s.pendingClaim;
   if (!claim?.email) return null;
@@ -952,23 +987,18 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             </div>
           </div>
         )}
-        {/* SYNCED = the node is caught up and the treasury has granted + funded the
-            member's MemberBond clone with the 32k, but the member has not activated it
-            yet. Onboarding auto-opens the activation ceremony (maybeAutoBond); this is
-            the visible fallback if the member dismissed it — one click re-opens the
-            MemberBond.activate review (Rule 3: the human still approves). */}
+        {/* SYNCED = the node is caught up. Activating the validator bond is its own step now
+            (S7 · Activate validator, Join-8), which explains the transaction and opens the
+            Signature Ceremony only on the member's click. */}
         {s.node === "synced" && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced — not yet a validator</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · not a validator yet</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                bond 32,000 SALT to enter the active set and earn the proposer subsidy
+                {s.hasGrant ? "next: activate your validator, after the local model below" : "caught up with the network"}
               </div>
             </div>
-            <button className="btn btn-primary" onClick={() => void store.activateValidator()}>
-              Bond 32,000 SALT
-            </button>
           </div>
         )}
       </div>
@@ -1139,9 +1169,171 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
         <div className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
           huggingface.co/ggml-org/gemma-4-E4B-it-GGUF · sha256 {sha}
         </div>
-        <button className="btn btn-primary" disabled={!canEnter} onClick={() => store.onEnter()} data-testid="model-enter">
-          Enter your dashboard
+        <button className="btn btn-primary" disabled={!canEnter} onClick={() => store.onS6Continue()} data-testid="model-enter">
+          {s.hasGrant && s.stage === "s6" ? "Continue to Activate validator" : "Enter your dashboard"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Join-8 · S7 Activate validator. Runs after node sync for a member with a granted bond. Every
+// state word, condition and duration follows the UI truth contract v1 (§1, §2, §5); the logic
+// lives in ./activateValidator.ts. Activation only OPENS the Signature Ceremony (Rule 3).
+// =====================================================================
+const ACTIVATION_POLL_MS = 15_000;
+
+function GateRow({ ok, label, detail }: { ok: boolean | null; label: string; detail: string }) {
+  const color = ok === true ? "var(--ok)" : ok === false ? "var(--danger)" : "var(--tx-3)";
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+      <span className="mono" style={{ width: 14, flexShrink: 0, color }}>{ok === true ? "✓" : ok === false ? "×" : "—"}</span>
+      <span className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)", width: 120, flexShrink: 0 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 13, color: ok === false ? "var(--tx-1)" : "var(--tx-2)" }}>{detail}</span>
+    </div>
+  );
+}
+
+export function S7({ store, s }: { store: Store; s: AppState }) {
+  useEffect(() => {
+    void store.refreshActivation();
+    const t = setInterval(() => void store.refreshActivation("poll"), ACTIVATION_POLL_MS);
+    return () => clearInterval(t);
+  }, [store]);
+  const a = s.activation;
+  const linked = store.walletIsLinked();
+  const gate = activationGate(a, linked);
+  const phase = activationPhase(a, linked, s.s7TxHash);
+  const pendingTx = a?.tx && (!s.s7TxHash || a.tx.hash === s.s7TxHash) ? a.tx : null;
+  const vs = validatorState(a);
+  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "slashed";
+  const mismatch = keyMismatch(a);
+  return (
+    <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }} data-testid="s7">
+      <div style={eyebrow}>S7 · Activate validator</div>
+      <div style={h1}>Activate your validator</div>
+      <p style={body}>{ACTIVATE_EXPLANATION}</p>
+
+      <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+          <span style={eyebrow}>Validator status</span>
+          <span style={{ fontSize: 15, fontWeight: 500 }} data-testid="s7-state">{vs.word ?? "—"}</span>
+        </div>
+        <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>{vs.detail}</p>
+        {mismatch && (
+          <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--warn, var(--danger))", margin: 0 }} data-testid="s7-key-mismatch">
+            {mismatch}
+          </p>
+        )}
+        <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0, borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
+          {activationGrantCopy(a)}
+        </p>
+      </div>
+
+      {!settled && (
+        <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 8 }} data-testid="s7-gate">
+          <div style={eyebrow}>Before activation</div>
+          {gate.checks.map((c) => (
+            <GateRow key={c.key} ok={c.ok} label={c.label} detail={c.detail} />
+          ))}
+          {a && !a.nodeKeyReady && a.bondActivated === false && (
+            <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: "6px 0 0" }} data-testid="s7-key">
+              Activation stays hidden until this node has its validator key, because the registration is signed with it. The node mints the key
+              when block production is allowed for it{s.miningHold ? ". Right now: " + s.miningHold : "."} This step checks again every 15 s.
+            </p>
+          )}
+        </div>
+      )}
+
+      {phase === "ready" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div>
+            <button className="btn btn-primary btn-lg" onClick={() => void store.onS7Activate()} data-testid="s7-activate">
+              Activate validator
+            </button>
+          </div>
+          <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0 }}>
+            Opens the Signature Ceremony for one MemberBond.activate transaction. It moves no SALT from your wallet; your wallet pays the gas.
+          </p>
+        </div>
+      )}
+
+      {phase === "pending" && (s.s7TxHash || pendingTx) && (
+        <div className="surface" style={{ display: "flex", alignItems: "center", gap: 16, padding: "18px 20px" }} data-testid="s7-pending">
+          <div style={{ width: 40, height: 40, flexShrink: 0 }}>
+            <LoaderMark size={40} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Pending</div>
+            <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+              {pendingTx?.included === true && pendingTx.blockNumber != null
+                ? `Included in block ${fmtI(pendingTx.blockNumber)} · waiting for the bond to read activated`
+                : `tx ${short(pendingTx?.hash ?? s.s7TxHash ?? "")} · not in a block yet`}
+            </div>
+            {store.canForgetActivationTx(Date.now()) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => void store.onS7ForgetTx()} data-testid="s7-forget">
+                  Forget this transaction
+                </button>
+                <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
+                  It is not seen on the network yet after 10 minutes; it may still be included. If it was sent, a second activation reverts and costs only gas.
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {phase === "failed" && a?.tx && (
+        <div style={{ border: "1px solid var(--danger)", background: "var(--danger-bg)", borderRadius: "var(--r-2)", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }} data-testid="s7-failed">
+          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--danger)" }}>Activation transaction reverted</div>
+          <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+            tx {short(a.tx.hash)} was included in block {a.tx.blockNumber != null ? fmtI(a.tx.blockNumber) : "—"} and reverted. The bond is unchanged
+            (still locked, not staked). Check the conditions above, then try again.
+          </p>
+          <div>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => void store.onS7RetryAfterRevert()}
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      )}
+
+      {s.activationError && (
+        <p className="mono" style={{ fontSize: 11, color: "var(--warn, var(--tx-3))", margin: 0 }} data-testid="s7-read-error">
+          Last read failed: {s.activationError}. {a ? "Showing the previous read." : ""}
+        </p>
+      )}
+
+      {settled ? (
+        <div>
+          <button className="btn btn-primary btn-lg" onClick={() => store.onEnter()} data-testid="s7-enter">
+            Enter your dashboard
+          </button>
+        </div>
+      ) : (
+        <div style={{ borderTop: "1px solid var(--line-2)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div>
+            <button className="btn btn-ghost btn-lg" onClick={() => store.onS7Skip()} data-testid="s7-skip">
+              Explore free
+            </button>
+          </div>
+          <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0 }}>
+            Enter the app without activating. Your bond stays locked, not staked, and you can activate later from Node.
+          </p>
+        </div>
+      )}
+
+      <div className="mono" style={dataSrc}>
+        Data sources — MembershipStakeVault.bondOf · MemberBond.activated / principal / unlockBlock / unlockTimestamp · CitrateMemberSBT.isActive ·
+        ValidatorRegistry.validatorInfo / isActive / currentEpoch / EPOCH · local eth_syncing · block time{" "}
+        {a?.blockTimeMs != null ? fmtDuration(a.blockTimeMs) : "—"} (measured over the last 100 blocks)
       </div>
     </div>
   );

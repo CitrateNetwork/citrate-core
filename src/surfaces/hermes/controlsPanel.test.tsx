@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { ControlsPanel, CONTROL_ROWS, type ControlsIo } from "./ControlsPanel";
+import { ControlsPanel, CONTROL_DETAILS, CONTROL_ROWS, type ControlsIo } from "./ControlsPanel";
 import { DEFAULT_WEB_SETTINGS, type HermesWebStatus, type WebSettingsIo } from "../../agent/webSearch";
 import type { EscalationBudget, FlTrajectoryStatus } from "../../bridge/domains";
 import { daemonsSlice } from "../../daemons/slice";
@@ -184,7 +184,7 @@ async function click(el: Element | null) {
 }
 
 describe("Hermes › Controls, first depth (K2)", () => {
-  it("lists the six first-depth controls, each with a one-line description, a data source and an inert 'more'", async () => {
+  it("lists the six first-depth controls, each with a one-line description and a data source", async () => {
     await mount(harness());
     expect(CONTROL_ROWS.map((r) => r.id)).toEqual(["local-model", "web-search", "terminal", "daemons", "learn", "voice"]);
     for (const r of CONTROL_ROWS) {
@@ -194,11 +194,41 @@ describe("Hermes › Controls, first depth (K2)", () => {
       const row = $(`control-${r.id}`);
       expect(row).toBeTruthy();
       expect(row?.getAttribute("data-source")).toBe(r.source);
-      const more = $(`more-${r.id}`);
-      expect(more).toBeTruthy();
-      expect((more as unknown as HTMLButtonElement).disabled).toBe(true);
-      expect(more?.textContent).toContain("coming next");
     }
+  });
+
+  it("each row's Details opens its second-depth section (or Hermes › Learn for learning)", async () => {
+    const opened: string[] = [];
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const h = harness();
+    await act(async () => {
+      root?.render(<ControlsPanel store={fakeStore()} s={{ hermesTerminal: false, hermesReadAloud: false }} io={h.io} onDetails={(id) => opened.push(id)} />);
+    });
+    await flush();
+    for (const r of CONTROL_ROWS) {
+      const more = $(`more-${r.id}`) as unknown as HTMLButtonElement | null;
+      expect(more, r.id).toBeTruthy();
+      expect(more?.disabled, r.id).toBe(false);
+      expect(more?.textContent).toContain("Details");
+      expect(more?.textContent).not.toContain("coming next");
+      await click(more);
+    }
+    expect(opened).toEqual(["local-model", "web-search", "terminal", "daemons", "learn", "voice"]);
+    expect(CONTROL_DETAILS).toEqual({
+      "local-model": { route: "hermes/controls/details", sSec: "ai" },
+      "web-search": { route: "hermes/controls/details", sSec: "web" },
+      terminal: { route: "hermes/controls/details", sSec: "terminal" },
+      daemons: { route: "hermes/controls/details", sSec: "budgets" },
+      learn: { route: "hermes/learn" },
+      voice: { route: "hermes/controls/details", sSec: "personas" },
+    });
+  });
+
+  it("without a Details handler no inert button is drawn", async () => {
+    await mount(harness());
+    for (const r of CONTROL_ROWS) expect($(`more-${r.id}`), r.id).toBeNull();
   });
 
   it("mounting only reads: no write call to any store, so nothing new is allowed by the panel itself", async () => {
@@ -294,7 +324,7 @@ describe("Hermes › Controls, first depth (K2)", () => {
   });
 
   // ---------- Terminal ----------
-  it("terminal: reads the stored choice and writes through store.setHermesTerminal (same call as Settings › App)", async () => {
+  it("terminal: reads the stored choice and writes through store.setHermesTerminal (same call as Controls › Details › Terminal & folders)", async () => {
     const h = harness();
     const st = (await mount(h, { hermesTerminal: false, hermesReadAloud: false })) as ReturnType<typeof fakeStore>;
     expect($("toggle-terminal")?.checked).toBe(false);
@@ -391,7 +421,7 @@ describe("Hermes › Controls, first depth (K2)", () => {
   });
 
   // ---------- Voice ----------
-  it("voice: reads hermesReadAloud (off by default) and writes through store.setHermesReadAloud (same call as Settings › App › persona)", async () => {
+  it("voice: reads hermesReadAloud (off by default) and writes through store.setHermesReadAloud (same call as Controls › Details › Personas & voice)", async () => {
     const h = harness();
     const st = (await mount(h, { hermesTerminal: false, hermesReadAloud: false })) as ReturnType<typeof fakeStore>;
     expect($("toggle-voice")?.checked).toBe(false);
