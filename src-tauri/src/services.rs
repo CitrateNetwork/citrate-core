@@ -259,8 +259,35 @@ pub(crate) enum SlotRead<'a> {
 
 /// The row for `desc`, read from the owner's supervisor slot.
 pub(crate) fn entry(desc: &'static ServiceDescriptor, slot: SlotRead<'_>) -> ServiceEntry {
-    let _ = (slot, SLOT_READ_BUDGET);
-    unobserved(desc, ObservationKind::NotSupervised)
+    let slot = match slot {
+        SlotRead::NoOwner => return unobserved(desc, ObservationKind::NotSupervised),
+        SlotRead::OwnerBusy => return unobserved(desc, ObservationKind::Busy),
+        SlotRead::Slot(slot) => slot,
+    };
+    let Some(guard) = lock_bounded(slot, SLOT_READ_BUDGET) else {
+        return unobserved(desc, ObservationKind::Busy);
+    };
+    let Some(sup) = guard.as_ref() else {
+        return unobserved(desc, ObservationKind::NotSupervised);
+    };
+    let Some(obs) = sup.observe() else {
+        return unobserved(desc, ObservationKind::Busy);
+    };
+    drop(guard);
+    ServiceEntry {
+        observation: ObservationKind::Observed,
+        phase: Some(obs.lifecycle.phase),
+        readiness: Some(obs.lifecycle.readiness),
+        last_transition: Some(obs.last_transition),
+        restarts: Some(obs.lifecycle.restarts),
+        last_crash: obs.last_crash.map(|c| CrashView {
+            at_unix_ms: c.at_unix_ms,
+            exit: c.exit,
+            restart_attempt: c.restart_attempt,
+        }),
+        quarantine: obs.lifecycle.quarantine,
+        ..unobserved(desc, ObservationKind::Observed)
+    }
 }
 
 fn unobserved(desc: &'static ServiceDescriptor, observation: ObservationKind) -> ServiceEntry {
@@ -284,7 +311,6 @@ fn unobserved(desc: &'static ServiceDescriptor, observation: ObservationKind) ->
     }
 }
 
-#[allow(dead_code)]
 fn lock_bounded<T>(m: &Mutex<T>, budget: Duration) -> Option<MutexGuard<'_, T>> {
     let deadline = std::time::Instant::now() + budget;
     loop {

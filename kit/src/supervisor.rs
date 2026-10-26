@@ -733,9 +733,26 @@ struct Cell {
     settled: Option<(ControlToken, Receipt)>,
     /// This supervisor instance, carried in every token it issues.
     instance: u64,
+    /// The most recent phase change and when it happened (K1a-2). Written only by `set_phase`.
+    last_transition: PhaseTransition,
+    /// The supervisor's injected clock, read when the phase changes.
+    clock: Arc<dyn Clock>,
 }
 
 impl Cell {
+    /// The one writer of `phase`. A change records the transition at the clock's current time; a
+    /// write of the same phase records nothing.
+    fn set_phase(&mut self, next: Phase) {
+        if next != self.phase {
+            self.last_transition = PhaseTransition {
+                from: Some(self.phase),
+                to: next,
+                at_unix_ms: self.clock.now_unix_ms(),
+            };
+            self.phase = next;
+        }
+    }
+
     fn snapshot(&self, epoch: u64) -> LifecycleSnapshot {
         LifecycleSnapshot {
             name: self.status.name.clone(),
@@ -921,13 +938,13 @@ impl Shared {
         if stop_pending {
             return;
         }
-        c.phase = match state {
+        c.set_phase(match state {
             SupervisorState::Off => Phase::Stopped,
             SupervisorState::Starting => Phase::Starting,
             SupervisorState::Running => Phase::Alive,
             SupervisorState::Backoff { .. } => Phase::Backoff,
             SupervisorState::Failed => Phase::Failed,
-        };
+        });
     }
 
     fn snapshot(&self) -> SupervisorStatus {
@@ -1033,6 +1050,12 @@ impl Supervisor {
                 active: Some((first, IntentKind::Start)),
                 settled: None,
                 instance,
+                last_transition: PhaseTransition {
+                    from: None,
+                    to: Phase::Starting,
+                    at_unix_ms: config.clock.now_unix_ms(),
+                },
+                clock: config.clock.clone(),
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1070,17 +1093,10 @@ impl Supervisor {
     /// last crash, under one bounded lock. `None` means the cell was contended and nothing is
     /// claimed.
     pub fn observe(&self) -> Option<Observation> {
-        self.shared.lock_bounded().map(|c| {
-            let lifecycle = c.snapshot(self.shared.epoch);
-            Observation {
-                last_transition: PhaseTransition {
-                    from: None,
-                    to: lifecycle.phase,
-                    at_unix_ms: 0,
-                },
-                last_crash: c.status.last_crash.clone(),
-                lifecycle,
-            }
+        self.shared.lock_bounded().map(|c| Observation {
+            lifecycle: c.snapshot(self.shared.epoch),
+            last_transition: c.last_transition,
+            last_crash: c.status.last_crash.clone(),
         })
     }
 
@@ -1128,7 +1144,7 @@ impl Supervisor {
         }
         let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
         if c.phase != Phase::Quarantined {
-            c.phase = Phase::Stopping;
+            c.set_phase(Phase::Stopping);
         }
         drop(c);
         self.shared.notify();
@@ -1617,12 +1633,12 @@ impl Drop for MonitorExit {
         match c.phase {
             Phase::Starting | Phase::Alive | Phase::Backoff => {
                 c.status.state = SupervisorState::Failed;
-                c.phase = Phase::Failed;
+                c.set_phase(Phase::Failed);
             }
             // A Stop's teardown can no longer be observed to finish: never Stopped.
             Phase::Stopping => {
                 c.status.state = SupervisorState::Off;
-                c.phase = Phase::Quarantined;
+                c.set_phase(Phase::Quarantined);
                 c.quarantine = Some(reason.to_string());
             }
             Phase::Stopped | Phase::Failed | Phase::Quarantined => {}
@@ -1710,7 +1726,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 // was observed when the Stop settled; a fresh explicit Start is now admitted.
                 let mut c = shared.lock();
                 c.quarantine = None;
-                c.phase = Phase::Stopped;
+                c.set_phase(Phase::Stopped);
                 c.touch();
                 continue;
             }
@@ -1896,7 +1912,7 @@ fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
     }
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
-    c.phase = Phase::Quarantined;
+    c.set_phase(Phase::Quarantined);
     c.quarantine = Some(format!(
         "the previous incarnation is not cleaned up yet ({}): its output is still open, so \
          another process (for example one it started) may hold the pipe; the next start waits \
@@ -1911,7 +1927,7 @@ fn release_start_hold(shared: &Shared, seq: u64) {
     let mut c = shared.lock();
     if c.intent_sequence == seq && c.desired == Desired::Running && c.quarantine.is_some() {
         c.quarantine = None;
-        c.phase = Phase::Starting;
+        c.set_phase(Phase::Starting);
         c.touch();
     }
 }
@@ -1924,7 +1940,7 @@ fn admit_spawn(shared: &Shared, seq: u64) -> bool {
         return false;
     }
     c.status.state = SupervisorState::Starting;
-    c.phase = Phase::Starting;
+    c.set_phase(Phase::Starting);
     c.touch();
     true
 }
@@ -1941,7 +1957,7 @@ fn publish_alive(shared: &Shared, seq: u64, pid: u32) -> bool {
     }
     c.status.state = SupervisorState::Running;
     c.status.pid = Some(pid);
-    c.phase = Phase::Alive;
+    c.set_phase(Phase::Alive);
     let incarnation = c.incarnation;
     c.settle(seq, IntentKind::Start, Receipt::Started { incarnation });
     true
@@ -1994,7 +2010,7 @@ fn settle_stop(
             }
         }
         scope.push("readers".to_string());
-        c.phase = Phase::Stopped;
+        c.set_phase(Phase::Stopped);
         c.quarantine = None;
         c.settle(seq, IntentKind::Stop, Receipt::Complete { scope });
     } else {
@@ -2002,7 +2018,7 @@ fn settle_stop(
                       end of file, so another process (for example one the child started) may \
                       still hold the pipe"
             .to_string();
-        c.phase = Phase::Quarantined;
+        c.set_phase(Phase::Quarantined);
         c.quarantine = Some(reason.clone());
         c.settle(
             seq,
@@ -2039,11 +2055,11 @@ fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: b
         };
         c.settle(token.intent_sequence, kind, receipt);
     }
-    c.phase = if remaining.is_empty() {
+    c.set_phase(if remaining.is_empty() {
         Phase::Stopped
     } else {
         Phase::Quarantined
-    };
+    });
     c.touch();
 }
 
@@ -2285,7 +2301,7 @@ fn backoff_wait(shared: &Shared, seq: u64, delay: Duration, clock: &dyn Clock) {
             return;
         }
         c.status.state = SupervisorState::Backoff { next_retry_ms };
-        c.phase = Phase::Backoff;
+        c.set_phase(Phase::Backoff);
         c.touch();
     }
     let deadline = std::time::Instant::now() + delay;
