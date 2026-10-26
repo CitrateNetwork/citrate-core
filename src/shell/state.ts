@@ -11,7 +11,7 @@
 // =====================================================================
 
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
-import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
+import type { ActivationStatusView, Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -238,7 +238,18 @@ export interface WalletReview {
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
-  onResolved?: (approved: boolean) => void | Promise<void>;
+  onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
+  /**
+   * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
+   * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
+   * which polls for the receipt before returning). A caller that must survive a quit at any
+   * point after signing (S7 shows the activation tx as Pending) gets the hash here. The durable
+   * record is written in Rust (#347's fsync'd submitted-tx record) by the send itself, before
+   * the tx reaches the node; with no durable record nothing is sent.
+   */
+  onSigned?: (txHash: string) => void;
+  /** Join-8 — with `onSigned`: the backend refused the send before submission; nothing was sent. */
+  onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
@@ -318,7 +329,7 @@ export interface AppState {
    */
   authExpiresAt: string | null;
   entitlement: "active" | "expiring" | "grace" | "lapsed";
-  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "done";
+  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7" | "done";
   s1: "idle" | "waiting" | "attest" | "done";
   s2: "none" | "pending" | "verified" | "failed" | "review";
   s3: "idle" | "paying" | "settled";
@@ -610,6 +621,20 @@ export interface AppState {
   dataReady: boolean;
   s6ready?: boolean;
   /**
+   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate. NOT persisted here:
+   * the durable record is #347's fsync'd submitted-tx record in Rust, written before the send, and
+   * the activation read returns it (`activation.recordedTx`) so a relaunch resumes to "Pending".
+   * Cleared once the chain shows the bond activated, or by Forget / Try again (which also mark the
+   * durable record forgotten).
+   */
+  s7TxHash: string | null;
+  /** Join-8 — when `s7TxHash` was recorded (ms since epoch; from the durable record after a relaunch). */
+  s7TxAt: number | null;
+  /** Join-8 — the step's last chain read (NOT persisted: chain is the truth, re-read on launch). */
+  activation: ActivationStatusView | null;
+  /** Join-8 — why the last read failed (the last honest read is kept), or null. */
+  activationError: string | null;
+  /**
    * CORE-C3 runtime memory graph (NOT persisted). In a Tauri build the Storage
    * surface fetches this from the REAL mcp_serve daemon via
    * `bridge.memory.constellation()`; nodes/links/tenant-totals come from the
@@ -833,6 +858,10 @@ export function freshState(pid: string): AppState {
     cerStep: 0,
     cerHash: "",
     walletReview: null,
+    s7TxHash: null,
+    s7TxAt: null,
+    activation: null,
+    activationError: null,
     chatMsgs: [],
     chatStatus: "ready",
     chatRouteHold: null,
