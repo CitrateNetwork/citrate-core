@@ -51,7 +51,7 @@ describe("an already-activated bond with stake 0 is never offered activation aga
   for (const validatorActivation of [null, { isActive: false, status: 0, actEpoch: 0, currentEpoch: 546 }]) {
     it(`onboarding S6 (registry ${validatorActivation ? "status None" : "unread"})`, () => {
       const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", bondActivated: true, validatorActivation })} />);
-      expect(html).not.toContain("Stake my bond");
+      expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
       expect(html).not.toContain("Bond locked · not staked");
     });
 
@@ -62,8 +62,9 @@ describe("an already-activated bond with stake 0 is never offered activation aga
     });
   }
 
+  // Join-8 (#354): activation is offered by its own step (S7), so S6 points there; no button in S6.
   it("a bond that never activated is still offered activation", () => {
     const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", bondActivated: false, validatorActivation: null })} />);
-    expect(html).toContain("Stake my bond");
+    expect(html).toContain("next: activate your validator, after the local model below");
   });
 });

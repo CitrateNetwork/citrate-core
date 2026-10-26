@@ -145,7 +145,7 @@ describe("#348 — §1 activation epoch", () => {
     const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: pending })} />);
     expect(html).toContain("Registered · active from epoch 501");
     expect(html).not.toContain("Bond locked · not staked");
-    expect(html).not.toContain("Stake my bond");
+    expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
     const a = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "validating", bondedStake: 32_000, validatorActivation: active })} />);
     expect(a).toContain("Validator active");
     expect(a).not.toContain("ValidatorRegistry.isActive) ·");

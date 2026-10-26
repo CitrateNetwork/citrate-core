@@ -74,7 +74,7 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
       const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", validatorActivation })} />);
       expect(html).toContain("— · bond state not read yet");
       expect(html).not.toContain("Bond locked · not staked");
-      expect(html).not.toContain("Stake my bond");
+      expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
     });
 
     it(`the Node page offers no activation and shows no bond-locked word (${which})`, () => {
@@ -97,7 +97,8 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
   it("a bond that reads not activated still gets the word and the offer", () => {
     const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", validatorActivation: null, bondActivated: false })} />);
     expect(html).toContain("Bond locked · not staked");
-    expect(html).toContain("Stake my bond");
+    // Join-8 (#354): the offer is the S7 step; S6 points to it.
+    expect(html).toContain("next: activate your validator, after the local model below");
   });
 
   it("maybeAutoBond never arms or opens activation while activated() is unread", () => {

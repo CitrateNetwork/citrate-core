@@ -391,9 +391,15 @@ describe("#348 review — widget unknowns", () => {
 });
 
 describe("#348 review — the activation ceremony states the bond principal, not 32,000", () => {
-  it("labels the review from the grant read", async () => {
+  // Join-8 (#354): the principal is MemberBond.principal() from the activation read (state.activation),
+  // which every activation entry refreshes first.
+  it("labels the review from the bond's principal read", async () => {
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ walletReview: null, s5StakeWei: wei(33_500) });
+    vi.spyOn(store, "refreshActivation").mockImplementation(async () => {
+      store.setState({ activation: { bondActivated: false, principalWei: wei(33_500) } as never, s7TxHash: null as never });
+      return true;
+    });
+    store.setState({ walletReview: null });
     vi.spyOn(bridge.node, "registerValidator").mockResolvedValue({ id: "c1", decoded: { action: "MemberBond.activate", cost: "0", destination: "0x" } } as never);
     await store.activateValidator();
     const r = store.state.walletReview!;
