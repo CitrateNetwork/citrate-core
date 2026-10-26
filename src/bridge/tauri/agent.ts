@@ -64,6 +64,11 @@ export const tauriAgentHarness: AgentHarnessDomain = {
     const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};
     return invoke<string>("hermes_session_open", { systemPrompt, toolsJson, ...extra });
   },
+  sessionOpenCloud(systemPrompt, toolsJson, providerId, model, persona) {
+    // D-11: the same persona choice; the provider and model are the member's (core mints the route).
+    const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};
+    return invoke<string>("hermes_session_open_cloud", { systemPrompt, toolsJson, providerId, model, ...extra });
+  },
   async sessionSend(id, text) {
     await invoke("hermes_session_send", { id, text });
   },

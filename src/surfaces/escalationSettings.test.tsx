@@ -48,7 +48,7 @@ describe("Settings › Escalation (HUP-S1.5)", () => {
     });
     expect(html).toContain("Planner · api.example.com");
     expect(html).toContain("$3.00 in / $15.00 out per 1M tokens");
-    expect(html).toContain("key sealed");
+    expect(html).toContain("key kept on this computer");
     expect(html).not.toMatch(/sk-/);
   });
 

@@ -74,25 +74,47 @@ pub const VENDORS: &[VendorSpec] = &[
     },
 ];
 
-/// A remote-agent delegate (ADR P-8). Not a chat model; listed so the delegate WP shares this
-/// egress table, the key store and the usage log.
-// Consumed by WP-S1-PROV-AGENT (the Cognition delegate); pinned by the egress tests here.
-#[cfg_attr(not(test), allow(dead_code))]
+/// A remote-agent delegate (ADR P-8). Not a chat model; it shares this egress table, the key store
+/// and the usage log with the vendors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DelegateSpec {
     pub id: &'static str,
     pub name: &'static str,
     pub base_url: &'static str,
     pub key_page: &'static str,
+    pub revoke_page: &'static str,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+/// Cognition's Devin API v3 (the current API; v1/v2 and their `apk_` keys are deprecated).
+/// Sources: <https://docs.devin.ai/api-reference/overview> (base `https://api.devin.ai/v3/...`),
+/// <https://docs.devin.ai/api-reference/authentication> (`Authorization: Bearer cog_…`; service
+/// users and personal access tokens are made in Settings › Devin API).
 pub const DELEGATES: &[DelegateSpec] = &[DelegateSpec {
-    id: "cognition",
+    id: crate::model_provider::COGNITION_ID,
     name: "Cognition (Devin)",
-    base_url: "https://api.devin.ai/v1",
+    base_url: "https://api.devin.ai/v3",
     key_page: "https://app.devin.ai/settings",
+    revoke_page: "https://app.devin.ai/settings",
 }];
+
+/// The Citrate gateway: a pinned first-party host for Citrate-issued `cgk_` keys
+/// (ADR-2026-06-03-infer-key-identity). Not one of the six governed vendors, but every call to it
+/// goes through the core model proxy too (ADR P-6).
+pub const GATEWAY_BASE_URL: &str = "https://infer.citrate.ai/v1";
+
+/// The pinned endpoint of the Citrate gateway.
+pub fn resolve_gateway() -> Result<ResolvedEndpoint, ProviderError> {
+    resolved(ProviderId::Gateway, parse_base_url(GATEWAY_BASE_URL)?, true)
+}
+
+/// The pinned endpoint of the Cognition delegate.
+pub fn resolve_delegate() -> Result<ResolvedEndpoint, ProviderError> {
+    let spec = DELEGATES
+        .iter()
+        .find(|d| d.id == crate::model_provider::COGNITION_ID)
+        .ok_or(ProviderError::Egress("no delegate is pinned"))?;
+    resolved(ProviderId::Cognition, parse_base_url(spec.base_url)?, true)
+}
 
 pub fn vendor_spec(v: Vendor) -> &'static VendorSpec {
     // VENDORS lists every Vendor (pinned by `every_vendor_has_exactly_one_pinned_spec`).

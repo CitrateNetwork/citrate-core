@@ -73,13 +73,22 @@ impl Vendor {
     }
 }
 
-/// Which provider a call goes to: a named vendor (pinned host) or a member-added custom endpoint
-/// (`custom-<slug>`, shown as unverified everywhere).
+/// Which provider a call goes to: a named vendor (pinned host), the Citrate gateway (pinned
+/// first-party host, Citrate-issued `cgk_` keys), the Cognition remote-agent delegate (pinned host,
+/// ADR P-8; never a chat model), or a member-added custom endpoint (`custom-<slug>`, shown as
+/// unverified everywhere).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ProviderId {
     Vendor(Vendor),
+    Gateway,
+    Cognition,
     Custom(String),
 }
+
+/// The wire id of the Citrate gateway.
+pub const GATEWAY_ID: &str = "gateway";
+/// The wire id of the Cognition (Devin) delegate.
+pub const COGNITION_ID: &str = "cognition";
 
 /// Prefix of every custom endpoint's provider id.
 pub const CUSTOM_PREFIX: &str = "custom-";
@@ -90,6 +99,7 @@ impl ProviderId {
         if let Some(v) = Vendor::from_id(id) {
             return Some(ProviderId::Vendor(v));
         }
+
         let slug = id.strip_prefix(CUSTOM_PREFIX)?;
         let ok = !slug.is_empty()
             && slug.len() <= 40
@@ -102,12 +112,20 @@ impl ProviderId {
     pub fn as_str(&self) -> &str {
         match self {
             ProviderId::Vendor(v) => v.id(),
+            ProviderId::Gateway => GATEWAY_ID,
+            ProviderId::Cognition => COGNITION_ID,
             ProviderId::Custom(s) => s,
         }
     }
 
     pub fn is_custom(&self) -> bool {
         matches!(self, ProviderId::Custom(_))
+    }
+
+    /// The Cognition delegate runs remote agent sessions; it is never a chat model, so no chat
+    /// call or sidecar route may name it.
+    pub fn is_delegate(&self) -> bool {
+        matches!(self, ProviderId::Cognition)
     }
 }
 

@@ -514,6 +514,25 @@ impl GuardBook {
         Ok(())
     }
 
+    /// The member named `model` for this provider in a setting (a chat preset, an escalation
+    /// endpoint, the Hermes model picker): it is approved, so the anomaly halt does not stop it.
+    /// A model the member never named still halts.
+    pub fn approve_model(&mut self, provider: &str, model: &str) -> Result<(), String> {
+        let model = model.trim();
+        if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
+            return Err("enter the model id".into());
+        }
+        let e = self.entry(provider);
+        if e.approved_models.contains(model) {
+            return Ok(());
+        }
+        if e.approved_models.len() >= MAX_APPROVED_MODELS {
+            return Err("too many approved models for this provider".into());
+        }
+        e.approved_models.insert(model.to_string());
+        Ok(())
+    }
+
     pub fn set_caps(&mut self, provider: &str, caps: Caps) -> Result<(), String> {
         caps.validate()?;
         self.entry(provider).caps = caps;

@@ -50,6 +50,17 @@ import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource
 import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, escalationOffered, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
+import {
+  DELEGATE_TOOL_NAME,
+  DELEGATION_STATUS_TOOL_NAME,
+  cognitionConnected,
+  delegationApproval,
+  delegationOffered,
+  isDelegationDeclined,
+  runDelegationStatusTool,
+  runDelegationTool,
+  withDelegationTools,
+} from "../agent/cognition";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
@@ -100,7 +111,7 @@ import { reachedStep } from "../privacy/joinFunnel";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -528,6 +539,21 @@ export function pickChatProviderKind(
   if (inferenceState === "ask-gateway" || inferenceState === "local-only" || remote) return "ask";
   // 4) DEMO: the honest built-in agent.
   return "demo";
+}
+
+/** D-11: the cloud model Hermes runs on, when one is chosen and allowed (the sidecar loop on, the
+ *  desktop app, and not Local model only); null = the local model. */
+export function cloudModelFor(
+  choice: { providerId: string; model: string } | null | undefined,
+  route: ChatRoute,
+  sidecarLoop: boolean,
+  mode: "sim" | "tauri",
+): { providerId: string; model: string } | null {
+  void choice;
+  void route;
+  void sidecarLoop;
+  void mode;
+  return null;
 }
 
 /** The states in which a local model is set up but its server is not running. */
@@ -1112,8 +1138,11 @@ export class Store {
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
       // (same local model, same approvals), so chat never depends on the sidecar being up.
+      // D-11 (ADR P-5): the cloud model the member chose for Hermes, through the core proxy. Never
+      // under Local model only (core refuses it there too); it needs the sidecar loop.
+      const cloudChoice = cloudModelFor(this.state.hermesCloudModel, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
       const sidecarUp =
-        kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
+        (kind === "local" || cloudChoice) && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
           ? await bridge.agentHarness
               .status()
               .then((st) => st.running)
@@ -1127,6 +1156,11 @@ export class Store {
           .endpoints()
           .then((e) => escalationOffered(e.length, route))
           .catch(() => false);
+        // D-11 (P-8): the Devin delegation tools only with a connected Devin key, never under Local
+        // model only. A failed read offers none.
+        const providerStatuses = await bridge.providers.status().catch(() => []);
+        const delegationReady = delegationOffered(cognitionConnected(providerStatuses), route);
+        const cloudName = cloudChoice ? providerStatuses.find((p) => p.id === cloudChoice.providerId)?.name ?? cloudChoice.providerId : null;
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider
         // change) means a fresh session, so the saved one is let go.
@@ -1138,7 +1172,12 @@ export class Store {
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
             // skill allowlist and tool emphasis. None = the session body is unchanged.
-            open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
+            open: (p, t, persona) =>
+              cloudChoice
+                ? h.sessionOpenCloud(p, t, cloudChoice.providerId, cloudChoice.model, persona ?? null)
+                : persona
+                  ? h.sessionOpen(p, t, persona)
+                  : h.sessionOpen(p, t),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
@@ -1159,9 +1198,9 @@ export class Store {
           },
           // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
-          () => withEscalationTool(annotatedAgentTools(), escalationReady),
+          () => withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady),
           () => this.sidecarPersonaChoice(),
-          { store: sessionStore },
+          cloudChoice && cloudName ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model } } : { store: sessionStore },
         );
         this.reflectProvider();
         if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
@@ -1215,7 +1254,7 @@ export class Store {
     const kind: "local" | "real" | "demo" =
       p.kind === "local" || p.kind === "sidecar" || p.kind === "local-stopped"
         ? "local"
-        : p.kind === "real" || p.kind === "agent"
+        : p.kind === "real" || p.kind === "agent" || p.kind === "sidecar-cloud"
           ? "real"
           : "demo";
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
@@ -2999,6 +3038,15 @@ export class Store {
   /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for
    *  the default voice. Only the prompt's voice changes; tools, approvals and gates do not. A running
    *  sidecar session keeps its prompt, so the provider is rebuilt to open a fresh one. */
+  /** D-11 (ADR P-5) — the model Hermes's loop runs on: a cloud model from a provider connected in
+   *  Settings › Models, or null for the local model. A running session keeps its model, so the
+   *  provider is rebuilt to open a fresh one. */
+  setHermesCloudModel(choice: { providerId: string; model: string } | null): void {
+    this.setState({ hermesCloudModel: choice });
+    this.save();
+    void this.rebuildProvider();
+  }
+
   chooseHermesPersona(p: HermesPersona | null): void {
     this.setState({ hermesPersona: p });
     this.save();
@@ -3632,6 +3680,38 @@ export class Store {
         hic,
       );
       status = isEscalationDeclined(result) ? "declined" : "ok";
+    } else if (call.name === DELEGATE_TOOL_NAME) {
+      // D-11 (P-8): every delegation is the member's decision on a card that shows the exact
+      // prompt; core sends only what it prepared (the card's hash binds it).
+      const d = bridge.delegation;
+      result = await runDelegationTool(
+        {
+          prepare: (scope) => d.prepare(scope),
+          decline: (id) => d.decline(id),
+          approve: (id, hash) => d.approve(id, hash),
+          status: (id) => d.status(id),
+          confirm: (view) => {
+            const a = delegationApproval(view, hic?.reason);
+            return ask(
+              {
+                origin: "chat agent",
+                requester: "dashboard agent · tool " + DELEGATE_TOOL_NAME,
+                title: a.title,
+                chainless: true,
+                rows: a.rows,
+                cost: a.cost,
+                sponsor: "billed by Cognition to your Devin account, not a chain transaction",
+                sponsorColor: "var(--warn)",
+              },
+              a.card,
+            );
+          },
+        },
+        args as Record<string, unknown>,
+      );
+      status = isDelegationDeclined(result) ? "declined" : "ok";
+    } else if (call.name === DELEGATION_STATUS_TOOL_NAME) {
+      result = await runDelegationStatusTool({ status: (id) => bridge.delegation.status(id) }, args as Record<string, unknown>);
     } else if (call.name === "memory_assert") {
       // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
       // isn't bundled yet), so an approval here does NOT durably write anything. Show

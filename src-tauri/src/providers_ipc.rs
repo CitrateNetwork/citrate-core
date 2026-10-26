@@ -56,7 +56,7 @@ impl From<&Halt> for HaltView {
 pub struct ProviderView {
     pub id: String,
     pub name: String,
-    /// `vendor` or `custom`.
+    /// `vendor`, `delegate` (Cognition), `gateway` or `custom`.
     pub kind: &'static str,
     /// A governed vendor on its pinned host (false for a custom endpoint).
     pub verified: bool,
@@ -142,10 +142,20 @@ impl From<&CustomEndpoint> for CustomEndpointView {
 // Pure builders (tested without Tauri)
 // ---------------------------------------------------------------------------
 
-/// Every provider id the status lists: the six vendors, then the custom endpoints.
+/// Every provider id the status lists: the six vendors, the Cognition delegate (its key is
+/// connected here too), then the custom endpoints.
 fn all_ids(g: &GuardBook) -> Vec<ProviderId> {
     let mut ids: Vec<ProviderId> = Vendor::ALL.into_iter().map(ProviderId::Vendor).collect();
+    ids.push(ProviderId::Cognition);
     ids.extend(g.customs.iter().map(|c| ProviderId::Custom(c.id.clone())));
+    ids
+}
+
+/// Every provider the usage summary covers: the status list plus the Citrate gateway (its key is
+/// set in the chat presets, but its calls go through the proxy and are logged too).
+fn usage_ids(g: &GuardBook) -> Vec<ProviderId> {
+    let mut ids = all_ids(g);
+    ids.insert(Vendor::ALL.len(), ProviderId::Gateway);
     ids
 }
 
@@ -170,6 +180,27 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                         s.base_url.to_string(),
                         Some(s.key_page),
                         Some(s.revoke_page),
+                        true,
+                    )
+                }
+                ProviderId::Gateway => (
+                    "Citrate gateway".to_string(),
+                    "gateway",
+                    true,
+                    crate::provider_egress::GATEWAY_BASE_URL.to_string(),
+                    None,
+                    None,
+                    true,
+                ),
+                ProviderId::Cognition => {
+                    let d = &crate::provider_egress::DELEGATES[0];
+                    (
+                        d.name.to_string(),
+                        "delegate",
+                        true,
+                        d.base_url.to_string(),
+                        Some(d.key_page),
+                        Some(d.revoke_page),
                         true,
                     )
                 }
@@ -223,7 +254,7 @@ fn period(calls: u64, p: crate::provider_guard::PeriodUse) -> PeriodView {
 }
 
 pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummaryView {
-    let providers = all_ids(g)
+    let providers = usage_ids(g)
         .into_iter()
         .map(|id| {
             let (d, m) = log.period_use(id.as_str(), now);
@@ -397,6 +428,18 @@ impl ModelProxyState {
         *slot = Some(proxy.clone());
         Ok(proxy)
     }
+
+    /// The proxy if it is open (never opens it): for revoking routes when a session or the
+    /// sidecar ends.
+    pub fn peek(&self) -> Option<Arc<ModelProxy>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// The open proxy of the app, if any (never opens it).
+pub(crate) fn open_proxy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<Arc<ModelProxy>> {
+    use tauri::Manager;
+    app.try_state::<ModelProxyState>().and_then(|s| s.peek())
 }
 
 fn with_proxy<R: tauri::Runtime, T: Send + 'static>(

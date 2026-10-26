@@ -285,6 +285,9 @@ pub struct SidecarSpec {
     pub args: Vec<String>,
     /// Extra environment for the child, as explicit key/value pairs.
     pub env: Vec<(String, String)>,
+    /// Variables of the parent's environment the child must not inherit (removed before `env` is
+    /// applied), such as a model vendor's API key in the launch environment.
+    pub env_remove: Vec<String>,
     /// Working directory for the child, if any.
     pub workdir: Option<PathBuf>,
     /// Optional periodic liveness probe (see [`HealthCheck`]).
@@ -330,6 +333,7 @@ impl std::fmt::Debug for SidecarSpec {
                 "env_keys",
                 &self.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
             )
+            .field("env_remove", &self.env_remove)
             .field("workdir", &self.workdir)
             .field("has_health_check", &self.health_check.is_some())
             .field("child_watch", &self.child_watch)
@@ -346,6 +350,7 @@ impl SidecarSpec {
             bin: bin.into(),
             args,
             env: Vec::new(),
+            env_remove: Vec::new(),
             workdir: None,
             health_check: None,
             child_watch: None,

@@ -45,7 +45,7 @@ import type { DaemonsView } from "../daemons/api";
 export const PLAN_ROW_STATES = ["not checked yet", "passed", "failed", "running", "done", "stopped"] as const;
 export type PlanRowState = (typeof PLAN_ROW_STATES)[number];
 
-export type ProviderClass = "local" | "gateway" | "demo" | "unknown";
+export type ProviderClass = "local" | "gateway" | "cloud" | "demo" | "unknown";
 
 /** HUP-S1.9 — one of the agent sidecar's worker processes, as Rust reports it (hermes_workers). */
 export interface WorkerRow {
@@ -215,6 +215,7 @@ export interface MonitorInputs {
 export function providerClass(kind: string): ProviderClass {
   if (kind === "local" || kind === "sidecar") return "local";
   if (kind === "real" || kind === "agent") return "gateway";
+  // D-11: the Hermes loop on a member-chosen cloud model, through the core model proxy.
   if (kind === "demo") return "demo";
   return "unknown";
 }
@@ -227,6 +228,8 @@ export function spendFor(kind: string): MonitorSnapshot["spend"] {
       return { amount: 0, unit: "SALT", note: "built-in demo agent, no model call" };
     case "gateway":
       return { amount: null, unit: "SALT", note: "gateway spend is not metered in the app yet" };
+    case "cloud":
+      return { amount: null, unit: "SALT", note: "billed by the provider to your own account; usage and spend are in Settings › Models" };
     default:
       return { amount: null, unit: "SALT", note: "this provider does not report spend" };
   }

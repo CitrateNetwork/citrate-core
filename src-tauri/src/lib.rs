@@ -101,6 +101,8 @@ mod model_register;
 mod model_registry;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
 // internal format, and the pinned egress table.
+// D-11 (RC52) — the Cognition (Devin) remote-agent delegate (ADR P-8).
+pub(crate) mod cognition;
 pub(crate) mod model_provider;
 pub(crate) mod model_proxy;
 pub(crate) mod model_proxy_http;
@@ -405,6 +407,8 @@ pub fn run() {
             // D-11 — the core model proxy for cloud providers (opened, and its loopback endpoint
             // started, on first use off the main thread).
             app.manage(providers_ipc::ModelProxyState::default());
+            // D-11 (P-8) — Cognition delegations: approvals shown and sessions started (memory).
+            app.manage(cognition::DelegationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             app.manage(faucet::build_faucet_state(app.handle()));
@@ -689,6 +693,11 @@ pub fn run() {
             providers_ipc::providers_custom_confirm,
             providers_ipc::providers_custom_remove,
             providers_ipc::providers_usage_log_reset,
+            // D-11 (P-8) — the Cognition delegate: per-task approval of the exact scope.
+            cognition::delegation_prepare,
+            cognition::delegation_decline,
+            cognition::delegation_approve,
+            cognition::delegation_status,
             escalation::escalation_endpoints,
             escalation::escalation_endpoint_add,
             escalation::escalation_endpoint_remove,
@@ -775,6 +784,8 @@ pub fn run() {
             hermes::hermes_pending_approvals,
             hermes::hermes_stop,
             hermes::hermes_session_open,
+            // D-11 (P-5, P-6) — the agent loop on a cloud model through the core proxy.
+            hermes::hermes_session_open_cloud,
             hermes::hermes_session_send,
             hermes::hermes_session_events,
             hermes::hermes_session_tool_result,

@@ -1605,6 +1605,16 @@ export interface AgentHarnessDomain {
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */
   sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
+  /** D-11 (ADR P-5/P-6) — the same session on a cloud model the member chose. The sidecar gets a
+   *  loopback route to the core model proxy, never a key; refused under Local model only and when
+   *  the provider is not connected in Settings › Models. Returns the session id. */
+  sessionOpenCloud(
+    systemPrompt: string,
+    toolsJson: string,
+    providerId: string,
+    model: string,
+    persona?: SessionPersonaChoice | null,
+  ): Promise<string>;
   sessionSend(id: string, text: string): Promise<void>;
   /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
@@ -2725,7 +2735,9 @@ export interface ServicesDomain {
 // Keys go in one way (`setKey`) and never come back. Amounts are integer micro-USD; token counts are
 // the vendor's own. Unknown is `null`, never zero.
 
-export type ProviderKind = "vendor" | "custom";
+/** `delegate` is Cognition (Devin): a key and a usage row, never a chat model. `gateway` appears in
+ *  the usage summary only (its key is set in the chat presets). */
+export type ProviderKind = "vendor" | "delegate" | "gateway" | "custom";
 export interface ProviderCaps {
   dailyTokens: number | null;
   monthlyTokens: number | null;
@@ -2817,6 +2829,59 @@ export interface ProvidersDomain {
   resetUsageLog(): Promise<ProviderUsageSummary>;
 }
 
+// ---- D-11 (RC52, ADR P-8) — the Cognition (Devin) delegate. Mirrors Rust `cognition.rs`. ----
+// Hermes proposes; core assembles the exact payload from the scope the member approves on a card.
+
+export interface DelegationScope {
+  task: string;
+  /** `owner/name` on the member's Devin-connected git host. */
+  repo: string;
+  files: string[];
+  context: string;
+}
+export interface DelegationView {
+  delegationId: string;
+  repo: string;
+  files: string[];
+  task: string;
+  context: string;
+  /** The exact text core sends. */
+  prompt: string;
+  scopeHash: string;
+  expiresAtMs: number;
+  destination: string;
+}
+export interface DelegationStarted {
+  delegationId: string;
+  repo: string;
+  sessionUrl: string | null;
+}
+export interface DelegationPullRequest {
+  url: string;
+  state: string | null;
+}
+/** Every text field is third-party output: fence it before the model sees it. */
+export interface DelegationSession {
+  delegationId: string;
+  repo: string;
+  sessionUrl: string | null;
+  status: string;
+  statusDetail: string | null;
+  pullRequests: DelegationPullRequest[];
+  messages: string[];
+  structuredOutput: string | null;
+  acusConsumed: number | null;
+  untrusted: true;
+}
+export interface DelegationDomain {
+  /** Check a proposal and get the exact prompt to show. Nothing is sent. */
+  prepare(scope: DelegationScope): Promise<DelegationView>;
+  decline(delegationId: string): Promise<void>;
+  /** The member approved the card: send exactly what was prepared (the hash binds it). */
+  approve(delegationId: string, scopeHash: string): Promise<DelegationStarted>;
+  status(delegationId: string): Promise<DelegationSession>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2838,4 +2903,5 @@ export interface CxBridge {
   store: StoreDomain;
   services: ServicesDomain;
   providers: ProvidersDomain;
+  delegation: DelegationDomain;
 }

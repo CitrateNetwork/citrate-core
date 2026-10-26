@@ -48,9 +48,12 @@ const UNBOUNDED = new Set<string>([
 /** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so
  *  the Rust error (with its real cause) always arrives first and the UI never abandons a live turn. */
 const LONG: Record<string, number> = {
-  // One non-streaming model turn: Rust bounds it at AI_REQUEST_TIMEOUT (300 s).
-  ai_chat: 330_000,
-  ai_chat_tools: 330_000,
+  // One non-streaming model turn. Local: Rust bounds it at AI_REQUEST_TIMEOUT (300 s). Remote (D-11):
+  // a core model proxy call, bounded at provider_egress::CALL_TIMEOUT (600 s); setting a preset
+  // tests its key live through the same transport.
+  ai_chat: 630_000,
+  ai_chat_tools: 630_000,
+  ai_set_provider: 630_000,
   ai_chat_local: 330_000,
   ai_chat_local_tools: 330_000,
   // Loopback control calls to the Hermes sidecar: Rust bounds them at HERMES_CONTROL_TIMEOUT (30 s).
@@ -69,6 +72,11 @@ const LONG: Record<string, number> = {
   hermes_terminal_set: 60_000,
   // HUP-S1.1c: session calls; events is a long-poll capped at 20 s Rust-side.
   hermes_session_open: 45_000,
+  hermes_session_open_cloud: 45_000,
+  // D-11 (P-8): two calls to Devin's API through the proxy (GET /self then POST /sessions; the
+  // session then its messages), each bounded at provider_egress::CALL_TIMEOUT (600 s).
+  delegation_approve: 1_230_000,
+  delegation_status: 1_230_000,
   // HUP-S8.2: pairing tries up to 6 address hints at 2.5 s each, then a 5 s exchange (Rust-bounded).
   fleet_pair_join: 30_000,
   hermes_session_send: 45_000,

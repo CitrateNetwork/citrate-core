@@ -4,9 +4,14 @@
 //!
 //! 1. **Member endpoints** (this build). The member adds an OpenAI-compatible endpoint in
 //!    Settings › Escalation: a label, the base URL, a model, the price card from their provider,
-//!    and an API key. The key is sealed in the **OS keyring** here and never written to a file,
-//!    never returned to the webview, and never stored by the sidecar: core reads it for one request
-//!    and passes it to the sidecar inside that request (`POST /escalations`), which drops it.
+//!    and an API key. **D-11 (ADR P-6):** an https endpoint's requests go through the core model
+//!    proxy. Its key is kept in the proxy's store (the provider its URL maps to: a pinned vendor,
+//!    the Citrate gateway, or a custom endpoint the member confirms in Settings › Models), and the
+//!    sidecar gets a loopback route token for the one request (`POST /escalations` with
+//!    `baseUrl` = the proxy, `apiKey` = the route token), revoked when it returns. The sidecar never
+//!    holds a vendor key. A key stored here before 0.5.2 moves into the proxy's store on first use.
+//!    A **local** endpoint (plain http to this computer) is unchanged: its key is sealed in the OS
+//!    keyring here and passed to the sidecar for that one request.
 //! 2. **Registry models** (the on-chain InferenceRouter, [`crate::inference_router`]). The deployed
 //!    router is paid in native SALT, so each registry escalation is a transaction the member
 //!    approves (HIC-1), never a budgeted x402 authorization. **Off on 40204** while the address
@@ -879,7 +884,14 @@ impl Book {
     }
 }
 
-/// Seal the key, then add the record. A keyring failure adds nothing.
+/// D-11: an endpoint on this computer (plain http to a loopback host). Only those keep a key in
+/// this module; every other endpoint's requests go through the core model proxy.
+pub fn is_local_endpoint(base_url: &str) -> bool {
+    base_url.starts_with("http://") && validate_base_url(base_url).is_ok()
+}
+
+/// Seal a LOCAL endpoint's key, then add the record. A keyring failure adds nothing. An https
+/// endpoint's key belongs in the model proxy's store ([`store_proxied_key`]).
 pub fn add_endpoint_with_key(
     book: &mut Book,
     keyring: &dyn AiKeyring,
@@ -911,6 +923,32 @@ pub fn add_endpoint_with_key(
     }
 }
 
+/// D-11: an https endpoint's key goes into the model proxy's store, for the provider its URL maps
+/// to (tested live when the endpoint is pinned or confirmed; stored unconfirmed otherwise, and no
+/// request goes there until the member confirms the URL in Settings › Models). The model is
+/// approved for the anomaly halt (the member named it).
+pub fn store_proxied_key(
+    proxy: &crate::model_proxy::ModelProxy,
+    input: &EndpointInput,
+    api_key: SecretString,
+) -> Result<crate::model_provider::ProviderId, EscError> {
+    let _ = (proxy, input, api_key);
+    Err(EscError::Invalid("RED stub".into()))
+}
+
+/// D-11: the proxy provider an https endpoint's requests go to, ready to call. A key stored here
+/// before 0.5.2 is moved into the proxy's store first (an existing proxy key for that provider is
+/// kept and this copy is deleted). Refused, with nothing reserved or sent, when the URL is not a
+/// pinned or confirmed provider or no key is connected for it.
+pub fn proxied_provider(
+    proxy: &crate::model_proxy::ModelProxy,
+    keyring: &dyn AiKeyring,
+    e: &Endpoint,
+) -> Result<crate::model_provider::ProviderId, EscError> {
+    let _ = (proxy, keyring, e);
+    Err(EscError::Invalid("RED stub".into()))
+}
+
 /// Delete the key, then the record (and its quotes).
 pub fn remove_endpoint_with_key(
     book: &mut Book,
@@ -930,15 +968,16 @@ pub fn remove_endpoint_with_key(
 // The sidecar request and answer
 // ---------------------------------------------------------------------------
 
-/// The `POST /escalations` body. It carries the key, so it lives in a wiping buffer and is never
-/// logged.
-pub fn sidecar_body(a: &Authorized, api_key: &str) -> Zeroizing<String> {
+/// The `POST /escalations` body for `base_url` and `credential`: for an https endpoint the core
+/// model proxy's loopback URL and a route token (D-11); for a local endpoint its own URL and key.
+/// It lives in a wiping buffer and is never logged.
+pub fn sidecar_body(a: &Authorized, base_url: &str, credential: &str) -> Zeroizing<String> {
     Zeroizing::new(
         serde_json::json!({
             "escalationId": a.escalation_id,
-            "baseUrl": a.endpoint.base_url,
+            "baseUrl": base_url,
             "model": a.endpoint.model,
-            "apiKey": api_key,
+            "apiKey": credential,
             "system": a.system,
             "prompt": a.prompt,
             "maxTokens": a.max_tokens,
@@ -1341,20 +1380,33 @@ pub async fn escalation_endpoint_add(
     api_key: SecretString,
 ) -> Result<EndpointView, String> {
     crate::blocking::off_main(move || {
+        if is_local_endpoint(input.base_url.trim()) {
+            return with_book(&app, |dir, b| {
+                let view = add_endpoint_with_key(
+                    b,
+                    &crate::ai::OsAiKeyring,
+                    &input,
+                    api_key.expose(),
+                    new_id("ep"),
+                    now_ms(),
+                )?;
+                if let Err(e) = save_book(dir, b) {
+                    let _ = remove_endpoint_with_key(b, &crate::ai::OsAiKeyring, &view.id);
+                    return Err(e);
+                }
+                Ok(view)
+            });
+        }
+        // D-11: an https endpoint's key goes into the model proxy's store.
+        let proxy = crate::ai::proxy_for_app(&app)?;
+        store_proxied_key(&proxy, &input, api_key).map_err(|e| e.to_string())?;
         with_book(&app, |dir, b| {
-            let view = add_endpoint_with_key(
-                b,
-                &crate::ai::OsAiKeyring,
-                &input,
-                api_key.expose(),
-                new_id("ep"),
-                now_ms(),
-            )?;
-            if let Err(e) = save_book(dir, b) {
-                let _ = remove_endpoint_with_key(b, &crate::ai::OsAiKeyring, &view.id);
-                return Err(e);
+            let e = b.add_endpoint(&input, new_id("ep"), now_ms())?;
+            if let Err(err) = save_book(dir, b) {
+                let _ = b.remove_endpoint(&e.id);
+                return Err(err);
             }
-            Ok(view)
+            Ok(EndpointView::from(&e))
         })
     })
     .await
@@ -1415,6 +1467,16 @@ pub async fn escalation_quote(
 ) -> Result<QuoteView, String> {
     crate::blocking::off_main(move || {
         let ask_each_time = escalation_route_for_app(&app)?;
+        // D-11: an https endpoint must be reachable through the proxy before a price is shown.
+        let ep = with_book(&app, |_, b| {
+            b.endpoint(&endpoint_id)
+                .cloned()
+                .ok_or(EscError::UnknownEndpoint)
+        })?;
+        if !is_local_endpoint(&ep.base_url) {
+            let proxy = crate::ai::proxy_for_app(&app)?;
+            proxied_provider(&proxy, &crate::ai::OsAiKeyring, &ep).map_err(|e| e.to_string())?;
+        }
         with_book(&app, |_, b| {
             b.ask_each_time = ask_each_time;
             b.quote(
@@ -1515,24 +1577,26 @@ fn escalation_run_sync<R: tauri::Runtime>(
         }
         Ok(a)
     })?;
-    // 2. Read the key for this one request.
-    let key = crate::ai::OsAiKeyring
-        .get(&key_account(&auth.endpoint.id))
-        .ok()
-        .flatten()
-        .map(Zeroizing::new);
-    let outcome = match key {
-        None => Err((
-            Settlement::NotSent,
-            "the key for this endpoint is missing from the OS keyring; remove and re-add the endpoint"
-                .to_string(),
-        )),
-        Some(key) => {
-            let body = sidecar_body(&auth, key.as_str());
-            drop(key);
-            match crate::hermes::sidecar_escalate(app, body.as_str()) {
-                Ok((status, text)) => interpret_sidecar(status, &text),
-                Err(sent) => Err((
+    // 2. The credential for this one request: a proxy route token for an https endpoint (D-11),
+    //    the endpoint's own key for a local one.
+    let outcome = match escalation_credential(app, &auth) {
+        Err(msg) => Err((Settlement::NotSent, msg)),
+        Ok((base_url, credential, route_label, proxy)) => {
+            let body = sidecar_body(&auth, &base_url, credential.as_str());
+            drop(credential);
+            let sent = if route_label.is_some() {
+                crate::hermes::cloud::ensure_keyless("escalation", body.as_str())
+                    .map(|()| crate::hermes::sidecar_escalate(app, body.as_str()))
+            } else {
+                Ok(crate::hermes::sidecar_escalate(app, body.as_str()))
+            };
+            if let (Some(label), Some(p)) = (&route_label, &proxy) {
+                p.revoke_session(label);
+            }
+            match sent {
+                Err(msg) => Err((Settlement::NotSent, msg)),
+                Ok(Ok((status, text))) => interpret_sidecar(status, &text),
+                Ok(Err(sent)) => Err((
                     if sent {
                         Settlement::MaybeSent
                     } else {
@@ -1576,6 +1640,54 @@ fn escalation_run_sync<R: tauri::Runtime>(
         exceeded_quote: rec.exceeded_quote,
         remaining_micros: remaining,
     })
+}
+
+/// The `(base URL, credential, route label, proxy)` of one escalation request. An https endpoint:
+/// a gated proxy route (refused under Local model only, revoked when the request returns). A
+/// local endpoint: its own URL and key, as before.
+#[allow(clippy::type_complexity)]
+fn escalation_credential<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    auth: &Authorized,
+) -> Result<
+    (
+        String,
+        Zeroizing<String>,
+        Option<String>,
+        Option<std::sync::Arc<crate::model_proxy::ModelProxy>>,
+    ),
+    String,
+> {
+    let e = &auth.endpoint;
+    if is_local_endpoint(&e.base_url) {
+        let key = crate::ai::OsAiKeyring
+            .get(&key_account(&e.id))
+            .ok()
+            .flatten()
+            .map(Zeroizing::new)
+            .ok_or("the key for this endpoint is missing from the OS keyring; remove and re-add the endpoint")?;
+        return Ok((e.base_url.clone(), key, None, None));
+    }
+    let proxy = crate::ai::proxy_for_app(app)?;
+    let provider =
+        proxied_provider(&proxy, &crate::ai::OsAiKeyring, e).map_err(|x| x.to_string())?;
+    let label = format!("esc-{}", auth.escalation_id.trim_start_matches("esc-"));
+    let grant = proxy
+        .mint_route(
+            crate::model_proxy::ProxyRoute {
+                provider,
+                model: e.model.clone(),
+                session_id: label.clone(),
+            },
+            crate::chat_route::route_dir(app)?,
+        )
+        .map_err(|x| x.to_string())?;
+    Ok((
+        grant.base_url.clone(),
+        Zeroizing::new(grant.bearer.expose().to_string()),
+        Some(label),
+        Some(proxy),
+    ))
 }
 
 /// **escalation_registry_status** — the registry route (off on 40204 until a router is pinned).

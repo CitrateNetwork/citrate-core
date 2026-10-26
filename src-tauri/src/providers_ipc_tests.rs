@@ -34,7 +34,10 @@ fn status_is_honest_about_keys_adapters_and_custom_endpoints() {
     let rig = Rig::new("ipc-status");
     let s = status(&rig.proxy);
     let ids: Vec<&str> = s.iter().map(|v| v.id.as_str()).collect();
-    assert_eq!(ids, vec!["openai", "anthropic", "gemini", "xai", "deepseek", "meta"]);
+    assert_eq!(ids, vec!["openai", "anthropic", "gemini", "xai", "deepseek", "meta", "cognition"]);
+    let cog = s.iter().find(|v| v.id == "cognition").unwrap();
+    assert_eq!((cog.kind, cog.adapter, cog.host.as_str()), ("delegate", Some("delegate"), "api.devin.ai"));
+    assert!(!cog.key_configured);
     let openai = &s[0];
     assert!(openai.key_configured && openai.verified);
     assert_eq!(openai.host, "api.openai.com");

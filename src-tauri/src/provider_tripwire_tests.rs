@@ -161,7 +161,8 @@ fn planted() -> Vec<String> {
         format!("xai-{tail}"),          // xAI
         format!("sk-{tail}"),           // DeepSeek
         format!("LLM|{tail}"),          // Meta Llama API
-        format!("apk_user_{tail}"),     // Cognition
+        format!("apk_user_{tail}"),     // Cognition (deprecated v1 key)
+        format!("cog_{tail}"),          // Cognition (v3 service user / PAT)
         format!("cmp_{tail}"),          // a model-proxy route token
     ]
 }
@@ -194,4 +195,99 @@ fn the_diagnostics_bundle_scrubs_every_vendor_key_shape() {
         .unwrap_or_default();
         assert!(!re.contains(&k), "re-scrub leaked {:?}", &k[..8]);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// D-11 (WP-S1-PROV-AGENT): no key crosses into the Hermes sidecar, and every remote path goes
+// through the proxy.
+// ---------------------------------------------------------------------------------------------
+
+/// A production source file's code, whole (to its trailing test module) and without comment
+/// lines. (`sources()` stops at the first `#[cfg(test)]`, which some files use for test hooks.)
+fn code_of(f: &str) -> String {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f);
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|_| panic!("{f} not found"));
+    let end = text.find("#[cfg(test)]\nmod ").unwrap_or(text.len());
+    text[..end]
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn every_sidecar_session_body_and_proxied_escalation_passes_the_key_tripwire() {
+    let hermes = code_of("hermes.rs");
+    // Both session-open paths check the body before the sidecar sees it.
+    for f in [
+        "pub fn session_open(&self",
+        "pub fn session_open_store(&self",
+    ] {
+        let at = hermes.find(f).unwrap_or_else(|| panic!("{f}"));
+        let body = &hermes[at..at + 400.min(hermes.len() - at)];
+        assert!(
+            body.contains("cloud::ensure_keyless(\"session\""),
+            "{f} must run the key tripwire first"
+        );
+    }
+    // The spawn environment and arguments are filtered, and vendor key variables are removed.
+    assert!(hermes.contains("cloud::ensure_keyless(\"environment\""));
+    assert!(hermes.contains("cloud::ensure_keyless(\"arguments\""));
+    assert!(hermes.contains("spec.env_remove = cloud::inherited_key_vars("));
+    assert!(code_of("escalation.rs").contains("ensure_keyless(\"escalation\""));
+}
+
+#[test]
+fn sidecar_facing_modules_never_read_a_vendor_key() {
+    for f in [
+        "hermes.rs",
+        "hermes_cloud.rs",
+        "cognition.rs",
+        "escalation.rs",
+    ] {
+        let t = code_of(f);
+        for needle in [
+            "provider-key:",
+            "expose_for_",
+            "read_key(",
+            "model_proxy::KEY_ACCOUNT_PREFIX",
+        ] {
+            assert!(
+                !t.contains(needle),
+                "{f} must not touch vendor keys ({needle})"
+            );
+        }
+    }
+    // The only key escalation still reads itself is a LOCAL endpoint's (plain http to this
+    // computer), inside the `is_local_endpoint` branch.
+    let esc = code_of("escalation.rs");
+    let reads: Vec<usize> = esc
+        .match_indices(".get(&key_account(")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(reads.len(), 2, "one local read, one legacy-migration read");
+    let local = esc
+        .find("if is_local_endpoint(&e.base_url) {")
+        .expect("local branch");
+    assert!(reads.iter().any(|&i| i > local && i < local + 300));
+    assert!(
+        esc.contains("proxy\n            .import_key(&pid, SecretString::new(key), false)"),
+        "the legacy read only migrates"
+    );
+}
+
+#[test]
+fn remote_chat_and_media_have_no_http_client_of_their_own() {
+    let ai = code_of("ai.rs");
+    // The AiHttpClient seam is used by the two LOCAL paths only.
+    assert_eq!(ai.matches("self.http.post_json(").count(), 2);
+    for f in ["fn chat_local(", "fn chat_local_tools("] {
+        let at = ai.find(f).unwrap();
+        assert!(ai[at..].find("self.http.post_json(").unwrap() < 1500, "{f}");
+    }
+    // Remote sends are proxy calls.
+    assert!(ai.contains("proxy\n        .call(route, req, None, &mut |_| {})"));
+    assert!(ai.contains(".post_fixed(&route.provider"));
+    // No preset blob is ever written with a key again.
+    assert!(ai.contains("#[serde(rename = \"apiKey\", default, skip_serializing)]"));
 }

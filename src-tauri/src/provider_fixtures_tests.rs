@@ -97,6 +97,8 @@ pub(crate) struct ScriptedVendor {
     pub usage: Option<(u64, u64)>,
     pub status: Mutex<Option<u16>>,
     pub during_call: Mutex<Option<Hook>>,
+    /// When set, a non-streamed answer is this JSON text instead of the scripted reply.
+    pub raw_reply: Mutex<Option<String>>,
 }
 
 impl ScriptedVendor {
@@ -108,6 +110,7 @@ impl ScriptedVendor {
             usage,
             status: Mutex::new(None),
             during_call: Mutex::new(None),
+            raw_reply: Mutex::new(None),
         })
     }
     pub(crate) fn calls(&self) -> usize {
@@ -173,6 +176,9 @@ impl ProviderHttp for ScriptedVendor {
             }
             s.push_str("data: [DONE]\n\n");
             return ok("text/event-stream", s);
+        }
+        if let Some(raw) = self.raw_reply.lock().unwrap().clone() {
+            return ok("application/json", raw);
         }
         let mut v = json!({"choices": [{"index": 0, "message": {"role": "assistant",
             "content": self.reply}, "finish_reason": "stop"}]});

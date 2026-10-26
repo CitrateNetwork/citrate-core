@@ -404,3 +404,30 @@ fn already_satisfied_start_requires_a_running_monitor_source_check() {
         "run_monitor must install its exit guard before the loop"
     );
 }
+
+// D-11 (RC52): a variable named in `env_remove` is not inherited by the child, and `env` still
+// applies after it.
+#[test]
+fn env_remove_strips_an_inherited_variable_before_env_applies() {
+    let mut spec = SidecarSpec::new("t", "/bin/true", vec![]);
+    spec.env_remove = vec!["CITRATE_TEST_STRIPPED".into(), "CITRATE_TEST_SET".into()];
+    spec.env = vec![("CITRATE_TEST_SET".into(), "v".into())];
+    let cmd = spec.to_command();
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().to_string(),
+                v.map(|v| v.to_string_lossy().to_string()),
+            )
+        })
+        .collect();
+    assert!(
+        envs.contains(&("CITRATE_TEST_STRIPPED".to_string(), None)),
+        "{envs:?}"
+    );
+    assert!(
+        envs.contains(&("CITRATE_TEST_SET".to_string(), Some("v".to_string()))),
+        "{envs:?}"
+    );
+}
