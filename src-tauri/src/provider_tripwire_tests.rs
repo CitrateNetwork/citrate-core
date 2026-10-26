@@ -74,6 +74,56 @@ fn key_bytes_are_read_in_exactly_two_places() {
     assert_eq!(n, 1, "exactly one keychain write of a vendor key");
 }
 
+/// The `pub` items of `impl ApiKey` in model_provider.rs (any visibility qualifier).
+fn api_key_public_fns(src: &str) -> Vec<String> {
+    let Some(start) = src.find("impl ApiKey {") else {
+        return vec!["<impl ApiKey not found>".into()];
+    };
+    let body = &src[start..];
+    let end = body.find("\n}\n").unwrap_or(body.len());
+    body[..end]
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| l.starts_with("pub"))
+        .filter_map(|l| l.split("fn ").nth(1))
+        .map(|rest| rest.split('(').next().unwrap_or("").to_string())
+        .collect()
+}
+
+#[test]
+fn api_key_has_no_public_accessor_beyond_construction_and_the_keychain_write() {
+    // Holding `&ApiKey` must not let code read it piecewise (prefix, length, byte predicates): every
+    // accessor is private to model_provider.rs, and vendor formats are data (`KeyFormat`) that core
+    // evaluates. Adapters get no `&ApiKey` at all.
+    let srcs = sources();
+    let mp = &srcs
+        .iter()
+        .find(|(n, _)| n == "model_provider.rs")
+        .unwrap()
+        .1;
+    let mut public = api_key_public_fns(mp);
+    public.sort();
+    assert_eq!(
+        public,
+        vec!["expose_for_keychain".to_string(), "from_secret".to_string()]
+    );
+    assert!(
+        !mp.contains("fn check_key_format(&self, key: &ApiKey)"),
+        "adapters must not receive &ApiKey for a format check"
+    );
+}
+
+#[test]
+fn negative_control_a_public_key_accessor_is_flagged() {
+    let src = "impl ApiKey {\n    pub(crate) fn from_secret(s: S) -> ApiKey {}\n    pub fn starts_with(&self, p: &str) -> bool {}\n    fn len(&self) -> usize {}\n}\n";
+    let mut got = api_key_public_fns(src);
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["from_secret".to_string(), "starts_with".to_string()]
+    );
+}
+
 #[test]
 fn vendor_key_accounts_are_touched_only_by_the_proxy() {
     let srcs = sources();

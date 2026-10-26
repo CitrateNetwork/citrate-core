@@ -1,7 +1,7 @@
 // D-11 — the OpenAI-compatible adapter against recorded answers (no network).
 
 use super::*;
-use crate::model_provider::{ChatMessage, InboundResponse, ProviderHttp, ToolDef, Vendor, WireRequest};
+use crate::model_provider::{ApiKey, ChatMessage, InboundResponse, ProviderHttp, ToolDef, Vendor, WireRequest};
 use crate::secret::SecretString;
 use std::sync::Mutex;
 
@@ -36,7 +36,7 @@ impl ProviderHttp for Replay {
 }
 
 fn adapter() -> OpenAiCompatAdapter {
-    OpenAiCompatAdapter::new(ProviderId::Vendor(Vendor::OpenAi), "sk-", vec![])
+    OpenAiCompatAdapter::new(ProviderId::Vendor(Vendor::OpenAi), &["sk-"], vec![])
 }
 
 fn key() -> ApiKey {
@@ -183,7 +183,7 @@ fn key_test_lists_models_and_maps_rejection() {
 
 #[test]
 fn key_format_checks_the_prefix() {
-    assert!(adapter().check_key_format(&key()).is_ok());
+    assert!(adapter().key_format().check(&key()).is_ok());
     let wrong = ApiKey::from_secret(SecretString::new("xai-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()));
-    assert!(matches!(adapter().check_key_format(&wrong), Err(ProviderError::KeyFormat(_))));
+    assert!(matches!(adapter().key_format().check(&wrong), Err(ProviderError::KeyFormat(_))));
 }
