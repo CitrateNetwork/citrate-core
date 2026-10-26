@@ -925,7 +925,7 @@ export class Store {
    * it is surfaced (memDaemon "error" + the coarse message). On success it re-reads
    * the status and re-runs the constellation fetch so the graph loads.
    */
-  async startMemoryDaemon(): Promise<void> {
+  async startMemoryDaemon(): Promise<string | null> {
     this.setState({ memDaemon: "idle", memDaemonError: null });
     // HUP-S3.1: import the bundled knowledge corpus BEFORE the daemon takes the store lock. Idempotent
     // and gated in Rust; a failure is shown and never blocks the daemon from starting.
@@ -934,14 +934,16 @@ export class Store {
       await bridge.memory.start();
     } catch (err) {
       // Honest failure (e.g. BinaryNotFound — the binary isn't bundled yet).
-      this.setState({ memDaemon: "error", memDaemonError: String((err as Error).message ?? err) });
-      return;
+      const reason = String((err as Error).message ?? err);
+      this.setState({ memDaemon: "error", memDaemonError: reason });
+      return reason;
     }
     const state = await this.refreshMemoryStatus();
     if (state === "running") {
       await this.refreshConstellation();
       void this.seedMemoryGraph();
     }
+    return null;
   }
 
   /**
@@ -3297,7 +3299,7 @@ export class Store {
       systemPrompt: () => chatSystemPrompt(this.snapshot()),
       context: () => this.snapshot(),
       sidecar: {
-        openUnattended: (p, t, daemonId) => h.sessionOpenUnattended(p, t, daemonId),
+        openUnattended: (p, t, daemonId, runId) => h.sessionOpenUnattended(p, t, daemonId, runId),
         send: (id, text) => h.sessionSend(id, text),
         events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
         toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
@@ -4311,7 +4313,11 @@ export class Store {
     this.startNode();
   }
 
-  startNode(): void {
+  /**
+   * Start the node. Resolves to the reason the start was refused, or null when nothing refused it
+   * (Node › Services shows the reason on the node row; other callers may ignore it).
+   */
+  startNode(): Promise<string | null> {
     // IDEMPOTENT START (onboarding-snag fix). The launch autostart already brings the node
     // up, so a second startNode() — from the S5 provisioning step or a user tap — would ask
     // the supervisor to spawn an already-live node and get `AlreadyRunning`, which used to
@@ -4323,7 +4329,7 @@ export class Store {
     ) {
       this.setState({ nodeIntent: "run" });
       void this.refreshNode();
-      return;
+      return Promise.resolve("the app already has the node starting or running");
     }
     this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
@@ -4339,13 +4345,13 @@ export class Store {
       void bridge.node.startIpfs().catch(() => {
         /* honest no-op: IPFS unavailable (dev/web) — the node still produces */
       });
-      void bridge.node
-        .start()
-        .then(() => {
+      return bridge.node.start().then(
+        async (): Promise<string | null> => {
           this.nodeStarting = false;
-          return this.refreshNode();
-        })
-        .catch((e) => {
+          await this.refreshNode();
+          return null;
+        },
+        (e: unknown) => {
           this.nodeStarting = false;
           // Surface the REAL failure. Tauri rejects a Rust `Err(String)` as a
           // plain string (not an Error), so an `instanceof Error` gate would
@@ -4356,42 +4362,50 @@ export class Store {
           // AlreadyRunning is NOT a failure — the node is already up (a race past the
           // idempotent guard above). Fold the live state and proceed; never scare the
           // user with "could not start" when the node is in fact running.
+          // The reason still goes back to the caller: from Node › Services this start was refused
+          // (a supervisor already holds the node's slot).
           if (/already running/i.test(reason)) {
             void this.refreshNode();
-            return;
+            return reason;
           }
           this.setState({ node: "error" });
           this.toast("Could not start the node: " + reason);
-        });
-      return;
+          return reason;
+        },
+      );
     }
     setTimeout(() => {
       this.setState({ node: "syncing", syncPct: 2, peerRows: this.makePeers(8) });
       this.save();
     }, 1500);
+    return Promise.resolve(null);
   }
 
   /** Stop the node. Tauri: release the real supervisor (bridge.node.stop). */
-  stopNode(): void {
+  /** Stop the node. Resolves to the reason the stop was refused, or null (see `startNode`). */
+  stopNode(): Promise<string | null> {
     // Explicit member action — remember it so launch does NOT restart the node.
     this.setState({ node: "off", nodeIntent: "stopped", peers: 0, logs: [], syncPct: 0, peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
       // Only claim the supervisor was released once the real stop RESOLVES — the
       // optimistic "off" reflects intent, but the toast must not overstate.
-      void bridge.node
+      const done = bridge.node
         .stop()
-        .then(() => {
+        .then(async (): Promise<string | null> => {
           this.toast("Node stopped — supervisor released");
-          return this.refreshNode();
+          await this.refreshNode();
+          return null;
         })
-        .catch(() => {
+        .catch((e: unknown) => {
           this.toast("Stop requested — the supervisor releases on the next poll");
+          return e instanceof Error ? e.message : typeof e === "string" && e.trim() ? e : "the stop was not confirmed";
         });
       this.save();
-      return;
+      return done;
     }
     this.toast("Node stopped — supervisor released");
     this.save();
+    return Promise.resolve(null);
   }
 
   // ---------- CORE-BC-3: local model (download + verify + serve) ----------
@@ -4846,6 +4860,17 @@ export class Store {
       this.toast("Your bond is already activated; there is nothing to sign.");
       return false;
     }
+    // #405: the FULL gate (contract §1 conditions) on THIS fresh read, never an earlier one: a
+    // membership that lapsed, a node that fell out of sync or out of band, or any field the read
+    // could not get blocks the ceremony. The proposer key is the one exception: arming mints it
+    // and signs nothing, so a node whose ONLY missing check is the key arms below and returns.
+    const gate = activationGate(this.state.activation, this.walletIsLinked());
+    const blocking = gate.checks.filter((c) => c.ok !== true);
+    const keyOnly = blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false;
+    if (blocking.length > 0 && !(keyOnly && !this.validatorArmed)) {
+      this.toast("Activation not available yet — " + blocking[0].detail);
+      return false;
+    }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
@@ -4868,6 +4893,11 @@ export class Store {
         this.validatorArmed = true;
         this.toast("Block production armed — minting your validator key, then activation opens.");
         return false; // retry once the key lands
+      }
+      if (keyOnly) {
+        // No key, and the node did not arm (not caught up, or no coinbase): nothing to sign with.
+        this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
+        return false;
       }
     }
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;

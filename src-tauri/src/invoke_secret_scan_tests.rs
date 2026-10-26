@@ -445,3 +445,139 @@ pub fn view() -> Result<View, String> { todo() }
 "#;
     assert!(violations(&[("synthetic.rs".into(), skipped.into())]).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Secret-typed fields and arguments: an API key or OAuth token is held in `SecretString` (wiping
+// buffer, redacted Debug, no Serialize) from the moment it is deserialized — a command argument,
+// a provider response, a sealed record read back — never in a plain `String`.
+// ---------------------------------------------------------------------------
+
+/// Field and argument names that hold a key or token and must not be a plain owned string.
+const SECRET_TYPED_NAMES: &[&str] = &[
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "client_secret",
+    "priv_key",
+    "private_key",
+    "secret_key",
+    "mnemonic",
+    "entropy",
+    "seed",
+];
+
+/// `(file, name)` pairs that keep a plain string on purpose, with the reason.
+const PLAIN_STRING_EXEMPT: &[(&str, &str, &str)] = &[
+    // The cluster group seed is link/QR text naming where to dial (group id + addresses): it is
+    // meant to be shared and carries no key material. The name is the cluster-daemon wire format.
+    ("cluster.rs", "seed", "a shareable locator, not a secret"),
+];
+
+/// Types that are a plain owned string or byte buffer.
+fn is_plain_owned(ty: &str) -> bool {
+    let ty = ty.trim_start();
+    ["String", "Option<String>", "Vec<u8>", "Option<Vec<u8>>"]
+        .iter()
+        .any(|p| {
+            ty.strip_prefix(p).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with([',', ')', '>', ' ', '}', '\n', ';'])
+            })
+        })
+}
+
+/// `(file, name, line)` for every struct field or fn parameter named in [`SECRET_TYPED_NAMES`]
+/// whose type is a plain owned string, outside test code. `let` bindings are not scanned.
+fn plain_secret_slots(file: &str, src: &str) -> Vec<(String, String, String)> {
+    let src = crate::vault_slot_reservation_tests::without_test_items(src);
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("//") || t.starts_with("let ") || t.starts_with('#') {
+            continue;
+        }
+        for name in SECRET_TYPED_NAMES {
+            let mut from = 0;
+            while let Some(i) = t[from..].find(name) {
+                let at = from + i;
+                from = at + name.len();
+                let before = t[..at].chars().next_back();
+                if before.is_some_and(is_ident_char) || t[..at].trim_end().ends_with("let") {
+                    continue;
+                }
+                let rest = t[at + name.len()..].trim_start();
+                let Some(ty) = rest.strip_prefix(':') else {
+                    continue;
+                };
+                if ty.starts_with(':') || !is_plain_owned(ty) {
+                    continue;
+                }
+                if PLAIN_STRING_EXEMPT
+                    .iter()
+                    .any(|(f, n, _)| *f == file && n == name)
+                {
+                    continue;
+                }
+                out.push((file.to_string(), name.to_string(), t.to_string()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn no_key_or_token_is_held_in_a_plain_string() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
+    production_sources(&manifest.join("src"), &mut sources);
+    production_sources(&manifest.join("..").join("kit").join("src"), &mut sources);
+    assert!(sources.len() > 20, "the scan must see the sources");
+    let hits: Vec<_> = sources
+        .iter()
+        .flat_map(|(path, src)| {
+            let file = Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("")
+                .to_string();
+            plain_secret_slots(&file, src)
+        })
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "hold these in citrate_core_kit::secret::SecretString (or a Zeroizing type):\n{hits:#?}"
+    );
+}
+
+#[test]
+fn negative_control_plain_string_secrets_are_flagged() {
+    let src = r#"
+struct ProviderConfig {
+    base_url: String,
+    api_key: String,
+}
+pub async fn set(provider_id: String, api_key: String) -> Result<(), String> { todo() }
+pub fn exchange(
+    code: String,
+    refresh_token: Option<String>,
+) {}
+struct Fine {
+    access_token: SecretString,
+    api_key_label: String,
+}
+fn ok() { let api_key: String = String::new(); }
+#[cfg(test)]
+mod tests { struct T { api_key: String } }
+"#;
+    let hits = plain_secret_slots("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["api_key", "api_key", "refresh_token"],
+        "{hits:#?}"
+    );
+    // The exemption applies only to its own file.
+    let seed = "struct S {\n    seed: String,\n}\n";
+    assert!(plain_secret_slots("cluster.rs", seed).is_empty());
+    assert_eq!(plain_secret_slots("other.rs", seed).len(), 1);
+}

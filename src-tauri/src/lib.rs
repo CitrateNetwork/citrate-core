@@ -26,7 +26,8 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    abi_book, ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
+    abi_book, ceremony, config, custody, oidc, rpc, secret, supervisor, txdecode, wallet,
+    wallet_link,
 };
 
 mod activity;
@@ -128,6 +129,7 @@ mod sbt_art;
 mod seam;
 mod serve;
 mod serve_plan;
+mod services;
 mod shell;
 mod skill_registry;
 mod skills_local;
@@ -977,6 +979,8 @@ pub fn run() {
             components::components_status,
             components::components_update,
             components::components_rollback,
+            // K1a-2 — the services registry snapshot Node › Services reads (read-only).
+            services::services_snapshot,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
