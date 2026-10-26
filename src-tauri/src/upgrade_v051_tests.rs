@@ -23,7 +23,7 @@ fn copy_of_v051(tag: &str) -> PathBuf {
     dst
 }
 
-fn copy_dir(src: &Path, dst: &Path) {
+pub(crate) fn copy_dir(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap_or_else(|e| panic!("mkdir {}: {e}", dst.display()));
     let entries = std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
     for entry in entries.flatten() {
@@ -37,7 +37,7 @@ fn copy_dir(src: &Path, dst: &Path) {
     }
 }
 
-fn read(p: &Path) -> Vec<u8> {
+pub(crate) fn read(p: &Path) -> Vec<u8> {
     std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
