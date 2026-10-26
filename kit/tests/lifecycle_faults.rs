@@ -3174,6 +3174,134 @@ fn a_member_start_joining_an_automated_start_gives_a_fresh_budget() {
     fx.assert_clean();
 }
 
+/// A member Start that joins a pending automated Start while the carried budget is still
+/// unspent gives the fresh budget to the very next incarnation. The monitor reads the automated
+/// intent and is held before the budget rule; the member joins then. With `max_retries` 0 the
+/// fresh budget allows exactly one incarnation: when it crashes the service is Failed, and no
+/// second incarnation is spawned under a budget reset that arrives one turn late.
+#[test]
+fn a_member_joining_an_unspent_automated_start_gets_exactly_its_budget() {
+    let fx = OwnedFixture::new("member-joins-unspent");
+    let gate = Arc::new(ArmedGate::default());
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_after_spec("lcf-member-joins-unspent", "1"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.backoff = fast_backoff(0);
+    cfg.stop_grace = Duration::from_millis(300);
+    cfg.budget_barrier = Some(ArmedGate::hook(&gate));
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    // Stop the first incarnation before its timer ends it: a Stop is not a failure, so the
+    // carried budget is unspent.
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("INCONCLUSIVE: Stop of a running service: {other:?}"),
+    };
+    settle(&sup, stop, ACQUIRE);
+    let stopped = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        sup.lifecycle().filter(|l| l.phase == Phase::Stopped)
+    });
+    let before = match stopped {
+        Ok((l, _)) => l,
+        Err(_) => panic!("INCONCLUSIVE: the service never read Stopped"),
+    };
+    if before.counters.consecutive_failures != 0 {
+        panic!(
+            "INCONCLUSIVE: the first incarnation ended on its own before the Stop: {:?}",
+            before.counters
+        );
+    }
+    gate.arm();
+    let auto = match sup.request_auto_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("automated Start of a stopped service: {other:?}"),
+    };
+    gate.wait_held();
+    let member = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("member Start joining the automated one: {other:?}"),
+    };
+    gate.release();
+    assert_eq!(
+        member, auto,
+        "the member Start joined the pending automated Start"
+    );
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
+    assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
+    let after = match sup.lifecycle() {
+        Some(l) => l,
+        None => panic!("INCONCLUSIVE: no snapshot"),
+    };
+    assert_eq!(
+        after.incarnation - before.incarnation,
+        1,
+        "a fresh budget with max_retries 0 allows exactly one incarnation: {:?}",
+        after.counters
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A failed probe outside the startup grace makes the service Unavailable before its teardown
+/// starts. The child ignores SIGTERM, so the teardown lasts the whole stop grace; the Ready of
+/// the last success must not outlive the supervisor's own decision, and it must not merely
+/// fade to Stale.
+#[test]
+fn a_failed_probe_outside_the_grace_clears_ready_before_teardown() {
+    let fx = OwnedFixture::new("unhealthy-ready");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let probe_calls = calls.clone();
+    let mut spec = fx.stubborn_leaf_spec("lcf-unhealthy-ready");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_secs(2),
+        grace: Duration::ZERO,
+        probe: Arc::new(move || probe_calls.fetch_add(1, Ordering::SeqCst) == 0),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(0);
+    cfg.stop_grace = Duration::from_secs(5);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let pid = running_pid(&sup, &fx);
+    let ready = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        sup.is_ready().then_some(())
+    });
+    assert!(
+        ready.is_ok(),
+        "INCONCLUSIVE: the first probe never made it Ready"
+    );
+    // The second probe fails. The first readiness that is not Ready must be the supervisor's
+    // own Unavailable, published while the stubborn child is still being torn down.
+    let first = wait_for(SLOW_FAILED, Duration::from_millis(2), || {
+        sup.lifecycle()
+            .filter(|l| l.readiness != Readiness::Ready)
+            .map(|l| (l.readiness, pid_alive(pid)))
+    });
+    let (readiness, child_alive) = match first {
+        Ok((r, _)) => r,
+        Err(_) => panic!("INCONCLUSIVE: the service stayed Ready"),
+    };
+    assert!(
+        calls.load(Ordering::SeqCst) >= 2,
+        "INCONCLUSIVE: Ready ended before the failing probe ran"
+    );
+    assert_eq!(
+        readiness,
+        Readiness::Unavailable,
+        "a failed probe outside the grace ends Ready at once, not when it goes stale"
+    );
+    assert!(
+        child_alive,
+        "INCONCLUSIVE: observed only after the teardown ended"
+    );
+    let st = sup.wait_until(|s| *s == SupervisorState::Failed, SLOW_FAILED);
+    assert_eq!(st.state, SupervisorState::Failed, "INCONCLUSIVE: {st:?}");
+    drop(sup);
+    fx.assert_clean();
+}
+
 /// End to end through the monitor: a probe worker that finished on time, but is collected only
 /// after the freshness limit (the monitor was held past it), is not fresh evidence. The service
 /// never reads Ready from it and earns no credit, even with `healthy_after` zero.
