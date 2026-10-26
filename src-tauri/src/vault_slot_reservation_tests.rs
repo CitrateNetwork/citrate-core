@@ -17,8 +17,6 @@ use citrate_core_kit::custody::is_backend_reserved_slot;
 const ALLOWED_WRITES: &[(&str, &str)] = &[
     // The OAuth token exchange seals the connection record.
     ("connections.rs", "&slot(service)"),
-    // The social link flow seals the provider token.
-    ("social.rs", "&keyring_slot(network)"),
     // The OIDC refresh token.
     ("oidc.rs", "REFRESH_SLOT"),
     // The wallet keystore (create and import).
@@ -28,7 +26,7 @@ const ALLOWED_WRITES: &[(&str, &str)] = &[
 ];
 
 /// Cut every `#[cfg(test)]` item (a `mod … { … }` block or a single item) from `src`.
-fn without_test_items(src: &str) -> String {
+pub(crate) fn without_test_items(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut rest = src;
     while let Some(i) = rest.find("#[cfg(test)]") {
