@@ -3409,3 +3409,67 @@ fn rule3_tripwire_no_config_can_skip_the_ceremony() {
         );
     }
 }
+
+/// Violations of "every ceremony entry that signs or sends passes the K6 network gate" in
+/// ceremony.rs's production code (#363 review). The gate is process-wide and never installed in
+/// unit tests, so a `None` in any of these paths would leave every behaviour test green.
+fn network_gate_violations(src: &str) -> Vec<String> {
+    let code = strip_test_module(src);
+    let body = |sig: &str| fn_body(&code, sig).map(|b| b.split_whitespace().collect::<String>());
+    let mut out = Vec::new();
+    // The public entries pass the process gate, never `None`.
+    for (entry, call) in [
+        ("approve_and_sign<", "self.sign_consumed("),
+        ("send_prepared<", "self.send_signed("),
+        ("approve_and_broadcast<", "self.approve_and_broadcast_gated("),
+    ] {
+        match body(entry) {
+            Some(b) => {
+                let Some(at) = b.find(call) else {
+                    out.push(format!("{entry} no longer calls {call}"));
+                    continue;
+                };
+                let args = &b[at..at + b[at..].find(";").unwrap_or(b.len() - at)];
+                if !args.contains("crate::rpc::network_gate()") || args.contains("None") {
+                    out.push(format!("{entry} must pass crate::rpc::network_gate() to {call}: {args}"));
+                }
+            }
+            None => out.push(format!("fn {entry} not found")),
+        }
+    }
+    // The gated helpers use their own gate parameter, never `None`.
+    match body("approve_and_broadcast_gated<") {
+        Some(b) => {
+            if !b.contains(",gate)?;") || !b.contains("self.send_signed(rpc,prepared,cfg,gate)") || b.contains("None") {
+                out.push("approve_and_broadcast_gated must sign and send with its own gate".into());
+            }
+        }
+        None => out.push("fn approve_and_broadcast_gated not found".into()),
+    }
+    match body("sign_consumed<") {
+        Some(b) if b.contains("ifletSome(expected)=gate{rpc.verify_network(expected)") => {}
+        _ => out.push("sign_consumed must check verify_network against its gate before signing".into()),
+    }
+    match body("send_signed<") {
+        Some(b) if b.contains("send_raw_transaction_gated(&prepared.raw,gate)") => {}
+        _ => out.push("send_signed must send with send_raw_transaction_gated(.., gate)".into()),
+    }
+    out
+}
+
+#[test]
+fn k6_tripwire_every_signing_and_sending_entry_passes_the_network_gate() {
+    assert_eq!(network_gate_violations(include_str!("ceremony.rs")), Vec::<String>::new());
+    // Negative controls: each public entry with `None` in place of the process gate.
+    let src = include_str!("ceremony.rs");
+    for (needle, replacement) in [
+        ("            crate::rpc::network_gate(),\n        )?;", "            None,\n        )?;"),
+        ("self.send_signed(rpc, prepared, cfg, crate::rpc::network_gate())", "self.send_signed(rpc, prepared, cfg, None)"),
+        ("self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, crate::rpc::network_gate())", "self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, None)"),
+        ("self.send_signed(rpc, prepared, cfg, gate)", "self.send_signed(rpc, prepared, cfg, None)"),
+    ] {
+        assert_eq!(src.matches(needle).count(), 1, "control needle: {needle}");
+        let mutated = src.replace(needle, replacement);
+        assert!(!network_gate_violations(&mutated).is_empty(), "not caught: {replacement}");
+    }
+}
