@@ -313,6 +313,21 @@ pub struct RemoteStatus {
     pub running: bool,
     pub skills: usize,
     pub pending_approvals: usize,
+    /// citrate-agent-runtime#87: what the session API supports. Absent on an older sidecar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<SessionCapabilities>,
+}
+
+/// `GET /status` → `capabilities` (citrate-agent-runtime#87).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCapabilities {
+    /// The host tool-set names a session's `toolSets` allowlist accepts (core's permission names).
+    #[serde(default)]
+    pub session_tool_sets: Vec<String>,
+    /// `promptSnapshot: false` is honoured (the sidecar adds nothing to core's system prompt).
+    #[serde(default)]
+    pub session_prompt_snapshot: bool,
 }
 
 /// One installed skill (a capsule).
@@ -911,6 +926,17 @@ impl HermesManager {
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
+    /// K5a + citrate-agent-runtime#87: the host tool sets this sidecar can scope per session, read
+    /// fresh from `GET /status`. `None` while not running, on any error, for an older sidecar
+    /// without `capabilities`, or when it cannot honour `promptSnapshot: false` (both are needed
+    /// to open a Store daemon's session exactly as core sends it).
+    pub fn session_tool_sets(&self) -> Option<Vec<String>> {
+        if !self.is_running() {
+            return None;
+        }
+        scoping_tool_sets(&self.remote_status().ok()?)
+    }
+
     /// `GET /status` — the sidecar's running/skills/pending snapshot.
     pub fn remote_status(&self) -> Result<RemoteStatus> {
         let bearer = self.bearer()?;
@@ -1013,11 +1039,21 @@ impl HermesManager {
     /// Refused (nothing is sent) when Hermes stopped or started since `generation` was read; a
     /// stop or start waits until this open has returned.
     pub fn session_open_in(&self, generation: u64, body: &str) -> Result<String> {
+        self.in_generation(generation, |m| m.session_open(body))
+    }
+
+    /// Run `f` (a session open) in sidecar `generation`: refused when Hermes stopped or started
+    /// since it was read, and no stop or start runs until `f` has returned.
+    pub fn in_generation<T>(
+        &self,
+        generation: u64,
+        f: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<T> {
         let _gate = self.open_gate.read().unwrap_or_else(|e| e.into_inner());
         if self.generation() != generation {
             return Err(HermesError::Restarted);
         }
-        self.session_open(body)
+        f(self)
     }
 
     /// `POST /sessions` with a body from [`build_session_body`]; returns the session id.
@@ -1044,6 +1080,32 @@ impl HermesManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(id.clone());
+        }
+        Ok(id)
+    }
+
+    /// K5a + citrate-agent-runtime#87: open a STORE daemon's session and verify the sidecar applied
+    /// the scoping. The 201 response must echo `toolSets` equal (as a set) to `sent_sets` and
+    /// `promptSnapshot: false`. A sidecar that ignored either (an older one, or a dropped field)
+    /// fails open, so its session is closed and the run refused.
+    pub fn session_open_store(&self, body: &str, sent_sets: &[String]) -> Result<String> {
+        let bearer = self.bearer()?;
+        let resp = Self::check(self.control.post(
+            &format!("{}/sessions", self.control_url()),
+            &bearer,
+            body,
+        )?)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))?;
+        let id = v
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        valid_session_id(&id).map_err(HermesError::Decode)?;
+        if let Err(why) = verify_store_session_echo(&v, sent_sets) {
+            let _ = self.session_close(&id);
+            return Err(HermesError::Decode(why));
         }
         Ok(id)
     }
@@ -1801,6 +1863,7 @@ pub fn hermes_status_sync(app: tauri::AppHandle) -> std::result::Result<RemoteSt
             running: false,
             skills: 0,
             pending_approvals: 0,
+            capabilities: None,
         });
     }
     m.remote_status().map_err(|e| e.to_string())
@@ -2240,8 +2303,24 @@ pub(crate) fn effective_child_env(
     inherited: impl Iterator<Item = (String, String)>,
     set: &[(String, String)],
 ) -> Vec<(String, String)> {
+    effective_child_env_for(inherited, set, cfg!(windows))
+}
+
+/// [`effective_child_env`] with the platform's env-name rule made explicit (tests drive both).
+pub(crate) fn effective_child_env_for(
+    inherited: impl Iterator<Item = (String, String)>,
+    set: &[(String, String)],
+    case_insensitive: bool,
+) -> Vec<(String, String)> {
+    use crate::daemons::env_name_eq;
+    let citrate = |k: &str| {
+        k.get(..8)
+            .is_some_and(|p| env_name_eq(p, "CITRATE_", case_insensitive))
+    };
     let mut out: Vec<(String, String)> = inherited
-        .filter(|(k, _)| k.starts_with("CITRATE_") && !set.iter().any(|(s, _)| s == k))
+        .filter(|(k, _)| {
+            citrate(k) && !set.iter().any(|(s, _)| env_name_eq(s, k, case_insensitive))
+        })
         .collect();
     out.extend(set.iter().cloned());
     out
@@ -2274,17 +2353,107 @@ pub fn build_daemon_session_body(
     Ok(v.to_string())
 }
 
-/// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
-type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
-
-/// Open a sidecar session on the LOCAL model (endpoint and key from serve state), into sidecar
-/// `generation` when one was checked (a Store daemon).
-fn open_local_session_in(
-    app: &tauri::AppHandle,
-    generation: Option<u64>,
+/// K5a + citrate-agent-runtime#87: the body for a STORE daemon run's session: the daemon body with
+/// only the core tools the daemon was approved for, `toolSets` naming exactly the host tool sets
+/// its approved permissions cover (empty = none; a sidecar without the field ignores it, which is
+/// why core also gates the start on the sidecar's capability), and `promptSnapshot: false` so the
+/// sidecar adds nothing to the prompt.
+#[allow(clippy::too_many_arguments)]
+pub fn build_store_daemon_session_body(
     system_prompt: &str,
     tools_json: &str,
-    build: SessionBodyFn,
+    base_url: &str,
+    bearer: &str,
+    model: &str,
+    context_tokens: u32,
+    allowed: &[String],
+) -> std::result::Result<String, String> {
+    let body = build_daemon_session_body(
+        system_prompt,
+        tools_json,
+        base_url,
+        bearer,
+        model,
+        context_tokens,
+    )?;
+    let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let o = v
+        .as_object_mut()
+        .ok_or_else(|| "internal: the session body is not an object".to_string())?;
+    if let Some(serde_json::Value::Array(tools)) = o.get_mut("tools") {
+        tools.retain(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| allowed.iter().any(|a| a == n))
+        });
+    }
+    o.insert(
+        "toolSets".into(),
+        serde_json::json!(crate::daemons::store_tool_sets(allowed)),
+    );
+    o.insert("promptSnapshot".into(), serde_json::Value::Bool(false));
+    Ok(v.to_string())
+}
+
+/// The host tool sets a sidecar's `GET /status` says a session can be scoped to, or `None` unless
+/// it reports BOTH `sessionToolSets` and `sessionPromptSnapshot: true` (citrate-agent-runtime#87).
+pub(crate) fn scoping_tool_sets(status: &RemoteStatus) -> Option<Vec<String>> {
+    let caps = status.capabilities.as_ref()?;
+    caps.session_prompt_snapshot
+        .then(|| caps.session_tool_sets.clone())
+}
+
+/// The check on a Store daemon's session-create response: `toolSets` echoed as an array with
+/// exactly the sent names (any order), and `promptSnapshot` echoed as `false`.
+pub(crate) fn verify_store_session_echo(
+    resp: &serde_json::Value,
+    sent_sets: &[String],
+) -> std::result::Result<(), String> {
+    let refused = |what: &str| {
+        format!("Not started: Hermes did not confirm {what} for this daemon's session, so it was closed. Hermes may need an update.")
+    };
+    let echoed = resp
+        .get("toolSets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| refused("the toolSets allowlist"))?;
+    let mut got: Vec<&str> = echoed.iter().filter_map(|v| v.as_str()).collect();
+    if got.len() != echoed.len() {
+        return Err(refused("the toolSets allowlist"));
+    }
+    let mut want: Vec<&str> = sent_sets.iter().map(String::as_str).collect();
+    got.sort_unstable();
+    got.dedup();
+    want.sort_unstable();
+    want.dedup();
+    if got != want {
+        return Err(refused("the toolSets allowlist"));
+    }
+    if resp.get("promptSnapshot") != Some(&serde_json::Value::Bool(false)) {
+        return Err(refused("promptSnapshot: false"));
+    }
+    Ok(())
+}
+
+/// Open a daemon session on the local model with the body `build` makes from (system prompt,
+/// tools JSON, base URL, bearer, model, context tokens).
+fn open_local_session_with(
+    app: &tauri::AppHandle,
+    system_prompt: &str,
+    tools_json: &str,
+    build: impl FnOnce(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>,
+) -> std::result::Result<String, String> {
+    open_local_session_via(app, system_prompt, tools_json, build, |m, body| {
+        m.session_open(body)
+    })
+}
+
+/// [`open_local_session_with`] with the call that opens the built body.
+fn open_local_session_via(
+    app: &tauri::AppHandle,
+    system_prompt: &str,
+    tools_json: &str,
+    build: impl FnOnce(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>,
+    open: impl FnOnce(&HermesManager, &str) -> Result<String>,
 ) -> std::result::Result<String, String> {
     let serve = tauri::Manager::try_state::<crate::serve::ServeState>(app)
         .ok_or("internal: serve state unavailable")?;
@@ -2302,12 +2471,7 @@ fn open_local_session_in(
         &serve.0.current_model_file(),
         serve.0.ctx_size(),
     )?;
-    let m = manager(app)?;
-    match generation {
-        Some(g) => m.session_open_in(g, &body),
-        None => m.session_open(&body),
-    }
-    .map_err(|e| e.to_string())
+    open(manager(app)?, &body).map_err(|e| e.to_string())
 }
 
 /// **hermes_session_open_unattended** — open a sidecar session for a scheduled daemon run, on the
@@ -2320,20 +2484,45 @@ pub async fn hermes_session_open_unattended(
     // K5a: the daemon this run belongs to. A Store daemon is re-checked against the sidecar's
     // CURRENT environment right before its session opens (an older runner sends none).
     daemon_id: Option<String>,
+    // The claimed run this session is for; core checks it is in flight for `daemon_id`.
+    run_id: Option<String>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
-        // A Store daemon is checked against one sidecar generation and opened in that same one.
-        let generation = match &daemon_id {
-            Some(id) => crate::daemons::check_store_daemon_open(&app, id)?,
-            None => None,
-        };
-        open_local_session_in(
-            &app,
-            generation,
-            &system_prompt,
-            &tools_json,
-            build_daemon_session_body,
-        )
+        // DGX R3: fail closed. A missing or unknown daemon id, or a run that is not this
+        // daemon's run in flight, is refused inside the check. A Store daemon is opened in the
+        // sidecar generation it was checked against (a restart in between refuses the open).
+        let store_allowed =
+            crate::daemons::check_store_daemon_open(&app, daemon_id.as_deref(), run_id.as_deref())?;
+        match store_allowed {
+            // A Store daemon: only its approved core tools, exactly its approved host tool sets,
+            // and no prompt additions from the sidecar.
+            // On a sidecar that scopes host tool sets, the response must confirm the scoping
+            // (`session_open_store`); otherwise the env-hold fallback already found no uncovered
+            // set on, and the session opens as is.
+            Some(open) => {
+                let allowed = open.allowed;
+                let generation = open.generation;
+                let sets = crate::daemons::store_tool_sets(&allowed);
+                let build = |p: &str, t: &str, u: &str, k: &str, m: &str, c: u32| {
+                    build_store_daemon_session_body(p, t, u, k, m, c, &allowed)
+                };
+                if open.scoped {
+                    open_local_session_via(&app, &system_prompt, &tools_json, build, |m, body| {
+                        m.in_generation(generation, |m| m.session_open_store(body, &sets))
+                    })
+                } else {
+                    open_local_session_via(&app, &system_prompt, &tools_json, build, |m, body| {
+                        m.session_open_in(generation, body)
+                    })
+                }
+            }
+            None => open_local_session_with(
+                &app,
+                &system_prompt,
+                &tools_json,
+                build_daemon_session_body,
+            ),
+        }
     })
     .await
 }
