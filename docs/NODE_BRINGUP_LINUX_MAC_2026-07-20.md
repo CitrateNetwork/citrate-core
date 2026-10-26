@@ -67,8 +67,8 @@ npm run build
 npx tauri build --config src-tauri/tauri.bundle-node.conf.json
 
 # 5) Prove the bundled node actually syncs (spawns it the way NodeManager does)
-src-tauri/scripts/c1_1_node_sync_proof.sh target/release/citrate   # or the copied binary
-#   asserts: net_peerCount > 0, eth_blockNumber advances, data dir ciphertext-at-rest
+python3 scripts/e2e/cold-sync.py --node-bin target/release/citrate --out /tmp/cold-sync --blocks 2000   # or the copied binary (replaces c1_1_node_sync_proof.sh)
+#   asserts: block 0 = the profile genesis, head past 2000, every 1000th block agrees with the network RPC, peers > 0, encrypted data dir
 ```
 
 Intel Macs: same, `TRIPLE=x86_64-apple-darwin`.

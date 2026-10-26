@@ -280,3 +280,22 @@ fn a_clock_well_behind_the_last_record_is_refused() {
     assert!(log.check_clock(T0 - 60_000).is_ok(), "small skew is tolerated");
     assert!(log.check_clock(T0 - DAY_MS).is_err(), "a clock moved back a day is refused");
 }
+
+#[test]
+fn a_log_with_records_but_no_anchor_fails_closed() {
+    // Only the anchor removed, then the log cut short: without this check it would pass as a
+    // fresh install with lower totals.
+    let dir = TmpDir::new("log-noanchor");
+    let kr = Arc::new(MemKeyring::default());
+    drop(three_calls(&dir, &kr));
+    kr.map.lock().unwrap().remove(ANCHOR_ACCOUNT);
+    let log = reopen_after(&dir, &kr, |mut l| {
+        l.truncate(1);
+        l
+    });
+    assert!(matches!(log.ready(), Err(LogError::Broken(_))), "a log with records needs its anchor");
+    // An empty log file with no anchor is still a fresh install.
+    let fresh = TmpDir::new("log-noanchor-empty");
+    std::fs::write(log_path(&fresh.0), "").unwrap();
+    assert!(UsageLog::open(&fresh.0, Arc::new(MemKeyring::default())).ready().is_ok());
+}
