@@ -33,14 +33,21 @@ the same entry as K1-F plus `--net --ipc --uts`), and then, inside them:
 | The systemd user manager and the session bus | `/run` is a private tmpfs (no `/run/user/<uid>`, no system bus socket); the network namespace makes the host's abstract sockets (`@…/bus/systemd/bus-api-user`, `@/tmp/.X11-unix/X1`, …) unreachable; the app gets its own `dbus-daemon` and `gnome-keyring-daemon` |
 | cgroup kills | `/sys/fs/cgroup` is a private tmpfs |
 | The desktop's X server and GPU | `/tmp` is private, the abstract X socket is unreachable, `/dev` is a minimal tmpfs (null, zero, full, random, urandom, tty, own devpts; no `/dev/dri`, no `/dev/nvidia*`); the app draws on a private `Xvfb :77` |
-| Your files | `/home`, `/root`, `/tmp`, `/var/tmp`, `/dev/shm` are private tmpfs; HOME and every XDG dir point into the run directory |
+| Your files | `/home`, `/root`, `/tmp`, `/var/tmp`, `/dev/shm` are private tmpfs; HOME and every XDG dir point into the run directory; the harness moves into the run directory before anything runs, so no working directory still points at a mounted-over directory |
 | The network (and production RPC) | Loopback only |
 
 Before the first launch the harness checks each of these and records it in `summary.txt`
 ("probe ok: …"). The abstract-socket check has a positive control (a socket made inside must be
 reachable), the stray-process scan and the listening-socket scan each have a negative control (a
-leaked `sleep` and a new listener must be seen). **If any probe fails, the app is not started**
-and the run exits 2.
+leaked `sleep` and a new listener must be seen). Two probes cover paths that are not absolute:
+no process may hold a working directory, root or open directory that the seal mounted over, and
+from the working directory no `.`, `../` chain, `./src`-style child or symlink (to the checkout,
+the caller's working directory, HOME, `/proc/1/cwd`, `/proc/self/cwd`, or any symlink in the run
+directory) may resolve to the caller's checkout, working directory or HOME, compared by
+device and inode recorded before entry. Their negative controls use handles taken before the
+seal (on the host `/tmp` and on the checkout), which both scans must flag. A checkout outside
+the hidden directories (for example under `/opt`) stays reachable, so that probe fails and the
+harness refuses to run. **If any probe fails, the app is not started** and the run exits 2.
 
 Mounts are made in the run's private mount namespace and never propagate to the host. When the
 run's PID 1 exits, the kernel ends every process left in the namespace, so nothing outlives a run
@@ -63,9 +70,11 @@ scripts/ci/linux-native-acceptance.sh --self-test
 ```
 
 It packages a stand-in app (`scripts/ci/linux-native-acceptance/fake-app.sh`, copies of `sleep`
-as sidecars) as two real `.deb` versions in four modes and requires: the good mode passes;
+as sidecars) as two real `.deb` versions in five modes and requires: the good mode passes;
 "leaks a sidecar on quit" fails `quit` only; "does not restart a killed sidecar" fails `restart`
-only; "does not stop an earlier run's orphans" fails `reap` only.
+only; "does not stop an earlier run's orphans" fails `reap` only; "runs two instances of the
+restart target and restarts neither" fails `restart` only (an instance that was already running
+before the kill does not count as the restart).
 
 A run takes about 10 minutes per package kind. `K1L_KEEP=1` keeps the run directory (the app's
 HOME, logs, the installed tree) for inspection; otherwise only `logs/` is kept.

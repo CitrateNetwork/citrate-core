@@ -34,10 +34,11 @@ export interface Place {
   tabs: PlaceTab[];
 }
 
-/** Settings sections that live in Hermes › Controls: the Controls panel (`hermes`) and the five that moved. */
-export const CONTROLS_SETTINGS = ["hermes", "ai", "escalation", "mcp", "web", "budgets"] as const;
-/** The five Settings sections that moved to Hermes › Controls; the tab lists them under the panel. */
-export const MOVED_CONTROLS_SETTINGS = ["ai", "escalation", "mcp", "web", "budgets"] as const;
+/** Settings sections that live in Hermes › Controls: the Controls panel (`hermes`) and the Details sections. */
+export const CONTROLS_SETTINGS = ["hermes", "ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"] as const;
+/** Hermes › Controls › 2 · Details: the Settings sections for Hermes, in the design's order (slice 1).
+ *  Terminal & folders and Personas & voice came out of Settings › App. */
+export const CONTROLS_DETAIL_SETTINGS = ["ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"] as const;
 /** The Settings section that moved to Node › Advanced. */
 export const NODE_SETTINGS = ["node"] as const;
 /** Account-level Settings sections, the only ones Settings keeps. */
@@ -53,7 +54,16 @@ export const PLACES: Place[] = [
       { label: "Journal", route: "hermes/journal" },
       { label: "Work", route: "hermes/work" },
       { label: "Learn", route: "hermes/learn" },
-      { label: "Controls", route: "hermes/controls" },
+      {
+        label: "Controls",
+        route: "hermes/controls",
+        // Three depths (design slice 1): the switches, the details behind them, and the records.
+        sub: [
+          { label: "1 · Switches", route: "hermes/controls" },
+          { label: "2 · Details", route: "hermes/controls/details" },
+          { label: "3 · Records", route: "hermes/controls/records" },
+        ],
+      },
     ],
   },
   {
@@ -158,13 +168,24 @@ export const LEGACY_ROUTES: Record<string, Redirect> = {
   connections: { route: "settings/connections" },
   // Earlier name of Node › Rewards (UI truth contract §1: the tab is "Rewards").
   "node/earnings": { route: "node/rewards" },
-  // Settings sections that moved to Hermes › Controls. `hermes` is the Controls panel itself.
+  // Settings sections that moved to Hermes › Controls. `hermes` is the Controls panel itself
+  // (1 · Switches); the rest open 2 · Details on their section.
   "settings/hermes": { route: "hermes/controls", patch: { sSec: "hermes" } },
-  "settings/ai": { route: "hermes/controls", patch: { sSec: "ai" } },
-  "settings/escalation": { route: "hermes/controls", patch: { sSec: "escalation" } },
-  "settings/mcp": { route: "hermes/controls", patch: { sSec: "mcp" } },
-  "settings/web": { route: "hermes/controls", patch: { sSec: "web" } },
-  "settings/budgets": { route: "hermes/controls", patch: { sSec: "budgets" } },
+  "settings/ai": { route: "hermes/controls/details", patch: { sSec: "ai" } },
+  "settings/escalation": { route: "hermes/controls/details", patch: { sSec: "escalation" } },
+  "settings/mcp": { route: "hermes/controls/details", patch: { sSec: "mcp" } },
+  "settings/web": { route: "hermes/controls/details", patch: { sSec: "web" } },
+  "settings/terminal": { route: "hermes/controls/details", patch: { sSec: "terminal" } },
+  "settings/budgets": { route: "hermes/controls/details", patch: { sSec: "budgets" } },
+  "settings/personas": { route: "hermes/controls/details", patch: { sSec: "personas" } },
+  // The design's depth-two ids (design/SLICE1_NOTES.md) open Details on their section.
+  "hermes/controls/providers": { route: "hermes/controls/details", patch: { sSec: "ai" } },
+  "hermes/controls/escalation": { route: "hermes/controls/details", patch: { sSec: "escalation" } },
+  "hermes/controls/mcp": { route: "hermes/controls/details", patch: { sSec: "mcp" } },
+  "hermes/controls/web": { route: "hermes/controls/details", patch: { sSec: "web" } },
+  "hermes/controls/terminal": { route: "hermes/controls/details", patch: { sSec: "terminal" } },
+  "hermes/controls/budgets": { route: "hermes/controls/details", patch: { sSec: "budgets" } },
+  "hermes/controls/personas": { route: "hermes/controls/details", patch: { sSec: "personas" } },
   // Node configuration moved to Node › Advanced.
   "settings/node": { route: "node/advanced", patch: { sSec: "node" } },
   // Account-level sections stay in Settings.
@@ -267,6 +288,8 @@ const REGISTER_BY_ROUTE: Record<string, "instrument" | "charter"> = {
   "hermes/work": "charter",
   "hermes/learn": "charter",
   "hermes/controls": "charter",
+  "hermes/controls/details": "charter",
+  "hermes/controls/records": "charter",
   "groups/chat": "charter",
   "groups/chat/alerts": "charter",
   "groups/rounds": "instrument",

@@ -30,7 +30,7 @@
 #        download the packages pinned in linux-native-acceptance/pins.txt (sha256-checked);
 #        add --fetch-only to download and stop
 #   scripts/ci/linux-native-acceptance.sh --self-test [--log-dir DIR]
-#        run the scenarios against a stand-in app in four modes (one good, three broken) and
+#        run the scenarios against a stand-in app in five modes (one good, four broken) and
 #        require PASS for the good one and the matching FAIL for each broken one
 # Env:
 #   K1L_LAUNCH_TIMEOUT   seconds for the required sidecars to come up (default 180)
@@ -176,10 +176,18 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
   cp "$SELF" "$RUN/harness/scripts/ci/" && cp "$ROOT/scripts/ci/lib/pidns.sh" "$RUN/harness/scripts/ci/lib/" &&
     cp "$HERE/x11_windows.py" "$RUN/harness/scripts/ci/linux-native-acceptance/" || return 2
   awk '$8 ~ /^@/ {print substr($8, 2)}' /proc/net/unix | sort -u >"$RUN/logs/host-abstract-sockets.txt"
+  # Identity (device:inode) of the caller's directories: the checkout, its top-level dirs, the
+  # caller's working directory and HOME. Inside, no path (relative, symlinked or absolute) may
+  # resolve to any of them.
+  local d
+  for d in "$ROOT" "$ROOT/src" "$ROOT/scripts" "$ROOT/.git" "$PWD" "$HOME"; do
+    [ -e "$d" ] && echo "$(stat -L -c '%d:%i' -- "$d") $d"
+  done >"$RUN/logs/host-dir-ids.txt"
   echo "▶ enter: unshare --user --map-root-user --pid --fork --mount-proc --net --ipc --uts setsid"
   unshare --user --map-root-user --pid --fork --mount-proc --net --ipc --uts \
     setsid env -i PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin LANG=C.UTF-8 \
       K1L_HOST_HOME="$HOME" K1L_HOST_UID="$(id -u)" K1L_RUN="$RUN" K1L_KINDS="$KINDS" \
+      K1L_HOST_ROOT="$ROOT" K1L_HOST_PWD="$PWD" \
       K1L_QUIT="$QUIT" K1L_HARNESS_REV="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
       K1L_LAUNCH_TIMEOUT="${K1L_LAUNCH_TIMEOUT:-180}" K1L_SETTLE_SECS="${K1L_SETTLE_SECS:-15}" \
       K1L_RESTART_TIMEOUT="${K1L_RESTART_TIMEOUT:-90}" K1L_QUIT_TIMEOUT="${K1L_QUIT_TIMEOUT:-60}" \
@@ -218,7 +226,7 @@ self_test() { # work logdir
   mkdir -p "$logdir"
   : >"$logdir/self-test.txt"
   # mode → the scenario that must fail ("" = everything passes)
-  for spec in "good:" "leak-on-quit:quit" "no-restart:restart" "no-sweep:reap"; do
+  for spec in "good:" "leak-on-quit:quit" "no-restart:restart" "no-sweep:reap" "dup-no-restart:restart"; do
     mode="${spec%%:*}"; want="${spec#*:}"
     run="$(mktemp -d "$work/run.XXXXXX")" || return 2
     mkdir -p "$run/src"
@@ -281,6 +289,10 @@ seal() {
   mount --move /mnt/dev /dev || return 1
   mkdir -p /run/lock /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
   ip link set lo up || return 1
+  # The caller's working directory was just mounted over, but a cwd keeps pointing at the old
+  # directory, so relative paths would still reach the caller's files. Move into the run dir
+  # before anything else runs; the app and every probe inherit it.
+  cd -P "$W" || return 1
 }
 
 # Isolation checks. Each one has a positive or negative control so a check that cannot see what
@@ -330,6 +342,85 @@ p_stray_scan_control() {
   kill -KILL "$nc" 2>/dev/null
   wait_gone "$nc" 5
   [ "$seen" -eq 1 ]
+}
+# Directory handles (cwd, root, open directory fds) of the given pids that no longer resolve
+# through their own path, i.e. directories the seal mounted over: "pid handle path" per line.
+id_of() { stat -L -c '%d:%i' -- "$1" 2>/dev/null; }
+hidden_handles() { # pid ...
+  local pid h t
+  for pid in "$@"; do
+    for h in "/proc/$pid/cwd" "/proc/$pid/root" "/proc/$pid/fd/"*; do
+      [ -d "$h" ] || continue
+      t="$(readlink "$h" 2>/dev/null)" || continue
+      [ -n "$(id_of "$h")" ] && [ "$(id_of "$h")" = "$(id_of "$t")" ] || echo "$pid ${h#/proc/$pid/} $t"
+    done
+  done
+}
+all_pids() { local d; for d in /proc/[0-9]*; do echo "${d#/proc/}"; done; }
+# Paths under a base directory that resolve to one of the caller's directories
+# (logs/host-dir-ids.txt): ".", "../" chains, "./src"-style children, and symlinks made here that
+# point back at the checkout, the caller's cwd, HOME, or another process's cwd.
+reaches_host() { # base [extra-symlink-target ...]
+  local base="$1"; shift
+  declare -A host=()
+  local id path rel up="" n=0
+  while read -r id path; do [ -n "$id" ] && host[$id]="$path"; done <"$W/logs/host-dir-ids.txt"
+  [ "${#host[@]}" -gt 0 ] || { echo "no host directory ids recorded"; return 0; }
+  local -a cands=(. src scripts .git)
+  for n in $(seq 1 16); do up="${up}../"; cands+=("$up" "${up}src" "${up}scripts"); done
+  for rel in "${cands[@]}"; do
+    id="$(id_of "$base/$rel")" || continue
+    [ -n "${host[$id]:-}" ] && echo "$base/$rel -> ${host[$id]}"
+  done
+  local links; links="$(mktemp -d "$W/logs/escape-links.XXXXXX")" || { echo "mktemp failed"; return 0; }
+  local t k=0
+  for t in "$K1L_HOST_ROOT" "$K1L_HOST_ROOT/src" "$K1L_HOST_PWD" "$K1L_HOST_HOME" \
+           ../../../../../../../../../../../../../../.. /proc/1/cwd /proc/self/cwd "$@"; do
+    k=$((k + 1)); ln -s -- "$t" "$links/l$k" || continue
+    id="$(id_of "$links/l$k")" || continue
+    [ -n "${host[$id]:-}" ] && echo "symlink -> $t reaches ${host[$id]}"
+  done
+  rm -rf -- "${links:?}"
+  while IFS= read -r -d '' t; do
+    id="$(id_of "$t")" || continue
+    [ -n "${host[$id]:-}" ] && echo "symlink $t reaches ${host[$id]}"
+  done < <(find -H "$base" -xdev -type l -print0 2>/dev/null)
+}
+# Negative controls: handles on directories taken BEFORE the seal (the host /tmp and the caller's
+# checkout), held open by PID 1 and by a child started in the mounted-over /tmp. Both scans must
+# flag them; then the handles are dropped.
+p_hidden_handle_control() {
+  ( cd -P "/proc/1/fd/$PRESEAL_TMP_FD" && exec sleep 300 </dev/null >/dev/null 2>&1 ) &
+  local child=$! seen_child seen_fd
+  local i; for i in $(seq 1 50); do [ "$(readlink "/proc/$child/exe" 2>/dev/null)" = "$(readlink -f "$(command -v sleep)")" ] && break; sleep 0.1; done
+  seen_child="$(hidden_handles "$child" | grep -c ' cwd ')"
+  seen_fd="$(hidden_handles 1 | grep -c " fd/$PRESEAL_TMP_FD ")"
+  kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null
+  echo "control: child in mounted-over /tmp flagged=$seen_child, PID 1 fd on it flagged=$seen_fd"
+  [ "$seen_child" -ge 1 ] && [ "$seen_fd" -ge 1 ]
+}
+p_checkout_reach_control() {
+  local hits; hits="$(reaches_host "/proc/1/fd/$PRESEAL_ROOT_FD" "/proc/1/fd/$PRESEAL_ROOT_FD")"
+  echo "control: through a pre-seal handle on the checkout:"; echo "$hits"
+  # ".", "src" and a symlink to the handle must all be seen.
+  echo "$hits" | grep -q '/\. -> ' && echo "$hits" | grep -q '/src -> ' && echo "$hits" | grep -q '^symlink -> /proc/1/fd/'
+}
+drop_preseal_handles() { exec {PRESEAL_TMP_FD}<&- {PRESEAL_ROOT_FD}<&-; PRESEAL_TMP_FD=""; PRESEAL_ROOT_FD=""; }
+p_cwd_sealed() {
+  local c s h
+  c="$(readlink /proc/1/cwd)"; s="$(readlink /proc/self/cwd)"
+  echo "cwd: PID 1 $c, probe $s (run dir $W)"
+  h="$(hidden_handles $(all_pids))"; [ -n "$h" ] && echo "hidden handles:" && echo "$h"
+  case "$c" in "$W"|"$W"/*) ;; *) return 1 ;; esac
+  case "$s" in "$W"|"$W"/*) ;; *) return 1 ;; esac
+  [ -z "$h" ]
+}
+p_checkout_unreachable() {
+  # Relative to the working directory itself ("."), not to its path: a directory that was mounted
+  # over keeps its old contents for a process whose cwd it is.
+  local hits; hits="$(reaches_host .)"
+  [ -n "$hits" ] && echo "reachable from the working directory ($(readlink /proc/1/cwd)):" && echo "$hits"
+  [ -z "$hits" ]
 }
 p_socket_scan_control() {
   local before after
@@ -507,16 +598,22 @@ scenario_restart() { # kind
   line="$(sidecars_of "$APP_PID" | awk -v t="$K1L_RESTART_TARGET" '$1 == t {print; exit}')"
   [ -n "$line" ] || { fail "$kind restart: no '$K1L_RESTART_TARGET' sidecar to kill"; return 1; }
   old="$(echo "$line" | awk '{print $2}')"; exe="$(echo "$line" | awk '{print $3}')"
+  # Every process running the target binary before the kill, anywhere in the namespace: only a
+  # pid outside this set counts as the restart (another instance that was already running is not).
+  local -a before=() ; local d
+  for d in /proc/[0-9]*; do
+    [ "$(readlink "$d/exe" 2>/dev/null)" = "$exe" ] && before+=("${d#/proc/}")
+  done
   kill -KILL "$old"
   for i in $(seq 1 "$K1L_RESTART_TIMEOUT"); do
-    new="$(sidecars_of "$APP_PID" | awk -v e="$exe" -v o="$old" '$3 == e && $2 != o {print $2; exit}')"
+    new="$(sidecars_of "$APP_PID" | awk -v e="$exe" -v b=" ${before[*]} " '$3 == e && !index(b, " " $2 " ") {print $2; exit}')"
     [ -n "$new" ] && ! alive "$old" && break
     sleep 1
   done
   if [ -n "$new" ] && ! alive "$old"; then
-    pass "$kind restart: $K1L_RESTART_TARGET killed (pid $old), started again as pid $new in ${i}s"
+    pass "$kind restart: $K1L_RESTART_TARGET killed (pid $old), started again as pid $new in ${i}s (new pid; ${#before[@]} instance(s) before the kill)"
   else
-    fail "$kind restart: $K1L_RESTART_TARGET (pid $old) not started again within ${K1L_RESTART_TIMEOUT}s"
+    fail "$kind restart: $K1L_RESTART_TARGET (pid $old) not started again within ${K1L_RESTART_TIMEOUT}s (pids before the kill: ${before[*]})"
     return 1
   fi
 }
@@ -678,6 +775,9 @@ stop_session_services() {
 
 inner_main() {
   pidns_assert_init || { echo "::error::--inner must be PID 1 and its own group leader in a fresh PID namespace" >&2; exit 2; }
+  # Handles on two directories the seal will hide, taken now, for the probes' negative controls.
+  exec {PRESEAL_TMP_FD}</tmp {PRESEAL_ROOT_FD}<"$K1L_HOST_ROOT" ||
+    { echo "::error::cannot open the negative-control handles" >&2; exit 2; }
   seal || { echo "::error::could not seal the namespace; not launching anything" >&2; exit 2; }
   HERE="$W/harness/scripts/ci/linux-native-acceptance"
   mkdir -p "$W/logs"
@@ -703,6 +803,11 @@ inner_main() {
   probe "GPU device nodes hidden" p_gpu_hidden || ok=0
   probe "network: loopback only" p_net_lo_only || ok=0
   probe "host abstract sockets unreachable (with positive control)" p_abstract_sockets || ok=0
+  probe "handle scan sees a directory the seal mounted over (negative control)" p_hidden_handle_control || ok=0
+  probe "checkout scan sees ., src and a symlink through a pre-seal handle (negative control)" p_checkout_reach_control || ok=0
+  drop_preseal_handles
+  probe "working directory inside the run dir; no process holds a hidden directory" p_cwd_sealed || ok=0
+  probe "caller's checkout, cwd and HOME unreachable by relative path or symlink" p_checkout_unreachable || ok=0
   probe "stray-process scan sees a leaked sleep (negative control)" p_stray_scan_control || ok=0
   probe "listening-socket scan sees a new listener (negative control)" p_socket_scan_control || ok=0
   if [ "$ok" -ne 1 ]; then
