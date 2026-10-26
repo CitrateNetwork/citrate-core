@@ -373,3 +373,347 @@ fn k6_app_build_script_sets_no_test_cfg() {
         "src-tauri/build.rs changed; re-check that it sets no cfg(test), then update this pin"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #493 / K6-3 tripwire: no chain id or RPC URL literal outside `profiles.json`.
+//
+// Every signing and network path takes the chain id from `rpc::CITRATE_CHAIN_ID` and the RPC from
+// `rpc::CITRATE_RPC_URL`, the two kit constants `the_kit_rpc_constants_match_the_active_profile`
+// pins to the active profile. A literal anywhere else would keep the old value when the profile
+// changes (owner decision D1 may change the chain id at genesis), so this scans the production
+// Rust of the app and the kit and fails on:
+// - the chain id as a number in code (`40204`, `40_204`, `40204u64`, `0x9d0c`);
+// - the chain id as a whole string value (`"40204"`, `"0x9d0c"`, `eip155:40204`);
+// - an RPC URL (`https://rpc.citrate.ai`, `wss://rpc.citrate.ai`).
+// Comments, test modules and `*_tests.rs` files are not production paths and are skipped. Prose
+// that names the chain in a message ("chain 40204") is copy, not a value a path uses, and is not
+// matched.
+// ---------------------------------------------------------------------------
+
+/// One Rust source file with its comments removed and its string literals blanked, plus every
+/// string literal (byte offset in the blanked text, contents). Newlines are kept, so line numbers
+/// match the file.
+struct K6Lexed {
+    code: String,
+    strings: Vec<(usize, String)>,
+}
+
+fn k6_lex_rust(src: &str) -> K6Lexed {
+    let b: Vec<char> = src.chars().collect();
+    let mut code = String::with_capacity(src.len());
+    let mut strings = Vec::new();
+    let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        let next = b.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < b.len() && b[i] != '\n' {
+                code.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            let mut depth = 0usize;
+            while i < b.len() {
+                if b[i] == '/' && b.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    code.push_str("  ");
+                    i += 2;
+                } else if b[i] == '*' && b.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    code.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    code.push(blank(b[i]));
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // Raw strings: r"..", r#".."#, br#".."# (an identifier ending in r is not one: the char
+        // before must not be part of an identifier).
+        let ident_before = i > 0 && (b[i - 1].is_alphanumeric() || b[i - 1] == '_');
+        if !ident_before && (c == 'r' || (c == 'b' && next == Some('r'))) {
+            let mut j = i + if c == 'b' { 2 } else { 1 };
+            let mut hashes = 0;
+            while b.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if b.get(j) == Some(&'"') {
+                let start = code.len() + (j - i);
+                for _ in i..=j {
+                    code.push(' ');
+                }
+                j += 1;
+                let mut s = String::new();
+                loop {
+                    if j >= b.len() {
+                        break;
+                    }
+                    if b[j] == '"' && (0..hashes).all(|k| b.get(j + 1 + k) == Some(&'#')) {
+                        for _ in 0..=hashes {
+                            code.push(' ');
+                        }
+                        j += 1 + hashes;
+                        break;
+                    }
+                    s.push(b[j]);
+                    code.push(blank(b[j]));
+                    j += 1;
+                }
+                strings.push((start, s));
+                i = j;
+                continue;
+            }
+        }
+        if c == '"' {
+            let start = code.len();
+            code.push(' ');
+            i += 1;
+            let mut s = String::new();
+            while i < b.len() && b[i] != '"' {
+                if b[i] == '\\' && i + 1 < b.len() {
+                    s.push(b[i]);
+                    s.push(b[i + 1]);
+                    code.push(blank(b[i]));
+                    code.push(blank(b[i + 1]));
+                    i += 2;
+                    continue;
+                }
+                s.push(b[i]);
+                code.push(blank(b[i]));
+                i += 1;
+            }
+            code.push(' ');
+            i += 1;
+            strings.push((start, s));
+            continue;
+        }
+        if c == '\'' {
+            // A char literal ('x', '\n', '\'', '\u{..}'); otherwise a lifetime.
+            let end = if next == Some('\\') {
+                (i + 2..b.len().min(i + 12)).find(|&k| b[k] == '\'' && k > i + 2)
+            } else if b.get(i + 2) == Some(&'\'') {
+                Some(i + 2)
+            } else {
+                None
+            };
+            if let Some(e) = end {
+                for k in i..=e {
+                    code.push(blank(b[k]));
+                }
+                i = e + 1;
+                continue;
+            }
+        }
+        code.push(c);
+        i += 1;
+    }
+    K6Lexed { code, strings }
+}
+
+/// Byte ranges of `#[cfg(test)] mod name { .. }` blocks in lexed code (comments and strings are
+/// already blanked, so brace counting is exact).
+fn k6_test_module_ranges(code: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(p) = code[from..].find("#[cfg(test)]") {
+        let at = from + p;
+        let rest = &code[at + "#[cfg(test)]".len()..];
+        let trimmed = rest.trim_start();
+        let after_vis = trimmed.strip_prefix("pub ").unwrap_or(trimmed).trim_start();
+        if let Some(m) = after_vis.strip_prefix("mod ") {
+            let name_end = m
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(m.len());
+            if m[name_end..].trim_start().starts_with('{') {
+                let open = code.len() - m.len() + name_end + m[name_end..].find('{').unwrap_or(0);
+                let mut depth = 0i64;
+                let mut end = code.len();
+                for (k, ch) in code[open..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = open + k + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                out.push((at, end));
+                from = end;
+                continue;
+            }
+        }
+        from = at + 1;
+    }
+    out
+}
+
+/// The value of a Rust integer literal token (`40_204`, `40204u64`, `0x9d0c`), or None.
+fn k6_int_literal_value(tok: &str) -> Option<u64> {
+    let t = tok.to_ascii_lowercase().replace('_', "");
+    const SUFFIXES: &[&str] = &[
+        "u128", "usize", "isize", "i128", "u64", "u32", "u16", "i64", "i32", "i16", "u8", "i8",
+    ];
+    let t = SUFFIXES
+        .iter()
+        .find_map(|s| t.strip_suffix(s))
+        .unwrap_or(&t);
+    match t.strip_prefix("0x") {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => t.parse().ok(),
+    }
+}
+
+/// The literals in one production Rust source that pin a network value outside the profile.
+/// Each finding is `line: what`.
+fn k6_network_literals_in_rust(src: &str) -> Vec<String> {
+    let lexed = k6_lex_rust(src);
+    let skip = k6_test_module_ranges(&lexed.code);
+    let in_test = |off: usize| skip.iter().any(|&(a, b)| off >= a && off < b);
+    let line_of = |off: usize| lexed.code[..off].matches('\n').count() + 1;
+    let mut out = Vec::new();
+    // Numbers in code. A digit run is one token; `40_204`, `40204u64`, `0x9d0c` all count.
+    let code = lexed.code.as_bytes();
+    let mut i = 0;
+    while i < code.len() {
+        let c = code[i];
+        let starts_token = i == 0 || !(code[i - 1].is_ascii_alphanumeric() || code[i - 1] == b'_');
+        if c.is_ascii_digit() && starts_token {
+            let mut j = i;
+            while j < code.len() && (code[j].is_ascii_alphanumeric() || code[j] == b'_') {
+                j += 1;
+            }
+            if k6_int_literal_value(&lexed.code[i..j]) == Some(40204) && !in_test(i) {
+                out.push(format!("{}: chain id {}", line_of(i), &lexed.code[i..j]));
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    for (off, s) in &lexed.strings {
+        if in_test(*off) {
+            continue;
+        }
+        let lower = s.to_ascii_lowercase();
+        if lower == "40204" || lower == "0x9d0c" || lower.contains("eip155:40204") {
+            out.push(format!("{}: chain id string {s:?}", line_of(*off)));
+        }
+        if lower.contains("https://rpc.citrate.ai") || lower.contains("wss://rpc.citrate.ai") {
+            out.push(format!("{}: RPC URL {s:?}", line_of(*off)));
+        }
+    }
+    out
+}
+
+/// The two definitions every path reads; `the_kit_rpc_constants_match_the_active_profile` pins
+/// them to the active profile.
+const K6_PINNED_DEFINITIONS: &[(&str, &str)] = &[
+    ("kit/src/rpc.rs", "pub const CITRATE_RPC_URL: &str = \"https://rpc.citrate.ai\";"),
+    ("kit/src/rpc.rs", "pub const CITRATE_CHAIN_ID: u64 = 40204;"),
+];
+
+fn k6_production_rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if p.is_dir() {
+            if name != "tests" {
+                k6_production_rust_files(&p, out);
+            }
+        } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+            out.push(p);
+        }
+    }
+}
+
+#[test]
+fn k6_the_literal_scan_finds_each_form_and_skips_comments_tests_and_prose() {
+    let src = r##"
+// a comment with 40204 and https://rpc.citrate.ai
+/* block 40204 */
+const A: u64 = 40204;
+const B: u64 = 40_204;
+fn f() -> String { format!("0x{:x}", 40204u64) }
+const C: u64 = 0x9d0c;
+const D: &str = "40204";
+const E: &str = "https://rpc.citrate.ai";
+fn g(h: &str) -> String { format!("eip155:40204/tx/{h}") }
+const PROSE: &str = "not deployed on chain 40204 yet";
+const RAW: &str = r#"chain 40204 "quoted""#;
+const N: u64 = 402040;
+const LIFETIME: Option<&'static str> = None;
+#[cfg(test)]
+mod tests {
+    const T: u64 = 40204;
+    const U: &str = "https://rpc.citrate.ai";
+}
+const AFTER: u64 = 40204;
+"##;
+    let found = k6_network_literals_in_rust(src);
+    let lines: Vec<&str> = found.iter().map(|f| f.split(':').next().unwrap_or("")).collect();
+    assert_eq!(
+        lines,
+        vec!["4", "5", "6", "7", "20", "8", "9", "10"],
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn k6_no_chain_id_or_rpc_literal_outside_the_profile() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    k6_production_rust_files(&manifest.join("src"), &mut files);
+    k6_production_rust_files(&manifest.join("../kit/src"), &mut files);
+    assert!(
+        files.len() > 50,
+        "positive control: the scan reads the app and the kit ({} files)",
+        files.len()
+    );
+    let mut offenders = Vec::new();
+    let mut pinned_seen = 0;
+    for f in &files {
+        let src = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("read {}: {e}", f.display()));
+        let rel = f
+            .strip_prefix(manifest)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| f.display().to_string());
+        let rel = rel.trim_start_matches("../").to_string();
+        let rel = if rel.starts_with("kit/") { rel } else { format!("src-tauri/{rel}") };
+        let lines: Vec<&str> = src.lines().collect();
+        for finding in k6_network_literals_in_rust(&src) {
+            let n: usize = finding.split(':').next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            let line = lines.get(n.saturating_sub(1)).map(|l| l.trim()).unwrap_or("");
+            if K6_PINNED_DEFINITIONS
+                .iter()
+                .any(|(file, def)| *file == rel && *def == line)
+            {
+                pinned_seen += 1;
+                continue;
+            }
+            offenders.push(format!("{rel}:{finding}"));
+        }
+    }
+    assert_eq!(
+        pinned_seen, 2,
+        "positive control: the scan sees the two pinned kit definitions"
+    );
+    assert!(
+        offenders.is_empty(),
+        "network values outside the profile; read rpc::CITRATE_CHAIN_ID / rpc::CITRATE_RPC_URL \
+         instead:\n{}",
+        offenders.join("\n")
+    );
+}

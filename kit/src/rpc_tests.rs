@@ -454,6 +454,41 @@ fn gated_send_sends_after_the_network_matches() {
     assert_eq!(reqs[2]["params"][0], "0xdead");
 }
 
+/// #494: the gated send could not READ the endpoint before sending (a transport error on
+/// `eth_chainId`, or a block 0 without a hash). Nothing was sent, and the error says so in its own
+/// class, carrying the read error as is, so the ceremony can report "not sent".
+#[test]
+fn gated_send_reports_an_unreadable_endpoint_as_not_sent() {
+    let gate = expected(Some(40204), Some(GATE_GENESIS));
+    for script in [
+        vec![],
+        vec![
+            ok_result(Value::String("0x9d0c".into())),
+            ok_result(serde_json::json!({ "number": "0x0" })),
+        ],
+    ] {
+        let client = RpcClient::with_transport(MockTransport::new(script));
+        let e = client
+            .send_raw_transaction_gated(&[0xde, 0xad], Some(&gate))
+            .expect_err("the endpoint cannot be read");
+        let s = e.to_string();
+        assert!(s.contains("could not be checked"), "{s}");
+        assert!(s.contains("nothing was sent"), "{s}");
+        assert!(
+            s.contains("mock: no scripted response") || s.contains("block 0 hash"),
+            "the read error is carried as is: {s}"
+        );
+        assert!(
+            client
+                .transport
+                .requests()
+                .iter()
+                .all(|r| r["method"] != "eth_sendRawTransaction"),
+            "nothing may be sent"
+        );
+    }
+}
+
 /// No gate installed in this test process: the plain send is unchanged (other apps on this kit
 /// and every existing test keep their behaviour).
 #[test]
