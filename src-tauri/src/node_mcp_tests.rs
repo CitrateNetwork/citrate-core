@@ -1627,7 +1627,7 @@ fn node_mcp_demo() {
             .expect("token file");
         // With NODE_MCP_DEMO_RO_TOKEN_FILE, also issue the read-only token core gives Hermes.
         if let Ok(ro_file) = std::env::var("NODE_MCP_DEMO_RO_TOKEN_FILE") {
-            let ro = sv.state.hermes_token(None).expect("issue");
+            let ro = sv.state.hermes_token(None).expect("issue").expose().to_string();
             crate::node_mcp_token::write_private(
                 std::path::Path::new(&ro_file),
                 ro.as_bytes(),
@@ -2410,9 +2410,9 @@ fn the_stdio_shim_carries_stateless_requests_and_their_errors() {
 fn hermes_gets_at_most_one_live_token_and_losing_the_switch_revokes_it() {
     let sv = serve();
     let label = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
-    let first = sv.state.hermes_token(None).expect("issue");
+    let first = sv.state.hermes_token(None).expect("issue").expose().to_string();
     // No token in Hermes's file (or one that is not live): a new one replaces the earlier one.
-    let second = sv.state.hermes_token(None).expect("issue");
+    let second = sv.state.hermes_token(None).expect("issue").expose().to_string();
     let hermes: Vec<_> = sv
         .state
         .status()
@@ -2531,7 +2531,7 @@ fn members_cannot_issue_the_reserved_hermes_label_and_hermes_revocation_spares_m
         let e = sv.state.create_token(l).expect_err("reserved");
         assert!(e.contains("reserved"), "{e}");
     }
-    let _ = sv.state.hermes_token(None).expect("issue");
+    let _ = sv.state.hermes_token(None).expect("issue").expose().to_string();
     sv.state.revoke_hermes_tokens();
     // The member's "Claude Code" token survives revoking Hermes's tokens.
     assert!(sv.state.status().tokens.iter().any(|t| t.label == "Claude Code"));
@@ -2542,7 +2542,7 @@ fn members_cannot_issue_the_reserved_hermes_label_and_hermes_revocation_spares_m
 fn hermes_token_over_http_is_read_only_whatever_the_client_asks() {
     let sv = serve();
     let label = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
-    let h = sv.state.hermes_token(None).expect("issue");
+    let h = sv.state.hermes_token(None).expect("issue").expose().to_string();
     assert!(sv
         .state
         .status()
@@ -3000,9 +3000,9 @@ fn an_ephemeral_token_verifies_is_never_written_and_revokes() {
 #[test]
 fn the_hermes_token_is_kept_while_live_and_rotated_otherwise() {
     let st = NodeMcpState::new(Arc::new(Fixture::default()), TokenStore::in_memory(), None);
-    let t1 = st.hermes_token(None).expect("mint");
-    assert_eq!(st.hermes_token(Some(&t1)).expect("keep"), t1);
-    let t2 = st.hermes_token(Some("not-a-live-token")).expect("rotate");
+    let t1 = st.hermes_token(None).expect("mint").expose().to_string();
+    assert_eq!(st.hermes_token(Some(&t1)).expect("keep").expose().to_string(), t1);
+    let t2 = st.hermes_token(Some("not-a-live-token")).expect("rotate").expose().to_string();
     assert_ne!(t1, t2);
     assert!(
         st.shared().tokens.verify(&t1, 1).is_none(),
@@ -3011,7 +3011,7 @@ fn the_hermes_token_is_kept_while_live_and_rotated_otherwise() {
     assert!(st.shared().tokens.verify(&t2, 1).is_some());
     // A member's persisted token is never adopted as Hermes's.
     let member = st.create_token("Claude Code").expect("issue");
-    let t3 = st.hermes_token(Some(&member.connect_token)).expect("mint");
+    let t3 = st.hermes_token(Some(&member.connect_token)).expect("mint").expose().to_string();
     assert_ne!(t3, member.connect_token);
     assert!(st.shared().tokens.verify(&member.connect_token, 2).is_some());
     let views = st.status().tokens;
@@ -3109,14 +3109,18 @@ fn hermes_node_entry_demo() {
     });
     let state = NodeMcpState::new(backend.clone(), TokenStore::in_memory(), None);
     let port = state.start_on(47298).expect("bind");
-    let token = state.hermes_token(None).expect("mint");
+    let token = state.hermes_token(None).expect("mint").expose().to_string();
     let exe = std::path::PathBuf::from(std::env::var("HERMES_NODE_DEMO_SHIM").expect("shim exe"));
     let settings = crate::hermes_mcp::McpSettings {
         mem: false,
         scan: false,
         node: true,
     };
-    let target = crate::hermes_mcp::NodeTarget { exe, port, token };
+    let target = crate::hermes_mcp::NodeTarget {
+        exe,
+        port,
+        token: crate::secret::SecretString::new(token),
+    };
     let cfg = crate::hermes_mcp::render_config(&settings, None, Some(&target)).expect("node entry");
     let out = std::env::var("HERMES_NODE_DEMO_ALLOWLIST").expect("allowlist path");
     crate::node_mcp_token::write_private(
@@ -3124,7 +3128,7 @@ fn hermes_node_entry_demo() {
         serde_json::to_string_pretty(&cfg).expect("json").as_bytes(),
     )
     .expect("write");
-    let redacted = cfg.to_string().replace(&target.token, "cnmcp_<minted for Hermes, elided>");
+    let redacted = cfg.to_string().replace(target.token.expose(), "cnmcp_<minted for Hermes, elided>");
     println!("allowlist core wrote for Hermes: {redacted}");
     println!("serving {} ; tokens: {:?}", crate::node_mcp_http::endpoint_url(port), state.status().tokens.iter().map(|t| t.label.clone()).collect::<Vec<_>>());
     let secs: u64 = std::env::var("HERMES_NODE_DEMO_HOLD_SECS")

@@ -43,7 +43,6 @@ describe("grant stake surfacing — locked 32k is not '0 staked' (Rule 1)", () =
       s5StakeWei: WEI_32K,
       s5BondStatus: "Staked · unlocks at block 500,000",
       bondedStake: 0,
-      selfStake: 0,
     } as never);
     const snap = store.snapshot() as {
       staked: number;
