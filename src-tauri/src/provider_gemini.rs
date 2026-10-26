@@ -454,6 +454,11 @@ impl ModelProvider for GeminiAdapter {
 
     /// Gemini documents no key prefix, and its newer authorization keys have their own format,
     /// so only the shape is checked; the live key test decides.
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        // RED STUB: the old behaviour (the visible-output cap).
+        u64::from(req.max_tokens)
+    }
+
     fn key_format(&self) -> KeyFormat {
         KeyFormat::ANY
     }

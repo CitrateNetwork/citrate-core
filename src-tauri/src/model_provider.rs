@@ -647,6 +647,11 @@ pub trait ModelProvider: Send + Sync {
     /// adapter never receives the key.
     fn key_format(&self) -> KeyFormat;
 
+    /// The most output tokens (reasoning included) the vendor can bill for `req`. The spend guard
+    /// reserves against it before the call, so it must be a true upper bound: `req.max_tokens`
+    /// only where the vendor documents that its output cap covers reasoning.
+    fn output_bound(&self, req: &ChatRequest) -> u64;
+
     /// A live test with a free endpoint (such as the model list). A key that fails is not stored.
     /// Returns the model ids the vendor listed for this key (empty when the endpoint lists none);
     /// core keeps them as known models for the anomaly halt.

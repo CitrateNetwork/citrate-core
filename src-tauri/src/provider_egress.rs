@@ -26,7 +26,14 @@ pub struct VendorSpec {
     pub key_page: &'static str,
     /// The vendor page where the member revokes a key.
     pub revoke_page: &'static str,
+    /// The exact endpoint paths (under `base_url`) an adapter may call, with an optional query.
+    /// `{model}` stands for one model id (`[A-Za-z0-9._-]`, 1..=128, not starting with `.`).
+    pub paths: &'static [&'static str],
 }
+
+/// The endpoints of an OpenAI chat-completions API: xAI, DeepSeek and Meta, and every custom
+/// endpoint.
+pub const CHAT_PATHS: &[&str] = &["/chat/completions", "/models"];
 
 /// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts, checked
 /// against each vendor's own API docs on 2026-10-26 (sources in each adapter's module docs).
@@ -39,6 +46,7 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.openai.com/v1",
         key_page: "https://platform.openai.com/api-keys",
         revoke_page: "https://platform.openai.com/api-keys",
+        paths: &["/responses", "/models"],
     },
     VendorSpec {
         vendor: Vendor::Anthropic,
@@ -46,6 +54,7 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.anthropic.com/v1",
         key_page: "https://console.anthropic.com/settings/keys",
         revoke_page: "https://console.anthropic.com/settings/keys",
+        paths: &["/messages", "/models?limit=1000"],
     },
     VendorSpec {
         vendor: Vendor::Gemini,
@@ -53,6 +62,11 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://generativelanguage.googleapis.com/v1beta",
         key_page: "https://aistudio.google.com/apikey",
         revoke_page: "https://aistudio.google.com/apikey",
+        paths: &[
+            "/models/{model}:generateContent",
+            "/models/{model}:streamGenerateContent?alt=sse",
+            "/models?pageSize=1000",
+        ],
     },
     VendorSpec {
         vendor: Vendor::Xai,
@@ -60,6 +74,7 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.x.ai/v1",
         key_page: "https://console.x.ai",
         revoke_page: "https://console.x.ai",
+        paths: CHAT_PATHS,
     },
     VendorSpec {
         vendor: Vendor::DeepSeek,
@@ -67,6 +82,7 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.deepseek.com/v1",
         key_page: "https://platform.deepseek.com/api_keys",
         revoke_page: "https://platform.deepseek.com/api_keys",
+        paths: CHAT_PATHS,
     },
     VendorSpec {
         vendor: Vendor::Meta,
@@ -74,6 +90,7 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.meta.ai/v1",
         key_page: "https://dev.meta.ai/platform",
         revoke_page: "https://dev.meta.ai/platform",
+        paths: CHAT_PATHS,
     },
 ];
 
@@ -117,6 +134,8 @@ pub struct ResolvedEndpoint {
     pub host: String,
     pub port: u16,
     pub verified: bool,
+    /// The exact endpoint paths an adapter may call here ([`VendorSpec::paths`]).
+    pub paths: &'static [&'static str],
 }
 
 /// Parse and check a base URL: https, a host, no userinfo, query or fragment.
@@ -152,6 +171,7 @@ fn resolved(
     provider: ProviderId,
     base: url::Url,
     verified: bool,
+    paths: &'static [&'static str],
 ) -> Result<ResolvedEndpoint, ProviderError> {
     let host = base
         .host_str()
@@ -164,13 +184,19 @@ fn resolved(
         host,
         port,
         verified,
+        paths,
     })
 }
 
 /// The pinned endpoint of a governed vendor.
 pub fn resolve_vendor(v: Vendor) -> Result<ResolvedEndpoint, ProviderError> {
     let spec = vendor_spec(v);
-    resolved(ProviderId::Vendor(v), parse_base_url(spec.base_url)?, true)
+    resolved(
+        ProviderId::Vendor(v),
+        parse_base_url(spec.base_url)?,
+        true,
+        spec.paths,
+    )
 }
 
 /// Join an adapter's path to the endpoint and check the result stays on the pinned host and port,
@@ -326,7 +352,7 @@ pub fn resolve_custom(c: &CustomEndpoint) -> Result<ResolvedEndpoint, ProviderEr
         .filter(ProviderId::is_custom)
         .ok_or(ProviderError::Egress("not a custom endpoint id"))?;
     check_custom_host(&c.base_url)?;
-    resolved(id, parse_base_url(&c.base_url)?, false)
+    resolved(id, parse_base_url(&c.base_url)?, false, CHAT_PATHS)
 }
 
 // ---------------------------------------------------------------------------

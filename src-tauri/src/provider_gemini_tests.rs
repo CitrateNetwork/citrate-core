@@ -180,3 +180,10 @@ fn a_tool_result_for_an_unknown_call_is_refused() {
     req.messages[3].tool_call_id = Some("call_9".into());
     assert!(matches!(to_wire(&req), Err(ProviderError::BadRequest(_))));
 }
+
+#[test]
+fn a_continuation_finish_is_a_length_stop() {
+    let http = Recorded::one(200, JSON, &fixture("gemini/response-continuation.json"));
+    let (r, _) = call(&http, &tool_conversation("gemini-3.8-flash", false));
+    assert_eq!(expect_ok(r, "continuation").finish, FinishReason::Length);
+}

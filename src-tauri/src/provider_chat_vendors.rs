@@ -216,6 +216,11 @@ impl ModelProvider for ChatVendorAdapter {
         catalog(self.d.vendor)
     }
 
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        // RED STUB: the old behaviour (the visible-output cap).
+        u64::from(req.max_tokens)
+    }
+
     fn key_format(&self) -> KeyFormat {
         KeyFormat {
             prefixes: self.d.key_prefixes,

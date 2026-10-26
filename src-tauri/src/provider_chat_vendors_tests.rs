@@ -62,14 +62,35 @@ fn request_bytes_match_each_vendors_golden_on_its_pinned_host() {
 }
 
 #[test]
-fn deepseek_turns_thinking_off_only_when_tools_ride_along() {
+fn deepseek_always_turns_thinking_off_so_max_tokens_bounds_all_output() {
     let a = ChatVendorAdapter::deepseek();
     let mut req = tool_conversation("deepseek-flash", true);
     assert_eq!(a.to_wire(&req)["thinking"], json!({"type": "disabled"}));
     assert_eq!(a.to_wire(&req)["stream_options"]["include_usage"], true);
     req.tools.clear();
-    assert!(a.to_wire(&req).get("thinking").is_none(), "vendor default without tools");
-    assert!(ChatVendorAdapter::xai().to_wire(&tool_conversation("grok-4.7", false)).get("thinking").is_none());
+    assert_eq!(
+        a.to_wire(&req)["thinking"],
+        json!({"type": "disabled"}),
+        "without tools too: thinking mode's chain of thought has no documented cap"
+    );
+    assert_eq!(a.output_bound(&req), 512);
+    assert!(ChatVendorAdapter::xai()
+        .to_wire(&tool_conversation("grok-4.7", false))
+        .get("thinking")
+        .is_none());
+}
+
+#[test]
+fn xai_reserves_the_context_window_because_its_output_cap_leaves_reasoning_uncapped() {
+    let xai = ChatVendorAdapter::xai();
+    assert_eq!(xai.output_bound(&tool_conversation("grok-4.7", false)), 500_000);
+    assert_eq!(xai.output_bound(&tool_conversation("grok-4.3", false)), 1_000_000);
+    assert_eq!(
+        xai.output_bound(&tool_conversation("grok-next", false)),
+        1_000_000,
+        "an approved model outside the catalog gets the largest documented window"
+    );
+    assert_eq!(ChatVendorAdapter::meta().output_bound(&tool_conversation("muse-spark-1.3", false)), 512);
 }
 
 #[test]

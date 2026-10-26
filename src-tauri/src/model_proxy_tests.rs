@@ -354,6 +354,8 @@ fn every_vendor_has_its_native_adapter_with_a_priced_tool_capable_catalog() {
         assert_eq!(a.id(), ProviderId::Vendor(v), "the registry must never cross vendors");
         let models = a.models();
         assert!(!models.is_empty(), "{v:?} lists its models");
+        let probe = req(&models[0].id, false);
+        assert!(a.output_bound(&probe) >= u64::from(probe.max_tokens), "{v:?}");
         for m in models {
             assert!(m.supports_tools, "{}", m.id);
             assert!(
@@ -489,4 +491,25 @@ fn a_caller_that_goes_away_stops_the_vendor_call_and_is_logged_as_cancelled() {
         &mut |_| {},
     );
     assert_eq!(ok.map(|r| r.content).ok().as_deref(), Some("hello from the vendor"));
+}
+
+#[test]
+fn an_xai_call_whose_reasoning_could_pass_the_default_cap_is_refused_with_nothing_sent() {
+    let rig = Rig::new("proxy-xai-bound");
+    rig.proxy
+        .set_key("xai", SecretString::new(fake_key("xai-")), now_ms())
+        .unwrap();
+    let before = rig.vendor.calls();
+    let route = ProxyRoute {
+        provider: ProviderId::Vendor(Vendor::Xai),
+        model: "grok-4.7".into(),
+        session_id: "sess-x".into(),
+    };
+    let r = rig.proxy.call(&route, req("grok-4.7", false), None, &mut |_| {});
+    assert!(
+        matches!(r, Err(ProxyError::Refused(Refusal::CapExceeded { .. }))),
+        "500k reserved output tokens at $12/M is over the $5/day default: {r:?}"
+    );
+    assert_eq!(rig.vendor.calls(), before, "nothing reached the vendor");
+    assert!(rig.log_text().contains("\"reserveOut\":500000"), "{}", rig.log_text());
 }

@@ -439,6 +439,11 @@ impl ModelProvider for AnthropicAdapter {
         catalog()
     }
 
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        // RED STUB: the old behaviour (the visible-output cap).
+        u64::from(req.max_tokens)
+    }
+
     fn key_format(&self) -> KeyFormat {
         KeyFormat {
             prefixes: &[KEY_PREFIX],
