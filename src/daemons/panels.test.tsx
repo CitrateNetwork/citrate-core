@@ -87,11 +87,15 @@ describe("Daemons card", () => {
     expect($(el, "daemons-panel").textContent).toContain("Nothing runs on a schedule until you create one.");
   });
 
-  it("shows budget exhaustion, estimated tokens and zero spend", () => {
+  it("shows budget exhaustion and estimated tokens, and says daemons can't spend SALT instead of a 0 SALT figure", () => {
     daemonsSlice.set({ view });
     const el = render(<DaemonsPanel actions={actions()} />);
     expect($(el, "daemon-status").textContent).toBe("budget used up today");
-    expect($(el, "daemon-budget").textContent).toContain("4 of 4 runs · 20,100 of 20,000 tokens (estimated) · spend 0 SALT · 3 skipped (budget)");
+    expect($(el, "daemon-budget").textContent).toContain("4 of 4 runs · 20,100 of 20,000 tokens (estimated) · 3 skipped (budget)");
+    // Chain-team ruling 5: never "0 SALT"; the sentence is "Daemons can't spend SALT".
+    expect($(el, "daemons-panel").textContent).toContain("Daemons can’t spend SALT");
+    expect($(el, "daemons-panel").textContent).not.toMatch(/\d\s*SALT/);
+    expect($(el, "daemons-panel").textContent).not.toContain("Spend is 0");
     expect($(el, "daemon-row").textContent).toContain("over budget");
   });
 
@@ -100,6 +104,8 @@ describe("Daemons card", () => {
     const el = render(<DaemonsPanel actions={a} />);
     act(() => $(el, "daemons-new").click());
     expect($(el, "daemons-form").textContent).toContain("pending owner sign-off");
+    expect($(el, "daemons-form").textContent).toContain("Daemons can’t spend SALT");
+    expect($(el, "daemons-form").textContent).not.toMatch(/\d\s*SALT/);
     const set = (label: string, value: string) => {
       const input = el.querySelector(`[aria-label="${label}"]`) as HTMLInputElement | HTMLTextAreaElement;
       const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -128,6 +134,20 @@ describe("Daemons card", () => {
     await flush();
     expect(el.querySelector('[role="alert"]')?.textContent).toContain("needs a name");
     expect($(el, "daemons-form")).not.toBeNull();
+  });
+
+  it("each daemon's Runs opens its run history when the host offers one", () => {
+    daemonsSlice.set({ view });
+    const onRuns = vi.fn();
+    const el = render(<DaemonsPanel actions={actions()} onRuns={onRuns} />);
+    act(() => $(el, "daemon-runs").click());
+    expect(onRuns).toHaveBeenCalledWith(view.daemons[0].id);
+  });
+
+  it("without a run-history host there is no Runs button", () => {
+    daemonsSlice.set({ view });
+    const el = render(<DaemonsPanel actions={actions()} />);
+    expect($(el, "daemon-runs")).toBeNull();
   });
 
   it("pauses one daemon, pauses all, and removes", async () => {
