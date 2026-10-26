@@ -20,6 +20,10 @@ export type NetworkProfile = {
   faucetUrl: string | null;
   bootnodes: string[] | null;
   addressBook: string | null;
+  /** sha256 (64 lowercase hex) of the frozen canonical address book of this genesis. */
+  addressBookSha256: string | null;
+  /** The citrate-chain commit (40 lowercase hex) the bundled node must contain. */
+  minChainRev: string | null;
   pending: Record<string, string>;
 };
 

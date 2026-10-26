@@ -50,6 +50,8 @@ struct RawProfile {
     faucet_url: Option<String>,
     bootnodes: Option<Vec<String>>,
     address_book: Option<String>,
+    address_book_sha256: Option<String>,
+    min_chain_rev: Option<String>,
     #[serde(default)]
     pending: BTreeMap<String, String>,
 }
@@ -71,6 +73,12 @@ pub struct NetworkProfile {
     pub bootnodes: Option<Vec<String>>,
     /// The generated address book, relative to `src-tauri/`.
     pub address_book: Option<String>,
+    /// sha256 (64 lowercase hex) of the frozen canonical citrate-chain address book this
+    /// profile's genesis was deployed with, as exported at the reroll.
+    pub address_book_sha256: Option<String>,
+    /// The citrate-chain commit (40 lowercase hex) the bundled node must contain for this
+    /// network; `MIN_CHAIN_REV` in `scripts/build-sidecar.sh` pins the active one.
+    pub min_chain_rev: Option<String>,
     /// For each unset field: what sets it.
     pub pending: BTreeMap<String, String>,
 }
@@ -90,6 +98,10 @@ pub struct ReadyNetwork {
     /// At least one, each `noise_<64 hex>@<host>:<port>`.
     pub bootnodes: Vec<String>,
     pub address_book: String,
+    /// 64 lowercase hex, not zero.
+    pub address_book_sha256: String,
+    /// 40 lowercase hex, not zero.
+    pub min_chain_rev: String,
 }
 
 /// Why a profile cannot be used.
@@ -173,6 +185,8 @@ fn parse(json: &str) -> Result<(String, Vec<NetworkProfile>), ProfileError> {
             faucet_url: p.faucet_url,
             bootnodes: p.bootnodes,
             address_book: p.address_book,
+            address_book_sha256: p.address_book_sha256,
+            min_chain_rev: p.min_chain_rev,
             pending: p.pending,
         })
         .collect();
@@ -337,6 +351,8 @@ impl NetworkProfile {
             faucet_url,
             bootnodes,
             address_book,
+            address_book_sha256: self.address_book_sha256.clone().unwrap_or_default(),
+            min_chain_rev: self.min_chain_rev.clone().unwrap_or_default(),
         })
     }
 
