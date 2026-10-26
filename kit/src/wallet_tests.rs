@@ -1945,6 +1945,90 @@ struct K6DepRoots {
     data: Vec<std::path::PathBuf>,
     /// The workspace manifest, which clippy records for its lint settings.
     manifest: Option<std::path::PathBuf>,
+    /// Exact dep-info entries (workspace-relative, `/`-separated) that a kit build reads as data
+    /// from outside kit/src; see [`K6_DATA_READS`].
+    kit_reads: Vec<String>,
+    /// The same for an app build (`.rs` entries outside src-tauri/src read as text).
+    app_reads: Vec<String>,
+}
+
+/// Files a crate reads as DATA from outside its tree, with `include_str!` / `include_bytes!`
+/// (source scans and the v0.5.1 upgrade fixtures): `(reader, literal, reader is a kit source)`.
+/// rustc lists them in dep-info like any source, so each is accepted by its exact entry only,
+/// and only while every quoted use of the literal in kit/src and src-tauri/src is such a read
+/// ([`k6_data_read_entries`] fails otherwise). A new data read is added here, by name. The
+/// literals are split with `concat!` so this table is not itself a quoted use of them.
+const K6_DATA_READS: &[(&str, &str, bool)] = &[
+    ("kit/src/ceremony_tests.rs", concat!("../../", "src-tauri/src/lib.rs"), true),
+    (
+        "kit/src/upgrade_v051_tests.rs",
+        concat!("../../", "fixtures/upgrade-v0.5.1/app-data/custody.enc"),
+        true,
+    ),
+    (
+        "kit/src/upgrade_v051_tests.rs",
+        concat!("../../", "fixtures/upgrade-v0.5.1/custody.keyring.json"),
+        true,
+    ),
+    (
+        "kit/src/upgrade_v051_tests.rs",
+        concat!("../../", "fixtures/upgrade-v0.5.1/app-data/config.json"),
+        true,
+    ),
+    ("src-tauri/src/lib.rs", concat!("../../", "kit/src/custody.rs"), false),
+    ("src-tauri/src/staking_tests.rs", concat!("../../", "kit/src/rpc.rs"), false),
+];
+
+/// Whether every quoted occurrence of `lit` in `src` is the argument of `include_str!(` or
+/// `include_bytes!(` (any spacing). `include!`, `#[path = ..]` or any other use is not a read.
+fn k6_quoted_uses_are_data_reads(src: &str, lit: &str) -> bool {
+    let quoted = format!("\"{lit}\"");
+    src.match_indices(quoted.as_str()).all(|(at, _)| {
+        let before: String = src[..at].chars().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect();
+        let flat: String = before.chars().filter(|c| !c.is_whitespace()).collect();
+        flat.ends_with("include_str!(") || flat.ends_with("include_bytes!(")
+    })
+}
+
+/// The accepted dep-info entries of [`K6_DATA_READS`] for kit builds (`is_kit`) or app builds.
+/// Panics when a reader no longer reads its literal, or when the literal is used any other way
+/// in a kit or app source, so a stale or misused row fails rather than widens the check.
+fn k6_data_read_entries(ws: &std::path::Path, is_kit: bool) -> Vec<String> {
+    let mut sources = Vec::new();
+    for tree in ["kit/src", "src-tauri/src"] {
+        let mut stack = vec![ws.join(tree)];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).expect("read source dir").flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    sources.push(std::fs::read_to_string(&p).expect("read source"));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (reader, lit, kit_row) in K6_DATA_READS {
+        let src = std::fs::read_to_string(ws.join(reader)).expect("read the reader");
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flat.contains(&format!("include_str!(\"{lit}\")"))
+                || flat.contains(&format!("include_bytes!(\"{lit}\")")),
+            "{reader} no longer reads {lit}: drop the row"
+        );
+        for other in &sources {
+            assert!(
+                k6_quoted_uses_are_data_reads(other, lit),
+                "{lit} is used other than as an include_str!/include_bytes! read"
+            );
+        }
+        if *kit_row == is_kit {
+            let dir = reader.rsplit_once('/').map_or("", |(d, _)| d);
+            out.push(format!("{dir}/{lit}"));
+        }
+    }
+    out
 }
 
 /// The entries of one dep-info file (`text`, of a kit build when `is_kit`) that lie outside the
@@ -1957,6 +2041,10 @@ fn k6_dep_info_violations(
 ) -> Vec<String> {
     let mut bad = Vec::new();
     for s in k6_dep_info_sources(text) {
+        let reads = if is_kit { &roots.kit_reads } else { &roots.app_reads };
+        if reads.iter().any(|r| *r == s.replace('\\', "/")) {
+            continue;
+        }
         let allowed: &[std::path::PathBuf] = if is_kit {
             &roots.kit
         } else if s.ends_with(".rs") {
@@ -2019,6 +2107,8 @@ fn k6_compiled_sources_stay_in_the_scanned_trees() {
         app,
         data,
         manifest: ws.join("Cargo.toml").canonicalize().ok(),
+        kit_reads: k6_data_read_entries(ws, true),
+        app_reads: k6_data_read_entries(ws, false),
     };
     let mut files = vec![own.clone()];
     for e in std::fs::read_dir(deps).expect("read deps dir").flatten() {
@@ -2075,8 +2165,22 @@ fn k6_dep_info_violations_flags_a_probe_the_target_compiled() {
         app: vec![ws.join("src-tauri/src")],
         data: vec![ws.to_path_buf()],
         manifest: ws.join("Cargo.toml").canonicalize().ok(),
+        kit_reads: vec!["kit/src/../../fixtures/zz_read.json".to_string()],
+        app_reads: vec!["src-tauri/src/../../zz_app_read.rs".to_string()],
     };
     assert!(roots.manifest.is_some(), "workspace manifest");
+    // A named data read is accepted by its exact entry, for its own kind of build only.
+    let read = "/w/x: kit/src/../../fixtures/zz_read.json\n";
+    assert!(k6_dep_info_violations(read, true, ws, &roots).is_empty(), "named kit read");
+    let near = "/w/x: kit/src/../../fixtures/zz_read.json.rs kit/src/../fixtures/zz_read.json\n";
+    assert_eq!(k6_dep_info_violations(near, true, ws, &roots).len(), 2, "near misses");
+    let app_read = "/w/y: src-tauri/src/../../zz_app_read.rs\n";
+    assert!(k6_dep_info_violations(app_read, false, ws, &roots).is_empty(), "named app read");
+    assert_eq!(
+        k6_dep_info_violations(app_read.replace("/w/y", "/w/x").as_str(), true, ws, &roots).len(),
+        1,
+        "an app read is not a kit read"
+    );
     let abs = |rel: &str| ws.join(rel).to_string_lossy().replace(' ', "\\ ");
     let clean = format!(
         "{t}: kit/src/lib.rs kit/src/rpc.rs {w} Cargo.toml\n\nkit/src/lib.rs:\n",
@@ -2107,6 +2211,34 @@ fn k6_dep_info_violations_flags_a_probe_the_target_compiled() {
             vec!["kit\\src\\..\\zz_outside_probe.rs".to_string()]
         );
     }
+}
+
+/// [`K6_DATA_READS`] holds only while its literals are read as data: the checker accepts an
+/// `include_str!` / `include_bytes!` argument in any spacing and refuses every code use.
+#[test]
+fn k6_data_reads_accept_only_text_reads_of_the_literal() {
+    let lit = "../../x/y.rs";
+    for ok in [
+        "const A: &str = include_str!(\"../../x/y.rs\");",
+        "let b = include_bytes! ( \"../../x/y.rs\" );",
+        "let c = std::include_str!(\n    \"../../x/y.rs\"\n);",
+        "// mentions ../../x/y.rs unquoted",
+    ] {
+        assert!(k6_quoted_uses_are_data_reads(ok, lit), "{ok}");
+    }
+    for bad in [
+        "include!(\"../../x/y.rs\");",
+        "#[path = \"../../x/y.rs\"]\nmod m;",
+        "const A: &str = include_str!(\"../../x/y.rs\"); include!(\"../../x/y.rs\");",
+        "let s = \"../../x/y.rs\";",
+    ] {
+        assert!(!k6_quoted_uses_are_data_reads(bad, lit), "{bad}");
+    }
+    let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("workspace root");
+    let kit = k6_data_read_entries(ws, true);
+    assert!(kit.contains(&"kit/src/../../src-tauri/src/lib.rs".to_string()), "{kit:?}");
+    let app = k6_data_read_entries(ws, false);
+    assert!(app.contains(&"src-tauri/src/../../kit/src/rpc.rs".to_string()), "{app:?}");
 }
 
 /// The dep-info reader and path check used above, on an in-memory dep-info file.
