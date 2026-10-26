@@ -728,6 +728,11 @@ struct Cell {
     /// This supervisor's id in the deadline overlay, and the publisher it arms.
     owner: u64,
     deadlines: Arc<DeadlinePublisher>,
+    /// The intent sequence of the pending control that armed a deadline record, set under this
+    /// lock when it is armed. Only that control can be `DeadlineExpired`; any other control
+    /// settles without reading the overlay, so another owner's record mid-write never turns it
+    /// into an expiry.
+    deadline_seq: Option<u64>,
     /// A spawn admitted and not yet published or torn down (SCL-S2.3).
     spawn_ticket: bool,
     /// Admitted credential publications not yet committed or released:
@@ -814,8 +819,9 @@ impl Cell {
         if let Some((old, _)) = self.active.take() {
             // DeadlineExpired is final: a control whose deadline already passed stays expired
             // when a newer intent replaces it.
-            let expired =
-                self.deadlines
+            let expired = self.had_deadline(old.intent_sequence)
+                && self
+                    .deadlines
                     .expired_at_settle(self.owner, old.app_epoch, old.intent_sequence);
             self.deadlines
                 .release(self.owner, old.app_epoch, old.intent_sequence);
@@ -856,15 +862,22 @@ impl Cell {
         ControlResult::Busy
     }
 
+    /// Whether the control of intent `seq` armed a deadline record; clears the mark, since the
+    /// caller is about to release that record.
+    fn had_deadline(&mut self, seq: u64) -> bool {
+        self.deadline_seq.take() == Some(seq)
+    }
+
     /// Settle the pending receipt if it belongs to intent `seq` and is of `kind`.
     fn settle(&mut self, seq: u64, kind: IntentKind, receipt: Receipt) {
         if let Some((token, k)) = self.active {
             if token.intent_sequence == seq && k == kind {
                 // A settlement after the control's deadline is reported as expired, whatever was
                 // observed: the caller was promised an answer by then and did not get one.
-                let expired = self
-                    .deadlines
-                    .expired_at_settle(self.owner, token.app_epoch, seq);
+                let expired = self.had_deadline(seq)
+                    && self
+                        .deadlines
+                        .expired_at_settle(self.owner, token.app_epoch, seq);
                 self.deadlines.release(self.owner, token.app_epoch, seq);
                 let receipt = if expired {
                     Receipt::DeadlineExpired
@@ -1132,6 +1145,7 @@ impl Supervisor {
                 next_ticket: 1,
                 closed: false,
                 closed_readers: Vec::new(),
+                deadline_seq: None,
                 instance,
             }),
             wake: Condvar::new(),
@@ -1199,6 +1213,7 @@ impl Supervisor {
                 ) {
                     return ControlResult::Busy;
                 }
+                c.deadline_seq = Some(token.intent_sequence);
                 drop(c);
                 return self.observed(token);
             }
@@ -1221,6 +1236,9 @@ impl Supervisor {
             return ControlResult::Busy;
         }
         let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
+        if monitor_alive {
+            c.deadline_seq = Some(token.intent_sequence);
+        }
         if c.phase != Phase::Quarantined {
             c.phase = Phase::Stopping;
         }
@@ -1341,7 +1359,8 @@ impl Supervisor {
     ///
     /// - Refused as `RejectedClosing` after shutdown began, and as `Quarantined` while owned
     ///   work from an earlier stop is still running.
-    /// - A Start on a live service is `AlreadySatisfied`; one while a Start is pending joins it.
+    /// - A Start on a live service is `AlreadySatisfied` while its monitor runs; one while a
+    ///   Start is pending joins it. With the monitor gone it is `ObservationUnknown`.
     /// - After a Stop (or after `Failed`) it commits a new intent: the monitor finishes any
     ///   teardown first, then spawns exactly one new incarnation with a fresh retry budget.
     pub fn request_start(&self) -> ControlResult {
@@ -1362,7 +1381,10 @@ impl Supervisor {
             // Joining a pending Start is only Accepted while a monitor can settle it.
             return self.observed(token);
         }
-        if c.desired == Desired::Running && c.phase != Phase::Failed {
+        // Satisfied only while a monitor supervises the running service. Without one the cached
+        // process state can no longer be maintained, so the Start is committed and reported as
+        // ObservationUnknown (core#398).
+        if c.desired == Desired::Running && c.phase != Phase::Failed && self.monitor_running() {
             return ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch));
         }
         let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
@@ -1396,23 +1418,27 @@ impl Supervisor {
         }
         // Compare the monotonic deadline directly, without any lock, so expiry is reported even
         // when the publisher has not run and the cell is busy.
-        match self
+        let torn = match self
             .deadlines
             .expired(self.owner, token.app_epoch, token.intent_sequence)
         {
             Some(true) => return Receipt::DeadlineExpired,
-            Some(false) => {}
-            None => {
-                return Receipt::Unknown {
-                    reason: "the deadline record was being rewritten".to_string(),
-                }
-            }
-        }
+            Some(false) => false,
+            None => true,
+        };
         let Some(c) = self.shared.lock_bounded() else {
             return Receipt::Unknown {
                 reason: "the lifecycle cell is busy".to_string(),
             };
         };
+        // A torn read leaves expiry undecided only for the pending control that armed its own
+        // record. Any other control has no record, so another owner's rewrite says nothing
+        // about it, and the cell answers.
+        if torn && c.deadline_seq == Some(token.intent_sequence) {
+            return Receipt::Unknown {
+                reason: "the deadline record was being rewritten".to_string(),
+            };
+        }
         match (&c.active, &c.settled) {
             (Some((t, _)), _) if *t == token => Receipt::Pending,
             (_, Some((t, r))) if *t == token => r.clone(),
@@ -1939,6 +1965,51 @@ impl Drop for OwnedChild {
     }
 }
 
+/// Installed first in [`run_monitor`], so it drops last. If the monitor unwinds (a `ChildWatch`
+/// hook panicked), the [`OwnedChild`] drop has already killed and reaped the child; this marks
+/// the cell so it no longer reports a supervised process: Starting, Alive and Backoff become
+/// Failed with no pid, Stopping becomes Quarantined (its cleanup can no longer be observed), and
+/// a pending receipt is settled. A normal
+/// exit (shutdown) leaves the cell to `finish_closing`.
+struct MonitorExit(Arc<Shared>);
+
+impl Drop for MonitorExit {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let reason = "the service monitor ended; nothing supervises the service";
+        let mut c = self.0.lock();
+        c.status.pid = None;
+        match c.phase {
+            Phase::Starting | Phase::Alive | Phase::Backoff => {
+                c.status.state = SupervisorState::Failed;
+                c.phase = Phase::Failed;
+            }
+            // A Stop's teardown can no longer be observed to finish: never Stopped.
+            Phase::Stopping => {
+                c.status.state = SupervisorState::Off;
+                c.phase = Phase::Quarantined;
+                c.quarantine = Some(reason.to_string());
+            }
+            Phase::Stopped | Phase::Failed | Phase::Quarantined => {}
+        }
+        if let Some((token, kind)) = c.active {
+            let receipt = match kind {
+                IntentKind::Start => Receipt::Failed {
+                    reason: reason.to_string(),
+                },
+                IntentKind::Stop => Receipt::Incomplete {
+                    remaining: vec!["readers".to_string()],
+                    reason: reason.to_string(),
+                },
+            };
+            c.settle(token.intent_sequence, kind, receipt);
+        }
+        c.touch();
+    }
+}
+
 /// The monitor loop: the sole owner of the child and the sole writer of process state.
 ///
 /// Every turn reads the latest intent from the cell (SC1):
@@ -1965,6 +2036,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         failed_barrier: _failed_barrier,
         settle_barrier: _settle_barrier,
     } = config;
+    // Dropped last: marks the cell if this thread unwinds (core#398).
+    let _exit = MonitorExit(shared.clone());
 
     // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap. Reset to 0 once a
     // respawned child stays Running for `healthy_after` (F-1), and for every new Start intent.
@@ -1988,8 +2061,6 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     // admitted before the Stop that returned after it ("spawnTicket").
     let mut tore_down_child = false;
     let mut late_spawn = false;
-    // The intent the last admitted spawn served. A different current intent is a new Start.
-    let mut spawned_for: u64 = 0;
 
     loop {
         let (seq, desired, closing) = shared.intent();
@@ -2037,31 +2108,30 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
             shared.wait_wake(None);
             continue;
         }
-        // The first spawn for a new Start intent. However the previous incarnation ended (a
-        // Stop's teardown that this Start superseded, a crash, or health failures that spent the
-        // retry budget), its child is gone but its readers (and any process holding its output
-        // pipe) may not be. Reconcile them before admitting the spawn; until then the service is
-        // Quarantined and the Start pending.
-        if spawned_for != seq {
-            let mut remaining = drain_readers(&mut readers, READER_DRAIN);
-            // Publications admitted under an earlier intent are the old incarnation's too.
-            remaining.extend(
-                shared
-                    .lock()
-                    .publications
-                    .iter()
-                    .filter(|(_, admitted, _)| *admitted < seq)
-                    .map(|(_, _, n)| format!("publication:{n}")),
-            );
-            if !remaining.is_empty() {
-                hold_start_for_cleanup(&shared, seq, &remaining);
-                shared.wait_wake(Some(QUARANTINE_POLL));
-                continue;
-            }
-            release_start_hold(&shared, seq);
-            tore_down_child = false;
-            late_spawn = false;
+        // Before every spawn: the first one for a new Start intent and every automatic retry
+        // under the same intent (core#397). However the previous incarnation ended (a Stop's
+        // teardown that this Start superseded, a crash, or a failed health check), its child is
+        // gone but its readers (and any process holding its output pipe) may not be. Reconcile
+        // them before admitting the spawn; until then the service is Quarantined and nothing is
+        // spawned. A pending Start stays pending; a retry keeps its budget position.
+        let mut remaining = drain_readers(&mut readers, READER_DRAIN);
+        // Publications admitted under an earlier intent are the old incarnation's too.
+        remaining.extend(
+            shared
+                .lock()
+                .publications
+                .iter()
+                .filter(|(_, admitted, _)| *admitted < seq)
+                .map(|(_, _, n)| format!("publication:{n}")),
+        );
+        if !remaining.is_empty() {
+            hold_start_for_cleanup(&shared, seq, &remaining);
+            shared.wait_wake(Some(QUARANTINE_POLL));
+            continue;
         }
+        release_start_hold(&shared, seq);
+        tore_down_child = false;
+        late_spawn = false;
         if budget_seq != seq {
             budget_seq = seq;
             consecutive_failures = 0;
@@ -2071,7 +2141,6 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         if !admit_spawn(&shared, seq) {
             continue;
         }
-        spawned_for = seq;
         if let Some(barrier) = &spawn_barrier {
             barrier();
         }
@@ -2108,9 +2177,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         // Stream stdout + stderr into the shared log ring (Q-A.2). Done BEFORE publishing so no
         // early line is missed. The crash tail is later derived from the ring's `err` lines.
-        // Join readers of earlier incarnations that have ended, so a long crash-and-retry
-        // history does not keep their handles around.
-        let _still_reading = drain_readers(&mut readers, Duration::ZERO);
+        // Earlier incarnations' readers were all joined by the reconcile above.
         readers.extend(spawn_log_readers(&mut child, &spec.name, &shared));
 
         // --- publication admission: a newer intent that arrived during the OS call wins ---
@@ -2223,8 +2290,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     }
 }
 
-/// The previous incarnation still holds `remaining`: quarantine the service while the accepted
-/// Start for intent `seq` waits. Nothing is spawned meanwhile.
+/// The previous incarnation still holds `remaining`: quarantine the service while the next spawn
+/// for intent `seq` (an accepted Start or an automatic retry) waits. Nothing is spawned meanwhile.
 fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
     let mut c = shared.lock();
     if c.closing || c.intent_sequence != seq || c.quarantine.is_some() {
@@ -2235,8 +2302,8 @@ fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
     c.phase = Phase::Quarantined;
     c.quarantine = Some(format!(
         "the previous incarnation is not cleaned up yet ({}): its output is still open, so \
-         another process (for example one it started) may hold the pipe; the accepted Start \
-         waits until it ends",
+         another process (for example one it started) may hold the pipe; the next start waits \
+         until it ends",
         remaining.join(", ")
     ));
     c.touch();

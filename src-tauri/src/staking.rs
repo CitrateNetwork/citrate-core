@@ -594,10 +594,20 @@ pub fn load_scan(file: &std::path::Path, key: &str) -> WithdrawalScan {
 
 /// C1-W (#371 review) — two scans of the same key, merged so progress never goes back and a
 /// rewind is never undone. A newer generation (a -32001 recovery) wins; within one generation the
-/// further cursor wins. The winner keeps its own cursor, rows and checkpoints together: rows belong
-/// to the chain their cursor was read on. The session-only state comes from `b`, the newer one.
+/// further cursor wins. With no cursor in the same generation, a finished recovery beats one still
+/// running, and between two running recoveries the one with fewer checkpoints left to try wins:
+/// a recovery only drops checkpoints it rejected (#401). The winner keeps its own cursor, rows and
+/// checkpoints together: rows belong to the chain their cursor was read on. The session-only state
+/// comes from `b`, the newer one.
 pub fn merge_scans(a: &WithdrawalScan, b: &WithdrawalScan) -> WithdrawalScan {
-    let pos = |s: &WithdrawalScan| (s.generation, s.cursor.as_ref().map(|c| c.number));
+    let pos = |s: &WithdrawalScan| {
+        (
+            s.generation,
+            s.cursor.as_ref().map(|c| c.number),
+            !s.recovering,
+            std::cmp::Reverse(s.checkpoints.len()),
+        )
+    };
     let lead = if pos(a) >= pos(b) { a } else { b };
     WithdrawalScan {
         cursor: lead.cursor.clone(),

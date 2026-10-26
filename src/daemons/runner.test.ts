@@ -302,3 +302,182 @@ describe("daemon runner: pausing claims that have not started yet (review)", () 
     expect(api.finished.map((f) => f.outcome)).toEqual(["stopped", "answered"]);
   });
 });
+
+describe("cancelling a daemon before it is removed", () => {
+  it("cancel aborts the run in flight and resolves only after its end is recorded", async () => {
+    const api = fakeApi([[claim()]]);
+    let started!: () => void;
+    const begun = new Promise<void>((res) => (started = res));
+    const turn: DaemonTurn = (_c, signal) =>
+      new Promise((_, reject) => {
+        started();
+        // The turn takes a moment to unwind after the abort.
+        signal.addEventListener("abort", () => setTimeout(() => reject(new TurnStopped()), 5));
+      });
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    await r.cancel("d1");
+    // By the time cancel resolves the run is over and recorded: nothing is left to finish later.
+    expect(api.setPaused).toHaveBeenCalledWith("d1", true, 0);
+    expect(api.finished).toHaveLength(1);
+    expect(api.finished[0].outcome).toBe("stopped");
+    expect(r.state().running).toBeNull();
+    await t;
+    expect(api.finished).toHaveLength(1);
+  });
+
+  it("cancel holds back a claim still queued in this tick and waits for it", async () => {
+    const api = fakeApi([[claim(), claim({ daemonId: "d2", runId: "r2" })]]);
+    let started!: () => void;
+    const begun = new Promise<void>((res) => (started = res));
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    const ran: string[] = [];
+    const turn: DaemonTurn = async (c) => {
+      ran.push(c.daemonId);
+      if (c.daemonId === "d1") {
+        started();
+        await gate;
+      }
+      return "done";
+    };
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    const cancelled = r.cancel("d2");
+    release();
+    await cancelled;
+    expect(ran).toEqual(["d1"]);
+    expect(api.finished.find((f) => f.id === "d2")?.outcome).toBe("stopped");
+    await t;
+  });
+
+  it("cancel of a daemon with nothing in flight resolves at once", async () => {
+    const api = fakeApi([]);
+    const r = createDaemonRunner(deps(api, async () => "x"));
+    await r.cancel("d9");
+    expect(api.setPaused).toHaveBeenCalledWith("d9", true, 0);
+  });
+
+  it("a run whose end core refuses (the daemon is gone) is not written to the journal", async () => {
+    const api = fakeApi([[claim()]]);
+    (api.finishRun as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("no such daemon"));
+    const onFinished = vi.fn();
+    const r = createDaemonRunner(deps(api, async () => "answer", { onFinished }));
+    await r.tick();
+    expect(onFinished).not.toHaveBeenCalled();
+    expect(r.state().error).toMatch(/no such daemon/);
+  });
+});
+
+describe("cancel waits for the sidecar to confirm the run stopped (Codex P2, #356 at 81d3da7)", () => {
+  const ctx = () => ({ height: 1, peers: 0, finalityAge: 0, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" });
+  const tick = () => new Promise((res) => setTimeout(res, 2));
+  type Knobs = { stop?: () => Promise<void>; close?: () => Promise<void>; stopsTurn?: boolean };
+  /** A sidecar that behaves like the real one: a sent turn keeps running (busy) until a stop is
+   *  acknowledged; events long-poll briefly. */
+  function liveSidecar(k: Knobs = {}) {
+    const log: string[] = [];
+    let busy = false;
+    let closed = false;
+    const sidecar = {
+      openUnattended: vi.fn(async () => "s1"),
+      send: vi.fn(async () => {
+        busy = true;
+        log.push("send");
+      }),
+      events: vi.fn(async () => {
+        await tick();
+        if (closed) throw new Error("sidecar returned 404 Not Found");
+        return { events: [], lastSeq: 0, busy };
+      }),
+      toolResult: vi.fn(async () => undefined),
+      stop: vi.fn(async () => {
+        log.push("stop");
+        await (k.stop ?? (async () => undefined))();
+        if (k.stopsTurn !== false) busy = false;
+        log.push("stopped");
+      }),
+      close: vi.fn(async () => {
+        log.push("close");
+        await (k.close ?? (async () => undefined))();
+        closed = true;
+        log.push("closed");
+      }),
+    };
+    return { sidecar, log };
+  }
+  async function cancelDuringRun(k: Knobs, stopConfirm = { deadlineMs: 300, pollMs: 2 }) {
+    const { runDaemonTurn } = await import("./turn");
+    const api = fakeApi([[claim({ allowedTools: [] })]]);
+    const { sidecar, log } = liveSidecar(k);
+    const turnDeps = { providerKind: "sidecar", systemPrompt: () => "You are Hermes.", context: ctx, sidecar, handleTool: async () => "ok", stopConfirm };
+    const r = createDaemonRunner(deps(api, (c, signal, meter) => runDaemonTurn(c, signal, meter, turnDeps), { runTimeoutMs: 60_000 }));
+    const ticked = r.tick();
+    await vi.waitFor(() => expect(sidecar.send).toHaveBeenCalledTimes(1));
+    let cancelError: unknown = null;
+    await r.cancel("d1").then(() => log.push("cancelled"), (e) => {
+      cancelError = e;
+      log.push("cancel-refused");
+    });
+    await ticked;
+    return { api, log, cancelError, sidecar };
+  }
+
+  it("a delayed stop: cancel resolves only after the turn is idle and the session closed", async () => {
+    const { api, log, cancelError } = await cancelDuringRun({ stop: () => new Promise((res) => setTimeout(res, 40)) });
+    expect(cancelError).toBeNull();
+    expect(log.indexOf("stopped")).toBeGreaterThan(-1);
+    expect(log.indexOf("closed")).toBeGreaterThan(log.indexOf("stopped"));
+    expect(log.indexOf("cancelled")).toBeGreaterThan(log.indexOf("closed"));
+    expect(api.finished).toHaveLength(1);
+    expect(api.finished[0].outcome).toBe("stopped");
+  });
+
+  it("a rejected stop: cancel is refused and the run is not recorded as ended", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stop: async () => Promise.reject(new Error("sidecar returned 500")) });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a rejected close: cancel is refused", async () => {
+    const { api, cancelError } = await cancelDuringRun({ close: async () => Promise.reject(new Error("sidecar returned 500")) });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a turn still busy at the deadline: cancel is refused", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stopsTurn: false }, { deadlineMs: 30, pollMs: 2 });
+    expect(String(cancelError)).toMatch(/did not confirm/);
+    expect(api.finished).toHaveLength(0);
+  });
+
+  it("a session the sidecar no longer has counts as stopped", async () => {
+    const { api, cancelError } = await cancelDuringRun({ stop: async () => Promise.reject(new Error("sidecar returned 404 Not Found")) });
+    expect(cancelError).toBeNull();
+    expect(api.finished[0].outcome).toBe("stopped");
+  });
+
+});
+
+describe("tripwire: a run that did not answer ends only through confirmed termination", () => {
+  it("runDaemonTurn closes sessions without confirmation only after an answered turn", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(__dirname, "turn.ts"), "utf8");
+    const fn = src.slice(src.indexOf("export async function runDaemonTurn("));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    const fin = body.slice(body.lastIndexOf("} finally {"));
+    const answered = fin.indexOf("if (answered)");
+    const otherwise = fin.indexOf("} else if (sc)");
+    expect(answered).toBeGreaterThan(0);
+    expect(otherwise).toBeGreaterThan(answered);
+    // The only unconfirmed close is in the answered branch.
+    const unconfirmedClose = [...fin.matchAll(/\.close\(id\)\.catch\(/g)].map((m) => m.index ?? -1);
+    expect(unconfirmedClose.length).toBe(1);
+    expect(unconfirmedClose[0]).toBeGreaterThan(answered);
+    expect(unconfirmedClose[0]).toBeLessThan(otherwise);
+    expect(fin.slice(otherwise)).toContain("await terminateSession(");
+  });
+});

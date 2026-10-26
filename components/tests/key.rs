@@ -65,3 +65,18 @@ fn a_test_key_parses_and_has_a_stable_fingerprint() {
     assert_eq!(a.fingerprint(), b.fingerprint());
     assert_eq!(a.fingerprint().len(), 16);
 }
+
+#[test]
+fn key_separation_compares_the_decoded_public_key_not_the_encoded_line() {
+    // The same Ed25519 public key under another key id is a different base64 line but the same
+    // key: it must be refused as the forbidden key.
+    let k = common::TestKey::generate();
+    let line = k.public_b64();
+    let other_id = k.public_b64_with_key_id([9u8; 8]);
+    assert_ne!(line, other_id);
+    let err = TrustRoot::from_base64_checked(&other_id, &[line.as_str()]).unwrap_err();
+    assert!(matches!(err, ComponentError::BadKey(_)), "{err:?}");
+    // A different key still passes.
+    let unrelated = common::TestKey::generate();
+    assert!(TrustRoot::from_base64_checked(&unrelated.public_b64(), &[line.as_str()]).is_ok());
+}

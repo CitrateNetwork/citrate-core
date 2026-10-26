@@ -37,6 +37,15 @@ impl TestKey {
         base64::engine::general_purpose::STANDARD.encode(bin)
     }
 
+    /// The same Ed25519 public key under another key id (a different base64 line).
+    pub fn public_b64_with_key_id(&self, key_id: [u8; 8]) -> String {
+        let mut bin = Vec::with_capacity(42);
+        bin.extend_from_slice(b"Ed");
+        bin.extend_from_slice(&key_id);
+        bin.extend_from_slice(self.sk.verifying_key().as_bytes());
+        base64::engine::general_purpose::STANDARD.encode(bin)
+    }
+
     /// A prehashed (`ED`) minisign signature with the given trusted comment.
     pub fn sign(&self, data: &[u8], trusted_comment: &str) -> String {
         let h = blake2::Blake2b512::digest(data);
