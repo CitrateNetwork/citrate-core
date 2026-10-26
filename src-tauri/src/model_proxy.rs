@@ -112,6 +112,7 @@ impl ProxyError {
         match self {
             ProxyError::Unauthorized => (401, "unauthorized"),
             ProxyError::BadRequest(_) => (400, "bad_request"),
+            ProxyError::Provider(ProviderError::BadRequest(_)) => (400, "bad_request"),
             ProxyError::NotConfigured => (409, "not_configured"),
             ProxyError::NotAvailable => (501, "not_available"),
             ProxyError::Egress(_) => (403, "egress_refused"),
@@ -127,7 +128,9 @@ impl ProxyError {
     pub fn outcome(&self) -> &'static str {
         match self {
             ProxyError::Unauthorized => "unauthorized",
-            ProxyError::BadRequest(_) => "bad_request",
+            ProxyError::BadRequest(_) | ProxyError::Provider(ProviderError::BadRequest(_)) => {
+                "bad_request"
+            }
             ProxyError::NotConfigured => "not_configured",
             ProxyError::NotAvailable => "not_available",
             ProxyError::Egress(_) => "egress_refused",
@@ -167,17 +170,18 @@ impl AdapterKind {
     }
 }
 
-/// RED: the registry as before this WP (OpenAI-compatible stand-ins; the rest unserved).
+/// The adapter registry: every governed vendor has its native adapter.
 pub fn vendor_adapter(v: Vendor) -> (Arc<dyn ModelProvider>, AdapterKind) {
-    match v {
-        Vendor::OpenAi | Vendor::Xai | Vendor::DeepSeek => (
-            Arc::new(OpenAiCompatAdapter::new(ProviderId::Vendor(v), vec![])),
-            AdapterKind::OpenAiCompatible,
-        ),
-        Vendor::Anthropic => (Arc::new(crate::provider_anthropic::AnthropicAdapter), AdapterKind::OpenAiCompatible),
-        Vendor::Gemini => (Arc::new(crate::provider_gemini::GeminiAdapter), AdapterKind::OpenAiCompatible),
-        Vendor::Meta => (Arc::new(crate::provider_chat_vendors::ChatVendorAdapter::meta()), AdapterKind::OpenAiCompatible),
-    }
+    use crate::provider_chat_vendors::ChatVendorAdapter;
+    let a: Arc<dyn ModelProvider> = match v {
+        Vendor::OpenAi => Arc::new(crate::provider_openai::OpenAiAdapter),
+        Vendor::Anthropic => Arc::new(crate::provider_anthropic::AnthropicAdapter),
+        Vendor::Gemini => Arc::new(crate::provider_gemini::GeminiAdapter),
+        Vendor::Xai => Arc::new(ChatVendorAdapter::xai()),
+        Vendor::DeepSeek => Arc::new(ChatVendorAdapter::deepseek()),
+        Vendor::Meta => Arc::new(ChatVendorAdapter::meta()),
+    };
+    (a, AdapterKind::Native)
 }
 
 // ---------------------------------------------------------------------------

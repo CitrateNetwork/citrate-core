@@ -193,7 +193,11 @@ impl ProviderHttp for ScriptedVendor {
 
 impl ScriptedVendor {
     /// The same reply in the Responses API shape (typed SSE events when streamed).
-    fn responses_answer(&self, stream: bool, status: u16) -> Result<InboundResponse, ProviderError> {
+    fn responses_answer(
+        &self,
+        stream: bool,
+        status: u16,
+    ) -> Result<InboundResponse, ProviderError> {
         let usage = self
             .usage
             .map(|(p, c)| json!({"input_tokens": p, "output_tokens": c}))

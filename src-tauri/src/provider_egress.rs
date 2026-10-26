@@ -28,7 +28,10 @@ pub struct VendorSpec {
     pub revoke_page: &'static str,
 }
 
-/// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts.
+/// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts, checked
+/// against each vendor's own API docs on 2026-10-26 (sources in each adapter's module docs).
+/// Meta: the Meta Model API serving the Muse models is `https://api.meta.ai/v1`
+/// (<https://dev.meta.ai/docs/overview>); the earlier Llama API host is not used.
 pub const VENDORS: &[VendorSpec] = &[
     VendorSpec {
         vendor: Vendor::OpenAi,
@@ -68,9 +71,9 @@ pub const VENDORS: &[VendorSpec] = &[
     VendorSpec {
         vendor: Vendor::Meta,
         name: "Meta",
-        base_url: "https://api.llama.com/v1",
-        key_page: "https://llama.developer.meta.com",
-        revoke_page: "https://llama.developer.meta.com",
+        base_url: "https://api.meta.ai/v1",
+        key_page: "https://dev.meta.ai/platform",
+        revoke_page: "https://dev.meta.ai/platform",
     },
 ];
 
@@ -87,10 +90,13 @@ pub struct DelegateSpec {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
+/// Cognition: API v3 (`https://api.devin.ai/v3`, `Authorization: Bearer cog_…`, sessions at
+/// `POST /v3/organizations/{org_id}/sessions`); v1/v2 and `apk_` keys are legacy
+/// (<https://docs.devin.ai/api-reference/authentication>).
 pub const DELEGATES: &[DelegateSpec] = &[DelegateSpec {
     id: "cognition",
     name: "Cognition (Devin)",
-    base_url: "https://api.devin.ai/v1",
+    base_url: "https://api.devin.ai/v3",
     key_page: "https://app.devin.ai/settings",
 }];
 

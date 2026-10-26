@@ -159,16 +159,16 @@ fn negative_control_the_scans_can_fail() {
 fn planted() -> Vec<String> {
     let tail = "Z9".repeat(16);
     vec![
-        format!("sk-proj-{tail}"),      // OpenAI
-        format!("sk-ant-api03-{tail}"), // Anthropic
-        format!("AIza{tail}"),          // Gemini
-        format!("xai-{tail}"),          // xAI
-        format!("sk-{tail}"),           // DeepSeek
-        format!("LLM|{tail}"),          // Meta Llama API (retired)
+        format!("sk-proj-{tail}"),              // OpenAI
+        format!("sk-ant-api03-{tail}"),         // Anthropic
+        format!("AIza{tail}"),                  // Gemini
+        format!("xai-{tail}"),                  // xAI
+        format!("sk-{tail}"),                   // DeepSeek
+        format!("LLM|{tail}"),                  // Meta Llama API (retired)
         format!("LLM_1607358788850350_{tail}"), // Meta Model API (`LLM_<id>_<secret>`)
-        format!("apk_user_{tail}"),     // Cognition (legacy)
-        format!("cog_{tail}"),          // Cognition API v3
-        format!("cmp_{tail}"),          // a model-proxy route token
+        format!("apk_user_{tail}"),             // Cognition (legacy)
+        format!("cog_{tail}"),                  // Cognition API v3
+        format!("cmp_{tail}"),                  // a model-proxy route token
     ]
 }
 
