@@ -654,26 +654,6 @@ pub(crate) fn mac_key(keyring: &dyn AiKeyring, account: &str) -> Result<Zeroizin
     }
 }
 
-/// Owner-only (0600 from creation), written to a temporary file and renamed into place.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    let tmp = path.with_extension("tmp");
-    if let Some(dir) = path.parent() {
-        citrate_core_kit::fsutil::ensure_private_dir(dir).map_err(|e| e.kind().to_string())?;
-    }
-    let res = (|| -> std::io::Result<()> {
-        let _ = std::fs::remove_file(&tmp);
-        let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    if res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    res.map_err(|e| e.kind().to_string())
-}
-
 pub fn guard_path(dir: &Path) -> PathBuf {
     dir.join(GUARD_FILE)
 }
@@ -768,7 +748,9 @@ pub fn save(dir: &Path, g: &mut GuardBook) -> Result<(), String> {
         mac: hex::encode(mac),
     })
     .map_err(|_| "encode guard".to_string())?;
-    write_atomic(&guard_path(dir), &sealed)?;
+    // The directory is owner-only; the file is replaced through a temp name unique to this write.
+    citrate_core_kit::fsutil::ensure_private_dir(dir).map_err(|e| e.kind().to_string())?;
+    crate::atomic_file::replace(&guard_path(dir), &sealed).map_err(|e| e.kind().to_string())?;
     g.generation = generation;
     crate::provider_usage_log::update_anchor(keyring.as_ref(), |a| a.guard_gen = generation)
         .map_err(|_| "the spend settings anchor could not be written".to_string())
