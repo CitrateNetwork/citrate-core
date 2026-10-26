@@ -63,7 +63,6 @@ const FIXTURE = JSON.parse(RAW.toString("utf8")) as Fixture;
 const ctx: AgentContext = {
   height: 100,
   peers: 3,
-  finalityAge: 4,
   nodeState: "synced",
   staked: 32000,
   liquid: 1,

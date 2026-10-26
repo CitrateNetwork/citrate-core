@@ -136,6 +136,61 @@ describe("HUP-S10.1 MediaPanel", () => {
     expect(calls).toEqual([]);
   });
 
+  // K2 (owner 2026-10-19): image generation through a provider is a remote service. Local model
+  // only blocks it (owner decision 2026-10-23), so core shows it as not available then.
+  it("a provider route says it uses a remote service and names the provider; the local route does not", async () => {
+    const remote = { id: "remote", kind: "image" as const, available: true, reason: null, destination: "OpenAI (api.openai.com)", cost: "Billed by the provider to your key", model: "gpt-image-1" };
+    const { io } = makeIo(() => options({ image: [options().image[0], remote] }));
+    const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} />);
+    expect(q(host, "media-remote-image-remote")?.textContent).toBe("Uses a remote service (OpenAI (api.openai.com)).");
+    expect(q(host, "media-remote-image-local")).toBeNull();
+    expect(q(host, "media-local-only-note")).toBeNull();
+  });
+
+  it("with Local model only on, a provider route is not available and says why; nothing is sent", async () => {
+    // Core marks the provider route not available under Local model only (owner decision 2026-10-23).
+    const remote = { id: "remote", kind: "image" as const, available: false, reason: "Local only is on, so nothing was sent off this device. Turn off Local model only in Hermes › Controls to use the gateway.", destination: "Citrate gateway (infer.citrate.ai)", cost: "Billed by the provider to your key", model: "x" };
+    const { io, calls } = makeIo(() => options({ image: [remote] }));
+    const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} localOnly />);
+    expect(q(host, "media-route-image-remote")?.textContent).toContain("Local only is on");
+    // The note says Local model only covers image generation too (never "does not apply").
+    expect(host.textContent).not.toContain("does not apply");
+    expect(q(host, "media-local-only-note")?.textContent).toBe(
+      "Local model only is on: images are made only on this device, and no prompt is sent to a provider.",
+    );
+    await type(q<HTMLTextAreaElement>(host, "media-prompt"), "a lemon tree");
+    expect(q<HTMLButtonElement>(host, "media-generate")!.disabled).toBe(true);
+    expect(calls.some(([c]) => c === "media_consent_prepare" || c === "media_generate_image")).toBe(false);
+  });
+
+  it("a remote image is sent with the consent core minted for that prompt", async () => {
+    const remote = { id: "remote", kind: "image" as const, available: true, reason: null, destination: "Citrate gateway (infer.citrate.ai)", cost: "Billed by the provider to your key", model: "x" };
+    const opts = options({
+      image: [remote],
+      settings: { localUrl: null, localModel: null, remoteProvider: "gateway", remoteModel: "x" },
+    });
+    const { io, calls } = makeIo((cmd) =>
+      cmd === "media_options"
+        ? opts
+        : cmd === "media_consent_prepare"
+          ? { consentId: "cc_img_1", providerId: "gateway", expiresAtMs: 1 }
+          : cmd === "media_generate_image"
+            ? item({ route: "remote" })
+            : cmd === "media_read"
+              ? PNG
+              : null,
+    );
+    const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} />);
+    await type(q<HTMLTextAreaElement>(host, "media-prompt"), "a lemon tree at dusk");
+    await click(q(host, "media-generate"));
+    const prep = calls.find(([c]) => c === "media_consent_prepare");
+    expect(prep?.[1]).toEqual({ providerId: "gateway", prompt: "a lemon tree at dusk" });
+    const gen = calls.find(([c]) => c === "media_generate_image")!;
+    expect(gen[1]).toEqual({ route: "remote", prompt: "a lemon tree at dusk", size: "1024x1024", grantId: "4", consentId: "cc_img_1" });
+    // The consent is asked for before the image request.
+    expect(calls.findIndex(([c]) => c === "media_consent_prepare")).toBeLessThan(calls.findIndex(([c]) => c === "media_generate_image"));
+  });
+
   it("lists every route with its availability, reason and cost", async () => {
     const { io } = makeIo(() => options());
     const { host } = await mount(<MediaPanel io={async () => io} openPlayer={() => undefined} />);

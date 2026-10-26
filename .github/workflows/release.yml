@@ -19,10 +19,22 @@
 #   KEYCHAIN_PASSWORD                   any throwaway string (temp keychain in CI)
 #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarization creds (app-specific pwd)
 #   CITRATE_CHAIN_READ_TOKEN            fine-grained PAT, Contents:read on citrate-chain
-# Runtime deps (the ~4.3 GB model + sidecars are NOT in git): upload them once to a
-# GitHub prerelease tagged `runtime-deps` (see RELEASE.md); this workflow pulls them and
-# verifies each against src-tauri/runtime-deps.sha256 before staging (PBA-L7b-005).
+# Runtime deps (sidecars, llama runtime, BGE models, corpus) are NOT in git: they are uploaded to
+# the GitHub prerelease tagged `runtime-deps` (see RELEASE.md); this workflow pulls them and
+# verifies each against src-tauri/runtime-deps.sha256 before staging (PBA-L7b-005). Which bytes
+# each sidecar asset must hold (source repo, exact rev, build command) is release/components.json;
+# `node scripts/component-pins.mjs check` (CI) keeps this file, that manifest and the pins in step.
+# The Gemma model is not bundled (bundle-lite, as 0.5.0 and 0.5.1 shipped): the app downloads it on
+# first run and checks it against the digest pinned in src-tauri/src/model.rs.
 # The pinned updater PUBLIC key lives in tauri.conf.json; only the PRIVATE key is a secret.
+#
+# ── Dry run (workflow_dispatch, dry_run: true) ────────────────────────────────────────────────
+# Builds every release input from the pinned sources on a clean runner and bundles the app,
+# UNSIGNED, with no updater artifacts: no secret is read, nothing is signed, notarized, uploaded or
+# published, and no tag or release is created. The sidecars are built from the pinned revs with
+# the release build scripts (not taken from runtime-deps), and the step summary compares each
+# digest with its pin. Steps that sign or publish carry `if: env.DRY_RUN != 'true'`;
+# `component-pins.mjs check` fails CI if one does not.
 
 name: release
 
@@ -42,6 +54,11 @@ on:
         type: boolean
         required: false
         default: false
+      dry_run:
+        description: "Dry run: build all inputs and the bundle from the pinned sources, unsigned; sign, notarize and publish nothing"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -55,19 +72,26 @@ jobs:
       contents: write # create/update the GitHub Release + upload assets
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # true only for a manual run with dry_run; a tag push is never a dry run.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
       CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # The federation repos the app and its sidecars build from are public; a token is only
+      # needed if one goes private again. An empty token in the rewrite would break every fetch.
       - name: Authenticate to private federation repos (citrate-chain)
+        if: ${{ env.CHAIN_TOKEN != '' }}
         run: |
           git config --global \
             url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
             "https://github.com/"
 
+      # The toolchain release/components.json pins (toolchain.rust) for the sidecars, also used for
+      # the app so a release does not move with whatever `stable` is that day.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          toolchain: stable
+          toolchain: "1.96.0"
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -101,11 +125,53 @@ jobs:
           scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
           node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
 
-      # ── Stage the runtime artifacts the bundle needs but git does not carry:
-      #    the three sidecars (target-triple suffixed), the llama runtime dylibs,
-      #    and the Gemma model. Pulled from the `runtime-deps` prerelease so a
-      #    build is reproducible and does not rebuild 4 cross-repo binaries here.
-      - name: Stage runtime deps (sidecars · llama · models · BGE embedder · knowledge corpus)
+      # ── Dry run only: build the six cargo sidecars from the revs pinned in release/components.json
+      #    with the release build scripts, on this clean runner. These bytes are NOT the reviewed
+      #    pins (the pins are the release Mac's builds; a different build root changes the Mach-O
+      #    UUID), so they are staged only for this unsigned, unpublished bundle; the summary says
+      #    for each one whether it matches its pin.
+      - name: Build sidecars from the pinned sources (dry run)
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: |
+          set -euo pipefail
+          export CITRATE_COMPONENT_BUILD_ROOT="$RUNNER_TEMP/component-build"
+          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
+            # Full clones: build-component.sh takes the pinned commit from this object store.
+            git clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
+          done
+          {
+            echo "### Sidecars built from the pinned sources (dry run)"
+            echo
+            echo "| component | rev | built sha256 | pinned sha256 (aarch64-apple-darwin) | |"
+            echo "|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for c in citrate-node node-agent mem-mcp comms-member-daemon cluster-daemon hermes-sidecar; do
+            script="$(node scripts/component-pins.mjs field "$c" build.script)"
+            if [ "$script" = scripts/build-component.sh ]; then
+              out="$(scripts/build-component.sh "$c" --target aarch64-apple-darwin --print-digest | tail -1)"
+            else
+              out="$("$script" --target aarch64-apple-darwin --print-digest | tail -1)"
+            fi
+            read -r id triple digest built <<<"$out"
+            [ "$id" = "$c" ] && [ "$triple" = aarch64-apple-darwin ] && [ -f "$built" ] || { echo "::error::$c: unexpected build output: $out"; exit 1; }
+            pin="$(node scripts/component-pins.mjs digest "$c" aarch64-apple-darwin 2>/dev/null || echo none)"
+            name="$(basename "$(node scripts/component-pins.mjs field "$c" external_bin)")"
+            mkdir -p src-tauri/binaries
+            install -m 755 "$built" "src-tauri/binaries/$name-aarch64-apple-darwin"
+            rev="$(node scripts/component-pins.mjs field "$c" source.rev)"
+            verdict="differs (expected: other build root)"; [ "$digest" = "$pin" ] && verdict="matches"
+            echo "| $c | \`${rev:0:12}\` | \`$digest\` | \`$pin\` | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            # Free the runner disk before the next build (the app build needs it too).
+            rm -rf "$CITRATE_COMPONENT_BUILD_ROOT/$c-"*/target
+          done
+          df -h . | tail -1
+
+      # ── Stage the runtime artifacts the bundle needs but git does not carry: the six cargo
+      #    sidecars (target-triple suffixed; a release run only), the llama runtime, the BGE models
+      #    and the knowledge corpus, pulled from the `runtime-deps` prerelease and verified against
+      #    the committed pins; then Kubo from its upstream release, verified by
+      #    scripts/build-component.sh against release/components.json.
+      - name: Stage runtime deps (sidecars · llama · BGE embedder · knowledge corpus · Kubo)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -116,37 +182,50 @@ jobs:
           DL="$RUNNER_TEMP/runtime-deps"
           rm -rf "$DL" && mkdir -p "$DL"
           ASSETS=(
-            citrate-aarch64-apple-darwin
-            mem-mcp-aarch64-apple-darwin
-            node-agent-aarch64-apple-darwin
             llama-server-aarch64-apple-darwin-b10909-nowebui
             llama-runtime-arm64-b10909-nowebui.tar.gz
-            gemma-4-E4B-it-Q4_0.gguf
             bge-base-en-v1.5.tar.gz
             bge-base-en-v1.5-f16.gguf
             knowledge-corpus.tar.gz
           )
+          # The sidecars a release ships: each asset is the release Mac's build of the rev pinned
+          # in release/components.json (named <bin>-<triple>-<rev12>), pinned in runtime-deps.sha256.
+          SIDECARS=(citrate node-agent mem-mcp comms-member-daemon cluster-daemon hermes)
+          if [ "$DRY_RUN" != true ]; then
+            ASSETS+=(
+              citrate-aarch64-apple-darwin-c384fc982882
+              node-agent-aarch64-apple-darwin-1d8cb8e4e24a
+              mem-mcp-aarch64-apple-darwin-5aeda3172369
+              comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
+              cluster-daemon-aarch64-apple-darwin-755cf2172260
+              hermes-aarch64-apple-darwin-626486b8a7db
+            )
+          fi
           for a in "${ASSETS[@]}"; do
             gh release download runtime-deps -p "$a" -D "$DL" --clobber
           done
           scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
 
           mkdir -p src-tauri/binaries src-tauri/llama src-tauri/models
-          # Sidecars (Apple Silicon target triple).
-          for b in citrate mem-mcp node-agent; do
-            cp "$DL/$b-aarch64-apple-darwin" src-tauri/binaries/
-          done
+          if [ "$DRY_RUN" != true ]; then
+            for b in "${SIDECARS[@]}"; do
+              f="$(cd "$DL" && ls "$b"-aarch64-apple-darwin-????????????)"
+              cp "$DL/$f" "src-tauri/binaries/$b-aarch64-apple-darwin"
+            done
+          fi
           # llama.cpp b10909 built with the web UI off (v0.5.0-rc.4, runtime-deps.sha256).
           cp "$DL/llama-server-aarch64-apple-darwin-b10909-nowebui" src-tauri/binaries/llama-server-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
-          # llama runtime dylibs (packed as a tarball asset) + the model.
+          # Kubo (ipfs), from its upstream release: the archive and the binary must both match
+          # release/components.json, or nothing is installed.
+          scripts/build-component.sh kubo --target aarch64-apple-darwin
+          # llama runtime dylibs (packed as a tarball asset).
           tar -xzf "$DL/llama-runtime-arm64-b10909-nowebui.tar.gz" -C src-tauri/llama
           # HUP-S11.0 (g5-size): keep only llama-server's dependency closure. The tarball holds
           # each dylib three times (dereferenced version symlinks) plus unused tool libraries,
           # about 34 MB the loader never opens. Refuses (fails the job) if a needed library is
           # missing, so the prune can never ship a runtime that does not start.
           node scripts/prune-llama-runtime.mjs --dir src-tauri/llama
-          cp "$DL/gemma-4-E4B-it-Q4_0.gguf" src-tauri/models/
           # BGE embedder (Hermes P1): the mem-mcp semantic ingest is GATED on this model
           # being bundled at models/bge-base-en-v1.5/ — without it first-run ingest skips
           # ("not-semantic") and the memory graph never fills. Extract it here.
@@ -176,6 +255,10 @@ jobs:
           # binds the corpus to the BGE model staged above: offline import needs that model
           # (else it is skipped as not-semantic), and every tenant's precomputed vectors must
           # come from exactly those weights (else members embed ~21k nodes on their CPU).
+          # The staged sidecars carry every interface this app requires of them (release/components.json
+          # `requires`), e.g. mem-mcp reads its store key from the file the app names. A stale
+          # runtime-deps upload or an older build fails here, before anything is signed.
+          node scripts/component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin
           node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
             --bge-dir src-tauri/models/bge-base-en-v1.5 \
             --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
@@ -197,6 +280,7 @@ jobs:
           node scripts/licence-inventory.mjs --require-notices
 
       - name: Build · sign · notarize · publish updater artifacts
+        if: ${{ env.DRY_RUN != 'true' }}
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           # Updater artifact signing (Ed25519; pubkey pinned in tauri.conf.json).
@@ -214,7 +298,8 @@ jobs:
         with:
           # The overlay merges the externalBin sidecars onto the base config
           # (which carries the updater plugin + createUpdaterArtifacts).
-          args: --target aarch64-apple-darwin --config src-tauri/tauri.bundle-node.conf.json
+          # bundle-lite: what the macOS releases ship (no Gemma in the bundle; first-run download).
+          args: --target aarch64-apple-darwin --config src-tauri/tauri.bundle-lite.conf.json
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Citrate Core ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: "See CHANGELOG. Installs update in-app via the signed release feed."
@@ -225,14 +310,35 @@ jobs:
           # explicit here because it is the whole point of W2.
           includeUpdaterJson: true
 
-      # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md).
-      # Exit 1 (over budget) fails the job and leaves the release a draft for review.
-      - name: Size gate (manual, size_gate input)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+      # Dry run: the same bundle, unsigned and without updater artifacts (so no updater key is
+      # needed). Nothing leaves the runner; the summary records what was built.
+      - name: Build the bundle unsigned (dry run)
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: |
+          set -euo pipefail
+          npx tauri build --target aarch64-apple-darwin --no-sign \
+            --config src-tauri/tauri.bundle-lite.conf.json \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          B=target/aarch64-apple-darwin/release/bundle
+          {
+            echo "### Bundle (dry run, unsigned, not published)"
+            echo
+            echo '```'
+            (cd "$B" && find . -maxdepth 2 \( -name '*.dmg' -o -name '*.app' \) -print)
+            (cd "$B/dmg" && shasum -a 256 ./*.dmg)
+            (cd "$B/macos"/*.app/Contents/MacOS && shasum -a 256 ./*)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md), and every
+      # dry run (it only reads the bundle dir). Exit 1 (over budget) fails the job and leaves the
+      # release a draft for review.
+      - name: Size gate (manual, size_gate input or dry run)
+        if: ${{ env.DRY_RUN == 'true' || (github.event_name == 'workflow_dispatch' && inputs.size_gate) }}
         run: node scripts/size-budget.mjs --bundle-dir target/aarch64-apple-darwin/release/bundle --arch aarch64 --markdown "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the draft release (size gate passed)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+        if: ${{ env.DRY_RUN != 'true' && github.event_name == 'workflow_dispatch' && inputs.size_gate }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag }}

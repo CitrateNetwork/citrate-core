@@ -29,7 +29,7 @@ export function isWidgetQuery(v: unknown): v is WidgetQuery {
 
 /** The app state the catalog reads (store + slices in the app; plain functions in tests). */
 export interface WidgetSources {
-  context(): { height: number; peers: number; finalityAge: number; nodeState: string; staked: number; liquid: number; claimable: number };
+  context(): { height: number; peers: number; nodeState: string; staked: number; liquid: number; claimable: number };
   model(): { label: string; id: string | null };
   daemons(): { allPaused: boolean; total: number; running: number; paused: number; budgetUsedUp: number };
 }
@@ -39,7 +39,8 @@ export function resolveQuery(q: WidgetQuery, s: WidgetSources): unknown {
   switch (q) {
     case "node.status": {
       const c = s.context();
-      return { height: c.height, peers: c.peers, state: c.nodeState, finalityAgeSec: c.finalityAge };
+      // C1-V V10: 0 means the height has not been read (eth_blockNumber returns 0x0 on error).
+      return { height: c.height > 0 ? c.height : null, peers: c.peers, state: c.nodeState };
     }
     case "wallet.summary": {
       const c = s.context();

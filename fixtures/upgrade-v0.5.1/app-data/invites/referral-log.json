@@ -1,0 +1,11 @@
+[
+  {
+    "role": "inviter",
+    "event": "invited",
+    "group": "abababababababababababababababab",
+    "groupName": "Garden club",
+    "tokenHash": "0777ccddd237093460b681da7804fea3d97de21de170213e57b26323c5267ed6",
+    "forHandle": "@alice",
+    "ts": 1792300000
+  }
+]

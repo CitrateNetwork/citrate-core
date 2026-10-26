@@ -623,7 +623,11 @@ fn the_escalation_files_are_owner_only() {
     b.add_endpoint(&input(), "ep1".into(), T0).expect("add");
     save_book(&dir, &b).expect("save");
     for f in [LEDGER_FILE, ENDPOINTS_FILE] {
-        let mode = std::fs::metadata(dir.join(f)).expect("meta").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(dir.join(f))
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "{f}");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -653,11 +657,7 @@ fn a_plain_ledger_is_trusted_only_before_the_app_has_sealed_one() {
     let kr = MemKeyring::default();
     let mut l = Ledger::new(10_000, T0);
     l.committed_micros = 4_000;
-    std::fs::write(
-        dir.join(LEDGER_FILE),
-        serde_json::to_vec(&l).expect("json"),
-    )
-    .expect("write");
+    std::fs::write(dir.join(LEDGER_FILE), serde_json::to_vec(&l).expect("json")).expect("write");
     let b = load_book(&dir, T0, &kr);
     assert!(!b.ledger.unreadable);
     assert_eq!(b.ledger.used(), 4_000);
@@ -712,7 +712,10 @@ fn a_pinned_router_turns_on_the_hic1_route_but_never_budgeted_x402() {
     assert!(s.enabled);
     assert!(!s.x402_enabled, "the router has no token entry point");
     assert_eq!(s.payment, "native-salt-hic1");
-    assert_eq!(s.router.as_deref(), Some("0x1111111111111111111111111111111111111111"));
+    assert_eq!(
+        s.router.as_deref(),
+        Some("0x1111111111111111111111111111111111111111")
+    );
     assert!(!s.missing.iter().any(|m| m.contains("not deployed")));
     assert!(s.missing.iter().any(|m| m.contains("native SALT")));
     assert!(s.reason.contains("approval"));
@@ -843,4 +846,79 @@ fn the_run_command_takes_a_confirmation_id_not_a_flag() {
     let acl = include_str!("../permissions/main-window.toml");
     assert!(lib.contains("escalation::escalation_confirm_prepare"));
     assert!(acl.contains("\"escalation_confirm_prepare\""));
+}
+
+// ---------------------------------------------------------------------------
+// K2: the member's chat route applies to escalation (a BYO-key remote route)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn local_only_refuses_escalation_with_the_reason() {
+    let e = escalation_route_gate(crate::chat_route::ChatRoute::LocalOnly).expect_err("refused");
+    assert!(e.contains("Local only"), "{e}");
+    assert!(e.contains("nothing was sent"), "{e}");
+    assert_eq!(
+        escalation_route_gate(crate::chat_route::ChatRoute::AskFirst),
+        Ok(true)
+    );
+}
+
+#[test]
+fn ask_first_asks_for_every_escalation_even_within_budget() {
+    let (mut b, ep) = book(1_000_000);
+    b.ask_each_time = true;
+    let q = quote(&mut b, &ep, "q1", 64, T0);
+    assert!(q.asks_first, "the quote says it will ask");
+    let err = b
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
+        .expect_err("asks");
+    match err {
+        EscError::NeedsConfirmation { reason, .. } => {
+            assert!(reason.contains("asks before"), "{reason}")
+        }
+        other => panic!("expected NeedsConfirmation, got {other:?}"),
+    }
+    assert_eq!(
+        b.ledger.reserved_micros, 0,
+        "nothing reserved, nothing sent"
+    );
+    // The member's explicit approval for this one escalation runs it.
+    let id = confirm(&mut b, "q1", q.cost_micros);
+    let a = b
+        .authorize("q1", q.cost_micros, Some(&id), false, T0, "x2".into())
+        .expect("confirmed");
+    assert_eq!(a.mode, Mode::Confirmed);
+}
+
+#[test]
+fn without_ask_first_the_budget_rule_is_unchanged() {
+    let (mut b, ep) = book(1_000_000);
+    let q = quote(&mut b, &ep, "q1", 64, T0);
+    assert!(!q.asks_first);
+    let a = b
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
+        .expect("within budget");
+    assert_eq!(a.mode, Mode::Budget);
+}
+
+#[test]
+fn the_escalation_commands_check_the_route_before_any_book_or_network_step() {
+    let src = include_str!("escalation.rs");
+    for f in [
+        "pub async fn escalation_quote(",
+        "pub async fn escalation_confirm_prepare(",
+        "fn escalation_run_sync<",
+    ] {
+        let at = src.find(f).expect(f);
+        let body = &src[at..];
+        let gate = body.find("escalation_route_for_app(").expect("gate");
+        let first_book = body.find("with_book(").expect("with_book");
+        assert!(
+            gate < first_book,
+            "{f}: the route gate runs before the book"
+        );
+        if let Some(net) = body.find("sidecar_escalate(") {
+            assert!(gate < net, "{f}: the route gate runs before the network");
+        }
+    }
 }
