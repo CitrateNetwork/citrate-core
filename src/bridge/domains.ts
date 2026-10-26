@@ -645,6 +645,13 @@ export interface ChatDomain {
    */
   consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
+   * K2 — the question for a held message closed without "Send this message to the gateway this
+   * time" (cancelled, stopped, or the local model answers instead). Core drops the consent it
+   * minted for it (`chat_consent_drop`), so it cannot be used later. An id that is no longer open
+   * is not an error. The sim impl has nothing to drop.
+   */
+  consentDrop(consentId: string): Promise<void>;
+  /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
    * the frontend runs the tool loop. Rust reads the STORED baseURL + sealed key
