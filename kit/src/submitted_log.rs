@@ -57,6 +57,15 @@ pub struct RecordedCall {
     pub at_ms: Option<u64>,
 }
 
+/// Where a recorded transaction's nonce came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonceSource {
+    /// The app read it from the node (`eth_getTransactionCount` at `pending`) for this send.
+    Fetched,
+    /// The requester (a dApp) supplied it.
+    Supplied,
+}
+
 /// How many recent submissions are kept.
 pub const CAPACITY: usize = 256;
 
@@ -377,6 +386,7 @@ impl SubmittedTxLog {
         hash: &str,
         sender: &str,
         nonce: u64,
+        _source: NonceSource,
         call: Option<&CallMeta>,
     ) -> Result<bool, String> {
         self.record_entry(hash, Some((sender, nonce)), call)

@@ -3258,3 +3258,31 @@ fn rule3_tripwire_no_config_can_skip_the_ceremony() {
         );
     }
 }
+
+/// One approval of a 1-wei tx at the node's pending nonce `nonce`, answered with `send`.
+fn send_at_fetched_nonce(c: &SignatureCeremony, v: &CustodyVault, nonce: u64, send: JsonValue) -> Result<BroadcastResult> {
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![ok(JsonValue::String(format!("0x{nonce:x}"))), ok(JsonValue::String("0x1".into())), send]);
+    c.approve_and_broadcast(v, &RpcClient::with_transport(mock), &view.id, false, bcfg(1))
+}
+
+// #443: on a profile upgraded from a build without the submitted-tx record, the first send at an
+// app-read nonce stays "outcome unknown"; a later send at a higher app-read nonce that the node
+// refuses reads "not sent".
+#[test]
+fn an_upgraded_profile_reports_not_sent_again_after_its_first_send() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-upgraded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault marker");
+    let file = dir.join("submitted-tx.json");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let refused = || node_error("Insufficient funds: account balance 0");
+    let first = send_at_fetched_nonce(&c, &v, 5, refused());
+    assert!(submitted_outcome_unknown(&first).is_some(), "the first send after the upgrade: {first:?}");
+    let later = send_at_fetched_nonce(&c, &v, 6, refused());
+    assert!(matches!(later, Err(CeremonyError::Broadcast(_))), "a refusal at a higher app-read nonce is not sent: {later:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
