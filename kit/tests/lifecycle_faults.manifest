@@ -75,6 +75,7 @@ a_probe_answer_after_its_interval_never_counts | regression | SCL-S3.1 | an answ
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures
 a_member_start_joining_an_automated_start_gives_a_fresh_budget | regression | SCL-S3 | a member Start that joins a pending automated Start gives the fresh budget, even if the monitor read the automated intent first
 a_member_joining_an_unspent_automated_start_gets_exactly_its_budget | regression | SCL-S3 | a member joining a pending automated Start with an unspent budget gives the next incarnation the fresh budget: max_retries 0 allows exactly one incarnation
+a_member_joining_during_the_spawn_call_gets_exactly_its_budget | regression | SCL-S3 | a member joining while the admitted spawn is in its OS call gives that incarnation the fresh budget: max_retries 0 allows exactly one incarnation
 a_failed_probe_outside_the_grace_clears_ready_before_teardown | regression | SCL-S3 | a failed probe outside the grace makes the service Unavailable before its teardown, never Ready during it and never only Stale
 a_success_collected_late_by_the_monitor_never_reads_ready | regression | SCL-S3 | end to end: an on-time probe success collected after the freshness limit never reads Ready and earns no credit
 a_flapping_probe_never_earns_credit | regression | SCL-S3 | credit needs fresh successes spanning healthy_after: a probe that flaps per incarnation runs out the budget

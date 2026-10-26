@@ -968,3 +968,51 @@ fn already_satisfied_start_requires_a_running_monitor_source_check() {
         "run_monitor must install its exit guard before the loop"
     );
 }
+
+/// Tripwire (SC2 member budget): the monitor never decides a budget from a member-Start count
+/// read earlier in its turn. `run_monitor` does not touch `member_starts` itself; it adopts a
+/// member Start under the lock, at the budget rule and in `publish_alive` (where the Start
+/// settles, so no later join can belong to the incarnation).
+#[test]
+fn the_monitor_adopts_member_budgets_under_the_lock_source_check() {
+    let src = include_str!("supervisor.rs");
+    let monitor = fn_source(src, "fn run_monitor(", "");
+    assert!(
+        !monitor.contains("member_starts"),
+        "run_monitor must not keep its own copy of the member-Start count"
+    );
+    assert!(
+        monitor.contains("adopt_member_budget(&shared, &mut budget_member)"),
+        "run_monitor adopts a member Start under the lock before the budget rule"
+    );
+    let publish = fn_source(src, "fn publish_alive(", "");
+    assert!(
+        publish.contains("c.adopt_member_budget(budget_member)"),
+        "publish_alive adopts a member Start in the critical section that settles the Start"
+    );
+}
+
+/// Tripwire (SC2 readiness): every unhealthy verdict clears Ready before it returns, so the
+/// teardown that follows never runs under a cached Ready.
+#[test]
+fn an_unhealthy_verdict_clears_ready_first_source_check() {
+    let src = include_str!("supervisor.rs");
+    let mut found = 0;
+    for (at, _) in src.match_indices("return RunOutcome::Unhealthy") {
+        found += 1;
+        let before: Vec<&str> = src[..at]
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .take(2)
+            .collect();
+        assert!(
+            before
+                .iter()
+                .any(|l| l.starts_with("publish(Readiness::Unavailable")),
+            "an Unhealthy verdict returns without clearing Ready first: {before:?}"
+        );
+    }
+    assert!(found > 0, "tripwire: no Unhealthy verdict found");
+}

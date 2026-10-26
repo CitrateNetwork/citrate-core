@@ -1016,6 +1016,16 @@ impl Cell {
         ControlResult::Busy
     }
 
+    /// A member Start since `budget_member` was read gives a fresh retry budget: reset it and
+    /// record the member count it now belongs to.
+    fn adopt_member_budget(&mut self, budget_member: &mut u64) {
+        if self.member_starts != *budget_member {
+            *budget_member = self.member_starts;
+            self.counters.consecutive_failures = 0;
+            self.touch();
+        }
+    }
+
     /// Whether the control of intent `seq` armed a deadline record; clears the mark, since the
     /// caller is about to release that record.
     fn had_deadline(&mut self, seq: u64) -> bool {
@@ -1186,11 +1196,10 @@ impl Shared {
         self.lock().status.clone()
     }
 
-    /// The current intent: its sequence, what it asks for, whether shutdown has begun, and the
-    /// member-Start count (a change means a fresh retry budget).
-    fn intent(&self) -> (u64, Desired, bool, u64) {
+    /// The current intent: its sequence, what it asks for, and whether shutdown has begun.
+    fn intent(&self) -> (u64, Desired, bool) {
         let c = self.lock();
-        (c.intent_sequence, c.desired, c.closing, c.member_starts)
+        (c.intent_sequence, c.desired, c.closing)
     }
 
     /// Whether a newer intent than `seq` was committed, or shutdown began.
@@ -2328,7 +2337,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     let mut spawned_for: u64 = 0;
 
     loop {
-        let (seq, desired, closing, member_starts) = shared.intent();
+        let (seq, desired, closing) = shared.intent();
         if closing {
             finish_closing(&shared, &mut readers, tore_down_child);
             return;
@@ -2400,11 +2409,10 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         if let Some(barrier) = &budget_barrier {
             barrier();
         }
-        // A member Start gives a fresh retry budget; an automated one carries it over.
-        if budget_member != member_starts {
-            budget_member = member_starts;
-            reset_budget(&shared);
-        }
+        // A member Start gives a fresh retry budget; an automated one carries it over. The
+        // member count is read now, under the lock, not at the top of the turn: a member who
+        // joined meanwhile gets the budget for the spawn this turn admits.
+        adopt_member_budget(&shared, &mut budget_member);
         // An automated intent cannot buy more retries: with the budget spent, it settles Failed
         // without a spawn (INV-17).
         if consecutive_failures(&shared) > backoff.max_retries {
@@ -2444,6 +2452,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 };
                 append_crash_record(&crash_record_path, &record);
                 record_crash_status(&shared, &record);
+                // A member who joined while the OS call ran: this attempt was theirs.
+                adopt_member_budget(&shared, &mut budget_member);
                 let failures = count_failure(&shared);
                 if failures > backoff.max_retries {
                     if enter_failed(
@@ -2470,7 +2480,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         readers.extend(spawn_log_readers(&mut child, &spec.name, &shared));
 
         // --- publication admission: a newer intent that arrived during the OS call wins ---
-        let Some(incarnation) = publish_alive(&shared, seq, child.id()) else {
+        let Some(incarnation) = publish_alive(&shared, seq, child.id(), &mut budget_member) else {
             // The spawn ticket was admitted before the newer intent: its child is still owned
             // and goes straight to teardown. The ticket closes only once the child is reaped.
             terminate_child(&mut child, stop_grace, watch.as_ref());
@@ -2591,11 +2601,10 @@ fn count_failure(shared: &Shared) -> u32 {
     c.counters.consecutive_failures
 }
 
-/// A member Start: a fresh retry budget.
-fn reset_budget(shared: &Shared) {
-    let mut c = shared.lock();
-    c.counters.consecutive_failures = 0;
-    c.touch();
+/// Apply any member Start since the budget was last read: a fresh retry budget. Under the lock,
+/// so the reset and the member count it answers to are one observation.
+fn adopt_member_budget(shared: &Shared, budget_member: &mut u64) {
+    shared.lock().adopt_member_budget(budget_member);
 }
 
 /// Health credit (once per window): the budget resets.
@@ -2670,16 +2679,19 @@ fn end_spawn_ticket(shared: &Shared) {
 
 /// Count the new incarnation, then publish it `Alive` only if intent `seq` is still current,
 /// with the profile's spawn readiness (`Awaiting` for a probed service). Settles a pending Start
-/// receipt as `Started` and returns the incarnation. Returns `None` when a newer intent (or
+/// receipt as `Started` and returns the incarnation. A member who joined the pending Start while
+/// the OS call ran gives this incarnation the fresh budget, in the same critical section that
+/// settles the Start (after it, nothing can join). Returns `None` when a newer intent (or
 /// shutdown) arrived while the OS call ran: the caller tears the child down without publishing
 /// it.
-fn publish_alive(shared: &Shared, seq: u64, pid: u32) -> Option<u64> {
+fn publish_alive(shared: &Shared, seq: u64, pid: u32, budget_member: &mut u64) -> Option<u64> {
     let mut c = shared.lock();
     c.incarnation = c.incarnation.saturating_add(1);
     c.touch();
     if c.closing || c.intent_sequence != seq {
         return None;
     }
+    c.adopt_member_budget(budget_member);
     c.status.state = SupervisorState::Running;
     c.status.pid = Some(pid);
     c.phase = Phase::Alive;
@@ -3108,6 +3120,9 @@ fn supervise_running(
         macro_rules! sample_failed {
             () => {{
                 if !in_grace {
+                    // The supervisor has decided: the incarnation is unhealthy. It stops being
+                    // Ready now, before its teardown starts, not when its last success ages out.
+                    publish(Readiness::Unavailable, None);
                     return RunOutcome::Unhealthy;
                 }
                 window = Window::default();

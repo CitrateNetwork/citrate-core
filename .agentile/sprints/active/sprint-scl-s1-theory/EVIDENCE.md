@@ -923,3 +923,22 @@ fixture flakes in CI, the fix belongs in the fixture (a longer probe interval), 
 - **Counts:** kit lib 378; `supervisor::tests` 55 Unix / 33 Windows; `lifecycle_faults` 65.
   Load: 32 runs (4 rounds of 8 concurrent copies) at a load average of about 77: 32/32 green, no
   `citrate-lcf-` process left.
+
+### SCL-S3 review round 5 (2026-10-25)
+
+- **#352 merged up** at `d6b6ef2` (main through #351, #412, #414; only a control that armed a
+  deadline can be `DeadlineExpired`). The reader reconcile now runs before every spawn; the
+  core#398 tripwire scans `start_intent`, where SC2 moved the Start logic.
+- **Member join with an unspent budget (Codex P2 at `44a68e0`).** The monitor adopts a member
+  Start under the lock (`adopt_member_budget`) at the budget rule and in `publish_alive`, never
+  from the count read at the top of its turn. Red `4d31b08`:
+  `a_member_joining_an_unspent_automated_start_gets_exactly_its_budget` (2 incarnations, not 1).
+  `a_member_joining_during_the_spawn_call_gets_exactly_its_budget` kills the mutant that drops
+  the adoption in `publish_alive`. Tripwire: `the_monitor_adopts_member_budgets_under_the_lock_source_check`.
+- **Ready during an unhealthy teardown (Codex P2 at `44a68e0`).** An unhealthy verdict publishes
+  `Unavailable` before it returns, so the teardown never runs under a cached Ready. Red `4d31b08`:
+  `a_failed_probe_outside_the_grace_clears_ready_before_teardown` (first non-Ready was `Stale`).
+  Tripwire: `an_unhealthy_verdict_clears_ready_first_source_check`.
+- **Counts:** kit lib 532 passed, 1 ignored; `supervisor::tests` 61 Unix / 39 Windows;
+  `lifecycle_faults` 73. Load: 16 runs (2 rounds of 8 concurrent copies) at a load average of
+  about 77 to 120: 16/16 green, no `citrate-lcf-` process left.

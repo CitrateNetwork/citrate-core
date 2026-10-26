@@ -3181,15 +3181,35 @@ fn a_member_start_joining_an_automated_start_gives_a_fresh_budget() {
 /// second incarnation is spawned under a budget reset that arrives one turn late.
 #[test]
 fn a_member_joining_an_unspent_automated_start_gets_exactly_its_budget() {
-    let fx = OwnedFixture::new("member-joins-unspent");
+    member_joins_an_unspent_automated_start("member-joins-unspent", JoinAt::BudgetRule);
+}
+
+/// As above, with the member joining while the admitted spawn is in its OS call (after the
+/// budget rule, before the incarnation is published and the Start settles).
+#[test]
+fn a_member_joining_during_the_spawn_call_gets_exactly_its_budget() {
+    member_joins_an_unspent_automated_start("member-joins-spawning", JoinAt::SpawnCall);
+}
+
+/// Where the monitor is held while the member Start joins.
+enum JoinAt {
+    BudgetRule,
+    SpawnCall,
+}
+
+fn member_joins_an_unspent_automated_start(tag: &str, at: JoinAt) {
+    let fx = OwnedFixture::new(tag);
     let gate = Arc::new(ArmedGate::default());
     let mut cfg = SupervisorConfig::new(
-        fx.crash_after_spec("lcf-member-joins-unspent", "1"),
+        fx.crash_after_spec(&format!("lcf-{tag}"), "1"),
         fx.path("crash.jsonl"),
     );
     cfg.backoff = fast_backoff(0);
     cfg.stop_grace = Duration::from_millis(300);
-    cfg.budget_barrier = Some(ArmedGate::hook(&gate));
+    match at {
+        JoinAt::BudgetRule => cfg.budget_barrier = Some(ArmedGate::hook(&gate)),
+        JoinAt::SpawnCall => cfg.spawn_barrier = Some(ArmedGate::hook(&gate)),
+    }
     let sup = Supervisor::start(cfg)
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
     running_pid(&sup, &fx);
