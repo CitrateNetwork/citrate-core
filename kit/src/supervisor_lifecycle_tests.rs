@@ -491,6 +491,25 @@ fn a_plain_control_never_reads_another_owners_torn_record_as_expiry() {
     );
 }
 
+/// Tripwire: the cell asks the deadline overlay whether a control expired only for the control
+/// that armed its own record. Fails on an `expired_at_settle` call in the supervisor that is not
+/// guarded by `had_deadline` in the same expression.
+#[test]
+fn settlement_reads_expiry_only_for_a_control_that_armed_a_deadline() {
+    let source = include_str!("supervisor.rs");
+    let mut calls = 0;
+    for (at, _) in source.match_indices(".expired_at_settle(") {
+        calls += 1;
+        let stmt_start = source[..at].rfind(';').map_or(0, |i| i + 1);
+        assert!(
+            source[stmt_start..at].contains("had_deadline("),
+            "an expiry read at settlement without the had_deadline guard: {}",
+            &source[stmt_start..(at + 40).min(source.len())]
+        );
+    }
+    assert!(calls >= 2, "settle and commit both read expiry");
+}
+
 /// Tripwire: a deadline record is published free only after its writer has finished its
 /// version update, so the next owner's `arm` is always the record's only writer. Fails on any
 /// `REC_FREE` store that is followed by a version bump in the same block.

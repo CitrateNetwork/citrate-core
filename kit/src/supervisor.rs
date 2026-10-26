@@ -728,6 +728,11 @@ struct Cell {
     /// This supervisor's id in the deadline overlay, and the publisher it arms.
     owner: u64,
     deadlines: Arc<DeadlinePublisher>,
+    /// The intent sequence of the pending control that armed a deadline record, set under this
+    /// lock when it is armed. Only that control can be `DeadlineExpired`; any other control
+    /// settles without reading the overlay, so another owner's record mid-write never turns it
+    /// into an expiry.
+    deadline_seq: Option<u64>,
     /// A spawn admitted and not yet published or torn down (SCL-S2.3).
     spawn_ticket: bool,
     /// Admitted credential publications not yet committed or released:
@@ -814,8 +819,9 @@ impl Cell {
         if let Some((old, _)) = self.active.take() {
             // DeadlineExpired is final: a control whose deadline already passed stays expired
             // when a newer intent replaces it.
-            let expired =
-                self.deadlines
+            let expired = self.had_deadline(old.intent_sequence)
+                && self
+                    .deadlines
                     .expired_at_settle(self.owner, old.app_epoch, old.intent_sequence);
             self.deadlines
                 .release(self.owner, old.app_epoch, old.intent_sequence);
@@ -856,15 +862,22 @@ impl Cell {
         ControlResult::Busy
     }
 
+    /// Whether the control of intent `seq` armed a deadline record; clears the mark, since the
+    /// caller is about to release that record.
+    fn had_deadline(&mut self, seq: u64) -> bool {
+        self.deadline_seq.take() == Some(seq)
+    }
+
     /// Settle the pending receipt if it belongs to intent `seq` and is of `kind`.
     fn settle(&mut self, seq: u64, kind: IntentKind, receipt: Receipt) {
         if let Some((token, k)) = self.active {
             if token.intent_sequence == seq && k == kind {
                 // A settlement after the control's deadline is reported as expired, whatever was
                 // observed: the caller was promised an answer by then and did not get one.
-                let expired = self
-                    .deadlines
-                    .expired_at_settle(self.owner, token.app_epoch, seq);
+                let expired = self.had_deadline(seq)
+                    && self
+                        .deadlines
+                        .expired_at_settle(self.owner, token.app_epoch, seq);
                 self.deadlines.release(self.owner, token.app_epoch, seq);
                 let receipt = if expired {
                     Receipt::DeadlineExpired
@@ -1124,6 +1137,7 @@ impl Supervisor {
                 next_ticket: 1,
                 closed: false,
                 closed_readers: Vec::new(),
+                deadline_seq: None,
                 instance,
             }),
             wake: Condvar::new(),
@@ -1190,6 +1204,7 @@ impl Supervisor {
                 ) {
                     return ControlResult::Busy;
                 }
+                c.deadline_seq = Some(token.intent_sequence);
                 drop(c);
                 return self.observed(token);
             }
@@ -1212,6 +1227,9 @@ impl Supervisor {
             return ControlResult::Busy;
         }
         let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
+        if monitor_alive {
+            c.deadline_seq = Some(token.intent_sequence);
+        }
         if c.phase != Phase::Quarantined {
             c.phase = Phase::Stopping;
         }
@@ -1391,23 +1409,27 @@ impl Supervisor {
         }
         // Compare the monotonic deadline directly, without any lock, so expiry is reported even
         // when the publisher has not run and the cell is busy.
-        match self
+        let torn = match self
             .deadlines
             .expired(self.owner, token.app_epoch, token.intent_sequence)
         {
             Some(true) => return Receipt::DeadlineExpired,
-            Some(false) => {}
-            None => {
-                return Receipt::Unknown {
-                    reason: "the deadline record was being rewritten".to_string(),
-                }
-            }
-        }
+            Some(false) => false,
+            None => true,
+        };
         let Some(c) = self.shared.lock_bounded() else {
             return Receipt::Unknown {
                 reason: "the lifecycle cell is busy".to_string(),
             };
         };
+        // A torn read leaves expiry undecided only for the pending control that armed its own
+        // record. Any other control has no record, so another owner's rewrite says nothing
+        // about it, and the cell answers.
+        if torn && c.deadline_seq == Some(token.intent_sequence) {
+            return Receipt::Unknown {
+                reason: "the deadline record was being rewritten".to_string(),
+            };
+        }
         match (&c.active, &c.settled) {
             (Some((t, _)), _) if *t == token => Receipt::Pending,
             (_, Some((t, r))) if *t == token => r.clone(),
