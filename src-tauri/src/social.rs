@@ -142,7 +142,7 @@ fn save_links(app: &tauri::AppHandle, links: &[StoredLink]) -> Result<(), String
 }
 
 /// The OS-keyring slot the sealed OAuth token lives in (never leaves the vault).
-fn keyring_slot(network: &str) -> String {
+pub(crate) fn keyring_slot(network: &str) -> String {
     format!("social.{network}")
 }
 

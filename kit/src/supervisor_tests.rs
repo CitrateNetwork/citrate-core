@@ -1133,8 +1133,10 @@ fn ring_survives_restart() {
     let tmp = TmpDir::new("logs-restart");
     let crash_file = tmp.path("crashes.jsonl");
     // Each run prints a UNIQUE marker so we can tell the runs apart. The marker
-    // includes the pid so run-1 and run-2 differ.
-    let script = "echo RUN_MARKER_$$; sleep 60".to_string();
+    // includes the pid so run-1 and run-2 differ. `exec` makes the killed pid the only holder of
+    // the output pipe: a forked `sleep` would outlive the kill holding it, and the supervisor
+    // rightly waits for held readers before every retry (core#397).
+    let script = "echo RUN_MARKER_$$; exec sleep 60".to_string();
     let spec = SidecarSpec::new("restarter", sh_bin(), vec!["-c".into(), script]);
     let mut cfg = SupervisorConfig::new(spec, &crash_file);
     cfg.backoff = BackoffPolicy {
@@ -1355,4 +1357,25 @@ fn child_watch_ended_runs_after_a_crash() {
     let ended = log.ended.load(Ordering::SeqCst);
     drop(sup);
     assert_eq!(ended, 2, "`ended` ran after each of the two crashes");
+}
+
+// ---------------------------------------------------------------------------
+// Pid guard: a signal is never sent to pid 0 (the caller's process group) or to a value that
+// does not fit a positive pid_t (a negative pid targets a group, -1 every process).
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn signal_targets_are_positive_pids_only() {
+    assert_eq!(checked_pid(0), None, "0 would signal our own process group");
+    assert_eq!(checked_pid(u32::MAX), None, "would wrap to -1: every process");
+    assert_eq!(checked_pid(i32::MAX as u32 + 1), None, "would wrap negative: a group");
+    assert_eq!(checked_pid(1), Some(1));
+    assert_eq!(checked_pid(i32::MAX as u32), Some(i32::MAX));
+    // Signal 0 only probes, so a broken guard here could not hurt the test runner.
+    assert!(!signal_pid(0, 0), "pid 0 is refused");
+    assert!(!signal_pid(u32::MAX, 0), "a wrapping pid is refused");
+    assert!(!pid_alive(0));
+    assert!(!pid_alive(u32::MAX));
+    assert!(signal_pid(std::process::id(), 0), "a real positive pid is signalled");
 }

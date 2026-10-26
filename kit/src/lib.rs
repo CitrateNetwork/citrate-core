@@ -21,6 +21,9 @@
 //! to *this* crate. After the extraction they are unreachable from citrate-core
 //! or citrate-quorum except through `ceremony::approve`. A source-scan test in
 //! each consuming crate asserts no sibling signing site exists.
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 // K6: no `unsafe` in this crate except the reviewed blocks that carry their own
 // `#[allow(unsafe_code)]` and a SAFETY note (today: the two libc calls in `supervisor`, plus one
@@ -37,11 +40,16 @@ pub mod config;
 pub mod custody;
 pub mod eip712;
 pub mod fsutil;
+pub mod join;
 pub mod oidc;
 pub mod rpc;
 pub mod siwe;
+pub mod submitted_log;
 pub mod supervisor;
 pub mod txdecode;
 pub mod wallet;
 pub mod wallet_link;
 pub mod web_budget;
+
+#[cfg(test)]
+mod upgrade_v051_tests;

@@ -153,3 +153,68 @@ fn pba_l7b_014_rescrub_bounds_are_exact() {
     let max = format!("rpt_{}", "a".repeat(64));
     assert!(rescrub_bundle_json(&make(&max, 0), "/Users/a").is_ok());
 }
+
+/// 0.5.2 Join — the funnel field. Only allowlisted step ids survive, once each, in path order:
+/// a step id is the whole event (no invite code, group, address, email or time rides along).
+#[test]
+fn join_steps_are_allowlisted_deduped_and_in_path_order() {
+    let b = build_bundle("rpt_ab".into(), "0.5.2", "macos", "", "", &[], "/Users/a").with_join_steps(&[
+        "wallet".to_string(),
+        "sign_in".to_string(),
+        "wallet".to_string(),
+        "citrate://join/AB12CD".to_string(),
+        "0x2655d9fbbe599e75ff6e53790f99ebc9a20c93bf".to_string(),
+        "me@example.com".to_string(),
+    ]);
+    assert_eq!(b.join_steps, vec!["sign_in".to_string(), "wallet".to_string()]);
+    assert_eq!(JOIN_STEPS.len(), 11);
+    let plain = build_bundle("rpt_ab".into(), "0.5.2", "macos", "", "", &[], "/Users/a");
+    assert!(plain.join_steps.is_empty(), "no steps unless the caller passes them");
+}
+
+/// 0.5.2 Join — the send path re-validates the funnel field too: an unknown or repeated step id
+/// is refused (never forwarded), an honest one round-trips, and a pre-funnel bundle still parses.
+#[test]
+fn rescrub_refuses_foreign_join_steps() {
+    let make = |steps: serde_json::Value| {
+        serde_json::json!({
+            "reportId": "rpt_ab", "appVersion": "0.5.2", "os": "macos",
+            "crashTail": "", "nodeLogTail": "", "uiErrors": [], "joinSteps": steps
+        })
+        .to_string()
+    };
+    for bad in [
+        serde_json::json!(["sign_in", "group:42"]),
+        serde_json::json!(["AB12CD"]),
+        serde_json::json!(["kyc", "kyc"]),
+        serde_json::json!([{"step": "kyc", "at": 1}]),
+    ] {
+        assert!(rescrub_bundle_json(&make(bad.clone()), "/Users/a").is_err(), "must refuse {bad}");
+    }
+    let ok = make(serde_json::json!(["arrive", "open_app", "join_group"]));
+    let back: serde_json::Value =
+        serde_json::from_str(&rescrub_bundle_json(&ok, "/Users/a").unwrap()).unwrap();
+    assert_eq!(back, serde_json::from_str::<serde_json::Value>(&ok).unwrap());
+    let legacy = serde_json::json!({
+        "reportId": "rpt_ab", "appVersion": "0.5.1", "os": "macos",
+        "crashTail": "", "nodeLogTail": "", "uiErrors": []
+    })
+    .to_string();
+    let out = rescrub_bundle_json(&legacy, "/Users/a").expect("a pre-funnel bundle still parses");
+    assert!(out.contains("\"joinSteps\":[]"), "{out}");
+}
+
+/// 0.5.2 Join — the disclosure lists the same step ids the Rust allowlist accepts.
+#[test]
+fn join_steps_match_the_consent_disclosure() {
+    let t: serde_json::Value =
+        serde_json::from_str(include_str!("../../src/privacy/telemetry-fields.json")).expect("parses");
+    let listed: Vec<String> = t["joinSteps"]
+        .as_array()
+        .expect("joinSteps listed")
+        .iter()
+        .map(|s| s.as_str().expect("str").to_string())
+        .collect();
+    let rust: Vec<String> = JOIN_STEPS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(listed, rust);
+}

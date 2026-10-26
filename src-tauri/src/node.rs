@@ -1222,7 +1222,7 @@ pub fn spawn_withdrawn_watch<R: Runtime>(app: AppHandle<R>) {
 /// The install id in the storage key directory's name: the first 16 hex digits of
 /// `sha256("citrate/node-key-dir/v1" || data dir)`, so each install (each app data dir) has its
 /// own directory and the name reveals nothing about the path.
-fn install_key_id(data_dir: &Path) -> String {
+pub(crate) fn install_key_id(data_dir: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(b"citrate/node-key-dir/v1");
@@ -1254,7 +1254,7 @@ pub(crate) fn usable_key_runtime_dir(dir: &Path) -> bool {
 
 /// The per-user runtime directory for the storage key file, if this platform has a usable
 /// one (see the module doc).
-fn key_runtime_dir() -> Option<PathBuf> {
+pub(crate) fn key_runtime_dir() -> Option<PathBuf> {
     platform_runtime_dir().filter(|d| usable_key_runtime_dir(d))
 }
 

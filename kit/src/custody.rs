@@ -160,7 +160,7 @@ const KEYRING_AUTO_PASSPHRASE_ACCOUNT: &str = "custody-auto-passphrase";
 const AUTO_PASSPHRASE_LEN: usize = 32;
 
 /// Envelope file name inside the app data dir.
-const ENVELOPE_FILE: &str = "custody.enc";
+pub(crate) const ENVELOPE_FILE: &str = "custody.enc";
 
 /// Slot-name prefixes reserved for BACKEND-OWNED secrets. The **in-process**
 /// `put`/`custody_get`/`clear_slot` APIs may address these freely (that is how the
@@ -175,11 +175,17 @@ const ENVELOPE_FILE: &str = "custody.enc";
 ///   vault, so the invoke-boundary reservation is load-bearing — a webview
 ///   `custody_put("wallet-…", …)` that could plant/overwrite the key would be
 ///   fund-relevant. B1.1 mirrors the `oidc-` reservation here (B1.1-ADV-R).
-const BACKEND_SLOT_PREFIXES: &[&str] = &["oidc-", "wallet-"];
+/// - `connection-` — the OAuth connection records (`connection-<service>`), written only by
+///   the backend's token exchange in `connections.rs`.
+/// - `social.` — the sealed social-link tokens (`social.<network>`), written only by the
+///   backend's link flow in `social.rs`.
+///
+/// Every in-process vault write must target one of these namespaces; src-tauri's
+/// `vault_slot_reservation_tests` holds the allowlist of write sites and fails on a new one.
+pub const BACKEND_SLOT_PREFIXES: &[&str] = &["oidc-", "wallet-", "connection-", "social."];
 
 /// Whether `slot` is a backend-owned slot the invoke boundary must refuse. Checks
-/// EVERY reserved prefix (`oidc-`, `wallet-`), so a single guard at the invoke
-/// boundary covers both A3 tokens and B1 wallet keys.
+/// EVERY reserved prefix, so a single guard at the invoke boundary covers them all.
 pub fn is_backend_reserved_slot(slot: &str) -> bool {
     BACKEND_SLOT_PREFIXES.iter().any(|p| slot.starts_with(p))
 }
@@ -1738,7 +1744,7 @@ pub fn custody_status_sync(
     Ok(CustodyStatus {
         initialized: v.is_initialized(),
         unlocked: v.is_unlocked(),
-        autolock_mins: (*v.autolock_secs.lock().unwrap() / 60) as u32,
+        autolock_mins: (*v.autolock_secs.lock().unwrap_or_else(|e| e.into_inner()) / 60) as u32,
         keyring_status: keyring_probe(),
     })
 }
@@ -1817,7 +1823,7 @@ pub async fn custody_ensure_unlocked(
     Ok(CustodyStatus {
         initialized: v.is_initialized(),
         unlocked: v.is_unlocked(),
-        autolock_mins: (*v.autolock_secs.lock().unwrap() / 60) as u32,
+        autolock_mins: (*v.autolock_secs.lock().unwrap_or_else(|e| e.into_inner()) / 60) as u32,
         keyring_status: keyring_probe(),
     })
 }
@@ -1847,6 +1853,15 @@ pub async fn custody_put(
 pub fn custody_put_sync(
     state: State<'_, CustodyState>,
     slot: String,
+    bytes: Vec<u8>,
+) -> std::result::Result<(), String> {
+    invoke_put(&state.0, &slot, bytes)
+}
+
+/// The invoke-path write: what [`custody_put`] does with a webview-supplied slot and bytes.
+pub fn invoke_put(
+    vault: &CustodyVault,
+    slot: &str,
     mut bytes: Vec<u8>,
 ) -> std::result::Result<(), String> {
     // A3-01 boundary: the INVOKE path must not address a backend-owned slot
@@ -1855,11 +1870,11 @@ pub fn custody_put_sync(
     // vaulted refresh token. In-process `put` (used by A3/B1) is unrestricted; the
     // command wrapper is where the untrusted frontend crosses, so the guard lives
     // here. Zeroize the inbound bytes even on rejection.
-    if is_backend_reserved_slot(&slot) {
+    if is_backend_reserved_slot(slot) {
         bytes.zeroize();
         return Err("reserved slot name".into());
     }
-    let r = state.0.put(&slot, &mut bytes).map_err(err_str);
+    let r = vault.put(slot, &mut bytes).map_err(err_str);
     bytes.zeroize();
     r
 }

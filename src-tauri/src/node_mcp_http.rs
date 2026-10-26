@@ -946,3 +946,100 @@ pub fn stdio_main() -> i32 {
     let stdout = std::io::stdout();
     run_stdio_shim(stdin.lock(), stdout.lock(), &transport, token.trim())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_header_value, encode_header_value, B64_PREFIX, B64_SUFFIX};
+
+    /// The plain/sentinel rule written as an early-return chain, structurally independent of
+    /// the boolean expression in `encode_header_value`, so the two can be compared.
+    fn oracle_is_plain(v: &str) -> bool {
+        if v.is_empty() {
+            return false;
+        }
+        if !v.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+            return false;
+        }
+        if v.starts_with(' ') || v.ends_with(' ') {
+            return false;
+        }
+        if v.starts_with(B64_PREFIX) && v.ends_with(B64_SUFFIX) {
+            return false;
+        }
+        true
+    }
+
+    /// Truth table over the five operands of the `plain` predicate (empty, all visible ASCII
+    /// or space, leading space, trailing space, sentinel prefix + suffix), one named input per
+    /// reachable row, plus every 4-part concatenation of edge fragments (11^4 inputs).
+    #[test]
+    fn encode_header_value_plain_rule_matches_the_oracle_on_every_operand_combination() {
+        let check = |v: &str| {
+            let e = encode_header_value(v);
+            assert_eq!(
+                e == v,
+                oracle_is_plain(v),
+                "plain decision for {v:?} -> {e:?}"
+            );
+            if e != v {
+                assert!(
+                    e.starts_with(B64_PREFIX) && e.ends_with(B64_SUFFIX),
+                    "{v:?} -> {e:?}"
+                );
+            }
+            assert_eq!(
+                decode_header_value(&e).as_deref(),
+                Some(v),
+                "round trip {v:?}"
+            );
+        };
+        let rows: &[(&str, bool)] = &[
+            ("tools/call", true),
+            ("a b", true),
+            ("", false),
+            (" a", false),
+            ("a ", false),
+            (" ", false),
+            ("h\u{e9}", false),
+            ("a\tb", false),
+            ("a\nb", false),
+            ("=?base64?abc?=", false),
+            ("=?base64??=", false),
+            ("=?base64?=", false),
+            ("=?base64?abc", true),
+            ("abc?=", true),
+            (" =?base64?abc?=", false),
+            ("=?base64?a b?=", false),
+        ];
+        for (v, plain) in rows {
+            assert_eq!(oracle_is_plain(v), *plain, "oracle row {v:?}");
+            assert_eq!(encode_header_value(v) == *v, *plain, "row {v:?}");
+            check(v);
+        }
+        let parts = [
+            "",
+            " ",
+            "a",
+            "=?base64?",
+            "?=",
+            "=?",
+            "?",
+            "\u{e9}",
+            "\t",
+            "=?base64?=",
+            "x y",
+        ];
+        let mut n = 0usize;
+        for a in parts {
+            for b in parts {
+                for c in parts {
+                    for d in parts {
+                        check(&format!("{a}{b}{c}{d}"));
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 14_641);
+    }
+}

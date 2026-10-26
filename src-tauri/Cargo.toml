@@ -177,3 +177,6 @@ rlp = "0.5"
 # HUP-S6 test-only: the local hello-mint end-to-end test renders the template with the
 # workspace's own renderer crate (templates/renderer, no new third-party crates).
 citrate-templates = { path = "../templates/renderer" }
+# K5a test-only: sign Store catalog fixtures with a throwaway minisign-format key (BLAKE2b-512
+# prehash). Already in Cargo.lock via citrate-components' dev-dependencies (no new crates).
+blake2 = "0.10"
