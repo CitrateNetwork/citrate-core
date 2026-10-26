@@ -346,3 +346,14 @@ fn a_crash_between_the_guard_write_and_the_anchor_update_is_not_a_rollback() {
     assert!(!g2.unreadable);
     assert!(g2.get("openai").halt.is_some());
 }
+
+#[test]
+fn a_guard_file_with_no_anchor_fails_closed() {
+    let dir = TmpDir::new("guard-noanchor");
+    let kr = Arc::new(MemKeyring::default());
+    let mut g = load(&dir.0, kr.clone(), T0);
+    g.member_halt("openai", T0);
+    save(&dir.0, &mut g).unwrap();
+    kr.map.lock().unwrap().remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    assert!(load(&dir.0, kr.clone(), T0).unreadable, "a saved guard file needs its anchor");
+}
