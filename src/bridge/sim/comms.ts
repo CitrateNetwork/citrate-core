@@ -4,8 +4,9 @@
 // same way it will over the real daemon. It starts EMPTY (Rule 1 / the frozen contract test: no
 // fabricated rooms or messages) and fills only as the user creates groups + sends — never seeded.
 // Guarded out of packaged builds by the bridge mode. secp addresses are a clearly-fake sim self.
-import type { Group, GroupMessage, GroupRole, GroupsDomain } from "../domains";
+import type { Group, GroupMessage, GroupsDomain } from "../domains";
 import type { SimHost } from "./index";
+import { ROLE_CHANGES_NOT_AVAILABLE } from "../../surfaces/groupRoles";
 
 /** The dev user's address in sim (clearly fake, valid hex) — the owner/sender of sim groups. */
 const SIM_SELF = "0x5100000000000000000000000000000000000051";
@@ -59,12 +60,10 @@ export function simGroups(_host: SimHost): GroupsDomain {
     async roster(groupId) {
       return groups.get(groupId)?.members.map((m) => ({ ...m })) ?? [];
     },
-    async assignRole(groupId, address, role: GroupRole) {
-      const g = groups.get(groupId);
-      if (!g) return;
-      const m = g.members.find((x) => x.address === address);
-      if (m) m.role = role;
-      else g.members.push({ address, role });
+    // #495: the app has no role-grant signer, so the real command refuses. The sim refuses the same
+    // way rather than simulate a role change the app can't make.
+    async assignRole() {
+      throw new Error(ROLE_CHANGES_NOT_AVAILABLE);
     },
     async offboard(groupId, address) {
       const g = groups.get(groupId);

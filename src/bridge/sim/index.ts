@@ -686,6 +686,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // No gateway in the web preview, so there is nothing to consent to.
         throw new Unavailable("chat", "consentPrepare");
       },
+      async consentDrop() {
+        assertSimAllowed("chat.consentDrop");
+        // `consentPrepare` never mints one in the web preview, so there is nothing to drop.
+      },
       async inferTools() {
         assertSimAllowed("chat.inferTools");
         // No gateway in the web preview — honest Unavailable (the store uses the

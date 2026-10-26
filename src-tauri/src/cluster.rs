@@ -148,6 +148,11 @@ pub struct Libp2pOpts {
 }
 
 impl ClusterDaemonManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     pub fn new(
         bin: PathBuf,
         socket_path: PathBuf,
@@ -570,6 +575,10 @@ pub struct ClusterPeerDto {
 /// HUP-S8.1 follow-on: unlike the `OnceLock` it replaces, the slot can be emptied
 /// ([`take_if`](Self::take_if)), so a new mesh identity (this machine just linked, or was removed)
 /// takes effect on the next cluster call instead of after an app restart.
+/// [`Slot::try_get`] found the slot held by a start or a reload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SlotHeld;
+
 pub(crate) struct Slot<T> {
     inner: Mutex<Option<Arc<T>>>,
 }
@@ -588,6 +597,16 @@ impl<T> Slot<T> {
     /// The current value, if any.
     pub(crate) fn get(&self) -> Option<Arc<T>> {
         self.lock().clone()
+    }
+
+    /// The current value without waiting: `Err(SlotHeld)` while the slot is held (a start or a
+    /// reload is running under its lock), so a read-only caller never blocks behind it.
+    pub(crate) fn try_get(&self) -> std::result::Result<Option<Arc<T>>, SlotHeld> {
+        match self.inner.try_lock() {
+            Ok(g) => Ok(g.clone()),
+            Err(std::sync::TryLockError::Poisoned(p)) => Ok(p.into_inner().clone()),
+            Err(std::sync::TryLockError::WouldBlock) => Err(SlotHeld),
+        }
     }
 
     /// The current value, or the one `init` builds (run at most once per empty slot, under the lock).
@@ -630,6 +649,13 @@ impl<T> Slot<T> {
 }
 
 static MANAGER: Slot<ClusterDaemonManager> = Slot::new();
+
+/// The manager if this session built one, without building or starting it (the services registry,
+/// K1a-2). `Err(SlotHeld)` while a start or reload holds the slot.
+pub(crate) fn existing_manager() -> std::result::Result<Option<Arc<ClusterDaemonManager>>, SlotHeld>
+{
+    MANAGER.try_get()
+}
 
 /// Stop the cluster-daemon if this session started it (called on graceful app teardown). Removes the
 /// seed file and drops the mesh cleanly. Idempotent and a no-op if the daemon was never started.

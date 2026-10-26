@@ -51,6 +51,7 @@
 //! app data directory, owner-only and sealed with an HMAC whose key is in the OS keyring; an
 //! unreadable or edited file fails closed to asking.
 
+use crate::secret::SecretString;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -1337,16 +1338,15 @@ pub async fn escalation_endpoints(app: tauri::AppHandle) -> Result<Vec<EndpointV
 pub async fn escalation_endpoint_add(
     app: tauri::AppHandle,
     input: EndpointInput,
-    api_key: String,
+    api_key: SecretString,
 ) -> Result<EndpointView, String> {
-    let api_key = Zeroizing::new(api_key);
     crate::blocking::off_main(move || {
         with_book(&app, |dir, b| {
             let view = add_endpoint_with_key(
                 b,
                 &crate::ai::OsAiKeyring,
                 &input,
-                api_key.as_str(),
+                api_key.expose(),
                 new_id("ep"),
                 now_ms(),
             )?;

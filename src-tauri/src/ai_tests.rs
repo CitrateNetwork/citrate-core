@@ -108,7 +108,7 @@ fn mgr_no_http() -> AiManager {
 }
 
 /// A remote send permit for `provider_id` (tests only; production permits come from
-/// `chat_consent::ConsentBook::authorize`).
+/// `chat_consent::authorize`).
 fn permit_for(provider_id: &str) -> RemoteSendPermit {
     RemoteSendPermit::for_tests(provider_id)
 }
@@ -182,7 +182,7 @@ fn seals_config_and_binds_key_to_base_url() {
     let cfg = mgr.read_config("openai").expect("read back");
     assert_eq!(cfg.base_url, OPENAI_BASE);
     assert_eq!(cfg.model, "gpt-4o");
-    assert_eq!(cfg.api_key, "sk-secret-xyz");
+    assert_eq!(cfg.api_key.expose(), "sk-secret-xyz");
 }
 
 #[test]
@@ -858,6 +858,19 @@ fn the_usage_key_is_never_sent_back_to_the_model() {
     assert!(!body.to_string().contains(USAGE_KEY));
 }
 
+/// No error from setting a provider carries the key, whatever is wrong with the input.
+#[test]
+fn set_provider_errors_never_carry_the_key() {
+    let mgr = mgr_no_http();
+    for (url, model) in [("http://evil.example/v1", "m"), (OPENAI_BASE, " "), ("notaurl", "m")] {
+        let err = mgr
+            .set_provider("custom", url, model, "sk-live-should-not-appear")
+            .expect_err("bad input is refused");
+        assert!(!err.to_string().contains("sk-live"), "key in error: {err}");
+        assert!(!format!("{err:?}").contains("sk-live"), "key in error Debug: {err:?}");
+    }
+}
+
 // ===========================================================================
 // K2 — remote chat sends need a core-issued consent (chat_consent)
 // ===========================================================================
@@ -872,14 +885,26 @@ fn configured_gateway(http: &Rc<SharedHttp>) -> AiManager {
     mgr
 }
 
+/// A clock reading `ms` into the test (monotonic and wall time move together).
+fn clk(ms: u64) -> crate::ceremony::ClockReading {
+    crate::chat_consent::test_clock(ms, ms)
+}
+
+/// A route folder with no setting stored: the "ask first" default.
+fn ask_first_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("citrate-ai-route-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
 #[test]
 fn remote_chat_without_a_core_issued_consent_sends_nothing() {
     let http = SharedHttp::new(vec![Ok(completion_response("hi"))]);
     let mgr = configured_gateway(&http);
     let consents = crate::chat_consent::ChatConsentState::default();
-    let r = ai_chat_sync(&mgr, &consents, 1_000, "", "gateway", &convo("hello"), "{}");
+    let r = ai_chat_sync(&mgr, &consents, &ask_first_dir("chat"), clk(1_000), "", "gateway", &convo("hello"), "{}");
     assert!(r.is_err(), "sent without consent: {r:?}");
-    let r = ai_chat_tools_sync(&mgr, &consents, 1_000, "cc_made_up", "gateway", &convo("hello"), "[]", "{}");
+    let r = ai_chat_tools_sync(&mgr, &consents, &ask_first_dir("chat"), clk(1_000), "cc_made_up", "gateway", &convo("hello"), "[]", "{}");
     assert!(r.is_err(), "sent without consent: {r:?}");
     assert!(http.calls().is_empty(), "nothing may reach the gateway");
 }
@@ -896,12 +921,12 @@ fn remote_chat_with_the_members_consent_sends_that_message_only() {
         .0
         .lock()
         .unwrap()
-        .prepare(crate::chat_consent::Purpose::Chat, "gateway", "hello", 1_000, "cc_abc".into());
-    let out = ai_chat_sync(&mgr, &consents, 1_001, &v.consent_id, "gateway", &convo("hello"), "{}")
+        .prepare(crate::chat_consent::Purpose::Chat, "gateway", "hello", clk(1_000), "cc_abc".into());
+    let out = ai_chat_sync(&mgr, &consents, &ask_first_dir("chat"), clk(1_001), &v.consent_id, "gateway", &convo("hello"), "{}")
         .expect("consented send");
     assert_eq!(out, "answer");
     // The same consent cannot carry a different message (and is spent by trying).
-    let r = ai_chat_sync(&mgr, &consents, 1_002, &v.consent_id, "gateway", &convo("other"), "{}");
+    let r = ai_chat_sync(&mgr, &consents, &ask_first_dir("chat"), clk(1_002), &v.consent_id, "gateway", &convo("other"), "{}");
     assert!(r.is_err());
     assert_eq!(http.calls().len(), 1, "only the consented message went out");
 }
@@ -927,7 +952,7 @@ fn media_consent(consents: &crate::chat_consent::ChatConsentState, prompt: &str)
         .0
         .lock()
         .unwrap()
-        .prepare(crate::chat_consent::Purpose::Media, "gateway", prompt, 1_000, "cc_img".into())
+        .prepare(crate::chat_consent::Purpose::Media, "gateway", prompt, clk(1_000), "cc_img".into())
         .consent_id
 }
 
@@ -937,7 +962,7 @@ fn a_remote_image_without_a_core_issued_consent_sends_nothing() {
     let mgr = configured_gateway(&http);
     let consents = crate::chat_consent::ChatConsentState::default();
     for id in [None, Some(""), Some("cc_made_up")] {
-        let r = crate::media::remote_image_post(&mgr, &consents, 1_001, id, "gateway", "a lemon tree", &image_body());
+        let r = crate::media::remote_image_post(&mgr, &consents, &ask_first_dir("media"), clk(1_001), id, "gateway", "a lemon tree", &image_body());
         assert!(r.is_err(), "sent without consent ({id:?}): {r:?}");
     }
     assert!(http.calls().is_empty(), "nothing may reach the provider");
@@ -951,7 +976,7 @@ fn a_media_consent_is_single_use_and_bound_to_its_prompt_purpose_and_provider() 
     let consents = crate::chat_consent::ChatConsentState::default();
     let id = media_consent(&consents, "a lemon tree");
     let post = |id: &str, provider: &str, prompt: &str| {
-        crate::media::remote_image_post(&mgr, &consents, 1_001, Some(id), provider, prompt, &image_body())
+        crate::media::remote_image_post(&mgr, &consents, &ask_first_dir("media"), clk(1_001), Some(id), provider, prompt, &image_body())
     };
     assert!(post(&id, "gateway", "a lemon tree").is_ok());
     assert!(post(&id, "gateway", "a lemon tree").is_err(), "spent after one image");
@@ -964,14 +989,15 @@ fn a_media_consent_is_single_use_and_bound_to_its_prompt_purpose_and_provider() 
         .0
         .lock()
         .unwrap()
-        .prepare(crate::chat_consent::Purpose::Chat, "gateway", "a lemon tree", 1_000, "cc_chat".into());
+        .prepare(crate::chat_consent::Purpose::Chat, "gateway", "a lemon tree", clk(1_000), "cc_chat".into());
     assert!(post(&chat.consent_id, "gateway", "a lemon tree").is_err(), "chat consent");
     // Expired.
     let id = media_consent(&consents, "a lemon tree");
     let r = crate::media::remote_image_post(
         &mgr,
         &consents,
-        1_000 + crate::chat_consent::CONSENT_TTL_MS,
+        &ask_first_dir("media"),
+        clk(1_000 + crate::chat_consent::CONSENT_TTL_MS),
         Some(&id),
         "gateway",
         "a lemon tree",
@@ -994,4 +1020,48 @@ fn a_remote_image_is_refused_under_local_model_only() {
     crate::chat_route::set(&dir, crate::chat_route::ChatRoute::AskFirst, 2).unwrap();
     assert!(crate::media::media_remote_allowed(&dir).is_ok(), "ask first allows (with consent)");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// #473 / #469: the Local model only check is part of obtaining a permit, so a consent minted
+// before the member turned it on cannot be spent afterwards.
+
+#[test]
+fn remote_chat_under_local_model_only_sends_nothing_even_with_a_consent() {
+    let http = SharedHttp::new(vec![
+        Ok(completion_response("never")),
+        Ok(completion_response("never")),
+    ]);
+    let mgr = configured_gateway(&http);
+    let consents = crate::chat_consent::ChatConsentState::default();
+    for id in ["cc_a", "cc_b"] {
+        consents.0.lock().unwrap().prepare(
+            crate::chat_consent::Purpose::Chat,
+            "gateway",
+            "hello",
+            clk(1_000),
+            id.into(),
+        );
+    }
+    let dir = ask_first_dir("chat-local-only");
+    crate::chat_route::set(&dir, crate::chat_route::ChatRoute::LocalOnly, 1).unwrap();
+    let r = ai_chat_sync(&mgr, &consents, &dir, clk(1_001), "cc_a", "gateway", &convo("hello"), "{}");
+    assert!(r.as_ref().is_err_and(|e| e.contains("Local only is on")), "{r:?}");
+    let r = ai_chat_tools_sync(&mgr, &consents, &dir, clk(1_001), "cc_b", "gateway", &convo("hello"), "[]", "{}");
+    assert!(r.as_ref().is_err_and(|e| e.contains("Local only is on")), "{r:?}");
+    assert!(http.calls().is_empty(), "nothing may reach the gateway");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_media_consent_minted_before_local_model_only_posts_nothing() {
+    let http = SharedHttp::new(vec![Ok("{}".into())]);
+    let mgr = configured_gateway(&http);
+    let consents = crate::chat_consent::ChatConsentState::default();
+    let id = media_consent(&consents, "a lemon tree");
+    let dir = ask_first_dir("media-local-only");
+    crate::chat_route::set(&dir, crate::chat_route::ChatRoute::LocalOnly, 1).unwrap();
+    let r = crate::media::remote_image_post(&mgr, &consents, &dir, clk(1_001), Some(&id), "gateway", "a lemon tree", &image_body());
+    assert!(r.as_ref().is_err_and(|e| e.contains("Local only is on")), "{r:?}");
+    assert!(http.calls().is_empty(), "nothing may reach the provider");
+    let _ = std::fs::remove_dir_all(dir);
 }

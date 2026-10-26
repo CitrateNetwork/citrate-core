@@ -645,6 +645,13 @@ export interface ChatDomain {
    */
   consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
+   * K2 — the question for a held message closed without "Send this message to the gateway this
+   * time" (cancelled, stopped, or the local model answers instead). Core drops the consent it
+   * minted for it (`chat_consent_drop`), so it cannot be used later. An id that is no longer open
+   * is not an error. The sim impl has nothing to drop.
+   */
+  consentDrop(consentId: string): Promise<void>;
+  /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
    * the frontend runs the tool loop. Rust reads the STORED baseURL + sealed key
@@ -1113,7 +1120,8 @@ export interface GroupsDomain {
    */
   addMember(groupId: string, address: string): Promise<void>;
   roster(groupId: string): Promise<GroupMember[]>;
-  /** Grant/change a role — a signed RoleAssertion enforced at the relay. */
+  /** Change a member's role. Not available yet (#495): the daemon needs a signed role grant and
+   *  nothing signs one, so this rejects with the not-available reason. */
   assignRole(groupId: string, address: string, role: GroupRole): Promise<void>;
   /** Atomic offboard — drops all four planes in one epoch (ADR-001). */
   offboard(groupId: string, address: string): Promise<void>;
@@ -1605,8 +1613,9 @@ export interface AgentHarnessDomain {
   sessionStop(id: string): Promise<void>;
   /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
    *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
-  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first. */
-  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string): Promise<string>;
+  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first;
+   *  `runId` is the claimed run, which core checks is in flight for that daemon. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string, runId?: string): Promise<string>;
   /** HUP-S10.3 — close a session (a finished daemon run). */
   sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
@@ -2679,6 +2688,39 @@ export interface StoreDomain {
   remove(listingId: string): Promise<StoreOutcome<string>>;
 }
 
+// ---- services: the K1a-2 registry snapshot (Rust `services.rs`, `services_snapshot`) ----
+// Each row is read from that service's kit supervisor (SPEC-001 lifecycle cell). `observation`
+// says whether a supervisor was read at all; `phase` and everything after it are null unless it
+// was. Readiness is its own axis (SC2): Alive never implies Ready.
+export type ServiceId = "node" | "nodeAgent" | "memory" | "llamaChat" | "llamaEmbed" | "ipfs" | "hermes" | "comms" | "cluster";
+export type ServicePhase = "stopped" | "starting" | "alive" | "backoff" | "failed" | "stopping" | "quarantined";
+export type ServiceReadiness = "notAssessed" | "awaiting" | "ready" | "stale" | "unavailable";
+export interface ServiceEntry {
+  id: ServiceId;
+  label: string;
+  owner: string;
+  prerequisites: string[];
+  probe: string;
+  readySignal: string;
+  logBudgetLines: number;
+  logsCommand: string | null;
+  controls: boolean;
+  observation: "observed" | "notSupervised" | "busy";
+  phase: ServicePhase | null;
+  readiness: ServiceReadiness | null;
+  lastTransition: { from: ServicePhase | null; to: ServicePhase; atUnixMs: number } | null;
+  restarts: number | null;
+  lastCrash: { atUnixMs: number; exit: string; restartAttempt: number } | null;
+  quarantine: string | null;
+}
+export interface ServicesSnapshot {
+  takenAtUnixMs: number;
+  services: ServiceEntry[];
+}
+export interface ServicesDomain {
+  snapshot(): Promise<ServicesSnapshot>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2698,4 +2740,5 @@ export interface CxBridge {
   join: JoinDomain;
   components: ComponentsDomain;
   store: StoreDomain;
+  services: ServicesDomain;
 }

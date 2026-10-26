@@ -4,8 +4,9 @@
 //! - **The switch:** `<app data>/escalation/route.json`, next to the escalation endpoints and
 //!   spend ledger (`escalation.rs`), written only by [`chat_route_set`].
 //! - **Where it applies:** [`select_route`] turns the honest inference state
-//!   (`ai::select_inference_state`) into what `model_inference_state` reports, and the remote chat
-//!   commands (`ai::ai_chat`, `ai::ai_chat_tools`) refuse to send while it is `local_only`.
+//!   (`ai::select_inference_state`) into what `model_inference_state` reports, and no remote-send
+//!   permit (`chat_consent::authorize` / `authorize_once`, which every remote chat and image send
+//!   needs) is handed out while it is `local_only`.
 //!
 //! Two values (owner decision 2026-10-19):
 //! - **`ask_first` (default):** today's behaviour (ask before a message goes to the gateway when the
@@ -132,7 +133,7 @@ pub fn select_route(i: ProviderInputs, route: ChatRoute) -> InferenceState {
 }
 
 /// Whether a message may be sent to a remote provider now. Under `local_only` (or an unreadable
-/// setting) the remote chat commands refuse before anything is sent.
+/// setting) no remote-send permit is handed out, so nothing is sent.
 pub fn remote_chat_allowed(dir: &Path) -> Result<(), String> {
     match effective(dir) {
         ChatRoute::AskFirst => Ok(()),
