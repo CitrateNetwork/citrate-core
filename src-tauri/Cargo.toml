@@ -150,6 +150,12 @@ socket2 = { version = "0.6", features = ["all"] }
 # lock (it was a dev-dependency for the ACL tests, which still use it).
 toml = "0.9"
 
+# RC52 G8 — updater end to end. A test build only (K1-L `update-e2e`, docs/UPDATER_E2E.md): the app
+# checks, verifies, installs and restarts by itself once at start-up (src/updater_e2e.rs). No release
+# build enables it; upgrade_updater_feed_tests fails if a release path or `default` names it.
+[features]
+updater-e2e = []
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
