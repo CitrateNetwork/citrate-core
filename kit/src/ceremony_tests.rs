@@ -2195,6 +2195,53 @@ fn k6_gated_approve_signs_and_sends_on_the_matching_network() {
     assert_eq!(result.block_number, Some(100));
 }
 
+/// The send-time check refuses (the endpoint changed after the pre-sign check): nothing reached
+/// `eth_sendRawTransaction`, so on a first submission this is a definitive "not sent", not an
+/// unknown outcome.
+#[test]
+fn k6_send_time_network_refusal_on_a_first_submission_is_not_sent() {
+    let (v, _p) = vault_with_wallet();
+    // A record that can prove a first submission (`new()` is unpersisted: every send counts as
+    // a re-send there).
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::in_memory());
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(
+            serde_json::json!({ "hash": "0x2222222222222222222222222222222222222222222222222222222222222222" }),
+        ),
+        ok(JsonValue::String("0xhashk6".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("network check refused"), "{m}")
+        }
+        other => panic!("expected a definitive not-sent refusal, got {other:?}"),
+    }
+    let methods: Vec<String> = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+}
+
 // =========================================================================
 // C1-V #347 review (Codex P1): after the node has accepted a transaction, a later failure must
 // report an unknown outcome carrying the tx hash, never a failure that reads as "not sent".
