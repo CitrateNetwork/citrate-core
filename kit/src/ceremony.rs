@@ -1443,10 +1443,11 @@ impl SignatureCeremony {
 /// Managed Tauri state: the process-wide SignatureCeremony.
 pub struct CeremonyState(pub SignatureCeremony);
 
-/// Build the managed ceremony state with its first-submission record persisted at `path`.
-pub fn build_ceremony_state_at(path: std::path::PathBuf) -> CeremonyState {
+/// Build the managed ceremony state with its first-submission record persisted at `path`, keyed to
+/// `genesis`, the block-0 hash of the network every send is gated to.
+pub fn build_ceremony_state_at(path: std::path::PathBuf, genesis: &str) -> CeremonyState {
     CeremonyState(SignatureCeremony::with_submitted_log(
-        crate::submitted_log::SubmittedTxLog::open(path),
+        crate::submitted_log::SubmittedTxLog::open(path, genesis),
     ))
 }
 

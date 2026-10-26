@@ -40,6 +40,11 @@ use std::sync::Mutex;
 /// How many recent submissions are kept.
 pub const CAPACITY: usize = 256;
 
+/// The genesis of a record written before entries were keyed to a genesis: the r1005 testnet
+/// (`alpha-r1005` in src-tauri/network/profiles.json), the only network those builds sent to.
+pub const LEGACY_GENESIS: &str =
+    "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1";
+
 /// One submitted transaction: its hash, and its sender and nonce when known.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Entry {
@@ -160,12 +165,12 @@ impl SubmittedTxLog {
 
     /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt
     /// one is empty and uncertain.
-    pub fn open(path: PathBuf) -> Self {
-        Self::open_with(path, sync_dir)
+    pub fn open(path: PathBuf, genesis: &str) -> Self {
+        Self::open_with(path, genesis, sync_dir)
     }
 
     /// [`Self::open`] with the directory sync given.
-    fn open_with(path: PathBuf, sync_dir: SyncDir) -> Self {
+    fn open_with(path: PathBuf, _genesis: &str, sync_dir: SyncDir) -> Self {
         let bare = |hashes: Vec<String>| -> Vec<Entry> {
             hashes
                 .into_iter()

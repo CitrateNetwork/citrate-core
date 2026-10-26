@@ -367,11 +367,23 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             // Contract v1.1 §1: the first-submission record persists under the app data dir, so
-            // a re-send after a restart is never mistaken for a first submission.
-            app.manage(match app.path().app_data_dir() {
-                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
-                Err(e) => {
+            // a re-send after a restart is never mistaken for a first submission. It is keyed to
+            // the genesis of the installed network gate (#511): entries sent on another genesis
+            // are kept as history and take no part in this network's sends. With no gate genesis
+            // every send is refused anyway, and the record on disk is left as it is.
+            let gate_genesis = rpc::network_gate()
+                .filter(|g| g.is_set())
+                .and_then(|g| g.genesis_hash.clone());
+            app.manage(match (app.path().app_data_dir(), gate_genesis) {
+                (Ok(dir), Some(genesis)) => {
+                    ceremony::build_ceremony_state_at(dir.join("submitted-tx.json"), &genesis)
+                }
+                (Err(e), _) => {
                     eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+                (Ok(_), None) => {
+                    eprintln!("[ceremony] no network genesis; the submitted-tx record is not opened");
                     ceremony::build_ceremony_state_unpersisted()
                 }
             });
