@@ -13,7 +13,7 @@ install learns about 0.5.2. Two automated layers now cover it, and one release s
 
 | Layer | What it proves | Where it runs |
 |---|---|---|
-| Unit: `upgrade_updater_feed_tests` | The plugin's own `check()` and `download()` (download verifies the signature before it returns a byte) against goldens signed with a throwaway key, served from loopback in a mock app: a newer signed update is offered and verifies; an altered signature, another key's signature and an altered artifact are refused with the verifier's error; a feed that is not newer offers nothing and downloads nothing. Plus the existing 0.5.1 contract tests (pinned v2 key and endpoints, the published 0.5.1 feed) and a tripwire (below). | `cargo test -p citrate-core --lib upgrade_updater_feed` (any OS, CI `ci`) |
+| Unit: `upgrade_updater_feed_tests` | The plugin's own `check()` and `download()` (download verifies the signature before it returns a byte) against goldens signed with a throwaway key, served from loopback in a mock app: a newer signed update is offered and verifies; an altered signature, another key's signature and an altered artifact are refused with the verifier's error; a feed that is not newer offers nothing and downloads nothing. Plus the existing 0.5.1 contract tests (pinned v2 key and endpoints, the published 0.5.1 feed) and a tripwire (below). | `cargo test -p citrate-core --lib upgrade_updater_feed` on macOS and Linux only (CI `ci`, `src-tauri lifecycle (macOS-14)`). On Windows the mock-runtime plugin tests are compiled out (tauri's `test` runtime does not load there; Windows ships no updater artifacts); the golden, guard and tripwire tests still run. |
 | Packaged: K1-L `update-e2e` | The packaged AppImage, in the K1-L sealed namespace: a test build N finds N+1 on a loopback feed, verifies it, installs it over its own AppImage and restarts into it. The same five refusals leave N running, the AppImage unchanged and no restart. | CI `linux-native-acceptance` → `updater e2e (x86_64)` and `(aarch64)`; or by hand on the DGX |
 | Manual: release checklist §3 rehearsal and §8 human checks | A real 0.5.1 install updates to the real RC through a staging feed signed with the real v2 key, on macOS and Linux. | A test machine, never the release Mac |
 
@@ -67,16 +67,27 @@ plugin calls itself once at start-up and prints one `updater-e2e:` line per step
 | `downloadAndInstall()` | `update.download_and_install()` (verifies, then installs) |
 | `relaunch()` (process plugin) | `app.request_restart()` (what `relaunch` calls) |
 
-It does nothing unless `CITRATE_UPDATER_E2E` is set, the pinned key is not the release key, and
-every endpoint is on loopback (unit-tested in `updater_e2e::tests`). The banner and buttons
+It does nothing unless `CITRATE_UPDATER_E2E` is set, the pinned key is neither release key (v1
+or v2, compared by key id and key bytes), and every endpoint is on loopback (unit-tested in `updater_e2e::tests`). The banner and buttons
 themselves are covered by `src/shell/updater.test.ts`, not by this scenario.
 
 ### Tripwire
 
-`no_release_config_or_release_path_relaxes_the_updater_or_enables_the_e2e_driver` fails if any
-`src-tauri/tauri*.conf.json` carries a `dangerous*` updater flag, if an overlay overrides the
-updater key or endpoints, if `updater-e2e` becomes a default feature, or if `release.yml` or a
-release script under `scripts/` names the feature.
+`no_release_config_or_release_path_relaxes_the_updater_or_enables_the_e2e_driver` fails if:
+
+- any `src-tauri/tauri*.conf.json` carries a `dangerous*` updater flag, names `updater-e2e`, or (as
+  an overlay) overrides the updater key or endpoints;
+- any feature in `src-tauri/Cargo.toml` turns `updater-e2e` on, directly or through other
+  features (`default` included);
+- any workflow under `.github/workflows/` or any file under `scripts/` (all subdirectories) names
+  `updater-e2e`, except the K1-L harness (`linux-native-acceptance.yml`,
+  `scripts/ci/linux-native-acceptance.sh`, `scripts/ci/linux-native-acceptance/update-e2e-build.sh`);
+- `release.yml` or any file under `scripts/` builds with `--all-features`.
+
+Its reach is textual: a build command assembled at run time from pieces, a workflow outside
+`.github/workflows/`, or a manual `--features updater-e2e` on the release Mac would not be seen.
+The driver's own guard is the second line: it refuses to act in any build that pins the v1 or v2
+release key (compared by key id and key bytes, not by text) or polls a feed off loopback.
 
 ## Running it
 
