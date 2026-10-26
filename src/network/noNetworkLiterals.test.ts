@@ -129,11 +129,21 @@ describe("no chain id or RPC literal outside the network profile (#493, K6-3)", 
       "const h = 402040;", // 10
       'if (t === "40204") {}', // 11
       "const i = `eip155:40204/tx/${h}`;", // 12
-      "const j = <div>Syncing chain 40204</div>;", // 13 (JSX text: copy)
+      "const j = <div>Syncing chain 40204</div>;", // 13 (JSX text is code to the scan)
       "const k = <Card id={40204} />;", // 14
       "if (id === 40204) {}", // 15
+      "switch (x) { case 40204: break; }", // 16
+      "const l = () => 40204;", // 17
+      "if (x < 40204 || x > 40204) {}", // 18
+      "const m = `chain ${40204}`;", // 19
+      `const n = '{"chainId":40204}';`, // 20
+      'const o = "http://rpc.citrate.ai";', // 21
+      `const p = '{"chain_id": "0x9d0c"}';`, // 22
+      "const q = `a ${`b ${40_204}`} c`;", // 23 (nested template)
+      "const r = 140204 + 402041;", // 24 (other numbers)
     ].join("\n");
-    expect(networkLiteralsInTs(src).map((f) => f.split(":")[0])).toEqual(["3", "4", "5", "14", "15", "6", "7", "8", "11", "12"]);
+    const lines = [...new Set(networkLiteralsInTs(src).map((f) => Number(f.split(":")[0])))].sort((a, b) => a - b);
+    expect(lines).toEqual([3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
   });
 
   it("the production webview code holds none", () => {

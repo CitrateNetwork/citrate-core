@@ -661,12 +661,22 @@ mod tests {
     const U: &str = "https://rpc.citrate.ai";
 }
 const AFTER: u64 = 40204;
+const HTTP: &str = "http://rpc.citrate.ai";
+const BARE: &str = "rpc.citrate.ai";
+const JSON: &str = r#"{"chainId":40204}"#;
+const JSON_HEX: &str = "{\"chain_id\": \"0x9d0c\"}";
+const OTHER: u64 = 140204 + 402041;
 "##;
     let found = k6_network_literals_in_rust(src);
-    let lines: Vec<&str> = found.iter().map(|f| f.split(':').next().unwrap_or("")).collect();
+    let mut lines: Vec<usize> = found
+        .iter()
+        .filter_map(|f| f.split(':').next().and_then(|n| n.parse().ok()))
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
     assert_eq!(
         lines,
-        vec!["4", "5", "6", "7", "20", "8", "9", "10"],
+        vec![4, 5, 6, 7, 8, 9, 10, 20, 21, 22, 23, 24],
         "{found:#?}"
     );
 }
