@@ -225,17 +225,21 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole-call deadline (a long streamed answer included).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// The transport's configuration.
+pub fn pinned_config() -> ureq::config::Config {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_global(Some(CALL_TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+}
+
 /// https only, no redirects, no proxy from the environment, pinned host re-checked.
 pub struct PinnedHttp;
 
 impl ProviderHttp for PinnedHttp {
     fn send(&self, req: WireRequest<'_>) -> Result<InboundResponse, ProviderError> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(CONNECT_TIMEOUT))
-            .timeout_global(Some(CALL_TIMEOUT))
-            .http_status_as_error(false)
-            .build()
-            .into();
+        let agent: ureq::Agent = pinned_config().into();
         let url = req.url.as_str();
         let resp = match (req.method, &req.body) {
             (Method::Get, _) => {

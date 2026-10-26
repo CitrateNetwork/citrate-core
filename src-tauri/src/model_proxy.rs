@@ -1,0 +1,714 @@
+//! D-11 (RC52) — the core model proxy: the one choke point for every cloud model call.
+//! ADR-2026-10-26 P-2, P-4, P-6, P-7 and the core invariant:
+//!
+//! > A vendor key is created by the user, stored only in their device keychain, and read only by
+//! > the Rust core's model proxy. The proxy sends the key only to that vendor's pinned host, within
+//! > the user's caps, and every use leaves a signed local record.
+//!
+//! ## One call ([`ModelProxy::call`])
+//!
+//! 1. **Resolve** the provider and model from the caller's route (a sidecar route token binds both;
+//!    nothing in a request body can change them). No key yet.
+//! 2. **Egress**: a governed vendor's pinned host, or a custom endpoint the member confirmed
+//!    (unverified). Anything else is refused.
+//! 3. **Guard**: the usage log must be writable; caps and the anomaly halt are checked against the
+//!    log's own totals plus this call's worst case. A refusal sends nothing.
+//! 4. **Begin record** written (durably) before anything is sent; if it cannot be written the call
+//!    is refused.
+//! 5. **Key** read from the keychain into an [`ApiKey`] (wiped on drop, not serializable).
+//! 6. **Adapter** call through the pinned transport; text streams back as it arrives.
+//! 7. **End record** (the vendor's tokens and the cost, no content) written before the reply is
+//!    returned. If it cannot be written the reply is withheld.
+//!
+//! ## Data sources (Rule 7)
+//! - Keys: the OS keychain (service `ai.citrate.core`, account `provider-key:<id>`; a custom
+//!   endpoint's account also names a hash of its URL, so its key is bound to that URL).
+//! - Caps, halts, approved models, prices, custom endpoints: `<app data>/providers/guard.json`,
+//!   sealed (HMAC key in the keychain).
+//! - Usage and spend: `<app data>/providers/usage.jsonl`, the signed usage log.
+//! - Model lists: the adapter's own list, plus the vendor's `/models` answer at the key test.
+
+use crate::ai::AiKeyring;
+use crate::model_provider::{
+    ApiKey, ChatRequest, ChatResponse, KeyTest, ModelProvider, ProviderCtx, ProviderError,
+    ProviderHttp, ProviderId, Vendor,
+};
+use crate::provider_egress::{CustomEndpoint, ResolvedEndpoint};
+use crate::provider_guard::{CallPlan, GuardBook, Price, Refusal};
+use crate::provider_openai_compat::OpenAiCompatAdapter;
+use crate::provider_usage_log::{Kind, LogError, UsageLog};
+use crate::secret::SecretString;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// App-data subdirectory for the guard file and the usage log.
+pub const DIR_NAME: &str = "providers";
+/// Keychain account prefix for vendor keys.
+pub const KEY_ACCOUNT_PREFIX: &str = "provider-key:";
+/// Output ceiling when a request names none, and the most a request may ask for.
+pub const DEFAULT_MAX_OUTPUT: u32 = 4096;
+pub const MAX_OUTPUT_TOKENS: u32 = 65_536;
+/// Tokens added per message for the chat template, on top of its UTF-8 bytes.
+pub const PER_MESSAGE_OVERHEAD: u64 = 16;
+/// Route tokens: lifetime and how many may be live at once.
+pub const ROUTE_TTL_MS: u64 = 12 * 60 * 60 * 1000;
+pub const MAX_ROUTES: usize = 64;
+/// Custom endpoints a member may add.
+pub const MAX_CUSTOM_ENDPOINTS: usize = 8;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProxyError {
+    /// No such route token (or it expired).
+    Unauthorized,
+    /// The request is malformed, or names a different model than its route.
+    BadRequest(String),
+    /// No key is stored for this provider.
+    NotConfigured,
+    /// No adapter for this provider in this build.
+    NotAvailable,
+    /// Egress refused (unknown or unconfirmed endpoint, off-host URL).
+    Egress(String),
+    /// The spend guard refused (cap, halt, unpriced model under a currency cap).
+    Refused(Refusal),
+    /// The usage log cannot take a record, so nothing is sent / the reply is withheld.
+    LogUnavailable(LogError),
+    /// The vendor call failed.
+    Provider(ProviderError),
+    /// The keychain or a settings file could not be used.
+    Storage(String),
+}
+
+impl std::fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProxyError::Unauthorized => {
+                f.write_str("the model route is not valid (it may have expired)")
+            }
+            ProxyError::BadRequest(m) => write!(f, "bad model request: {m}"),
+            ProxyError::NotConfigured => f.write_str("no key is set for this provider"),
+            ProxyError::NotAvailable => {
+                f.write_str("this provider is not available in this version yet")
+            }
+            ProxyError::Egress(m) => write!(f, "blocked: {m}"),
+            ProxyError::Refused(r) => write!(f, "refused: {r}"),
+            ProxyError::LogUnavailable(e) => write!(f, "refused: {e}; nothing was sent"),
+            ProxyError::Provider(e) => write!(f, "{e}"),
+            ProxyError::Storage(m) => write!(f, "provider settings: {m}"),
+        }
+    }
+}
+
+impl ProxyError {
+    /// The HTTP status and error type the loopback endpoint answers with.
+    pub fn http(&self) -> (u16, &'static str) {
+        match self {
+            ProxyError::Unauthorized => (401, "unauthorized"),
+            ProxyError::BadRequest(_) => (400, "bad_request"),
+            ProxyError::NotConfigured => (409, "not_configured"),
+            ProxyError::NotAvailable => (501, "not_available"),
+            ProxyError::Egress(_) => (403, "egress_refused"),
+            ProxyError::Refused(Refusal::Halted(_)) => (423, "provider_halted"),
+            ProxyError::Refused(_) => (429, "cap_exceeded"),
+            ProxyError::LogUnavailable(_) => (503, "usage_log_unavailable"),
+            ProxyError::Provider(_) => (502, "provider_error"),
+            ProxyError::Storage(_) => (500, "storage"),
+        }
+    }
+
+    /// The coarse outcome code written to the usage log.
+    pub fn outcome(&self) -> &'static str {
+        match self {
+            ProxyError::Unauthorized => "unauthorized",
+            ProxyError::BadRequest(_) => "bad_request",
+            ProxyError::NotConfigured => "not_configured",
+            ProxyError::NotAvailable => "not_available",
+            ProxyError::Egress(_) => "egress_refused",
+            ProxyError::Refused(Refusal::Halted(_)) => "halted",
+            ProxyError::Refused(Refusal::PriceUnknown) => "price_unknown",
+            ProxyError::Refused(Refusal::CapExceeded { .. }) => "cap_exceeded",
+            ProxyError::LogUnavailable(_) => "log_unavailable",
+            ProxyError::Provider(ProviderError::Unauthorized) => "key_rejected",
+            ProxyError::Provider(ProviderError::RateLimited) => "rate_limited",
+            ProxyError::Provider(ProviderError::Redirect) => "redirect_refused",
+            ProxyError::Provider(ProviderError::Egress(_)) => "egress_refused",
+            ProxyError::Provider(_) => "provider_error",
+            ProxyError::Storage(_) => "storage",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Adapters
+// ---------------------------------------------------------------------------
+
+/// How a provider is served in this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterKind {
+    Native,
+    OpenAiCompatible,
+}
+
+impl AdapterKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AdapterKind::Native => "native",
+            AdapterKind::OpenAiCompatible => "openai-compatible",
+        }
+    }
+}
+
+/// The adapter registry. Vendors whose public API is OpenAI-compatible at their pinned base are
+/// served by [`OpenAiCompatAdapter`] until their native adapter lands (WP-S1-PROV-ADAPT replaces
+/// these entries); Anthropic, Gemini and Meta have no adapter yet and report "not available".
+pub fn vendor_adapter(v: Vendor) -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
+    let compat = |prefix: &'static str| -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
+        Some((
+            Arc::new(OpenAiCompatAdapter::new(
+                ProviderId::Vendor(v),
+                prefix,
+                vec![],
+            )),
+            AdapterKind::OpenAiCompatible,
+        ))
+    };
+    match v {
+        Vendor::OpenAi => compat("sk-"),
+        Vendor::Xai => compat("xai-"),
+        Vendor::DeepSeek => compat("sk-"),
+        Vendor::Anthropic | Vendor::Gemini | Vendor::Meta => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Routes (what the sidecar holds instead of a key)
+// ---------------------------------------------------------------------------
+
+/// What a route token is bound to. Only core mints one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyRoute {
+    pub provider: ProviderId,
+    pub model: String,
+    pub session_id: String,
+}
+
+/// What the sidecar gets: the loopback base URL and a bearer for this route only.
+pub struct ProxyGrant {
+    pub base_url: String,
+    pub bearer: SecretString,
+}
+
+struct RouteEntry {
+    route: ProxyRoute,
+    expires_ms: u64,
+}
+
+fn bearer_hash(b: &str) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(b.as_bytes()).into()
+}
+
+fn valid_label(s: &str, max: usize) -> bool {
+    !s.is_empty()
+        && s.len() <= max
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+}
+
+// ---------------------------------------------------------------------------
+// The proxy
+// ---------------------------------------------------------------------------
+
+struct Inner {
+    guard: GuardBook,
+    log: UsageLog,
+}
+
+pub struct ModelProxy {
+    dir: PathBuf,
+    keyring: Arc<dyn AiKeyring>,
+    http: Arc<dyn ProviderHttp>,
+    inner: Mutex<Inner>,
+    routes: Mutex<HashMap<[u8; 32], RouteEntry>>,
+    port: std::sync::atomic::AtomicU16,
+}
+
+/// A call that passed the guard and has its begin record written.
+struct Prepared {
+    call_id: String,
+    endpoint: ResolvedEndpoint,
+    key: ApiKey,
+    adapter: Arc<dyn ModelProvider>,
+    plan: CallPlan,
+    route: ProxyRoute,
+    conversation: Option<String>,
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// An upper bound on a request's input tokens: UTF-8 bytes of every message, tool call and tool
+/// schema, plus a per-message allowance.
+pub fn input_token_bound(req: &ChatRequest) -> u64 {
+    let mut n: u64 = PER_MESSAGE_OVERHEAD;
+    for m in &req.messages {
+        n = n.saturating_add(m.content.len() as u64 + PER_MESSAGE_OVERHEAD);
+        for c in &m.tool_calls {
+            n = n.saturating_add((c.id.len() + c.name.len() + c.arguments.len()) as u64);
+        }
+        if let Some(id) = &m.tool_call_id {
+            n = n.saturating_add(id.len() as u64);
+        }
+    }
+    for t in &req.tools {
+        n = n.saturating_add(
+            (t.name.len() + t.description.len() + t.parameters.to_string().len()) as u64,
+        );
+    }
+    n
+}
+
+impl ModelProxy {
+    /// Open the proxy's state in `dir` (`<app data>/providers`).
+    pub fn new(dir: PathBuf, keyring: Arc<dyn AiKeyring>, http: Arc<dyn ProviderHttp>) -> Self {
+        let now = now_ms();
+        let guard = crate::provider_guard::load(&dir, keyring.as_ref(), now);
+        let log = UsageLog::open(&dir, keyring.as_ref());
+        ModelProxy {
+            dir,
+            keyring,
+            http,
+            inner: Mutex::new(Inner { guard, log }),
+            routes: Mutex::new(HashMap::new()),
+            port: std::sync::atomic::AtomicU16::new(0),
+        }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // ---- adapters and endpoints -------------------------------------------------------------
+
+    /// The adapter and the resolved endpoint for a provider id. A custom endpoint must exist and
+    /// be confirmed by the member.
+    fn resolve(
+        &self,
+        id: &ProviderId,
+    ) -> Result<(Arc<dyn ModelProvider>, AdapterKind, ResolvedEndpoint), ProxyError> {
+        match id {
+            ProviderId::Vendor(v) => {
+                let (a, k) = vendor_adapter(*v).ok_or(ProxyError::NotAvailable)?;
+                let ep = crate::provider_egress::resolve_vendor(*v)
+                    .map_err(|e| ProxyError::Egress(e.to_string()))?;
+                Ok((a, k, ep))
+            }
+            ProviderId::Custom(cid) => {
+                let c = self
+                    .inner()
+                    .guard
+                    .customs
+                    .iter()
+                    .find(|c| &c.id == cid)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProxyError::Egress("that custom endpoint is not set up".into())
+                    })?;
+                if !c.confirmed {
+                    return Err(ProxyError::Egress(
+                        "that custom endpoint has not been confirmed in Settings".into(),
+                    ));
+                }
+                let ep = crate::provider_egress::resolve_custom(&c)
+                    .map_err(|e| ProxyError::Egress(e.to_string()))?;
+                let models = c
+                    .models
+                    .iter()
+                    .map(|m| crate::model_provider::ModelInfo {
+                        id: m.clone(),
+                        display_name: m.clone(),
+                        supports_tools: true,
+                        input_micros_per_mtok: None,
+                        output_micros_per_mtok: None,
+                    })
+                    .collect();
+                Ok((
+                    Arc::new(OpenAiCompatAdapter::new(id.clone(), "", models)),
+                    AdapterKind::OpenAiCompatible,
+                    ep,
+                ))
+            }
+        }
+    }
+
+    /// The keychain account for a provider's key. A custom endpoint's account names a hash of its
+    /// URL, so a key is never sent to a URL other than the one it was set for.
+    fn key_account(id: &ProviderId, ep: &ResolvedEndpoint) -> String {
+        match id {
+            ProviderId::Vendor(v) => format!("{KEY_ACCOUNT_PREFIX}{}", v.id()),
+            ProviderId::Custom(c) => {
+                use sha2::Digest;
+                let h = sha2::Sha256::digest(ep.base_url.as_str().as_bytes());
+                format!("{KEY_ACCOUNT_PREFIX}{c}:{}", hex::encode(&h[..8]))
+            }
+        }
+    }
+
+    fn read_key(&self, id: &ProviderId, ep: &ResolvedEndpoint) -> Result<ApiKey, ProxyError> {
+        let v = self
+            .keyring
+            .get(&Self::key_account(id, ep))
+            .map_err(|_| ProxyError::Storage("the keychain could not be read".into()))?
+            .ok_or(ProxyError::NotConfigured)?;
+        Ok(ApiKey::from_secret(SecretString::new(v)))
+    }
+
+    // ---- the call ------------------------------------------------------------------------------
+
+    /// One model call for `route`, end to end (see the module docs).
+    pub fn call(
+        &self,
+        route: &ProxyRoute,
+        req: ChatRequest,
+        conversation: Option<String>,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ChatResponse, ProxyError> {
+        let (prepared, req) = self.prepare(route, req, conversation)?;
+        self.execute(prepared, &req, on_text)
+    }
+
+    /// Steps 1-5: everything that can refuse before anything is sent. The loopback endpoint calls
+    /// this before it commits to a streamed answer, so a refusal is a plain error status.
+    fn prepare(
+        &self,
+        route: &ProxyRoute,
+        mut req: ChatRequest,
+        conversation: Option<String>,
+    ) -> Result<(Prepared, ChatRequest), ProxyError> {
+        let _ = (&route, &conversation);
+        if req.model.is_empty() {
+            req.model = route.model.clone();
+        }
+        if req.max_tokens == 0 {
+            req.max_tokens = DEFAULT_MAX_OUTPUT;
+        }
+        let (adapter, _kind, endpoint) = self.resolve(&route.provider)?;
+        let key = self.read_key(&route.provider, &endpoint)?;
+        let plan = CallPlan {
+            provider: route.provider.to_string(),
+            model: req.model.clone(),
+            reserve_in: input_token_bound(&req),
+            reserve_out: u64::from(req.max_tokens),
+            price: None,
+        };
+        Ok((
+            Prepared {
+                call_id: format!("pc-{:016x}", rand::random::<u64>()),
+                endpoint,
+                key,
+                adapter,
+                plan,
+                route: route.clone(),
+                conversation,
+            },
+            req,
+        ))
+    }
+
+    /// Steps 6-7: the vendor call and the end record.
+    fn execute(
+        &self,
+        p: Prepared,
+        req: &ChatRequest,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ChatResponse, ProxyError> {
+        let ctx = ProviderCtx::new(&p.endpoint, &p.key, self.http.as_ref());
+        p.adapter
+            .complete(&ctx, req, on_text)
+            .map_err(ProxyError::Provider)
+    }
+
+    // ---- keys (one way) ---------------------------------------------------------------------
+
+    /// Check the key's format, test it live (a free vendor endpoint), and only then store it.
+    pub fn set_key(&self, id: &str, key: SecretString, now: u64) -> Result<KeyTest, ProxyError> {
+        let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
+        let (adapter, _, ep) = self.resolve(&pid)?;
+        let key = ApiKey::from_secret(key);
+        adapter
+            .check_key_format(&key)
+            .map_err(ProxyError::Provider)?;
+        let test = adapter
+            .test_key(&ProviderCtx::new(&ep, &key, self.http.as_ref()))
+            .map_err(ProxyError::Provider)?;
+        self.keyring
+            .set(&Self::key_account(&pid, &ep), key.expose_for_keychain())
+            .map_err(|_| ProxyError::Storage("the keychain could not be written".into()))?;
+        let mut inner = self.inner();
+        inner.guard.key_set(pid.as_str(), test.models.clone(), now);
+        let _ = crate::provider_guard::save(&self.dir, &inner.guard);
+        Ok(test)
+    }
+
+    /// Test the stored key live.
+    pub fn test_key(&self, id: &str, now: u64) -> Result<KeyTest, ProxyError> {
+        let _ = now;
+        let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
+        let (adapter, _, ep) = self.resolve(&pid)?;
+        let key = self.read_key(&pid, &ep)?;
+        adapter
+            .test_key(&ProviderCtx::new(&ep, &key, self.http.as_ref()))
+            .map_err(ProxyError::Provider)
+    }
+
+    /// Delete the stored key (and revoke every route to this provider).
+    pub fn remove_key(&self, id: &str) -> Result<(), ProxyError> {
+        let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
+        let account = match &pid {
+            ProviderId::Vendor(v) => format!("{KEY_ACCOUNT_PREFIX}{}", v.id()),
+            ProviderId::Custom(_) => {
+                let (_, _, ep) = self.resolve_any_custom(&pid)?;
+                Self::key_account(&pid, &ep)
+            }
+        };
+        self.keyring
+            .delete(&account)
+            .map_err(|_| ProxyError::Storage("the keychain could not be written".into()))?;
+        self.revoke_provider(&pid);
+        let mut inner = self.inner();
+        inner.guard.key_removed(pid.as_str());
+        let _ = crate::provider_guard::save(&self.dir, &inner.guard);
+        Ok(())
+    }
+
+    /// Whether a key is stored (the keychain entry exists). Never reads it into memory beyond the
+    /// check.
+    pub fn key_configured(&self, id: &ProviderId) -> bool {
+        let ep = match id {
+            ProviderId::Vendor(v) => crate::provider_egress::resolve_vendor(*v).ok(),
+            ProviderId::Custom(_) => self.resolve_any_custom(id).ok().map(|(_, _, e)| e),
+        };
+        ep.is_some_and(|ep| {
+            self.keyring
+                .get(&Self::key_account(id, &ep))
+                .ok()
+                .flatten()
+                .is_some()
+        })
+    }
+
+    /// A custom endpoint's resolution, confirmed or not (for key removal and status).
+    fn resolve_any_custom(
+        &self,
+        id: &ProviderId,
+    ) -> Result<(CustomEndpoint, AdapterKind, ResolvedEndpoint), ProxyError> {
+        let c = self
+            .inner()
+            .guard
+            .customs
+            .iter()
+            .find(|c| c.id == id.as_str())
+            .cloned()
+            .ok_or_else(|| ProxyError::Egress("that custom endpoint is not set up".into()))?;
+        let ep = crate::provider_egress::resolve_custom(&c)
+            .map_err(|e| ProxyError::Egress(e.to_string()))?;
+        Ok((c, AdapterKind::OpenAiCompatible, ep))
+    }
+
+    // ---- custom endpoints (ADR P-4) ---------------------------------------------------------
+
+    /// Add a custom OpenAI-compatible endpoint. It starts unconfirmed: every call to it is refused
+    /// until the member confirms this exact URL.
+    pub fn add_custom(
+        &self,
+        label: &str,
+        base_url: &str,
+        models: Vec<String>,
+        now: u64,
+    ) -> Result<CustomEndpoint, ProxyError> {
+        let label = label.trim();
+        if label.is_empty() || label.chars().count() > 80 || label.chars().any(char::is_control) {
+            return Err(ProxyError::BadRequest(
+                "give the endpoint a name of 1 to 80 characters".into(),
+            ));
+        }
+        let url = crate::provider_egress::parse_base_url(base_url)
+            .map_err(|e| ProxyError::Egress(e.to_string()))?;
+        let models: Vec<String> = models
+            .into_iter()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+        if models.is_empty()
+            || models.len() > crate::provider_guard::MAX_APPROVED_MODELS
+            || models
+                .iter()
+                .any(|m| m.len() > 200 || m.chars().any(char::is_control))
+        {
+            return Err(ProxyError::BadRequest(
+                "list the model ids this endpoint serves".into(),
+            ));
+        }
+        let mut inner = self.inner();
+        if inner.guard.customs.len() >= MAX_CUSTOM_ENDPOINTS {
+            return Err(ProxyError::BadRequest("too many custom endpoints".into()));
+        }
+        let c = CustomEndpoint {
+            id: format!(
+                "{}{:08x}",
+                crate::model_provider::CUSTOM_PREFIX,
+                rand::random::<u32>()
+            ),
+            label: label.to_string(),
+            base_url: url.as_str().trim_end_matches('/').to_string(),
+            models,
+            confirmed: true,
+            created_ms: now,
+        };
+        inner.guard.customs.push(c.clone());
+        crate::provider_guard::save(&self.dir, &inner.guard).map_err(ProxyError::Storage)?;
+        Ok(c)
+    }
+
+    /// The member confirms a custom endpoint by echoing its exact URL.
+    pub fn confirm_custom(&self, id: &str, base_url_echo: &str) -> Result<(), ProxyError> {
+        let _ = (id, base_url_echo);
+        Ok(())
+    }
+
+    /// Remove a custom endpoint and its key.
+    pub fn remove_custom(&self, id: &str) -> Result<(), ProxyError> {
+        let pid = ProviderId::parse(id)
+            .filter(ProviderId::is_custom)
+            .ok_or(ProxyError::BadRequest("not a custom endpoint".into()))?;
+        if let Ok((_, _, ep)) = self.resolve_any_custom(&pid) {
+            self.keyring
+                .delete(&Self::key_account(&pid, &ep))
+                .map_err(|_| ProxyError::Storage("the keychain could not be written".into()))?;
+        }
+        self.revoke_provider(&pid);
+        let mut inner = self.inner();
+        inner.guard.customs.retain(|c| c.id != id);
+        inner.guard.providers.remove(id);
+        crate::provider_guard::save(&self.dir, &inner.guard).map_err(ProxyError::Storage)
+    }
+
+    // ---- routes ----------------------------------------------------------------------------
+
+    pub fn set_port(&self, port: u16) {
+        self.port.store(port, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Mint a bearer bound to one provider, model and session. In-process only: no command
+    /// returns one. The sidecar gets it in its session's `LlmEndpoint`.
+    pub fn mint_route(&self, route: ProxyRoute) -> Result<ProxyGrant, ProxyError> {
+        let port = self.port();
+        if port == 0 {
+            return Err(ProxyError::Storage("the model proxy is not running".into()));
+        }
+        if !valid_label(&route.session_id, 128) || route.model.is_empty() || route.model.len() > 200
+        {
+            return Err(ProxyError::BadRequest("bad route".into()));
+        }
+        let bearer = format!("cmp_{}", hex::encode(rand::random::<[u8; 32]>()));
+        let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_ms();
+        routes.retain(|_, r| r.expires_ms > now);
+        if routes.len() >= MAX_ROUTES {
+            if let Some(oldest) = routes
+                .iter()
+                .min_by_key(|(_, r)| r.expires_ms)
+                .map(|(k, _)| *k)
+            {
+                routes.remove(&oldest);
+            }
+        }
+        routes.insert(
+            bearer_hash(&bearer),
+            RouteEntry {
+                route,
+                expires_ms: now.saturating_add(ROUTE_TTL_MS),
+            },
+        );
+        Ok(ProxyGrant {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            bearer: SecretString::new(bearer),
+        })
+    }
+
+    /// The route a bearer is bound to, if it is live.
+    pub fn route_for(&self, bearer: &str) -> Option<ProxyRoute> {
+        let routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+        routes
+            .get(&bearer_hash(bearer))
+            .filter(|r| r.expires_ms > now_ms())
+            .map(|r| r.route.clone())
+    }
+
+    pub fn revoke_session(&self, session_id: &str) {
+        let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+        routes.retain(|_, r| r.route.session_id != session_id);
+    }
+
+    fn revoke_provider(&self, id: &ProviderId) {
+        let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+        routes.retain(|_, r| &r.route.provider != id);
+    }
+
+    // ---- guard / log access for the commands ---------------------------------------------------
+
+    pub(crate) fn with_state<T>(&self, f: impl FnOnce(&mut GuardBook, &mut UsageLog) -> T) -> T {
+        let mut inner = self.inner();
+        let Inner { guard, log } = &mut *inner;
+        f(guard, log)
+    }
+
+    pub(crate) fn save_guard(&self, g: &GuardBook) -> Result<(), String> {
+        crate::provider_guard::save(&self.dir, g)
+    }
+
+    /// The price used for a call: the member's entry, else the adapter's published one.
+    pub(crate) fn adapter_price(adapter: &dyn ModelProvider, model: &str) -> Option<Price> {
+        adapter
+            .models()
+            .into_iter()
+            .find(|m| m.id == model)
+            .and_then(|m| {
+                Some(Price {
+                    input_micros_per_mtok: m.input_micros_per_mtok?,
+                    output_micros_per_mtok: m.output_micros_per_mtok?,
+                })
+            })
+    }
+
+    pub(crate) fn kind_for(&self, id: &ProviderId) -> Option<AdapterKind> {
+        match id {
+            ProviderId::Vendor(v) => vendor_adapter(*v).map(|(_, k)| k),
+            ProviderId::Custom(_) => Some(AdapterKind::OpenAiCompatible),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn log_kind_unused(_: Kind) {}
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    include!("model_proxy_tests.rs");
+}

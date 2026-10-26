@@ -164,8 +164,14 @@ impl ApiKey {
         !k.is_empty() && haystack.windows(k.len()).any(|w| w == k)
     }
 
-    /// The bytes, for the transport header and the sealed keychain record only.
-    pub(crate) fn expose_for_transport(&self) -> &str {
+    /// The bytes, for the transport's auth header only ([`ProviderCtx::send`]).
+    fn expose_for_transport(&self) -> &str {
+        self.0.expose()
+    }
+
+    /// The bytes, for the keychain write in `model_proxy::ModelProxy::set_key` only (pinned by
+    /// the `key_bytes_are_read_in_exactly_two_places` tripwire).
+    pub(crate) fn expose_for_keychain(&self) -> &str {
         self.0.expose()
     }
 }
