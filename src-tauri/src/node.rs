@@ -361,6 +361,11 @@ pub struct NodeManager {
 const ADMISSION_WAIT: Duration = Duration::from_secs(30);
 
 impl NodeManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over an explicit keyring, binary path, data dir, and RPC
     /// url. Production uses [`NodeManager::from_app`]; tests inject a fake
     /// keyring + a stub binary + a temp data dir + a stub RPC url.

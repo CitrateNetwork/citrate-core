@@ -1013,10 +1013,22 @@ describe("store.resumeSession — launch session re-establish", () => {
 
 describe("activateValidator — arms block production before it needs the key", () => {
   afterEach(() => vi.restoreAllMocks());
-  // These pin the arming order. The reconciling read every entry makes first (Join-8) is
-  // covered in activateValidatorStep.store.test.ts; here it reads fresh with nothing recorded.
+  // These pin the arming order. The reconciling read and the full gate every entry runs first
+  // (Join-8, #405) are covered in activateValidatorStep.store.test.ts; here the fresh read is a
+  // ready one with nothing recorded.
   beforeEach(() => {
     vi.spyOn(store, "refreshActivation").mockResolvedValue(true);
+    vi.spyOn(store, "walletIsLinked").mockReturnValue(true);
+    store.setState({
+      s7TxHash: null,
+      activation: {
+        bondAddress: "0x" + "22".repeat(20), bondDeployed: true, bondActivated: false, principalWei: (32000n * 10n ** 18n).toString(),
+        unlockBlock: 16_200_000, unlockTimestamp: 1_822_000_000, memberTokenId: "4", membershipActive: true,
+        validatorPubkey: "0x" + "07".repeat(32), pubkeySource: "node", nodeKeyReady: true, nodePubkey: "0x" + "07".repeat(32), bondPubkey: null,
+        registryStatus: 0, activationEpoch: 0, registryActive: false, currentEpoch: 500, epochBlocks: 1000,
+        headBlock: 500_000, blockTimeMs: 2000, localBlock: 499_999, localSyncing: false, tx: null, recordedTx: null,
+      },
+    });
   });
 
   it("calls armMining BEFORE registerValidator", async () => {
