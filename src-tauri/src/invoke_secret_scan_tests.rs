@@ -3,8 +3,9 @@
 // `group_invites` returned `Vec<PendingInvite>`, a `Serialize` struct whose `priv_key` field (the
 // invite's ECIES private key) serialized whenever it was non-empty — so the key crossed into the
 // webview. This scan walks the REAL production sources of the app crate and the kit crate and
-// fails if any `#[tauri::command]` return type names a `Serialize` struct that carries a
-// secret-named field that is not `skip_serializing`/`skip`.
+// fails if any `#[tauri::command]` return type names a `Serialize` struct or enum that serializes
+// a secret-named field that is not `skip_serializing`/`skip`, directly or through the serialized
+// fields of the types it contains, at any depth.
 //
 // XR-002 lesson: a source tripwire must never scan its own literals and must prove it can fail.
 // Test files (`*_tests.rs`, this file) are excluded, and `negative_control_*` feeds the scanner a
@@ -63,64 +64,201 @@ fn braced_body(src: &str, open: usize) -> Option<&str> {
     None
 }
 
-/// Names of `Serialize` structs in `src` that carry a serialized secret-named field.
-fn secret_bearing_serialize_structs(src: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut from = 0;
-    while let Some(i) = src[from..].find("struct ") {
-        let at = from + i;
-        from = at + 7;
-        // The derive attribute(s) just above the struct.
-        let mut head_start = at.saturating_sub(400);
-        while !src.is_char_boundary(head_start) {
-            head_start += 1;
+/// One serialized field of a `Serialize` type: its name (empty for a tuple field) and type text.
+struct Field {
+    name: String,
+    ty: String,
+}
+
+/// The body between the `(` at/after `open` and its matching `)`.
+fn paren_body(src: &str, open: usize) -> Option<&str> {
+    let start = open + src[open..].find('(')?;
+    let mut depth = 0usize;
+    for (i, c) in src[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[start + 1..start + i]);
+                }
+            }
+            _ => {}
         }
-        let head = &src[head_start..at];
-        let derive = head.rfind("#[derive(").map(|d| &head[d..]);
-        if !derive.is_some_and(|d| d.contains("Serialize")) {
+    }
+    None
+}
+
+/// Whether the collected `#[...]` attributes skip the field from serialization.
+fn is_skipped(attrs: &str) -> bool {
+    attrs.contains("skip_serializing\"")
+        || attrs.contains("skip_serializing)")
+        || attrs.contains("skip_serializing,")
+        || attrs.contains("skip)")
+        || attrs.contains("skip,")
+}
+
+/// The serialized fields in a struct body, an enum body, or a tuple-struct body. Enum variants
+/// are flattened: a struct variant's named fields and a tuple variant's types all count.
+fn serialized_fields(body: &str) -> Vec<Field> {
+    let mut out = Vec::new();
+    let mut pending_attrs = String::new();
+    // Split at the item separators so `Variant { a: A, b: B }` and `Variant(A)` both yield
+    // their fields; generic arguments may split too, which only adds harmless type pieces.
+    let normalized: String = body
+        .lines()
+        .map(|l| {
+            let t = l.trim();
+            if t.starts_with("//") {
+                ""
+            } else {
+                t
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut piece = String::new();
+    let mut pieces = Vec::new();
+    let mut attr_depth = 0usize;
+    let mut chars = normalized.chars().peekable();
+    while let Some(c) = chars.next() {
+        if attr_depth == 0 && c == '#' && chars.peek() == Some(&'[') {
+            if !piece.trim().is_empty() {
+                pieces.push(std::mem::take(&mut piece));
+            }
+            piece.push(c);
+            attr_depth = 1;
+            chars.next();
+            piece.push('[');
             continue;
         }
-        let name: String = src[at + 7..]
-            .chars()
-            .take_while(|c| is_ident_char(*c))
-            .collect();
-        if name.is_empty() {
+        if attr_depth > 0 {
+            piece.push(c);
+            match c {
+                '[' => attr_depth += 1,
+                ']' => {
+                    attr_depth -= 1;
+                    if attr_depth == 0 {
+                        pieces.push(std::mem::take(&mut piece));
+                    }
+                }
+                _ => {}
+            }
             continue;
         }
-        // Tuple/unit structs have no named fields to leak by name.
-        let rest = &src[at + 7 + name.len()..];
-        if !rest.trim_start().starts_with('{') && !rest.trim_start().starts_with('<') {
+        match c {
+            '{' | '}' | '(' | ')' | ',' | '\n' => {
+                if !piece.trim().is_empty() {
+                    pieces.push(std::mem::take(&mut piece));
+                }
+                piece.clear();
+            }
+            _ => piece.push(c),
+        }
+    }
+    if !piece.trim().is_empty() {
+        pieces.push(piece);
+    }
+    for p in pieces {
+        let t = p.trim();
+        if t.starts_with("#[") {
+            pending_attrs.push_str(t);
             continue;
         }
-        let Some(body) = braced_body(src, at) else {
-            continue;
+        let t = t
+            .trim_start_matches("pub(crate) ")
+            .trim_start_matches("pub ");
+        let (name, ty) = match t.split_once(':') {
+            Some((n, ty)) if !n.contains('<') && !ty.starts_with(':') => {
+                (n.trim().to_string(), ty.trim().to_string())
+            }
+            _ => (String::new(), t.to_string()),
         };
-        let mut pending_attrs = String::new();
-        for line in body.lines() {
-            let t = line.trim();
-            if t.starts_with("#[") {
-                pending_attrs.push_str(t);
+        if !is_skipped(&pending_attrs) {
+            out.push(Field { name, ty });
+        }
+        pending_attrs.clear();
+    }
+    out
+}
+
+/// Every `Serialize` struct or enum in `src`, with its serialized fields.
+fn serialize_types(src: &str) -> Vec<(String, Vec<Field>)> {
+    let mut out = Vec::new();
+    for kw in ["struct ", "enum "] {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(kw) {
+            let at = from + i;
+            from = at + kw.len();
+            if at > 0 && src[..at].chars().next_back().is_some_and(is_ident_char) {
                 continue;
             }
-            if t.starts_with("//") || t.is_empty() {
+            // The derive attribute(s) just above the item.
+            let mut head_start = at.saturating_sub(400);
+            while !src.is_char_boundary(head_start) {
+                head_start += 1;
+            }
+            let head = &src[head_start..at];
+            let derive = head.rfind("#[derive(").map(|d| &head[d..]);
+            if !derive.is_some_and(|d| d.contains("Serialize")) {
                 continue;
             }
-            let field = t
-                .trim_start_matches("pub(crate) ")
-                .trim_start_matches("pub ");
-            let fname: String = field.chars().take_while(|c| is_ident_char(*c)).collect();
-            let skipped = pending_attrs.contains("skip_serializing\"")
-                || pending_attrs.contains("skip_serializing)")
-                || pending_attrs.contains("skip_serializing,")
-                || pending_attrs.contains("skip)")
-                || pending_attrs.contains("skip,");
-            if SECRET_FIELD_NAMES.contains(&fname.as_str()) && !skipped {
-                out.insert(name.clone());
+            let name: String = src[at + kw.len()..]
+                .chars()
+                .take_while(|c| is_ident_char(*c))
+                .collect();
+            if name.is_empty() {
+                continue;
             }
-            pending_attrs.clear();
+            let rest = src[at + kw.len() + name.len()..].trim_start();
+            let body = if rest.starts_with('(') {
+                paren_body(src, at + kw.len() + name.len())
+            } else if rest.starts_with('{') || rest.starts_with('<') || rest.starts_with("where") {
+                braced_body(src, at)
+            } else {
+                None
+            };
+            if let Some(body) = body {
+                out.push((name, serialized_fields(body)));
+            }
         }
     }
     out
+}
+
+/// Names of `Serialize` types in `sources` that serialize a secret: directly, through a
+/// secret-named field, or through a serialized field of a type that does (at any depth).
+fn secret_bearing_types(sources: &[(String, String)]) -> BTreeSet<String> {
+    let types: Vec<(String, Vec<Field>)> = sources
+        .iter()
+        .flat_map(|(_, src)| serialize_types(src))
+        .collect();
+    let mut secret: BTreeSet<String> = types
+        .iter()
+        .filter(|(_, fields)| {
+            fields
+                .iter()
+                .any(|f| SECRET_FIELD_NAMES.contains(&f.name.as_str()))
+        })
+        .map(|(n, _)| n.clone())
+        .collect();
+    loop {
+        let before = secret.len();
+        for (name, fields) in &types {
+            if secret.contains(name) {
+                continue;
+            }
+            if fields
+                .iter()
+                .any(|f| secret.iter().any(|s| contains_ident(&f.ty, s)))
+            {
+                secret.insert(name.clone());
+            }
+        }
+        if secret.len() == before {
+            return secret;
+        }
+    }
 }
 
 /// `(fn name, return type text)` for every `#[tauri::command]` in `src`.
@@ -153,10 +291,7 @@ fn command_return_types(src: &str) -> Vec<(String, String)> {
 
 /// Violations: commands whose return type names a secret-bearing Serialize struct.
 fn violations(sources: &[(String, String)]) -> Vec<String> {
-    let mut secret_structs = BTreeSet::new();
-    for (_, src) in sources {
-        secret_structs.extend(secret_bearing_serialize_structs(src));
-    }
+    let secret_structs = secret_bearing_types(sources);
     let mut v = Vec::new();
     for (file, src) in sources {
         for (cmd, ret) in command_return_types(src) {
@@ -247,4 +382,66 @@ pub struct View {
 pub fn list() -> Result<Vec<View>, String> { Ok(vec![]) }
 "#;
     assert!(violations(&[("synthetic.rs".into(), fixed.into())]).is_empty());
+}
+
+#[test]
+fn negative_control_a_secret_nested_below_the_return_type_is_flagged() {
+    // The secret-bearing struct is reached through a field (directly, in a Vec, in an Option and
+    // two levels down), and through an enum variant. Each command must be flagged.
+    let nested = r#"
+#[derive(Serialize)]
+pub struct Inner {
+    pub group: String,
+    pub priv_key: String,
+}
+#[derive(Serialize)]
+pub struct Middle {
+    pub label: String,
+    pub inner: Inner,
+}
+#[derive(Serialize)]
+pub struct Outer {
+    pub items: Vec<Middle>,
+}
+#[derive(Serialize)]
+pub struct MaybeOuter {
+    pub one: Option<Inner>,
+}
+#[derive(Serialize)]
+pub enum Event {
+    Plain(String),
+    Leaky { inner: Inner },
+}
+#[tauri::command]
+pub fn direct() -> Result<Middle, String> { todo() }
+#[tauri::command]
+pub fn deep() -> Result<Outer, String> { todo() }
+#[tauri::command]
+pub fn optional() -> Result<MaybeOuter, String> { todo() }
+#[tauri::command]
+pub fn event() -> Result<Vec<Event>, String> { todo() }
+"#;
+    let v = violations(&[("synthetic.rs".into(), nested.into())]);
+    for cmd in ["direct", "deep", "optional", "event"] {
+        assert!(
+            v.iter().any(|m| m.contains(&format!("command `{cmd}`"))),
+            "`{cmd}` reaches a secret through a nested type and must be flagged: {v:?}"
+        );
+    }
+    // A field skipped from serialization does not carry the nested secret across.
+    let skipped = r#"
+#[derive(Serialize)]
+pub struct Inner {
+    pub priv_key: String,
+}
+#[derive(Serialize)]
+pub struct View {
+    pub label: String,
+    #[serde(skip)]
+    pub inner: Inner,
+}
+#[tauri::command]
+pub fn view() -> Result<View, String> { todo() }
+"#;
+    assert!(violations(&[("synthetic.rs".into(), skipped.into())]).is_empty());
 }

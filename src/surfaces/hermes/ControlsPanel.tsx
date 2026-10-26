@@ -8,32 +8,32 @@
 //
 //   Local model only        chat_route_get / chat_route_set via store.setChatRoute (chat_route.rs:
 //                           local_only or ask_first, the default); spend line read from escalation_budget
-//   Web search              hermes_web_settings_get / _set (Settings › Web search & decisions); each write
+//   Web search              hermes_web_settings_get / _set (Details › Web search & decisions); each write
 //                           re-reads the saved settings first and changes only searchEnabled
-//   Terminal access         store.setHermesTerminal → hermes_terminal_set (Settings › App)
+//   Terminal access         store.setHermesTerminal → hermes_terminal_set (Details › Terminal & folders)
 //   Daemons running         daemons_list / daemons_set_all_paused (Hermes home › Daemons, "Pause all")
 //   Learn from my sessions  trajectories_settings_get / _set (Train › federated rounds › Training data)
-//   Voice                   store.setHermesReadAloud, AppState.hermesReadAloud (Settings › App › persona)
+//   Voice                   store.setHermesReadAloud, AppState.hermesReadAloud (Details › Personas & voice)
 //
 // Saved is not effective: web search and learning are read by Hermes when it starts (core answers
 // `appliesOnRestart`), so after a change the row says the running Hermes keeps its previous setting
 // until it restarts, with the existing restart (the Agent page's stop + start) when one is wired.
 //
-// Depth 2 (providers, escalation and spend caps, MCP servers, budgets, personas) opens from each
-// row's "more"; until it lands the affordance is inert and says so.
+// Depth 2 (providers, escalation and spend caps, MCP servers, web search, terminal and folders,
+// budgets, personas) opens from each row's "Details": CONTROL_DETAILS names where each row goes.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { BRIDGE_MODE } from "../../bridge/mode";
 import { invoke } from "../../bridge/tauri/invoke";
 import { bridge } from "../../bridge";
 import type { EscalationBudget, EscalationDomain, FlRoundsDomain, FlTrajectoryStatus } from "../../bridge/domains";
-import { loadWebSettings, saveWebSettings, type HermesWebStatus, type WebSettingsIo } from "../../agent/webSearch";
+import { loadWebSettings, type HermesWebStatus, type WebSettingsIo } from "../../agent/webSearch";
 import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
-import { publishWebSettings, subscribeWebSettings } from "../../agent/webSettingsSync";
-import { writeStartSettingUnlessStarting } from "../../agent/startSettingsWrite";
+import { subscribeWebSettings } from "../../agent/webSettingsSync";
+import { patchWebSettings, writeStartSettingUnlessStarting } from "../../agent/startSettingsWrite";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -89,6 +89,17 @@ export const CONTROL_ROWS: readonly ControlRow[] = [
   },
 ];
 
+/** Where each row's "Details" opens: Hermes › Controls › 2 · Details on a Settings section, or
+ *  Hermes › Learn for learning (design slice 1). */
+export const CONTROL_DETAILS: Record<ControlId, { route: string; sSec?: string }> = {
+  "local-model": { route: "hermes/controls/details", sSec: "ai" },
+  "web-search": { route: "hermes/controls/details", sSec: "web" },
+  terminal: { route: "hermes/controls/details", sSec: "terminal" },
+  daemons: { route: "hermes/controls/details", sSec: "budgets" },
+  learn: { route: "hermes/learn" },
+  voice: { route: "hermes/controls/details", sSec: "personas" },
+};
+
 /** The reads and writes the panel uses, injected so tests run without Tauri. */
 export interface ControlsIo {
   web: WebSettingsIo;
@@ -133,6 +144,7 @@ function Row({
   onRestart,
   restarting,
   restartError,
+  onDetails,
 }: {
   row: ControlRow;
   checked: boolean;
@@ -146,6 +158,8 @@ function Row({
   restarting?: boolean;
   /** The last restart failed: what happened, shown until a restart is confirmed. */
   restartError?: string | null;
+  /** Open this control's second depth. Without it no Details button is drawn. */
+  onDetails?: () => void;
 }) {
   return (
     <div
@@ -190,21 +204,16 @@ function Row({
           </span>
         )}
       </span>
-      <button
-        className="btn btn-ghost btn-sm"
-        data-testid={`more-${row.id}`}
-        disabled
-        aria-disabled="true"
-        title="More settings for this control are coming next"
-        style={{ opacity: 0.5, cursor: "not-allowed", whiteSpace: "nowrap" }}
-      >
-        More · coming next
-      </button>
+      {onDetails && (
+        <button className="btn btn-ghost btn-sm" data-testid={`more-${row.id}`} onClick={onDetails} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+          Details ›
+        </button>
+      )}
     </div>
   );
 }
 
-export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; s: ControlsState; io?: ControlsIo }) {
+export function ControlsPanel({ store, s, io: ioProp, onDetails }: { store: ControlsStore; s: ControlsState; io?: ControlsIo; /** Open a row's second depth (CONTROL_DETAILS). */ onDetails?: (id: ControlId) => void }) {
   // One io per mount (the default builds the app's real calls once, not on every render).
   const [io] = useState<ControlsIo>(() => ioProp ?? appControlsIo());
   const rows = Object.fromEntries(CONTROL_ROWS.map((r) => [r.id, r])) as Record<ControlId, ControlRow>;
@@ -268,6 +277,8 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     };
   }, [io]);
 
+  const det = (id: ControlId) => (onDetails ? () => onDetails(id) : undefined);
+
   const run = async (id: ControlId, f: () => Promise<void>) => {
     setBusy(id);
     try {
@@ -285,15 +296,9 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
       try {
         // Field-specific: re-read what is saved now (another form may have changed it since this
         // panel loaded), change only searchEnabled, and show what core answers.
-        // One write at a time with the Web search form (webSettingsSync.ts).
+        // One write at a time with the Web search form (patchWebSettings, startSettingsWrite.ts).
         // Held (null) if a Hermes start began while this write waited; the row says so.
-        const st = await writeStartSettingUnlessStarting(async () => {
-          const fresh = await loadWebSettings(io.web);
-          noteRunning("webSearch", fresh.settings.searchEnabled);
-          const saved = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
-          publishWebSettings(saved, me);
-          return saved;
-        });
+        const st = await patchWebSettings(io.web, { searchEnabled: on }, me);
         if (!st) return;
         setWeb(st);
         setWebErr(st.loadError ?? null);
@@ -305,7 +310,7 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     ? "Web search needs the desktop app. This preview cannot change it."
     : held
       ? HELD_DURING_START
-      : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (set it in Hermes › Controls › Web search & decisions)." : null);
+      : webErr ?? (web?.searxngFound === false && webOn ? "Search is on, but no SearXNG program is set yet (set it in Hermes › Controls › Details › Web search & decisions)." : null);
 
   const webPending =
     web && web.appliesOnRestart && webStarted !== null && web.settings.searchEnabled !== webStarted
@@ -403,11 +408,12 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
     <div className="surface" data-testid="hermes-controls" style={{ display: "flex", flexDirection: "column" }}>
       <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line-1)", display: "flex", flexDirection: "column", gap: 3 }}>
         <span className="eyebrow">Hermes · controls</span>
-        <span style={desc}>These switches change the same settings as their cards in Settings. Opening this panel changes nothing.</span>
+        <span style={desc}>These switches change the same settings as the forms under Details. Opening this panel changes nothing.</span>
       </div>
 
       <Row
         row={rows["local-model"]}
+        onDetails={det("local-model")}
         checked={s.chatRoute === "local_only"}
         disabled={!desktop || busy === "local-model"}
         onChange={(on) => void run("local-model", () => store.setChatRoute(on ? "local_only" : "ask_first"))}
@@ -421,15 +427,15 @@ export function ControlsPanel({ store, s, io: ioProp }: { store: ControlsStore; 
         }
       />
 
-      <Row row={rows["web-search"]} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search" || held} onChange={(on) => void setWebSearch(on)} reason={webReason} pending={webPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
+      <Row row={rows["web-search"]} onDetails={det("web-search")} checked={webOn} disabled={!webDesktop || web === null || busy === "web-search" || held} onChange={(on) => void setWebSearch(on)} reason={webReason} pending={webPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
 
-      <Row row={rows.terminal} checked={!!s.hermesTerminal} disabled={busy === "terminal"} onChange={(on) => void run("terminal", () => store.setHermesTerminal(on))} />
+      <Row row={rows.terminal} onDetails={det("terminal")} checked={!!s.hermesTerminal} disabled={busy === "terminal"} onChange={(on) => void run("terminal", () => store.setHermesTerminal(on))} />
 
-      <Row row={rows.daemons} checked={daemonsOn} disabled={daemonsDisabled} onChange={(on) => void setDaemonsOn(on)} reason={daemonReason} />
+      <Row row={rows.daemons} onDetails={det("daemons")} checked={daemonsOn} disabled={daemonsDisabled} onChange={(on) => void setDaemonsOn(on)} reason={daemonReason} />
 
-      <Row row={rows.learn} checked={learnOn} disabled={learn === null || busy === "learn" || held} onChange={(on) => void setLearnOn(on)} reason={held ? HELD_DURING_START : learnErr} pending={learnPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
+      <Row row={rows.learn} onDetails={det("learn")} checked={learnOn} disabled={learn === null || busy === "learn" || held} onChange={(on) => void setLearnOn(on)} reason={held ? HELD_DURING_START : learnErr} pending={learnPending} onRestart={onRestart} restarting={restarting} restartError={restartError} />
 
-      <Row row={rows.voice} checked={!!s.hermesReadAloud} disabled={false} onChange={(on) => store.setHermesReadAloud(on)} />
+      <Row row={rows.voice} onDetails={det("voice")} checked={!!s.hermesReadAloud} disabled={false} onChange={(on) => store.setHermesReadAloud(on)} />
     </div>
   );
 }

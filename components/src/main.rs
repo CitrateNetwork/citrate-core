@@ -9,6 +9,9 @@
 //!
 //! `--sigs` holds one `<sha256>.minisig` per measured artifact, made at the release ceremony
 //! with `minisign -S -H -t "citrate-components-artifact <name> <version>"`. Nothing here signs.
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

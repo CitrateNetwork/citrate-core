@@ -722,3 +722,53 @@ fn a_resume_must_get_206_partial_content() {
     assert!(check_range_status(4096, 206).is_ok());
     assert!(matches!(check_range_status(4096, 200), Err(ModelError::RangeIgnored)));
 }
+
+// ---------------------------------------------------------------------------
+// Codex P2 on #356 at 2c0cbb3: one file name, two models. A download never verifies a different
+// verified model against its own hash (which would quarantine it).
+// ---------------------------------------------------------------------------
+
+fn gguf(fill: u8, len: usize) -> Vec<u8> {
+    let mut b = GGUF_MAGIC.to_vec();
+    b.extend(std::iter::repeat_n(fill, len));
+    b
+}
+
+fn verified_at(dir: &std::path::Path, file: &str, body: &[u8]) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(file), body).unwrap();
+    ModelManager::new(dir.to_path_buf(), Box::new(FixtureTransport::new(Vec::new())), sha256_hex(body), body.len() as u64)
+        .with_file(file.to_string())
+        .verify()
+        .expect("the other model verifies against its own hash");
+}
+
+#[test]
+fn a_download_never_quarantines_a_different_verified_model_with_the_same_name() {
+    let dir = tmp_model_dir("same-name");
+    let other = gguf(1, 60);
+    verified_at(&dir, "m.gguf", &other);
+    let mine = gguf(2, 60);
+    let mgr = ModelManager::new(dir.clone(), Box::new(FixtureTransport::new(mine.clone())), sha256_hex(&mine), mine.len() as u64)
+        .with_file("m.gguf".to_string());
+    for existing in [ExistingFile::ResumeUnverified, ExistingFile::Refuse] {
+        assert!(mgr.download_and_verify(existing, |_, _| {}).is_err(), "{existing:?}");
+        assert_eq!(std::fs::read(dir.join("m.gguf")).ok(), Some(other.clone()), "{existing:?}: the other model is kept");
+        assert!(is_file_ready(&dir, "m.gguf"), "{existing:?}: and still verified");
+    }
+}
+
+#[test]
+fn a_download_still_finishes_its_own_unverified_file_and_skips_its_own_verified_one() {
+    let body = gguf(3, 60);
+    let dir = tmp_model_dir("own-file");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("m.gguf"), &body).unwrap();
+    let mgr = ModelManager::new(dir.clone(), Box::new(FixtureTransport::new(body.clone())), sha256_hex(&body), body.len() as u64)
+        .with_file("m.gguf".to_string());
+    mgr.download_and_verify(ExistingFile::ResumeUnverified, |_, _| {}).expect("verified in place");
+    assert!(is_file_ready(&dir, "m.gguf"));
+    mgr.download_and_verify(ExistingFile::ResumeUnverified, |_, _| {}).expect("already verified");
+    assert!(mgr.download_and_verify(ExistingFile::Refuse, |_, _| {}).is_err(), "Refuse never takes an existing file");
+    assert!(is_file_ready(&dir, "m.gguf"), "and leaves it as it was");
+}

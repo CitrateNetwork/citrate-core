@@ -1,5 +1,5 @@
 // =====================================================================
-// HUP-S2.1 — the Grants panel (Settings > App > Hermes folder access).
+// HUP-S2.1 — the Grants panel (Hermes › Controls › Details › Terminal & folders).
 //
 // Lists every grant with its status and, for full access, a live countdown.
 // Grant a folder: pick it, then tick read and/or write (separate grants; read

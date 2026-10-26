@@ -16,16 +16,15 @@ import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
 import { localOnlyDoesNotApply, remoteServiceLine } from "../agent/remoteServices";
-import { HELD_DURING_START, hermesRunningSlice, hermesStarting, noteRunning } from "../shell/slices/hermesRunning";
-import { publishWebSettings, subscribeWebSettings } from "../agent/webSettingsSync";
-import { writeStartSettingUnlessStarting } from "../agent/startSettingsWrite";
+import { HELD_DURING_START, hermesRunningSlice, hermesStarting } from "../shell/slices/hermesRunning";
+import { subscribeWebSettings } from "../agent/webSettingsSync";
+import { patchWebSettings } from "../agent/startSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
   isAbsolutePath,
   loadWebSettings,
   parseOrigins,
-  saveWebSettings,
   sendsToThirdParty,
   type HermesWebSettings,
   type HermesWebStatus,
@@ -152,18 +151,11 @@ export function WebSearchSettings({ io = defaultIo, localOnly = false }: { io?: 
     setError(null);
     try {
       const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
-      // One write at a time across every view (webSettingsSync.ts): re-read, apply only the
+      // One write at a time across every view (patchWebSettings, startSettingsWrite.ts): re-read, apply only the
       // fields changed here, write, announce, then let the next writer in.
       // Held (null) if a Hermes start began while this write waited: the draft stays unsaved and
       // the "Hermes is starting" line shows; Save works again once Hermes is up.
-      const st = await writeStartSettingUnlessStarting(async () => {
-        const fresh = await loadWebSettings(io);
-        // Hermes reads search at start: remember what it runs with before changing the saved value.
-        noteRunning("webSearch", fresh.settings.searchEnabled);
-        const saved = await saveWebSettings(io, { ...fresh.settings, ...edits });
-        publishWebSettings(saved, me);
-        return saved;
-      });
+      const st = await patchWebSettings(io, edits, me);
       if (!st) return;
       setStatus(st);
       setDraft(st.settings);
