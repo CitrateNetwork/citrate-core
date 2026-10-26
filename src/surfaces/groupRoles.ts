@@ -8,7 +8,7 @@
 // =====================================================================
 
 /** Whether a member's role can be changed in this build. */
-export const ROLE_CHANGES_AVAILABLE: boolean = true;
+export const ROLE_CHANGES_AVAILABLE: boolean = false;
 
 /** The member-facing reason, word for word the Rust `ROLE_GRANTS_NOT_AVAILABLE`. */
 export const ROLE_CHANGES_NOT_AVAILABLE = "Role changes aren't available yet: signed role grants aren't built.";

@@ -541,11 +541,6 @@ enum Request {
     Roster {
         group: String,
     },
-    AssignRole {
-        group: String,
-        member: String,
-        role: String,
-    },
     Offboard {
         group: String,
         member: String,
@@ -1326,28 +1321,19 @@ impl std::fmt::Display for RoleGrantError {
     }
 }
 
-/// Whether this build can sign a role grant.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Whether this build can sign a role grant. It can't: where grants are signed is still open
+/// (core, or the daemon with the comms key it holds), so this is `NotAvailable`.
 pub(crate) fn role_grants_available() -> std::result::Result<(), RoleGrantError> {
-    Ok(())
+    Err(RoleGrantError::NotAvailable)
 }
 
-/// **groups_assign_role** — owner-signed role grant.
+/// **groups_assign_role** — change a member's role. Not available in this build (#495): the pinned
+/// daemon's `assignRole` requires a signed role assertion and nothing here signs one, so this
+/// returns [`RoleGrantError::NotAvailable`] without contacting the daemon. The bridge's
+/// `{group, member, role}` arguments are ignored until a signer exists.
 #[tauri::command]
-pub async fn groups_assign_role(
-    app: tauri::AppHandle,
-    group: String,
-    member: String,
-    role: String,
-) -> std::result::Result<(), String> {
-    parse_ok(route(
-        &app,
-        Request::AssignRole {
-            group,
-            member,
-            role,
-        },
-    )?)
+pub async fn groups_assign_role() -> std::result::Result<(), String> {
+    role_grants_available().map_err(|e| e.to_string())
 }
 
 /// **groups_offboard** — atomic offboard (MLS remove + relay roster/tree drop).
