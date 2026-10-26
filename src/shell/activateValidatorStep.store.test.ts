@@ -655,7 +655,8 @@ function proseDecisions(src: string): string[] {
   const prose = /(ceremony:|nothing was sent|expired before it was sent|broadcast failed)/;
   return src
     .split("\n")
-    .filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"))
+    // Comments are prose about the code, not decisions: `//`, `/* … */`, `/** … */` and ` * ` lines.
+    .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
     .filter((l) => prose.test(l) && (/\/[^/\n]*(ceremony:|nothing was sent|expired before it was sent|broadcast failed)[^/\n]*\/[a-z]*/.test(l) || /\.(includes|startsWith|endsWith|match|search|indexOf)\(/.test(l)));
 }
 
@@ -690,6 +691,8 @@ describe("follow-up tripwires", () => {
   it("B-1 tripwire: the store never decides a ceremony outcome by matching its prose", () => {
     const store = readFileSync(join(root, "shell/store.ts"), "utf8");
     expect(proseDecisions(store)).toEqual([]);
+    // A doc comment that mentions the words is not a decision (main's #453 has one in store.ts).
+    expect(proseDecisions("/** K2: nothing was sent to the gateway. */")).toEqual([]);
     expect(proseDecisions("if (/nothing was sent/.test(msg)) clear();")).toHaveLength(1);
     expect(proseDecisions('if (msg.includes("ceremony: broadcast failed")) x();')).toHaveLength(1);
     expect(proseDecisions("if (err instanceof SignedTxExpired) clear();")).toHaveLength(0);
