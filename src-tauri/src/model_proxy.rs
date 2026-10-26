@@ -152,36 +152,31 @@ impl ProxyError {
 /// How a provider is served in this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterKind {
+    /// The vendor's own API through its native adapter (WP-S1-PROV-ADAPT).
+    Native,
+    /// A member-confirmed custom endpoint, spoken to as OpenAI chat-completions.
     OpenAiCompatible,
 }
 
 impl AdapterKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            AdapterKind::Native => "native",
             AdapterKind::OpenAiCompatible => "openai-compatible",
         }
     }
 }
 
-/// The adapter registry. Vendors whose public API is OpenAI-compatible at their pinned base are
-/// served by [`OpenAiCompatAdapter`] until their native adapter lands (WP-S1-PROV-ADAPT replaces
-/// these entries); Anthropic, Gemini and Meta have no adapter yet and report "not available".
-pub fn vendor_adapter(v: Vendor) -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
-    let compat = |prefix: &'static str| -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
-        Some((
-            Arc::new(OpenAiCompatAdapter::new(
-                ProviderId::Vendor(v),
-                prefix,
-                vec![],
-            )),
-            AdapterKind::OpenAiCompatible,
-        ))
-    };
+/// RED: the registry as before this WP (OpenAI-compatible stand-ins; the rest unserved).
+pub fn vendor_adapter(v: Vendor) -> (Arc<dyn ModelProvider>, AdapterKind) {
     match v {
-        Vendor::OpenAi => compat("sk-"),
-        Vendor::Xai => compat("xai-"),
-        Vendor::DeepSeek => compat("sk-"),
-        Vendor::Anthropic | Vendor::Gemini | Vendor::Meta => None,
+        Vendor::OpenAi | Vendor::Xai | Vendor::DeepSeek => (
+            Arc::new(OpenAiCompatAdapter::new(ProviderId::Vendor(v), vec![])),
+            AdapterKind::OpenAiCompatible,
+        ),
+        Vendor::Anthropic => (Arc::new(crate::provider_anthropic::AnthropicAdapter), AdapterKind::OpenAiCompatible),
+        Vendor::Gemini => (Arc::new(crate::provider_gemini::GeminiAdapter), AdapterKind::OpenAiCompatible),
+        Vendor::Meta => (Arc::new(crate::provider_chat_vendors::ChatVendorAdapter::meta()), AdapterKind::OpenAiCompatible),
     }
 }
 
@@ -309,7 +304,7 @@ impl ModelProxy {
     ) -> Result<(Arc<dyn ModelProvider>, AdapterKind, ResolvedEndpoint), ProxyError> {
         match id {
             ProviderId::Vendor(v) => {
-                let (a, k) = vendor_adapter(*v).ok_or(ProxyError::NotAvailable)?;
+                let (a, k) = vendor_adapter(*v);
                 // A registry slip must never send one vendor's key through another's adapter.
                 if a.id() != *id {
                     return Err(ProxyError::NotAvailable);
@@ -348,7 +343,7 @@ impl ModelProxy {
                     })
                     .collect();
                 Ok((
-                    Arc::new(OpenAiCompatAdapter::new(id.clone(), "", models)),
+                    Arc::new(OpenAiCompatAdapter::new(id.clone(), models)),
                     AdapterKind::OpenAiCompatible,
                     ep,
                 ))
@@ -888,7 +883,7 @@ impl ModelProxy {
 
     pub(crate) fn kind_for(&self, id: &ProviderId) -> Option<AdapterKind> {
         match id {
-            ProviderId::Vendor(v) => vendor_adapter(*v).map(|(_, k)| k),
+            ProviderId::Vendor(v) => Some(vendor_adapter(*v).1),
             ProviderId::Custom(_) => Some(AdapterKind::OpenAiCompatible),
         }
     }

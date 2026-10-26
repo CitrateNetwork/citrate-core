@@ -87,8 +87,9 @@ pub(crate) struct Seen {
 
 type Hook = Box<dyn Fn() + Send + Sync>;
 
-/// An OpenAI-compatible vendor: `GET …/models` lists `models`; `POST …/chat/completions` answers
-/// `reply` (JSON, or SSE when the request streams) with `usage` (if any). `status` overrides the
+/// A scripted vendor: `GET …/models` lists `models`; `POST …/chat/completions` (OpenAI-compatible)
+/// or `POST …/responses` (OpenAI's native Responses API) answers `reply` (JSON, or SSE when the
+/// request streams) with `usage` (if any). `status` overrides the
 /// answer's status. `during_call` runs inside the chat call (to break things mid-call).
 pub(crate) struct ScriptedVendor {
     pub seen: Mutex<Vec<Seen>>,
@@ -115,7 +116,7 @@ impl ScriptedVendor {
             .lock()
             .unwrap()
             .iter()
-            .filter(|s| s.url.ends_with("/chat/completions"))
+            .filter(|s| s.url.ends_with("/chat/completions") || s.url.ends_with("/responses"))
             .count()
     }
 }
@@ -153,6 +154,9 @@ impl ProviderHttp for ScriptedVendor {
             .and_then(|b| b.get("stream"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        if req.url.path().ends_with("/responses") {
+            return self.responses_answer(stream, status);
+        }
         let usage = self
             .usage
             .map(|(p, c)| json!({"prompt_tokens": p, "completion_tokens": c}));
@@ -180,5 +184,191 @@ impl ProviderHttp for ScriptedVendor {
             v["usage"] = u;
         }
         ok("application/json", v.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WP-S1-PROV-ADAPT: recorded vendor answers for the native adapters' conformance suites
+// ---------------------------------------------------------------------------
+
+impl ScriptedVendor {
+    /// The same reply in the Responses API shape (typed SSE events when streamed).
+    fn responses_answer(&self, stream: bool, status: u16) -> Result<InboundResponse, ProviderError> {
+        let usage = self
+            .usage
+            .map(|(p, c)| json!({"input_tokens": p, "output_tokens": c}))
+            .unwrap_or(Value::Null);
+        let item = json!({"type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": self.reply, "annotations": []}]});
+        let response = json!({"object": "response", "status": "completed", "output": [item],
+            "usage": usage, "incomplete_details": null});
+        let (ct, text) = if stream {
+            let mut s = String::new();
+            for piece in self.reply.split_inclusive(' ') {
+                s.push_str(&format!(
+                    "event: response.output_text.delta\ndata: {}\n\n",
+                    json!({"type": "response.output_text.delta", "delta": piece})
+                ));
+            }
+            s.push_str(&format!(
+                "event: response.completed\ndata: {}\n\n",
+                json!({"type": "response.completed", "response": response})
+            ));
+            ("text/event-stream", s)
+        } else {
+            ("application/json", response.to_string())
+        };
+        Ok(InboundResponse {
+            status,
+            content_type: ct.into(),
+            body: Box::new(std::io::Cursor::new(text.into_bytes())),
+        })
+    }
+}
+
+/// One recorded vendor answer: status, content type, body.
+pub(crate) type Answer = (u16, &'static str, String);
+
+/// Answers each send with the next recorded answer, keeps what it was sent, and asserts at the
+/// transport (as `PinnedHttp` does) that every URL is on the endpoint's pinned host.
+pub(crate) struct Recorded {
+    answers: Mutex<Vec<Answer>>,
+    pub seen: Mutex<Vec<Seen>>,
+}
+
+impl Recorded {
+    pub(crate) fn new(answers: Vec<Answer>) -> Recorded {
+        Recorded {
+            answers: Mutex::new(answers),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn one(status: u16, content_type: &'static str, body: &str) -> Recorded {
+        Recorded::new(vec![(status, content_type, body.to_string())])
+    }
+
+    /// The only request sent (panics unless exactly one was).
+    pub(crate) fn sent(&self) -> Seen {
+        let s = self.seen.lock().unwrap();
+        assert_eq!(s.len(), 1, "exactly one request");
+        s[0].clone()
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.seen.lock().unwrap().len()
+    }
+}
+
+impl ProviderHttp for Recorded {
+    fn send(&self, req: WireRequest<'_>) -> Result<InboundResponse, ProviderError> {
+        crate::provider_egress::check_on_endpoint(req.endpoint, &req.url)
+            .expect("an adapter request left the pinned host");
+        self.seen.lock().unwrap().push(Seen {
+            method: req.method,
+            url: req.url.to_string(),
+            auth: format!("{}: {}", req.auth_header.0, req.auth_header.1.as_str()),
+            headers: req.headers.clone(),
+            body: req
+                .body
+                .as_ref()
+                .map(|b| serde_json::from_slice(b).expect("request body is JSON")),
+        });
+        let (status, ct, body) = self.answers.lock().unwrap().remove(0);
+        Ok(InboundResponse {
+            status,
+            content_type: ct.into(),
+            body: Box::new(std::io::Cursor::new(body.into_bytes())),
+        })
+    }
+}
+
+/// A recorded fixture file under `src-tauri/tests/fixtures/providers/`.
+pub(crate) fn fixture(rel: &str) -> String {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/providers")
+        .join(rel);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("fixture {}: {e}", p.display()))
+}
+
+pub(crate) fn fixture_json(rel: &str) -> Value {
+    serde_json::from_str(&fixture(rel)).unwrap_or_else(|e| panic!("fixture {rel}: {e}"))
+}
+
+/// The one conversation every adapter's request golden is built from: a system prompt, a user
+/// turn, an assistant turn with text and two parallel tool calls, both tool results, a follow-up
+/// user turn, and one tool definition.
+pub(crate) fn tool_conversation(model: &str, stream: bool) -> crate::model_provider::ChatRequest {
+    use crate::model_provider::{ChatMessage, ChatRequest, Role, ToolCall, ToolDef};
+    let msg = |role, content: &str| ChatMessage {
+        role,
+        content: content.into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+    };
+    let result = |id: &str, content: &str| ChatMessage {
+        role: Role::Tool,
+        content: content.into(),
+        tool_calls: vec![],
+        tool_call_id: Some(id.into()),
+    };
+    ChatRequest {
+        model: model.into(),
+        messages: vec![
+            msg(Role::System, "You are Hermes. Be brief."),
+            msg(Role::User, "What is the weather in Boston and Paris?"),
+            ChatMessage {
+                role: Role::Assistant,
+                content: "Checking both.".into(),
+                tool_calls: vec![
+                    ToolCall {
+                        id: "call_1".into(),
+                        name: "get_weather".into(),
+                        arguments: "{\"location\":\"Boston, MA\"}".into(),
+                    },
+                    ToolCall {
+                        id: "call_2".into(),
+                        name: "get_weather".into(),
+                        arguments: "{\"location\":\"Paris\"}".into(),
+                    },
+                ],
+                tool_call_id: None,
+            },
+            result("call_1", "{\"temp_c\":12}"),
+            result("call_2", "sunny"),
+            msg(Role::User, "Thanks. Which is warmer?"),
+        ],
+        tools: vec![ToolDef {
+            name: "get_weather".into(),
+            description: "Get the current weather for a location".into(),
+            parameters: json!({"type": "object",
+                "properties": {"location": {"type": "string"}}, "required": ["location"]}),
+        }],
+        max_tokens: 512,
+        stream,
+    }
+}
+
+/// Run `f` with a context on `v`'s pinned endpoint and a fake key with `prefix`.
+pub(crate) fn with_vendor_ctx<T>(
+    v: crate::model_provider::Vendor,
+    prefix: &str,
+    http: &dyn ProviderHttp,
+    f: impl FnOnce(&crate::model_provider::ProviderCtx<'_>) -> T,
+) -> T {
+    let ep = crate::provider_egress::resolve_vendor(v).unwrap();
+    let key = crate::model_provider::ApiKey::from_secret(crate::secret::SecretString::new(
+        fake_key(prefix),
+    ));
+    let ctx = crate::model_provider::ProviderCtx::new(&ep, &key, http);
+    f(&ctx)
+}
+
+/// Assert `r` is `Ok` (an assertion failure, not a panic in the code under test) and unwrap it.
+pub(crate) fn expect_ok<T, E: std::fmt::Debug>(r: Result<T, E>, what: &str) -> T {
+    assert!(r.is_ok(), "{what}: expected Ok, got {:?}", r.as_ref().err());
+    match r {
+        Ok(v) => v,
+        Err(_) => unreachable!(),
     }
 }

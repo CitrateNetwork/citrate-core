@@ -25,10 +25,12 @@ fn every_vendor_has_exactly_one_pinned_spec() {
     );
     assert_eq!(resolve_vendor(Vendor::Xai).unwrap().host, "api.x.ai");
     assert_eq!(resolve_vendor(Vendor::DeepSeek).unwrap().host, "api.deepseek.com");
-    assert_eq!(resolve_vendor(Vendor::Meta).unwrap().host, "api.llama.com");
+    assert_eq!(resolve_vendor(Vendor::Meta).unwrap().host, "api.meta.ai");
+    assert_eq!(resolve_vendor(Vendor::Meta).unwrap().base_url.path(), "/v1");
     for d in DELEGATES {
         assert!(parse_base_url(d.base_url).is_ok(), "{}", d.id);
     }
+    assert_eq!(DELEGATES[0].base_url, "https://api.devin.ai/v3");
 }
 
 #[test]

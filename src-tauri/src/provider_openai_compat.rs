@@ -1,10 +1,10 @@
 //! D-11 (RC52) — the OpenAI-compatible adapter: the first [`ModelProvider`] implementation.
 //!
 //! Speaks `POST {base}/chat/completions` (streamed with `stream_options.include_usage`) and
-//! `GET {base}/models` for the key test. It serves a member-confirmed custom endpoint, and the
-//! vendors whose public API is OpenAI-compatible at their pinned base until their native adapter
-//! (WP-S1-PROV-ADAPT) replaces it. The key travels only as `Authorization: Bearer`, attached by
-//! core ([`ProviderCtx::send`]).
+//! `GET {base}/models` for the key test. It serves a member-confirmed custom endpoint; its wire
+//! helpers are shared with the native chat-completions vendors
+//! ([`crate::provider_chat_vendors`]). The key travels only as `Authorization: Bearer`, attached
+//! by core ([`ProviderCtx::send`]).
 
 use crate::model_provider::{
     basic_key_shape, read_sse, status_error, ApiKey, AuthPlacement, ChatRequest, ChatResponse,
@@ -19,18 +19,14 @@ pub const MAX_MODEL_ID_LEN: usize = 200;
 
 pub struct OpenAiCompatAdapter {
     id: ProviderId,
-    /// Required key prefix (`sk-` for OpenAI/DeepSeek, `xai-` for xAI); empty = any.
-    key_prefix: &'static str,
     models: Vec<ModelInfo>,
 }
 
 impl OpenAiCompatAdapter {
-    pub fn new(id: ProviderId, key_prefix: &'static str, models: Vec<ModelInfo>) -> Self {
-        OpenAiCompatAdapter {
-            id,
-            key_prefix,
-            models,
-        }
+    /// A custom endpoint's adapter: any key shape the basic check accepts (the endpoint is the
+    /// member's own; it has no known key format).
+    pub fn new(id: ProviderId, models: Vec<ModelInfo>) -> Self {
+        OpenAiCompatAdapter { id, models }
     }
 }
 
@@ -117,8 +113,17 @@ fn arguments_text(v: Option<&Value>) -> String {
     }
 }
 
+/// How a vendor's usage object becomes [`Usage`] (vendors differ on whether reasoning tokens are
+/// inside `completion_tokens`).
+pub type UsageFn = fn(&Value) -> Option<Usage>;
+
 /// Parse a non-streamed chat-completions answer.
 pub fn parse_response(v: &Value) -> Result<ChatResponse, ProviderError> {
+    parse_response_with(v, usage_from)
+}
+
+/// [`parse_response`] with the vendor's own usage reading.
+pub fn parse_response_with(v: &Value, usage: UsageFn) -> Result<ChatResponse, ProviderError> {
     let choice = v
         .get("choices")
         .and_then(Value::as_array)
@@ -165,7 +170,7 @@ pub fn parse_response(v: &Value) -> Result<ChatResponse, ProviderError> {
     Ok(ChatResponse {
         content,
         tool_calls,
-        usage: usage_from(v),
+        usage: usage(v),
         finish: finish_from(choice.get("finish_reason").and_then(Value::as_str)),
     })
 }
@@ -181,6 +186,16 @@ struct Partial {
 pub fn read_stream(
     body: impl std::io::Read,
     on_text: &mut dyn FnMut(&str),
+) -> Result<ChatResponse, ProviderError> {
+    read_stream_with(body, on_text, usage_from)
+}
+
+/// [`read_stream`] with the vendor's own usage reading. The last usage object seen wins (some
+/// vendors send a running total on every chunk, others one on the final chunk).
+pub fn read_stream_with(
+    body: impl std::io::Read,
+    on_text: &mut dyn FnMut(&str),
+    usage_of: UsageFn,
 ) -> Result<ChatResponse, ProviderError> {
     let mut content = String::new();
     let mut calls: Vec<Partial> = Vec::new();
@@ -199,7 +214,7 @@ pub fn read_stream(
                 "the provider reported an error mid-answer",
             ));
         }
-        if let Some(u) = usage_from(&v) {
+        if let Some(u) = usage_of(&v) {
             usage = Some(u);
         }
         let Some(choice) = v
@@ -311,13 +326,7 @@ impl ModelProvider for OpenAiCompatAdapter {
     }
 
     fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)?;
-        if !self.key_prefix.is_empty() && !key.starts_with(self.key_prefix) {
-            return Err(ProviderError::KeyFormat(
-                "that key does not have this provider's prefix (check you picked the right provider)",
-            ));
-        }
-        Ok(())
+        basic_key_shape(key)
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {

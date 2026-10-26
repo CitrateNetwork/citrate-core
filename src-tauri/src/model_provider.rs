@@ -347,6 +347,9 @@ pub enum ProviderError {
     BadResponse(&'static str),
     /// The key failed the vendor's format check (nothing was sent).
     KeyFormat(&'static str),
+    /// The request cannot be put in the vendor's format (nothing was sent), such as a tool call in
+    /// the history whose arguments are not a JSON object, or a model id unsafe in a URL path.
+    BadRequest(&'static str),
 }
 
 impl std::fmt::Display for ProviderError {
@@ -362,6 +365,7 @@ impl std::fmt::Display for ProviderError {
             ProviderError::Egress(m) => write!(f, "blocked: {m}"),
             ProviderError::BadResponse(m) => write!(f, "the provider's answer was unusable: {m}"),
             ProviderError::KeyFormat(m) => f.write_str(m),
+            ProviderError::BadRequest(m) => write!(f, "the request could not be sent: {m}"),
         }
     }
 }
@@ -393,8 +397,6 @@ pub enum Method {
 pub enum AuthPlacement {
     /// `Authorization: Bearer <key>` (OpenAI, xAI, DeepSeek, Meta, OpenAI-compatible).
     Bearer,
-    // Consumed by WP-S1-PROV-ADAPT (Anthropic `x-api-key`, Gemini `x-goog-api-key`).
-    #[cfg_attr(not(test), allow(dead_code))]
     /// A named header carrying the bare key (`x-api-key` for Anthropic, `x-goog-api-key` for
     /// Gemini).
     Header(&'static str),

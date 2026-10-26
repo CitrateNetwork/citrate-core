@@ -108,10 +108,14 @@ mod node;
 mod node_genesis;
 mod node_holder;
 mod node_withdrawn;
+pub(crate) mod provider_anthropic;
+pub(crate) mod provider_chat_vendors;
 pub(crate) mod provider_egress;
 #[cfg(test)]
 mod provider_fixtures_tests;
+pub(crate) mod provider_gemini;
 pub(crate) mod provider_guard;
+pub(crate) mod provider_openai;
 pub(crate) mod provider_openai_compat;
 #[cfg(test)]
 mod provider_tripwire_tests;

@@ -83,8 +83,13 @@ fn a_call_reaches_the_pinned_host_with_the_key_only_in_its_auth_header() {
         .unwrap();
     assert_eq!(r.content, "hello from the vendor");
     let seen = rig.vendor.seen.lock().unwrap();
-    let chat = seen.iter().find(|s| s.url.ends_with("/chat/completions")).unwrap();
-    assert_eq!(chat.url, "https://api.openai.com/v1/chat/completions");
+    let chat = seen.iter().find(|s| s.method == crate::model_provider::Method::Post);
+    assert_eq!(
+        chat.map(|c| c.url.as_str()),
+        Some("https://api.openai.com/v1/responses"),
+        "OpenAI's native Responses endpoint"
+    );
+    let chat = chat.unwrap();
     assert_eq!(chat.method, crate::model_provider::Method::Post);
     assert!(chat.headers.iter().any(|(k, v)| k == "accept" && v == "application/json"));
     assert_eq!(chat.auth, format!("authorization: Bearer {}", rig.key));
@@ -304,11 +309,13 @@ fn keys_are_one_way_and_a_failing_key_is_never_stored() {
     rig.proxy.remove_key("xai").unwrap();
     assert!(!rig.proxy.key_configured(&ProviderId::Vendor(Vendor::Xai)));
     assert!(rig.proxy.route_for(g.bearer.expose()).is_none());
-    // Not-yet-available vendors say so.
-    assert_eq!(
-        rig.proxy.set_key("anthropic", SecretString::new(fake_key("sk-ant-")), 1).err(),
-        Some(ProxyError::NotAvailable)
-    );
+    // A key in another vendor's format is refused by that vendor's native check, nothing sent.
+    let before = rig.vendor.seen.lock().unwrap().len();
+    assert!(matches!(
+        rig.proxy.set_key("anthropic", SecretString::new(fake_key("xai-")), 1).err(),
+        Some(ProxyError::Provider(ProviderError::KeyFormat(_)))
+    ));
+    assert_eq!(rig.vendor.seen.lock().unwrap().len(), before);
 }
 
 #[test]
@@ -326,4 +333,70 @@ fn routes_bind_one_provider_model_and_session_and_are_not_keys() {
     for v in rig.kr.values() {
         assert!(!v.contains("cmp_"));
     }
+}
+
+#[test]
+fn every_vendor_has_its_native_adapter_with_a_priced_tool_capable_catalog() {
+    for v in Vendor::ALL {
+        let (a, kind) = vendor_adapter(v);
+        assert_eq!(kind, AdapterKind::Native, "{v:?}");
+        assert_eq!(a.id(), ProviderId::Vendor(v), "the registry must never cross vendors");
+        let models = a.models();
+        assert!(!models.is_empty(), "{v:?} lists its models");
+        for m in models {
+            assert!(m.supports_tools, "{}", m.id);
+            assert!(
+                m.input_micros_per_mtok.is_some() && m.output_micros_per_mtok.is_some(),
+                "{} is priced (a currency cap refuses unpriced models)",
+                m.id
+            );
+        }
+    }
+    assert_eq!(AdapterKind::Native.as_str(), "native");
+}
+
+/// Tripwire for the off-host class: whatever an adapter builds (key test, plain and streamed
+/// call), every URL it sends is under its own vendor's pinned base, never another vendor's.
+#[test]
+fn every_native_adapter_stays_under_its_own_pinned_base() {
+    use crate::provider_fixtures_tests::{tool_conversation, with_vendor_ctx, Recorded};
+    for v in Vendor::ALL {
+        let (a, _) = vendor_adapter(v);
+        let first = a.models().first().map(|m| m.id.clone());
+        assert!(first.is_some(), "{v:?} lists a model to call");
+        let model = first.unwrap_or_default();
+        let http = Recorded::new(vec![
+            (500, "application/json", "{}".into()),
+            (500, "application/json", "{}".into()),
+            (500, "application/json", "{}".into()),
+        ]);
+        let prefix = match v {
+            Vendor::Anthropic => "sk-ant-api03-",
+            Vendor::Xai => "xai-",
+            Vendor::Meta => "LLM_1_",
+            _ => "sk-",
+        };
+        with_vendor_ctx(v, prefix, &http, |ctx| {
+            assert_eq!(a.test_key(ctx), Err(ProviderError::Status(500)));
+            for stream in [false, true] {
+                let r = a.complete(ctx, &tool_conversation(&model, stream), &mut |_| {});
+                assert_eq!(r, Err(ProviderError::Status(500)), "{v:?}");
+            }
+        });
+        let base = crate::provider_egress::vendor_spec(v).base_url;
+        let seen = http.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "{v:?}");
+        for s in seen.iter() {
+            // (`Recorded` also re-checks the pinned host and port at the transport.)
+            assert!(s.url.starts_with(&format!("{base}/")), "{v:?} sent to {}", s.url);
+        }
+    }
+}
+
+#[test]
+fn a_request_an_adapter_cannot_express_is_a_400_not_a_provider_failure() {
+    let e = ProxyError::Provider(ProviderError::BadRequest("x"));
+    assert_eq!(e.http(), (400, "bad_request"));
+    assert_eq!(e.outcome(), "bad_request");
+    assert_eq!(ProxyError::Provider(ProviderError::Status(500)).http().0, 502);
 }
