@@ -152,7 +152,7 @@ describe("launch spec (NodeManager::build_spec)", () => {
     expect(rpcAddr).toMatch(/^127\.0\.0\.1:\d+$/);
     expect(rpcAddr).not.toBe("127.0.0.1:8545");
     expect(config.match(/\[network\][^[]*?listen_addr\s*=\s*"([^"]+)"/s)[1]).not.toMatch(/:30303$/);
-    expect(config.match(/\[mining\][^[]*?enabled\s*=\s*(\w+)/s)[1]).toBe("false");
+    expect(config.match(/\[mining\][^[]*?^enabled\s*=\s*(\w+)/ms)[1]).toBe("false");
     // The storage key is a file path (owner-only, 64 hex digits), never the key itself.
     expect(env.CITRATE_STORAGE_KEY).toBeUndefined();
     expect(env.CITRATE_STORAGE_KEY_FILE.startsWith(dataDir)).toBe(true);
