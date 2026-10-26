@@ -38,6 +38,12 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+// Steps whose run block a test has executed; the coverage tripwire at the end needs every one.
+const exercised = new Set();
+function runStep(name, env, cwd) {
+  exercised.add(name);
+  return bash(stepScript(name), env, cwd);
+}
 function bash(script, env, cwd) {
   const file = path.join(dir, "step.sh");
   fs.writeFileSync(file, script);
@@ -55,7 +61,7 @@ function checkout(withProfiles) {
 const OUT = () => path.join(dir, "out");
 const outputs = () => ({ GITHUB_OUTPUT: path.join(dir, "gh-output"), GITHUB_STEP_SUMMARY: path.join(dir, "summary") });
 const resolve = (env, withProfiles = true) =>
-  bash(stepScript("Resolve the profile"), { OUT: OUT(), IN_PROFILE_NAME: "", IN_PROFILE_JSON: "", ...outputs(), ...env }, checkout(withProfiles));
+  runStep("Resolve the profile", { OUT: OUT(), IN_PROFILE_NAME: "", IN_PROFILE_JSON: "", ...outputs(), ...env }, checkout(withProfiles));
 const profileArgs = () => fs.readFileSync(path.join(OUT(), "profile-args"), "utf8").split("\n").filter(Boolean);
 
 describe("Resolve the profile", () => {
@@ -108,7 +114,7 @@ esac
     const root = checkout(true);
     fs.mkdirSync(OUT(), { recursive: true });
     fs.writeFileSync(path.join(OUT(), "profile-args"), "--profiles\nsrc-tauri/network/profiles.json\n");
-    return bash(stepScript("Cold sync"), {
+    return runStep("Cold sync", {
       PATH: `${fakePython()}:${process.env.PATH}`, OUT: OUT(), NODE_BIN: "/opt/citrate", NODE_SHA256: "ab".repeat(32),
       IN_TIMEOUT: "60m", IN_EVERY: "1000", IN_BLOCKS: "", ...outputs(), ...env,
     }, root);
@@ -130,12 +136,13 @@ esac
   });
 });
 
-describe("tripwire: no step ends a branch on a bare `[ … ] && …` list", () => {
-  // Under `bash -e`, `[ -n "$X" ] && cmd` as the last command of an if-branch or a step returns 1
-  // when the test is false, and fails the step (#523). Use `if …; then …; fi`. A list with its own
-  // `|| { …; exit 1; }` handler is a deliberate check and is allowed.
-  it("every `run:` block", () => {
-    const hits = workflow.split("\n").map((l, i) => [i + 1, l]).filter(([, l]) => /^\s*\[\[? .*\]\]? && /.test(l) && !/ \|\| /.test(l));
-    expect(hits).toEqual([]);
+describe("tripwire: every step with a run block has a dry run in this file", () => {
+  // A structural check of shell text can always be dodged (#526 review: `|| false`, a comment, a
+  // line continuation, `test`, `:;`, no spaces). Running every step is the check that holds: a
+  // step that cannot work under `bash -eo pipefail` fails its own dry run.
+  it("every `run:` step was executed by a test above", () => {
+    const steps = [...workflow.matchAll(/^\s+- name: (.+)\n(?:\s+(?!- ).*\n)*?\s+run: \|/gm)].map((m) => m[1].trim());
+    expect(steps.length).toBeGreaterThanOrEqual(6);
+    expect(steps.filter((s) => !exercised.has(s))).toEqual([]);
   });
 });
