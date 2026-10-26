@@ -99,7 +99,9 @@ impl std::fmt::Display for ProxyError {
             ProxyError::NotAvailable => {
                 f.write_str("this provider is not available in this version yet")
             }
-            ProxyError::Cancelled => f.write_str("the caller went away; the vendor call was stopped"),
+            ProxyError::Cancelled => {
+                f.write_str("the caller went away; the vendor call was stopped")
+            }
             ProxyError::Egress(m) => write!(f, "blocked: {m}"),
             ProxyError::Refused(r) => write!(f, "refused: {r}"),
             ProxyError::LogUnavailable(e) => write!(f, "refused: {e}; nothing was sent"),
@@ -393,19 +395,21 @@ impl ModelProxy {
         on_text: &mut dyn FnMut(&str),
     ) -> Result<ChatResponse, ProxyError> {
         let (prepared, req) = self.prepare(route, req, conversation)?;
-        self.execute(prepared, &req, on_text)
+        self.execute(prepared, &req, None, on_text)
     }
 
-    /// RED STUB: [`Self::call`], ignoring the cancel flag.
+    /// [`Self::call`] that stops when `cancel` is set (the caller went away): the vendor call is
+    /// cut off at its next read and the end record says `cancelled`.
     pub fn call_until(
         &self,
         route: &ProxyRoute,
         req: ChatRequest,
         conversation: Option<String>,
-        _cancel: crate::model_provider::CancelFlag,
+        cancel: crate::model_provider::CancelFlag,
         on_text: &mut dyn FnMut(&str),
     ) -> Result<ChatResponse, ProxyError> {
-        self.call(route, req, conversation, on_text)
+        let (prepared, req) = self.prepare(route, req, conversation)?;
+        self.execute(prepared, &req, Some(cancel), on_text)
     }
 
     /// Steps 1-5: everything that can refuse before anything is sent. The loopback endpoint calls
@@ -508,13 +512,23 @@ impl ModelProxy {
         &self,
         p: Prepared,
         req: &ChatRequest,
+        cancel: Option<crate::model_provider::CancelFlag>,
         on_text: &mut dyn FnMut(&str),
     ) -> Result<ChatResponse, ProxyError> {
         let result = {
-            let ctx = ProviderCtx::new(&p.endpoint, &p.key, self.http.as_ref());
-            p.adapter
-                .complete(&ctx, req, on_text)
-                .map_err(ProxyError::Provider)
+            let mut ctx = ProviderCtx::new(&p.endpoint, &p.key, self.http.as_ref());
+            if let Some(c) = &cancel {
+                ctx = ctx.with_cancel(c.clone());
+            }
+            let gone = || {
+                cancel
+                    .as_ref()
+                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+            };
+            match p.adapter.complete(&ctx, req, on_text) {
+                Err(_) if gone() => Err(ProxyError::Cancelled),
+                r => r.map_err(ProxyError::Provider),
+            }
         };
         drop(p.key);
         self.finish(

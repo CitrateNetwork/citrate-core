@@ -519,6 +519,24 @@ pub struct ProviderCtx<'a> {
 /// Set by core when the caller of a call has gone away (the loopback client disconnected).
 pub type CancelFlag = std::sync::Arc<std::sync::atomic::AtomicBool>;
 
+/// A vendor answer body that fails its next read once the call is cancelled.
+struct CancelOnFlag {
+    inner: Box<dyn Read + Send>,
+    flag: CancelFlag,
+}
+
+impl Read for CancelOnFlag {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.flag.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "the call was cancelled",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
 impl<'a> ProviderCtx<'a> {
     pub(crate) fn new(
         endpoint: &'a crate::provider_egress::ResolvedEndpoint,
@@ -533,15 +551,27 @@ impl<'a> ProviderCtx<'a> {
         }
     }
 
-    /// RED STUB: stores the flag, nothing reads it yet.
+    /// Stop this call when `flag` is set: nothing more is sent, and the vendor's answer body
+    /// fails at its next read, so every adapter's read loop ends and the vendor connection is
+    /// dropped (which stops the vendor generating). Bytes already buffered may still be parsed;
+    /// they are not forwarded by a caller that has gone.
     pub(crate) fn with_cancel(mut self, flag: CancelFlag) -> Self {
         self.cancel = Some(flag);
         self
     }
 
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
     /// Compose, check and send. Fails closed (nothing sent) when the joined URL leaves the pinned
     /// host, carries the key, or a header is not allowed.
     pub fn send(&self, req: OutboundRequest) -> Result<InboundResponse, ProviderError> {
+        if self.cancelled() {
+            return Err(ProviderError::Transport("the call was cancelled"));
+        }
         let url = crate::provider_egress::join_checked(self.endpoint, &req.path)?;
         if self.key.appears_in(url.as_str().as_bytes()) {
             return Err(ProviderError::Egress("a key may never travel in a URL"));
@@ -582,14 +612,21 @@ impl<'a> ProviderCtx<'a> {
                 )
             }
         };
-        self.http.send(WireRequest {
+        let mut resp = self.http.send(WireRequest {
             method: req.method,
             url,
             headers,
             auth_header,
             body,
             endpoint: self.endpoint,
-        })
+        })?;
+        if let Some(flag) = &self.cancel {
+            resp.body = Box::new(CancelOnFlag {
+                inner: resp.body,
+                flag: flag.clone(),
+            });
+        }
+        Ok(resp)
     }
 }
 
