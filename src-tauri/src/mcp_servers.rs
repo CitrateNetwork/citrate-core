@@ -29,10 +29,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// The registry file (every entry), under `<app local data>/hermes/`.
 pub const REGISTRY_FILE: &str = "mcp-servers.json";
@@ -43,6 +44,89 @@ pub const MCP_REGISTRY_ENV: &str = "CITRATE_HERMES_MCP_REGISTRY";
 pub const ALLOWLIST_FILE: &str = "mcp-allowlist.json";
 /// The runtime's limit on configured servers (`agent-mcp-host::config::MAX_SERVERS`).
 pub const MAX_SERVERS: usize = 16;
+
+// RC52 P-9a red stub: the keychain API shape with the old (plain-text) behaviour.
+pub const PROBE_FILE: &str = "mcp-probe.json";
+pub const LEGACY_ALLOWLIST_FILE: &str = ALLOWLIST_FILE;
+pub const KEYRING_SERVICE: &str = "ai.citrate.core";
+pub const ENV_ACCOUNT_PREFIX: &str = "mcp-server-env:";
+pub const MASK: &str = "•••••••• (in the system keychain)";
+
+pub fn env_account(server: &str, key: &str, reference: &str) -> String {
+    format!("{ENV_ACCOUNT_PREFIX}{server}:{key}:{reference}")
+}
+
+pub trait SecretStore: Send + Sync {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String>;
+    fn set(&self, account: &str, value: &str) -> Result<(), String>;
+    fn delete(&self, account: &str) -> Result<(), String>;
+}
+
+pub struct OsSecretStore;
+
+impl SecretStore for OsSecretStore {
+    fn get(&self, _account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        Ok(None)
+    }
+    fn set(&self, _account: &str, _value: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn delete(&self, _account: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MemSecrets {
+    items: Mutex<BTreeMap<String, String>>,
+    pub fail_set_after: Mutex<Option<usize>>,
+    sets: std::sync::atomic::AtomicUsize,
+    pub unavailable: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl MemSecrets {
+    pub fn items(&self) -> BTreeMap<String, String> {
+        self.items.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+    pub fn set_count(&self) -> usize {
+        self.sets.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+impl SecretStore for MemSecrets {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        Ok(self
+            .items
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(account)
+            .map(|v| Zeroizing::new(v.clone())))
+    }
+    fn set(&self, account: &str, value: &str) -> Result<(), String> {
+        self.sets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.items
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(account.to_string(), value.to_string());
+        Ok(())
+    }
+    fn delete(&self, account: &str) -> Result<(), String> {
+        self.items
+            .lock()
+            .map_err(|e| e.to_string())?
+            .remove(account);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SaveEffects {
+    pub written: Vec<String>,
+    pub obsolete: Vec<String>,
+}
 
 // Mirrors `agent-mcp-host::user` (the source of truth; the sidecar re-validates every probe with these
 // rules, and the allowlist on load with the base rules, failing closed).
@@ -156,6 +240,8 @@ pub struct StoredServer {
     pub url: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub env_refs: BTreeMap<String, String>,
     #[serde(default)]
     pub allow_write_tools: bool,
     #[serde(default)]
@@ -540,6 +626,10 @@ pub fn fingerprint(s: &StoredServer) -> String {
     hex::encode(Sha256::digest(material.to_string().as_bytes()))
 }
 
+fn legacy_fingerprint(s: &StoredServer) -> String {
+    fingerprint(s)
+}
+
 fn review_matches(s: &StoredServer) -> bool {
     s.reviewed.as_deref() == Some(fingerprint(s).as_str())
 }
@@ -583,7 +673,11 @@ pub fn views(reg: &Registry) -> Vec<ServerView> {
 
 /// Add or edit an entry. A new or changed entry is stored disabled; an edit that changes nothing
 /// that runs keeps its review.
-pub fn apply_save(reg: &mut Registry, input: ServerInput) -> Result<(), Vec<FieldError>> {
+pub fn apply_save(
+    reg: &mut Registry,
+    input: ServerInput,
+    _secrets: &dyn SecretStore,
+) -> Result<SaveEffects, Vec<FieldError>> {
     validate_input(&input)?;
     let prev_idx = match &input.previous_name {
         Some(p) => Some(
@@ -642,6 +736,7 @@ pub fn apply_save(reg: &mut Registry, input: ServerInput) -> Result<(), Vec<Fiel
         },
         url: if stdio { None } else { input.url },
         env,
+        env_refs: BTreeMap::new(),
         allow_write_tools: input.allow_write_tools,
         enabled: false,
         reviewed: None,
@@ -657,14 +752,14 @@ pub fn apply_save(reg: &mut Registry, input: ServerInput) -> Result<(), Vec<Fiel
         Some(i) => reg.servers[i] = next,
         None => reg.servers.push(next),
     }
-    Ok(())
+    Ok(SaveEffects::default())
 }
 
 /// Remove an entry. Returns whether it existed.
-pub fn apply_remove(reg: &mut Registry, name: &str) -> bool {
+pub fn apply_remove(reg: &mut Registry, name: &str) -> Option<SaveEffects> {
     let before = reg.servers.len();
     reg.servers.retain(|s| s.name != name);
-    reg.servers.len() != before
+    (reg.servers.len() != before).then(SaveEffects::default)
 }
 
 /// Disable an entry (keeps it; a later enable needs a fresh review, so this session's check of
@@ -798,6 +893,40 @@ pub fn allowlist_json(reg: &Registry) -> Option<String> {
     }
 }
 
+pub fn runtime_entry_json(
+    s: &StoredServer,
+    _secrets: &dyn SecretStore,
+) -> Result<Zeroizing<String>, String> {
+    Ok(Zeroizing::new(entry_json(s).to_string()))
+}
+
+pub fn enabled_servers(reg: &Registry) -> impl Iterator<Item = &StoredServer> {
+    reg.servers
+        .iter()
+        .filter(|s| s.enabled && review_matches(s))
+}
+
+pub fn runtime_allowlist_json(
+    reg: &Registry,
+    _secrets: &dyn SecretStore,
+    builtin: &[serde_json::Value],
+) -> Result<Option<Zeroizing<String>>, String> {
+    let mut servers: Vec<serde_json::Value> = builtin.to_vec();
+    servers.extend(enabled_servers(reg).map(entry_json));
+    Ok((!servers.is_empty())
+        .then(|| Zeroizing::new(serde_json::json!({ "servers": servers }).to_string())))
+}
+
+pub fn keychain_accounts(_registry_text: &str) -> Vec<(String, String)> {
+    Vec::new()
+}
+
+pub fn sweep_runtime_files(_dir: &Path) {}
+
+pub fn os_store(dir: PathBuf) -> McpStore {
+    McpStore::new(dir, Arc::new(OsSecretStore))
+}
+
 fn quote_arg(a: &str) -> String {
     if !a.is_empty()
         && a.chars()
@@ -839,13 +968,43 @@ pub fn review_view(gate: &ReviewGate, s: &StoredServer, probe: ProbeReport) -> R
 // ---------------------------------------------------------------------------
 
 /// The two files under `<app local data>/hermes/`.
+#[derive(Clone)]
 pub struct McpStore {
     dir: PathBuf,
+    secrets: Arc<dyn SecretStore>,
 }
 
 impl McpStore {
-    pub fn new(dir: PathBuf) -> Self {
-        McpStore { dir }
+    pub fn new(dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
+        McpStore { dir, secrets }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn secrets(&self) -> &dyn SecretStore {
+        &*self.secrets
+    }
+
+    pub fn probe_path(&self) -> PathBuf {
+        self.registry_path()
+    }
+
+    pub fn legacy_allowlist_path(&self) -> PathBuf {
+        self.allowlist_path()
+    }
+
+    pub fn commit(&self, reg: &Registry, _effects: &SaveEffects) -> Result<(), String> {
+        self.save(reg)
+    }
+
+    pub fn with_probe_file<T>(
+        &self,
+        _entry_json: &str,
+        f: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        Ok(f())
     }
 
     pub fn registry_path(&self) -> PathBuf {
@@ -913,7 +1072,7 @@ pub fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBu
 }
 
 fn store(app: &tauri::AppHandle) -> Result<McpStore, String> {
-    Ok(McpStore::new(hermes_dir(app)?))
+    Ok(os_store(hermes_dir(app)?))
 }
 
 const NOT_RUNNING: &str =
@@ -944,9 +1103,9 @@ fn mcp_server_save_sync(app: &tauri::AppHandle, input: ServerInput) -> Result<Sa
     let st = store(app)?;
     let mut reg = st.load()?;
     let renamed_from = input.previous_name.clone().filter(|p| p != &input.name);
-    match apply_save(&mut reg, input) {
-        Ok(()) => {
-            st.save(&reg)?;
+    match apply_save(&mut reg, input, st.secrets()) {
+        Ok(effects) => {
+            st.commit(&reg, &effects)?;
             if let Some(old) = renamed_from {
                 g.forget(&old);
             }
@@ -974,8 +1133,8 @@ pub async fn mcp_server_remove(
         let mut g = gate().lock().unwrap_or_else(|e| e.into_inner());
         let st = store(&app)?;
         let mut reg = st.load()?;
-        if apply_remove(&mut reg, &name) {
-            st.save(&reg)?;
+        if let Some(effects) = apply_remove(&mut reg, &name) {
+            st.commit(&reg, &effects)?;
         }
         g.forget(&name);
         Ok(views(&reg))
@@ -1024,8 +1183,10 @@ fn mcp_server_review_sync(app: &tauri::AppHandle, name: &str) -> Result<ReviewRe
         return Err(NOT_RUNNING.into());
     }
     // The probe can take up to 20 s; the registry lock is not held meanwhile.
-    let outcome = mgr
-        .mcp_probe(&entry_json(&entry))
+    let st = store(app)?;
+    let body = runtime_entry_json(&entry, st.secrets())?;
+    let outcome = st
+        .with_probe_file(&body, || mgr.mcp_probe(&body))?
         .map_err(|e| e.to_string())?;
     let mut g = gate().lock().unwrap_or_else(|e| e.into_inner());
     // The entry may have been edited while the probe ran: record against what was probed, and

@@ -191,7 +191,12 @@ pub const EFFECTIVE_FILE: &str = "mcp-effective.json";
 /// ones (they are reserved). If either file cannot be read, nothing is passed (fail closed). A
 /// joined file left from an earlier start is removed whenever it is not needed, since it can hold
 /// the member's server credentials.
-pub fn effective_allowlist(builtin: Option<&Path>, user: Option<&Path>) -> Option<PathBuf> {
+pub fn effective_allowlist(
+    builtin: Option<&Path>,
+    user: Option<&crate::mcp_servers::McpStore>,
+) -> Option<PathBuf> {
+    let user_path = user.map(|u| u.legacy_allowlist_path());
+    let user = user_path.as_deref();
     let dir = builtin
         .or(user)
         .and_then(Path::parent)

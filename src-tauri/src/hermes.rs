@@ -400,7 +400,7 @@ pub struct HermesManager {
     skill_sources: Option<crate::hermes_learn::SkillSources>,
     /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
     /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
-    mcp_allowlist: Option<PathBuf>,
+    mcp_servers: Option<crate::mcp_servers::McpStore>,
     /// HUP-S7.3/S7.5: the base folder for the sidecar's metering log, decision records and anchor
     /// ledger (see `hermes_chain`). `None` (tests) leaves those env vars unset.
     chain_data_dir: Option<PathBuf>,
@@ -476,7 +476,7 @@ impl HermesManager {
             checkpoints_dir: None,
             learn_dirs: None,
             skill_sources: None,
-            mcp_allowlist: None,
+            mcp_servers: None,
             chain_data_dir: None,
             env_source: None,
             embed: None,
@@ -554,8 +554,8 @@ impl HermesManager {
 
     /// HUP-S4.4: the member's MCP allowlist file (joined with the built-in one, see
     /// [`crate::hermes_mcp::effective_allowlist`]).
-    pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
-        self.mcp_allowlist = Some(path);
+    pub fn with_mcp_servers(mut self, store: crate::mcp_servers::McpStore) -> Self {
+        self.mcp_servers = Some(store);
         self
     }
 
@@ -650,7 +650,7 @@ impl HermesManager {
         // reviewed servers, joined when both are on), and only when one is written (default: none).
         if let Some(path) = crate::hermes_mcp::effective_allowlist(
             self.mcp_config_path.as_deref(),
-            self.mcp_allowlist.as_deref(),
+            self.mcp_servers.as_ref(),
         ) {
             spec.env.push((
                 crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
@@ -659,13 +659,10 @@ impl HermesManager {
         }
         // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
         // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
-        if let Some(allow) = &self.mcp_allowlist {
+        if let Some(store) = &self.mcp_servers {
             spec.env.push((
                 crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
-                allow
-                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
-                    .to_string_lossy()
-                    .to_string(),
+                store.registry_path().to_string_lossy().to_string(),
             ));
         }
         if let Some(dir) = &self.checkpoints_dir {
@@ -736,6 +733,11 @@ impl HermesManager {
     #[cfg(test)]
     pub fn spec_env_for_test(&self) -> Vec<(String, String)> {
         self.build_spec().env
+    }
+
+    #[cfg(test)]
+    pub fn spec_for_test(&self) -> SidecarSpec {
+        self.build_spec()
     }
 
     /// Start the sidecar: mint a fresh session bearer, persist it `0600` (the child adopts it), and
@@ -996,13 +998,11 @@ impl HermesManager {
     /// `POST /mcp/probe` — the sidecar's dry-run check of one server entry (the runtime's
     /// `[[servers]]` shape). 422 = the sidecar's field errors; 200 = the probe report (which may
     /// itself say the server could not be reached). Registers nothing.
-    pub fn mcp_probe(&self, entry: &serde_json::Value) -> Result<crate::mcp_servers::ProbeOutcome> {
+    pub fn mcp_probe(&self, entry: &str) -> Result<crate::mcp_servers::ProbeOutcome> {
         let bearer = self.bearer()?;
-        let resp = self.control.post(
-            &format!("{}/mcp/probe", self.control_url()),
-            &bearer,
-            &entry.to_string(),
-        )?;
+        let resp =
+            self.control
+                .post(&format!("{}/mcp/probe", self.control_url()), &bearer, entry)?;
         if resp.status == 422 {
             #[derive(Deserialize)]
             struct Invalid {
@@ -1781,7 +1781,7 @@ pub(crate) fn manager<R: tauri::Runtime>(
         .with_checkpoints_dir(base.join("checkpoints"))
         .with_learn_dirs(base.join("learn"), base.join("skills"))
         .with_skill_sources(skill_sources)
-        .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
+        .with_mcp_servers(crate::mcp_servers::os_store(base.clone()))
         .with_chain_data_dir(base.clone())
         .with_env_source({
             // HUP-S5.2/S5.3 web opt-ins and HUP-S6.3 the toolchain switch, read at each start.

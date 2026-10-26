@@ -886,6 +886,29 @@ fn hermes_control_calls_are_bounded() {
     assert!(HERMES_CONTROL_TIMEOUT <= Duration::from_secs(60));
 }
 
+/// A member store (keychain double) with one enabled, reviewed stdio server named `notes`.
+fn member_store_with_notes(dir: &std::path::Path) -> crate::mcp_servers::McpStore {
+    use crate::mcp_servers as m;
+    let store = m::McpStore::new(dir.to_path_buf(), std::sync::Arc::new(m::MemSecrets::default()));
+    let mut reg = m::Registry::default();
+    let input: m::ServerInput = serde_json::from_value(serde_json::json!({
+        "name": "notes", "transport": "stdio", "command": "/usr/bin/true",
+        "env": [{"key": "NOTES_TOKEN", "value": "tok-notes"}]
+    }))
+    .unwrap();
+    let fx = m::apply_save(&mut reg, input, store.secrets()).unwrap();
+    let mut gate = m::ReviewGate::default();
+    let probe: m::ProbeReport = serde_json::from_value(serde_json::json!({
+        "name": "notes", "transport": "stdio", "ok": true, "tools": []
+    }))
+    .unwrap();
+    gate.record(&reg.servers[0], &probe);
+    let token = m::review_token(&gate, &reg.servers[0]);
+    m::apply_enable(&mut reg, &gate, "notes", &token).unwrap();
+    store.commit(&reg, &fx).unwrap();
+    store
+}
+
 #[test]
 fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
     // HUP-S4.3 + S4.4 integration: the sidecar reads exactly one CITRATE_HERMES_MCP file, so when
@@ -895,12 +918,11 @@ fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
     let hermes = dir.join("hermes");
     std::fs::create_dir_all(&hermes).unwrap();
     let builtin = hermes.join("mcp.json");
-    let user = hermes.join(crate::mcp_servers::ALLOWLIST_FILE);
     std::fs::write(&builtin, br#"{"servers":[{"name":"scan","transport":"http","url":"https://explorer.citrate.ai/api/mcp","allow_write_tools":false}]}"#).unwrap();
-    std::fs::write(&user, br#"{"servers":[{"name":"notes","transport":"stdio","command":"/usr/bin/true","args":[],"env":{},"allow_write_tools":false}]}"#).unwrap();
+    let store = member_store_with_notes(&hermes);
     let mgr = mgr
         .with_mcp_config_path(builtin.clone())
-        .with_mcp_allowlist(user.clone());
+        .with_mcp_servers(store.clone());
     let env = mgr.spec_env_for_test();
     let mcp: Vec<&String> = env
         .iter()
@@ -921,14 +943,19 @@ fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
         .filter_map(|s| s["name"].as_str())
         .collect();
     assert_eq!(names, ["scan", "notes"]);
+    // The member's value comes from the keychain at spawn.
+    assert_eq!(v["servers"][1]["env"]["NOTES_TOKEN"], "tok-notes");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(mcp[0]).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
-    // Only one side on: its own file is used as is.
-    std::fs::remove_file(&user).unwrap();
+    // Only the built-in side on: its own file is used as is, and the spawn-time file is gone.
+    let mut reg = store.load().unwrap();
+    let mut gate = crate::mcp_servers::ReviewGate::default();
+    crate::mcp_servers::apply_disable(&mut reg, &mut gate, "notes");
+    store.save(&reg).unwrap();
     let env = mgr.spec_env_for_test();
     let mcp: Vec<&String> = env
         .iter()
@@ -936,6 +963,7 @@ fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
         .map(|(_, v)| v)
         .collect();
     assert_eq!(mcp, [&builtin.to_string_lossy().to_string()]);
+    assert!(!hermes.join(crate::hermes_mcp::EFFECTIVE_FILE).exists());
 }
 
 #[test]
@@ -959,24 +987,28 @@ fn mcp_env_is_set_only_while_the_allowlist_file_exists() {
 }
 
 #[test]
-fn the_child_is_told_where_the_saved_mcp_server_list_is() {
-    // HUP-S4.4: the sidecar's dry-run probe starts only an entry core has saved, so it needs the
-    // saved list (mcp-servers.json, next to the allowlist). Without the member-servers feature
-    // wired, nothing is passed.
+fn the_child_is_told_where_the_entry_being_checked_is() {
+    // HUP-S4.4: the sidecar's dry-run probe starts only an entry core has saved for the check.
+    // RC52 P-9a: that is the probe file (written only during a check, with the entry's values),
+    // not the server list (which holds no values). Without the member-servers feature wired,
+    // nothing is passed.
     let (mgr, dir) = stub_manager("mcpreg");
     let env: std::collections::BTreeMap<String, String> =
         mgr.spec_env_for_test().into_iter().collect();
     assert!(!env.contains_key(crate::mcp_servers::MCP_REGISTRY_ENV));
 
     let hermes = dir.join("hermes");
-    let mgr = mgr.with_mcp_allowlist(hermes.join(crate::mcp_servers::ALLOWLIST_FILE));
+    let mgr = mgr.with_mcp_servers(crate::mcp_servers::McpStore::new(
+        hermes.clone(),
+        std::sync::Arc::new(crate::mcp_servers::MemSecrets::default()),
+    ));
     let env: std::collections::BTreeMap<String, String> =
         mgr.spec_env_for_test().into_iter().collect();
     assert_eq!(
         env.get(crate::mcp_servers::MCP_REGISTRY_ENV).map(String::as_str),
         Some(
             hermes
-                .join(crate::mcp_servers::REGISTRY_FILE)
+                .join(crate::mcp_servers::PROBE_FILE)
                 .to_string_lossy()
                 .as_ref()
         )
