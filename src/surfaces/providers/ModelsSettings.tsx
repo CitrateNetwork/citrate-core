@@ -342,7 +342,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
                 </span>
                 {!pe && (
                   <button className="btn btn-ghost btn-sm" data-testid={`enter-price-${m.id}`} onClick={() => v.on.onEditPrice(p.id, m.id)} disabled={anyBusy || !v.desktop}>
-                    {m.source === "member" ? "Change price" : "Enter price"}
+                    {m.source === "member" ? "Change price" : m.source === "published" ? "Override price" : "Enter price"}
                   </button>
                 )}
               </span>

@@ -178,8 +178,8 @@ export function hygieneSteps(name: string, host: string): string[] {
 /** Vendor-specific advice, worded as what to look for (the vendor's console is the authority). */
 export const VENDOR_HINT: Record<string, string> = {
   openai: "OpenAI: create the key inside a project made for Citrate Core, and set that project's budget and model permissions.",
-  anthropic: "Anthropic: create the key in a workspace made for Citrate Core, and set the workspace spend limit.",
-  gemini: "Google: restrict the key to the Generative Language API. Google Cloud budgets send alerts but do not stop calls, so keep the caps below.",
+  anthropic: "Anthropic: create a workspace-scoped key, in a workspace made for Citrate Core, and set that workspace's spend limit. It keeps this key's spend and access apart from the rest of your account.",
+  gemini: "Google: restrict the key to the Generative Language API. Google Cloud budgets send alerts but do not stop calls, so keep the caps below. Google keys have no fixed key format, so core cannot check the key's shape: the live test with Google decides whether it works.",
   xai: "xAI: create the key in the xAI console and limit the models and endpoints it may use.",
   deepseek: "DeepSeek charges a prepaid balance, so top up only what you are willing to spend.",
   meta: "Meta: create the key in the Llama developer console, in a project used only by Citrate Core.",
