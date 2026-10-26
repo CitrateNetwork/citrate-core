@@ -590,6 +590,52 @@ fn an_expired_bridged_ceremony_is_bridged_again_as_a_fresh_request() {
 }
 
 #[test]
+fn an_expired_bridged_ceremony_is_bridged_again_after_many_other_expiries() {
+    // #457: other requests expiring in the same process (more than the ceremony keeps for
+    // ordinary ids) must not make an expired bridged request read as "decided" (no card, never
+    // re-bridged).
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    let mgr = control_manager(chain_effect_mock());
+    let wall = Arc::new(AtomicU64::new(1_790_000_000_000));
+    let base = std::time::Instant::now();
+    let w2 = Arc::clone(&wall);
+    let ceremony = SignatureCeremony::with_clock(
+        crate::ceremony::PENDING_TTL,
+        Box::new(move || {
+            let ms = w2.load(Ordering::SeqCst);
+            crate::ceremony::ClockReading {
+                mono: base + std::time::Duration::from_millis(ms - 1_790_000_000_000),
+                wall_ms: ms,
+            }
+        }),
+    );
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        rpc_ok(serde_json::json!("0x8000")),
+        rpc_ok(serde_json::json!("0x8000")),
+    ]));
+    let c1 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .unwrap();
+    wall.fetch_add(crate::ceremony::PENDING_TTL_MS, Ordering::SeqCst);
+    assert!(ceremony.status(&c1.id).is_none(), "the first request expired");
+    // A busy process: 4097 other requests (another origin) open and expire.
+    for i in 0..4097 {
+        ceremony.request(hermes_intent("0x0000000000000000000000000000000000000001", &format!("0x{i:08x}"), "0x00", None));
+    }
+    wall.fetch_add(crate::ceremony::PENDING_TTL_MS, Ordering::SeqCst);
+    assert_eq!(ceremony.opened(), 4098);
+    let c2 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .expect("the expired bridged request is replaced by a fresh one, not read as decided");
+    assert_ne!(c2.id, c1.id);
+    assert!(ceremony.status(&c2.id).is_some());
+}
+
+#[test]
 fn bridge_pending_skips_a_non_chain_effect() {
     // An approval with no to/data (a code/shell effect) has no chain signature to bridge.
     let mut mock = MockControl::new();

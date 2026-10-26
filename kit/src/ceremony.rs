@@ -787,6 +787,12 @@ impl SignatureCeremony {
         view
     }
 
+    /// Like [`request`](Self::request), for a caller that must later tell "expired" from
+    /// "decided" for this id with [`is_expired`](Self::is_expired).
+    pub fn request_watched(&self, intent: SignatureIntent) -> CeremonyView {
+        self.request(intent)
+    }
+
     /// Re-inspect a pending ceremony without consuming it (for the approval UI to
     /// re-render). `None` if it does not exist / was consumed.
     pub fn status(&self, id: &str) -> Option<CeremonyView> {
