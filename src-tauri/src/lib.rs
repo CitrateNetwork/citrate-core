@@ -197,6 +197,9 @@ mod windows_installer_hook_tests;
 mod upgrade_updater_feed_tests;
 #[cfg(test)]
 mod upgrade_v051_tests;
+// D-9: the LiquidStakingPool is retired; no pool reference in the crate, its book or the kit.
+#[cfg(test)]
+mod lsp_retired_tests;
 
 use tauri::Manager;
 

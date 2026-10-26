@@ -249,3 +249,40 @@ fn member_agent_sbt_mint_is_a_known_call_and_the_owner_mint_is_not() {
     let (_, d) = decode_transaction(&router_tx(&owner, 0)).unwrap_or_else(|| panic!("decodes"));
     assert!(!d.action.contains("mintAgent"), "{}", d.action);
 }
+
+// Owner decision D-9 (2026-10-26): the LiquidStakingPool is retired, and core builds none of its
+// calls. Its stake, withdrawal and read selectors (fixtures/retired/liquid-staking-pool.json) and the
+// pool's `deposit()` are no longer known calls: one sent to the ceremony needs the raw-mode ack.
+#[test]
+fn retired_pool_calls_are_not_known_calls() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/retired/liquid-staking-pool.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let retired: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let selectors: Vec<Vec<u8>> = retired["selectors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("selectors"))
+        .iter()
+        .map(|s| hex::decode(s.as_str().unwrap_or_default()).unwrap_or_else(|e| panic!("{e}")))
+        .collect();
+    assert_eq!(selectors.len(), 5);
+    let mut calls: Vec<Vec<u8>> = selectors
+        .into_iter()
+        .map(|mut d| {
+            d.extend_from_slice(&[0u8; 32]);
+            d
+        })
+        .collect();
+    calls.push(selector_of("deposit()").to_vec());
+    for data in calls {
+        let (_, d) =
+            decode_transaction(&router_tx(&data, 1)).unwrap_or_else(|| panic!("decodes"));
+        assert_eq!(
+            d.action,
+            crate::ceremony::UNRECOGNIZED_ACTION,
+            "0x{} is still a known call",
+            hex::encode(&data[..4])
+        );
+    }
+}
