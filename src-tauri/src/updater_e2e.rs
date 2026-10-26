@@ -125,6 +125,66 @@ mod tests {
             .to_string()
     }
 
+    /// The v1 release updater public key (key id F6E74B821EAAEB32), pinned before v0.3.0
+    /// (src-tauri/tauri.conf.json at 1b63e019^). Public material.
+    const V1_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2RTc0QjgyMUVBQUVCMzIKUldReTY2b2Vna3ZuOXN2OG9kNG5NTHdsUHJaOEYyUkhKN0QrVDR3clJSaXNaY1ppMW9Xa3dSK3UK";
+
+    fn b64(s: &str) -> String {
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(s.trim())
+            .unwrap_or_else(|e| panic!("base64: {e}"));
+        String::from_utf8(raw).unwrap_or_else(|e| panic!("utf8: {e}"))
+    }
+
+    fn enc(text: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(text)
+    }
+
+    fn refused(pubkey: &str) -> String {
+        let cfg = json!({ "pubkey": pubkey, "endpoints": [LOOPBACK] });
+        guard(&cfg).expect_err("a release key was accepted")
+    }
+
+    #[test]
+    fn the_driver_refuses_the_v1_release_key() {
+        let err = refused(V1_PUBKEY);
+        assert!(err.contains("release updater key"), "{err}");
+    }
+
+    #[test]
+    fn the_driver_refuses_the_v2_release_key_under_another_comment() {
+        let text = b64(&release_key());
+        let key_line = text.lines().nth(1).unwrap_or_else(|| panic!("no key line"));
+        for rewritten in [
+            format!("untrusted comment: test build key\n{key_line}\n"),
+            format!("untrusted comment: minisign public key: 0000000000000000\r\n{key_line}\r\n"),
+            format!("untrusted comment: x\n  {key_line}  \n"),
+        ] {
+            let err = refused(&enc(&rewritten));
+            assert!(err.contains("release updater key"), "{rewritten:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_driver_refuses_the_v2_release_key_without_a_trailing_newline() {
+        let text = b64(&release_key());
+        let err = refused(&enc(text.trim_end()));
+        assert!(err.contains("release updater key"), "{err}");
+    }
+
+    #[test]
+    fn the_driver_refuses_a_pubkey_it_cannot_decode() {
+        for bad in [
+            "not base64 at all",
+            &enc("untrusted comment: no key line\n"),
+        ] {
+            let cfg = json!({ "pubkey": bad, "endpoints": [LOOPBACK] });
+            assert!(guard(&cfg).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn the_driver_runs_with_a_throwaway_key_and_a_loopback_feed() {
         for ep in [

@@ -567,39 +567,158 @@ fn no_release_config_or_release_path_relaxes_the_updater_or_enables_the_e2e_driv
         );
     }
     assert!(confs >= 2, "no tauri*.conf.json found in {}", dir.display());
-    // (2) The `updater-e2e` feature: not on by default, and no release workflow or release script
-    // names it (the K1-L harness under scripts/ci/linux-native-acceptance/ is the only user).
+    // (2) The `updater-e2e` feature: no other feature enables it, and no release workflow or
+    // release script names it or builds with every feature on.
+    let enabling = features_enabling(include_str!("../Cargo.toml"), "updater-e2e");
+    assert!(
+        enabling.is_empty(),
+        "features enabling updater-e2e: {enabling:?}"
+    );
+    let root = dir.parent().unwrap_or_else(|| panic!("no repo root"));
+    let (scanned, findings) = release_path_findings(root);
+    assert!(findings.is_empty(), "{findings:#?}");
+    assert!(
+        scanned > 5,
+        "release paths not found under {}",
+        root.display()
+    );
+}
+
+/// The features in `cargo_toml` that turn on `target`.
+fn features_enabling(cargo_toml: &str, target: &str) -> Vec<String> {
     let cargo: toml::Value =
-        toml::from_str(include_str!("../Cargo.toml")).unwrap_or_else(|e| panic!("Cargo.toml: {e}"));
+        toml::from_str(cargo_toml).unwrap_or_else(|e| panic!("Cargo.toml: {e}"));
     let default = cargo
         .get("features")
         .and_then(|f| f.get("default"))
         .and_then(|d| d.as_array())
         .cloned()
         .unwrap_or_default();
-    assert!(
-        !default.iter().any(|f| f.as_str() == Some("updater-e2e")),
-        "updater-e2e is a default feature"
-    );
-    let root = dir.parent().unwrap_or_else(|| panic!("no repo root"));
-    let mut release_paths = vec![root.join(".github/workflows/release.yml")];
-    for entry in std::fs::read_dir(root.join("scripts")).unwrap_or_else(|e| panic!("{e}")) {
-        let p = entry.unwrap_or_else(|e| panic!("{e}")).path();
-        if p.is_file() {
-            release_paths.push(p);
+    if default.iter().any(|f| f.as_str() == Some(target)) {
+        vec!["default".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Release workflows and scripts under `root` that name the `updater-e2e` feature: the number of
+/// files scanned, and one finding per offending file.
+fn release_path_findings(root: &std::path::Path) -> (usize, Vec<String>) {
+    let mut paths = vec![root.join(".github/workflows/release.yml")];
+    if let Ok(rd) = std::fs::read_dir(root.join("scripts")) {
+        for entry in rd.flatten() {
+            if entry.path().is_file() {
+                paths.push(entry.path());
+            }
         }
     }
-    for p in &release_paths {
+    let mut findings = Vec::new();
+    for p in &paths {
         let text = std::fs::read_to_string(p).unwrap_or_default();
-        assert!(
-            !text.contains("updater-e2e"),
-            "{} names the updater-e2e feature",
-            p.display()
-        );
+        if text.contains("updater-e2e") {
+            findings.push(format!("{} names the updater-e2e feature", p.display()));
+        }
     }
-    assert!(
-        release_paths.len() > 5,
-        "release paths not found under {}",
-        root.display()
+    (paths.len(), findings)
+}
+
+/// A fresh scratch directory for one test (never shared with another test or run).
+fn tripwire_scratch(tag: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let d = std::env::temp_dir().join(format!(
+        "citrate-ue-tripwire-{tag}-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&d).unwrap_or_else(|e| panic!("{}: {e}", d.display()));
+    d
+}
+
+fn tripwire_write(root: &std::path::Path, rel: &str, text: &str) {
+    let p = root.join(rel);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|e| panic!("{e}"));
+    }
+    std::fs::write(&p, text).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+}
+
+#[test]
+fn the_tripwire_sees_a_feature_that_enables_updater_e2e_through_another() {
+    let toml = r#"
+[package]
+name = "x"
+version = "0.1.0"
+[features]
+default = ["extras"]
+extras = ["nightly", "dep:foo"]
+nightly = ["updater-e2e"]
+alias = ["updater-e2e"]
+unrelated = ["serde/std"]
+updater-e2e = []
+"#;
+    let mut got = features_enabling(toml, "updater-e2e");
+    got.sort();
+    assert_eq!(got, ["alias", "default", "extras", "nightly"]);
+    let clean =
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n[features]\nupdater-e2e = []\nother = []\n";
+    assert!(features_enabling(clean, "updater-e2e").is_empty());
+}
+
+#[test]
+fn the_tripwire_scans_nested_release_scripts_and_every_feature_builds() {
+    let root = tripwire_scratch("paths");
+    tripwire_write(
+        &root,
+        ".github/workflows/release.yml",
+        "run: cargo build --release --all-features\n",
+    );
+    tripwire_write(
+        &root,
+        ".github/workflows/linux-native-acceptance.yml",
+        "updater-e2e is the K1-L job\n",
+    );
+    tripwire_write(
+        &root,
+        ".github/workflows/nightly.yml",
+        "run: npx tauri build --features updater-e2e\n",
+    );
+    tripwire_write(&root, "scripts/ok.sh", "cargo build --release\n");
+    tripwire_write(
+        &root,
+        "scripts/release/linux/package.sh",
+        "npx tauri build --features updater-e2e\n",
+    );
+    tripwire_write(
+        &root,
+        "scripts/release/all.sh",
+        "cargo build --all-features\n",
+    );
+    tripwire_write(
+        &root,
+        "scripts/ci/linux-native-acceptance.sh",
+        "# --update-e2e: builds with updater-e2e\n",
+    );
+    tripwire_write(
+        &root,
+        "scripts/ci/linux-native-acceptance/update-e2e-build.sh",
+        "--features updater-e2e\n",
+    );
+    let (_, findings) = release_path_findings(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    let mut got: Vec<String> = findings
+        .iter()
+        .map(|f| f.replace(&format!("{}/", root.display()), ""))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            ".github/workflows/nightly.yml names the updater-e2e feature",
+            ".github/workflows/release.yml builds with --all-features",
+            "scripts/release/all.sh builds with --all-features",
+            "scripts/release/linux/package.sh names the updater-e2e feature",
+        ]
     );
 }
