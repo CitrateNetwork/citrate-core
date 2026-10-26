@@ -20,7 +20,7 @@
 import { useEffect, useState } from "react";
 import { bridge } from "../../bridge";
 import { BRIDGE_MODE } from "../../bridge/mode";
-import type { ProviderRecentCall, ProviderStatus, ProviderUsage, ProviderUsageSummary } from "../../bridge/domains";
+import type { ProviderModelPrice, ProviderRecentCall, ProviderStatus, ProviderUsage, ProviderUsageSummary } from "../../bridge/domains";
 import { formatMicros, parseUsdToMicros } from "../../agent/escalation";
 import {
   EMPTY_CUSTOM,
@@ -65,7 +65,7 @@ export interface ModelsActions {
   onEditCaps(id: string | null): void;
   onCapsForm(f: CapsForm): void;
   onSaveCaps(): void;
-  onEditPrice(id: string | null): void;
+  onEditPrice(id: string | null, model?: string): void;
   onPriceForm(f: PriceForm): void;
   onSavePrice(): void;
   onConfirmDraft(id: string, v: string): void;
@@ -126,11 +126,35 @@ function UnverifiedBadge() {
   );
 }
 
-function outcomeText(c: ProviderRecentCall): string {
+/** Plain words for the usage log's coarse outcome codes (`ProxyError::outcome` in core). */
+const OUTCOME_WORDS: Record<string, string> = {
+  cap_exceeded: "a cap was reached",
+  halted: "the provider was paused",
+  log_unavailable: "the usage log could not be used",
+  egress_refused: "the address is not this provider's pinned host",
+  not_configured: "no key is connected",
+  not_available: "this build has no adapter for it",
+  key_rejected: "the vendor rejected the key",
+  rate_limited: "the vendor is limiting requests",
+  redirect_refused: "the vendor redirected off its host",
+  provider_error: "the vendor returned an error",
+};
+
+function outcomeText(c: ProviderRecentCall, providerName: string): string {
   if (c.outcome === null) return "not finished (in flight, or interrupted; its reservation still counts)";
   if (c.outcome === "ok") return "ok";
-  return (c.refused ? "refused: " : "failed: ") + c.outcome.replace(/_/g, " ");
+  const prefix = c.refused ? "refused: " : "failed: ";
+  if (c.outcome === "price_unknown") return `${prefix}this model has no price, so its cost under your spending cap is unknown. Enter its price on the ${providerName} card`;
+  return prefix + (OUTCOME_WORDS[c.outcome] ?? c.outcome.replace(/_/g, " "));
 }
+
+/** "Paused 2026-10-26 01:00 UTC" or just "Paused" when core recorded no time. */
+const pausedAt = (atMs: number) => (atMs > 0 ? `Paused ${fmtWhen(atMs)}` : "Paused");
+
+const priceText = (m: ProviderModelPrice) =>
+  m.price
+    ? `${m.id} · ${formatMicros(m.price.inputMicrosPerMtok)} in / ${formatMicros(m.price.outputMicrosPerMtok)} out per 1M tokens (${m.source === "member" ? "price you entered" : "published price"})`
+    : `${m.id} · no price yet`;
 
 function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; v: ModelsViewProps }) {
   const { p, u, v } = props;
@@ -143,7 +167,11 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
   const custom = p.kind === "custom";
   const age = rotationDue(p, v.nowMs);
   const draft = v.keyDrafts[p.id] ?? "";
-  const models = Array.from(new Set([...p.listedModels, ...p.approvedModels]));
+  // Core's model list with price sources; models it listed but did not price yet are added unpriced.
+  const priced: ProviderModelPrice[] = [...p.models];
+  for (const id of [...p.listedModels, ...p.approvedModels]) if (!priced.some((m) => m.id === id)) priced.push({ id, price: null, source: null });
+  const unpriced = priced.filter((m) => m.price === null).length;
+  const moneyCap = p.caps.dailyMicros !== null || p.caps.monthlyMicros !== null;
   const pe = v.priceEdit && v.priceEdit.id === p.id ? v.priceEdit.form : null;
   const set = (k: keyof PriceForm) => (e: { target: { value: string } }) => pe && v.on.onPriceForm({ ...pe, [k]: e.target.value });
 
@@ -193,7 +221,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
 
       {p.halt && (
         <span data-testid="provider-halt-line" style={{ fontSize: 12, color: "var(--warn)" }}>
-          Paused {fmtWhen(p.halt.atMs)}: {p.halt.message}. Resume it under Spend and usage.
+          {pausedAt(p.halt.atMs)}: {p.halt.message}. Resume it under Spend and usage.
         </span>
       )}
       {st === "capped" && (
@@ -298,30 +326,46 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
         </span>
       )}
 
-      {st !== "unavailable" && (p.keyConfigured || models.length > 0) && (
+      {st !== "unavailable" && (p.keyConfigured || priced.length > 0) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span className="mono" style={{ fontSize: 11 }}>
-            Models: {models.length === 0 ? "none listed yet (a key test lists them)" : models.join(", ")}
-          </span>
-          {p.approvedModels.length > 0 && <span className="mono" style={small}>Approved by you: {p.approvedModels.join(", ")}</span>}
+          <span className="eyebrow">Models and prices</span>
+          {priced.length === 0 ? (
+            <span className="mono" style={{ fontSize: 11 }}>
+              No models listed yet. A key test lists them.
+            </span>
+          ) : (
+            priced.map((m) => (
+              <span key={m.id} style={{ ...row, gap: 6 }}>
+                <span className="mono" style={{ fontSize: 11, color: m.price ? "var(--tx-1)" : "var(--tx-3)" }}>
+                  {priceText(m)}
+                  {p.approvedModels.includes(m.id) ? " · approved by you" : ""}
+                </span>
+                {!pe && (
+                  <button className="btn btn-ghost btn-sm" data-testid={`enter-price-${m.id}`} onClick={() => v.on.onEditPrice(p.id, m.id)} disabled={anyBusy || !v.desktop}>
+                    {m.source === "member" ? "Change price" : "Enter price"}
+                  </button>
+                )}
+              </span>
+            ))
+          )}
+          {unpriced > 0 && moneyCap && (
+            <span data-testid="unpriced-warning" style={{ fontSize: 12, color: "var(--warn)" }}>
+              {unpriced === 1 ? "1 model has no price. While a spending cap is set, calls to it are refused" : `${unpriced} models have no price. While a spending cap is set, calls to them are refused`}, because the cost would be unknown. Enter the price from {p.name}'s pricing page.
+            </span>
+          )}
           <span className="mono" data-testid="model-choice-note" style={small}>
             Choosing which of these models Hermes uses is not available yet. A call for a model not on this list pauses the provider and asks you.
           </span>
-          {Object.keys(p.prices).length > 0 && (
-            <span className="mono" style={small}>
-              Your prices:{" "}
-              {Object.entries(p.prices)
-                .map(([m, pr]) => `${m} ${formatMicros(pr.inputMicrosPerMtok)} in / ${formatMicros(pr.outputMicrosPerMtok)} out per 1M tokens`)
-                .join("; ")}
-            </span>
-          )}
+          <span className="mono" style={small}>
+            A price you enter is used instead of a published one. Your vendor's bill is what counts.
+          </span>
           {pe ? (
             <span style={row}>
               <select className="input mono" aria-label="model to price" value={pe.model} onChange={set("model")} style={{ ...field, width: 200 }}>
                 <option value="">choose a model</option>
-                {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
+                {priced.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.id}
                   </option>
                 ))}
               </select>
@@ -335,13 +379,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
               </button>
             </span>
           ) : (
-            models.length > 0 && (
-              <span>
-                <button className="btn btn-ghost btn-sm" onClick={() => v.on.onEditPrice(p.id)} disabled={anyBusy || !v.desktop}>
-                  Set a model price
-                </button>
-              </span>
-            )
+            null
           )}
         </div>
       )}
@@ -389,7 +427,7 @@ function UsageRow(props: { p: ProviderStatus; u: ProviderUsage | undefined; v: M
       {p.halt && resume ? (
         <div data-testid="halt-block" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <span style={{ fontSize: 12, color: "var(--warn)" }}>
-            Paused {fmtWhen(p.halt.atMs)}: {p.halt.message}.
+            {pausedAt(p.halt.atMs)}: {p.halt.message}.
           </span>
           <span className="mono" style={small}>
             {resume.note}
@@ -452,6 +490,8 @@ export function ModelsSettingsView(v: ModelsViewProps) {
   const cf = v.customForm;
   const setCf = (k: keyof CustomForm) => (e: { target: { value: string } }) => v.on.onCustomForm({ ...cf, [k]: e.target.value });
   // Usage rows: every provider with a key, a pause or any recorded use this month.
+  const guardHalt = st?.find((p) => p.halt?.kind === "guardUnreadable") ?? null;
+  const banner = { border: "1px solid var(--danger)", borderRadius: "var(--r-2)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 6 } as const;
   const usageRows = (st ?? []).filter((p) => p.keyConfigured || p.halt || (usageFor(p.id)?.month.calls ?? 0) > 0);
 
   return (
@@ -465,6 +505,47 @@ export function ModelsSettingsView(v: ModelsViewProps) {
           </>
         )}
       </div>
+
+      {/* ---------- fail-closed states: every provider stops until the member acts ---------- */}
+      {guardHalt && (
+        <div data-testid="failclosed-guard" role="alert" style={banner}>
+          <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--danger)" }}>Every provider is paused: the spend settings file could not be verified.</span>
+          <span style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
+            The file that holds your caps, prices, pauses and custom endpoints is unreadable, was edited, or is an older copy than the one last saved. Nothing is sent to any provider until you acknowledge. Acknowledging resets caps, prices, pauses and custom endpoints for every provider to the defaults, so check them afterwards.
+          </span>
+          <span>
+            <button className="btn btn-secondary btn-sm" onClick={() => v.on.onResume(guardHalt.id)} disabled={v.busy !== null || !v.desktop}>
+              Acknowledge and reset settings
+            </button>
+          </span>
+        </div>
+      )}
+      {v.usage && !v.usage.logIntact && (
+        <div data-testid="usage-log-broken" role="alert" style={banner}>
+          <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--danger)" }}>Every cloud call is refused: the usage log failed its check.</span>
+          <span style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
+            {v.usage.logProblem ? v.usage.logProblem + ". " : ""}The log may have been cut short, removed or edited. Starting a new log keeps the old file beside it; it is never deleted. This month's spend carries into the new log, so starting one does not reset your caps.
+          </span>
+          <span>
+            <button className="btn btn-secondary btn-sm" onClick={v.on.onResetLog} disabled={v.busy !== null || !v.desktop}>
+              Start a new usage log
+            </button>
+          </span>
+        </div>
+      )}
+      {v.usage?.clockProblem && (
+        <div data-testid="failclosed-clock" role="alert" style={banner}>
+          <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--danger)" }}>Every cloud call is refused: {v.usage.clockProblem}.</span>
+          <span style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
+            A clock set back would move calls out of today and this month, so core stops until the clock is right. Correct this computer's date and time, then check again.
+          </span>
+          <span>
+            <button className="btn btn-secondary btn-sm" onClick={v.on.onRefresh} disabled={v.busy !== null}>
+              Check again
+            </button>
+          </span>
+        </div>
+      )}
 
       {v.errors[""] && (
         <span className="mono" role="alert" style={{ fontSize: 11.5, color: "var(--danger)" }}>
@@ -556,21 +637,6 @@ export function ModelsSettingsView(v: ModelsViewProps) {
           </span>
         ) : (
           <>
-            {!v.usage.logIntact && (
-              <div data-testid="usage-log-broken" style={{ display: "flex", flexDirection: "column", gap: 6, padding: "12px 18px", borderBottom: "1px solid var(--line-1)" }}>
-                <span style={{ fontSize: 12, color: "var(--danger)" }}>
-                  The usage log failed its check{v.usage.logProblem ? ` (${v.usage.logProblem})` : ""}. Every cloud call is refused until a new log is started.
-                </span>
-                <span className="mono" style={small}>
-                  Starting a new log keeps the old file beside it; it is never deleted.
-                </span>
-                <span>
-                  <button className="btn btn-secondary btn-sm" onClick={v.on.onResetLog} disabled={v.busy !== null || !v.desktop}>
-                    Start a new usage log
-                  </button>
-                </span>
-              </div>
-            )}
             {usageRows.length === 0 ? (
               <span className="mono" style={{ padding: "12px 18px", ...small }}>
                 No provider is connected, so nothing has been used.
@@ -590,7 +656,7 @@ export function ModelsSettingsView(v: ModelsViewProps) {
                     {fmtWhen(c.atMs)} · {nameOf(c.provider)}
                     {c.verified ? "" : " (Unverified)"} · {c.model || "no model"} ·{" "}
                     {c.tokensIn !== null && c.tokensOut !== null ? `${fmtTokens(c.tokensIn)} in / ${fmtTokens(c.tokensOut)} out` : "tokens not reported"} ·{" "}
-                    {c.costMicros !== null ? formatMicros(c.costMicros) : "cost unknown"} · {outcomeText(c)}
+                    {c.costMicros !== null ? formatMicros(c.costMicros) : "cost unknown"} · {outcomeText(c, nameOf(c.provider))}
                   </span>
                 ))
               )}
@@ -740,7 +806,7 @@ export function ModelsSettings({ onOpen }: { onOpen(url: string): void }) {
             setCapsEdit(null);
           });
         },
-        onEditPrice: (id) => setPriceEdit(id ? { id, form: { model: "", inUsd: "", outUsd: "" } } : null),
+        onEditPrice: (id, model) => setPriceEdit(id ? { id, form: { model: model ?? "", inUsd: "", outUsd: "" } } : null),
         onPriceForm: (form) => setPriceEdit((c) => (c ? { ...c, form } : c)),
         onSavePrice: () => {
           if (!priceEdit) return;

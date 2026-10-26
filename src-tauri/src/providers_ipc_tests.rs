@@ -145,11 +145,13 @@ fn model_prices_say_where_each_price_came_from() {
             output_micros_per_mtok: None,
         },
     ];
-    let mut pg = ProviderGuard::default();
-    pg.listed_models = vec!["pub-m".into(), "listed-only".into()];
-    pg.approved_models.insert("approved-only".into());
     let member = Price { input_micros_per_mtok: 7, output_micros_per_mtok: 9 };
-    pg.prices.insert("member-m".into(), member);
+    let mut pg = ProviderGuard {
+        listed_models: vec!["pub-m".into(), "listed-only".into()],
+        approved_models: ["approved-only".to_string()].into_iter().collect(),
+        prices: [("member-m".to_string(), member)].into_iter().collect(),
+        ..ProviderGuard::default()
+    };
     let v = model_prices(&published, &["custom-m".into()], &pg);
     let by = |id: &str| v.iter().find(|m| m.id == id).cloned().unwrap();
     assert_eq!(v.len(), 6, "each model once: {v:?}");

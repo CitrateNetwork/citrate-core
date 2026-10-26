@@ -163,11 +163,40 @@ impl From<&CustomEndpoint> for CustomEndpointView {
 /// The models to show for a provider, each with its price and source. The member's price wins over
 /// the adapter's published one (the same order the guard uses to charge a call).
 pub fn model_prices(
-    _published: &[ModelInfo],
-    _extra: &[String],
-    _pg: &ProviderGuard,
+    published: &[ModelInfo],
+    extra: &[String],
+    pg: &ProviderGuard,
 ) -> Vec<ModelPriceView> {
-    Vec::new()
+    let mut ids: Vec<String> = Vec::new();
+    let names = published
+        .iter()
+        .map(|m| &m.id)
+        .chain(extra)
+        .chain(&pg.listed_models)
+        .chain(&pg.approved_models)
+        .chain(pg.prices.keys());
+    for id in names {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids.into_iter()
+        .map(|id| {
+            let member = pg.prices.get(&id).copied();
+            let published = published.iter().find(|m| m.id == id).and_then(|m| {
+                Some(Price {
+                    input_micros_per_mtok: m.input_micros_per_mtok?,
+                    output_micros_per_mtok: m.output_micros_per_mtok?,
+                })
+            });
+            let (price, source) = match (member, published) {
+                (Some(p), _) => (Some(p), Some("member")),
+                (None, Some(p)) => (Some(p), Some("published")),
+                (None, None) => (None, None),
+            };
+            ModelPriceView { id, price, source }
+        })
+        .collect()
 }
 
 /// Every provider id the status lists: the six vendors, then the custom endpoints.
@@ -296,7 +325,7 @@ pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummary
         as_of_ms: now,
         providers,
         recent_calls: log.recent(),
-        clock_problem: None,
+        clock_problem: log.check_clock(now).err().map(|e| e.to_string()),
     }
 }
 

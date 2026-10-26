@@ -106,7 +106,8 @@ describe("Settings › Models: the vendor cards", () => {
     expect(c).toContain("Remove key here");
     expect(c).toContain("Remove here and open the OpenAI revoke page");
     expect(c).toContain("still works at OpenAI until you revoke it there");
-    expect(c).toContain("Models: gpt-a, gpt-b");
+    expect(c).toContain("gpt-a · no price yet");
+    expect(c).toContain("gpt-b · no price yet");
     expect(c).not.toContain("rotation-reminder");
     expect(c).not.toContain("key-hygiene");
   });
@@ -245,7 +246,7 @@ describe("Settings › Models: spend and usage", () => {
     ];
     const html = render({ statuses: [connected], usage: summary({ recentCalls }) });
     expect(html).toContain("no prompts or replies");
-    expect(html).toContain("refused: cap exceeded");
+    expect(html).toContain("refused: a cap was reached");
     expect(html).toContain("not finished");
     expect(html).toContain("12 in / 5 out · $0.0015 · ok");
     expect(html).toContain("tokens not reported · cost unknown");

@@ -165,4 +165,30 @@ describe("Settings › Models container", () => {
     });
     expect(providers.confirmCustom).toHaveBeenCalledWith("custom-ab12", "https://llm.example.org/v1");
   });
+
+  it("Enter price opens the editor on that model and sends the member's price to core", async () => {
+    providers.status.mockResolvedValue([vendor({ keyConfigured: true, models: [{ id: "gpt-c", price: null, source: null }] })]);
+    await mount();
+    await act(async () => {
+      (q<HTMLButtonElement>('[data-testid="enter-price-gpt-c"]') as HTMLButtonElement).click();
+    });
+    expect(q<HTMLSelectElement>('select[aria-label="model to price"]')?.value).toBe("gpt-c");
+    await type(q<HTMLInputElement>('input[aria-label="input price"]'), "0.15");
+    await type(q<HTMLInputElement>('input[aria-label="output price"]'), "0.60");
+    await act(async () => {
+      button("Save price")?.click();
+    });
+    expect(providers.setPrice).toHaveBeenCalledWith("openai", "gpt-c", { inputMicrosPerMtok: 150_000, outputMicrosPerMtok: 600_000 });
+  });
+
+  it("Check again re-reads usage after a clock problem", async () => {
+    providers.status.mockResolvedValue([vendor({ keyConfigured: true })]);
+    providers.usageSummary.mockResolvedValue({ logIntact: true, logProblem: null, records: 1, asOfMs: NOW, providers: [usage()], recentCalls: [], clockProblem: "the clock reads earlier than the last recorded call" });
+    await mount();
+    const before = providers.usageSummary.mock.calls.length;
+    await act(async () => {
+      button("Check again")?.click();
+    });
+    expect(providers.usageSummary.mock.calls.length).toBe(before + 1);
+  });
 });
