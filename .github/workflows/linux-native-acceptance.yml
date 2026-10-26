@@ -180,9 +180,16 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           unshare --user --map-root-user --pid --fork --mount-proc --net true
+      - name: Fetch the pinned release packages (their sidecars go into the test builds)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/k1l-cache"
+          scripts/ci/linux-native-acceptance.sh --fetch "${{ matrix.arch }}" --cache "$RUNNER_TEMP/k1l-cache" --fetch-only
       - name: Build N and N+1 with a throwaway updater key (private halves deleted after signing)
         shell: bash
-        run: scripts/ci/linux-native-acceptance/update-e2e-build.sh --out "$RUNNER_TEMP/k1l-ue"
+        run: |
+          scripts/ci/linux-native-acceptance/update-e2e-build.sh --out "$RUNNER_TEMP/k1l-ue" \
+            --sidecars-from "$RUNNER_TEMP/k1l-cache/to.deb"
       - name: Run update-e2e in the sealed namespace
         shell: bash
         run: |

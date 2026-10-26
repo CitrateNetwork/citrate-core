@@ -30,7 +30,9 @@ after signing; nothing in this repo can sign an update.
      `dangerousInsecureTransportProtocol` (plain http to loopback only);
    - N+1 (version 0.5.2), signed with A (`tauri signer sign`, as the release signs its Linux
      artifacts) and, for the other-key case, with B.
-   The private keys are deleted when the script exits. `TAURI_SIGNING_*` is cleared first, and the
+   The app will not start without its bundled sidecars, so both builds bundle the sidecars of the
+   published 0.5.1 `.deb` (`--sidecars-from`; the package K1-L fetches, sha256-checked against
+   `pins.txt`). The private keys are deleted when the script exits. `TAURI_SIGNING_*` is cleared first, and the
    shipping `tauri.conf.json` is not changed. `--overlay-only` writes the overlays and stops (any OS).
 2. `scripts/ci/linux-native-acceptance.sh --update-e2e DIR` enters the K1-L namespace
    ([LINUX_NATIVE_ACCEPTANCE.md](LINUX_NATIVE_ACCEPTANCE.md): no host processes, files, display or
@@ -87,7 +89,9 @@ By hand on the DGX (aarch64), from a checkout with `npm ci` done, never in the d
 outside the harness:
 
 ```sh
-scripts/ci/linux-native-acceptance/update-e2e-build.sh --out "$PWD/target/k1l-ue"
+scripts/ci/linux-native-acceptance.sh --fetch aarch64 --cache "$PWD/target/k1l-cache" --fetch-only
+scripts/ci/linux-native-acceptance/update-e2e-build.sh --out "$PWD/target/k1l-ue" \
+  --sidecars-from "$PWD/target/k1l-cache/to.deb"
 scripts/ci/linux-native-acceptance.sh --update-e2e "$PWD/target/k1l-ue" \
   --work "$PWD/target/k1l-work" --log-dir "$PWD/target/k1l-ue-logs"
 ```
@@ -116,4 +120,5 @@ The 0.5.2 checklist is `citrate-federation` `.agentile/planset/2026-10-19-betane
   overlay only); the production endpoints are https, enforced by the plugin in release builds.
 - **AppImage runs extracted** (`APPIMAGE_EXTRACT_AND_RUN=1`), as in the rest of K1-L; the FUSE
   mount path is not covered. The install writes the AppImage file itself, which is the same in both.
-- **No sidecars.** The test builds bundle none; the scenario covers the updater, not the node.
+- **Sidecars from 0.5.1.** The test builds bundle the published 0.5.1 sidecars, whatever this tree
+  pins; the scenario covers the updater, not the sidecars (K1-L `update` covers those).

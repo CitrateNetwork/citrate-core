@@ -7,6 +7,9 @@
 #   N+1  (--to-version, default 0.5.2): the same build at the next version; its AppImage is signed
 #        with the throwaway key (`tauri signer sign`, as the release signs its Linux artifacts)
 #        and, for the negative case, with a second throwaway key.
+# The app refuses to start without its bundled sidecars, so both builds bundle the sidecars of a
+# published release package (--sidecars-from: the pinned, sha256-checked 0.5.1 .deb K1-L fetches),
+# copied into src-tauri/binaries/ (git-ignored) under this host's target triple.
 #
 # Both keys are generated here, into the output dir, and the private halves are deleted before the
 # script exits. The release updater keys are never read: TAURI_SIGNING_* is cleared, and the
@@ -14,7 +17,7 @@
 # Output (--out DIR): from.AppImage, to.AppImage, to.AppImage.sig, to.AppImage.other.sig,
 # overlay-from.json, overlay-to.json, keys/{a,b}.key.pub, versions.
 #
-# Usage: scripts/ci/linux-native-acceptance/update-e2e-build.sh --out DIR
+# Usage: scripts/ci/linux-native-acceptance/update-e2e-build.sh --out DIR --sidecars-from DEB
 #          [--from-version V] [--to-version V] [--port P] [--overlay-only]
 #   --overlay-only  write the keys' public halves and the two overlays, build nothing (any OS)
 # Docs: docs/UPDATER_E2E.md. Runs in CI (.github/workflows/linux-native-acceptance.yml).
@@ -22,7 +25,10 @@ set -euo pipefail
 unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PATH TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-OUT="" FROM_V=0.5.1 TO_V=0.5.2 PORT=18477 OVERLAY_ONLY=0
+OUT="" FROM_V=0.5.1 TO_V=0.5.2 PORT=18477 OVERLAY_ONLY=0 SIDECARS_DEB=""
+# The sidecars the Linux release bundles (src-tauri/tauri.bundle-linux.conf.json externalBin).
+SIDECARS="$(python3 -I -c 'import json,sys; print(" ".join(p.split("/")[-1] for p in json.load(open(sys.argv[1]))["bundle"]["externalBin"]))' \
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/src-tauri/tauri.bundle-linux.conf.json")"
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
@@ -30,7 +36,8 @@ while [ $# -gt 0 ]; do
     --to-version) TO_V="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --overlay-only) OVERLAY_ONLY=1; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    --sidecars-from) SIDECARS_DEB="$2"; shift 2 ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -52,9 +59,9 @@ SHIPPING_PUB="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]
 [ "$PUB_A" != "$SHIPPING_PUB" ] || { echo "generated key equals the release key; refusing" >&2; exit 2; }
 
 overlay() { # version out
-  python3 -I - "$1" "$PUB_A" "$PORT" >"$2" <<'PY'
+  python3 -I - "$1" "$PUB_A" "$PORT" "$SIDECARS" >"$2" <<'PY'
 import json, sys
-version, pub, port = sys.argv[1:4]
+version, pub, port, sidecars = sys.argv[1:5]
 print(json.dumps({
     "version": version,
     "plugins": {"updater": {
@@ -64,7 +71,8 @@ print(json.dumps({
         # carries this flag (tripwire: upgrade_updater_feed_tests).
         "dangerousInsecureTransportProtocol": True,
     }},
-    "bundle": {"targets": ["appimage"], "createUpdaterArtifacts": False},
+    "bundle": {"targets": ["appimage"], "createUpdaterArtifacts": False,
+               "externalBin": [f"binaries/{n}" for n in sidecars.split()]},
 }, indent=2))
 PY
 }
@@ -75,6 +83,16 @@ echo "overlays: $OUT/overlay-from.json $OUT/overlay-to.json (throwaway key $(bas
 [ "$OVERLAY_ONLY" -eq 1 ] && exit 0
 
 [ "$(uname -s)" = Linux ] || { echo "AppImages build on Linux only (use --overlay-only here)" >&2; exit 2; }
+[ -f "$SIDECARS_DEB" ] || { echo "--sidecars-from DEB is required to build (the pinned release .deb)" >&2; exit 2; }
+TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+SC_TMP="$(mktemp -d "$OUT/sidecars.XXXXXX")"
+dpkg-deb -x "$SIDECARS_DEB" "$SC_TMP"
+for n in $SIDECARS; do
+  [ -f "$SC_TMP/usr/bin/$n" ] || { echo "$SIDECARS_DEB has no usr/bin/$n" >&2; exit 1; }
+  install -m 0755 "$SC_TMP/usr/bin/$n" "$ROOT/src-tauri/binaries/$n-$TRIPLE"
+done
+rm -rf -- "${SC_TMP:?}"
+echo "sidecars from $(dpkg-deb -f "$SIDECARS_DEB" Package Version | tr '\n' ' '): $SIDECARS"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 build() { # version overlay out
   local v="$1" conf="$2" out="$3" ai
