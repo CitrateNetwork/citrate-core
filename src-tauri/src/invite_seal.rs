@@ -15,6 +15,7 @@ use k256::{PublicKey, SecretKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 const EPH_LEN: usize = 33; // compressed SEC1 public key
 const NONCE_LEN: usize = 12;
@@ -22,24 +23,75 @@ const KDF_INFO: &[u8] = b"citrate-connect-s1-claim-v1";
 
 /// Domain-separated KDF from the ECDH shared secret to the AES key (a one-shot; the ephemeral key is
 /// never reused, so a single SHA-256 with a context tag is sufficient).
-fn derive_key(shared: &[u8]) -> [u8; 32] {
+fn derive_key(shared: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut h = Sha256::new();
     h.update(KDF_INFO);
     h.update(shared);
-    let out = h.finalize();
-    let mut k = [0u8; 32];
-    k.copy_from_slice(&out);
+    let mut out = h.finalize();
+    let mut k = Zeroizing::new([0u8; 32]);
+    k.copy_from_slice(out.as_slice());
+    out.as_mut_slice().zeroize();
     k
 }
 
-/// Generate a fresh invite ephemeral keypair. Returns `(private_key_hex, public_key_hex)` — the private
+/// An invite's ephemeral private key (hex), as persisted with the owner's `PendingInvite`. The
+/// buffer is wiped when dropped and `Debug` never prints it; it serializes as the bare hex string
+/// so stored invites keep their format.
+#[derive(Clone, Default)]
+pub struct InvitePrivKey(Zeroizing<String>);
+
+impl serde::Serialize for InvitePrivKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for InvitePrivKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(InvitePrivKey::from_hex)
+    }
+}
+
+impl std::fmt::Debug for InvitePrivKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = if self.0.is_empty() {
+            "empty"
+        } else {
+            "redacted"
+        };
+        f.debug_tuple("InvitePrivKey").field(&state).finish()
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for InvitePrivKey {}
+
+impl InvitePrivKey {
+    /// Wrap a private key given as hex (the string is moved in, not copied).
+    pub fn from_hex(hex: String) -> Self {
+        InvitePrivKey(Zeroizing::new(hex))
+    }
+
+    /// The private key as hex, for opening a sealed claim.
+    pub fn expose_hex(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether no key is held (pre-S1 invites).
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Generate a fresh invite ephemeral keypair. Returns `(private key, public_key_hex)` — the private
 /// key is persisted with the owner's `PendingInvite`; the public key is embedded in the invite link.
-pub fn new_invite_keypair() -> (String, String) {
+pub fn new_invite_keypair() -> (InvitePrivKey, String) {
     let sk = SecretKey::random(&mut OsRng);
     let pk = sk.public_key();
-    let priv_hex = hex::encode(sk.to_bytes());
+    let mut priv_bytes = sk.to_bytes();
+    let priv_hex = hex::encode(priv_bytes.as_slice());
+    priv_bytes.as_mut_slice().zeroize();
     let pub_hex = hex::encode(pk.to_encoded_point(true).as_bytes());
-    (priv_hex, pub_hex)
+    (InvitePrivKey::from_hex(priv_hex), pub_hex)
 }
 
 /// Seal `plaintext` to the invite's public key (hex, compressed SEC1). Invitee side.
@@ -50,7 +102,7 @@ pub fn seal_to(recipient_pub_hex: &str, plaintext: &[u8]) -> Result<Vec<u8>, Str
     let eph = SecretKey::random(&mut OsRng);
     let shared = diffie_hellman(eph.to_nonzero_scalar(), recipient.as_affine());
     let key = derive_key(shared.raw_secret_bytes());
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(&key));
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key.as_slice()));
     let mut nonce = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce);
     let ct = cipher
@@ -65,19 +117,20 @@ pub fn seal_to(recipient_pub_hex: &str, plaintext: &[u8]) -> Result<Vec<u8>, Str
 }
 
 /// Open a sealed claim with the invite's private key (hex). Owner side. Fails closed on any tamper.
-pub fn open_with(recipient_priv_hex: &str, sealed: &[u8]) -> Result<Vec<u8>, String> {
+pub fn open_with(recipient_priv: &InvitePrivKey, sealed: &[u8]) -> Result<Vec<u8>, String> {
     if sealed.len() < EPH_LEN + NONCE_LEN {
         return Err("sealed claim is too short".into());
     }
-    let priv_bytes =
-        hex::decode(recipient_priv_hex.trim()).map_err(|_| "invite priv is not hex")?;
+    let priv_bytes = Zeroizing::new(
+        hex::decode(recipient_priv.expose_hex().trim()).map_err(|_| "invite priv is not hex")?,
+    );
     let sk = SecretKey::from_slice(&priv_bytes).map_err(|_| "invite priv is not a valid scalar")?;
     let eph = PublicKey::from_sec1_bytes(&sealed[..EPH_LEN]).map_err(|_| "bad ephemeral key")?;
     let nonce = &sealed[EPH_LEN..EPH_LEN + NONCE_LEN];
     let ct = &sealed[EPH_LEN + NONCE_LEN..];
     let shared = diffie_hellman(sk.to_nonzero_scalar(), eph.as_affine());
     let key = derive_key(shared.raw_secret_bytes());
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(&key));
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key.as_slice()));
     cipher
         .decrypt(GenericArray::from_slice(nonce), ct)
         .map_err(|_| "open: decrypt failed (wrong key or tampered)".into())
@@ -125,6 +178,52 @@ mod tests {
         let last = sealed.len() - 1;
         sealed[last] ^= 0x01; // flip a ciphertext bit
         assert!(open_with(&priv_hex, &sealed).is_err()); // AEAD auth fails
+    }
+
+    /// The invite private key never shows in `Debug` output (logs, panics, error chains).
+    #[test]
+    fn invite_private_key_debug_is_redacted() {
+        let (priv_key, _pub_hex) = new_invite_keypair();
+        let hex = priv_key.expose_hex().to_string();
+        assert_eq!(hex.len(), 64);
+        let dbg = format!("{priv_key:?}");
+        assert!(!dbg.contains(&hex), "private key in Debug: {dbg}");
+        assert!(
+            !dbg.contains(&hex[..16]),
+            "private key prefix in Debug: {dbg}"
+        );
+    }
+
+    /// The persisted form (pending.json) is still the bare hex string, so stored invites load and
+    /// their claims still open after a round trip.
+    #[test]
+    fn invite_private_key_persists_as_hex_and_still_opens_claims() {
+        let (priv_key, pub_hex) = new_invite_keypair();
+        let json = serde_json::to_string(&priv_key).unwrap();
+        assert_eq!(json, format!("\"{}\"", priv_key.expose_hex()));
+        let back: InvitePrivKey = serde_json::from_str(&json).unwrap();
+        let sealed = seal_to(&pub_hex, b"claim").unwrap();
+        assert_eq!(open_with(&back, &sealed).unwrap(), b"claim");
+        let empty: InvitePrivKey = serde_json::from_str("\"\"").unwrap();
+        assert!(empty.is_empty());
+        assert!(
+            open_with(&empty, &sealed).is_err(),
+            "an empty key fails closed"
+        );
+        let junk = InvitePrivKey::from_hex("zz".into());
+        assert!(
+            open_with(&junk, &sealed).is_err(),
+            "a non-hex key fails closed"
+        );
+    }
+
+    /// The key types are wiped on drop (a type-level check: dropping the wrapper wipes the hex).
+    #[test]
+    fn invite_private_key_is_wiped_on_drop() {
+        fn wipes_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        let (priv_key, _pub_hex) = new_invite_keypair();
+        wipes_on_drop(&priv_key);
+        wipes_on_drop(&derive_key(b"shared"));
     }
 
     #[test]

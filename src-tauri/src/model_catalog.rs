@@ -336,7 +336,7 @@ struct DownloadMarker {
     size_bytes: u64,
 }
 
-fn marker_path(dir: &std::path::Path, file: &str) -> std::path::PathBuf {
+pub(crate) fn marker_path(dir: &std::path::Path, file: &str) -> std::path::PathBuf {
     dir.join(format!("{file}.download.json"))
 }
 
@@ -552,7 +552,9 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
         // reads as a stuck download). Emit only on a whole-percent change to avoid flooding.
         let emit_id = id.clone();
         let mut last_pct: i64 = -1;
-        mgr.download_with_progress(|downloaded, total| {
+        // Download and verify as one operation under the file's download lock (shared with the
+        // Store): a different verified model already saved under this name is never replaced.
+        mgr.download_and_verify(crate::model::ExistingFile::ResumeUnverified, |downloaded, total| {
             let pct = if total > 0 { ((downloaded as u128 * 100) / total as u128) as i64 } else { 0 };
             if pct != last_pct {
                 last_pct = pct;
@@ -563,7 +565,6 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
             }
         })
         .map_err(|e| e.to_string())?;
-        mgr.verify().map_err(|e| e.to_string())?;
         clear_download_marker(&models_dir, &local_file);
         let _ = app.emit(
             "model://download-progress",

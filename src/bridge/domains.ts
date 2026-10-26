@@ -127,6 +127,14 @@ export interface SigningDomain {
    * real tx hash + block (never key material). Same explicit-id / raw-ack /
    * single-use / fail-closed invariants as `approve`. */
   broadcast(id: string, rawAck: boolean): Promise<BroadcastResult>;
+  /**
+   * Join-8 — the same approval as `broadcast`, split in two so the caller learns the tx hash
+   * BEFORE anything is sent: `prepare` approves + signs (sends nothing) and returns the hash
+   * (keccak256 of the signed raw); `sendPrepared` sends that signed tx once and polls its receipt.
+   * One approval, one signature, at most one send. Tauri → `sign_prepare` / `sign_send_prepared`.
+   */
+  prepare(id: string, rawAck: boolean): Promise<{ txHash: string }>;
+  sendPrepared(id: string): Promise<BroadcastResult>;
   /** Reject a pending ceremony — consumes it, produces no signature. */
   reject(id: string): Promise<void>;
 }
@@ -160,8 +168,10 @@ export interface WalletDomain {
   claimWithdrawal(id: string): Promise<CeremonyView>;
   /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
    * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * A fresh wallet honestly returns []. Never fabricated (Rule 1). */
-  pendingWithdrawals(): Promise<PendingWithdrawal[]>;
+   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
+   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
+   * missing and an empty list is not "none". */
+  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -213,6 +223,24 @@ export interface WalletDomain {
 /** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
  * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
  * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
+/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
+ * `complete` = it reached the end of what the node serves and read every withdrawal;
+ * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
+export interface PendingWithdrawalsRead {
+  withdrawals: PendingWithdrawal[];
+  confirmed: boolean;
+  complete: boolean;
+  note: string | null;
+}
+
+/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
+ * when the Wallet reads again; `message` is display only and is never matched. */
+export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
+export interface PendingWithdrawalsError {
+  kind: PendingReadErrorKind;
+  message: string;
+}
+
 export interface PendingWithdrawal {
   id: string;
   saltWei: string;
@@ -262,6 +290,66 @@ export interface NodeStatusView {
   miningHold?: string;
 }
 
+/**
+ * Join-8 — everything the "Activate validator" onboarding step reads, in one call. Each field
+ * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
+ * Wei as decimal strings. Mirrors the Rust `validator_activation::ActivationStatus`.
+ */
+export interface ActivationStatusView {
+  /** `MembershipStakeVault.bondOf(member)` (CREATE2: present even before the bond exists). */
+  bondAddress: string | null;
+  /** Code at `bondAddress`. */
+  bondDeployed: boolean | null;
+  /** `MemberBond.activated()`. */
+  bondActivated: boolean | null;
+  /** `MemberBond.principal()`. */
+  principalWei: string | null;
+  /** `MemberBond.unlockBlock()` / `unlockTimestamp()` (unix seconds). */
+  unlockBlock: number | null;
+  unlockTimestamp: number | null;
+  /** `MemberBond.memberTokenId()`. */
+  memberTokenId: string | null;
+  /** `CitrateMemberSBT.isActive(memberTokenId)`. */
+  membershipActive: boolean | null;
+  /** The key the registry reads use: the bond's registered key once activated, else this node's. */
+  validatorPubkey: string | null;
+  pubkeySource: "bond" | "node" | null;
+  /** This node has a proposer key on disk. */
+  nodeKeyReady: boolean;
+  /** This node's proposer key, when it has one. */
+  nodePubkey: string | null;
+  /** `MemberBond.pubkey()`: the key the bond registered with (null before activation). */
+  bondPubkey: string | null;
+  /** `ValidatorRegistry.validatorInfo(pubkey).status`: 0 None, 1 Active, 2 Exiting, 3 Slashed. */
+  registryStatus: 0 | 1 | 2 | 3 | null;
+  /** `validatorInfo(pubkey).actEpoch`. */
+  activationEpoch: number | null;
+  /** `ValidatorRegistry.isActive(pubkey)`. */
+  registryActive: boolean | null;
+  /** `ValidatorRegistry.EPOCH()`. */
+  epochBlocks: number | null;
+  /**
+   * `ValidatorRegistry.currentEpoch()`. `isActive` is already true at registration (chain#319), so
+   * "Validator active" also needs `activationEpoch <= currentEpoch`.
+   */
+  currentEpoch: number | null;
+  /** Public `eth_blockNumber` (`0x0` is read as unknown). */
+  headBlock: number | null;
+  /** Measured: timestamp delta over the last 100 public blocks, in ms per block. */
+  blockTimeMs: number | null;
+  /** This node's `eth_blockNumber` / `eth_syncing` (true while it returns an object). */
+  localBlock: number | null;
+  localSyncing: boolean | null;
+  /** `eth_getTransactionReceipt` for a sent activation (null when none was sent). */
+  tx: { hash: string; included: boolean | null; blockNumber: number | null; success: boolean | null } | null;
+  /**
+   * The member's latest activation send to this bond as the durable submitted-tx record names it
+   * (written and fsync'd in Rust BEFORE the send; #347). Null when none is recorded, or it was
+   * forgotten. This, not localStorage, is how the step resumes to Pending after a restart.
+   */
+  recordedTx: { hash: string; atMs: number | null } | null;
+}
+
 export interface NodeDomain {
   status(): Promise<NodeStatusView>;
   start(): Promise<void>;
@@ -273,6 +361,19 @@ export interface NodeDomain {
    * `node_register_validator`; the sim shim is honestly Unavailable (no node/key).
    */
   registerValidator(): Promise<CeremonyView>;
+  /**
+   * Join-8 — the Activate-validator step's one read (pure; signs nothing). `memberAddress` is the
+   * member wallet the bond was granted to; `txHash` a sent activation to look up. Tauri →
+   * `validator_activation_status`; the sim shim is honestly Unavailable (no chain, no node).
+   */
+  activationStatus(memberAddress: string, txHash?: string | null): Promise<ActivationStatusView>;
+  /**
+   * Join-8 — Forget a recorded activation send (S7's Forget after 10 minutes unseen, or Try again
+   * after a revert): marks it forgotten in the durable record so a restart does not bring it back.
+   * Resolves true when the record held it; rejects when the write fails. Tauri →
+   * `validator_activation_forget`; the sim shim is honestly Unavailable.
+   */
+  activationForget(txHash: string): Promise<boolean>;
   /**
    * The most recent supervised-node crash, or null if it has never crashed.
    * Used by the liveness watchdog to name the REAL reason a node stopped.
@@ -495,6 +596,13 @@ export interface MemoryDomain {
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
  * id, https baseURL, model, and a `configured` flag — NEVER the API key or the
  * Authorization header (invariant 1). Mirrors the Rust `ProviderStatus`. */
+/** K2: a core-minted, one-time consent to send one held message to a remote provider. */
+export interface ChatConsent {
+  consentId: string;
+  providerId: string;
+  expiresAtMs: number;
+}
+
 export interface AiProviderStatus {
   id: string;
   baseURL: string;
@@ -529,7 +637,13 @@ export interface ChatDomain {
    * completion. The webview can NEVER supply the URL (exfil-binding, invariant 3).
    * The Tauri impl invokes `ai_chat`; the sim impl is honestly Unavailable.
    */
-  infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
+  infer(providerId: string, messagesJson: string, contextJson: string, consentId: string): Promise<string>;
+  /**
+   * K2 — the app is asking the member whether to send a held message to the gateway. Core mints
+   * the one-time consent that `infer` / `inferTools` need for that message (`chat_consent_prepare`);
+   * a remote send without it is refused in core. The sim impl is honestly Unavailable.
+   */
+  consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
@@ -542,6 +656,7 @@ export interface ChatDomain {
     messagesJson: string,
     toolsJson: string,
     contextJson: string,
+    consentId: string,
   ): Promise<string>;
   /**
    * BC-3.2 — REAL LOCAL inference against the bundled `llama-server` (llama.cpp)
@@ -570,6 +685,26 @@ export interface ChatDomain {
    * Tauri impl invokes `model_inference_state`; the sim impl returns `demo`.
    */
   inferenceState(gatewayConfigured: boolean): Promise<string>;
+  /** K2: the member's chat route, stored in core (chat_route.rs). An unreadable setting reads as
+   *  `local_only` with `loadError` set (a read error never widens what may leave the device).
+   *  Tauri invokes `chat_route_get`; sim reports the default. */
+  route(): Promise<ChatRouteStatus>;
+  /** K2: store the chat route. Tauri invokes `chat_route_set`; sim is Unavailable. */
+  setRoute(route: ChatRoute): Promise<ChatRouteStatus>;
+}
+
+/** K2: where chat may go. `ask_first` (default): ask before each message goes to the gateway.
+ *  `local_only`: never to the gateway. Mirrors Rust `chat_route::ChatRoute` (snake_case). */
+export type ChatRoute = "local_only" | "ask_first";
+export interface ChatRouteStatus {
+  route: ChatRoute;
+  loadError: string | null;
+}
+/** K2: what the held-message card may offer: start the local model, and/or send this message to
+ *  the gateway this time. */
+export interface RouteAskOptions {
+  restart: boolean;
+  gateway: boolean;
 }
 
 /**
@@ -847,14 +982,102 @@ export interface PinRow {
   pinState: "pinned" | "pinning" | "challenged" | "unpinned";
   addedAt: number;
 }
+/** K4 — IPFSIncentivesV3 pin-bond PARAMETERS (Rust `storage::PinParams`). Parameters only: the
+ *  contract is deployed but dormant and unfunded, so `bondsLive` is always false in this build.
+ *  A null value means its read failed (unknown is not zero); the reason is in `errors`. */
+export interface PinParams {
+  contract: string;
+  /** `BOND()` in wei, decimal string. */
+  bondWei: string | null;
+  /** `REWARD()` in wei, decimal string, paid over `rounds` rounds. */
+  rewardWei: string | null;
+  rounds: number | null;
+  bondsLive: boolean;
+  /** Where the values came from (shown on screen). */
+  source: string;
+  errors: string[];
+}
+
+/** K4 — a storage part a backup can hold. */
+export type BackupPart = "files" | "memory";
+
+/** K4 — one export/restore progress step (Rust `storage_backup::Progress`). */
+export interface BackupProgress {
+  op: "export" | "restore";
+  phase: "files" | "memory" | "verify" | "daemon" | "done";
+  done: number;
+  total: number;
+  item: string;
+}
+
+/** K4 — one way a backup folder disagrees with its manifest (Rust `storage_backup::Mismatch`). */
+export type BackupMismatch =
+  | { kind: "missing"; path: string }
+  | { kind: "sizeDiffers"; path: string; expected: number; actual: number }
+  | { kind: "hashDiffers"; path: string }
+  | { kind: "unlisted"; path: string }
+  | { kind: "unsafePath"; path: string }
+  | { kind: "notAFile"; path: string }
+  | { kind: "badMode"; path: string }
+  | { kind: "modeDiffers"; path: string; expected: number; actual: number };
+
+export interface BackupExportReport {
+  folder: string;
+  createdAt: number;
+  /** The parts actually written (a skipped part is in `skipped` with item "files" / "memory"). */
+  parts: BackupPart[];
+  files: number;
+  memoryFiles: number;
+  totalBytes: number;
+  entriesSha256: string;
+  skipped: { item: string; reason: string }[];
+  daemonRestarted: boolean;
+  notes: string[];
+}
+
+export interface BackupVerifyReport {
+  folder: string;
+  ok: boolean;
+  createdAt: number | null;
+  parts: BackupPart[];
+  fileCount: number;
+  totalBytes: number;
+  mismatches: BackupMismatch[];
+  /** A problem with the manifest itself (missing, other format, edited). */
+  problem: string | null;
+}
+
+export interface BackupRestoreReport {
+  folder: string;
+  /** The parts actually restored. */
+  parts: BackupPart[];
+  /** Requested parts that were not restored, and why. */
+  skipped: { item: string; reason: string }[];
+  filesRestored: number;
+  cidsChanged: { expected: string; actual: string }[];
+  memoryFilesRestored: number;
+  previousMemoryKeptAt: string | null;
+  daemonRestarted: boolean;
+  notes: string[];
+}
+
 export interface StorageDomain {
   /** Add a local file to IPFS; returns its CID. */
   add(path: string): Promise<{ cid: string; sizeBytes: number }>;
-  /** Pin a CID with a SALT bond — ceremony-gated (D-18). */
-  pin(cid: string, bondSalt: string): Promise<void>;
+  /** K4: keep a CID on this node only ("Local pin · no bond"). No bond, no transaction: pin bonds
+   *  are not live until IPFSIncentivesV3 is funded at genesis. */
+  pinLocal(cid: string): Promise<void>;
   list(): Promise<PinRow[]>;
   retrieve(cid: string): Promise<{ path: string }>;
   unpin(cid: string): Promise<void>;
+  /** K4: the IPFSIncentivesV3 BOND / REWARD / ROUNDS parameters, read from chain 40204. */
+  pinParams(): Promise<PinParams>;
+  /** K4: export Files and/or Memory into a new verified backup folder inside `dest`. */
+  backupExport(dest: string, parts: BackupPart[], onProgress?: (p: BackupProgress) => void): Promise<BackupExportReport>;
+  /** K4: check a backup folder against its manifest (sha256 + size per file). */
+  backupVerify(folder: string): Promise<BackupVerifyReport>;
+  /** K4: restore from a backup folder; Rust refuses on any manifest mismatch before touching anything. */
+  backupRestore(folder: string, parts: BackupPart[], onProgress?: (p: BackupProgress) => void): Promise<BackupRestoreReport>;
 }
 
 // ── C-19 groups: secure 1:1 + group comms, admin RBAC (lane s3) ──
@@ -1382,7 +1605,8 @@ export interface AgentHarnessDomain {
   sessionStop(id: string): Promise<void>;
   /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
    *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
-  sessionOpenUnattended(systemPrompt: string, toolsJson: string): Promise<string>;
+  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string): Promise<string>;
   /** HUP-S10.3 — close a session (a finished daemon run). */
   sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
@@ -1824,6 +2048,70 @@ export interface InviteClaim {
   address: string;
 }
 
+// ── v2 invite links (GROW-S1 task 10): a short code at citrate.ai plus a sealed envelope that only
+// the share link opens. Mirrors the Rust `citrate_core_kit::join` views. The webview never sees the
+// link key, the envelope, the relay token or the session bearer: the only value carrying the key is
+// `JoinMinted.shareUrl` (`https://citrate.ai/join/<code>#<key>`), meant to be copied and shared.
+// Not yet registered on CxBridge: the inviter UI (task 11) and invitee path (task 12) wire it.
+export type JoinKind = "direct" | "referral";
+export type JoinGoal = "storage" | "training" | "inference" | "dapps" | "general";
+export interface JoinMintRequest {
+  kind: JoinKind;
+  /** Inviter-approved display name (the service filters reserved names: HTTP 422). */
+  clusterName: string;
+  goal: JoinGoal;
+  ttlSeconds?: number;
+  maxResolves?: number;
+}
+export interface JoinMinted {
+  code: string;
+  kind: JoinKind;
+  /** `valid` once usable; `pending` = reserved but the envelope isn't attached (retry `attach`). */
+  status: "valid" | "pending";
+  /** ISO expiry. */
+  exp: string;
+  /** The link to share. Present only when `status === "valid"`. */
+  shareUrl: string | null;
+  /** Why a direct code is still pending. */
+  attachError: string | null;
+}
+export interface JoinResolved {
+  code: string;
+  kind: JoinKind;
+  clusterName: string | null;
+  goal: string | null;
+  inviter: string | null;
+  inviterVerified: boolean;
+  exp: string;
+  /** A direct invite that opened and is held (in Rust) for `redeem`. */
+  actionable: boolean;
+  /** A direct invite whose link arrived without its key. */
+  keyMissing: boolean;
+}
+export interface JoinCodeEntry {
+  code: string;
+  kind: JoinKind;
+  status: "pending" | "valid" | "expired" | "revoked" | "exhausted";
+  exp: string;
+  resolveCount: number;
+}
+export interface JoinDomain {
+  /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
+  mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
+  /** Retry attaching a pending direct code's envelope (idempotent). */
+  attach(code: string): Promise<JoinMinted>;
+  /** Resolve + verify a link (or bare code). Each call counts against the code's resolve limit
+   *  (direct 1–50, default 50); resolve on the member's action, not on a preview. */
+  resolve(link: string): Promise<JoinResolved>;
+  /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
+   *  stays held (until it expires), so calling it again retries. */
+  redeem(code: string): Promise<void>;
+  /** Revoke one of the member's codes. */
+  revoke(code: string): Promise<void>;
+  /** The member's codes, newest first. */
+  list(): Promise<JoinCodeEntry[]>;
+}
+
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
  *  caller-supplied + compiled — the app never fabricates contract code (Rule 1). */
 export interface ContractDeployInput {
@@ -1955,12 +2243,16 @@ export interface DiagnosticBundle {
   crashTail: string;
   nodeLogTail: string;
   uiErrors: string[];
+  /** 0.5.2 Join: the join step ids reached since the last sent report (bare ids, allowlisted in
+   *  Rust; see src/privacy/joinFunnel.ts). Empty when telemetry is off. */
+  joinSteps: string[];
 }
 
 export interface TelemetryDomain {
   /** WP-T.2/T.3 — assemble the SCRUBBED bundle locally for review. No network. `uiErrors` is
-   *  the frontend error ring. Returns already-scrubbed content the member can inspect. */
-  bundle(uiErrors: string[]): Promise<DiagnosticBundle>;
+   *  the frontend error ring; `joinSteps` the pending join step ids (joinFunnel). Returns
+   *  already-scrubbed content the member can inspect. */
+  bundle(uiErrors: string[], joinSteps?: string[]): Promise<DiagnosticBundle>;
   /** WP-T.4 — the ONE pinned HTTPS POST. Call ONLY after the member reviewed + consented
    *  (ConsentGate, WP-T.1). Sends exactly the reviewed bundle JSON. Honest error if the
    *  ingest service (WP-T.5) isn't live. */
@@ -2073,6 +2365,9 @@ export interface EscalationQuote {
   costMicros: number;
   costLabel: string;
   withinBudget: boolean;
+  /** K2: core will ask before this escalation runs whatever the budget (the member's route is
+   *  ask first). Absent from an older core. */
+  asksFirst?: boolean;
   remainingMicros: number;
   capMicros: number;
   maxTokens: number;
@@ -2228,6 +2523,135 @@ export interface ComponentsDomain {
   rollback(name: string): Promise<string>;
 }
 
+// ---- K5a — Store v1: signed catalog, staged installs that arrive paused. Mirrors Rust
+// `store_catalog.rs`. Every catalog call refuses until the catalog key is issued at the key
+// ceremony ("no_key"), before any network or disk access. ----
+
+/** `ready`, or why the catalog is not shown (one honest state each). */
+export type StoreCatalogState =
+  | "ready"
+  | "no_key"
+  | "fetch_failed"
+  | "signature_failed"
+  | "invalid"
+  | "expired"
+  | "rollback"
+  | "desktop_only";
+
+/** Why a Store call did not go ahead. */
+export type StoreRefusalCode =
+  | "no_key"
+  | "fetch_failed"
+  | "signature_failed"
+  | "invalid"
+  | "expired"
+  | "rollback"
+  | "hash_failed"
+  | "tier_locked"
+  | "not_installable"
+  | "not_listed"
+  | "stage_expired"
+  | "changed"
+  | "already_installed"
+  | "not_installed"
+  | "in_use"
+  | "install_running"
+  | "daemon_running"
+  | "install_failed"
+  | "desktop_only";
+
+export interface StoreRefusal {
+  code: StoreRefusalCode;
+  message: string;
+}
+
+/** Exactly one of `ok` / `refused`. */
+export interface StoreOutcome<T> {
+  ok?: T;
+  refused?: StoreRefusal;
+}
+
+export type StoreListingKind = "app" | "daemon" | "widget" | "skill" | "model" | "mcp_server";
+
+export interface StorePermission {
+  id: string;
+  reason: string;
+}
+
+export interface StoreBudget {
+  maxRunsPerDay: number;
+  maxTokensPerDay: number;
+  maxTokensPerRun: number;
+  /** Always "0" in this version. */
+  maxSpendSalt: string;
+}
+
+export interface StoreListing {
+  id: string;
+  kind: StoreListingKind;
+  name: string;
+  summary: string;
+  version: string;
+  publisher: string;
+  firstParty: boolean;
+  tier: "public" | "member" | "enterprise";
+  sizeBytes: number;
+  sha256: string;
+  permissions: StorePermission[];
+  budget: StoreBudget | null;
+  locked: boolean;
+  lockReason: string | null;
+  installable: boolean;
+  installNote: string | null;
+  installed: boolean;
+}
+
+export interface StoreCatalogView {
+  state: StoreCatalogState;
+  message: string | null;
+  catalogUrl: string;
+  keyFingerprint: string | null;
+  sequence: number | null;
+  expiresAt: number | null;
+  listings: StoreListing[];
+}
+
+export interface StoreStaged {
+  stageId: string;
+  listingId: string;
+  kind: StoreListingKind;
+  name: string;
+  version: string;
+  publisher: string;
+  sizeBytes: number;
+  sha256: string;
+  permissions: StorePermission[];
+  budget: StoreBudget | null;
+  /** verified: downloaded and matched now. on_download: checked as it downloads after approval. */
+  hashCheck: "verified" | "on_download";
+  expiresAt: number;
+}
+
+export interface StoreInstalled {
+  listingId: string;
+  kind: StoreListingKind;
+  name: string;
+  version: string;
+  target: string;
+  installedAt: number;
+  /** paused | active (daemon); not_selected (model on disk, not in use); installing; missing. */
+  state: "paused" | "active" | "not_selected" | "installing" | "missing";
+}
+
+export interface StoreDomain {
+  catalog(): Promise<StoreCatalogView>;
+  stage(listingId: string): Promise<StoreOutcome<StoreStaged>>;
+  /** The member approved the install sheet for this stage (HIC). Installs PAUSED. */
+  install(stageId: string, onProgress?: (pct: number) => void): Promise<StoreOutcome<StoreInstalled>>;
+  installed(): Promise<StoreInstalled[]>;
+  remove(listingId: string): Promise<StoreOutcome<string>>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2244,4 +2668,5 @@ export interface CxBridge {
   social: SocialDomain;
   invites: InvitesDomain;
   components: ComponentsDomain;
+  store: StoreDomain;
 }
