@@ -265,7 +265,8 @@ fn remote_status_parses_and_presents_the_bearer() {
         RemoteStatus {
             running: true,
             skills: 2,
-            pending_approvals: 1
+            pending_approvals: 1,
+            capabilities: None,
         }
     );
 }
