@@ -464,3 +464,121 @@ fn pin_params_refuse_an_out_of_range_word() {
     assert_eq!(p.rounds, None);
     assert_eq!(p.errors.len(), 3);
 }
+
+/// #461: the storage commands are stateless (a manager per call, on the blocking pool) and a pin is
+/// also reachable from the node MCP and a backup restore, so index writers overlap. Every writer's
+/// record must land, no call may fail on the shared index file, and nothing may be set aside as
+/// damaged when nothing crashed.
+#[test]
+fn concurrent_pins_keep_every_record_and_never_set_the_index_aside() {
+    const THREADS: usize = 8;
+    const PINS: usize = 25;
+    let fake = FakeKubo::new();
+    let dir = tmp_dir("concurrent-pins");
+    let errors: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let fake = fake.clone();
+                let dir = dir.clone();
+                s.spawn(move || {
+                    let mut errs = Vec::new();
+                    for i in 0..PINS {
+                        // A manager per call, as the stateless commands build one.
+                        let mgr = StorageManager::new(Box::new(SharedKubo(fake.clone())), dir.clone())
+                            .with_clock(|| 1000);
+                        if let Err(e) = mgr.pin_local(&format!("bafyt{t}c{i}")) {
+                            errs.push(e.to_string());
+                        }
+                    }
+                    errs
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("pin thread"))
+            .collect()
+    });
+    assert!(
+        errors.is_empty(),
+        "no pin call fails; {} of {} failed, first: {:?}",
+        errors.len(),
+        THREADS * PINS,
+        errors.first()
+    );
+    let idx = PinIndex::read(&dir.join("pins.json")).expect("the index parses");
+    let missing: Vec<String> = (0..THREADS)
+        .flat_map(|t| (0..PINS).map(move |i| format!("bafyt{t}c{i}")))
+        .filter(|cid| !idx.records.contains_key(cid))
+        .collect();
+    assert!(missing.is_empty(), "every pinned CID is in the index; missing {missing:?}");
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read ipfs dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n != "pins.json")
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no damaged-aside or temp file is left beside the index: {leftovers:?}"
+    );
+}
+
+/// #461: adds and pins of the same CIDs from overlapping writers merge into one record each
+/// (the add's size and the pin's marker both survive), not whichever write landed last.
+#[test]
+fn overlapping_add_and_pin_of_the_same_cid_keep_both_fields() {
+    const ROUNDS: usize = 40;
+    let fake = FakeKubo::new();
+    let dir = tmp_dir("add-and-pin");
+    let errors: Vec<String> = std::thread::scope(|s| {
+        let adder = {
+            let (fake, dir) = (fake.clone(), dir.clone());
+            s.spawn(move || {
+                let mut errs = Vec::new();
+                for i in 0..ROUNDS {
+                    let mgr = StorageManager::new(Box::new(SharedKubo(fake.clone())), dir.clone())
+                        .with_clock(|| 1000);
+                    if let Err(e) = mgr.add_bytes("f", &vec![i as u8 + 1; i + 1]) {
+                        errs.push(format!("add: {e}"));
+                    }
+                }
+                errs
+            })
+        };
+        let pinner = {
+            let (fake, dir) = (fake.clone(), dir.clone());
+            s.spawn(move || {
+                let mut errs = Vec::new();
+                for i in 0..ROUNDS {
+                    let mgr = StorageManager::new(Box::new(SharedKubo(fake.clone())), dir.clone())
+                        .with_clock(|| 1000);
+                    let cid = FakeKubo::cid_for(&vec![i as u8 + 1; i + 1]);
+                    if let Err(e) = mgr.pin_local(&cid) {
+                        errs.push(format!("pin: {e}"));
+                    }
+                }
+                errs
+            })
+        };
+        let mut errs = adder.join().expect("adder");
+        errs.extend(pinner.join().expect("pinner"));
+        errs
+    });
+    assert!(
+        errors.is_empty(),
+        "no add or pin call fails; {} failed, first: {:?}",
+        errors.len(),
+        errors.first()
+    );
+    let idx = PinIndex::read(&dir.join("pins.json")).expect("the index parses");
+    for i in 0..ROUNDS {
+        let cid = FakeKubo::cid_for(&vec![i as u8 + 1; i + 1]);
+        let rec = idx
+            .records
+            .get(&cid)
+            .unwrap_or_else(|| panic!("record for {cid} is present"));
+        assert_eq!(rec.size_bytes, (i + 1) as u64, "{cid}: the add's size survives");
+        assert_eq!(rec.bond_salt, LOCAL_PIN_MARKER, "{cid}: the pin's marker survives");
+    }
+}

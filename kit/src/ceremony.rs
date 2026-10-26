@@ -517,23 +517,52 @@ struct Pending {
     created: ClockReading,
 }
 
-/// How many expired ids are remembered (oldest forgotten first). Only used to tell "expired"
-/// from "unknown" in a late approval's error.
+/// How many expired ids are remembered (oldest forgotten first). Used to tell "expired" from
+/// "unknown" in a late approval's error. Watched ids are not counted (see [`WATCHED_IDS_KEPT`]).
 const EXPIRED_IDS_KEPT: usize = 4096;
+
+/// How many watched ids ([`SignatureCeremony::request_watched`]) are kept (oldest forgotten
+/// first). A watched id that expired reads as expired however many ordinary ids expire after
+/// it, until this many newer ids are watched. The Hermes bridge, the one watcher, has at most one
+/// request open at a time, so its current one is always the newest.
+const WATCHED_IDS_KEPT: usize = 64;
 
 /// The pending requests, plus the ids that expired unapproved.
 #[derive(Default)]
 struct Book {
     pending: BTreeMap<u64, Pending>,
+    /// Ordinary ids that expired unapproved (bounded by [`EXPIRED_IDS_KEPT`]).
     expired: BTreeSet<u64>,
+    /// Ids whose caller must later tell "expired" from "decided" (bounded by
+    /// [`WATCHED_IDS_KEPT`]).
+    watched: BTreeSet<u64>,
+    /// Watched ids that expired unapproved (a subset of `watched`).
+    expired_watched: BTreeSet<u64>,
 }
 
 impl Book {
     fn remember_expired(&mut self, key: u64) {
+        if self.watched.contains(&key) {
+            self.expired_watched.insert(key);
+            return;
+        }
         self.expired.insert(key);
         while self.expired.len() > EXPIRED_IDS_KEPT {
             self.expired.pop_first();
         }
+    }
+
+    fn watch(&mut self, key: u64) {
+        self.watched.insert(key);
+        while self.watched.len() > WATCHED_IDS_KEPT {
+            if let Some(old) = self.watched.pop_first() {
+                self.expired_watched.remove(&old);
+            }
+        }
+    }
+
+    fn is_expired(&self, key: u64) -> bool {
+        self.expired.contains(&key) || self.expired_watched.contains(&key)
     }
 }
 
@@ -617,7 +646,7 @@ impl SignatureCeremony {
         let Some(key) = Self::parse_id(id) else {
             return false;
         };
-        self.live().expired.contains(&key)
+        self.live().is_expired(key)
     }
 
     /// How many requests this ceremony has opened.
@@ -658,7 +687,7 @@ impl SignatureCeremony {
     /// consumed one [`CeremonyError::UnknownCeremony`].
     fn take_live(&self, key: u64) -> Result<Pending> {
         let mut book = self.live();
-        if book.expired.contains(&key) {
+        if book.is_expired(key) {
             return Err(CeremonyError::Expired);
         }
         book.pending
@@ -765,6 +794,11 @@ impl SignatureCeremony {
     /// touches no key material. The returned `id` is what a human must later
     /// approve/reject *explicitly* — there is no "approve latest" (B1.2-ADV-6).
     pub fn request(&self, intent: SignatureIntent) -> CeremonyView {
+        self.open(intent, false)
+    }
+
+    /// Open a pending request; `watched` marks its id for [`request_watched`](Self::request_watched).
+    fn open(&self, intent: SignatureIntent, watched: bool) -> CeremonyView {
         let decoded = self.decode_with_book(&intent);
         let requires_raw_ack = decoded.action == UNRECOGNIZED_ACTION;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -777,7 +811,11 @@ impl SignatureCeremony {
             decoded: decoded.clone(),
             requires_raw_ack,
         };
-        self.live().pending.insert(
+        let mut book = self.live();
+        if watched {
+            book.watch(id);
+        }
+        book.pending.insert(
             id,
             Pending {
                 intent,
@@ -787,6 +825,14 @@ impl SignatureCeremony {
             },
         );
         view
+    }
+
+    /// Like [`request`](Self::request), for a caller that must later tell "expired" from
+    /// "decided" for this id with [`is_expired`](Self::is_expired).
+    /// The id stays answerable as expired after any number of ordinary expiries (bounded by
+    /// [`WATCHED_IDS_KEPT`] newer watched ids).
+    pub fn request_watched(&self, intent: SignatureIntent) -> CeremonyView {
+        self.open(intent, true)
     }
 
     /// Re-inspect a pending ceremony without consuming it (for the approval UI to

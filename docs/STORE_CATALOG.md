@@ -123,31 +123,43 @@ member-daemon tool set.
 
 ### Tools the Hermes sidecar hosts itself
 
-The Hermes sidecar adds its own tool sets to **every** session while they are on, whatever core
-passes for that session. There is no per-session switch for them yet (follow-up in
-citrate-agent-runtime: a session flag to turn host tool sets off). Until there is, core does not
-start a Store daemon while any set its approved permissions do not cover is on: Start (resume)
-is refused with the reason and how to run it sandboxed, and a run that comes due is recorded as
-`not_started` instead of running (`daemons.rs::HOST_TOOL_SETS`, `resume_checked`,
-`claim_due_with`; the check reads the effective environment the running sidecar was started
-with).
+The Hermes sidecar adds its own tool sets to every session while they are on. Whether a Store
+daemon may run with them depends on the sidecar:
 
-| Tool set | Tools | On when | Covering permission | How it is excluded today |
-|---|---|---|---|---|
-| Web search and page reading | `web_search`, `read_url` | `CITRATE_HERMES_SEARCH=1` | `web_search` | Daemon not started while on; the member turns it off in Settings > Web search & decisions |
-| Hermes's browser | `browser_*` | `CITRATE_HERMES_BROWSER=1` | `web_browse` | Daemon not started while on; Settings > Web search & decisions |
-| MCP servers | `mcp__<server>__<tool>` | an MCP allowlist is written (`CITRATE_HERMES_MCP`) | `mcp` | Daemon not started while any server is on; Settings > MCP servers |
-| Contract toolchain | `forge_test`, `slither_scan`, `aderyn_scan`, `medusa_fuzz` | `CITRATE_HERMES_TOOLCHAIN=1` | `toolchain` | Daemon not started while on; Agent > Contracts |
-| Installed skills | `skill_load` | a skills library is configured (`CITRATE_HERMES_SKILLS`) | `skills_read` | Daemon not started while on; no app switch yet |
-| Skill learning | `learn_propose` | `CITRATE_HERMES_LEARN_DIR` | `learn_propose` | Daemon not started while on; no app switch yet |
-| Installed capsules | the installed capsules | `CITRATE_HERMES_CAPSULES` | `capsules_run` | Daemon not started while on; no app switch yet |
-| File, sheet, project and undo tools | `file_*`, `fs_*`, `sheet_*`, `project_create` | a grant document in the session | none | Daemon sessions are opened with no grant document |
-| `shell_run` | `shell_run` | `CITRATE_HERMES_SHELL_RUN=1` and folder grants | none | No grant document; and in a daemon run every command is declined (no one approves it) |
+- **A sidecar with per-session tool sets (citrate-agent-runtime#87 or later).** `GET /status`
+  reports `capabilities.sessionToolSets` and `capabilities.sessionPromptSnapshot`. When those
+  cover every set below, core opens a Store daemon's session with `toolSets` naming exactly the
+  sets its approved permissions cover (an empty list for none), `promptSnapshot: false`, and only
+  its approved core tools. The other sets stay off for that session whatever is on elsewhere, so
+  the start check is relaxed. Because such a sidecar would fail open if `toolSets` did not
+  arrive, the session-create response must echo `toolSets` (the same names) and
+  `promptSnapshot: false`; otherwise core closes the session and the run does not start.
+  `toolSets` is always an explicit array built in core from the daemon's stored approved
+  permissions (never from the webview), and never names `files` or `shell_run`. Relaxing needs
+  both capabilities: `sessionToolSets` covering every set below and `sessionPromptSnapshot`.
+- **An older sidecar (no `capabilities`, or not every set listed).** Core does not start a Store
+  daemon while any set its approved permissions do not cover is on: Start (resume) is refused
+  with the reason and how to run it sandboxed, and a run that comes due is recorded as
+  `not_started` (`daemons.rs::HOST_TOOL_SETS`, `resume_with`, `claim_due_facts`; the check reads
+  the effective environment the running sidecar was started with).
 
-The app ships with the starter capsules and the bundled skills (and turns skill learning on), so
-in practice **a Store daemon starts only if its approved permissions cover those sets too**
-(`capsules_run`, `skills_read`, `learn_propose`), which no first-party listing is expected to
-declare, until the runtime switch exists. That is deliberate: "no tools" must be true, not
+| Tool set | Tools | On when | Covering permission | With a #87 sidecar | With an older sidecar |
+|---|---|---|---|---|---|
+| Web search and page reading | `web_search`, `read_url` | `CITRATE_HERMES_SEARCH=1` | `web_search` | Off unless in `toolSets` | Daemon not started while on; turn it off in Settings > Web search & decisions |
+| Hermes's browser | `browser_*` | `CITRATE_HERMES_BROWSER=1` | `web_browse` | Off unless in `toolSets` | Not started while on; Settings > Web search & decisions |
+| MCP servers | `mcp__<server>__<tool>` | an MCP allowlist is written (`CITRATE_HERMES_MCP`) | `mcp` | Off unless in `toolSets` | Not started while any server is on; Settings > MCP servers |
+| Contract toolchain | `forge_test`, `slither_scan`, `aderyn_scan`, `medusa_fuzz` | `CITRATE_HERMES_TOOLCHAIN=1` | `toolchain` | Off unless in `toolSets` | Not started while on; Agent > Contracts |
+| Installed skills | `skill_load` | a skills library is configured (`CITRATE_HERMES_SKILLS`) | `skills_read` | Off unless in `toolSets` | Not started while on; no app switch yet |
+| Skill learning | `learn_propose` | `CITRATE_HERMES_LEARN_DIR` | `learn_propose` | Off unless in `toolSets` | Not started while on; no app switch yet |
+| Installed capsules | the installed capsules | `CITRATE_HERMES_CAPSULES` | `capsules_run` | Off unless in `toolSets` | Not started while on; no app switch yet |
+| File tools from the launch environment | `fs_*` | `CITRATE_HERMES_FILES=1` and a grants file (no grant document needed); core never sets it | `files` (never granted, never sent) | Off: not in `toolSets` | Daemon not started while on; start Citrate Core without `CITRATE_HERMES_FILES` |
+| File, sheet, project and undo tools from a grant document | `file_*`, `fs_*`, `sheet_*`, `project_create` | a grant document in the session | `files` (never granted, never sent) | Off: not in `toolSets`, and no grant document | Daemon sessions get no grant document |
+| `shell_run` | `shell_run` | `CITRATE_HERMES_SHELL_RUN=1` and folder grants | `shell_run` (runtime name; never sent by core) | Off: not in `toolSets` | No grant document; every command is declined in a daemon run |
+
+With an older sidecar: the app ships with the starter capsules and the bundled skills (and turns
+skill learning on), so in practice **a Store daemon starts only if its approved permissions cover
+those sets too** (`capsules_run`, `skills_read`, `learn_propose`), which no first-party listing is
+expected to declare. That is deliberate: "no tools" must be true, not
 approximately true.
 
 Three more rules close the gaps around restarts and the launch environment:
@@ -161,6 +173,12 @@ Three more rules close the gaps around restarts and the launch environment:
   The check and the open are bound to one Hermes generation: a stop or start between them makes
   the open refuse ("Not started: Hermes restarted …"), and a stop or start waits until an open
   in flight has returned.
+- **Fail closed at open.** The daemon session open must name a daemon the book holds and the run
+  core claimed for it, still in flight; a missing or unknown id, a missing run id, another
+  daemon's run, or a finished or released run is refused. A refusal at open is recorded as
+  `not_started`, not `failed`.
+- **Environment names follow the platform.** On Windows, where variable names are
+  case-insensitive, `citrate_hermes_search` counts as `CITRATE_HERMES_SEARCH`.
 - **The effective environment is checked.** The sidecar inherits the app's own environment, so a
   `CITRATE_HERMES_*` flag in the launch environment would turn a set on without core setting it.
   Core records what the child actually sees (the inherited `CITRATE_*` variables overlaid with
@@ -184,7 +202,6 @@ never a count of catalog listings. The catalog is not cross-checked against the 
   `{name, prompt, schedule}` up to 64 KiB; model URLs end in a plain `.gguf` file name.
 - An HIC outbox decision kind for the install approval (the agent-runtime sidecar's
   `/records/core` must accept it first).
-- citrate-agent-runtime: a session flag to turn the sidecar-hosted tool sets off (all of them,
-  or all but the ones a Store daemon's permissions cover), so a sandboxed daemon run no longer
-  depends on the member turning sets off for every session.
+- citrate-agent-runtime#87 (per-session `toolSets` and `promptSnapshot: false`) must ship in the
+  bundled sidecar for Store daemons to run with host tool sets on elsewhere.
 - Sign-off on the placeholders: catalog lifetime cap, stage expiry, template size cap.
