@@ -328,6 +328,15 @@ pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), Genes
     Ok((names, bytes))
 }
 
+/// The suffix a previous network's `node.toml` is set aside under: the first 10 characters of its
+/// genesis, or `unrecorded`.
+fn aside_tag(previous_genesis: Option<&str>) -> String {
+    let tag: String = previous_genesis
+        .map(|g| g.chars().take(10).collect())
+        .unwrap_or_else(|| "unrecorded".to_string());
+    tag.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+}
+
 /// K6: on a genesis change, set the previous network's `node.toml` aside as
 /// `node.toml.<first 10 characters of its genesis>` (or `node.toml.unrecorded`), so the next
 /// spawn writes a fresh one from the active profile. A member's hand edits are in that file.
@@ -345,10 +354,7 @@ pub(crate) fn retire_node_config(
     if std::fs::symlink_metadata(&path).is_err() {
         return Ok(None);
     }
-    let tag: String = previous_genesis
-        .map(|g| g.chars().take(10).collect())
-        .unwrap_or_else(|| "unrecorded".to_string());
-    let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let tag = aside_tag(previous_genesis);
     let mut dest = data_dir.join(format!("node.toml.{tag}"));
     let mut n = 1;
     while std::fs::symlink_metadata(&dest).is_ok() {
@@ -357,6 +363,39 @@ pub(crate) fn retire_node_config(
     }
     std::fs::rename(&path, &dest)?;
     Ok(Some(dest))
+}
+
+/// Where a switch away from `previous_genesis` left the previous `node.toml`: the newest
+/// `node.toml.<tag>[.n]` [`retire_node_config`] names for it. A launch that finishes a switch
+/// interrupted after the set-aside gets `retired_config: None` from the reset (nothing left to move)
+/// and still has to tell the member where the file is.
+pub(crate) fn set_aside_node_config(
+    data_dir: &Path,
+    previous_genesis: Option<&str>,
+) -> Option<PathBuf> {
+    let tag = aside_tag(previous_genesis);
+    let mut found = None;
+    let mut dest = data_dir.join(format!("node.toml.{tag}"));
+    let mut n = 1;
+    while std::fs::symlink_metadata(&dest).is_ok() {
+        found = Some(dest);
+        dest = data_dir.join(format!("node.toml.{tag}.{n}"));
+        n += 1;
+    }
+    found
+}
+
+/// The member-facing notice for a reset: [`CHAIN_RESET_NOTICE`], plus where the previous network's
+/// node settings were kept when there were any, so a hand edit there is never dropped silently.
+pub fn reset_notice(set_aside_config: Option<&Path>) -> String {
+    match set_aside_config {
+        Some(p) => format!(
+            "{CHAIN_RESET_NOTICE}. The previous network's node settings were kept in {}; new \
+             settings were written for this network.",
+            p.display()
+        ),
+        None => CHAIN_RESET_NOTICE.to_string(),
+    }
 }
 
 /// Make the directory entries of `dir` (deletions, renames) durable before a later step
@@ -1736,6 +1775,34 @@ mod tests {
         ] {
             assert!(!is_chain_db_entry(f), "{f}");
         }
+    }
+
+    /// RC52 G2: a launch that finishes an interrupted switch names the copy the earlier attempt
+    /// set aside, the newest one for that genesis, and never another genesis's copy.
+    #[test]
+    fn the_set_aside_config_lookup_names_the_newest_copy_for_that_genesis() {
+        let d = tmp("aside-lookup");
+        assert_eq!(set_aside_node_config(&d, Some(OLD)), None);
+        std::fs::write(d.join("node.toml"), "first").unwrap();
+        let first = retire_node_config(&d, Some(OLD)).unwrap();
+        assert_eq!(first, Some(d.join(OLD_CONFIG_ASIDE)));
+        assert_eq!(set_aside_node_config(&d, Some(OLD)), first);
+        std::fs::write(d.join("node.toml"), "second").unwrap();
+        let second = retire_node_config(&d, Some(OLD)).unwrap();
+        assert_eq!(set_aside_node_config(&d, Some(OLD)), second);
+        assert_ne!(first, second);
+        assert_eq!(set_aside_node_config(&d, Some(NEW)), None);
+        assert_eq!(set_aside_node_config(&d, None), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_reset_notice_names_the_set_aside_config_only_when_there_is_one() {
+        assert_eq!(reset_notice(None), CHAIN_RESET_NOTICE);
+        let p = Path::new("/data/node/node.toml.0x0f2b567f");
+        let n = reset_notice(Some(p));
+        assert!(n.starts_with(CHAIN_RESET_NOTICE), "{n}");
+        assert!(n.contains("/data/node/node.toml.0x0f2b567f"), "{n}");
     }
 
     #[test]

@@ -451,6 +451,14 @@ fn the_launch_after_a_completed_switch_keeps_the_dir_and_reports_nothing() {
     let node = app.join("node");
     let node_kr = MapKeyring::from_fixture("node-r1005.keyring.json");
     start_for_new_network(&manager(&root, &app, &node_kr, Ok(new_network())));
+    assert_eq!(
+        crate::node_genesis::read_marker_record(&node)
+            .unwrap_or_else(|e| panic!("{e:?}"))
+            .map(|m| m.genesis),
+        Some(NEW_GENESIS.to_string()),
+        "the first launch switched"
+    );
+    assert!(node.join(ASIDE).exists());
     let before: Vec<(String, Vec<u8>)> = names(&node)
         .into_iter()
         .map(|n| {
