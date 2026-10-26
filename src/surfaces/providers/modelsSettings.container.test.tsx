@@ -34,7 +34,7 @@ const opened: string[] = [];
 beforeEach(() => {
   for (const f of Object.values(providers)) f.mockReset();
   opened.length = 0;
-  providers.usageSummary.mockResolvedValue({ logIntact: true, logProblem: null, records: 0, asOfMs: NOW, providers: [usage()], recentCalls: [] });
+  providers.usageSummary.mockResolvedValue({ logIntact: true, logProblem: null, records: 0, asOfMs: NOW, providers: [usage()], recentCalls: [], clockProblem: null });
 });
 afterEach(() => {
   act(() => root.unmount());

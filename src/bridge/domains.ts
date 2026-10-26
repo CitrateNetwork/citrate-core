@@ -2736,6 +2736,13 @@ export interface ProviderPrice {
   inputMicrosPerMtok: number;
   outputMicrosPerMtok: number;
 }
+/** A model core knows for a provider: its price and where the price came from. */
+export interface ProviderModelPrice {
+  id: string;
+  price: ProviderPrice | null;
+  /** `member` (entered in Settings, wins), `published` (the vendor's cited price), or null (unknown). */
+  source: "member" | "published" | null;
+}
 export interface ProviderHalt {
   /** `member`, `burst`, `unknownModel`, `tokenSpike` or `guardUnreadable`. */
   kind: string;
@@ -2763,6 +2770,8 @@ export interface ProviderStatus {
   approvedModels: string[];
   listedModels: string[];
   prices: Record<string, ProviderPrice>;
+  /** Every known model with its price source. Under a spending cap an unpriced model is refused. */
+  models: ProviderModelPrice[];
 }
 export interface ProviderPeriodUsage {
   calls: number;
@@ -2803,6 +2812,8 @@ export interface ProviderUsageSummary {
   providers: ProviderUsage[];
   /** The latest calls, newest first (bounded in core). */
   recentCalls: ProviderRecentCall[];
+  /** Set when this computer's clock reads well before the last record: every call is refused. */
+  clockProblem: string | null;
 }
 export interface ProviderKeyTest {
   ok: boolean;

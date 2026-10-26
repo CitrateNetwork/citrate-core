@@ -19,6 +19,7 @@ const summary = (over: Partial<ProviderUsageSummary> = {}): ProviderUsageSummary
   asOfMs: NOW,
   providers: [usage()],
   recentCalls: [],
+  clockProblem: null,
   ...over,
 });
 
@@ -267,5 +268,92 @@ describe("Settings › Models: the web preview", () => {
   it("a failed status read is shown as such, not as an empty list", () => {
     const html = render({ statuses: null, usage: null, loadError: "the model proxy could not start: AddrInUse" });
     expect(html).toContain("Provider status could not be read: the model proxy could not start: AddrInUse");
+  });
+});
+
+describe("Settings › Models: model prices under the default spending caps", () => {
+  const priced = vendor({
+    keyConfigured: true,
+    listedModels: ["gpt-a", "gpt-b", "gpt-c"],
+    models: [
+      { id: "gpt-a", price: { inputMicrosPerMtok: 2_000_000, outputMicrosPerMtok: 8_000_000 }, source: "published" },
+      { id: "gpt-b", price: { inputMicrosPerMtok: 150_000, outputMicrosPerMtok: 600_000 }, source: "member" },
+      { id: "gpt-c", price: null, source: null },
+    ],
+  });
+
+  it("each model shows its price and where it came from, or that it has none", () => {
+    const c = card(render({ statuses: [priced] }), "openai");
+    expect(c).toContain("gpt-a · $2.00 in / $8.00 out per 1M tokens (published price)");
+    expect(c).toContain("gpt-b · $0.15 in / $0.60 out per 1M tokens (price you entered)");
+    expect(c).toContain("gpt-c · no price yet");
+  });
+
+  it("with a spending cap set, unpriced models are said to be refused, with a way to enter a price", () => {
+    const c = card(render({ statuses: [priced] }), "openai");
+    expect(c).toContain('data-testid="unpriced-warning"');
+    expect(c).toContain("1 model has no price. While a spending cap is set, calls to it are refused");
+    expect(c).toContain('data-testid="enter-price-gpt-c"');
+    expect(c).toMatch(/data-testid="enter-price-gpt-c"[^>]*>Enter price</);
+    expect(c).toMatch(/data-testid="enter-price-gpt-b"[^>]*>Change price</);
+  });
+
+  it("with no spending cap, an unpriced model is not called refused", () => {
+    const noMoney = { ...priced, caps: { ...priced.caps, dailyMicros: null, monthlyMicros: null } };
+    const c = card(render({ statuses: [noMoney] }), "openai");
+    expect(c).not.toContain("unpriced-warning");
+    expect(c).toContain("gpt-c · no price yet");
+  });
+
+  it("a recent call refused for an unknown price says why and what to do", () => {
+    const recentCalls = [{ atMs: NOW, provider: "openai", model: "gpt-c", verified: true, outcome: "price_unknown", refused: true, tokensIn: null, tokensOut: null, costMicros: null }];
+    const html = render({ statuses: [priced], usage: summary({ recentCalls }) });
+    expect(html).toContain("refused: this model has no price, so its cost under your spending cap is unknown. Enter its price on the OpenAI card");
+  });
+
+  it("other refusal and failure codes read as plain words", () => {
+    const mk = (outcome: string, refused: boolean) => ({ atMs: NOW, provider: "openai", model: "m", verified: true, outcome, refused, tokensIn: null, tokensOut: null, costMicros: null });
+    const html = render({ statuses: [priced], usage: summary({ recentCalls: [mk("cap_exceeded", true), mk("halted", true), mk("key_rejected", false), mk("log_unavailable", true)] }) });
+    expect(html).toContain("refused: a cap was reached");
+    expect(html).toContain("refused: the provider was paused");
+    expect(html).toContain("failed: the vendor rejected the key");
+    expect(html).toContain("refused: the usage log could not be used");
+  });
+});
+
+describe("Settings › Models: fail-closed states pause every provider", () => {
+  const unreadable = { kind: "guardUnreadable", message: "paused: the spend settings file could not be verified; check your caps and resume", atMs: 0 };
+
+  it("an unverifiable or rolled-back settings file: one page banner, every provider paused, acknowledge resets to defaults", () => {
+    const html = render({ statuses: [vendor({ keyConfigured: true, halt: unreadable }), vendor({ id: "xai", name: "xAI", halt: unreadable })] });
+    expect(html).toContain('data-testid="failclosed-guard"');
+    expect(html).toContain("Every provider is paused");
+    expect(html).toContain("an older copy than the one last saved");
+    expect(html).toContain("Acknowledge and reset settings");
+    expect(html).toContain("resets caps, prices, pauses and custom endpoints for every provider to the defaults");
+    expect(html.match(/data-testid="failclosed-guard"/g)?.length).toBe(1);
+  });
+
+  it("a halt with no recorded time shows no fake time", () => {
+    const html = render({ statuses: [vendor({ keyConfigured: true, halt: unreadable })] });
+    expect(html).not.toContain("1970-01-01");
+    expect(html).not.toMatch(/Paused :/);
+  });
+
+  it("a log cut short or removed: every call is refused, the reset keeps this month's spend", () => {
+    const html = render({ statuses: [vendor({ keyConfigured: true })], usage: summary({ logIntact: false, logProblem: "the usage log failed verification (the file is shorter than its anchor)" }) });
+    expect(html).toContain('data-testid="usage-log-broken"');
+    expect(html).toContain("the file is shorter than its anchor");
+    expect(html).toContain("This month's spend carries into the new log, so starting one does not reset your caps.".replace("'", "&#x27;"));
+  });
+
+  it("a clock moved back: every call is refused until the clock is right, with a check-again action", () => {
+    const clockProblem = "this computer's clock reads earlier than the last recorded call; check the date and time";
+    const html = render({ statuses: [vendor({ keyConfigured: true })], usage: summary({ clockProblem }) });
+    expect(html).toContain('data-testid="failclosed-clock"');
+    expect(html).toContain("Every cloud call is refused");
+    expect(html).toContain("clock reads earlier than the last recorded call");
+    expect(html).toContain("Check again");
+    expect(render()).not.toContain("failclosed-clock");
   });
 });

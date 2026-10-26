@@ -23,6 +23,7 @@ export function vendor(over: Partial<ProviderStatus> = {}): ProviderStatus {
     approvedModels: [],
     listedModels: [],
     prices: {},
+    models: [],
     ...over,
   };
 }

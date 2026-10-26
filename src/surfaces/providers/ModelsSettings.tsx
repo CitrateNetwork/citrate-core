@@ -75,6 +75,8 @@ export interface ModelsActions {
   onCustomForm(f: CustomForm): void;
   onAddCustom(): void;
   onResetLog(): void;
+  /** Read status and usage again (after the member fixes something outside the app). */
+  onRefresh(): void;
 }
 
 export interface ModelsViewProps {
@@ -777,6 +779,7 @@ export function ModelsSettings({ onOpen }: { onOpen(url: string): void }) {
           });
         },
         onResetLog: () => void act("", "reset", "", () => bridge.providers.resetUsageLog()),
+        onRefresh: () => void refresh(),
       }}
     />
   );

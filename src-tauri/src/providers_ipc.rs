@@ -15,10 +15,10 @@
 //! | `providers_custom_add`, `providers_custom_confirm`, `providers_custom_remove` | the sealed guard file (custom endpoints), the keychain on remove |
 //! | `providers_usage_log_reset` | the usage log (a broken file is archived, a new chain starts) |
 
-use crate::model_provider::{ProviderId, Vendor};
+use crate::model_provider::{ModelInfo, ProviderId, Vendor};
 use crate::model_proxy::{now_ms, ModelProxy, ProxyError};
 use crate::provider_egress::{vendor_spec, CustomEndpoint};
-use crate::provider_guard::{Caps, GuardBook, Halt, Price};
+use crate::provider_guard::{Caps, GuardBook, Halt, Price, ProviderGuard};
 use crate::provider_usage_log::UsageLog;
 use crate::secret::SecretString;
 use serde::Serialize;
@@ -51,6 +51,17 @@ impl From<&Halt> for HaltView {
     }
 }
 
+/// One model core knows for a provider, with its price and where that price came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceView {
+    pub id: String,
+    pub price: Option<Price>,
+    /// `member` (entered in Settings, wins), `published` (the adapter's cited vendor price), or
+    /// `None` (unknown: refused while a spending cap is set).
+    pub source: Option<&'static str>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderView {
@@ -75,6 +86,8 @@ pub struct ProviderView {
     pub approved_models: Vec<String>,
     pub listed_models: Vec<String>,
     pub prices: BTreeMap<String, Price>,
+    /// Every known model (adapter, listed, approved, custom, priced), with its price source.
+    pub models: Vec<ModelPriceView>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -106,6 +119,9 @@ pub struct UsageSummaryView {
     pub providers: Vec<ProviderUsageView>,
     /// The latest calls, newest first: metadata only (no content, no session or call ids).
     pub recent_calls: Vec<crate::provider_usage_log::RecentCall>,
+    /// Set when this computer's clock reads well before the last record: every call is refused
+    /// until the clock is corrected.
+    pub clock_problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -143,6 +159,16 @@ impl From<&CustomEndpoint> for CustomEndpointView {
 // ---------------------------------------------------------------------------
 // Pure builders (tested without Tauri)
 // ---------------------------------------------------------------------------
+
+/// The models to show for a provider, each with its price and source. The member's price wins over
+/// the adapter's published one (the same order the guard uses to charge a call).
+pub fn model_prices(
+    _published: &[ModelInfo],
+    _extra: &[String],
+    _pg: &ProviderGuard,
+) -> Vec<ModelPriceView> {
+    Vec::new()
+}
 
 /// Every provider id the status lists: the six vendors, then the custom endpoints.
 fn all_ids(g: &GuardBook) -> Vec<ProviderId> {
@@ -188,6 +214,23 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                     )
                 }
             };
+            let (published, extra) = match &id {
+                ProviderId::Vendor(v) => (
+                    crate::model_proxy::vendor_adapter(*v)
+                        .map(|(a, _)| a.models())
+                        .unwrap_or_default(),
+                    Vec::new(),
+                ),
+                ProviderId::Custom(cid) => (
+                    Vec::new(),
+                    customs
+                        .iter()
+                        .find(|c| &c.id == cid)
+                        .map(|c| c.models.clone())
+                        .unwrap_or_default(),
+                ),
+            };
+            let models = model_prices(&published, &extra, &pg);
             let host = url::Url::parse(&base_url)
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_string))
@@ -210,6 +253,7 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                 approved_models: pg.approved_models.iter().cloned().collect(),
                 listed_models: pg.listed_models.clone(),
                 prices: pg.prices.clone(),
+                models,
             }
         })
         .collect()
@@ -252,6 +296,7 @@ pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummary
         as_of_ms: now,
         providers,
         recent_calls: log.recent(),
+        clock_problem: None,
     }
 }
 

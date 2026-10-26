@@ -126,3 +126,70 @@ fn usage_summary_lists_recent_calls_as_metadata_only() {
     assert!(!json.contains(&rig.key));
     assert!(!json.contains("sess-1"), "no session id in the view");
 }
+
+#[test]
+fn model_prices_say_where_each_price_came_from() {
+    let published = vec![
+        ModelInfo {
+            id: "pub-m".into(),
+            display_name: "Pub".into(),
+            supports_tools: true,
+            input_micros_per_mtok: Some(1_000_000),
+            output_micros_per_mtok: Some(4_000_000),
+        },
+        ModelInfo {
+            id: "half-priced".into(),
+            display_name: "Half".into(),
+            supports_tools: true,
+            input_micros_per_mtok: Some(1),
+            output_micros_per_mtok: None,
+        },
+    ];
+    let mut pg = ProviderGuard::default();
+    pg.listed_models = vec!["pub-m".into(), "listed-only".into()];
+    pg.approved_models.insert("approved-only".into());
+    let member = Price { input_micros_per_mtok: 7, output_micros_per_mtok: 9 };
+    pg.prices.insert("member-m".into(), member);
+    let v = model_prices(&published, &["custom-m".into()], &pg);
+    let by = |id: &str| v.iter().find(|m| m.id == id).cloned().unwrap();
+    assert_eq!(v.len(), 6, "each model once: {v:?}");
+    assert_eq!(by("pub-m").source, Some("published"));
+    assert_eq!(by("pub-m").price.unwrap().output_micros_per_mtok, 4_000_000);
+    assert_eq!((by("half-priced").source, by("half-priced").price), (None, None), "half a price is no price");
+    assert_eq!((by("listed-only").source, by("approved-only").source, by("custom-m").source), (None, None, None));
+    assert_eq!((by("member-m").source, by("member-m").price), (Some("member"), Some(member)));
+    // The member's price wins over the published one, as it does when a call is charged.
+    pg.prices.insert("pub-m".into(), member);
+    let v = model_prices(&published, &[], &pg);
+    let p = v.iter().find(|m| m.id == "pub-m").unwrap();
+    assert_eq!((p.source, p.price), (Some("member"), Some(member)));
+}
+
+#[test]
+fn status_lists_each_model_with_its_price_source() {
+    let rig = Rig::new("ipc-model-prices");
+    let s = status(&rig.proxy);
+    let m = s[0].models.iter().find(|m| m.id == "gpt-known");
+    assert!(m.is_some(), "the priced model is listed: {:?}", s[0].models);
+    assert_eq!(m.and_then(|m| m.source), Some("member"));
+    price_set(&rig.proxy, "openai", "gpt-known", None).unwrap();
+    let s = status(&rig.proxy);
+    let m = s[0].models.iter().find(|m| m.id == "gpt-known").unwrap();
+    assert_eq!((m.source, m.price), (None, None), "an unknown price is shown as unknown");
+}
+
+#[test]
+fn usage_summary_reports_a_clock_moved_back() {
+    let rig = Rig::new("ipc-clock");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    let now = now_ms();
+    let ok = rig.proxy.with_state(|g, l| usage_summary_of(g, l, now));
+    assert_eq!(ok.clock_problem, None);
+    let behind = rig
+        .proxy
+        .with_state(|g, l| usage_summary_of(g, l, now - crate::provider_guard::DAY_MS));
+    assert!(behind.clock_problem.as_deref().unwrap_or("").contains("clock"), "{:?}", behind.clock_problem);
+    assert!(serde_json::to_string(&behind).unwrap().contains("\"clockProblem\""));
+}
