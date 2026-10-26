@@ -329,3 +329,141 @@ fn local_ids_are_a_single_plain_gguf_filename() {
     let long = format!("local:{}.gguf", "a".repeat(300));
     assert!(model_file_from_id(&long).is_err());
 }
+
+// ---- #489: the resume marker is written only once the file's download lock is held -----------
+
+fn gguf_body(fill: u8) -> Vec<u8> {
+    let mut b = b"GGUF".to_vec();
+    b.extend_from_slice(&[fill; 40]);
+    b
+}
+
+fn tiny_descriptor(id: &str, body: &[u8]) -> crate::model::ModelDescriptor {
+    use sha2::Digest as _;
+    crate::model::ModelDescriptor {
+        id: id.to_string(),
+        source: crate::model::ModelSource::Hf,
+        repo: "org/repo".to_string(),
+        file: "tiny.gguf".to_string(),
+        revision: None,
+        size_bytes: body.len() as u64,
+        sha256: hex::encode(sha2::Sha256::digest(body)),
+        kind: crate::model::ModelKind::Gguf,
+    }
+}
+
+/// Serves `body`, and records whether the marker was on disk, under a held lock, when the bytes
+/// were requested.
+struct MarkerProbe {
+    dir: std::path::PathBuf,
+    body: Vec<u8>,
+    seen: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+}
+
+impl crate::model::ModelTransport for MarkerProbe {
+    fn total_size(&self) -> std::result::Result<u64, crate::model::ModelError> {
+        Ok(self.body.len() as u64)
+    }
+    fn get_from(
+        &self,
+        offset: u64,
+    ) -> std::result::Result<Box<dyn std::io::Read + Send>, crate::model::ModelError> {
+        let tracked = marker_path(&self.dir, "tiny.gguf").exists()
+            && crate::model::download_in_flight(&self.dir.join("tiny.gguf.part"));
+        *self.seen.lock().unwrap() = Some(tracked);
+        let start = (offset as usize).min(self.body.len());
+        Ok(Box::new(std::io::Cursor::new(self.body[start..].to_vec())))
+    }
+}
+
+fn catalog_tmp(tag: &str) -> std::path::PathBuf {
+    let n: u64 = rand::random();
+    std::env::temp_dir().join(format!("citrate-core-catalog-{tag}-{n:016x}"))
+}
+
+#[test]
+fn a_catalog_download_is_tracked_while_it_streams_and_forgotten_once_verified() {
+    let dir = catalog_tmp("tracked");
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = gguf_body(4);
+    let desc = tiny_descriptor("hf:org/repo/tiny.gguf", &body);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let probe = MarkerProbe { dir: dir.clone(), body: body.clone(), seen: seen.clone() };
+    download_tracked(&dir, &desc.id, &desc, Box::new(probe), |_, _| {}).expect("downloaded and verified");
+    assert_eq!(*seen.lock().unwrap(), Some(true), "the marker is there, under the lock, while bytes stream");
+    assert!(!marker_path(&dir, "tiny.gguf").exists(), "and gone once verified");
+    assert!(crate::model::is_file_ready(&dir, "tiny.gguf"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_catalog_download_refused_by_the_lock_writes_no_marker() {
+    let dir = catalog_tmp("refused");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Another download (the Store's) holds the file's lock.
+    let lock = crate::model::DownloadGuard::acquire(&dir.join("tiny.gguf.part")).expect("lock");
+    let body = gguf_body(5);
+    let desc = tiny_descriptor("hf:org/repo/tiny.gguf", &body);
+    let probe = MarkerProbe { dir: dir.clone(), body, seen: Default::default() };
+    let err = download_tracked(&dir, &desc.id, &desc, Box::new(probe), |_, _| {}).unwrap_err();
+    assert_eq!(err, crate::model::ModelError::AlreadyDownloading.to_string());
+    assert!(!marker_path(&dir, "tiny.gguf").exists(), "no marker for a download that never got the lock");
+    drop(lock);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_refused_catalog_download_leaves_the_running_downloads_marker_as_it_was() {
+    let dir = catalog_tmp("refused-keep");
+    std::fs::create_dir_all(&dir).unwrap();
+    // A Models download of model A is running: its marker is written and it holds the lock.
+    let lock = crate::model::DownloadGuard::acquire(&dir.join("tiny.gguf.part")).expect("lock");
+    write_download_marker(&dir, "tiny.gguf", "hf:org/a/tiny.gguf", 44).unwrap();
+    let before = std::fs::read(marker_path(&dir, "tiny.gguf")).unwrap();
+    let body = gguf_body(6);
+    let desc = tiny_descriptor("hf:org/b/tiny.gguf", &body);
+    let probe = MarkerProbe { dir: dir.clone(), body, seen: Default::default() };
+    assert!(download_tracked(&dir, &desc.id, &desc, Box::new(probe), |_, _| {}).is_err());
+    assert_eq!(std::fs::read(marker_path(&dir, "tiny.gguf")).ok(), Some(before), "A's marker is untouched");
+    drop(lock);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether every resume-marker write in `src` (model_catalog.rs's production part) is the claim
+/// `download_and_verify` runs once it holds the file's download lock.
+fn markers_written_under_the_lock(src: &str) -> Result<(), String> {
+    let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src);
+    let calls: Vec<usize> = prod
+        .match_indices("write_download_marker(")
+        .map(|(i, _)| i)
+        .filter(|&i| !prod[..i].ends_with("pub fn "))
+        .collect();
+    if calls.is_empty() {
+        return Err("no marker write found".into());
+    }
+    for i in calls {
+        let Some(dv) = prod[..i].rfind(".download_and_verify(") else {
+            return Err(format!("marker write at byte {i} is not inside a download_and_verify call"));
+        };
+        if prod[dv..i].contains(';') {
+            return Err(format!("marker write at byte {i} runs outside the locked claim"));
+        }
+    }
+    Ok(())
+}
+
+/// Tripwire (#489): a Models download writes its marker only as the claim `download_and_verify`
+/// runs under the file's download lock; and that claim runs right after the lock is taken.
+#[test]
+fn tripwire_the_models_marker_is_written_only_under_the_download_lock() {
+    markers_written_under_the_lock(include_str!("model_catalog.rs")).expect("model_catalog.rs");
+    // Negative control: the order #489 fixed (marker first, then the locked download) is caught.
+    let before_the_lock = "fn f() {\n    write_download_marker(&dir, &file, &id, size)?;\n    mgr.download_and_verify(ExistingFile::ResumeUnverified, || Ok(()), |_, _| {})?;\n}\n";
+    assert!(markers_written_under_the_lock(before_the_lock).is_err());
+    let model = include_str!("model.rs");
+    let f = &model[model.find("pub fn download_and_verify(").expect("fn")..];
+    let f = &f[..f.find("\n    }\n").expect("ends")];
+    let guard = f.find("DownloadGuard::acquire(").expect("guard");
+    let claim = f.find("on_claimed()").expect("claim");
+    assert!(guard < claim && claim < f.find("self.final_path().exists()").expect("check"), "lock, claim, check");
+}

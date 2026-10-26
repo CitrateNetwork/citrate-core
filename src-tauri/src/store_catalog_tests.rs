@@ -1728,6 +1728,13 @@ fn tripwire_the_store_never_touches_a_file_with_a_models_marker() {
     assert!(clean.find("models_download_left(").expect("marker check") < clean.find("remove_file(").expect("delete"));
     let rec = body("fn reconcile_models(");
     assert!(rec.find("models_download_left(").expect("marker check") < rec.find(".verify_held(").expect("verify"));
+    // #463: the marker branch only confirms a match (no quarantine), then leaves the loop.
+    let marked = &rec[rec.find("if models_download_left(").expect("marker branch")..];
+    let marked = &marked[..marked.find("continue;").expect("leaves the loop")];
+    assert!(marked.contains(".confirm_held(&lock)"), "a match is confirmed under the lock");
+    for touch in [".verify_held(", ".verify()", "remove_unverified_model", "remove_file("] {
+        assert!(!marked.contains(touch), "the marker branch never runs {touch}");
+    }
     // The only other file removal is the single-use review stage (not a model).
     let stage = body("fn take_stage(");
     assert_eq!(
@@ -1735,4 +1742,104 @@ fn tripwire_the_store_never_touches_a_file_with_a_models_marker() {
         clean.matches("std::fs::remove_file(").count() + stage.matches("std::fs::remove_file(").count(),
         "every model file removal in the Store goes through remove_unverified_model_locked"
     );
+}
+
+// ---- #489: a Models download refused by the download lock leaves no marker behind ------------
+
+/// The Store's download of the listing: while it holds the file's download lock and streams, the
+/// Models screen asks for another catalog model under the same file name (refused by the lock),
+/// then the Store's stream ends short of the pinned size.
+struct ModelsAskMidStream {
+    models: PathBuf,
+    asked: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+impl crate::model::ModelTransport for ModelsAskMidStream {
+    fn total_size(&self) -> std::result::Result<u64, crate::model::ModelError> {
+        Ok(model_bytes().len() as u64)
+    }
+    fn get_from(&self, _offset: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, crate::model::ModelError> {
+        let mut other = model_bytes();
+        other[12] = 3;
+        let desc = crate::model::ModelDescriptor {
+            id: "hf:org/repo/tiny-model.gguf".to_string(),
+            source: crate::model::ModelSource::Hf,
+            repo: "org/repo".to_string(),
+            file: "tiny-model.gguf".to_string(),
+            revision: None,
+            size_bytes: other.len() as u64,
+            sha256: sha(&other),
+            kind: crate::model::ModelKind::Gguf,
+        };
+        let r = crate::model_catalog::download_tracked(&self.models, &desc.id, &desc, Box::new(MemTransport(other)), |_, _| {});
+        *self.asked.lock().unwrap() = Some(r);
+        Ok(Box::new(std::io::Cursor::new(model_bytes()[..30].to_vec())))
+    }
+}
+
+#[test]
+fn a_models_download_refused_by_the_lock_leaves_no_marker_and_the_store_partial_is_cleaned_up() {
+    let fx = Fx::standard("refused-marker");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (models, a) = (fx.models.clone(), asked.clone());
+    let transport = move |_: &str| -> Box<dyn crate::model::ModelTransport> {
+        Box::new(ModelsAskMidStream { models: models.clone(), asked: a.clone() })
+    };
+    let usage = Usage(None);
+    let t = fx.fx_targets(&usage, &transport);
+    let err = install_sync(&fx.root, &fx.key.root(), &t, 0, &st.stage_id, NOW, NOW_MS, 0, &mut |_, _| {}).unwrap_err();
+    assert_eq!(err.code, "hash_failed", "the Store's stream ended short: {err:?}");
+    let asked = asked.lock().unwrap().take().expect("the Models request ran while the Store streamed");
+    assert_eq!(asked, Err(crate::model::ModelError::AlreadyDownloading.to_string()), "refused by the lock");
+    assert!(!fx.models.join("tiny-model.gguf.download.json").exists(), "a refused Models request leaves no marker");
+    assert!(!fx.models.join("tiny-model.gguf.part").exists(), "the Store's partial bytes are cleaned up");
+    assert!(fx.fx_installed().is_empty(), "no record for the failed install");
+    assert!(crate::model_catalog::read_partial_downloads(&fx.models).is_empty(), "nothing is offered as a resume");
+    // The listing installs again from scratch.
+    let st = fx.fx_stage("tiny-model", 0).expect("stage again");
+    assert!(fx.fx_install(&st.stage_id, 0).is_ok());
+}
+
+// ---- #463: a stale Models marker does not keep a matching Store install unconfirmed -----------
+
+/// The Store's interrupted install has the pinned bytes, and a marker a failed Models download
+/// left under the same file name is beside it. Reconcile checks the file against the Store's pin
+/// without deleting anything: the match confirms the Store record.
+#[test]
+fn a_stale_models_marker_does_not_keep_a_matching_store_install_unconfirmed() {
+    let fx = interrupted_model("stale-marker", &model_bytes());
+    crate::model_catalog::write_download_marker(&fx.models, "tiny-model.gguf", "hf:org/repo/tiny-model.gguf", 99)
+        .expect("marker");
+    let listed = fx.fx_installed();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].state, "not_selected", "confirmed by its pinned hash");
+    assert!(!read_store_file(&fx.root).expect("state").installs[0].pending, "the record is confirmed");
+    assert_eq!(
+        crate::model::verified_sha256(&fx.models, "tiny-model.gguf"),
+        Some(sha(&model_bytes())),
+        "verified against the Store's pin"
+    );
+    // Remove takes the Store's own file, and the listing can be staged again.
+    fx.fx_remove("tiny-model", &Usage(None)).expect("remove");
+    assert!(!fx.models.join("tiny-model.gguf").exists());
+    assert!(fx.fx_stage("tiny-model", 0).is_ok(), "staging again is not refused");
+}
+
+/// The other side of #463: with a marker present, a file of another size is not the Store's. It is
+/// never quarantined or removed (the marker's owner decides), and the record waits.
+#[test]
+fn a_models_marker_file_of_another_size_is_kept_and_the_store_record_waits() {
+    let mut b = model_bytes();
+    b.extend_from_slice(&[9u8; 7]);
+    let fx = interrupted_model("marker-size", &b);
+    crate::model_catalog::write_download_marker(&fx.models, "tiny-model.gguf", "some-catalog-model", b.len() as u64)
+        .expect("marker");
+    let listed = fx.fx_installed();
+    assert_eq!(listed[0].state, "missing");
+    assert!(read_store_file(&fx.root).expect("state").installs[0].pending, "still pending");
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b), "the Models file is intact");
+    assert!(fx.models.join("tiny-model.gguf.download.json").exists(), "and its marker");
+    assert!(!crate::model::is_file_ready(&fx.models, "tiny-model.gguf"), "not verified against the Store's pin");
 }

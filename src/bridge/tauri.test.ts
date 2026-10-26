@@ -334,6 +334,8 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       const a = (args ?? {}) as { providerId: string; message: string };
       return { consentId: "cc_minted", providerId: a.providerId, expiresAtMs: 1 };
     }
+    case "chat_consent_drop":
+      return null;
     case "ai_chat": {
       const a = (args ?? {}) as { providerId: string; messagesJson: string; contextJson: string };
       if (!aiMock.map.has(a.providerId)) throw "ai: no provider configured for that id";
@@ -919,6 +921,12 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
     const c = await bridge.chat.consentPrepare("gateway", "hello");
     expect(invokeMock).toHaveBeenCalledWith("chat_consent_prepare", { providerId: "gateway", message: "hello" });
     expect(c.consentId).toBe("cc_minted");
+  });
+
+  it("consentDrop invokes chat_consent_drop with only the consent id", async () => {
+    const bridge = createTauriBridge();
+    await bridge.chat.consentDrop("cc_minted");
+    expect(invokeMock).toHaveBeenCalledWith("chat_consent_drop", { consentId: "cc_minted" });
   });
 
   it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {

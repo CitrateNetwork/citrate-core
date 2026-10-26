@@ -3166,7 +3166,8 @@ export class Store {
    *  3. otherwise ask the member: restart the local model, or send this message to the gateway
    *     this time. The gateway provider is built for this message only; the held route stays, so
    *     the next message asks again. Restart never falls back to the gateway.
-   * Stop (the turn's abort signal) cancels at any point; nothing is sent.
+   * Stop (the turn's abort signal) cancels at any point; nothing is sent. A consent core minted for
+   * the question is dropped in core on every exit except the gateway send that carries it.
    */
   private async routeHeldMessage(
     msgId: string,
@@ -3180,6 +3181,8 @@ export class Store {
       await this.rebuildProvider();
       return this.routeKind === "local" && this.provider ? this.provider : null;
     };
+    // K2: the consent core minted for this question, until it is handed to the gateway provider.
+    let consent: ChatConsent | null = null;
     try {
       let local = await localNow();
       if (local) return { ok: true, provider: local };
@@ -3203,7 +3206,6 @@ export class Store {
       }
       // K2: core mints the one-time consent for this message when the question opens. Core sends
       // nothing to the gateway without it, so a failed mint offers no gateway send.
-      let consent: ChatConsent | null = null;
       if (this.routeAsk.gateway) {
         consent = await bridge.chat.consentPrepare(this.state.aiDefault, text).catch(() => null);
       }
@@ -3221,6 +3223,7 @@ export class Store {
         if (!consent) return { ok: false, error: GATEWAY_CONSENT_UNAVAILABLE };
         const def = consent.providerId;
         const consentId = consent.consentId;
+        consent = null; // carried to core with the send, so not dropped below
         return {
           ok: true,
           provider: createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) =>
@@ -3239,6 +3242,9 @@ export class Store {
     } finally {
       this.localModelChoice = null;
       this.setState({ chatRouteHold: null });
+      // K2: closed without the gateway send (cancel, stop, the local model, an error): drop the
+      // consent in core so it cannot be used later. Best effort: it expires in core regardless.
+      if (consent) void bridge.chat.consentDrop(consent.consentId).catch(() => undefined);
     }
   }
 

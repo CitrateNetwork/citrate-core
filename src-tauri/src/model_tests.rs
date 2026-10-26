@@ -752,7 +752,7 @@ fn a_download_never_quarantines_a_different_verified_model_with_the_same_name() 
     let mgr = ModelManager::new(dir.clone(), Box::new(FixtureTransport::new(mine.clone())), sha256_hex(&mine), mine.len() as u64)
         .with_file("m.gguf".to_string());
     for existing in [ExistingFile::ResumeUnverified, ExistingFile::Refuse] {
-        assert!(mgr.download_and_verify(existing, |_, _| {}).is_err(), "{existing:?}");
+        assert!(mgr.download_and_verify(existing, || Ok(()), |_, _| {}).is_err(), "{existing:?}");
         assert_eq!(std::fs::read(dir.join("m.gguf")).ok(), Some(other.clone()), "{existing:?}: the other model is kept");
         assert!(is_file_ready(&dir, "m.gguf"), "{existing:?}: and still verified");
     }
@@ -766,9 +766,9 @@ fn a_download_still_finishes_its_own_unverified_file_and_skips_its_own_verified_
     std::fs::write(dir.join("m.gguf"), &body).unwrap();
     let mgr = ModelManager::new(dir.clone(), Box::new(FixtureTransport::new(body.clone())), sha256_hex(&body), body.len() as u64)
         .with_file("m.gguf".to_string());
-    mgr.download_and_verify(ExistingFile::ResumeUnverified, |_, _| {}).expect("verified in place");
+    mgr.download_and_verify(ExistingFile::ResumeUnverified, || Ok(()), |_, _| {}).expect("verified in place");
     assert!(is_file_ready(&dir, "m.gguf"));
-    mgr.download_and_verify(ExistingFile::ResumeUnverified, |_, _| {}).expect("already verified");
-    assert!(mgr.download_and_verify(ExistingFile::Refuse, |_, _| {}).is_err(), "Refuse never takes an existing file");
+    mgr.download_and_verify(ExistingFile::ResumeUnverified, || Ok(()), |_, _| {}).expect("already verified");
+    assert!(mgr.download_and_verify(ExistingFile::Refuse, || Ok(()), |_, _| {}).is_err(), "Refuse never takes an existing file");
     assert!(is_file_ready(&dir, "m.gguf"), "and leaves it as it was");
 }
