@@ -676,11 +676,23 @@ pub fn load(dir: &Path, keyring: std::sync::Arc<dyn AiKeyring>, now_ms: u64) -> 
     };
     let (Ok(key), Ok(anchor)) = (
         mac_key(keyring.as_ref(), GUARD_MAC_ACCOUNT),
-        crate::provider_usage_log::read_anchor(keyring.as_ref()),
+        crate::provider_usage_log::read_anchor_opt(keyring.as_ref()),
     ) else {
         return failed(None, keyring, 0);
     };
     let path = guard_path(dir);
+    // A saved guard file always has an anchor next to it; one without it is not trusted.
+    let Some(anchor) = anchor else {
+        return if path.exists() {
+            failed(Some(key), keyring, 0)
+        } else {
+            GuardBook {
+                mac_key: Some(key),
+                keyring: Some(keyring),
+                ..GuardBook::default()
+            }
+        };
+    };
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && anchor.guard_gen == 0 => {
