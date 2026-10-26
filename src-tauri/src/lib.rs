@@ -193,6 +193,9 @@ mod windows_installer_hook_tests;
 // 0.5.1 -> 0.5.2: the app data a 0.5.1 install holds, and the updater feed it trusts.
 #[cfg(test)]
 mod upgrade_updater_feed_tests;
+// RC52 G8: the K1-L update-e2e driver (feature `updater-e2e`, test builds only; guard tests always).
+#[cfg(test)]
+mod updater_e2e;
 #[cfg(test)]
 mod upgrade_v051_tests;
 

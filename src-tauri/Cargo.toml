@@ -180,3 +180,8 @@ citrate-templates = { path = "../templates/renderer" }
 # K5a test-only: sign Store catalog fixtures with a throwaway minisign-format key (BLAKE2b-512
 # prehash). Already in Cargo.lock via citrate-components' dev-dependencies (no new crates).
 blake2 = "0.10"
+# RC52 G8 test-only: run tauri-plugin-updater's own check/download/verify against a loopback feed in a
+# mock app (`test` adds no crates), and check the golden signatures as `minisign -V` does
+# (minisign-verify is already in Cargo.lock: tauri-plugin-updater and citrate-components use it).
+tauri = { version = "2", features = ["test"] }
+minisign-verify = "0.2"
