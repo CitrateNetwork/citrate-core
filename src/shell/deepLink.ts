@@ -1,7 +1,8 @@
 // GROW-S1 — wire the OS `citrate://` deep-link into the app (the one-tap cold-start hand-off from the
 // web join page). Two cases: the app was LAUNCHED by the link (getCurrent) and the app was ALREADY
-// running when the link fired (onOpenUrl). Both route to store.handleDeepLink → parseJoinLink → Groups.
-// Tauri-only; a no-op (and never throws) in the web/sim preview where the plugin isn't present.
+// running when the link fired (onOpenUrl). Both route to store.handleDeepLink, which hands a v2 invite
+// (`citrate://join/<code>#K`, `https://citrate.ai/join/<code>#K`) straight to Rust and keeps nothing
+// of it here; the URL is never logged. Tauri-only; a no-op (and never throws) in the web/sim preview.
 import type { Store } from "./store";
 import { BRIDGE_MODE } from "../bridge/mode";
 
