@@ -31,8 +31,9 @@ CARGO_TARGET_DIR=<your own target dir> scripts/e2e/moneypath-anvil.sh --chain ..
 Exit 0 means all three flows matched their goldens. The script also checks that the one e2e test
 ran: a cargo filter that matches nothing would otherwise exit 0.
 
-It takes about 4 minutes on an M-series Mac with a warm cargo cache: about 2.5 minutes for forge to
-compile and deploy, and under 2 minutes for the flows. It is not in CI, because CI does not run forge
+A run took 5.3 minutes on an M-series Mac (2026-10-26). Most of that is forge compiling and
+deploying the contracts (about 2.5 minutes) and cargo building the test binary. The flows take
+10 to 90 seconds, mostly mining. It is not in CI, because CI does not run forge
 or anvil for core. The goldens' truth labels are checked in CI (see "What CI checks").
 
 ## Which chain it pins

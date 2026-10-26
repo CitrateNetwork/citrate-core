@@ -1208,7 +1208,15 @@ fn anvil_moneypath_genesis_set() {
             (FLOWS[2], run_lsp_withdrawal),
         ];
         for (flow, run) in runs {
-            let steps = run(&mut w).map_err(|e| format!("{flow}: {e}"))?;
+            // A flow that cannot finish leaves the chain in a state the later flows were not
+            // recorded from, so the run stops there, keeping the drift already found.
+            let steps = match run(&mut w) {
+                Ok(steps) => steps,
+                Err(e) => {
+                    failures.push(format!("moneypath e2e: {flow} could not finish: {e}"));
+                    break;
+                }
+            };
             if let Err(e) = check_or_update(flow, steps, env.update) {
                 failures.push(e);
             }
