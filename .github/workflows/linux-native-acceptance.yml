@@ -5,6 +5,10 @@
 # update, inside a sealed namespace with a private Xvfb display (scripts/ci/linux-native-acceptance.sh).
 # x86_64 runs on ubuntu-24.04 and aarch64 on ubuntu-24.04-arm. The DGX runs the aarch64 leg
 # natively by hand (docs/LINUX_NATIVE_ACCEPTANCE.md). Not a required check.
+# RC52 G8: the `update-e2e` job builds two test AppImages (N pins a throwaway updater key and a
+# loopback feed; N+1 is signed with it) and proves in the same sealed namespace that N installs N+1
+# and restarts into it, and refuses an altered signature, another key, an altered artifact and a
+# feed that is not newer (docs/UPDATER_E2E.md). The release updater keys are never used here.
 name: linux-native-acceptance
 
 on:
@@ -15,6 +19,12 @@ on:
       - "scripts/ci/linux-native-acceptance/**"
       - "scripts/ci/lib/**"
       - ".github/workflows/linux-native-acceptance.yml"
+      # update-e2e: the updater, its pinned config and the driver
+      - "src-tauri/src/updater_e2e.rs"
+      - "src-tauri/tauri.conf.json"
+      - "src-tauri/Cargo.toml"
+      - "Cargo.lock"
+      - "fixtures/updater-e2e/**"
   push:
     branches: [main, "release/**"]
     paths:
@@ -22,6 +32,12 @@ on:
       - "scripts/ci/linux-native-acceptance/**"
       - "scripts/ci/lib/**"
       - ".github/workflows/linux-native-acceptance.yml"
+      # update-e2e: the updater, its pinned config and the driver
+      - "src-tauri/src/updater_e2e.rs"
+      - "src-tauri/tauri.conf.json"
+      - "src-tauri/Cargo.toml"
+      - "Cargo.lock"
+      - "fixtures/updater-e2e/**"
 
 permissions:
   contents: read
@@ -111,5 +127,72 @@ jobs:
         with:
           name: linux-native-acceptance-${{ matrix.arch }}
           path: k1l-logs
+          if-no-files-found: warn
+          retention-days: 14
+
+  update-e2e:
+    name: updater e2e (${{ matrix.arch }})
+    needs: self-test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      # citrate-core builds against the private citrate-chain crates (as in ci.yml).
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Authenticate to private federation repos (citrate-chain)
+        if: ${{ env.CHAIN_TOKEN != '' }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install the build deps and the harness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libgtk-3-dev file xvfb dbus dbus-x11 gnome-keyring iproute2 python3
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: update-e2e-${{ matrix.arch }}
+      - run: npm ci
+      - name: Allow unprivileged user namespaces
+        shell: bash
+        run: |
+          if ! unshare --user --map-root-user --pid --fork --mount-proc --net true 2>/dev/null; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --pid --fork --mount-proc --net true
+      - name: Build N and N+1 with a throwaway updater key (private halves deleted after signing)
+        shell: bash
+        run: scripts/ci/linux-native-acceptance/update-e2e-build.sh --out "$RUNNER_TEMP/k1l-ue"
+      - name: Run update-e2e in the sealed namespace
+        shell: bash
+        run: |
+          scripts/ci/linux-native-acceptance.sh --update-e2e "$RUNNER_TEMP/k1l-ue" \
+            --work "$RUNNER_TEMP/k1l-work" --log-dir "$GITHUB_WORKSPACE/k1l-ue-logs"
+      - name: Upload update-e2e logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-native-acceptance-update-e2e-${{ matrix.arch }}
+          path: k1l-ue-logs
           if-no-files-found: warn
           retention-days: 14

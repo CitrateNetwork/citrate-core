@@ -10,6 +10,11 @@
 #            ends the app and every process it started; no listening socket is left
 #   reap     after the app is killed with SIGKILL, the next launch stops the orphaned sidecars
 #            of the earlier run before it starts its own; then quit is clean again
+#   update-e2e  (--update-e2e DIR, RC52 G8) the app's own updater, end to end: a test build N
+#            that pins a throwaway key finds N+1 on a loopback feed, verifies its signature,
+#            installs it and restarts into it; an altered signature, another key's signature,
+#            an altered artifact and a feed that is not newer are each refused with no restart.
+#            DIR comes from linux-native-acceptance/update-e2e-build.sh; docs/UPDATER_E2E.md
 #
 # Plan and criteria: .agentile/sprints/active/sprint-scl-s14-native/S14.6_LINUX_PLAN.md.
 # How to run it safely: docs/LINUX_NATIVE_ACCEPTANCE.md.
@@ -29,6 +34,8 @@
 #   scripts/ci/linux-native-acceptance.sh --fetch <aarch64|x86_64> [--cache DIR] ...
 #        download the packages pinned in linux-native-acceptance/pins.txt (sha256-checked);
 #        add --fetch-only to download and stop
+#   scripts/ci/linux-native-acceptance.sh --update-e2e DIR [--log-dir DIR] [--work DIR]
+#        the update-e2e scenario on the AppImages update-e2e-build.sh wrote to DIR
 #   scripts/ci/linux-native-acceptance.sh --self-test [--log-dir DIR]
 #        run the scenarios against a stand-in app in five modes (one good, four broken) and
 #        require PASS for the good one and the matching FAIL for each broken one
@@ -40,6 +47,8 @@
 #   K1L_REQUIRED         sidecars that must start on launch (default "citrate")
 #   K1L_RESTART_TARGET   sidecar the restart scenario kills (default citrate)
 #   K1L_QUIT             x11 (default) or term (SIGTERM to the app; the self-test uses it)
+#   K1L_UE_TIMEOUT       update-e2e: seconds for an outcome line (default 240)
+#   K1L_UE_SETTLE        update-e2e: seconds to watch for a restart after a refusal (default 15)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -56,7 +65,7 @@ die() { echo "::error::$*" >&2; exit 2; }
 # Outer phase: stage the packages, then enter the namespace.
 # ============================================================================================
 outer_main() {
-  local DEB="" DEB_FROM="" AI="" AI_FROM="" FETCH="" CACHE="" WORK="" LOG_DIR="" SELFTEST=0 FETCH_ONLY=0
+  local DEB="" DEB_FROM="" AI="" AI_FROM="" FETCH="" CACHE="" WORK="" LOG_DIR="" SELFTEST=0 FETCH_ONLY=0 UE=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --deb) DEB="$2"; shift 2 ;;
@@ -69,7 +78,8 @@ outer_main() {
       --log-dir) LOG_DIR="$2"; shift 2 ;;
       --self-test) SELFTEST=1; shift ;;
       --fetch-only) FETCH_ONLY=1; shift ;;
-      -h|--help) sed -n '2,46p' "$SELF"; exit 0 ;;
+      --update-e2e) UE="$2"; shift 2 ;;
+      -h|--help) sed -n '2,56p' "$SELF"; exit 0 ;;
       *) die "unknown argument: $1" ;;
     esac
   done
@@ -105,9 +115,9 @@ outer_main() {
     self_test "$WORK" "${LOG_DIR:-$WORK/self-test-logs}"
     exit $?
   fi
-  [ -n "$DEB$AI" ] || die "nothing to test: pass --deb and/or --appimage (or --fetch)"
+  [ -n "$DEB$AI$UE" ] || die "nothing to test: pass --deb and/or --appimage (or --fetch), or --update-e2e"
   local RUN; RUN="$(mktemp -d "$WORK/run.XXXXXX")" || die "mktemp failed"
-  stage_and_enter "$RUN" "$DEB" "$DEB_FROM" "$AI" "$AI_FROM" "${K1L_QUIT:-x11}"
+  stage_and_enter "$RUN" "$DEB" "$DEB_FROM" "$AI" "$AI_FROM" "${K1L_QUIT:-x11}" "$UE"
   local rc=$?
   if [ -n "$LOG_DIR" ]; then mkdir -p "$LOG_DIR" && cp -r "$RUN/logs/." "$LOG_DIR/"; fi
   cleanup_run "$RUN" "$WORK"
@@ -152,8 +162,8 @@ is_appimage() { # ELF with the AppImage type-2 magic "AI\x02" at offset 8
     [ "$(dd if="$1" bs=1 skip=8 count=3 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 414902 ]
 }
 
-stage_and_enter() { # run deb deb_from ai ai_from quit
-  local RUN="$1" DEB="$2" DEB_FROM="$3" AI="$4" AI_FROM="$5" QUIT="$6"
+stage_and_enter() { # run deb deb_from ai ai_from quit [update-e2e dir]
+  local RUN="$1" DEB="$2" DEB_FROM="$3" AI="$4" AI_FROM="$5" QUIT="$6" UE="${7:-}"
   mkdir -p "$RUN/pkgs" "$RUN/logs"
   local KINDS="" src dst
   for pair in "to.deb:$DEB" "from.deb:$DEB_FROM" "to.AppImage:$AI" "from.AppImage:$AI_FROM"; do
@@ -169,6 +179,18 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
   done
   [ -f "$RUN/pkgs/to.deb" ] && KINDS="deb"
   [ -f "$RUN/pkgs/to.AppImage" ] && KINDS="$KINDS appimage"
+  if [ -n "$UE" ]; then
+    # update-e2e inputs (update-e2e-build.sh): N and N+1 AppImages, N+1's signatures, versions.
+    local f
+    for f in from.AppImage to.AppImage to.AppImage.sig to.AppImage.other.sig versions; do
+      [ -f "$UE/$f" ] || { echo "::error::update-e2e input missing: $UE/$f"; return 2; }
+      cp -- "$UE/$f" "$RUN/pkgs/ue-$f" || return 2
+    done
+    is_appimage "$RUN/pkgs/ue-from.AppImage" && is_appimage "$RUN/pkgs/ue-to.AppImage" ||
+      { echo "::error::update-e2e: not type-2 AppImages"; return 2; }
+    echo "staged update-e2e <- $UE ($(tr '\n' ' ' <"$UE/versions"))"
+    KINDS="$KINDS update-e2e"
+  fi
   # Host facts the inner probes check against; the inner side cannot see them any more.
   # The inner side runs from a copy of the harness inside the run dir: the checkout may live
   # under /tmp or /home, which the namespace hides.
@@ -193,6 +215,7 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
       K1L_RESTART_TIMEOUT="${K1L_RESTART_TIMEOUT:-90}" K1L_QUIT_TIMEOUT="${K1L_QUIT_TIMEOUT:-60}" \
       K1L_REQUIRED="${K1L_REQUIRED:-citrate}" K1L_RESTART_TARGET="${K1L_RESTART_TARGET:-citrate}" \
       K1L_EXTRA_ENV="${K1L_EXTRA_ENV:-}" \
+      K1L_UE_TIMEOUT="${K1L_UE_TIMEOUT:-240}" K1L_UE_SETTLE="${K1L_UE_SETTLE:-15}" \
       bash "$RUN/harness/scripts/ci/linux-native-acceptance.sh" --inner
   local rc=$?
   [ -f "$RUN/logs/summary.txt" ] && cat "$RUN/logs/summary.txt"
@@ -773,6 +796,177 @@ stop_session_services() {
   INFRA_PIDS=("${keep[@]}")
 }
 
+# --------------------------------------------------------------------------------------------
+# update-e2e (RC52 G8): the app's own updater, end to end, on the packaged AppImage.
+# N pins a throwaway key and polls http://127.0.0.1:<port>/latest.json, served here on loopback
+# inside the namespace. Each case installs N afresh, launches it with CITRATE_UPDATER_E2E=1 (the
+# test build then checks, downloads, verifies, installs and restarts by itself; src-tauri/src/
+# updater_e2e.rs) and reads its `updater-e2e:` lines. The outcome is also checked without the log:
+# the AppImage file on disk, and the binary the running process executes.
+# --------------------------------------------------------------------------------------------
+ue_ver() { sed -n "s/^$1=//p" "$W/pkgs/ue-versions"; }
+
+ue_write_feed() { # version sig-file artifact-name
+  python3 -I - "$1" "$(tr -d '\n' <"$2")" "http://127.0.0.1:$UE_PORT/$3" "$(uname -m)" \
+    >"$W/feed/latest.json.new" <<'PY'
+import json, sys
+version, sig, url, arch = sys.argv[1:5]
+entry = {"signature": sig, "url": url}
+print(json.dumps({"version": version, "notes": "K1-L update-e2e (throwaway key, not a release)",
+                  "pub_date": "2026-10-26T00:00:00Z",
+                  "platforms": {f"linux-{arch}-appimage": entry, f"linux-{arch}": entry}}))
+PY
+  mv -f "$W/feed/latest.json.new" "$W/feed/latest.json"
+}
+
+# The .sig text with one bit of the Ed25519 signature flipped: same framing and key id.
+ue_alter_sig() { # in out
+  python3 -I - "$1" "$2" <<'PY'
+import base64, sys
+lines = base64.b64decode(open(sys.argv[1]).read().strip()).decode().split("\n")
+raw = bytearray(base64.b64decode(lines[1])); raw[40] ^= 1
+lines[1] = base64.b64encode(bytes(raw)).decode()
+open(sys.argv[2], "w").write(base64.b64encode("\n".join(lines).encode()).decode())
+PY
+}
+
+# Requests the loopback feed served since line <mark> of its log.
+ue_feed_hits() { tail -n +"$(($1 + 1))" "$W/logs/feed-http.log"; }
+ue_sha() { sha256sum <"$1" 2>/dev/null | cut -d' ' -f1; }
+ue_lines() { grep -c "^updater-e2e: $1" "$2" 2>/dev/null; }
+
+# Topmost ancestor of a pid below PID 1 (the AppImage runtime the app runs under).
+ue_root_of() { local p="$1" pp; while pp="$(ppid_of "$p")" && [ "$pp" != 1 ] && [ "$pp" != 0 ]; do p="$pp"; done; echo "$p"; }
+
+ue_case() { # name feed-version sig-file artifact expect (install | no-update | refused:<error text>)
+  local name="$1" fver="$2" sig="$3" art="$4" expect="$5"
+  local log="$W/logs/app-update-e2e-$name.log" i done_re mark
+  mark="$(wc -l <"$W/logs/feed-http.log")"
+  ue_write_feed "$fver" "$sig" "$art"
+  mkdir -p "$W/apps"
+  cp -f "$W/pkgs/ue-from.AppImage" "$W/apps/Citrate-Core.AppImage.new" && chmod +x "$W/apps/Citrate-Core.AppImage.new" &&
+    mv -f "$W/apps/Citrate-Core.AppImage.new" "$W/apps/Citrate-Core.AppImage" ||
+    { fail "update-e2e $name: could not place N"; return 1; }
+  APP_EXE="$W/apps/Citrate-Core.AppImage"
+  : >"$log"
+  local -a envv=(HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" XDG_DATA_HOME="$HOME_DIR/.local/share"
+    XDG_CACHE_HOME="$HOME_DIR/.cache" XDG_STATE_HOME="$HOME_DIR/.local/state"
+    XDG_RUNTIME_DIR="$XRT" DBUS_SESSION_BUS_ADDRESS="unix:path=$XRT/bus" DISPLAY="$K1L_PRIVATE_DISPLAY"
+    NO_AT_BRIDGE=1 TMPDIR=/tmp APPIMAGE_EXTRACT_AND_RUN=1 CITRATE_UPDATER_E2E=1)
+  env "${envv[@]}" "$APP_EXE" </dev/null >>"$log" 2>&1 &
+  APP_PID=$!
+  if [ "$expect" = install ]; then done_re="^updater-e2e: (running version=$UE_TO |refused|check-error|not run)"
+  else done_re="^updater-e2e: (no-update|refused|check-error|not run|installed)"; fi
+  for i in $(seq 1 "$K1L_UE_TIMEOUT"); do
+    grep -qE "$done_re" "$log" && break
+    [ "$expect" != install ] && ! alive "$APP_PID" && break
+    sleep 1
+  done
+  local outcome; outcome="$(grep -E '^updater-e2e: (no-update|refused|check-error|not run|installed)' "$log" | head -1)"
+  local n_running; n_running="$(ue_lines running "$log")"
+  local disk; disk="$(ue_sha "$APP_EXE")"
+  if [ "$expect" = install ]; then
+    local new_pid old_pid ok=1
+    old_pid="$(sed -n "s/^updater-e2e: running version=$UE_FROM pid=\([0-9]*\).*/\1/p" "$log" | head -1)"
+    new_pid="$(sed -n "s/^updater-e2e: running version=$UE_TO pid=\([0-9]*\).*/\1/p" "$log" | head -1)"
+    # N+1 runs the same driver: on the same feed it must find itself up to date (no loop).
+    for i in $(seq 1 60); do grep -q "^updater-e2e: no-update current=$UE_TO" "$log" && break; sleep 1; done
+    if [ -z "$new_pid" ]; then
+      fail "update-e2e $name: N did not restart into $UE_TO within ${K1L_UE_TIMEOUT}s (outcome: ${outcome:-none})"
+      tail -n 20 "$log" | sed 's/^/    | /' | tee -a "$SUMMARY"
+      stop_strays; return 1
+    fi
+    grep -q "^updater-e2e: available version=$UE_TO" "$log" && grep -q "^updater-e2e: installed version=$UE_TO" "$log" ||
+      { ok=0; say "    no 'available'/'installed' line for $UE_TO"; }
+    [ "$disk" = "$UE_TO_SHA" ] || { ok=0; say "    AppImage on disk ${disk:0:16} is not N+1 ${UE_TO_SHA:0:16}"; }
+    [ -n "$old_pid" ] && [ "$old_pid" != "$new_pid" ] && ! alive "$old_pid" ||
+      { ok=0; say "    N (pid ${old_pid:-?}) is still running or did not log its pid"; }
+    local ran; ran="$(ue_sha "/proc/$new_pid/exe")"
+    [ -n "$ran" ] && [ "$ran" = "$UE_TO_BIN_SHA" ] ||
+      { ok=0; say "    pid $new_pid runs ${ran:0:16}, N+1's citrate-core is ${UE_TO_BIN_SHA:0:16}"; }
+    grep -q "^updater-e2e: no-update current=$UE_TO" "$log" ||
+      { ok=0; say "    N+1 did not find itself up to date on the same feed"; }
+    ue_feed_hits "$mark" | grep -q "GET /to.AppImage " || { ok=0; say "    the artifact was never downloaded"; }
+    if [ "$ok" -eq 1 ]; then
+      pass "update-e2e $name: $UE_FROM found $UE_TO, verified, installed and restarted into it (pid $old_pid -> $new_pid; the running binary and the AppImage on disk are N+1's)"
+    else
+      fail "update-e2e $name: the update did not complete as expected"
+    fi
+    APP_PID="$(ue_root_of "$new_pid")"
+    quit_app update-e2e "$name"
+    return 0
+  fi
+  # A refusal: N reports it, keeps running, and nothing changes on disk.
+  sleep "$K1L_UE_SETTLE"
+  local ok=1 want_line
+  case "$expect" in
+    no-update) want_line="^updater-e2e: no-update current=$UE_FROM" ;;
+    refused:*) want_line="^updater-e2e: refused version=[^ ]* error=${expect#refused:}\$" ;;
+  esac
+  grep -qE "$want_line" "$log" || { ok=0; say "    expected '${expect}', got: ${outcome:-no outcome line}"; }
+  [ "$(ue_lines running "$log")" = 1 ] && [ "$n_running" = 1 ] || { ok=0; say "    the app started more than once (restart)"; }
+  alive "$APP_PID" || { ok=0; say "    N is no longer running"; }
+  [ "$(ue_sha "$APP_EXE")" = "$UE_FROM_SHA" ] || { ok=0; say "    the AppImage on disk changed"; }
+  [ -z "$(grep -l "^updater-e2e: installed" "$log")" ] || { ok=0; say "    the app reported an install"; }
+  if [ "$expect" = no-update ] && ue_feed_hits "$mark" | grep -q "GET /to"; then
+    ok=0; say "    the artifact was downloaded for a feed that is not newer"
+  fi
+  if [ "$ok" -eq 1 ]; then
+    pass "update-e2e $name: refused ($(echo "$outcome" | sed 's/^updater-e2e: //')); N kept running, AppImage unchanged, no restart"
+  else
+    fail "update-e2e $name: not refused cleanly"
+    tail -n 20 "$log" | sed 's/^/    | /' | tee -a "$SUMMARY"
+  fi
+  quit_app update-e2e "$name"
+}
+
+UE_PORT="" UE_FROM="" UE_TO="" UE_FROM_SHA="" UE_TO_SHA="" UE_TO_BIN_SHA=""
+run_update_e2e() {
+  UE_FROM="$(ue_ver from)"; UE_TO="$(ue_ver to)"; UE_PORT="$(ue_ver port)"
+  [ -n "$UE_FROM" ] && [ -n "$UE_TO" ] && [ -n "$UE_PORT" ] || { fail "update-e2e: bad versions file"; return 1; }
+  HOME_DIR="$W/home-update-e2e"
+  # A member's HOME has ~/.cache; the AppImage installer stages its backup there when /tmp is
+  # another filesystem (as here, and on many desktops).
+  mkdir -p "$HOME_DIR/.cache"
+  UE_FROM_SHA="$(ue_sha "$W/pkgs/ue-from.AppImage")"; UE_TO_SHA="$(ue_sha "$W/pkgs/ue-to.AppImage")"
+  ( mkdir -p "$W/ref-ue-to" && cp "$W/pkgs/ue-to.AppImage" "$W/ref-ue-to.AppImage" && chmod +x "$W/ref-ue-to.AppImage" &&
+    cd "$W/ref-ue-to" && "$W/ref-ue-to.AppImage" --appimage-extract >>"$W/logs/ref-extract.log" 2>&1 ) &&
+    rm -f -- "$W/ref-ue-to.AppImage"
+  UE_TO_BIN_SHA="$(ue_sha "$W/ref-ue-to/squashfs-root/usr/bin/citrate-core")"
+  [ -n "$UE_TO_BIN_SHA" ] || { fail "update-e2e: could not extract N+1 for reference (logs/ref-extract.log)"; return 1; }
+  say "     update-e2e: N $UE_FROM ${UE_FROM_SHA:0:16}, N+1 $UE_TO ${UE_TO_SHA:0:16} (citrate-core ${UE_TO_BIN_SHA:0:16}), feed 127.0.0.1:$UE_PORT"
+  # The feed directory: N+1, an altered copy of it, and the three signatures.
+  mkdir -p "$W/feed"
+  cp "$W/pkgs/ue-to.AppImage" "$W/feed/to.AppImage" && cp "$W/pkgs/ue-to.AppImage" "$W/feed/to-altered.AppImage" &&
+    python3 -I -c 'import sys; f=open(sys.argv[1],"r+b"); f.seek(-1,2); b=f.read(1); f.seek(-1,2); f.write(bytes([b[0]^1]))' \
+      "$W/feed/to-altered.AppImage" || { fail "update-e2e: could not stage the feed"; return 1; }
+  ue_alter_sig "$W/pkgs/ue-to.AppImage.sig" "$W/pkgs/ue-to.AppImage.altered.sig" ||
+    { fail "update-e2e: could not make the altered signature"; return 1; }
+  start_session_services update-e2e || { fail "update-e2e session: could not start the private bus/keyring"; return 1; }
+  # The loopback feed server is part of the test session, like the bus: not counted as a stray.
+  python3 -I -m http.server "$UE_PORT" --bind 127.0.0.1 --directory "$W/feed" \
+    </dev/null >>"$W/logs/feed-http.log" 2>&1 &
+  local srv=$! i
+  INFRA_PIDS+=("$srv"); SESSION_PIDS+=("$srv")
+  for i in $(seq 1 50); do ss -Hltn | grep -q "127.0.0.1:$UE_PORT " && break; sleep 0.1; done
+  ss -Hltn | grep -q "127.0.0.1:$UE_PORT " || { fail "update-e2e: the loopback feed did not come up"; return 1; }
+  infra_tree; BASE_SOCKETS="$(listening "${INFRA_TREE[@]}")"
+  local sig="$W/pkgs/ue-to.AppImage.sig"
+  # Refusals first, each from a fresh N: a not-newer feed (same and older version), an altered
+  # signature, another key's signature, an altered artifact. Then the real update.
+  local c
+  for c in "same-version|$UE_FROM|$sig|to.AppImage|no-update" \
+           "older-version|0.0.1|$sig|to.AppImage|no-update" \
+           "altered-signature|$UE_TO|$W/pkgs/ue-to.AppImage.altered.sig|to.AppImage|refused:The signature verification failed" \
+           "other-key|$UE_TO|$W/pkgs/ue-to.AppImage.other.sig|to.AppImage|refused:The signature was created with a different key than the one provided" \
+           "altered-artifact|$UE_TO|$sig|to-altered.AppImage|refused:The signature verification failed" \
+           "signed-update|$UE_TO|$sig|to.AppImage|install"; do
+    IFS='|' read -r n v s a e <<<"$c"
+    ue_case "$n" "$v" "$s" "$a" "$e" || true
+  done
+  stop_session_services
+}
+
 inner_main() {
   pidns_assert_init || { echo "::error::--inner must be PID 1 and its own group leader in a fresh PID namespace" >&2; exit 2; }
   # Handles on two directories the seal will hide, taken now, for the probes' negative controls.
@@ -790,7 +984,7 @@ inner_main() {
     local r; for r in to.deb from.deb; do
       [ -f "$W/pkgs/$r" ] && echo "package:  $r $(dpkg-deb -f "$W/pkgs/$r" Version) $(sha256sum <"$W/pkgs/$r" | cut -c1-16)"
     done
-    for r in to.AppImage from.AppImage; do
+    for r in to.AppImage from.AppImage ue-from.AppImage ue-to.AppImage; do
       [ -f "$W/pkgs/$r" ] && echo "package:  $r $(sha256sum <"$W/pkgs/$r" | cut -c1-16)"
     done
   } >"$SUMMARY"
@@ -827,7 +1021,10 @@ inner_main() {
   local kind
   for kind in $K1L_KINDS; do
     say "== $kind"
-    run_kind "$kind" || true
+    case "$kind" in
+      update-e2e) run_update_e2e || true ;;
+      *) run_kind "$kind" || true ;;
+    esac
   done
 
   # Final check before PID 1 exits (the kernel would kill any leftover and hide it).
