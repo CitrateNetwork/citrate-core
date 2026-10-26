@@ -5,8 +5,10 @@ import { TierPanel } from "./TierPanel";
 import { PersonaPicker } from "../components/PersonaPicker";
 import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
+import { ActivationTxPanel } from "./ActivationTxPanel";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import { PendingJoinCard, InvitePasteField } from "../surfaces/PendingJoinCard";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -87,6 +89,11 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
+          {s.pendingJoin && (
+            <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
+              <PendingJoinCard store={store} s={s} />
+            </div>
+          )}
           <div style={eyebrow}>Chain 40204 · testnet-beta</div>
         </div>
       </div>
@@ -143,6 +150,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
         <div style={{ minHeight: 0, overflow: "auto", display: "flex", justifyContent: "center", padding: "56px 32px" }}>
           <div style={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", gap: 22 }}>
             <ClaimBanner store={store} s={s} />
+            <OnboardingInvite store={store} s={s} />
             {s.stage === "s1" && <S1 store={store} s={s} />}
             {s.stage === "s2" && <S2 store={store} s={s} />}
             {s.stage === "s3" && <S3 store={store} s={s} />}
@@ -283,6 +291,31 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
  * one-tap switch. It is DISPLAY ONLY — it grants nothing; the authority sign-in and the
  * server-side sub↔order reconciler are the sole gates (A8/A2).
  */
+// GROW-S1 task 12 — an invite that arrived (deep link) or was pasted waits here through setup. Before
+// sign-in + wallet the card says the join comes after setup; from the wallet step on it offers
+// Review, then one explicit "Join <cluster>". Never a silent join.
+function OnboardingInvite({ store, s }: { store: Store; s: AppState }) {
+  if (s.pendingJoin) return <PendingJoinCard store={store} s={s} />;
+  return (
+    <details className="surface" style={{ padding: "10px 14px" }} data-testid="onboarding-invite-paste">
+      <summary style={{ fontSize: 12.5, color: "var(--tx-2)", cursor: "pointer" }}>Have an invite?</summary>
+      <div style={{ paddingTop: 10 }}>
+        <InvitePasteField
+          onSubmit={async (text) => {
+            if (await store.acceptInviteInput(text)) return;
+            if (/^citrate:\/\/invite\?/i.test(text)) {
+              store.setState({ pendingInvite: { url: text } });
+              store.toast("Got it. You can join that group from Groups once setup finishes.");
+              return;
+            }
+            store.toast("That doesn't look like an invite link or code.");
+          }}
+        />
+      </div>
+    </details>
+  );
+}
+
 function ClaimBanner({ store, s }: { store: Store; s: AppState }) {
   const claim = s.pendingClaim;
   if (!claim?.email) return null;
@@ -1175,7 +1208,6 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
   const linked = store.walletIsLinked();
   const gate = activationGate(a, linked);
   const phase = activationPhase(a, linked, s.s7TxHash);
-  const pendingTx = a?.tx && (!s.s7TxHash || a.tx.hash === s.s7TxHash) ? a.tx : null;
   const vs = validatorState(a);
   const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "slashed";
   const mismatch = keyMismatch(a);
@@ -1229,49 +1261,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
 
-      {phase === "pending" && (s.s7TxHash || pendingTx) && (
-        <div className="surface" style={{ display: "flex", alignItems: "center", gap: 16, padding: "18px 20px" }} data-testid="s7-pending">
-          <div style={{ width: 40, height: 40, flexShrink: 0 }}>
-            <LoaderMark size={40} />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <div style={{ fontSize: 14, fontWeight: 500 }}>Pending</div>
-            <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              {pendingTx?.included === true && pendingTx.blockNumber != null
-                ? `Included in block ${fmtI(pendingTx.blockNumber)} · waiting for the bond to read activated`
-                : `tx ${short(pendingTx?.hash ?? s.s7TxHash ?? "")} · not in a block yet`}
-            </div>
-            {store.canForgetActivationTx(Date.now()) && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => void store.onS7ForgetTx()} data-testid="s7-forget">
-                  Forget this transaction
-                </button>
-                <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
-                  It is not seen on the network yet after 10 minutes; it may still be included. If it was sent, a second activation reverts and costs only gas.
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {phase === "failed" && a?.tx && (
-        <div style={{ border: "1px solid var(--danger)", background: "var(--danger-bg)", borderRadius: "var(--r-2)", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }} data-testid="s7-failed">
-          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--danger)" }}>Activation transaction reverted</div>
-          <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
-            tx {short(a.tx.hash)} was included in block {a.tx.blockNumber != null ? fmtI(a.tx.blockNumber) : "—"} and reverted. The bond is unchanged
-            (still locked, not staked). Check the conditions above, then try again.
-          </p>
-          <div>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => void store.onS7RetryAfterRevert()}
-            >
-              Try again
-            </button>
-          </div>
-        </div>
-      )}
+      <ActivationTxPanel store={store} s={s} testId="s7" />
 
       {s.activationError && (
         <p className="mono" style={{ fontSize: 11, color: "var(--warn, var(--tx-3))", margin: 0 }} data-testid="s7-read-error">
