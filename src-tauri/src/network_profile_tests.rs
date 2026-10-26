@@ -505,8 +505,8 @@ fn k6_lex_rust(src: &str) -> K6Lexed {
                 None
             };
             if let Some(e) = end {
-                for k in i..=e {
-                    code.push(blank(b[k]));
+                for &ch in &b[i..=e] {
+                    code.push(blank(ch));
                 }
                 i = e + 1;
                 continue;

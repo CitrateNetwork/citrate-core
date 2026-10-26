@@ -155,7 +155,7 @@ fn encode_register_tx_json(from: &str, calldata: &[u8]) -> String {
         "value": format!("0x{REGISTRATION_FEE_WEI:x}"),
         "data": format!("0x{}", hex::encode(calldata)),
         "gas": format!("0x{REGISTER_MODEL_GAS:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
+        "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string()
 }
@@ -244,7 +244,7 @@ pub fn models_registry_register_sync(
     let intent = crate::ceremony::SignatureIntent {
         origin: "agent:hermes".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
-        chain_id: 40204,
+        chain_id: crate::rpc::CITRATE_CHAIN_ID,
         raw,
     };
     ceremony.0.request(intent);

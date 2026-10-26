@@ -61,7 +61,7 @@ fn encode_deploy_tx_json(from: &str, initcode: &[u8], value_wei: u128, gas: u64)
         "value": format!("0x{value_wei:x}"),
         "data": format!("0x{}", hex::encode(initcode)),
         "gas": format!("0x{gas:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
+        "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string()
 }
@@ -169,7 +169,7 @@ pub fn propose_deploy(
     let intent = crate::ceremony::SignatureIntent {
         origin: origin.to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
-        chain_id: 40204,
+        chain_id: crate::rpc::CITRATE_CHAIN_ID,
         raw,
     };
     // Return the decoded view so the UI drives signing.broadcast(view.id) (the money-path

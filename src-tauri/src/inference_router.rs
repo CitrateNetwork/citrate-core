@@ -413,7 +413,7 @@ pub fn request_tx_json(
         "value": format!("0x{max_price_wei:x}"),
         "data": format!("0x{}", hex::encode(calldata)),
         "gas": format!("0x{gas:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
+        "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string()
 }
@@ -534,7 +534,7 @@ pub async fn escalation_registry_request(
         ceremony.0.request(crate::ceremony::SignatureIntent {
             origin: "agent:hermes".to_string(),
             kind: crate::ceremony::IntentKind::Transaction,
-            chain_id: 40204,
+            chain_id: crate::rpc::CITRATE_CHAIN_ID,
             raw,
         });
         Ok(())
@@ -562,7 +562,7 @@ pub fn claim_refund_tx_json(from: &str, router: &str, gas: u64) -> String {
         "value": "0x0",
         "data": format!("0x{}", hex::encode(selector(CLAIM_REFUND_SIG))),
         "gas": format!("0x{gas:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
+        "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string()
 }
@@ -588,7 +588,7 @@ pub async fn escalation_registry_claim_refund(app_h: tauri::AppHandle) -> Result
         ceremony.0.request(crate::ceremony::SignatureIntent {
             origin: "agent:hermes".to_string(),
             kind: crate::ceremony::IntentKind::Transaction,
-            chain_id: 40204,
+            chain_id: crate::rpc::CITRATE_CHAIN_ID,
             raw: claim_refund_tx_json(&wallet.address, router, CLAIM_REFUND_GAS),
         });
         Ok(())
@@ -613,7 +613,7 @@ pub fn expire_request_tx_json(from: &str, router: &str, request_id: u64, gas: u6
         "value": "0x0",
         "data": format!("0x{}", hex::encode(expire_request_calldata(request_id))),
         "gas": format!("0x{gas:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
+        "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string()
 }
@@ -661,7 +661,7 @@ pub async fn escalation_registry_expire(
         ceremony.0.request(crate::ceremony::SignatureIntent {
             origin: "agent:hermes".to_string(),
             kind: crate::ceremony::IntentKind::Transaction,
-            chain_id: 40204,
+            chain_id: crate::rpc::CITRATE_CHAIN_ID,
             raw: expire_request_tx_json(&wallet.address, router, request_id, gas),
         });
         Ok(())

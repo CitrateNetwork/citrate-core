@@ -67,8 +67,8 @@ pub const TRANSFER_TOPIC: &str =
 /// `OrgNotActive()` — the parent OrganizationSBT is not active.
 const ERR_ORG_NOT_ACTIVE: &str = "a4dde45e";
 
-/// Chain id the mint targets (40204).
-const CHAIN_ID: u64 = 40204;
+// The chain id the mint targets (the kit constant pinned to the active network profile).
+use crate::rpc::CITRATE_CHAIN_ID as CHAIN_ID;
 
 // ------------------------------------------------------------------ identity
 

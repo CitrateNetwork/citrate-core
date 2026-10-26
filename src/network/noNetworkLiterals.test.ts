@@ -11,6 +11,16 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { ACTIVE_PROFILE } from "./profile";
+import { CITRATE_QA_SET } from "../agent/eval";
+
+/**
+ * Pinned copies, not derived: each is checked equal to the active profile below, so a profile
+ * change fails here. `src/agent/eval.ts` is the answer-quality dataset (the fact the model's
+ * answer must contain); it runs under plain Node (scripts/eval-qa.mjs), which cannot import the
+ * profile JSON.
+ */
+const PINNED: { file: string; finding: string }[] = [{ file: "src/agent/eval.ts", finding: 'chain id string "40204"' }];
 
 type Lexed = { code: string; strings: { at: number; text: string }[] };
 
@@ -132,8 +142,17 @@ describe("no chain id or RPC literal outside the network profile (#493, K6-3)", 
     expect(files.length, "positive control: the scan reads the webview").toBeGreaterThan(100);
     const offenders: string[] = [];
     for (const f of files) {
-      for (const hit of networkLiteralsInTs(readFileSync(f, "utf8"))) offenders.push(`src/${relative(root, f)}:${hit}`);
+      const rel = `src/${relative(root, f)}`;
+      for (const hit of networkLiteralsInTs(readFileSync(f, "utf8"))) {
+        if (PINNED.some((p) => p.file === rel && hit.endsWith(": " + p.finding))) continue;
+        offenders.push(`${rel}:${hit}`);
+      }
     }
     expect(offenders, "read the chain id and RPC from src/network/profile.ts (or `citrate` in src/chain.ts)").toEqual([]);
+  });
+
+  it("the pinned eval fact is the active profile's chain id", () => {
+    const item = CITRATE_QA_SET.find((q) => q.id === "chain-id");
+    expect(item?.expectFacts).toEqual([String(ACTIVE_PROFILE?.chainId)]);
   });
 });

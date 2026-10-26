@@ -1263,7 +1263,7 @@ pub fn publish_intent(
     if owner != wallet.to_ascii_lowercase() {
         return Err("the publish payload is for another owner".into());
     }
-    if payload.get("chain_id").and_then(|c| c.as_u64()) != Some(40204) {
+    if payload.get("chain_id").and_then(|c| c.as_u64()) != Some(crate::rpc::CITRATE_CHAIN_ID) {
         return Err("the publish payload is for another chain".into());
     }
     if payload.get("broadcast").and_then(|b| b.as_bool()) != Some(false) {
@@ -1335,13 +1335,13 @@ pub fn publish_intent(
         "value": "0x0",
         "data": data,
         "gas": format!("0x{REGISTER_SKILL_GAS:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
+        "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string();
     Ok(crate::ceremony::SignatureIntent {
         origin: "agent:hermes".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
-        chain_id: 40204,
+        chain_id: crate::rpc::CITRATE_CHAIN_ID,
         raw,
     })
 }
@@ -1613,7 +1613,7 @@ pub async fn hermes_learn_publish(
             &format!("/learn/proposals/{id}/publish"),
             &json!({
                 "approval": { "member": wallet, "proposal_id": id, "content_sha256": sha },
-                "params": { "chain_id": 40204, "registry": registry, "owner": wallet, "version": version, "manifest_cid": cid, "tags": [] },
+                "params": { "chain_id": crate::rpc::CITRATE_CHAIN_ID, "registry": registry, "owner": wallet, "version": version, "manifest_cid": cid, "tags": [] },
             }),
         )?;
         check_manifest_cid(&payload, &cid)?;

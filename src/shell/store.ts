@@ -88,6 +88,7 @@ import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
+import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 
 /** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
@@ -982,8 +983,11 @@ export class Store {
    */
   async seedMemoryGraph(): Promise<void> {
     const s = this.state;
-    const facts = {
-      chainId: 40204,
+    // K6: the chain id is the network profile's. A build with no network set has no network facts
+    // to seed (the docs below are still ingested).
+    const chainId = isProfileReady() ? (ACTIVE_PROFILE?.chainId ?? null) : null;
+    const facts = chainId === null ? null : {
+      chainId,
       nodeState: s.node,
       height: s.height,
       peers: s.peers,
@@ -995,8 +999,8 @@ export class Store {
     };
     let changed = false;
     try {
-      const r = await bridge.memory.seedContext(facts);
-      if (r.authored > 0) changed = true;
+      const r = facts === null ? null : await bridge.memory.seedContext(facts);
+      if (r && r.authored > 0) changed = true;
     } catch {
       /* honest no-op: daemon race / unavailable (web preview) — never a fabricated node */
     }

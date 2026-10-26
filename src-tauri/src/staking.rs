@@ -53,8 +53,8 @@ pub fn liquid_staking_pool() -> &'static str {
     crate::addresses::liquid_staking_pool()
 }
 
-/// The Citrate chain id (40204).
-const CITRATE_CHAIN_ID: u64 = 40204;
+// The chain id this build targets (the kit constant pinned to the active network profile).
+use crate::rpc::CITRATE_CHAIN_ID;
 
 /// 4-byte selector for `deposit()` (no args) — `keccak256("deposit()")[..4]`. The
 /// canonical WETH-style deposit selector; PINNED here and proven by the

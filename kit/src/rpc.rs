@@ -207,6 +207,10 @@ pub enum RpcError {
     /// The network check refused this endpoint: it is not the network this build targets, or
     /// the build has no network set (see [`ExpectedNetwork`]). Nothing was signed or sent.
     WrongNetwork(String),
+    /// The gated send could not read the endpoint to check its network (a transport error or a
+    /// bad `eth_chainId` / block-0 answer), so `eth_sendRawTransaction` was not called. Carries
+    /// the read error as is. Nothing was sent (#494).
+    NetworkUnverified(String),
     /// The node's rate limiter answered HTTP 429 before the request reached a handler.
     RateLimited,
 }
@@ -220,6 +224,10 @@ impl std::fmt::Display for RpcError {
             RpcError::MissingField(m) => write!(f, "rpc missing/invalid field: {m}"),
             RpcError::ReceiptTimeout => write!(f, "rpc receipt not found within poll budget"),
             RpcError::WrongNetwork(m) => write!(f, "network check refused: {m}"),
+            RpcError::NetworkUnverified(m) => write!(
+                f,
+                "the network could not be checked before sending, so nothing was sent: {m}"
+            ),
             RpcError::RateLimited => write!(f, "rpc rate limited (HTTP 429)"),
         }
     }
@@ -693,14 +701,19 @@ impl<T: RpcTransport> RpcClient<T> {
     }
 
     /// [`Self::send_raw_transaction`] against an explicit gate: with `Some`, the endpoint is
-    /// checked first ([`Self::verify_network`]) and nothing is sent unless it passes.
+    /// checked first ([`Self::verify_network`]) and nothing is sent unless it passes. A refusal
+    /// stays [`RpcError::WrongNetwork`]; a check that could not read the endpoint is
+    /// [`RpcError::NetworkUnverified`], so a caller can tell either from a failed send (#494).
     pub fn send_raw_transaction_gated(
         &self,
         raw: &[u8],
         gate: Option<&ExpectedNetwork>,
     ) -> Result<String, RpcError> {
         if let Some(expected) = gate {
-            self.verify_network(expected)?;
+            self.verify_network(expected).map_err(|e| match e {
+                RpcError::WrongNetwork(m) => RpcError::WrongNetwork(m),
+                other => RpcError::NetworkUnverified(other.to_string()),
+            })?;
         }
         let raw_hex = format!("0x{}", hex::encode(raw));
         let result = self.request("eth_sendRawTransaction", json!([raw_hex]))?;

@@ -19,8 +19,8 @@
 
 use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
 
-/// The Citrate chain id (40204).
-const CITRATE_CHAIN_ID: u64 = 40204;
+// The chain id this build targets (the kit constant pinned to the active network profile).
+use crate::rpc::CITRATE_CHAIN_ID;
 /// Standard gas for a native (no-calldata) value transfer — the fixed 21,000.
 const TRANSFER_GAS: u64 = 21_000;
 /// The origin surfaced to the human for a user-initiated Send (displayed verbatim).

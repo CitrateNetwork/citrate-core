@@ -1544,7 +1544,7 @@ fn encode_activate_json(from: &str, bond: &str, calldata: &[u8]) -> String {
         "value": "0x0",
         "data": format!("0x{}", hex::encode(calldata)),
         "gas": format!("0x{REGISTER_GAS:x}"),
-        "chainId": format!("0x{:x}", 40204u64),
+        "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string()
 }
@@ -1614,16 +1614,17 @@ pub async fn node_register_validator(
     let nonce =
         crate::validator::read_registration_nonce(&rpc, node_validator_registry_value(), &staker)?;
     // Sign the registration with the node's proposer key (seed stays in validator.rs).
-    let (pubkey, sig) = state
-        .0
-        .sign_registration(40204, &registry, &staker, nonce)?;
+    let (pubkey, sig) =
+        state
+            .0
+            .sign_registration(crate::rpc::CITRATE_CHAIN_ID, &registry, &staker, nonce)?;
     let calldata = crate::validator::member_bond_activate_calldata(&pubkey, &sig);
     // Sent FROM the member EOA (the clone's `onlyMember`) TO the clone, value 0.
     let raw = encode_activate_json(&wallet.address, &grant.bond_address, &calldata);
     let intent = crate::ceremony::SignatureIntent {
         origin: "local-user".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
-        chain_id: 40204,
+        chain_id: crate::rpc::CITRATE_CHAIN_ID,
         raw,
     };
     Ok(ceremony.0.request(intent))

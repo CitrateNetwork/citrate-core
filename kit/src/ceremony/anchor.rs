@@ -43,7 +43,7 @@ pub const ANCHOR_SELECTOR: [u8; 4] = [0x9e, 0x62, 0x1f, 0x4c];
 /// `AnchorRegistry.AnchorKind.NightlyMerkle`.
 pub const NIGHTLY_MERKLE: u8 = 2;
 /// The only chain an anchor is signed for.
-pub const ANCHOR_CHAIN_ID: u64 = 40_204;
+pub const ANCHOR_CHAIN_ID: u64 = crate::rpc::CITRATE_CHAIN_ID;
 /// The origin shown on every anchor approval card.
 pub const ANCHOR_ORIGIN: &str = "hermes:nightly-anchor";
 

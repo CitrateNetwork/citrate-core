@@ -28,6 +28,10 @@ import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, Pending
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import book from "../../../src-tauri/addresses/40204.json";
+import { ACTIVE_PROFILE } from "../../network/profile";
+
+/** The chain id the web preview shows on its ceremonies: the network profile's (K6). */
+const SIM_CHAIN_ID = ACTIVE_PROFILE?.chainId ?? 0;
 import { GRAPH, NODE_LOG_TEMPLATES } from "../../data/seed";
 
 // The sim MemoryDomain maps the prototype seed GRAPH into the SAME contract the
@@ -107,7 +111,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       id,
       origin: "local-user",
       kind: "transaction",
-      chainId: 40204,
+      chainId: SIM_CHAIN_ID,
       decoded,
       requiresRawAck: false,
     };
@@ -556,14 +560,14 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         const view = simRequest({
           origin: "agent:node-agent",
           kind: "transaction",
-          chainId: 40204,
+          chainId: SIM_CHAIN_ID,
           // A legible claimRewards() selector-only calldata tx object, so the sim
           // ceremony decodes to a Call (not raw-gated) exactly like the real path.
           raw: JSON.stringify({
             to: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
             value: "0x0",
             data: "0x372500ab",
-            chainId: "0x9d0c",
+            chainId: "0x" + SIM_CHAIN_ID.toString(16),
           }),
         });
         return { kind: "ceremony", view };

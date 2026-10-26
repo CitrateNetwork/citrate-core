@@ -18,6 +18,7 @@ import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
+import { rpcHost } from "../network/profile";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -54,7 +55,7 @@ export function Wallet({ store, s }: SurfaceProps) {
     }
   })();
   const staked = grantSaltNum + s.selfStake;
-  const src = s.node === "off" ? "rpc.citrate.ai" : "local node";
+  const src = s.node === "off" ? (rpcHost() ?? "public RPC not set") : "local node";
   // BC-5.3 — which SBT-art source is rendered, for an honest caption. The
   // OnChainSbtEmblem reports "onchain" when the authoritative tokenURI art loaded,
   // else "local" (the deterministic offline preview). Starts null (still resolving).
@@ -425,7 +426,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
             {/* C1-W: an unread, failed or unfinished read is "—" plus why, never an empty queue. */}
             {s.pendingWithdrawalsError !== null && (
-              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title="LiquidStakingPool WithdrawalRequested logs (citrate_getLogs, 1000-block windows; eth_getLogs where the RPC lacks it) from rpc.citrate.ai">
+              <p className="mono" style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: 16 }} title={`LiquidStakingPool WithdrawalRequested logs (citrate_getLogs, 1000-block windows; eth_getLogs where the RPC lacks it) from ${rpcHost() ?? "the public RPC (not set)"}`}>
                 — · pending withdrawals: {s.pendingWithdrawalsError}
               </p>
             )}
