@@ -91,8 +91,8 @@ Each step records three things:
 
 | Flow | Steps | Core code driven |
 |---|---|---|
-| `membership-activation` | before-grant (core refuses activation) → grant (treasury) → activate → activate-again (core refuses) → epoch-reached | `grant_status::read_grant_status`, `validator_activation::read_activation_status`, `node::bond_activation_intent` (the body of `node_register_validator`) with `validator::sign_registration_from_data_dir`, the SignatureCeremony (`request` + `approve_and_broadcast`, EIP-155 from the vault) |
-| `bond-exit` | kyc-attested → release-inside-lock (reverts) → lock-elapsed → release (registry unbond, vault records it) → withdraw-too-early (reverts) → exit-matured (32,000 SALT back to the member) | the same reads; the ceremony for the member's sends; `staking::read_pending_withdrawals_with` (C1-W) after the release |
+| `membership-activation` | before-grant (core refuses activation) → grant (treasury) → activate (gas = the node's estimate + `money_gas` margin, recorded as `gasLimit`) → activate-again (core refuses) → epoch-reached | `grant_status::read_grant_status`, `validator_activation::read_activation_status`, `node::bond_activation_intent` (the body of `node_register_validator`) with `validator::sign_registration_from_data_dir`, the SignatureCeremony (`request` + `approve_and_broadcast`, EIP-155 from the vault) |
+| `bond-exit` | kyc-attested → release-inside-lock (reverts) → lock-elapsed → release (registry unbond, vault records it; "Exiting") → withdraw-too-early (reverts) → exit-matured (32,000 SALT back to the member; "Bond returned") | the same reads; the ceremony for the member's sends; `staking::read_pending_withdrawals_with` (C1-W) after the release |
 | `lsp-withdrawal-c1w` | stake → request (core's gas: reverts, #501) → request-estimated-gas → claim-too-early (reverts) → delay-elapsed → claim (40 SALT back) | `staking::stake_intent`, `request_withdrawal_intent`, `claim_withdrawal_intent`, `read_self_stake`, the C1-W paged scan (plain `eth_getLogs` windows of 1,000 blocks on anvil; anvil has no `citrate_getLogs`, so `confirmed` is false) |
 
 Pin bonds are not covered. `IPFSIncentivesV3` is not deployed by #320/#324/#331, and core has no
@@ -119,7 +119,7 @@ To change a golden on purpose, run with `--update` and review the diff in the PR
 - `src/onboarding/moneypathGoldens.test.ts` (vitest) feeds each recorded `activationStatus` through
   `validatorState` and `activationPhase`, the functions the Activate-validator step renders with. It
   checks the word and phase in `labels.json`, for example "Registered · active from epoch 1", then
-  "Validator active", then "Exiting". A golden rewrite that changes what the member is told fails
+  "Validator active", then "Exiting", then "Bond returned". A golden rewrite that changes what the member is told fails
   there.
 - `moneypath_goldens_are_complete`, `moneypath_event_table_is_well_formed` and
   `moneypath_first_diff_names_the_path` (cargo, in `ci`) check the goldens' shape and the comparison
@@ -129,7 +129,10 @@ To change a golden on purpose, run with `--update` and review the diff in the PR
 
 - **#501 (defect).** `requestWithdrawal` goes out with a fixed 150,000 gas, and the pool needs about
   160,500, so the core-built request reverts. The golden records the revert. The next step resends
-  core's same intent with the estimated gas, so the C1-W read is still exercised.
+  core's same intent with the estimated gas, so the C1-W read is still exercised. The pool is
+  retired at r1006 (D-9), and the LSP removal deletes this send, the C1-W read and this flow. Every
+  other money send core builds now carries the node's estimate plus a margin (`money_gas`), and the
+  `tripwire_no_transaction_core_builds_has_a_fixed_gas_limit` test keeps it that way.
 - **Track M exit has no core builder.** Core has no `MemberBond.requestRelease` or `withdrawToMember`
   intent. The ceremony decodes both as "Unrecognized" and needs the raw-mode ack, and the test
   supplies their calldata. The lock is 364 days, so this is not on the 0.5.2 path, but it is the only
@@ -137,8 +140,9 @@ To change a golden on purpose, run with `--update` and review the diff in the PR
 - **C1-W does not see the Track M exit.** The pending-withdrawals scan reads only
   `LiquidStakingPool.WithdrawalRequested`, so after a bond release it shows nothing. The genesis
   spec retires the pool.
-- **"Exiting" after the exit has paid out.** `validatorInfo.status` stays Exiting after
-  `withdrawToMember` returns the principal, so the Activate-validator step keeps saying "Exiting".
+- **"Exiting" after the exit has paid out (fixed).** `validatorInfo.status` stays Exiting after
+  `withdrawToMember` returns the principal. The activation read now carries `validatorInfo`'s bonded
+  stake and escrow, and with both at zero the step says "Bond returned" (phase `exited`).
 - **C1-W scan start.** `staking::LIQUID_STAKING_POOL_DEPLOY_BLOCK` is the r1005 pool's block (427).
   The script mines past it before deploying, so the scan covers the pool here. On a new genesis
   this pin has to move with the book, or go with the pool.

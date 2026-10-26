@@ -297,6 +297,14 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         if let Some(info) = eth_call(public, targets.registry, &with_word(VALIDATOR_INFO, &pk)) {
             // (staker, bonded, rewards, escrow, admissionMin, actEpoch, exitEpoch,
             //  escrowUnlock, status, claimableNow)
+            st.registry_bonded_wei = word(&info, 1)
+                .as_ref()
+                .and_then(word_u128)
+                .map(|v| v.to_string());
+            st.registry_escrow_wei = word(&info, 3)
+                .as_ref()
+                .and_then(word_u128)
+                .map(|v| v.to_string());
             st.activation_epoch = word(&info, 5).as_ref().and_then(word_u64);
             st.registry_status = word(&info, 8)
                 .as_ref()

@@ -1209,7 +1209,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
   const phase = activationPhase(a, linked, s.s7TxHash);
   const pendingTx = a?.tx && (!s.s7TxHash || a.tx.hash === s.s7TxHash) ? a.tx : null;
   const vs = validatorState(a);
-  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "slashed";
+  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "exited" || phase === "slashed";
   const mismatch = keyMismatch(a);
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }} data-testid="s7">

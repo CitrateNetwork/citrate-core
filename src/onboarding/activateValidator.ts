@@ -191,7 +191,18 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
 export function validatorState(st: ActivationStatusView | null): { word: ValidatorWord | null; detail: string } {
   const unknown = { word: null, detail: "— not read yet" };
   if (!st) return unknown;
-  if (st.registryStatus === 2) return { word: "Exiting", detail: "ValidatorRegistry status: Exiting." };
+  if (st.registryStatus === 2) {
+    // The key stays Exiting after the payout; what the registry still holds under it says which.
+    if (bondReturned(st)) {
+      return {
+        word: "Bond returned",
+        detail:
+          "The exit has paid out: the ValidatorRegistry holds no bonded stake and no escrow under this key (validatorInfo). " +
+          "Its registry status stays Exiting.",
+      };
+    }
+    return { word: "Exiting", detail: "ValidatorRegistry status: Exiting." };
+  }
   if (st.registryStatus === 3) return { word: "Slashed", detail: "ValidatorRegistry status: Slashed." };
   if (st.bondDeployed == null) return unknown;
   if (st.bondDeployed === false) return { word: "Not a validator", detail: "No stake in the registry for this membership." };
@@ -216,6 +227,14 @@ export function validatorState(st: ActivationStatusView | null): { word: Validat
     return { word: null, detail: "Registered, but ValidatorRegistry.isActive is false: not in the active set." };
   }
   return unknown;
+}
+
+/**
+ * The exit paid out: the key is Exiting and the registry holds neither bonded stake nor escrow
+ * under it. An unread leg is not zero, so it stays Exiting.
+ */
+function bondReturned(st: ActivationStatusView): boolean {
+  return st.registryStatus === 2 && st.registryBondedWei === "0" && st.registryEscrowWei === "0";
 }
 
 /** When the registered stake joins the active set: the real activation epoch, in blocks and measured time. */
@@ -256,9 +275,11 @@ export function activationGrantCopy(st: ActivationStatusView | null): string {
   const block = st?.unlockBlock != null ? fmtInt(st.unlockBlock) : "—";
   const custody = `Your membership comes with a ${amount} SALT grant, locked in your bond until ${date} (block ${block}); the lock opens when either is reached.`;
   const staked =
-    st?.bondActivated === true
-      ? "Your bond is activated, so the grant is staked in the ValidatorRegistry."
-      : "It is not staked until you activate the bond.";
+    st && bondReturned(st)
+      ? "Your validator exit has paid out and the bond is returned, so the grant is no longer staked."
+      : st?.bondActivated === true
+        ? "Your bond is activated, so the grant is staked in the ValidatorRegistry."
+        : "It is not staked until you activate the bond.";
   return [custody, staked, GRANT_DISCLAIMER, BETANET_CARRYOVER].join(" ");
 }
 
@@ -269,7 +290,7 @@ export function activationGrantCopy(st: ActivationStatusView | null): string {
  */
 export function activationPhase(st: ActivationStatusView | null, walletLinked: boolean, pendingTxHash: string | null = null): ActivationPhase {
   if (!st) return pendingTxHash ? "pending" : "reading";
-  if (st.registryStatus === 2) return "exiting";
+  if (st.registryStatus === 2) return bondReturned(st) ? "exited" : "exiting";
   if (st.registryStatus === 3) return "slashed";
   if (st.bondActivated === true) {
     const v = validatorState(st);

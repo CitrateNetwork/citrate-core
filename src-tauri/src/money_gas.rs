@@ -27,7 +27,21 @@ pub const MAX_SEND_GAS: u64 = 3_000_000;
 /// The gas limit for a send the node estimated at `estimate`: the estimate plus [`MARGIN_PCT`],
 /// at most [`MAX_SEND_GAS`]. An estimate of zero, or above the cap, is refused.
 pub fn with_margin(estimate: u64) -> Result<u64, String> {
-    Ok(estimate)
+    if estimate == 0 {
+        return Err(
+            "the node estimated 0 gas for this transaction, which is not a gas limit, so nothing \
+             was proposed"
+                .to_string(),
+        );
+    }
+    if estimate > MAX_SEND_GAS {
+        return Err(format!(
+            "the node estimates {estimate} gas for this transaction, above the {MAX_SEND_GAS} \
+             core signs a money send with, so nothing was proposed"
+        ));
+    }
+    // estimate <= MAX_SEND_GAS, so the product cannot overflow.
+    Ok((estimate + estimate * MARGIN_PCT / 100).min(MAX_SEND_GAS))
 }
 
 /// Ask the node what the send `from` → `to` with `value_wei` and `data` costs, and add the margin.

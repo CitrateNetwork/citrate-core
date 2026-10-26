@@ -51,6 +51,8 @@
           "pubkeySource": "node",
           "recordedTx": null,
           "registryActive": false,
+          "registryBondedWei": "0",
+          "registryEscrowWei": "0",
           "registryStatus": 0,
           "tx": null,
           "unlockBlock": null,
@@ -135,6 +137,8 @@
           "pubkeySource": "node",
           "recordedTx": null,
           "registryActive": false,
+          "registryBondedWei": "0",
+          "registryEscrowWei": "0",
           "registryStatus": 0,
           "tx": null,
           "unlockBlock": 15725328,
@@ -270,6 +274,8 @@
           "pubkeySource": "bond",
           "recordedTx": null,
           "registryActive": true,
+          "registryBondedWei": "32000000000000000000000",
+          "registryEscrowWei": "0",
           "registryStatus": 1,
           "tx": null,
           "unlockBlock": 15725328,
@@ -298,6 +304,7 @@
           "origin": "local-user",
           "requiresRawAck": false
         },
+        "gasLimit": "eth_estimateGas + margin",
         "grantStatus": {
           "attributedPrincipalWei": "32000000000000000000000",
           "attributedStakeWei": "32000000000000000000000",
@@ -311,7 +318,7 @@
           "unlockBlock": 15725328
         }
       },
-      "does": "core builds MemberBond.activate (node key signs the registry digest); the ceremony signs and sends it",
+      "does": "core builds MemberBond.activate (node key signs the registry digest, gas estimated); the ceremony signs and sends it",
       "events": [
         {
           "args": {
@@ -443,6 +450,8 @@
           "pubkeySource": "bond",
           "recordedTx": null,
           "registryActive": true,
+          "registryBondedWei": "32000000000000000000000",
+          "registryEscrowWei": "0",
           "registryStatus": 1,
           "tx": null,
           "unlockBlock": 15725328,
