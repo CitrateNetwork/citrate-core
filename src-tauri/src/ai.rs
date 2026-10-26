@@ -37,6 +37,7 @@
 #![allow(dead_code)]
 
 use crate::chat_consent::{ChatConsentState, RemoteSendPermit};
+use crate::secret::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zeroize::Zeroize;
@@ -368,8 +369,8 @@ struct ProviderConfig {
     #[serde(rename = "baseURL")]
     base_url: String,
     model: String,
-    #[serde(rename = "apiKey")]
-    api_key: String,
+    #[serde(rename = "apiKey", serialize_with = "crate::secret::serialize_exposed")]
+    api_key: SecretString,
 }
 
 // AI-06: redact the api key from any `{:?}`/dbg!/tracing output — no key ever
@@ -381,12 +382,6 @@ impl std::fmt::Debug for ProviderConfig {
             .field("model", &self.model)
             .field("api_key", &"<redacted>")
             .finish()
-    }
-}
-
-impl Drop for ProviderConfig {
-    fn drop(&mut self) {
-        self.api_key.zeroize();
     }
 }
 
@@ -589,7 +584,7 @@ impl AiManager {
         let cfg = ProviderConfig {
             base_url,
             model: model.to_string(),
-            api_key: api_key.to_string(),
+            api_key: SecretString::new(api_key.to_string()),
         };
         let mut blob = serde_json::to_string(&cfg).map_err(|_| AiError::KeyringUnavailable)?;
         let result = self.keyring.set(&account_for(provider_id), &blob);
@@ -611,6 +606,8 @@ impl AiManager {
             .keyring
             .get(&account_for(provider_id))?
             .ok_or(AiError::NotConfigured)?;
+        // The blob holds the key: parse it from a wiping buffer.
+        let blob = zeroize::Zeroizing::new(blob);
         let cfg: ProviderConfig =
             serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
         Ok(cfg)
@@ -640,7 +637,7 @@ impl AiManager {
         }
         let cfg = self.read_config(provider_id)?;
         let url = format!("{}{path}", cfg.base_url);
-        self.http.post_json(&url, &cfg.api_key, body)
+        self.http.post_json(&url, cfg.api_key.expose(), body)
     }
 
     /// The current default provider id, if one is set.
@@ -659,7 +656,8 @@ impl AiManager {
             validate_provider_id(id)?;
             match self.keyring.get(&account_for(id))? {
                 Some(blob) => {
-                    // Decode to surface baseURL + model (NOT the key).
+                    // Decode to surface baseURL + model (NOT the key); the blob holds the key.
+                    let blob = zeroize::Zeroizing::new(blob);
                     let cfg: ProviderConfig =
                         serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
                     out.push(ProviderStatus {
@@ -713,7 +711,7 @@ impl AiManager {
         // INVARIANT 3: the endpoint comes from the STORED config, never the caller.
         let url = format!("{}/chat/completions", cfg.base_url);
         let body = build_chat_body(&cfg.model, messages_json, context_json)?;
-        let resp = self.http.post_json(&url, &cfg.api_key, &body)?;
+        let resp = self.http.post_json(&url, cfg.api_key.expose(), &body)?;
         parse_completion(&resp)
     }
 
@@ -736,7 +734,7 @@ impl AiManager {
         let cfg = self.read_config(provider_id)?;
         let url = format!("{}/chat/completions", cfg.base_url);
         let body = build_chat_body_with_tools(&cfg.model, messages_json, tools_json, context_json)?;
-        let resp = self.http.post_json(&url, &cfg.api_key, &body)?;
+        let resp = self.http.post_json(&url, cfg.api_key.expose(), &body)?;
         parse_chat_message(&resp)
     }
 
@@ -1059,7 +1057,7 @@ pub async fn ai_set_provider(
     provider_id: String,
     base_url: String,
     model: String,
-    api_key: String,
+    api_key: SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1075,10 +1073,10 @@ pub fn ai_set_provider_sync(
     provider_id: String,
     base_url: String,
     model: String,
-    api_key: String,
+    api_key: SecretString,
     ai: tauri::State<'_, AiState>,
 ) -> std::result::Result<(), String> {
-    ai.0.set_provider(&provider_id, &base_url, &model, &api_key)
+    ai.0.set_provider(&provider_id, &base_url, &model, api_key.expose())
         .map_err(|e| e.to_string())
 }
 
