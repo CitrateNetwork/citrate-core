@@ -600,48 +600,62 @@ pub(crate) fn close_relay_for_join_code(
     close_relay_for_code_at(&store_path(app)?, code, close, revoke_relay)
 }
 
-/// Close (revoke at the relay) the relay invite sealed inside the short code `code`, if this
-/// device minted that code. `Ok(true)` = closed now or earlier; `Ok(false)` = this device has no
-/// record of it; `Err` = the relay refused or was unreachable, and nothing changed.
+/// Close the relay invite sealed inside the short code `code`, if this device minted that code:
+/// its rendezvous (`close`, when one was recorded) and its INVITE-S2 record (`revoke_relay`), the
+/// same two calls as [`revoke_at`]. `Ok(true)` = closed now or earlier; `Ok(false)` = this device
+/// has no record of it; `Err` = a close or the revoke failed, and nothing changed.
 ///
-/// core#355 B-1: the relay call runs with no copy of the store held. The record is read under the
+/// core#355 B-1: the relay calls run with no copy of the store held. The record is read under the
 /// lock, the relay is called, then the store is re-read under the lock and only that record is
 /// marked closed, so invites created, consumed or tagged while the relay answers are kept as they
-/// are (a record consumed meanwhile stays gone).
+/// are (a record consumed meanwhile stays gone). An invite with a rendezvous is also marked
+/// revoking (not claimable, key dropped) and is settled by the tick once the relay confirms.
 pub(crate) fn close_relay_for_code_at(
     path: &std::path::Path,
     code: &str,
-    _close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
+    close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     revoke_relay: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<bool, String> {
     if code.is_empty() {
         return Ok(false);
     }
     let found = read_pending_at(path, |v| {
-        v.iter()
-            .find(|i| i.join_code == code)
-            .map(|i| (i.token.clone(), i.relay_closed))
+        v.iter().find(|i| i.join_code == code).map(|i| {
+            (
+                i.token.clone(),
+                i.lookup.clone(),
+                i.relay_closed || i.revoking,
+            )
+        })
     })?;
-    let token = match found {
+    let (token, lookup) = match found {
         None => return Ok(false),
-        Some((_, true)) => return Ok(true),
-        Some((token, false)) => token,
+        Some((_, _, true)) => return Ok(true),
+        Some((token, lookup, false)) => (token, lookup),
     };
-    revoke_relay(blake3_token_hash(&token))?;
+    let closed = (!lookup.is_empty()).then(|| close(lookup.clone()));
+    let revoked = revoke_relay(blake3_token_hash(&token));
+    revoke_outcome(closed, revoked)?;
     update_pending_at(path, |v| {
         if let Some(i) = v
             .iter_mut()
             .find(|i| i.join_code == code && i.token == token)
         {
             i.relay_closed = true;
+            if !i.lookup.is_empty() {
+                i.revoking = true;
+                i.priv_key = InvitePrivKey::default();
+            }
         }
     })?;
     Ok(true)
 }
 
-/// Drop the records of relay invites closed for `code` (after the code itself is revoked).
+/// Drop the records of relay invites closed for `code` (after the code itself is revoked). Only a
+/// record without a rendezvous: one with a rendezvous stays revoking until the tick sees the relay
+/// confirm the close (`settle_revocations`).
 pub(crate) fn forget_join_code(invites: &mut Vec<PendingInvite>, code: &str) {
-    invites.retain(|i| !(i.relay_closed && i.join_code == code));
+    invites.retain(|i| !(i.relay_closed && i.join_code == code && i.lookup.is_empty()));
 }
 
 /// Decode a hex-encoded group name back to a display string (empty on any failure).
@@ -1748,13 +1762,31 @@ mod tests {
     }
 
     /// Tripwire: an invite record is only ever removed by `revoke_and_remove_at` (close + legacy
-    /// revoke first, behind both revoke and consume) or by `settle_revocations` (relay confirmed).
+    /// revoke first, behind both revoke and consume), by `settle_revocations` (relay confirmed), or
+    /// by `forget_join_code` (#355: a code's relay invite, closed by `close_relay_for_code_at` with
+    /// the same two calls, and only when it has no rendezvous left to confirm).
     #[test]
     fn invite_records_are_only_removed_by_revoke_at() {
         let src = include_str!("invites.rs");
         let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("tests")];
-        assert_eq!(prod.matches(".retain(").count(), 2, "two removal sites");
-        for f in ["fn revoke_and_remove_at", "fn settle_revocations("] {
+        assert_eq!(prod.matches(".retain(").count(), 3, "three removal sites");
+        let forget = &prod[prod.find("fn forget_join_code").expect("forget")..];
+        let forget = &forget[..forget.find("\n}\n").expect("end")];
+        assert!(
+            forget.contains("i.relay_closed") && forget.contains("i.lookup.is_empty()"),
+            "forget_join_code drops only a closed record with no rendezvous"
+        );
+        let close = &prod[prod.find("fn close_relay_for_code_at").expect("close")..];
+        let close = &close[..close.find("\n}\n").expect("end")];
+        assert!(
+            close.contains("close(lookup") && close.contains("revoke_outcome("),
+            "a code revoke closes the rendezvous and the legacy record"
+        );
+        for f in [
+            "fn revoke_and_remove_at",
+            "fn settle_revocations(",
+            "fn forget_join_code",
+        ] {
             let body = &prod[prod.find(f).expect(f)..];
             let body = &body[..body.find("\n}\n").expect("end")];
             assert!(body.contains(".retain("), "{f}");
@@ -2432,7 +2464,10 @@ mod tests {
             |_| panic!("no rendezvous recorded"),
             |_| Err("comms: relay unreachable".to_string()),
         );
-        assert_eq!(out, Err("comms: relay unreachable".to_string()));
+        assert_eq!(
+            out,
+            Err("couldn't revoke the invite: comms: relay unreachable".to_string())
+        );
         assert!(!super::view_pending_at(&path).unwrap()[0].relay_closed);
         super::update_pending_at(&path, |v| super::forget_join_code(v, "Ab3dE7gh")).unwrap();
         assert_eq!(
@@ -2617,12 +2652,15 @@ mod tests {
         // The relay call runs between the locked read and the locked write, never inside one.
         let close = fn_body(prod, "pub(crate) fn close_relay_for_code_at");
         let relay = close.find("revoke_relay(").expect("relay call");
+        let rendezvous = close.find("close(lookup").expect("rendezvous close call");
         for (c, _) in close.match_indices("_pending_at(") {
             let end = c + close[c..].find(";\n").expect("statement end");
-            assert!(
-                !(c..end).contains(&relay),
-                "the relay call runs inside a locked pending-store update"
-            );
+            for call in [relay, rendezvous] {
+                assert!(
+                    !(c..end).contains(&call),
+                    "a relay call runs inside a locked pending-store update"
+                );
+            }
         }
     }
 
@@ -2709,7 +2747,10 @@ mod tests {
                 Err("comms: relay unreachable".to_string())
             },
         );
-        assert_eq!(out, Err("comms: relay unreachable".to_string()));
+        assert_eq!(
+            out,
+            Err("couldn't revoke the invite: comms: relay unreachable".to_string())
+        );
         let v = super::view_pending_at(&path).unwrap();
         assert!(
             v.iter().any(|i| i.token == fresh),
