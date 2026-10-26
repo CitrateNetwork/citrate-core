@@ -154,7 +154,7 @@ fn model_prices_say_where_each_price_came_from() {
         prices: [("member-m".to_string(), member)].into_iter().collect(),
         ..ProviderGuard::default()
     };
-    let v = model_prices(&published, &["custom-m".into()], &pg);
+    let v = model_prices(None, &published, &["custom-m".into()], &pg);
     let by = |id: &str| v.iter().find(|m| m.id == id).cloned().unwrap();
     assert_eq!(v.len(), 6, "each model once: {v:?}");
     assert_eq!(by("pub-m").source, Some("published"));
@@ -164,7 +164,7 @@ fn model_prices_say_where_each_price_came_from() {
     assert_eq!((by("member-m").source, by("member-m").price), (Some("member"), Some(member)));
     // The member's price wins over the published one, as it does when a call is charged.
     pg.prices.insert("pub-m".into(), member);
-    let v = model_prices(&published, &[], &pg);
+    let v = model_prices(None, &published, &[], &pg);
     let p = v.iter().find(|m| m.id == "pub-m").unwrap();
     assert_eq!((p.source, p.price), (Some("member"), Some(member)));
 }

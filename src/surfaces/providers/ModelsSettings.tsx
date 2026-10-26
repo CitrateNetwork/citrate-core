@@ -24,6 +24,10 @@ import type { ProviderModelPrice, ProviderRecentCall, ProviderStatus, ProviderUs
 import { formatMicros, parseUsdToMicros } from "../../agent/escalation";
 import {
   EMPTY_CUSTOM,
+  LARGE_RESERVE_MICROS,
+  RESERVE_WHY,
+  raiseDailyCap,
+  roundCents,
   VENDOR_HINT,
   VENDOR_SUBTITLE,
   capReached,
@@ -62,7 +66,8 @@ export interface ModelsActions {
   onOpen(url: string): void;
   onHalt(id: string): void;
   onResume(id: string): void;
-  onEditCaps(id: string | null): void;
+  /** Open the caps editor; `dailyMicrosAtLeast` raises the daily spending cap in the form only. */
+  onEditCaps(id: string | null, dailyMicrosAtLeast?: number): void;
   onCapsForm(f: CapsForm): void;
   onSaveCaps(): void;
   onEditPrice(id: string | null, model?: string): void;
@@ -128,7 +133,7 @@ function UnverifiedBadge() {
 
 /** Plain words for the usage log's coarse outcome codes (`ProxyError::outcome` in core). */
 const OUTCOME_WORDS: Record<string, string> = {
-  cap_exceeded: "a cap was reached",
+  cap_exceeded: "the call's reservation would pass one of your caps; nothing was sent",
   halted: "the provider was paused",
   log_unavailable: "the usage log could not be used",
   egress_refused: "the address is not this provider's pinned host",
@@ -172,6 +177,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
   for (const id of [...p.listedModels, ...p.approvedModels]) if (!priced.some((m) => m.id === id)) priced.push({ id, price: null, source: null, minReserveMicros: null });
   const unpriced = priced.filter((m) => m.price === null).length;
   const moneyCap = p.caps.dailyMicros !== null || p.caps.monthlyMicros !== null;
+  const bigReserves = priced.filter((m) => m.minReserveMicros !== null && m.minReserveMicros >= LARGE_RESERVE_MICROS);
   const pe = v.priceEdit && v.priceEdit.id === p.id ? v.priceEdit.form : null;
   const set = (k: keyof PriceForm) => (e: { target: { value: string } }) => pe && v.on.onPriceForm({ ...pe, [k]: e.target.value });
 
@@ -348,6 +354,27 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
               </span>
             ))
           )}
+          {bigReserves.map((m) => {
+            const r = m.minReserveMicros as number;
+            const cap = p.caps.dailyMicros;
+            return (
+              <div key={"reserve-" + m.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span data-testid={`reserve-note-${m.id}`} style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
+                  Each {m.id} call reserves about {formatMicros(roundCents(r))} against your caps before it is sent. {RESERVE_WHY[p.id] ?? "That is the most the vendor can bill for one call."} The reservation settles to the vendor's real charge when the call returns.
+                </span>
+                {cap !== null && r > cap && (
+                  <span data-testid={`reserve-refused-${m.id}`} style={row}>
+                    <span style={{ fontSize: 12, color: "var(--warn)" }}>
+                      That is above your {formatMicros(cap)} daily cap, so every {m.id} call is refused and nothing is sent.
+                    </span>
+                    <button className="btn btn-secondary btn-sm" onClick={() => v.on.onEditCaps(p.id, r)} disabled={anyBusy || !v.desktop}>
+                      Raise the {p.name} daily cap
+                    </button>
+                  </span>
+                )}
+              </div>
+            );
+          })}
           {unpriced > 0 && moneyCap && (
             <span data-testid="unpriced-warning" style={{ fontSize: 12, color: "var(--warn)" }}>
               {unpriced === 1 ? "1 model has no price. While a spending cap is set, calls to it are refused" : `${unpriced} models have no price. While a spending cap is set, calls to them are refused`}, because the cost would be unknown. Enter the price from {p.name}'s pricing page.
@@ -788,9 +815,9 @@ export function ModelsSettings({ onOpen }: { onOpen(url: string): void }) {
         onOpen,
         onHalt: (id) => void act(id, "halt", id, () => bridge.providers.halt(id)),
         onResume: (id) => void act(id, "resume", id, () => bridge.providers.resume(id)),
-        onEditCaps: (id) => {
+        onEditCaps: (id, dailyMicrosAtLeast) => {
           const p = id ? find(id) : undefined;
-          setCapsEdit(p ? { id: p.id, form: capsToForm(p.caps) } : null);
+          setCapsEdit(p ? { id: p.id, form: capsToForm(dailyMicrosAtLeast ? raiseDailyCap(p.caps, dailyMicrosAtLeast) : p.caps) } : null);
         },
         onCapsForm: (form) => setCapsEdit((c) => (c ? { ...c, form } : c)),
         onSaveCaps: () => {

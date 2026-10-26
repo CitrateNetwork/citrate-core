@@ -189,3 +189,23 @@ export const VENDOR_HINT: Record<string, string> = {
 export const VENDOR_SUBTITLE: Record<string, string> = {
   meta: "Muse models on the Meta Model API",
 };
+
+// ---- large reservations ----
+
+/** A model whose least reservation per call is at least this is explained on its card ($1.00). */
+export const LARGE_RESERVE_MICROS = 1_000_000;
+
+/** Why a vendor's reservation is large, where the adapter's output bound says so (core #530). */
+export const RESERVE_WHY: Record<string, string> = {
+  xai: "xAI documents no limit on reasoning output, so core reserves the model's full context window.",
+};
+
+export const roundCents = (micros: number) => Math.round(micros / 10_000) * 10_000;
+
+/** Caps with the daily spending cap raised to cover one call (whole dollars), and the monthly cap
+ *  raised to match only if it would otherwise sit below the daily one. Nothing is saved here. */
+export function raiseDailyCap(c: ProviderCaps, atLeastMicros: number): ProviderCaps {
+  const daily = Math.max(c.dailyMicros ?? 0, Math.ceil(atLeastMicros / 1_000_000) * 1_000_000);
+  const monthly = c.monthlyMicros === null ? null : Math.max(c.monthlyMicros, daily);
+  return { ...c, dailyMicros: daily, monthlyMicros: monthly };
+}

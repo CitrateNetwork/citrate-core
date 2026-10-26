@@ -15,7 +15,9 @@
 //! | `providers_custom_add`, `providers_custom_confirm`, `providers_custom_remove` | the sealed guard file (custom endpoints), the keychain on remove |
 //! | `providers_usage_log_reset` | the usage log (a broken file is archived, a new chain starts) |
 
-use crate::model_provider::{ModelInfo, ProviderId, Vendor};
+use crate::model_provider::{
+    ChatMessage, ChatRequest, ModelInfo, ModelProvider, ProviderId, Role, Vendor,
+};
 use crate::model_proxy::{now_ms, ModelProxy, ProxyError};
 use crate::provider_egress::{vendor_spec, CustomEndpoint};
 use crate::provider_guard::{Caps, GuardBook, Halt, Price, ProviderGuard};
@@ -165,7 +167,32 @@ impl From<&CustomEndpoint> for CustomEndpointView {
 
 /// The models to show for a provider, each with its price and source. The member's price wins over
 /// the adapter's published one (the same order the guard uses to charge a call).
+/// The least the guard reserves for one call to `model`: an empty prompt, no tools, the adapter's
+/// output bound (the same `input_token_bound` + `output_bound` the proxy reserves with).
+fn min_reserve(
+    adapter: Option<&dyn ModelProvider>,
+    model: &str,
+    price: Option<Price>,
+) -> Option<u64> {
+    let price = price?;
+    let probe = ChatRequest {
+        model: model.to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: String::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }],
+        tools: Vec::new(),
+        max_tokens: 1,
+        stream: false,
+    };
+    let out = adapter.map_or(u64::from(probe.max_tokens), |a| a.output_bound(&probe));
+    Some(price.cost(crate::model_proxy::input_token_bound(&probe), out))
+}
+
 pub fn model_prices(
+    adapter: Option<&dyn ModelProvider>,
     published: &[ModelInfo],
     extra: &[String],
     pg: &ProviderGuard,
@@ -198,10 +225,10 @@ pub fn model_prices(
                 (None, None) => (None, None),
             };
             ModelPriceView {
+                min_reserve_micros: min_reserve(adapter, &id, price),
                 id,
                 price,
                 source,
-                min_reserve_micros: None,
             }
         })
         .collect()
@@ -251,12 +278,16 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                     )
                 }
             };
-            let (published, extra) = match &id {
-                ProviderId::Vendor(v) => (
-                    crate::model_proxy::vendor_adapter(*v).0.models(),
-                    Vec::new(),
-                ),
+            // A custom endpoint is served by the OpenAI-compatible adapter, whose bound is the
+            // request's own `max_tokens` (the `None` case in `min_reserve`).
+            let (model_adapter, published, extra) = match &id {
+                ProviderId::Vendor(v) => {
+                    let a = crate::model_proxy::vendor_adapter(*v).0;
+                    let m = a.models();
+                    (Some(a), m, Vec::new())
+                }
                 ProviderId::Custom(cid) => (
+                    None,
                     Vec::new(),
                     customs
                         .iter()
@@ -265,7 +296,7 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                         .unwrap_or_default(),
                 ),
             };
-            let models = model_prices(&published, &extra, &pg);
+            let models = model_prices(model_adapter.as_deref(), &published, &extra, &pg);
             let host = url::Url::parse(&base_url)
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_string))
