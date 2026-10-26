@@ -584,39 +584,90 @@ fn no_release_config_or_release_path_relaxes_the_updater_or_enables_the_e2e_driv
     );
 }
 
-/// The features in `cargo_toml` that turn on `target`.
+/// The features in `cargo_toml` that turn on `target`, directly or through other features
+/// (`default` included). `dep:` entries and `crate/feature` entries are not features of this crate.
 fn features_enabling(cargo_toml: &str, target: &str) -> Vec<String> {
     let cargo: toml::Value =
         toml::from_str(cargo_toml).unwrap_or_else(|e| panic!("Cargo.toml: {e}"));
-    let default = cargo
+    let table = cargo
         .get("features")
-        .and_then(|f| f.get("default"))
-        .and_then(|d| d.as_array())
+        .and_then(|f| f.as_table())
         .cloned()
         .unwrap_or_default();
-    if default.iter().any(|f| f.as_str() == Some(target)) {
-        vec!["default".to_string()]
-    } else {
-        Vec::new()
-    }
-}
-
-/// Release workflows and scripts under `root` that name the `updater-e2e` feature: the number of
-/// files scanned, and one finding per offending file.
-fn release_path_findings(root: &std::path::Path) -> (usize, Vec<String>) {
-    let mut paths = vec![root.join(".github/workflows/release.yml")];
-    if let Ok(rd) = std::fs::read_dir(root.join("scripts")) {
-        for entry in rd.flatten() {
-            if entry.path().is_file() {
-                paths.push(entry.path());
+    let enables = |f: &str| -> Vec<String> {
+        table
+            .get(f)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .filter(|x| !x.starts_with("dep:") && !x.contains('/'))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut out = Vec::new();
+    for start in table.keys().filter(|k| k.as_str() != target) {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut stack = enables(start);
+        while let Some(f) = stack.pop() {
+            if f == target {
+                out.push(start.clone());
+                break;
+            }
+            if seen.insert(f.clone()) {
+                stack.extend(enables(&f));
             }
         }
     }
+    out
+}
+
+/// The only files that may name `updater-e2e` outside src-tauri: the K1-L harness that builds and
+/// runs the test AppImages, and its workflow.
+const UPDATER_E2E_USERS: [&str; 3] = [
+    ".github/workflows/linux-native-acceptance.yml",
+    "scripts/ci/linux-native-acceptance.sh",
+    "scripts/ci/linux-native-acceptance/update-e2e-build.sh",
+];
+
+/// Workflows and scripts under `root` that could put the `updater-e2e` feature in a build: every
+/// workflow and every file under scripts/ (recursively) that names the feature, other than the
+/// K1-L harness; and release.yml or any script that builds with `--all-features`. Returns the
+/// number of files scanned and one finding per offending file.
+fn release_path_findings(root: &std::path::Path) -> (usize, Vec<String>) {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.is_file() {
+                out.push(p);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    walk(&root.join(".github/workflows"), &mut paths);
+    walk(&root.join("scripts"), &mut paths);
+    paths.sort();
     let mut findings = Vec::new();
     for p in &paths {
-        let text = std::fs::read_to_string(p).unwrap_or_default();
-        if text.contains("updater-e2e") {
+        let rel = p
+            .strip_prefix(root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = String::from_utf8_lossy(&std::fs::read(p).unwrap_or_default()).to_string();
+        if text.contains("updater-e2e") && !UPDATER_E2E_USERS.contains(&rel.as_str()) {
             findings.push(format!("{} names the updater-e2e feature", p.display()));
+        }
+        let release_path = rel == ".github/workflows/release.yml" || rel.starts_with("scripts/");
+        if release_path && text.contains("--all-features") {
+            findings.push(format!("{} builds with --all-features", p.display()));
         }
     }
     (paths.len(), findings)

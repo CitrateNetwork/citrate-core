@@ -10,28 +10,67 @@
 //!
 //! Only `guard` exists without the feature (for its unit tests). No release build enables the
 //! feature (tripwire: upgrade_updater_feed_tests), and even in a test build the driver does
-//! nothing unless `CITRATE_UPDATER_E2E` is set, the pinned key is not the release key, and every
-//! endpoint is on loopback. How to run it: docs/UPDATER_E2E.md.
+//! nothing unless `CITRATE_UPDATER_E2E` is set, the pinned key is neither release key (v1, v2,
+//! compared by key id and key bytes), and every endpoint is on loopback. How to run it: docs/UPDATER_E2E.md.
 
 use serde_json::Value;
 
-/// The shipping config: its updater public key is the one the driver must never run against.
+/// The shipping config: its updater public key is one the driver must never run against.
 const SHIPPING_CONF: &str = include_str!("../tauri.conf.json");
 
+/// The release updater public keys (public material). v1, key id F6E74B821EAAEB32, was pinned
+/// before v0.3.0 (installs older than that still trust it); v2, key id 8EC382DD107F08C5, since.
+/// The shipping config's key is added at run time, so a future rotation is covered too.
+const RELEASE_PUBKEYS: [&str; 2] = [
+    "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2RTc0QjgyMUVBQUVCMzIKUldReTY2b2Vna3ZuOXN2OG9kNG5NTHdsUHJaOEYyUkhKN0QrVDR3clJSaXNaY1ppMW9Xa3dSK3UK",
+    "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFQzM4MkREMTA3RjA4QzUKUldURkNIOFEzWUxEanZsN096Vk1WWm9WMllUUE5GNXVUYVFYeGRQNFluRnVlVG5vWVZnV0F6eXAK",
+];
+
+/// The minisign Ed25519 public keys in a tauri updater `pubkey` value (base64 of the minisign
+/// public key file): every line that decodes to `Ed` + 8-byte key id + 32-byte key, whatever the
+/// comment line, whitespace or line endings around it.
+fn minisign_keys(pubkey_b64: &str) -> Result<Vec<Vec<u8>>, String> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let raw = b64
+        .decode(pubkey_b64.trim())
+        .map_err(|e| format!("pubkey is not base64: {e}"))?;
+    let text = String::from_utf8(raw).map_err(|_| "pubkey is not a minisign key file")?;
+    let keys: Vec<Vec<u8>> = text
+        .lines()
+        .filter_map(|l| b64.decode(l.trim()).ok())
+        .filter(|k| k.len() == 42 && k.starts_with(b"Ed"))
+        .collect();
+    if keys.is_empty() {
+        return Err("no minisign public key in the pinned pubkey".into());
+    }
+    Ok(keys)
+}
+
 /// Whether this build's updater config (the `plugins.updater` object) is one the driver may act
-/// on: a public key other than the release key, and at least one endpoint, all on loopback.
+/// on: a public key that is neither release key (by key id or key bytes), and at least one
+/// endpoint, all on loopback.
 pub(crate) fn guard(updater: &Value) -> Result<(), String> {
     let shipping: Value =
         serde_json::from_str(SHIPPING_CONF).map_err(|e| format!("tauri.conf.json: {e}"))?;
-    let release_key = shipping["plugins"]["updater"]["pubkey"]
+    let shipping_key = shipping["plugins"]["updater"]["pubkey"]
         .as_str()
         .ok_or("tauri.conf.json has no updater pubkey")?;
-    let pinned = updater["pubkey"].as_str().unwrap_or_default().trim();
-    if pinned.is_empty() {
+    let mut release = Vec::new();
+    for k in RELEASE_PUBKEYS.iter().chain([&shipping_key]) {
+        release.extend(minisign_keys(k).map_err(|e| format!("release key: {e}"))?);
+    }
+    let pinned = updater["pubkey"].as_str().unwrap_or_default();
+    if pinned.trim().is_empty() {
         return Err("no updater pubkey in this build".into());
     }
-    if pinned == release_key.trim() {
-        return Err("this build pins the release updater key".into());
+    for k in minisign_keys(pinned)? {
+        if release
+            .iter()
+            .any(|r| r[2..10] == k[2..10] || r[10..] == k[10..])
+        {
+            return Err("this build pins a release updater key".into());
+        }
     }
     let endpoints = updater["endpoints"]
         .as_array()
