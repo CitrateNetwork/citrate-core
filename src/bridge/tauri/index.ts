@@ -31,6 +31,7 @@ import type {
   SeedReport,
   PendingWithdrawalsRead,
   AiProviderStatus,
+  ChatConsent,
   GrantStatus,
   ActivationStatusView,
   ModelStatus,
@@ -409,8 +410,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async clearProvider(providerId: string): Promise<void> {
         await invoke("ai_clear_provider", { providerId });
       },
-      async infer(providerId: string, messagesJson: string, contextJson: string): Promise<string> {
-        return invoke<string>("ai_chat", { providerId, messagesJson, contextJson });
+      async infer(providerId: string, messagesJson: string, contextJson: string, consentId: string): Promise<string> {
+        return invoke<string>("ai_chat", { providerId, messagesJson, contextJson, consentId });
+      },
+      // K2 — core mints the one-time consent for one held message (the remote send needs it).
+      async consentPrepare(providerId: string, message: string): Promise<ChatConsent> {
+        return invoke<ChatConsent>("chat_consent_prepare", { providerId, message });
       },
       // W3.3 — one agentic turn (tools attached; returns the assistant message
       // JSON with any tool_calls). The webview runs the loop; Rust holds the key.
@@ -419,8 +424,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         messagesJson: string,
         toolsJson: string,
         contextJson: string,
+        consentId: string,
       ): Promise<string> {
-        return invoke<string>("ai_chat_tools", { providerId, messagesJson, toolsJson, contextJson });
+        return invoke<string>("ai_chat_tools", { providerId, messagesJson, toolsJson, contextJson, consentId });
       },
       // BC-3.2 — REAL LOCAL inference. The webview supplies ONLY messages +
       // context; Rust derives the loopback endpoint from the serve manager's

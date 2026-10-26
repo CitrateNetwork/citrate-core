@@ -681,6 +681,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // (the store uses the built-in demo agent instead of a fabricated reply).
         throw new Unavailable("chat", "infer");
       },
+      async consentPrepare() {
+        assertSimAllowed("chat.consentPrepare");
+        // No gateway in the web preview, so there is nothing to consent to.
+        throw new Unavailable("chat", "consentPrepare");
+      },
       async inferTools() {
         assertSimAllowed("chat.inferTools");
         // No gateway in the web preview — honest Unavailable (the store uses the
