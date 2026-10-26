@@ -575,6 +575,29 @@ fn k6_int_literal_value(tok: &str) -> Option<u64> {
     }
 }
 
+/// A chain id as a JSON or key=value value inside a string (lowercased): `"chainid":40204`,
+/// `chain_id: "0x9d0c"`, with or without quotes, escapes and spaces.
+fn k6_json_chain_id(lower: &str) -> bool {
+    for value in ["40204", "40_204", "0x9d0c"] {
+        let mut from = 0;
+        while let Some(p) = lower[from..].find(value) {
+            let at = from + p;
+            from = at + value.len();
+            let after_ok = lower[from..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+            let key = lower[..at].trim_end_matches(|c: char| {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '\\' | ':' | '=')
+            });
+            if after_ok && (key.ends_with("chainid") || key.ends_with("chain_id")) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The literals in one production Rust source that pin a network value outside the profile.
 /// Each finding is `line: what`.
 fn k6_network_literals_in_rust(src: &str) -> Vec<String> {
@@ -607,11 +630,16 @@ fn k6_network_literals_in_rust(src: &str) -> Vec<String> {
             continue;
         }
         let lower = s.to_ascii_lowercase();
-        if lower == "40204" || lower == "0x9d0c" || lower.contains("eip155:40204") {
+        if lower == "40204"
+            || lower == "0x9d0c"
+            || lower.contains("eip155:40204")
+            || k6_json_chain_id(&lower)
+        {
             out.push(format!("{}: chain id string {s:?}", line_of(*off)));
         }
-        if lower.contains("https://rpc.citrate.ai") || lower.contains("wss://rpc.citrate.ai") {
-            out.push(format!("{}: RPC URL {s:?}", line_of(*off)));
+        // The RPC host with any scheme or none.
+        if lower.contains("rpc.citrate.ai") {
+            out.push(format!("{}: RPC host {s:?}", line_of(*off)));
         }
     }
     out

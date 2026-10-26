@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -468,7 +469,7 @@ export function Node({ store, s }: SurfaceProps) {
               once pin bonds go live. Until then nothing here is bonded.
             </p>
             <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
-              source · IPFSIncentivesV3 · address book 40204
+              source · IPFSIncentivesV3 · address book {CHAIN_ID_TEXT}
             </span>
           </div>
         </div>

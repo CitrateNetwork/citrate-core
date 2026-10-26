@@ -7,6 +7,7 @@ import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -85,7 +86,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
-          <div style={eyebrow}>Chain 40204 · testnet-beta</div>
+          <div style={eyebrow}>Chain {CHAIN_ID_TEXT} · testnet-beta</div>
         </div>
       </div>
     );
@@ -649,7 +650,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
               Check again
             </button>
             <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              reads chain 40204 · never re-opens checkout
+              reads chain {CHAIN_ID_TEXT} · never re-opens checkout
             </span>
           </div>
           <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
@@ -913,7 +914,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         {s.node === "syncing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain 40204</div>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain {CHAIN_ID_TEXT}</div>
               <div className="mono tabular" style={{ fontSize: 13, color: "var(--accent-text)" }}>
                 {syncPct}%
               </div>

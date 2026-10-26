@@ -24,55 +24,104 @@ const PINNED: { file: string; finding: string }[] = [{ file: "src/agent/eval.ts"
 
 type Lexed = { code: string; strings: { at: number; text: string }[] };
 
-/** Comments removed and string/template literals blanked (newlines kept), plus every literal. */
+/**
+ * Comments removed and string literals blanked (newlines kept), plus every literal. The `${..}`
+ * parts of a template literal are code, lexed like any other (nested templates included).
+ */
 function lexTs(src: string): Lexed {
   let code = "";
   const strings: Lexed["strings"] = [];
   const blank = (c: string) => (c === "\n" ? "\n" : " ");
   let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    const n = src[i + 1];
-    if (c === "/" && n === "/") {
-      while (i < src.length && src[i] !== "\n") {
-        code += " ";
-        i++;
-      }
-      continue;
-    }
-    if (c === "/" && n === "*") {
-      const end = src.indexOf("*/", i + 2);
-      const stop = end < 0 ? src.length : end + 2;
-      for (; i < stop; i++) code += blank(src[i]);
-      continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      const at = code.length;
-      code += " ";
-      i++;
-      let text = "";
-      while (i < src.length && src[i] !== c) {
-        if (src[i] === "\\" && i + 1 < src.length) {
-          text += src[i] + src[i + 1];
-          code += blank(src[i]) + blank(src[i + 1]);
-          i += 2;
-          continue;
+  // `depth` counts open braces inside a `${`; at 0 a `}` closes the substitution.
+  function lexCode(inSubst: boolean): void {
+    let depth = 0;
+    while (i < src.length) {
+      const c = src[i];
+      const n = src[i + 1];
+      if (c === "/" && n === "/") {
+        while (i < src.length && src[i] !== "\n") {
+          code += " ";
+          i++;
         }
-        if (c !== "`" && src[i] === "\n") break; // an unterminated quote: stop at the line end
-        text += src[i];
-        code += blank(src[i]);
-        i++;
+        continue;
       }
-      code += " ";
+      if (c === "/" && n === "*") {
+        const end = src.indexOf("*/", i + 2);
+        const stop = end < 0 ? src.length : end + 2;
+        for (; i < stop; i++) code += blank(src[i]);
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        lexQuoted(c);
+        continue;
+      }
+      if (c === "`") {
+        lexTemplate();
+        continue;
+      }
+      if (inSubst && c === "{") depth++;
+      if (inSubst && c === "}") {
+        if (depth === 0) return;
+        depth--;
+      }
+      code += c;
       i++;
-      strings.push({ at, text });
-      continue;
     }
-    code += c;
-    i++;
   }
+  function lexQuoted(q: string): void {
+    // A quote with no closing quote on its line is not a string (JSX text: "isn't"); it stays
+    // code, so nothing after it on the line is hidden from the scan.
+    let j = i + 1;
+    while (j < src.length && src[j] !== q && src[j] !== "\n") j += src[j] === "\\" ? 2 : 1;
+    if (j >= src.length || src[j] !== q) {
+      code += src[i];
+      i++;
+      return;
+    }
+    const at = code.length;
+    const text = src.slice(i + 1, j);
+    for (let k = i; k <= j; k++) code += blank(src[k]);
+    i = j + 1;
+    strings.push({ at, text });
+  }
+  function lexTemplate(): void {
+    let at = code.length;
+    code += " ";
+    i++;
+    let text = "";
+    while (i < src.length && src[i] !== "`") {
+      if (src[i] === "\\" && i + 1 < src.length) {
+        text += src[i] + src[i + 1];
+        code += blank(src[i]) + blank(src[i + 1]);
+        i += 2;
+        continue;
+      }
+      if (src[i] === "$" && src[i + 1] === "{") {
+        strings.push({ at, text });
+        text = "";
+        code += "  ";
+        i += 2;
+        lexCode(true);
+        code += " "; // the closing }
+        i++;
+        at = code.length;
+        continue;
+      }
+      text += src[i];
+      code += blank(src[i]);
+      i++;
+    }
+    code += " ";
+    i++;
+    strings.push({ at, text });
+  }
+  lexCode(false);
   return { code, strings };
 }
+
+/** A chain id in JSON or a key=value inside a string: `"chainId":40204`, `chain_id: "0x9d0c"`. */
+const JSON_CHAIN_ID = /chain_?id["']?\s*[:=]\s*["']?(40_?204|0x0*9d0c)(?![0-9a-z_])/;
 
 function intValue(tok: string): number | null {
   const t = tok.toLowerCase().replace(/_/g, "").replace(/n$/, "");
@@ -87,16 +136,14 @@ function networkLiteralsInTs(src: string): string[] {
   const lineOf = (at: number) => code.slice(0, at).split("\n").length;
   const out: string[] = [];
   const num = /(?<![A-Za-z0-9_$.])(0[xX][0-9a-fA-F_]+n?|[0-9][0-9_]*n?)(?![A-Za-z0-9_$])/g;
+  // Every bare chain-id token in code is a value, whatever precedes it (`case 40204:`,
+  // `() => 40204`, `< 40204`, JSX text). Copy names the chain through the profile.
   for (const m of code.matchAll(num)) {
-    if (intValue(m[1]) !== 40204) continue;
-    // A value in code follows an operator or punctuation (`chainId: 40204`, `=== 40204`,
-    // `f(40204)`, `{40204}`); a number after a word is JSX text, which is copy.
-    const before = code.slice(0, m.index ?? 0).trimEnd();
-    if (/[:=(,[?!&|+\-*/{]$/.test(before) || /\breturn$/.test(before)) out.push(`${lineOf(m.index ?? 0)}: chain id ${m[1]}`);
+    if (intValue(m[1]) === 40204) out.push(`${lineOf(m.index ?? 0)}: chain id ${m[1]}`);
   }
   for (const s of strings) {
     const t = s.text.toLowerCase();
-    if (t === "40204" || t === "0x9d0c" || t.includes("eip155:40204")) out.push(`${lineOf(s.at)}: chain id string ${JSON.stringify(s.text)}`);
+    if (t === "40204" || t === "0x9d0c" || t.includes("eip155:40204") || JSON_CHAIN_ID.test(t)) out.push(`${lineOf(s.at)}: chain id string ${JSON.stringify(s.text)}`);
     if (t.includes("rpc.citrate.ai")) out.push(`${lineOf(s.at)}: RPC host ${JSON.stringify(s.text)}`);
   }
   return out;
@@ -141,9 +188,11 @@ describe("no chain id or RPC literal outside the network profile (#493, K6-3)", 
       `const p = '{"chain_id": "0x9d0c"}';`, // 22
       "const q = `a ${`b ${40_204}`} c`;", // 23 (nested template)
       "const r = 140204 + 402041;", // 24 (other numbers)
+      "const s = <p>It isn't on chain 40204 yet</p>;", // 25 (an apostrophe hides nothing)
+      "const t = 1;", // 26 (line numbers stay right after it)
     ].join("\n");
     const lines = [...new Set(networkLiteralsInTs(src).map((f) => Number(f.split(":")[0])))].sort((a, b) => a - b);
-    expect(lines).toEqual([3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+    expect(lines).toEqual([3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25]);
   });
 
   it("the production webview code holds none", () => {
@@ -151,13 +200,20 @@ describe("no chain id or RPC literal outside the network profile (#493, K6-3)", 
     const files = productionFiles(root);
     expect(files.length, "positive control: the scan reads the webview").toBeGreaterThan(100);
     const offenders: string[] = [];
+    const pinnedSeen = new Map<string, number>();
     for (const f of files) {
       const rel = `src/${relative(root, f)}`;
       for (const hit of networkLiteralsInTs(readFileSync(f, "utf8"))) {
-        if (PINNED.some((p) => p.file === rel && hit.endsWith(": " + p.finding))) continue;
+        const pin = PINNED.find((p) => p.file === rel && hit.endsWith(": " + p.finding));
+        // Each pinned copy is allowed exactly once; a second copy is an offender.
+        if (pin && !pinnedSeen.has(rel)) {
+          pinnedSeen.set(rel, 1);
+          continue;
+        }
         offenders.push(`${rel}:${hit}`);
       }
     }
+    expect([...pinnedSeen.keys()], "positive control: each pinned copy is found exactly once").toEqual(PINNED.map((p) => p.file));
     expect(offenders, "read the chain id and RPC from src/network/profile.ts (or `citrate` in src/chain.ts)").toEqual([]);
   });
 

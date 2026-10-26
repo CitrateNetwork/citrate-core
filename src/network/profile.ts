@@ -60,6 +60,10 @@ export function missingValues(p: NetworkProfile): { field: string; reason: strin
   }));
 }
 
+/** The chain id this build targets, for copy ("chain {CHAIN_ID_TEXT}"): the active profile's,
+ *  or "not set" when it has none. Copy never names a chain id of its own. */
+export const CHAIN_ID_TEXT: string = ACTIVE_PROFILE?.chainId != null ? String(ACTIVE_PROFILE.chainId) : "not set";
+
 /** The host of the profile's RPC (`rpc.example.org`), or null when it is not set. */
 export function rpcHost(p: NetworkProfile | null = ACTIVE_PROFILE): string | null {
   if (!p?.rpcUrl) return null;

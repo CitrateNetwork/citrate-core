@@ -19,6 +19,7 @@ import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
 import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, setTelemetryConsent } from "./privacy/joinFunnel";
 import { JoinStepsNote } from "./privacy/JoinStepsNote";
+import { CHAIN_ID_TEXT } from "./network/profile";
 
 const queryClient = new QueryClient();
 
@@ -119,7 +120,7 @@ function AuthGate() {
       )}
       {err && <div style={{ fontSize: 12.5, color: "var(--danger)", maxWidth: 420 }}>{err}</div>}
       <div className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-        Chain 40204 · testnet-beta · session never stored on disk
+        Chain {CHAIN_ID_TEXT} · testnet-beta · session never stored on disk
       </div>
     </div>
   );
