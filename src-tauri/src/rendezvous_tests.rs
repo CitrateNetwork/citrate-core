@@ -383,7 +383,7 @@ fn pending(lookup: &str, created_at: u64) -> crate::invites::PendingInvite {
         "t",
         "@h",
         created_at,
-        String::new(),
+        crate::invite_seal::InvitePrivKey::default(),
         String::new(),
         decision(lookup),
     )

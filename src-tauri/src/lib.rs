@@ -6,6 +6,9 @@
 //! fabricated data (Rule 1). Chain reads happen in the webview via viem/wagmi
 //! (D-13); signing routes through the Rust SignatureCeremony once it exists
 //! (CORE-S2).
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 // WP-S1.2: the safety-critical spine (ceremony, custody, oidc, supervisor,
 // wallet, rpc, txdecode, config) now lives in `citrate-core-kit`, shared with
@@ -62,6 +65,7 @@ mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod chat_consent;
 mod chat_route;
 mod device_link;
 mod device_link_share;
@@ -162,13 +166,17 @@ mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
 mod storage_backup;
+mod store_catalog;
 mod training;
 
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
 #[cfg(test)]
 mod invoke_secret_scan_tests;
+// Every in-process vault write targets a slot the webview's custody_put cannot address.
 #[cfg(test)]
 mod main_thread_tripwire;
+#[cfg(test)]
+mod vault_slot_reservation_tests;
 // HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
 #[cfg(test)]
 mod privacy_contract_tests;
@@ -406,9 +414,9 @@ pub fn run() {
             // CORE-C3 — the MemoryManager: the citrate-memories `mcp_serve`
             // daemon under the SidecarSupervisor, serving the per-user encrypted
             // memory graph over a Unix socket. @rule8: a per-user store wrapping
-            // key lives in the OS keyring (never on disk clear) and is handed to
-            // the daemon via the CITRATE_MEM_STORE_KEY env (forward-compat seam —
-            // see memory.rs / sprint Concern 1). recall/search/neighbors speak the
+            // key lives in the OS keyring and is handed to the daemon in an
+            // owner-only key file named by CITRATE_MEM_STORE_KEY_FILE (see
+            // memory.rs). recall/search/neighbors speak the
             // daemon's JSON-RPC over the socket; the Storage constellation renders
             // the real graph (no fabricated nodes — Rule 1).
             app.manage(memory::build_memory_state(&app.handle().clone())?);
@@ -420,6 +428,8 @@ pub fn run() {
             // https baseURL at set-time and ai_chat calls the STORED baseURL only —
             // the webview picks WHICH provider id, never the URL (exfil-binding).
             app.manage(ai::build_ai_state());
+            // K2: the one-time consents remote chat sends need (in memory only).
+            app.manage(chat_consent::ChatConsentState::default());
             // CORE-BC-3.1 — the ModelManager: the local Gemma GGUF download +
             // SHA-256 verify. model_status is honest (Ready ONLY after a real
             // verify — never mere presence, Rule 1); model_download is STREAMED +
@@ -763,6 +773,8 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            chat_consent::chat_consent_prepare,
+            chat_consent::media_consent_prepare,
             chat_route::chat_route_get,
             chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
@@ -949,6 +961,13 @@ pub fn run() {
             components::components_status,
             components::components_update,
             components::components_rollback,
+            // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
+            // removal. Every catalog command refuses until the catalog key is issued.
+            store_catalog::store_catalog,
+            store_catalog::store_stage,
+            store_catalog::store_install,
+            store_catalog::store_installed,
+            store_catalog::store_remove,
             // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
             // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
             mcp_servers::mcp_servers_list,
@@ -1106,26 +1125,45 @@ mod tests {
         assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
     }
 
-    /// ADV-8 boundary, asserted structurally against the real source: the
-    /// invoke_handler registers exactly the seven metadata/status custody
-    /// commands and NEVER `custody_get` (the in-process secret-reading pub fn).
-    /// No invoke command returns secret bytes.
+    /// ADV-8 boundary, asserted structurally against the real sources: the invoke_handler
+    /// registers exactly the `#[tauri::command]`s defined in kit's custody.rs (whose return types
+    /// the kit ADV-8 test pins), and NEVER `custody_get` (the in-process secret-reading pub fn).
     #[test]
     fn no_custody_invoke_command_returns_secret_bytes() {
         let src = include_str!("lib.rs");
-        // The registered custody commands (all return status / () / metadata).
-        for cmd in [
-            "custody::custody_status",
-            "custody::custody_init",
-            "custody::custody_unlock",
-            "custody::custody_ensure_unlocked",
-            "custody::custody_lock",
-            "custody::custody_put",
-            "custody::custody_list",
-            "custody::custody_keyring_status",
-        ] {
-            assert!(src.contains(cmd), "custody command not registered: {cmd}");
+        let handler_start = src
+            .find("tauri::generate_handler![")
+            .expect("the invoke handler list");
+        let handler = &src[handler_start..];
+        let handler = &handler[..handler.find("])").expect("end of the handler list")];
+        let registered: std::collections::BTreeSet<String> = handler
+            .lines()
+            .map(str::trim)
+            .filter_map(|l| l.strip_prefix("custody::"))
+            .map(|l| l.trim_end_matches(',').to_string())
+            .collect();
+        let kit = include_str!("../../kit/src/custody.rs");
+        let mut defined = std::collections::BTreeSet::new();
+        let mut lines = kit.lines();
+        while let Some(line) = lines.next() {
+            if line.trim() != "#[tauri::command]" {
+                continue;
+            }
+            let sig = lines.find(|l| l.contains("fn ")).expect("command fn");
+            let name: String = sig[sig.find("fn ").expect("fn") + 3..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            defined.insert(name);
         }
+        assert!(
+            defined.len() >= 7,
+            "the scan must see the custody commands: {defined:?}"
+        );
+        assert_eq!(
+            registered, defined,
+            "the registered custody commands differ from those defined in kit custody.rs"
+        );
         // The secret-reading API must NEVER be registered as an invoke command.
         // Registration would take the form `<mod>::<fn>,` inside the
         // generate_handler![...] list. The needle is assembled from parts so

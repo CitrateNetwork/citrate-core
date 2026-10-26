@@ -1099,7 +1099,8 @@ impl Supervisor {
     ///
     /// - Refused as `RejectedClosing` after shutdown began, and as `Quarantined` while owned
     ///   work from an earlier stop is still running.
-    /// - A Start on a live service is `AlreadySatisfied`; one while a Start is pending joins it.
+    /// - A Start on a live service is `AlreadySatisfied` while its monitor runs; one while a
+    ///   Start is pending joins it. With the monitor gone it is `ObservationUnknown`.
     /// - After a Stop (or after `Failed`) it commits a new intent: the monitor finishes any
     ///   teardown first, then spawns exactly one new incarnation with a fresh retry budget.
     pub fn request_start(&self) -> ControlResult {
@@ -1120,7 +1121,10 @@ impl Supervisor {
             // Joining a pending Start is only Accepted while a monitor can settle it.
             return self.observed(token);
         }
-        if c.desired == Desired::Running && c.phase != Phase::Failed {
+        // Satisfied only while a monitor supervises the running service. Without one the cached
+        // process state can no longer be maintained, so the Start is committed and reported as
+        // ObservationUnknown (core#398).
+        if c.desired == Desired::Running && c.phase != Phase::Failed && self.monitor_running() {
             return ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch));
         }
         let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
@@ -1554,6 +1558,51 @@ impl Drop for OwnedChild {
     }
 }
 
+/// Installed first in [`run_monitor`], so it drops last. If the monitor unwinds (a `ChildWatch`
+/// hook panicked), the [`OwnedChild`] drop has already killed and reaped the child; this marks
+/// the cell so it no longer reports a supervised process: Starting, Alive and Backoff become
+/// Failed with no pid, Stopping becomes Quarantined (its cleanup can no longer be observed), and
+/// a pending receipt is settled. A normal
+/// exit (shutdown) leaves the cell to `finish_closing`.
+struct MonitorExit(Arc<Shared>);
+
+impl Drop for MonitorExit {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let reason = "the service monitor ended; nothing supervises the service";
+        let mut c = self.0.lock();
+        c.status.pid = None;
+        match c.phase {
+            Phase::Starting | Phase::Alive | Phase::Backoff => {
+                c.status.state = SupervisorState::Failed;
+                c.phase = Phase::Failed;
+            }
+            // A Stop's teardown can no longer be observed to finish: never Stopped.
+            Phase::Stopping => {
+                c.status.state = SupervisorState::Off;
+                c.phase = Phase::Quarantined;
+                c.quarantine = Some(reason.to_string());
+            }
+            Phase::Stopped | Phase::Failed | Phase::Quarantined => {}
+        }
+        if let Some((token, kind)) = c.active {
+            let receipt = match kind {
+                IntentKind::Start => Receipt::Failed {
+                    reason: reason.to_string(),
+                },
+                IntentKind::Stop => Receipt::Incomplete {
+                    remaining: vec!["readers".to_string()],
+                    reason: reason.to_string(),
+                },
+            };
+            c.settle(token.intent_sequence, kind, receipt);
+        }
+        c.touch();
+    }
+}
+
 /// The monitor loop: the sole owner of the child and the sole writer of process state.
 ///
 /// Every turn reads the latest intent from the cell (SC1):
@@ -1576,6 +1625,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         join_timeout: _join_timeout,
         clock,
     } = config;
+    // Dropped last: marks the cell if this thread unwinds (core#398).
+    let _exit = MonitorExit(shared.clone());
 
     // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap. Reset to 0 once a
     // respawned child stays Running for `healthy_after` (F-1), and for every new Start intent.
@@ -1597,8 +1648,6 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     let mut settled_stop: Option<u64> = None;
     // Whether a child was torn down since the last settled Stop (names "child" in the scope).
     let mut tore_down_child = false;
-    // The intent the last admitted spawn served. A different current intent is a new Start.
-    let mut spawned_for: u64 = 0;
 
     loop {
         let (seq, desired, closing) = shared.intent();
@@ -1634,21 +1683,20 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
             shared.wait_wake(None);
             continue;
         }
-        // The first spawn for a new Start intent. However the previous incarnation ended (a
-        // Stop's teardown that this Start superseded, a crash, or health failures that spent the
-        // retry budget), its child is gone but its readers (and any process holding its output
-        // pipe) may not be. Reconcile them before admitting the spawn; until then the service is
-        // Quarantined and the Start pending.
-        if spawned_for != seq {
-            let remaining = drain_readers(&mut readers, READER_DRAIN);
-            if !remaining.is_empty() {
-                hold_start_for_cleanup(&shared, seq, &remaining);
-                shared.wait_wake(Some(QUARANTINE_POLL));
-                continue;
-            }
-            release_start_hold(&shared, seq);
-            tore_down_child = false;
+        // Before every spawn: the first one for a new Start intent and every automatic retry
+        // under the same intent (core#397). However the previous incarnation ended (a Stop's
+        // teardown that this Start superseded, a crash, or a failed health check), its child is
+        // gone but its readers (and any process holding its output pipe) may not be. Reconcile
+        // them before admitting the spawn; until then the service is Quarantined and nothing is
+        // spawned. A pending Start stays pending; a retry keeps its budget position.
+        let remaining = drain_readers(&mut readers, READER_DRAIN);
+        if !remaining.is_empty() {
+            hold_start_for_cleanup(&shared, seq, &remaining);
+            shared.wait_wake(Some(QUARANTINE_POLL));
+            continue;
         }
+        release_start_hold(&shared, seq);
+        tore_down_child = false;
         if budget_seq != seq {
             budget_seq = seq;
             consecutive_failures = 0;
@@ -1658,7 +1706,6 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         if !admit_spawn(&shared, seq) {
             continue;
         }
-        spawned_for = seq;
         let mut child = match spawn_child(&spec) {
             Ok(c) => OwnedChild(c),
             Err(e) => {
@@ -1691,9 +1738,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         // Stream stdout + stderr into the shared log ring (Q-A.2). Done BEFORE publishing so no
         // early line is missed. The crash tail is later derived from the ring's `err` lines.
-        // Join readers of earlier incarnations that have ended, so a long crash-and-retry
-        // history does not keep their handles around.
-        let _still_reading = drain_readers(&mut readers, Duration::ZERO);
+        // Earlier incarnations' readers were all joined by the reconcile above.
         readers.extend(spawn_log_readers(&mut child, &spec.name, &shared));
 
         // --- publication admission: a newer intent that arrived during the OS call wins ---
@@ -1802,8 +1847,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     }
 }
 
-/// The previous incarnation still holds `remaining`: quarantine the service while the accepted
-/// Start for intent `seq` waits. Nothing is spawned meanwhile.
+/// The previous incarnation still holds `remaining`: quarantine the service while the next spawn
+/// for intent `seq` (an accepted Start or an automatic retry) waits. Nothing is spawned meanwhile.
 fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
     let mut c = shared.lock();
     if c.closing || c.intent_sequence != seq || c.quarantine.is_some() {
@@ -1814,8 +1859,8 @@ fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
     c.phase = Phase::Quarantined;
     c.quarantine = Some(format!(
         "the previous incarnation is not cleaned up yet ({}): its output is still open, so \
-         another process (for example one it started) may hold the pipe; the accepted Start \
-         waits until it ends",
+         another process (for example one it started) may hold the pipe; the next start waits \
+         until it ends",
         remaining.join(", ")
     ));
     c.touch();

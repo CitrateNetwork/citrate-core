@@ -194,8 +194,10 @@ step still packages, with a README-only corpus (first run: `skipped: no-bundle`)
 pinned corpus against **this platform's** `mem-mcp`, then run the pre-bundle check; both refuse
 anything that is not the pinned, verified corpus.
 
-The `mem-mcp` built above must implement `import-corpus` (citrate-memories `0e9d488` or later,
-features `rocksdb,transformer`); the stager refuses an older one. Windows 10/11 ship `tar.exe`,
+The `mem-mcp` built above must implement `import-corpus` and read its store key from the file
+citrate-core names (citrate-memories `5aeda317` or later, features `rocksdb,transformer`); the
+stager refuses one without `import-corpus`, and `node scripts/component-pins.mjs verify-bytes
+mem-mcp <binary>` refuses one without the key file. Windows 10/11 ship `tar.exe`,
 which the stager uses to unpack the asset.
 
 ```powershell
