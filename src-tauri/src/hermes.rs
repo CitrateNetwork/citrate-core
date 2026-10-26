@@ -398,8 +398,8 @@ pub struct HermesManager {
     /// HUP-S3.2: the other skill sources for the sidecar's one SKILL.md loader (the member's saved
     /// skills, Citrate's bundled skills, the reviewed third-party skills). `None` = learned only.
     skill_sources: Option<crate::hermes_learn::SkillSources>,
-    /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
-    /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
+    /// HUP-S4.4 + RC52 P-9a: the member's MCP servers (Settings > MCP servers; env values in the
+    /// keychain). Their allowlist is written for the child only at spawn (see [`Self::build_spec`]).
     mcp_servers: Option<crate::mcp_servers::McpStore>,
     /// HUP-S7.3/S7.5: the base folder for the sidecar's metering log, decision records and anchor
     /// ledger (see `hermes_chain`). `None` (tests) leaves those env vars unset.
@@ -552,7 +552,7 @@ impl HermesManager {
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
-    /// HUP-S4.4: the member's MCP allowlist file (joined with the built-in one, see
+    /// HUP-S4.4: the member's MCP servers (joined with the built-in ones at spawn, see
     /// [`crate::hermes_mcp::effective_allowlist`]).
     pub fn with_mcp_servers(mut self, store: crate::mcp_servers::McpStore) -> Self {
         self.mcp_servers = Some(store);
@@ -647,22 +647,25 @@ impl HermesManager {
             ));
         }
         // HUP-S4.3 + S4.4: hand the child one MCP allowlist (built-in servers and the member's
-        // reviewed servers, joined when both are on), and only when one is written (default: none).
-        if let Some(path) = crate::hermes_mcp::effective_allowlist(
+        // reviewed servers, joined when both are on), and only when there is one (default: none).
+        // RC52 P-9a: with member servers it is a spawn-time file holding their env values from the
+        // keychain; the child watch below removes it once the child has loaded it.
+        let effective = crate::hermes_mcp::effective_allowlist(
             self.mcp_config_path.as_deref(),
             self.mcp_servers.as_ref(),
-        ) {
+        );
+        if let Some(path) = &effective {
             spec.env.push((
                 crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
                 path.to_string_lossy().to_string(),
             ));
         }
-        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
-        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
+        // HUP-S4.4: the probe file, so the sidecar's dry-run probe starts only the entry this app
+        // is checking. It exists only during a check; otherwise the probe refuses.
         if let Some(store) = &self.mcp_servers {
             spec.env.push((
                 crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
-                store.registry_path().to_string_lossy().to_string(),
+                store.probe_path().to_string_lossy().to_string(),
             ));
         }
         if let Some(dir) = &self.checkpoints_dir {
@@ -709,7 +712,22 @@ impl HermesManager {
         });
         // SCL-S0.3: record the sidecar's managed browsers while it runs, clean them up after it
         // ends (including core's hard kill after the stop grace).
-        spec.child_watch = crate::owned_browser::watch(self.browser_record_path());
+        let browser = crate::owned_browser::watch(self.browser_record_path());
+        // RC52 P-9a: a spawn-time allowlist with member env values lives only until the child has
+        // loaded it, and is written again for a supervisor restart.
+        spec.child_watch = match (effective, &self.mcp_servers) {
+            (Some(path), Some(store)) if crate::hermes_mcp::is_spawn_file(&path, store) => {
+                let health_url = format!("http://{}/health", self.control_addr);
+                Some(crate::hermes_mcp::spawn_file_watch(
+                    browser,
+                    path,
+                    self.mcp_config_path.clone(),
+                    store.clone(),
+                    std::sync::Arc::new(move || http_health_ok(&health_url)),
+                ))
+            }
+            _ => browser,
+        };
         spec
     }
 
@@ -735,9 +753,17 @@ impl HermesManager {
         self.build_spec().env
     }
 
+    /// Test hook: the whole spec (for the child-watch hooks).
     #[cfg(test)]
     pub fn spec_for_test(&self) -> SidecarSpec {
         self.build_spec()
+    }
+
+    /// RC52 P-9a: remove the files that hold member MCP env values only around a spawn or a probe.
+    fn sweep_mcp_runtime_files(&self) {
+        if let Some(store) = &self.mcp_servers {
+            crate::mcp_servers::sweep_runtime_files(store.dir());
+        }
     }
 
     /// Start the sidecar: mint a fresh session bearer, persist it `0600` (the child adopts it), and
@@ -791,6 +817,7 @@ impl HermesManager {
         let sup = match started {
             Ok(sup) => sup,
             Err(e) => {
+                self.sweep_mcp_runtime_files();
                 // SCL-S0.5: the embedding server lives and dies with Hermes. A Hermes that did not
                 // start must not leave it running until the app quits.
                 if let Some(embed) = &self.embed {
@@ -822,6 +849,8 @@ impl HermesManager {
             sup.stop();
             drop(sup);
         }
+        // After the stop (its last child-watch call may have rewritten the spawn-time allowlist).
+        self.sweep_mcp_runtime_files();
         if let Some(embed) = &self.embed {
             embed.stop();
         }
@@ -998,6 +1027,7 @@ impl HermesManager {
     /// `POST /mcp/probe` — the sidecar's dry-run check of one server entry (the runtime's
     /// `[[servers]]` shape). 422 = the sidecar's field errors; 200 = the probe report (which may
     /// itself say the server could not be reached). Registers nothing.
+    /// `entry` is the entry's JSON with its env values ([`crate::mcp_servers::runtime_entry_json`]).
     pub fn mcp_probe(&self, entry: &str) -> Result<crate::mcp_servers::ProbeOutcome> {
         let bearer = self.bearer()?;
         let resp =
