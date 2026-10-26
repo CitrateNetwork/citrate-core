@@ -51,18 +51,21 @@ jobs:
     timeout-minutes: 360
     env:
       CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
-      CITRATE_COMPONENT_BUILD_ROOT: ${{ runner.temp }}/component-build
-      OUT: ${{ runner.temp }}/cold-sync
       IN_PROFILE_NAME: ${{ inputs.profile_name }}
       IN_PROFILE_JSON: ${{ inputs.profile_json }}
       IN_BLOCKS: ${{ inputs.blocks }}
       IN_TIMEOUT: ${{ inputs.timeout }}
       IN_EVERY: ${{ inputs.every }}
-      IN_NEGATIVE: ${{ inputs.negative }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      # The runner context is not available in job env; set the paths here.
+      - name: Paths
+        run: |
+          echo "OUT=$RUNNER_TEMP/cold-sync" >> "$GITHUB_ENV"
+          echo "CITRATE_COMPONENT_BUILD_ROOT=$RUNNER_TEMP/component-build" >> "$GITHUB_ENV"
 
       # citrate-chain is public; the token is only used if it is set (if the repo goes private).
       - name: Authenticate to citrate-chain (read-only)
@@ -112,13 +115,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$OUT"
+          # The profile arguments, one per line (inputs never become shell text).
           if [ -n "$IN_PROFILE_JSON" ]; then
             printf '%s' "$IN_PROFILE_JSON" > "$OUT/profile.json"
-            echo "args=--profile $OUT/profile.json" >> "$GITHUB_OUTPUT"
+            printf '%s\n' --profile "$OUT/profile.json" > "$OUT/profile-args"
           elif [ -f src-tauri/network/profiles.json ]; then
-            a="--profiles src-tauri/network/profiles.json"
-            [ -n "$IN_PROFILE_NAME" ] && a="$a --name $IN_PROFILE_NAME"
-            echo "args=$a" >> "$GITHUB_OUTPUT"
+            printf '%s\n' --profiles src-tauri/network/profiles.json > "$OUT/profile-args"
+            [ -n "$IN_PROFILE_NAME" ] && printf '%s\n' --name "$IN_PROFILE_NAME" >> "$OUT/profile-args"
           else
             echo "::error::no src-tauri/network/profiles.json on this ref (K6, core #363); pass profile_json"
             exit 1
@@ -126,11 +129,14 @@ jobs:
 
       - name: Cold sync
         shell: bash
+        env:
+          NODE_BIN: ${{ steps.node.outputs.bin }}
+          NODE_SHA256: ${{ steps.node.outputs.sha256 }}
         run: |
           set -euo pipefail
-          args=(${{ steps.profile.outputs.args }} --node-bin "${{ steps.node.outputs.bin }}"
-                --expect-sha256 "${{ steps.node.outputs.sha256 }}"
-                --timeout "$IN_TIMEOUT" --every "$IN_EVERY" --out "$OUT/positive")
+          mapfile -t args < "$OUT/profile-args"
+          args+=(--node-bin "$NODE_BIN" --expect-sha256 "$NODE_SHA256"
+                 --timeout "$IN_TIMEOUT" --every "$IN_EVERY" --out "$OUT/positive")
           [ -n "$IN_BLOCKS" ] && args+=(--blocks "$IN_BLOCKS")
           set +e
           python3 scripts/e2e/cold-sync.py "${args[@]}"
@@ -148,11 +154,14 @@ jobs:
       - name: Negative case (wrong genesis must be refused)
         if: ${{ always() && inputs.negative && steps.node.outcome == 'success' && steps.profile.outcome == 'success' }}
         shell: bash
+        env:
+          NODE_BIN: ${{ steps.node.outputs.bin }}
         run: |
           set -euo pipefail
           # The same profile and address book with another genesis (last hex digit flipped), so
           # the run gets past the input checks and both gates are exercised.
-          python3 - "$OUT" ${{ steps.profile.outputs.args }} <<'PY'
+          mapfile -t pargs < "$OUT/profile-args"
+          python3 - "$OUT" "${pargs[@]}" <<'PY'
           import json, sys
           out, args = sys.argv[1], sys.argv[2:]
           path = args[args.index("--profile") + 1] if "--profile" in args else args[args.index("--profiles") + 1]
@@ -169,7 +178,7 @@ jobs:
           PY
           set +e
           python3 scripts/e2e/cold-sync.py --profile "$OUT/wrong-profile.json" --address-book "$OUT/wrong-book.json" \
-            --node-bin "${{ steps.node.outputs.bin }}" --blocks 100 --timeout 5m --out "$OUT/negative"
+            --node-bin "$NODE_BIN" --blocks 100 --timeout 5m --out "$OUT/negative"
           code=$?
           set -e
           python3 - "$OUT/negative/verdict.json" "$code" <<'PY'
