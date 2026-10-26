@@ -182,7 +182,7 @@ fn seals_config_and_binds_key_to_base_url() {
     let cfg = mgr.read_config("openai").expect("read back");
     assert_eq!(cfg.base_url, OPENAI_BASE);
     assert_eq!(cfg.model, "gpt-4o");
-    assert_eq!(cfg.api_key, "sk-secret-xyz");
+    assert_eq!(cfg.api_key.expose(), "sk-secret-xyz");
 }
 
 #[test]
@@ -856,6 +856,19 @@ fn the_usage_key_is_never_sent_back_to_the_model() {
     .to_string();
     let body = build_chat_body_with_tools("m", &history, "[]", "{}").unwrap();
     assert!(!body.to_string().contains(USAGE_KEY));
+}
+
+/// No error from setting a provider carries the key, whatever is wrong with the input.
+#[test]
+fn set_provider_errors_never_carry_the_key() {
+    let mgr = mgr_no_http();
+    for (url, model) in [("http://evil.example/v1", "m"), (OPENAI_BASE, " "), ("notaurl", "m")] {
+        let err = mgr
+            .set_provider("custom", url, model, "sk-live-should-not-appear")
+            .expect_err("bad input is refused");
+        assert!(!err.to_string().contains("sk-live"), "key in error: {err}");
+        assert!(!format!("{err:?}").contains("sk-live"), "key in error Debug: {err:?}");
+    }
 }
 
 // ===========================================================================

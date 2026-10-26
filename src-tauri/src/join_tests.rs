@@ -5,13 +5,12 @@
 // crosses `invoke`, and that a rebuilt relay link feeds the existing redeem parser unchanged.
 
 use super::*;
-use citrate_core_kit::join::JoinKind;
+use citrate_core_kit::join::{JoinKind, ResolvedView};
 use std::collections::BTreeSet;
 
 const COMMANDS: &[&str] = &[
     "join_mint",
     "join_attach",
-    "join_resolve",
     "join_redeem",
     "join_revoke",
     "join_list",
@@ -135,4 +134,34 @@ fn production_state_uses_the_redirect_free_client_and_redeem_keeps_on_failure() 
     // join_redeem goes through redeem_opened (kept on failure), never take_opened (dropped first).
     assert!(prod.contains("redeem_opened(&code"));
     assert!(!prod.contains("take_opened("));
+}
+
+/// An invite is resolved (and its envelope opened) only through the held invite
+/// (`pending_join_resolve`), so Cancel and replacement always reach what was opened. There is no
+/// direct `join_resolve` command, and no other production code calls the join client's resolve.
+#[test]
+fn the_only_resolve_path_is_the_held_invite() {
+    let lib = include_str!("lib.rs");
+    let acl = include_str!("../permissions/main-window.toml");
+    assert!(!lib.contains("join::join_resolve,"), "join_resolve is registered");
+    assert!(!acl.contains("\"join_resolve\""), "join_resolve is allowed");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut callers = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("src dir").flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap_or_default();
+        let prod = src.split("\n#[cfg(test)]\nmod tests").next().unwrap_or("");
+        if prod.contains("join.resolve(") || prod.contains(".0.resolve(") {
+            callers.push(name);
+        }
+    }
+    assert_eq!(callers, vec!["pending_join.rs".to_string()]);
 }

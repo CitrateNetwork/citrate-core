@@ -469,6 +469,11 @@ fn map_state(state: &SupervisorState) -> &'static str {
 }
 
 impl AgentManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over explicit paths + a supervision transport. Production
     /// uses [`build_agent_state`]; tests inject a stub binary + temp paths + a
     /// mock/stub transport.

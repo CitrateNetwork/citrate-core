@@ -63,8 +63,8 @@ import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAcce
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
-import { parseJoinLink, resolveJoinCode, parseClaimLink } from "../surfaces/referral";
-import { groupsSlice } from "./slices/groups";
+import { classifyInviteInput, joinErrorMessage, joinErrorRetryable, parseClaimLink } from "../surfaces/referral";
+import { groupsSlice, refreshGroups } from "./slices/groups";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
@@ -661,6 +661,19 @@ export function tickPatch(
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
+  /** GROW-S1 task 12 — the resolved code awaiting the member's Join. Kept off AppState (and so off
+   *  every snapshot and save); the link key never reaches the webview at all. */
+  private pendingJoinCode: string | null = null;
+  /** Bumped whenever the waiting invite is replaced or cancelled. A Review, Join or start-up check
+   *  that started on an older value is about an invite that is no longer waiting, so its answer is
+   *  dropped (Rust applies the same rule to the hold itself). */
+  private pendingJoinGen = 0;
+  /** Bumped on every Cancel. A hold (pending_join_set) that was in flight when the member cancelled
+   *  doesn't bring the card back. */
+  private pendingJoinCancels = 0;
+  /** pending_join_set and pending_join_clear run one at a time, in the order they were asked for, so
+   *  Rust never sees a Cancel overtake the store it cancels, or two stores race. */
+  private pendingJoinOps: Promise<unknown> = Promise.resolve();
   private snap: AppState;
   private cid = 0;
   private mid = 0;
@@ -912,7 +925,7 @@ export class Store {
    * it is surfaced (memDaemon "error" + the coarse message). On success it re-reads
    * the status and re-runs the constellation fetch so the graph loads.
    */
-  async startMemoryDaemon(): Promise<void> {
+  async startMemoryDaemon(): Promise<string | null> {
     this.setState({ memDaemon: "idle", memDaemonError: null });
     // HUP-S3.1: import the bundled knowledge corpus BEFORE the daemon takes the store lock. Idempotent
     // and gated in Rust; a failure is shown and never blocks the daemon from starting.
@@ -921,14 +934,16 @@ export class Store {
       await bridge.memory.start();
     } catch (err) {
       // Honest failure (e.g. BinaryNotFound — the binary isn't bundled yet).
-      this.setState({ memDaemon: "error", memDaemonError: String((err as Error).message ?? err) });
-      return;
+      const reason = String((err as Error).message ?? err);
+      this.setState({ memDaemon: "error", memDaemonError: reason });
+      return reason;
     }
     const state = await this.refreshMemoryStatus();
     if (state === "running") {
       await this.refreshConstellation();
       void this.seedMemoryGraph();
     }
+    return null;
   }
 
   /**
@@ -2371,11 +2386,10 @@ export class Store {
   }
 
   /**
-   * GROW-S1 — handle a `citrate://join/...` deep-link handed to the app by the OS (the one-tap
-   * cold-start hand-off from the web join page). Parses the display context, stashes it as
-   * `pendingInvite`, and routes to Groups, which surfaces it and — for a full invite-token link —
-   * redeems it. Tolerant of a `citrate://` OR `https://citrate.ai/join/...` URL (parseJoinLink handles
-   * both). A malformed URL is ignored (no crash, no fabricated invite — Rule 1).
+   * GROW-S1 — handle a link handed to the app by the OS. A v2 invite (`citrate://join/<code>#K` or
+   * `https://citrate.ai/join/<code>#K`) goes to Rust to hold until the member acts (task 12); an
+   * app-only `citrate://invite?…` link and a legacy display link land on the Groups banner. A
+   * malformed URL is ignored (no crash, no fabricated invite — Rule 1).
    */
   handleDeepLink(url: string): void {
     if (!url) return;
@@ -2417,35 +2431,164 @@ export class Store {
       this.save();
       return;
     }
-    const parts = parseJoinLink(url);
-    // GROW-S1b — an opaque short code: resolve + VERIFY the EdDSA signature before trusting anything,
-    // then show the invite. Land on Groups immediately with a "resolving…" banner so it's responsive.
-    if (parts.code) {
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the code
-      this.setState({ pendingInvite: { url, resolving: true } });
-      this.go("groups");
-      void resolveJoinCode(parts.code)
-        .then((r) =>
-          this.setState({
-            pendingInvite: { url, clusterId: r.clusterId, clusterName: r.clusterName, inviterHandle: r.inviterHandle, goal: r.goal },
-          }),
-        )
-        .catch(() => this.setState({ pendingInvite: { url, unresolved: true } }));
+    const kind = classifyInviteInput(url);
+    // GROW-S1 task 12 — a v2 link (`citrate://join/<code>#K` / `https://citrate.ai/join/<code>#K`): hand
+    // it to Rust to hold and drop it here. Nothing is resolved until the member acts. During first-run
+    // setup it waits on the onboarding card; once set up it waits on the Groups banner.
+    if (kind.kind === "v2") {
+      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
+      void this.holdInvite(url).then((ok) => {
+        if (ok && this.state.stage === "done") this.go("groups");
+      });
       return;
     }
-    // Self-contained link — act only if it's join-shaped (has a cluster or referrer); else ignore.
-    if (!parts.clusterId && !parts.inviter && !parts.inviterHandle) return;
-    reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link's contents
-    this.setState({
-      pendingInvite: {
-        url,
-        clusterId: parts.clusterId,
-        clusterName: parts.clusterName,
-        inviterHandle: parts.inviterHandle,
-        goal: parts.goal,
-      },
-    });
-    this.go("groups");
+    // The app-only relay invite (`citrate://invite?g=&t=`) keeps its one-click Join on Groups.
+    if (kind.kind === "relay") {
+      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
+      this.setState({ pendingInvite: { url } });
+      this.go("groups");
+      return;
+    }
+    // A legacy display link already posted somewhere: context only (it can't join on its own).
+    if (kind.kind === "legacy-referral") {
+      const parts = kind.parts;
+      if (!parts.clusterId && !parts.inviterHandle) return;
+      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link's contents
+      this.setState({
+        pendingInvite: { url, clusterId: parts.clusterId, clusterName: parts.clusterName, inviterHandle: parts.inviterHandle, goal: parts.goal },
+      });
+      this.go("groups");
+    }
+  }
+
+  /** Run a pending-invite set/clear after the ones already asked for. */
+  private pendingJoinSerial<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.pendingJoinOps.then(f, f);
+    this.pendingJoinOps = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Hand a v2 invite link to Rust (pending_join_set) and record only its status. */
+  private async holdInvite(link: string): Promise<boolean> {
+    const cancels = this.pendingJoinCancels;
+    try {
+      const v = await this.pendingJoinSerial(() => bridge.join.pendingSet(link));
+      // Cancelled while it was being stored: the queued clear wipes it in Rust; don't show it.
+      if (cancels !== this.pendingJoinCancels) return false;
+      this.pendingJoinGen++;
+      this.pendingJoinCode = null;
+      this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
+      return true;
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      this.toast(/desktop app/.test(m) ? "Invite links need the desktop app." : "That invite link isn't complete. Ask for the full link, or paste the code.");
+      return false;
+    }
+  }
+
+  /** On start-up: pick up an invite Rust is still holding (status only; not resolved). */
+  async refreshPendingJoin(): Promise<void> {
+    const gen = this.pendingJoinGen;
+    try {
+      const v = await bridge.join.pendingGet();
+      if (gen !== this.pendingJoinGen) return;
+      if (v && !this.state.pendingJoin) this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
+      if (!v && this.state.pendingJoin?.phase === "waiting") this.setState({ pendingJoin: null });
+    } catch {
+      /* no join client (web preview / older build): nothing waiting */
+    }
+  }
+
+  /** Whether setup has reached the point where a Join can run (signed in, wallet ready): the wallet
+   *  step (s4) onward. `s7` is the "Activate validator" step added by core#354; it is compared as a
+   *  string so this works whether or not that step exists in this build's stage type. */
+  canJoinNow(): boolean {
+    const st: string = this.state.stage;
+    if (st === "done") return true;
+    return this.state.signedIn && ["s4", "s5", "s6", "s7"].includes(st);
+  }
+
+  /** The paste field (onboarding + Groups): the member typed or pasted an invite. A v2 link is held in
+   *  Rust and, if setup allows a Join, reviewed right away (pasting is the member acting). Returns false
+   *  when the text isn't a v2 invite, so the caller can try its own (legacy) path. */
+  async acceptInviteInput(raw: string): Promise<boolean> {
+    if (classifyInviteInput(raw).kind !== "v2") return false;
+    const ok = await this.holdInvite(raw.trim());
+    if (ok && this.canJoinNow()) await this.reviewPendingJoin();
+    return ok;
+  }
+
+  /** The member's Review: resolve + verify the waiting invite in Rust (counts against its resolve limit,
+   *  so it runs only on this click). */
+  async reviewPendingJoin(): Promise<void> {
+    const pj = this.state.pendingJoin;
+    if (!pj || pj.phase === "resolving" || pj.phase === "joining") return;
+    const gen = this.pendingJoinGen;
+    this.setState({ pendingJoin: { ...pj, phase: "resolving", error: undefined, retryable: undefined } });
+    try {
+      const r = await bridge.join.pendingResolve();
+      if (gen !== this.pendingJoinGen) return;
+      this.pendingJoinCode = r.actionable ? r.code : null;
+      this.setState({
+        pendingJoin: {
+          ...pj,
+          phase: "ready",
+          error: undefined,
+          retryable: undefined,
+          resolved: {
+            kind: r.kind,
+            clusterName: r.clusterName,
+            goal: r.goal,
+            inviter: r.inviter,
+            inviterVerified: r.inviterVerified,
+            exp: r.exp,
+            actionable: r.actionable,
+            keyMissing: r.keyMissing,
+          },
+        },
+      });
+    } catch (e) {
+      if (gen !== this.pendingJoinGen) return;
+      this.pendingJoinCode = null;
+      this.setState({ pendingJoin: { ...pj, phase: "error", error: joinErrorMessage(e), retryable: joinErrorRetryable(e) || undefined } });
+    }
+  }
+
+  /** The member's explicit "Join <cluster>": redeem the reviewed direct invite. Rust wipes the waiting
+   *  invite on success. Never called without that click. */
+  async redeemPendingJoin(): Promise<void> {
+    const pj = this.state.pendingJoin;
+    const code = this.pendingJoinCode;
+    if (!pj || pj.phase !== "ready" || !pj.resolved?.actionable || !code) return;
+    const gen = this.pendingJoinGen;
+    this.setState({ pendingJoin: { ...pj, phase: "joining" } });
+    try {
+      await bridge.join.redeem(code);
+      if (gen === this.pendingJoinGen) {
+        this.pendingJoinCode = null;
+        this.setState({ pendingJoin: null });
+      }
+      void refreshGroups().catch(() => {});
+      this.toast(`You're in. Welcome to ${pj.resolved.clusterName || "the group"}.`);
+    } catch (e) {
+      if (gen !== this.pendingJoinGen) return;
+      // Rust keeps the opened invite after a failed redeem (until it expires), so Join can be retried.
+      this.setState({ pendingJoin: { ...pj, phase: "ready", error: `Couldn't join yet (${joinErrorMessage(e).replace(/\.$/, "")}). You can try again.` } });
+    }
+  }
+
+  /** Cancel / dismiss: wipe the waiting invite in Rust. */
+  async cancelPendingJoin(): Promise<void> {
+    this.pendingJoinGen++;
+    this.pendingJoinCancels++;
+    this.pendingJoinCode = null;
+    this.setState({ pendingJoin: null });
+    try {
+      await this.pendingJoinSerial(() => bridge.join.pendingClear());
+    } catch {
+      // Rust has dropped it for this session, but the device keychain couldn't delete its copy.
+      this.toast("Cancelled, but this device's keychain couldn't be reached, so the invite may come back after a restart. Cancel it again if it does.");
+    }
   }
 
   /** HUP-S8.2 — clear the pending pairing link once the fleet wizard has taken it. */
@@ -3162,7 +3305,7 @@ export class Store {
       systemPrompt: () => chatSystemPrompt(this.snapshot()),
       context: () => this.snapshot(),
       sidecar: {
-        openUnattended: (p, t, daemonId) => h.sessionOpenUnattended(p, t, daemonId),
+        openUnattended: (p, t, daemonId, runId) => h.sessionOpenUnattended(p, t, daemonId, runId),
         send: (id, text) => h.sessionSend(id, text),
         events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
         toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
@@ -4176,7 +4319,11 @@ export class Store {
     this.startNode();
   }
 
-  startNode(): void {
+  /**
+   * Start the node. Resolves to the reason the start was refused, or null when nothing refused it
+   * (Node › Services shows the reason on the node row; other callers may ignore it).
+   */
+  startNode(): Promise<string | null> {
     // IDEMPOTENT START (onboarding-snag fix). The launch autostart already brings the node
     // up, so a second startNode() — from the S5 provisioning step or a user tap — would ask
     // the supervisor to spawn an already-live node and get `AlreadyRunning`, which used to
@@ -4188,7 +4335,7 @@ export class Store {
     ) {
       this.setState({ nodeIntent: "run" });
       void this.refreshNode();
-      return;
+      return Promise.resolve("the app already has the node starting or running");
     }
     this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
@@ -4204,13 +4351,13 @@ export class Store {
       void bridge.node.startIpfs().catch(() => {
         /* honest no-op: IPFS unavailable (dev/web) — the node still produces */
       });
-      void bridge.node
-        .start()
-        .then(() => {
+      return bridge.node.start().then(
+        async (): Promise<string | null> => {
           this.nodeStarting = false;
-          return this.refreshNode();
-        })
-        .catch((e) => {
+          await this.refreshNode();
+          return null;
+        },
+        (e: unknown) => {
           this.nodeStarting = false;
           // Surface the REAL failure. Tauri rejects a Rust `Err(String)` as a
           // plain string (not an Error), so an `instanceof Error` gate would
@@ -4221,42 +4368,50 @@ export class Store {
           // AlreadyRunning is NOT a failure — the node is already up (a race past the
           // idempotent guard above). Fold the live state and proceed; never scare the
           // user with "could not start" when the node is in fact running.
+          // The reason still goes back to the caller: from Node › Services this start was refused
+          // (a supervisor already holds the node's slot).
           if (/already running/i.test(reason)) {
             void this.refreshNode();
-            return;
+            return reason;
           }
           this.setState({ node: "error" });
           this.toast("Could not start the node: " + reason);
-        });
-      return;
+          return reason;
+        },
+      );
     }
     setTimeout(() => {
       this.setState({ node: "syncing", syncPct: 2, peerRows: this.makePeers(8) });
       this.save();
     }, 1500);
+    return Promise.resolve(null);
   }
 
   /** Stop the node. Tauri: release the real supervisor (bridge.node.stop). */
-  stopNode(): void {
+  /** Stop the node. Resolves to the reason the stop was refused, or null (see `startNode`). */
+  stopNode(): Promise<string | null> {
     // Explicit member action — remember it so launch does NOT restart the node.
     this.setState({ node: "off", nodeIntent: "stopped", peers: 0, logs: [], syncPct: 0, peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
       // Only claim the supervisor was released once the real stop RESOLVES — the
       // optimistic "off" reflects intent, but the toast must not overstate.
-      void bridge.node
+      const done = bridge.node
         .stop()
-        .then(() => {
+        .then(async (): Promise<string | null> => {
           this.toast("Node stopped — supervisor released");
-          return this.refreshNode();
+          await this.refreshNode();
+          return null;
         })
-        .catch(() => {
+        .catch((e: unknown) => {
           this.toast("Stop requested — the supervisor releases on the next poll");
+          return e instanceof Error ? e.message : typeof e === "string" && e.trim() ? e : "the stop was not confirmed";
         });
       this.save();
-      return;
+      return done;
     }
     this.toast("Node stopped — supervisor released");
     this.save();
+    return Promise.resolve(null);
   }
 
   // ---------- CORE-BC-3: local model (download + verify + serve) ----------
@@ -4711,6 +4866,17 @@ export class Store {
       this.toast("Your bond is already activated; there is nothing to sign.");
       return false;
     }
+    // #405: the FULL gate (contract §1 conditions) on THIS fresh read, never an earlier one: a
+    // membership that lapsed, a node that fell out of sync or out of band, or any field the read
+    // could not get blocks the ceremony. The proposer key is the one exception: arming mints it
+    // and signs nothing, so a node whose ONLY missing check is the key arms below and returns.
+    const gate = activationGate(this.state.activation, this.walletIsLinked());
+    const blocking = gate.checks.filter((c) => c.ok !== true);
+    const keyOnly = blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false;
+    if (blocking.length > 0 && !(keyOnly && !this.validatorArmed)) {
+      this.toast("Activation not available yet — " + blocking[0].detail);
+      return false;
+    }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
@@ -4733,6 +4899,11 @@ export class Store {
         this.validatorArmed = true;
         this.toast("Block production armed — minting your validator key, then activation opens.");
         return false; // retry once the key lands
+      }
+      if (keyOnly) {
+        // No key, and the node did not arm (not caught up, or no coinbase): nothing to sign with.
+        this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
+        return false;
       }
     }
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;

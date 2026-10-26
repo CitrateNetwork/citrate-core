@@ -96,9 +96,10 @@ const LONG: Record<string, number> = {
   // reserve + attach and resolve is resolve + JWKS (two calls each).
   join_mint: 35_000,
   join_attach: 20_000,
-  join_resolve: 35_000,
   join_revoke: 20_000,
   join_list: 20_000,
+  // Task 12: resolve of the waiting invite (resolve + JWKS, 15 s each Rust-side).
+  pending_join_resolve: 35_000,
   // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.
   gsheets_read: 20_000,
   gsheets_append: 20_000,
