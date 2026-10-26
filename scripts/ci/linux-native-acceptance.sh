@@ -16,8 +16,9 @@
 #
 # SAFETY. Launching Citrate Core on the DGX desktop session has ended that session before
 # (core#318). This script never does that. It re-runs itself as PID 1 of fresh user, PID, mount,
-# network, IPC and UTS namespaces (`unshare ... setsid`), hides /home, /tmp, /var/tmp, /run,
-# /dev/shm, /sys/fs/cgroup and the GPU device nodes behind private mounts, gives the app its own
+# network, IPC and UTS namespaces (`unshare ... setsid`), makes every mount it inherited from the
+# host read-only, hides /home, /tmp, /var/tmp, /run, /dev/shm, /sys/fs/cgroup and the GPU device
+# nodes behind private mounts, gives the app its own
 # loopback-only network, its own session bus, keyring and Xvfb display, and checks all of that
 # (with negative controls) BEFORE the first launch. If any check fails it exits 2 and never
 # launches the app. Every signal it sends goes to a pid inside the namespace.
@@ -289,12 +290,45 @@ say() { echo "$*" | tee -a "$SUMMARY"; }
 pass() { say "PASS $*"; }
 fail() { say "FAIL $*"; FAILED=1; }
 
+# Set (ro) or clear (rw) the read-only flag of the mount at an absolute path, with -r for the
+# whole subtree, through mount_setattr(2). Unlike a remount it leaves every other mount flag as it
+# is, so it also works on the mounts this user namespace inherited with locked flags.
+mount_attr() { # ro|rw path [-r]
+  python3 -I - "$@" <<'PY'
+import ctypes, os, sys
+mode, path = sys.argv[1], sys.argv[2]
+recursive = sys.argv[3:] == ["-r"]
+class MountAttr(ctypes.Structure):
+    _fields_ = [("attr_set", ctypes.c_uint64), ("attr_clr", ctypes.c_uint64),
+                ("propagation", ctypes.c_uint64), ("userns_fd", ctypes.c_uint64)]
+MOUNT_ATTR_RDONLY, AT_RECURSIVE, AT_FDCWD, SYS_MOUNT_SETATTR = 0x1, 0x8000, -100, 442  # 442 on x86_64 and aarch64
+attr = MountAttr(MOUNT_ATTR_RDONLY, 0, 0, 0) if mode == "ro" else MountAttr(0, MOUNT_ATTR_RDONLY, 0, 0)
+libc = ctypes.CDLL(None, use_errno=True)
+rc = libc.syscall(ctypes.c_long(SYS_MOUNT_SETATTR), ctypes.c_int(AT_FDCWD), path.encode(),
+                  ctypes.c_uint(AT_RECURSIVE if recursive else 0), ctypes.byref(attr), ctypes.c_size_t(ctypes.sizeof(attr)))
+if mode not in ("ro", "rw") or not path.startswith("/") or rc != 0:
+    sys.exit(f"mount_setattr {mode} {path}: {os.strerror(ctypes.get_errno())}")
+PY
+}
+
 seal() {
   # Private mounts only: unshare --mount-proc made this mount namespace with private propagation,
   # so nothing here reaches the host's mount table.
   INHERITED_MOUNT_IDS=" $(awk '{print $1}' /proc/self/mountinfo | tr '\n' ' ')"
+  # In the user namespace the caller's own files are owned by the mapped root, so every mount
+  # inherited from the host is made read-only first (the whole tree, in one call); the namespace's
+  # own /proc stays writable. What the seal mounts below is the only writable space.
+  mount_attr ro / -r || return 1
+  mount_attr rw /proc || return 1
   mount -t tmpfs -o mode=0755 tmpfs /mnt || return 1
   mkdir /mnt/work && mount --bind "$K1L_RUN" /mnt/work || return 1
+  mount_attr rw /mnt/work || return 1
+  # The staged packages may be hard links to the caller's files, and PID 1 runs the harness copy:
+  # both stay read-only inside the writable run dir.
+  local ro
+  for ro in pkgs harness; do
+    mount --bind "/mnt/work/$ro" "/mnt/work/$ro" && mount_attr ro "/mnt/work/$ro" || return 1
+  done
   local d
   for d in /tmp /var/tmp /run /home /root /sys/fs/cgroup; do
     [ -d "$d" ] || continue
@@ -447,11 +481,21 @@ p_checkout_unreachable() {
   [ -n "$hits" ] && echo "reachable from the working directory ($(readlink /proc/1/cwd)):" && echo "$hits"
   [ -z "$hits" ]
 }
-# Paths the scan reads on stdin that are writable here.
-writable_of() { local p; while IFS= read -r p; do [ -n "$p" ] && [ -e "$p" ] && [ -w "$p" ] && echo "$p"; done; }
+# Paths the scan reads on stdin that are writable here: access(W_OK) for any path, and for an
+# existing regular file also an actual open for appending (O_WRONLY|O_APPEND, nothing written,
+# so the file is left as it was).
+writable_of() {
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] && [ -e "$p" ] || continue
+    if [ -w "$p" ] || { [ -f "$p" ] && [ ! -L "$p" ] && { : >>"$p"; } 2>/dev/null; }; then echo "$p"; fi
+  done
+}
 p_writable_scan_control() {
-  # Negative control: the scan must flag a path that is writable here (the run dir's logs).
-  [ "$(printf '%s\n' "$W/logs" | writable_of)" = "$W/logs" ]
+  # Negative control: the scan must flag a directory and a file that are writable here (the run
+  # dir's logs), and the append-open alone must succeed on that file.
+  local f="$W/logs/probes.log"
+  [ "$(printf '%s\n' "$W/logs" "$f" | writable_of | paste -sd' ')" = "$W/logs $f" ] && { : >>"$f"; } 2>/dev/null
 }
 p_host_paths_readonly() {
   local hits
@@ -464,7 +508,10 @@ p_inherited_readonly() {
   # Every mount the namespace inherited from the host is read-only here, except the namespace's
   # own /proc; the seal's own tmpfs mounts and the run dir are the only writable places.
   local id mp opts procid bad=0
-  procid="$(findmnt -n -o ID -T /proc | head -n 1)"
+  # The mount id of the /proc this namespace sees (the topmost of the stacked /proc mounts).
+  local fd; exec {fd}</proc
+  procid="$(awk '$1 == "mnt_id:" {print $2}' "/proc/self/fdinfo/$fd")"; exec {fd}<&-
+  [ -n "$procid" ] || { echo "cannot read the mount id of /proc"; return 1; }
   while read -r id _ _ _ mp opts _; do
     [[ "$INHERITED_MOUNT_IDS" == *" $id "* ]] || continue
     [ "$id" = "$procid" ] && continue
