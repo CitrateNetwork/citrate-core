@@ -30,5 +30,8 @@ start_after_the_monitor_ends_is_never_already_satisfied | regression | SCL-S2.2 
 start_after_the_monitor_ends_past_an_exited_child_is_never_already_satisfied | regression | SCL-S2.2 | core#398: the same when the child had already exited and been reaped; nothing respawns
 start_after_a_crash_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after a crash leaves its output held and the budget is spent, a Start spawns nothing until cleanup
 start_after_health_failures_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | after health failures exhaust the budget with output held, a Start spawns nothing until cleanup
+crash_retry_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | core#397: an automatic retry after a crash spawns nothing while the old output is held (Quarantined meanwhile), then proceeds
+health_retry_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | core#397: the same after a health-check failure with budget left
+stop_during_a_held_retry_spawns_nothing | regression | SCL-S2.2 | core#397: a Stop during a held retry wins; Incomplete, then Stopped with one incarnation once the reader ends
 start_after_shutdown_is_rejected_closing | regression | SCL-S2.2 | a Start after shutdown begins is RejectedClosing and spawns nothing
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures

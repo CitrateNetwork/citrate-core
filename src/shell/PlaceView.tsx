@@ -13,6 +13,10 @@ import { HermesWork } from "../surfaces/hermes/HermesWork";
 import { HermesLearn } from "../surfaces/hermes/HermesLearn";
 import { HermesControls } from "../surfaces/hermes/HermesControls";
 import { agentSlice } from "./slices/agent";
+import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
+import { GroupRoundsCard } from "../fl/GroupRoundsCard";
+import { FlRoundsPanel } from "../fl/FlRoundsPanel";
+import { bridge } from "../bridge";
 import { Models, StorageFiles, Groups, Cluster, Train, Connections, Community, People } from "../surfaces";
 import { StoragePins, StorageBackup } from "../surfaces";
 
@@ -102,6 +106,17 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "groups/chat/alerts":
       return <Comms store={store} s={s} />;
     case "groups/rounds":
+      // FL round cards (0.5.2) behind VITE_FL_ROUND_CARDS: the address-book-gated ledger card in
+      // place of Train's PatronageLedger read, with the same federated-rounds panel below it.
+      if (flRoundCardsEnabled())
+        return (
+          <>
+            <GroupRoundsCard variant="tab" />
+            <div style={{ padding: "16px 26px 24px", maxWidth: 900 }}>
+              <FlRoundsPanel fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />
+            </div>
+          </>
+        );
       return <Train store={store} s={s} />;
     case "groups/members":
       return <People store={store} s={s} />;

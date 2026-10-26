@@ -224,7 +224,8 @@ describe("tripwire: start-time setting writes go through the lock", () => {
         if (!/UnlessStarting\(/.test(window)) offenders.push(`${rel}:${i + 1}`);
       });
     }
-    expect(calls).toBeGreaterThanOrEqual(4);
+    // patchWebSettings (the one web writer) and the two learning writers.
+    expect(calls).toBeGreaterThanOrEqual(3);
     expect(offenders).toEqual([]);
   });
 });

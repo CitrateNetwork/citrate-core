@@ -17,7 +17,11 @@
 //!
 //! Rule 3: nothing here holds a private key or signs. Signing happens offline at the release
 //! ceremony with the minisign tool.
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 pub mod bundle;
+pub mod catalog;
 pub mod error;
 pub mod extract;
 pub mod fetch;

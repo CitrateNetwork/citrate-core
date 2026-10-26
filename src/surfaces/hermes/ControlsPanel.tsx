@@ -27,13 +27,13 @@ import { BRIDGE_MODE } from "../../bridge/mode";
 import { invoke } from "../../bridge/tauri/invoke";
 import { bridge } from "../../bridge";
 import type { EscalationBudget, EscalationDomain, FlRoundsDomain, FlTrajectoryStatus } from "../../bridge/domains";
-import { loadWebSettings, saveWebSettings, type HermesWebStatus, type WebSettingsIo } from "../../agent/webSearch";
+import { loadWebSettings, type HermesWebStatus, type WebSettingsIo } from "../../agent/webSearch";
 import { formatMicros } from "../../agent/escalation";
 import { daemonsSlice } from "../../daemons/slice";
 import { restartHermesConfirmed, type HermesRestartResult } from "../../shell/slices/agent";
 import { HELD_DURING_START, confirmRunning, hermesRunningSlice, hermesStarting, noteRunning, withHermesStart, type HermesSavedSnapshot } from "../../shell/slices/hermesRunning";
-import { publishWebSettings, subscribeWebSettings } from "../../agent/webSettingsSync";
-import { writeStartSettingUnlessStarting } from "../../agent/startSettingsWrite";
+import { subscribeWebSettings } from "../../agent/webSettingsSync";
+import { patchWebSettings, writeStartSettingUnlessStarting } from "../../agent/startSettingsWrite";
 import { appDaemonActions, type DaemonActions } from "../../daemons/DaemonsPanel";
 import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
@@ -296,15 +296,9 @@ export function ControlsPanel({ store, s, io: ioProp, onDetails }: { store: Cont
       try {
         // Field-specific: re-read what is saved now (another form may have changed it since this
         // panel loaded), change only searchEnabled, and show what core answers.
-        // One write at a time with the Web search form (webSettingsSync.ts).
+        // One write at a time with the Web search form (patchWebSettings, startSettingsWrite.ts).
         // Held (null) if a Hermes start began while this write waited; the row says so.
-        const st = await writeStartSettingUnlessStarting(async () => {
-          const fresh = await loadWebSettings(io.web);
-          noteRunning("webSearch", fresh.settings.searchEnabled);
-          const saved = await saveWebSettings(io.web, { ...fresh.settings, searchEnabled: on });
-          publishWebSettings(saved, me);
-          return saved;
-        });
+        const st = await patchWebSettings(io.web, { searchEnabled: on }, me);
         if (!st) return;
         setWeb(st);
         setWebErr(st.loadError ?? null);
