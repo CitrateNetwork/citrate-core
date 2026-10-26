@@ -13,7 +13,6 @@ import { createDemoProvider, createRealProvider, createLocalProvider, createAgen
 const ctx: AgentContext = {
   height: 131234,
   peers: 23,
-  finalityAge: 8,
   nodeState: "validating",
   staked: 32000,
   liquid: 12.5,

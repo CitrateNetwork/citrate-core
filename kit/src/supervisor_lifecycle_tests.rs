@@ -411,7 +411,9 @@ fn a_record_rearmed_while_its_release_is_still_returning_reads_armed() {
 }
 
 /// A settlement whose expiry read stays indeterminate (a record mid-write through every bounded
-/// retry) counts the control as expired: a late completion is never stored as Complete.
+/// retry) counts the control as expired: a late completion is never stored as Complete. The cell
+/// asks this only for a control that armed its own record (see
+/// `a_plain_control_never_reads_another_owners_torn_record_as_expiry`).
 #[test]
 fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
     let p = idle_publisher();
@@ -434,6 +436,96 @@ fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
         !p.expired_at_settle(4, 1, 2),
         "once readable, a control without a record has not expired"
     );
+}
+
+/// Controls that never armed a deadline settle on what was observed, even while another owner's
+/// record stays mid-write in the shared publisher for the whole settlement. Only a control with
+/// a record of its own can be `DeadlineExpired`; an unrelated torn record must not fabricate one,
+/// neither at settlement (the Stop) nor at supersession (the Start the Stop replaced).
+#[test]
+fn a_plain_control_never_reads_another_owners_torn_record_as_expiry() {
+    let publisher = idle_publisher();
+    let mut cfg = missing_bin_config("torn-other", 0);
+    cfg.deadlines = Some(publisher.clone());
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+
+    // Another supervisor (owner 900 001) is descheduled in the middle of arming its record.
+    let (hook, at, go) = pause_hook();
+    publisher.pause_once(PausePoint::ArmWriting, hook);
+    let armer = {
+        let p = publisher.clone();
+        std::thread::spawn(move || p.arm(900_001, 1, 1, Duration::from_secs(60)))
+    };
+    if at.recv_timeout(Duration::from_secs(10)).is_err() {
+        panic!("INCONCLUSIVE: the other owner's arm never reached its pause point");
+    }
+    assert_eq!(
+        publisher.expired(900_002, 1, 1),
+        None,
+        "INCONCLUSIVE: the paused write did not make reads torn"
+    );
+
+    let start = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Start after Failed: {other:?}"),
+    };
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    // Answered while the other owner's record is still mid-write.
+    let start_receipt = wait_receipt(&sup, start);
+    let stop_receipt = wait_receipt(&sup, stop);
+    let _ = go.send(());
+    let _ = armer.join();
+    // What was stored at settlement, read once that write has finished.
+    let stored_start = sup.receipt(start);
+    let stored_stop = sup.receipt(stop);
+
+    assert!(
+        matches!(stored_stop, Receipt::Complete { .. }),
+        "a plain Stop is stored as what was observed, not as another owner's torn record: \
+         {stored_stop:?}"
+    );
+    assert!(
+        matches!(
+            stored_start,
+            Receipt::Superseded | Receipt::Failed { .. } | Receipt::Expired
+        ),
+        "a Start without a deadline is never stored DeadlineExpired: {stored_start:?}"
+    );
+    assert!(
+        matches!(stop_receipt, Receipt::Complete { .. }),
+        "the receipt of a control without a record answers while another owner writes: \
+         {stop_receipt:?}"
+    );
+    assert!(
+        matches!(
+            start_receipt,
+            Receipt::Superseded | Receipt::Failed { .. } | Receipt::Expired
+        ),
+        "{start_receipt:?}"
+    );
+}
+
+/// Tripwire: the cell asks the deadline overlay whether a control expired only for the control
+/// that armed its own record. Fails on an `expired_at_settle` call in the supervisor that is not
+/// guarded by `had_deadline` in the same expression.
+#[test]
+fn settlement_reads_expiry_only_for_a_control_that_armed_a_deadline() {
+    let source = include_str!("supervisor.rs");
+    let mut calls = 0;
+    for (at, _) in source.match_indices(".expired_at_settle(") {
+        calls += 1;
+        let stmt_start = source[..at].rfind(';').map_or(0, |i| i + 1);
+        assert!(
+            source[stmt_start..at].contains("had_deadline("),
+            "an expiry read at settlement without the had_deadline guard: {}",
+            &source[stmt_start..(at + 40).min(source.len())]
+        );
+    }
+    assert!(calls >= 2, "settle and commit both read expiry");
 }
 
 /// Tripwire: a deadline record is published free only after its writer has finished its
@@ -766,4 +858,113 @@ fn successes_spanning_healthy_after_earn_one_credit() {
         .map(|(i, _)| i)
         .collect();
     assert_eq!(credited, vec![4], "one credit, at the sample that spans healthy_after");
+}
+
+/// Tripwire (core#397): every spawn, automatic retries included, is preceded by the full reader
+/// reconcile. `run_monitor` has exactly one spawn admission, and the reconcile
+/// (`drain_readers(&mut readers, READER_DRAIN)`) runs at loop level on the path to it, not
+/// inside a branch that only some spawns take (a "first spawn for a new intent" condition was
+/// the defect).
+#[test]
+fn every_spawn_reconciles_held_readers_first_source_check() {
+    let src = include_str!("supervisor.rs");
+    let start = src
+        .find("fn run_monitor(")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor not found"));
+    let body = &src[start..];
+    let end = body
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor has no end"));
+    let body = &body[..end];
+    assert_eq!(
+        body.matches("admit_spawn(").count(),
+        1,
+        "run_monitor must have exactly one spawn admission"
+    );
+    assert_eq!(
+        src.matches("spawn_child(&").count(),
+        1,
+        "the supervisor must have exactly one spawn call"
+    );
+    let admit = body
+        .find("admit_spawn(")
+        .unwrap_or_else(|| panic!("tripwire: no spawn admission"));
+    let running = body
+        .find("// desired == Running")
+        .unwrap_or_else(|| panic!("tripwire: no Running branch marker"));
+    let path = &body[running..admit];
+    let reconcile = path
+        .lines()
+        .find(|l| l.contains("drain_readers(&mut readers, READER_DRAIN)"))
+        .unwrap_or_else(|| panic!("tripwire: no reader reconcile before the spawn admission"));
+    let indent = reconcile.len() - reconcile.trim_start().len();
+    assert_eq!(
+        indent, 8,
+        "the reader reconcile must run at loop level, for every spawn: {reconcile:?}"
+    );
+}
+
+/// The source text of the function whose signature starts with `sig`, up to its closing brace
+/// at `indent` (a structural tripwire helper; the module source is `include_str!`-ed).
+fn fn_source<'a>(src: &'a str, sig: &str, indent: &str) -> &'a str {
+    let start = src
+        .find(sig)
+        .unwrap_or_else(|| panic!("tripwire: `{sig}` not found in supervisor.rs"));
+    let close = format!("\n{indent}}}\n");
+    let len = src[start..]
+        .find(&close)
+        .unwrap_or_else(|| panic!("tripwire: no closing brace for `{sig}`"));
+    &src[start..start + len]
+}
+
+/// Tripwire (core#398): a running service is only "already satisfied" while a monitor
+/// supervises it, and the monitor marks the cell when it ends abnormally. Every
+/// `AlreadySatisfied` that `request_start` returns sits behind a `monitor_running()` check, and
+/// `run_monitor` installs its exit guard before its loop, so a new early return or a new
+/// satisfied answer cannot quietly drop either.
+#[test]
+fn already_satisfied_start_requires_a_running_monitor_source_check() {
+    let src = include_str!("supervisor.rs");
+    // Every Start control (member and automated) answers through `start_intent`.
+    assert!(
+        fn_source(src, "pub fn request_start(&self)", "    ")
+            .contains("self.start_intent(StartOrigin::Member)"),
+        "tripwire: request_start must answer through start_intent"
+    );
+    let start = fn_source(src, "fn start_intent(&self", "    ");
+    let lines: Vec<&str> = start.lines().collect();
+    let mut found = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if !line.contains("ControlResult::AlreadySatisfied") {
+            continue;
+        }
+        found += 1;
+        // The guarding `if` is the nearest preceding line that opens a condition.
+        let guard = lines[..i]
+            .iter()
+            .rev()
+            .find(|l| l.trim_start().starts_with("if ") || l.trim_start().starts_with("&&"))
+            .unwrap_or_else(|| panic!("tripwire: AlreadySatisfied at line {i} has no guard"));
+        let cond: String = lines[..i]
+            .iter()
+            .skip_while(|l| *l != guard)
+            .copied()
+            .collect();
+        assert!(
+            cond.contains("self.monitor_running()"),
+            "start_intent answers AlreadySatisfied without checking the monitor: {cond}"
+        );
+    }
+    assert!(found > 0, "tripwire: start_intent has no AlreadySatisfied answer to check");
+    let monitor = fn_source(src, "fn run_monitor(", "");
+    let guard_at = monitor
+        .find("MonitorExit(")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor installs no MonitorExit guard"));
+    let loop_at = monitor
+        .find("\n    loop {")
+        .unwrap_or_else(|| panic!("tripwire: run_monitor has no main loop"));
+    assert!(
+        guard_at < loop_at,
+        "run_monitor must install its exit guard before the loop"
+    );
 }

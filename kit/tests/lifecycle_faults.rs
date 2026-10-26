@@ -871,6 +871,109 @@ fn stop_without_a_monitor_is_observation_unknown() {
     fx.assert_clean();
 }
 
+/// After the monitor ends (a `ChildWatch` hook panicked while the child was running), a Start
+/// called directly, with no Stop first, is never `AlreadySatisfied`: nothing supervises the
+/// service any more, so the cell stops reporting Alive and the Start's outcome cannot be
+/// observed.
+#[test]
+fn start_after_the_monitor_ends_is_never_already_satisfied() {
+    let fx = OwnedFixture::new("start-no-monitor");
+    let mut spec = fx.leaf_spec("lcf-start-no-monitor");
+    // Panic only once the child has recorded its pid, so the monitor ends while it owns a live,
+    // published child.
+    let pidfile = fx.path("pids");
+    spec.child_watch = Some(ChildWatch {
+        interval: Duration::from_millis(20),
+        observe: std::sync::Arc::new(move |_| {
+            let recorded = std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty());
+            if recorded {
+                panic!("deliberate: end the monitor thread");
+            }
+        }),
+        ended: std::sync::Arc::new(|| {}),
+    });
+    let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let pid = fx.expect_pids(1, ACQUIRE)[0];
+    let gone = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        (!sup.monitor_running()).then_some(())
+    });
+    assert!(gone.is_ok(), "INCONCLUSIVE: the monitor did not end");
+    start_without_a_monitor_is_not_satisfied(&sup);
+    assert!(pid_reaped(pid), "the ended monitor reaped its child");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// The same after the child already exited on its own: the monitor reaped it, then the
+/// `ended` hook panicked before the crash was recorded. The cell must not keep the old pid
+/// Alive, and a Start is never `AlreadySatisfied`.
+#[test]
+fn start_after_the_monitor_ends_past_an_exited_child_is_never_already_satisfied() {
+    let fx = OwnedFixture::new("start-no-monitor-exited");
+    let mut spec = fx.crash_spec("lcf-start-no-monitor-exited", 3);
+    spec.child_watch = Some(ChildWatch {
+        interval: Duration::from_millis(20),
+        observe: std::sync::Arc::new(|_| {}),
+        ended: std::sync::Arc::new(|| panic!("deliberate: end the monitor after the child exited")),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(3);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let pid = fx.expect_pids(1, ACQUIRE)[0];
+    let gone = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        (!sup.monitor_running()).then_some(())
+    });
+    assert!(gone.is_ok(), "INCONCLUSIVE: the monitor did not end");
+    assert!(
+        pid_reaped(pid),
+        "INCONCLUSIVE: the child exited and was reaped"
+    );
+    start_without_a_monitor_is_not_satisfied(&sup);
+    hold_for(Duration::from_millis(300));
+    assert_eq!(
+        fx.pidfile_pids().len(),
+        1,
+        "nothing respawns without a monitor"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// Shared tail of the two fixtures above: the monitor has ended.
+fn start_without_a_monitor_is_not_satisfied(sup: &Supervisor) {
+    let snap = sup
+        .lifecycle()
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_ne!(
+        snap.phase,
+        Phase::Alive,
+        "an ended monitor leaves no supervised child: {snap:?}"
+    );
+    assert_eq!(
+        snap.pid, None,
+        "no pid is claimed without a monitor: {snap:?}"
+    );
+    assert_ne!(
+        sup.status().state,
+        SupervisorState::Running,
+        "the legacy view stops reporting Running"
+    );
+    let start = match sup.request_start() {
+        ControlResult::ObservationUnknown(token, reason) => {
+            assert!(!reason.is_empty());
+            token
+        }
+        other => panic!("a Start after the monitor ended: {other:?}"),
+    };
+    // A second Start joins the first and is still not a success.
+    match sup.request_start() {
+        ControlResult::ObservationUnknown(token, _) => assert_eq!(token, start),
+        other => panic!("a repeated Start after the monitor ended: {other:?}"),
+    }
+}
+
 /// A child that crashes leaving a descendant holding its output open: after the retry budget
 /// is spent, an explicit Start spawns nothing until the old readers are reconciled.
 #[test]
@@ -967,6 +1070,178 @@ fn held_reader_blocks_the_next_start(sup: &Supervisor, fx: &OwnedFixture) {
         "the Start proceeds after cleanup: {:?}",
         receipt_of(sup, start)
     );
+}
+
+/// core#397: a crash that leaves a descendant holding the child's output, with retry budget left.
+/// The automatic retry waits for the held readers exactly like an explicit Start: no new
+/// incarnation while the pipe is held, the service Quarantined meanwhile, and the retry proceeds
+/// once the descendant ends.
+#[test]
+fn crash_retry_with_a_held_reader_waits_for_cleanup() {
+    let fx = OwnedFixture::new("retry-crash-held");
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_with_descendant_spec("lcf-retry-crash-held"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.backoff = fast_backoff(1);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let descendant = retry_waits_for_the_held_reader(&sup, &fx);
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    retry_proceeds_after_cleanup(&sup);
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// core#397: the same for a health-check failure with retry budget left.
+#[test]
+fn health_retry_with_a_held_reader_waits_for_cleanup() {
+    let fx = OwnedFixture::new("retry-health-held");
+    let mut spec = fx.descendants_spec("lcf-retry-health-held", 1);
+    // Healthy until the first incarnation has recorded itself and its descendant, then failing.
+    let pidfile = fx.path("pids");
+    spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(50),
+        grace: Duration::ZERO,
+        probe: std::sync::Arc::new(move || {
+            std::fs::read_to_string(&pidfile)
+                .map(|s| s.lines().count() < 2)
+                .unwrap_or(true)
+        }),
+    });
+    let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
+    cfg.backoff = fast_backoff(1);
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let descendant = retry_waits_for_the_held_reader(&sup, &fx);
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    retry_proceeds_after_cleanup(&sup);
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// core#397: a Stop that arrives while an automatic retry waits for held readers wins: it never
+/// lets the retry spawn, and once the descendant ends the service is Stopped with one incarnation.
+#[test]
+fn stop_during_a_held_retry_spawns_nothing() {
+    let fx = OwnedFixture::new("retry-stop-held");
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_with_descendant_spec("lcf-retry-stop-held"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.backoff = fast_backoff(3);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let descendant = retry_waits_for_the_held_reader(&sup, &fx);
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop during a held retry: {other:?}"),
+    };
+    let settled = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        match receipt_of(&sup, stop) {
+            Receipt::Pending | Receipt::Unknown { .. } => None,
+            r => Some(r),
+        }
+    });
+    match settled {
+        Ok((Receipt::Incomplete { remaining, .. }, _)) => assert!(
+            remaining.iter().any(|r| r.starts_with("reader")),
+            "{remaining:?}"
+        ),
+        Ok((other, _)) => panic!("a held reader cannot make the Stop Complete: {other:?}"),
+        Err(e) => panic!("INCONCLUSIVE: the Stop never settled within {:?}", e.waited),
+    }
+    lifecycle::fixture::kill(descendant, libc::SIGKILL);
+    let stopped = wait_for(ACQUIRE, Duration::from_millis(20), || {
+        (sup.lifecycle().map(|l| l.phase) == Some(Phase::Stopped)).then_some(())
+    });
+    assert!(
+        stopped.is_ok(),
+        "the Stop leaves quarantine once the reader ends"
+    );
+    hold_for(Duration::from_millis(300));
+    let snap = sup
+        .lifecycle()
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_eq!(
+        snap.incarnation, 1,
+        "the held retry never spawned: {snap:?}"
+    );
+    assert_eq!(fx.pidfile_pids().len(), 2, "no new child after the Stop");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// Shared head of the three fixtures above: the first incarnation (a parent and one descendant)
+/// ended with retry budget left, and its descendant still holds the output pipe. Asserts that no
+/// second incarnation starts while it does, and returns the descendant's pid.
+fn retry_waits_for_the_held_reader(sup: &Supervisor, fx: &OwnedFixture) -> u32 {
+    let pids = fx.expect_pids(2, ACQUIRE);
+    let descendant = pids[1];
+    let crashed = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        (sup.status().restarts >= 1).then_some(())
+    });
+    assert!(
+        crashed.is_ok(),
+        "INCONCLUSIVE: the first incarnation never ended"
+    );
+    assert!(
+        pid_alive(descendant),
+        "INCONCLUSIVE: the descendant should hold the pipe"
+    );
+    // Counters, not timings: the incarnation counter is bumped by every spawn.
+    let samples = sample_over(
+        Duration::from_millis(1500),
+        Duration::from_millis(50),
+        || {
+            let snap = sup.lifecycle();
+            (
+                snap.as_ref().map(|l| l.incarnation),
+                fx.pidfile_pids().len(),
+                snap.map(|l| l.phase),
+            )
+        },
+    );
+    let spawned: Vec<_> = samples
+        .iter()
+        .filter(|(_, (inc, n, phase))| {
+            inc.is_some_and(|i| i != 1) || *n != 2 || *phase == Some(Phase::Alive)
+        })
+        .collect();
+    assert!(
+        spawned.is_empty(),
+        "an automatic retry started a new incarnation while the old reader was held: {spawned:?}"
+    );
+    let snap = sup
+        .lifecycle()
+        .unwrap_or_else(|| panic!("INCONCLUSIVE: snapshot busy"));
+    assert_eq!(
+        snap.phase,
+        Phase::Quarantined,
+        "the held retry is reported, not hidden: {snap:?}"
+    );
+    assert!(snap.quarantine.is_some_and(|q| !q.is_empty()));
+    assert_eq!(snap.pid, None);
+    descendant
+}
+
+/// Shared tail: once the old reader ended, the retry spawns the second incarnation, which uses
+/// up the budget (max_retries = 1), so the service ends Failed after exactly two incarnations.
+fn retry_proceeds_after_cleanup(sup: &Supervisor) {
+    let failed = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        sup.lifecycle()
+            .filter(|l| l.phase == Phase::Failed)
+            .map(|l| l.incarnation)
+    });
+    match failed {
+        Ok((incarnation, _)) => assert_eq!(incarnation, 2, "exactly one retry ran"),
+        Err(e) => panic!(
+            "the retry did not proceed after cleanup within {:?}: {:?}",
+            e.waited,
+            sup.lifecycle()
+        ),
+    }
 }
 
 /// After shutdown begins, a Start is refused as `RejectedClosing`.
