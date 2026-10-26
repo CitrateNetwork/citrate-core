@@ -125,7 +125,8 @@ describe("Hermes", () => {
 
   it("Details opens on its first section when the stored one is not a Details section", () => {
     const h = html("hermes/controls/details", { sSec: "account" });
-    expect(h).toContain("Provider keys");
+    // D-11: Models (the governed vendor connections) is the first Details section.
+    expect(h).toContain('data-testid="models-settings"');
   });
 
   it("Records hosts the third depth", () => {

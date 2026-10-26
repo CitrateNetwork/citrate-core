@@ -517,8 +517,6 @@ export interface AppState {
   panY: number;
   pollIn: number;
   dl: Record<string, { st: string; pct: number }>;
-  gwKey: string | null;
-  gwKeyFull: string | null;
   rpc: "local" | "public";
   net: "testnet" | "local";
   cpuCap: number;
@@ -882,8 +880,6 @@ export function freshState(pid: string): AppState {
     panY: 0,
     pollIn: 20,
     dl: {},
-    gwKey: null,
-    gwKeyFull: null,
     rpc: "local",
     net: "testnet",
     cpuCap: 50,
@@ -1039,7 +1035,6 @@ export function freshState(pid: string): AppState {
       s.earnVal = 30.11;
       s.earnPin = 4.02;
       s.earnComp = 6.4;
-      s.gwKey = "cgk_9f31•••••••••••••7f2a";
       s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
       s.node = "validating";
@@ -1069,7 +1064,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
-  "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "channel",
+  "nodeIntent", "rpc", "net", "cpuCap", "autolock", "channel",
   "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
@@ -1091,6 +1086,18 @@ export function loadState(): AppState {
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
+  // D-11 (P-9d): older builds persisted a gateway key display (`gwKey`, `gwKeyFull`). Provider keys
+  // live only in the OS keychain, so drop both from the loaded state and rewrite storage without them.
+  if (saved && ("gwKey" in saved || "gwKeyFull" in saved)) {
+    const legacy = saved as Record<string, unknown>;
+    delete legacy.gwKey;
+    delete legacy.gwKeyFull;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
+    } catch {
+      /* storage unavailable: the next save writes PERSIST_KEYS only, which no longer include it */
+    }
+  }
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // CLAUDE.md Rule 3: there is no signature-policy setting (every signature goes through the
   // ceremony; the one exception is a budgeted web sign-in). An older build persisted one, so drop

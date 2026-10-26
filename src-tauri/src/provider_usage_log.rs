@@ -254,11 +254,46 @@ impl UsageLog {
         }
     }
 
-    fn note_recent(&mut self, _r: &Record) {}
+    fn note_recent(&mut self, r: &Record) {
+        let entry = |refused: bool| RecentCall {
+            at_ms: r.ts,
+            provider: r.provider.clone(),
+            model: r.model.clone(),
+            verified: r.verified,
+            outcome: if refused { r.outcome.clone() } else { None },
+            refused,
+            tokens_in: None,
+            tokens_out: None,
+            cost_micros: None,
+            call: r.call.clone(),
+        };
+        match r.kind {
+            Kind::Begin | Kind::Refused => {
+                self.recent.push_back(entry(r.kind == Kind::Refused));
+                while self.recent.len() > RECENT_MAX {
+                    self.recent.pop_front();
+                }
+            }
+            Kind::End => {
+                if let Some(c) = self
+                    .recent
+                    .iter_mut()
+                    .rev()
+                    .find(|c| !c.refused && c.call == r.call)
+                {
+                    c.outcome = r.outcome.clone();
+                    c.tokens_in = r.tokens_in;
+                    c.tokens_out = r.tokens_out;
+                    c.cost_micros = r.cost_micros;
+                }
+            }
+            Kind::KeyTest | Kind::Reset => {}
+        }
+    }
 
     /// The latest model calls, newest first (metadata only).
     pub fn recent(&self) -> Vec<RecentCall> {
-        Vec::new()
+        self.recent.iter().rev().cloned().collect()
     }
 
     fn apply(&mut self, r: &Record) {
