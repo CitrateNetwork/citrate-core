@@ -289,6 +289,10 @@ seal() {
   mount --move /mnt/dev /dev || return 1
   mkdir -p /run/lock /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
   ip link set lo up || return 1
+  # The caller's working directory was just mounted over, but a cwd keeps pointing at the old
+  # directory, so relative paths would still reach the caller's files. Move into the run dir
+  # before anything else runs; the app and every probe inherit it.
+  cd -P "$W" || return 1
 }
 
 # Isolation checks. Each one has a positive or negative control so a check that cannot see what
