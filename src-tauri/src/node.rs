@@ -543,6 +543,11 @@ impl NodeManager {
             .clone()
     }
 
+    /// This node's local RPC url (the Activate-validator step reads `eth_syncing` there).
+    pub fn local_rpc_url(&self) -> String {
+        self.rpc_url.clone()
+    }
+
     /// Whether the block producer is currently armed (see [`Self::build_spec`]).
     pub fn is_mining_armed(&self) -> bool {
         self.mining_armed.load(Ordering::Relaxed)

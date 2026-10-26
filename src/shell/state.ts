@@ -11,7 +11,7 @@
 // =====================================================================
 
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
-import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
+import type { ActivationStatusView, Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -238,12 +238,46 @@ export interface WalletReview {
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
-  onResolved?: (approved: boolean) => void | Promise<void>;
+  onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
+  /**
+   * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
+   * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
+   * which polls for the receipt before returning). A caller that must survive a quit at any
+   * point after signing (S7 shows the activation tx as Pending) gets the hash here. The durable
+   * record is written in Rust (#347's fsync'd submitted-tx record) by the send itself, before
+   * the tx reaches the node; with no durable record nothing is sent.
+   */
+  onSigned?: (txHash: string) => void;
+  /** Join-8 — with `onSigned`: the backend refused the send before submission; nothing was sent. */
+  onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
   /** HUP-S6.4 — for a contract deploy: the READY D-4 gate record core checked for this bytecode. */
   deployGate?: DeployGateRecord;
+}
+
+/** GROW-S1 task 12 — the waiting v2 invite as the UI sees it. Never the code or the key. */
+export interface PendingJoinUi {
+  phase: "waiting" | "resolving" | "ready" | "joining" | "error";
+  hasKey: boolean;
+  /** false = held in Rust memory only (keyring unreachable), so it won't survive a restart. */
+  persisted: boolean;
+  /** On a failed Review: the failure is temporary and Rust still holds the invite, so Review can run again. */
+  retryable?: boolean;
+  /** Signed display data, after the member's Review. */
+  resolved?: {
+    kind: "direct" | "referral";
+    clusterName: string | null;
+    goal: string | null;
+    inviter: string | null;
+    inviterVerified: boolean;
+    exp: string;
+    actionable: boolean;
+    keyMissing: boolean;
+  };
+  /** Member-facing error text (phase "error"). */
+  error?: string;
 }
 
 export interface AppState {
@@ -295,7 +329,7 @@ export interface AppState {
    */
   authExpiresAt: string | null;
   entitlement: "active" | "expiring" | "grace" | "lapsed";
-  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "done";
+  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7" | "done";
   s1: "idle" | "waiting" | "attest" | "done";
   s2: "none" | "pending" | "verified" | "failed" | "review";
   s3: "idle" | "paying" | "settled";
@@ -587,6 +621,20 @@ export interface AppState {
   dataReady: boolean;
   s6ready?: boolean;
   /**
+   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate. NOT persisted here:
+   * the durable record is #347's fsync'd submitted-tx record in Rust, written before the send, and
+   * the activation read returns it (`activation.recordedTx`) so a relaunch resumes to "Pending".
+   * Cleared once the chain shows the bond activated, or by Forget / Try again (which also mark the
+   * durable record forgotten).
+   */
+  s7TxHash: string | null;
+  /** Join-8 — when `s7TxHash` was recorded (ms since epoch; from the durable record after a relaunch). */
+  s7TxAt: number | null;
+  /** Join-8 — the step's last chain read (NOT persisted: chain is the truth, re-read on launch). */
+  activation: ActivationStatusView | null;
+  /** Join-8 — why the last read failed (the last honest read is kept), or null. */
+  activationError: string | null;
+  /**
    * CORE-C3 runtime memory graph (NOT persisted). In a Tauri build the Storage
    * surface fetches this from the REAL mcp_serve daemon via
    * `bridge.memory.constellation()`; nodes/links/tenant-totals come from the
@@ -614,10 +662,9 @@ export interface AppState {
    */
   myGroups: GroupRoleRow[];
   /**
-   * GROW-S1 — an invite handed to the app via the `citrate://join/...` deep-link (the one-tap
-   * cold-start hand-off from the web join page). Carries the display context (cluster + inviter +
-   * goal) and the raw link; Groups renders a banner and, for a full invite-token link, redeems it.
-   * Cleared once consumed. Null when no deep-link is pending.
+   * GROW-S1 — an app-only `citrate://invite?…` link (Groups offers its one-click Join) or a legacy
+   * display link (context only), handed to the app by the OS. Transient, not persisted. v2 links
+   * never land here: they are held in Rust (`pendingJoin`).
    */
   /**
    * HUP-S8.2 — a `citrate://pair?…` fleet pairing link opened from a QR code or another app
@@ -631,11 +678,13 @@ export interface AppState {
     clusterName?: string;
     inviterHandle?: string;
     goal?: string;
-    /** GROW-S1b — an opaque code is being resolved+verified (show a "resolving…" banner). */
-    resolving?: boolean;
-    /** GROW-S1b — the code couldn't be verified (bad sig / expired / resolver down) — honest error. */
-    unresolved?: boolean;
   } | null;
+  /**
+   * GROW-S1 task 12 — a v2 invite (`citrate.ai/join/<code>#K`) waiting for the member to act. The
+   * link itself (code + one-time key) is held ONLY in Rust (keyring); this is just its status, plus
+   * the signed display data once the member chose Review. Transient, NOT persisted.
+   */
+  pendingJoin: PendingJoinUi | null;
   /**
    * PHONEPAY-S4 — a pending `citrate://claim` onboarding link (transient, NOT persisted).
    * Set from the emailed claim link; carries only untrusted DISPLAY HINTS (the email the
@@ -809,6 +858,10 @@ export function freshState(pid: string): AppState {
     cerStep: 0,
     cerHash: "",
     walletReview: null,
+    s7TxHash: null,
+    s7TxAt: null,
+    activation: null,
+    activationError: null,
     chatMsgs: [],
     chatStatus: "ready",
     chatRouteHold: null,
@@ -884,6 +937,7 @@ export function freshState(pid: string): AppState {
     peopleState: "loading",
     myGroups: [],
     pendingInvite: null,
+    pendingJoin: null,
     pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",
