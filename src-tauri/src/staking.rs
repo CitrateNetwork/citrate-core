@@ -1329,22 +1329,32 @@ pub fn wallet_stake_sync(
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<CeremonyView, String> {
+    let value_wei = parse_stake_amount(&amount_wei)?;
+    // The staker = THIS vault's wallet (public address only; never the key).
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    // Store PENDING + return the decoded view; the human approves via B1.4.
+    Ok(ceremony.0.request(stake_intent(&wallet.address, value_wei)))
+}
+
+/// A stake amount in wei: a u128, greater than zero (rejected before any ceremony state exists).
+fn parse_stake_amount(amount_wei: &str) -> std::result::Result<u128, String> {
     let value_wei: u128 = amount_wei
         .parse()
         .map_err(|_| "staking: amount is not a u128 wei value".to_string())?;
     if value_wei == 0 {
         return Err("staking: stake amount must be greater than zero".to_string());
     }
-    // The staker = THIS vault's wallet (public address only; never the key).
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let intent = SignatureIntent {
+    Ok(value_wei)
+}
+
+/// The `deposit()` stake intent of `value_wei` from `from` (the body of [`wallet_stake`]).
+pub(crate) fn stake_intent(from: &str, value_wei: u128) -> SignatureIntent {
+    SignatureIntent {
         origin: LOCAL_USER_ORIGIN.to_string(),
         kind: IntentKind::Transaction,
         chain_id: CITRATE_CHAIN_ID,
-        raw: encode_stake_json(&wallet.address, value_wei),
-    };
-    // Store PENDING + return the decoded view; the human approves via B1.4.
-    Ok(ceremony.0.request(intent))
+        raw: encode_stake_json(from, value_wei),
+    }
 }
 
 /// `wallet_request_withdrawal` command (@rule8) — build a `requestWithdrawal(
@@ -1361,27 +1371,37 @@ pub async fn wallet_request_withdrawal(
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<CeremonyView, String> {
+    // The staker = THIS vault's wallet (public address only; never the key).
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    let rpc = crate::rpc::RpcClient::citrate();
+    let intent = request_withdrawal_intent(&rpc, &wallet.address, &amount_wei)?;
+    Ok(ceremony.0.request(intent))
+}
+
+/// The body of [`wallet_request_withdrawal`]: the `requestWithdrawal(shareAmount)` intent from
+/// `from` for `amount_wei` SALT, the share amount converted from live reads.
+pub(crate) fn request_withdrawal_intent<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    from: &str,
+    amount_wei: &str,
+) -> std::result::Result<SignatureIntent, String> {
     let amount: u128 = amount_wei
         .parse()
         .map_err(|_| "staking: withdraw amount is not a u128 wei value".to_string())?;
     if amount == 0 {
         return Err("staking: withdraw amount must be greater than zero".to_string());
     }
-    // The staker = THIS vault's wallet (public address only; never the key).
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     // Live reads: the caller's self-stake SALT (balanceOf) + raw shares (shares).
-    let rpc = crate::rpc::RpcClient::citrate();
-    let self_stake_salt = read_self_stake(&rpc, &wallet.address).map_err(|e| e.to_string())?;
-    let self_shares = read_self_shares(&rpc, &wallet.address).map_err(|e| e.to_string())?;
+    let self_stake_salt = read_self_stake(rpc, from).map_err(|e| e.to_string())?;
+    let self_shares = read_self_shares(rpc, from).map_err(|e| e.to_string())?;
     let share_amount =
         salt_to_share_amount(amount, self_stake_salt, self_shares).map_err(|e| e.to_string())?;
-    let intent = SignatureIntent {
+    Ok(SignatureIntent {
         origin: LOCAL_USER_ORIGIN.to_string(),
         kind: IntentKind::Transaction,
         chain_id: CITRATE_CHAIN_ID,
-        raw: encode_request_withdrawal_json(&wallet.address, share_amount),
-    };
-    Ok(ceremony.0.request(intent))
+        raw: encode_request_withdrawal_json(from, share_amount),
+    })
 }
 
 /// `wallet_claim_withdrawal` command (@rule8) — build a `claimWithdrawal(
@@ -1411,17 +1431,26 @@ pub fn wallet_claim_withdrawal_sync(
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<CeremonyView, String> {
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    Ok(ceremony
+        .0
+        .request(claim_withdrawal_intent(&wallet.address, &request_id)?))
+}
+
+/// The body of [`wallet_claim_withdrawal`]: the `claimWithdrawal(requestId)` intent from `from`.
+pub(crate) fn claim_withdrawal_intent(
+    from: &str,
+    request_id: &str,
+) -> std::result::Result<SignatureIntent, String> {
     let id: u128 = request_id
         .parse()
         .map_err(|_| "staking: request id is not a u128 value".to_string())?;
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let intent = SignatureIntent {
+    Ok(SignatureIntent {
         origin: LOCAL_USER_ORIGIN.to_string(),
         kind: IntentKind::Transaction,
         chain_id: CITRATE_CHAIN_ID,
-        raw: encode_claim_withdrawal_json(&wallet.address, id),
-    };
-    Ok(ceremony.0.request(intent))
+        raw: encode_claim_withdrawal_json(from, id),
+    })
 }
 
 /// `wallet_pending_withdrawals` command — read the vault wallet's PENDING

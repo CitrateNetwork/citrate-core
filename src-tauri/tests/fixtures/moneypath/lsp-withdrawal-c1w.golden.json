@@ -1,0 +1,445 @@
+{
+  "flow": "lsp-withdrawal-c1w",
+  "steps": [
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": true
+        },
+        "head": 7002,
+        "pool": {
+          "balanceOfMemberWei": "100000000000000000000",
+          "balanceWei": "100000000000000000000",
+          "sharesOfMember": "100000000000000000000"
+        },
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "0",
+          "balanceWei": "0",
+          "currentEpoch": "7",
+          "escrowUnlockEpoch": "7",
+          "escrowWei": "0",
+          "exitEpoch": "1",
+          "isActive": false,
+          "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "stakeOfWei": "0",
+          "status": "Exiting"
+        },
+        "vault": {
+          "attributedPrincipalWei": "0",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Released"
+          }
+        }
+      },
+      "core": {
+        "broadcast": {
+          "blockNumber": 7002,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 1,
+          "to": "LiquidStakingPool",
+          "txHash": "<tx:deposit>",
+          "valueWei": "100000000000000000000"
+        },
+        "ceremony": {
+          "chainId": 40204,
+          "decoded": {
+            "action": "Call deposit() on <LiquidStakingPool> — 4 bytes calldata (value 100000000000000000000 wei)",
+            "cost": "100000000000000000000 wei",
+            "destination": "LiquidStakingPool"
+          },
+          "id": "<ceremonyId>",
+          "kind": "transaction",
+          "origin": "local-user",
+          "requiresRawAck": false
+        },
+        "pendingWithdrawalsC1W": {
+          "complete": true,
+          "confirmed": false,
+          "withdrawals": []
+        },
+        "selfStakeWei": "100000000000000000000"
+      },
+      "does": "core builds deposit() for 100 SALT; the ceremony signs and sends it",
+      "events": [
+        {
+          "args": {
+            "salt": "100000000000000000000",
+            "shares": "100000000000000000000",
+            "staker": "member"
+          },
+          "emitter": "LiquidStakingPool",
+          "event": "Deposited"
+        }
+      ],
+      "step": "stake"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": true
+        },
+        "head": 7003,
+        "pool": {
+          "balanceOfMemberWei": "100000000000000000000",
+          "balanceWei": "100000000000000000000",
+          "sharesOfMember": "100000000000000000000"
+        },
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "0",
+          "balanceWei": "0",
+          "currentEpoch": "7",
+          "escrowUnlockEpoch": "7",
+          "escrowWei": "0",
+          "exitEpoch": "1",
+          "isActive": false,
+          "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "stakeOfWei": "0",
+          "status": "Exiting"
+        },
+        "vault": {
+          "attributedPrincipalWei": "0",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Released"
+          }
+        }
+      },
+      "core": {
+        "broadcast": {
+          "blockNumber": 7003,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 0,
+          "to": "LiquidStakingPool",
+          "txHash": "<tx:requestWithdrawal>",
+          "valueWei": "0"
+        },
+        "ceremony": {
+          "chainId": 40204,
+          "decoded": {
+            "action": "Call requestWithdrawal() on <LiquidStakingPool> — 36 bytes calldata (value 0 wei)",
+            "cost": "0 wei",
+            "destination": "LiquidStakingPool"
+          },
+          "id": "<ceremonyId>",
+          "kind": "transaction",
+          "origin": "local-user",
+          "requiresRawAck": false
+        },
+        "pendingWithdrawalsC1W": {
+          "complete": true,
+          "confirmed": false,
+          "withdrawals": []
+        }
+      },
+      "does": "core builds requestWithdrawal for 40 SALT with its fixed 150,000 gas: today it reverts out of gas (citrate-core#501), nothing is queued",
+      "events": [],
+      "step": "request"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": true
+        },
+        "head": 7004,
+        "pool": {
+          "balanceOfMemberWei": "60000000000000000000",
+          "balanceWei": "100000000000000000000",
+          "sharesOfMember": "60000000000000000000"
+        },
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "0",
+          "balanceWei": "0",
+          "currentEpoch": "7",
+          "escrowUnlockEpoch": "7",
+          "escrowWei": "0",
+          "exitEpoch": "1",
+          "isActive": false,
+          "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "stakeOfWei": "0",
+          "status": "Exiting"
+        },
+        "vault": {
+          "attributedPrincipalWei": "0",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Released"
+          }
+        }
+      },
+      "core": {
+        "broadcast": {
+          "blockNumber": 7004,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 1,
+          "to": "LiquidStakingPool",
+          "txHash": "<tx:requestWithdrawal-estimated>",
+          "valueWei": "0"
+        },
+        "gasEstimateAboveCoreLimit": true,
+        "pendingWithdrawalsC1W": {
+          "complete": true,
+          "confirmed": false,
+          "withdrawals": [
+            {
+              "claimable": false,
+              "claimableAtBlock": 57404,
+              "id": "0",
+              "requestBlock": 7004,
+              "saltWei": "40000000000000000000"
+            }
+          ]
+        }
+      },
+      "does": "the same requestWithdrawal with the estimated gas: queued; the C1-W paged scan lists it, not yet claimable",
+      "events": [
+        {
+          "args": {
+            "id": "0",
+            "salt": "40000000000000000000",
+            "shares": "40000000000000000000",
+            "staker": "member"
+          },
+          "emitter": "LiquidStakingPool",
+          "event": "WithdrawalRequested"
+        }
+      ],
+      "step": "request-estimated-gas"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": true
+        },
+        "head": 7005,
+        "pool": {
+          "balanceOfMemberWei": "60000000000000000000",
+          "balanceWei": "100000000000000000000",
+          "sharesOfMember": "60000000000000000000"
+        },
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "0",
+          "balanceWei": "0",
+          "currentEpoch": "7",
+          "escrowUnlockEpoch": "7",
+          "escrowWei": "0",
+          "exitEpoch": "1",
+          "isActive": false,
+          "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "stakeOfWei": "0",
+          "status": "Exiting"
+        },
+        "vault": {
+          "attributedPrincipalWei": "0",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Released"
+          }
+        }
+      },
+      "core": {
+        "broadcast": {
+          "blockNumber": 7005,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 0,
+          "to": "LiquidStakingPool",
+          "txHash": "<tx:claimWithdrawal-early>",
+          "valueWei": "0"
+        },
+        "pendingWithdrawalsC1W": {
+          "complete": true,
+          "confirmed": false,
+          "withdrawals": [
+            {
+              "claimable": false,
+              "claimableAtBlock": 57404,
+              "id": "0",
+              "requestBlock": 7004,
+              "saltWei": "40000000000000000000"
+            }
+          ]
+        }
+      },
+      "does": "core builds claimWithdrawal before the delay: mined, reverted",
+      "events": [],
+      "step": "claim-too-early"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": true
+        },
+        "head": 57405,
+        "pool": {
+          "balanceOfMemberWei": "60000000000000000000",
+          "balanceWei": "100000000000000000000",
+          "sharesOfMember": "60000000000000000000"
+        },
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "0",
+          "balanceWei": "0",
+          "currentEpoch": "57",
+          "escrowUnlockEpoch": "7",
+          "escrowWei": "0",
+          "exitEpoch": "1",
+          "isActive": false,
+          "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "stakeOfWei": "0",
+          "status": "Exiting"
+        },
+        "vault": {
+          "attributedPrincipalWei": "0",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Released"
+          }
+        }
+      },
+      "core": {
+        "pendingWithdrawalsC1W": {
+          "complete": true,
+          "confirmed": false,
+          "withdrawals": [
+            {
+              "claimable": true,
+              "claimableAtBlock": 57404,
+              "id": "0",
+              "requestBlock": 7004,
+              "saltWei": "40000000000000000000"
+            }
+          ]
+        }
+      },
+      "does": "50,400 blocks pass: the C1-W scan reports the withdrawal claimable",
+      "events": [],
+      "step": "delay-elapsed"
+    },
+    {
+      "chain": {
+        "memberReceivedWei": "40000000000000000000",
+        "state": {
+          "bond": {
+            "activated": true,
+            "balanceWei": "0",
+            "isKycVerified": true,
+            "isUnlocked": true,
+            "releaseRequested": true
+          },
+          "head": 57406,
+          "pool": {
+            "balanceOfMemberWei": "60000000000000000000",
+            "balanceWei": "60000000000000000000",
+            "sharesOfMember": "60000000000000000000"
+          },
+          "registry": {
+            "activationEpoch": "1",
+            "activeCount": "0",
+            "balanceWei": "0",
+            "currentEpoch": "57",
+            "escrowUnlockEpoch": "7",
+            "escrowWei": "0",
+            "exitEpoch": "1",
+            "isActive": false,
+            "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "stakeOfWei": "0",
+            "status": "Exiting"
+          },
+          "vault": {
+            "attributedPrincipalWei": "0",
+            "balanceWei": "0",
+            "grant0": {
+              "bond": "bond",
+              "member": "member",
+              "memberTokenId": "0",
+              "principalWei": "32000000000000000000000",
+              "state": "Released"
+            }
+          }
+        }
+      },
+      "core": {
+        "broadcast": {
+          "blockNumber": 57406,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 1,
+          "to": "LiquidStakingPool",
+          "txHash": "<tx:claimWithdrawal>",
+          "valueWei": "0"
+        },
+        "pendingWithdrawalsC1W": {
+          "complete": true,
+          "confirmed": false,
+          "withdrawals": []
+        }
+      },
+      "does": "core builds claimWithdrawal after the delay: 40 SALT returns, the pending list is empty",
+      "events": [
+        {
+          "args": {
+            "id": "0",
+            "salt": "40000000000000000000",
+            "staker": "member"
+          },
+          "emitter": "LiquidStakingPool",
+          "event": "WithdrawalClaimed"
+        }
+      ],
+      "step": "claim"
+    }
+  ]
+}

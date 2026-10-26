@@ -1509,8 +1509,32 @@ pub async fn node_register_validator(
     ceremony: State<'_, crate::ceremony::CeremonyState>,
 ) -> std::result::Result<crate::ceremony::CeremonyView, String> {
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let registry = crate::validator::parse_address_20(node_validator_registry_value())?;
     let rpc = crate::rpc::RpcClient::citrate();
+    let intent = bond_activation_intent(
+        &rpc,
+        &wallet.address,
+        &|chain_id, registry, staker, nonce| {
+            // Sign the registration with the node's proposer key (seed stays in validator.rs).
+            state.0.sign_registration(chain_id, registry, staker, nonce)
+        },
+    )?;
+    Ok(ceremony.0.request(intent))
+}
+
+/// Signs a validator registration `(chain_id, registry, staker, nonce)` with a proposer key,
+/// returning `(proposer_pubkey, ed25519_sig)`. Production: [`NodeManager::sign_registration`].
+pub(crate) type RegistrationSigner<'a> =
+    &'a dyn Fn(u64, &[u8; 20], &[u8; 20], u64) -> std::result::Result<([u8; 32], [u8; 64]), String>;
+
+/// The body of [`node_register_validator`]: every live read and honesty guard, then the
+/// `MemberBond.activate` intent the ceremony shows. Signs only the registration digest (through
+/// `sign`), never a transaction. `member` is the wallet that sends `activate`.
+pub(crate) fn bond_activation_intent<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    member: &str,
+    sign: RegistrationSigner<'_>,
+) -> std::result::Result<crate::ceremony::SignatureIntent, String> {
+    let registry = crate::validator::parse_address_20(node_validator_registry_value())?;
 
     // Honesty guard (Rule 1): activation can only bond a clone that is deployed AND
     // funded, and only once. Read the live grant status keyed on the member EOA (the
@@ -1518,14 +1542,13 @@ pub async fn node_register_validator(
     // member whose grant has not landed has no deployed bond; one who already activated
     // would revert `AlreadyActivated`. Fail here with a clear reason rather than mint a
     // doomed ceremony that looks like activation succeeded.
-    let grant =
-        crate::grant_status::read_grant_status(&rpc, &wallet.address).map_err(|e| e.to_string())?;
+    let grant = crate::grant_status::read_grant_status(rpc, member).map_err(|e| e.to_string())?;
     if !grant.bond_deployed {
         return Err(format!(
             "validator bond not ready: no MemberBond escrow is deployed for your wallet ({}). \
              The membership grant deploys and funds it at payment; if it hasn't arrived, the \
              treasury grant step is still pending — activation can't proceed until then.",
-            wallet.address
+            member
         ));
     }
     if grant.has_validator {
@@ -1554,21 +1577,17 @@ pub async fn node_register_validator(
     let staker = crate::validator::parse_address_20(&grant.bond_address)?;
     // Live replay-guard nonce for the CLONE's registration digest (real read, never fabricated).
     let nonce =
-        crate::validator::read_registration_nonce(&rpc, node_validator_registry_value(), &staker)?;
-    // Sign the registration with the node's proposer key (seed stays in validator.rs).
-    let (pubkey, sig) = state
-        .0
-        .sign_registration(40204, &registry, &staker, nonce)?;
+        crate::validator::read_registration_nonce(rpc, node_validator_registry_value(), &staker)?;
+    let (pubkey, sig) = sign(40204, &registry, &staker, nonce)?;
     let calldata = crate::validator::member_bond_activate_calldata(&pubkey, &sig);
     // Sent FROM the member EOA (the clone's `onlyMember`) TO the clone, value 0.
-    let raw = encode_activate_json(&wallet.address, &grant.bond_address, &calldata);
-    let intent = crate::ceremony::SignatureIntent {
+    let raw = encode_activate_json(member, &grant.bond_address, &calldata);
+    Ok(crate::ceremony::SignatureIntent {
         origin: "local-user".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
         chain_id: 40204,
         raw,
-    };
-    Ok(ceremony.0.request(intent))
+    })
 }
 
 /// W1.x — arm the block producer, CONSENSUS-GATED on being synced. Delegates to
