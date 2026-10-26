@@ -4860,6 +4860,17 @@ export class Store {
       this.toast("Your bond is already activated; there is nothing to sign.");
       return false;
     }
+    // #405: the FULL gate (contract §1 conditions) on THIS fresh read, never an earlier one: a
+    // membership that lapsed, a node that fell out of sync or out of band, or any field the read
+    // could not get blocks the ceremony. The proposer key is the one exception: arming mints it
+    // and signs nothing, so a node whose ONLY missing check is the key arms below and returns.
+    const gate = activationGate(this.state.activation, this.walletIsLinked());
+    const blocking = gate.checks.filter((c) => c.ok !== true);
+    const keyOnly = blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false;
+    if (blocking.length > 0 && !(keyOnly && !this.validatorArmed)) {
+      this.toast("Activation not available yet — " + blocking[0].detail);
+      return false;
+    }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
     // on its own — arming respawns it with `--mine --coinbase`, which does. Only
     // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
@@ -4882,6 +4893,11 @@ export class Store {
         this.validatorArmed = true;
         this.toast("Block production armed — minting your validator key, then activation opens.");
         return false; // retry once the key lands
+      }
+      if (keyOnly) {
+        // No key, and the node did not arm (not caught up, or no coinbase): nothing to sign with.
+        this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
+        return false;
       }
     }
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
