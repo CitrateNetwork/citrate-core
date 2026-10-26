@@ -1,4 +1,5 @@
-// HUP-S2.1 — Settings > App carries the Hermes folder-access (Grants) card; no other section does.
+// HUP-S2.1 — the Hermes folder-access (Grants) card lives in one section. Since 0.5.2 K2 that is
+// Terminal & folders (Hermes › Controls › Details), next to the terminal switch; no other section has it.
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Settings } from "./Settings";
@@ -16,12 +17,19 @@ function render(sSec: AppState["sSec"]): string {
 }
 
 describe("Settings folder access", () => {
-  it("the App section shows the Hermes folder-access card", () => {
-    const html = render("app");
+  it("the Terminal & folders section shows the terminal switch and the Hermes folder-access card", () => {
+    const html = render("terminal");
     expect(html).toContain("Hermes · folder access");
     expect(html).toContain('id="hermes-folder-access"');
+    expect(html).toContain('id="hermes-terminal"');
   });
-  it("other sections do not", () => {
+  it("other sections do not, including App", () => {
     expect(render("account")).not.toContain("Hermes · folder access");
+    expect(render("app")).not.toContain("Hermes · folder access");
+    expect(render("app")).not.toContain('id="hermes-terminal"');
+  });
+  it("the Personas & voice section holds the persona picker; App no longer does", () => {
+    expect(render("personas")).toContain("Hermes · persona");
+    expect(render("app")).not.toContain("Hermes · persona");
   });
 });

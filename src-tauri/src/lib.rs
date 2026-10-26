@@ -46,6 +46,8 @@ mod components;
 mod connections;
 mod contract_deploy;
 mod daemons;
+// Join-13: deep links delivered to the running app on Linux/Windows; URL fragments never logged.
+mod deep_link_delivery;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
@@ -137,6 +139,7 @@ mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
+mod validator_activation;
 mod verified_source;
 mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
@@ -263,8 +266,11 @@ pub fn run() {
     tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
         // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // Join-13: on Linux/Windows a clicked `citrate://` link arrives as that second launch's
+        // argv; its accepted links go to the deep-link plugin's own path (see deep_link_delivery).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::Manager;
+            deep_link_delivery::deliver_second_instance_argv(app, &argv);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
@@ -276,6 +282,7 @@ pub fn run() {
         // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
         // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).
         // The frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → parseJoinLink → Groups.
+        // Links clicked while the app runs on Linux/Windows reach it via single-instance above.
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         // W2.1 — in-app auto-updates (signed GitHub Releases feed; pubkey pinned in
@@ -302,6 +309,9 @@ pub fn run() {
             // (NodeManager::start waits on it) until the cleanup has returned; a panicking
             // cleanup leaves it closed. The barrier does not depend on what the cleanup does.
             let handle = app.handle();
+            // Join-13: an AppImage has no .desktop install to register `citrate://`; do it here.
+            #[cfg(target_os = "linux")]
+            deep_link_delivery::register_appimage_schemes(handle);
             startup_barrier::StartupBarrier::global().run_cleanup(|| sweep_orphan_sidecars(handle));
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
@@ -569,6 +579,9 @@ pub fn run() {
             ceremony::sign_request,
             ceremony::sign_approve,
             ceremony::sign_and_broadcast,
+            // Join-8 — sign without sending (returns the tx hash), then send.
+            ceremony::sign_prepare,
+            ceremony::sign_send_prepared,
             ceremony::sign_reject,
             wallet_link::wallet_link_request,
             wallet_link::wallet_link_approve,
@@ -791,6 +804,10 @@ pub fn run() {
             // ceremony sends MemberBond.activate to the funded clone; the clone (=
             // staker) forwards its principal to registerValidator.
             node::node_register_validator,
+            // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
+            validator_activation::validator_activation_status,
+            // Join-8 — Forget an unseen activation send in the durable submitted-tx record.
+            validator_activation::validator_activation_forget,
             // W1.x — arm the producer once synced (consensus-gated); the respawn
             // mints proposer.key, the validator identity the bond activation needs.
             node::node_arm_mining,
@@ -1323,6 +1340,8 @@ mod tests {
             "sign_request",
             "sign_approve",
             "sign_and_broadcast",
+            "sign_prepare",
+            "sign_send_prepared",
             "sign_reject",
         ] {
             assert!(

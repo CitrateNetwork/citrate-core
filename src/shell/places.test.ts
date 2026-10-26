@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   ACCOUNT_SETTINGS,
   CANONICAL_ROUTES,
+  CONTROLS_DETAIL_SETTINGS,
   CONTROLS_SETTINGS,
   LEGACY_ROUTES,
   PLACES,
@@ -45,11 +46,13 @@ const OLD_ROUTES: Record<string, [string, string, string | null, string | null]>
 // Settings section → [new leaf route, place, tab label, section the new home opens on]
 const SETTINGS_SECTIONS: Record<string, [string, string, string, string | null]> = {
   hermes: ["hermes/controls", "hermes", "Controls", "hermes"],
-  ai: ["hermes/controls", "hermes", "Controls", "ai"],
-  escalation: ["hermes/controls", "hermes", "Controls", "escalation"],
-  mcp: ["hermes/controls", "hermes", "Controls", "mcp"],
-  web: ["hermes/controls", "hermes", "Controls", "web"],
-  budgets: ["hermes/controls", "hermes", "Controls", "budgets"],
+  ai: ["hermes/controls/details", "hermes", "Controls", "ai"],
+  escalation: ["hermes/controls/details", "hermes", "Controls", "escalation"],
+  mcp: ["hermes/controls/details", "hermes", "Controls", "mcp"],
+  web: ["hermes/controls/details", "hermes", "Controls", "web"],
+  terminal: ["hermes/controls/details", "hermes", "Controls", "terminal"],
+  budgets: ["hermes/controls/details", "hermes", "Controls", "budgets"],
+  personas: ["hermes/controls/details", "hermes", "Controls", "personas"],
   node: ["node/advanced", "node", "Advanced", "node"],
   account: ["settings", "settings", "Settings", "account"],
   connections: ["settings/connections", "settings", "Connections", null],
@@ -132,14 +135,53 @@ describe("every Settings section deep link opens its new home", () => {
     });
   }
 
-  it("AI providers, Escalation and spend, MCP servers, Web search and Budgets all land on Hermes › Controls", () => {
-    for (const sec of ["ai", "escalation", "mcp", "web", "budgets"]) expect(resolveRoute("settings/" + sec)?.route).toBe("hermes/controls");
+  it("AI providers, Escalation and spend, MCP servers, Web search, Terminal, Budgets and Personas land on Hermes › Controls › Details", () => {
+    for (const sec of ["ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"]) expect(resolveRoute("settings/" + sec)?.route).toBe("hermes/controls/details");
   });
 
   it("the Controls panel section (settings/hermes) lands on Hermes › Controls", () => {
     expect(CONTROLS_SETTINGS as readonly string[]).toContain("hermes");
     expect(resolveRoute("settings/hermes")).toEqual({ route: "hermes/controls", patch: { sSec: "hermes" } });
     expect(locate("#/settings/hermes").place).toBe("hermes");
+  });
+});
+
+describe("Hermes › Controls has three depths (design slice 1)", () => {
+  it("Switches, Details and Records are sub-tabs of Controls, Switches first", () => {
+    const controls = placeOf("hermes")?.tabs.find((t) => t.label === "Controls");
+    expect(controls?.route).toBe("hermes/controls");
+    expect(controls?.sub?.map((x) => [x.label, x.route])).toEqual([
+      ["1 · Switches", "hermes/controls"],
+      ["2 · Details", "hermes/controls/details"],
+      ["3 · Records", "hermes/controls/records"],
+    ]);
+  });
+
+  it("each depth is a canonical route on Hermes › Controls", () => {
+    for (const [route, sub] of [
+      ["hermes/controls", "1 · Switches"],
+      ["hermes/controls/details", "2 · Details"],
+      ["hermes/controls/records", "3 · Records"],
+    ] as const) {
+      expect(resolveRoute(route), route).toEqual({ route });
+      const loc = locate(route);
+      expect(loc.place).toBe("hermes");
+      expect(tabLabel("hermes", loc.tab)).toBe("Controls");
+      expect(subLabel("hermes", loc.tab, loc.sub)).toBe(sub);
+      expect(registerFor(route)).toBe("charter");
+    }
+  });
+
+  it("the design's depth-two ids open Details on their section", () => {
+    const want: Record<string, string> = { providers: "ai", escalation: "escalation", mcp: "mcp", web: "web", terminal: "terminal", budgets: "budgets", personas: "personas" };
+    for (const [id, sSec] of Object.entries(want)) {
+      expect(resolveRoute("hermes/controls/" + id), id).toEqual({ route: "hermes/controls/details", patch: { sSec } });
+    }
+  });
+
+  it("the Details sections are the moved Settings sections plus Terminal and Personas, none account-level", () => {
+    expect([...CONTROLS_DETAIL_SETTINGS]).toEqual(["ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"]);
+    for (const sec of CONTROLS_DETAIL_SETTINGS) expect(ACCOUNT_SETTINGS as readonly string[]).not.toContain(sec);
   });
 });
 

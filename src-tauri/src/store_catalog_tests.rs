@@ -1360,3 +1360,126 @@ fn tripwire_model_downloads_verify_under_the_shared_lock() {
     assert!(guard < f.find("self.final_path().exists()").expect("exists check"), "the lock covers the check");
     assert!(guard < f.find("self.verify()").expect("verify"), "and the verify");
 }
+
+// ---- #392: reconcile verifies an interrupted Store model only under the download lock ---------
+
+/// The Store's interrupted install A (pending, unverified file) while a Models download of a
+/// different model B under the same file name is in flight: it holds the download lock and
+/// renames B into place. The rename lands while reconcile runs (the transport factory is called
+/// right before reconcile's verify); without the lock, reconcile verifies B against A's hash and
+/// quarantines it.
+#[test]
+fn reconcile_never_verifies_a_file_a_models_download_is_writing() {
+    let fx = interrupted_model("reconcile-race", &model_bytes());
+    let mut b = model_bytes();
+    b[33] = 8;
+    // The Models download holds the file's download lock for its whole download and verify.
+    let lock = crate::model::DownloadGuard::acquire(&fx.models.join("tiny-model.gguf.part")).expect("lock");
+    let models = fx.models.clone();
+    let b2 = b.clone();
+    let renamed = std::sync::atomic::AtomicBool::new(false);
+    let transport = |_: &str| -> Box<dyn crate::model::ModelTransport> {
+        // The Models download's rename, mid-reconcile.
+        std::fs::write(models.join("tiny-model.gguf"), &b2).unwrap();
+        renamed.store(true, std::sync::atomic::Ordering::SeqCst);
+        Box::new(MemTransport(Vec::new()))
+    };
+    let usage = Usage(None);
+    let listed = installed_sync(&fx.root, &fx.fx_targets(&usage, &transport), NOW_MS);
+    if !renamed.load(std::sync::atomic::Ordering::SeqCst) {
+        // Reconcile stayed off the file; the rename happens now, as the download continues.
+        std::fs::write(fx.models.join("tiny-model.gguf"), &b).unwrap();
+    }
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b.clone()), "the Models download's file is intact");
+    let listed = listed.expect("the installed list reads while a download runs");
+    assert_eq!(listed.len(), 1, "the Store record is kept for a later reconcile");
+    assert!(read_store_file(&fx.root).expect("state").installs[0].pending, "still pending, not confirmed");
+    // The Models download verifies B against its own hash and ends.
+    crate::model::ModelManager::new(fx.models.clone(), Box::new(MemTransport(Vec::new())), sha(&b), b.len() as u64)
+        .with_file("tiny-model.gguf".to_string())
+        .verify()
+        .expect("B verifies");
+    drop(lock);
+    // Later reads never claim or remove B.
+    assert_eq!(fx.fx_installed()[0].state, "missing");
+    assert!(crate::model::is_file_ready(&fx.models, "tiny-model.gguf"));
+}
+
+/// Without a download in flight, reconcile still confirms or cleans up as before (under the lock).
+#[test]
+fn reconcile_takes_and_releases_the_download_lock() {
+    let fx = interrupted_model("reconcile-lock", &model_bytes());
+    assert_eq!(fx.fx_installed()[0].state, "not_selected");
+    // The lock is free again afterwards.
+    assert!(crate::model::DownloadGuard::acquire(&fx.models.join("tiny-model.gguf.part")).is_ok());
+}
+
+/// Tripwire (#392): every model verify in the Store path runs under the file's download lock:
+/// `download_and_verify` (which takes it) or `verify_held` (which needs it); never a bare verify.
+#[test]
+fn tripwire_every_store_model_verify_runs_under_the_download_lock() {
+    let src = include_str!("store_catalog.rs");
+    let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src);
+    assert!(!prod.contains(".verify()"), "a bare verify in store_catalog.rs");
+    let rec = &prod[prod.find("fn reconcile_models(").expect("reconcile")..];
+    let rec = &rec[..rec.find("\n}\n").expect("ends")];
+    let lock = rec.find("DownloadGuard::acquire(").expect("reconcile takes the lock");
+    let check = rec.find("is_file_ready(").expect("re-check");
+    let verify = rec.find(".verify_held(&lock)").expect("verify under it");
+    let clean = rec.find("remove_unverified_model_locked(").expect("clean-up under it");
+    assert!(lock < check && check < verify && verify < clean, "lock, re-check, verify, clean-up");
+    assert!(!rec.contains("remove_unverified_model("), "the clean-up does not re-take the lock");
+    let model = include_str!("model.rs");
+    let vh = &model[model.find("pub fn verify_held(").expect("verify_held")..];
+    let vh = &vh[..vh.find("\n    }\n").expect("ends")];
+    assert!(vh.find("guard.path != self.part_path()").expect("checks the guard") < vh.find("self.verify()").expect("verify"));
+}
+
+// ---- #441: a file a Models download left (its marker is there) is never the Store's ------------
+
+/// A Store install crashed before its own file landed, and a Models download of other bytes under
+/// the same name crashed between its rename and its verify: the file, plus the Models screen's
+/// `.download.json` marker (a Store install never writes one). Reconcile and Remove leave that
+/// file and marker alone; only the Store's record can go.
+#[test]
+fn a_file_a_models_download_left_is_never_verified_or_removed_by_the_store() {
+    let fx = interrupted_model("models-marker", &model_bytes());
+    let mut b = model_bytes();
+    b[21] = 6;
+    std::fs::write(fx.models.join("tiny-model.gguf"), &b).unwrap();
+    crate::model_catalog::write_download_marker(&fx.models, "tiny-model.gguf", "some-catalog-model", b.len() as u64)
+        .expect("marker");
+    let marker = fx.models.join("tiny-model.gguf.download.json");
+    let listed = fx.fx_installed();
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b.clone()), "reconcile kept the Models file");
+    assert!(marker.exists(), "and its marker");
+    assert_eq!(listed.len(), 1, "the Store record waits");
+    assert_eq!(listed[0].state, "missing");
+    fx.fx_remove("tiny-model", &Usage(None)).expect("the Store record is removable");
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b), "Remove kept the Models file");
+    assert!(marker.exists(), "and its marker");
+    assert!(read_store_file(&fx.root).expect("state").installs.is_empty());
+}
+
+/// Tripwire (#441): the Store's only file clean-up and reconcile's interrupted check both skip a
+/// file that carries the Models screen's download marker.
+#[test]
+fn tripwire_the_store_never_touches_a_file_with_a_models_marker() {
+    let src = include_str!("store_catalog.rs");
+    let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src);
+    let body = |sig: &str| -> &str {
+        let f = &prod[prod.find(sig).unwrap_or_else(|| panic!("{sig}"))..];
+        &f[..f.find("\n}\n").expect("ends")]
+    };
+    let clean = body("fn remove_unverified_model_locked(");
+    assert!(clean.find("models_download_left(").expect("marker check") < clean.find("remove_file(").expect("delete"));
+    let rec = body("fn reconcile_models(");
+    assert!(rec.find("models_download_left(").expect("marker check") < rec.find(".verify_held(").expect("verify"));
+    // The only other file removal is the single-use review stage (not a model).
+    let stage = body("fn take_stage(");
+    assert_eq!(
+        prod.matches("std::fs::remove_file(").count(),
+        clean.matches("std::fs::remove_file(").count() + stage.matches("std::fs::remove_file(").count(),
+        "every model file removal in the Store goes through remove_unverified_model_locked"
+    );
+}
