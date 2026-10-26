@@ -1,7 +1,7 @@
 // D-11 — the OpenAI-compatible adapter against recorded answers (no network).
 
 use super::*;
-use crate::model_provider::{ChatMessage, InboundResponse, ProviderHttp, ToolDef, Vendor, WireRequest};
+use crate::model_provider::{ApiKey, ChatMessage, InboundResponse, ProviderHttp, ToolDef, Vendor, WireRequest};
 use crate::secret::SecretString;
 use std::sync::Mutex;
 
@@ -36,7 +36,7 @@ impl ProviderHttp for Replay {
 }
 
 fn adapter() -> OpenAiCompatAdapter {
-    OpenAiCompatAdapter::new(ProviderId::Vendor(Vendor::OpenAi), "sk-", vec![])
+    OpenAiCompatAdapter::new(ProviderId::Custom("custom-box".into()), vec![])
 }
 
 fn key() -> ApiKey {
@@ -182,8 +182,12 @@ fn key_test_lists_models_and_maps_rejection() {
 }
 
 #[test]
-fn key_format_checks_the_prefix() {
-    assert!(adapter().check_key_format(&key()).is_ok());
-    let wrong = ApiKey::from_secret(SecretString::new("xai-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()));
-    assert!(matches!(adapter().check_key_format(&wrong), Err(ProviderError::KeyFormat(_))));
+fn a_custom_endpoint_takes_any_well_shaped_key_but_not_a_malformed_one() {
+    assert!(adapter().key_format().check(&key()).is_ok());
+    let other = ApiKey::from_secret(SecretString::new("xai-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()));
+    assert!(adapter().key_format().check(&other).is_ok());
+    for bad in ["short", "has space aaaaaaaaaaaaaaaaaaaaaaa"] {
+        let k = ApiKey::from_secret(SecretString::new(bad.into()));
+        assert!(matches!(adapter().key_format().check(&k), Err(ProviderError::KeyFormat(_))));
+    }
 }

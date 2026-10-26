@@ -34,25 +34,32 @@ fn status_is_honest_about_keys_adapters_and_custom_endpoints() {
     let rig = Rig::new("ipc-status");
     let s = status(&rig.proxy);
     let ids: Vec<&str> = s.iter().map(|v| v.id.as_str()).collect();
-    assert_eq!(ids, vec!["openai", "anthropic", "gemini", "xai", "deepseek", "meta", "cognition"]);
+    assert_eq!(ids, vec!["openai", "anthropic", "gemini", "xai", "deepseek", "meta", "gateway", "cognition"]);
+    let gw = s.iter().find(|v| v.id == "gateway").unwrap();
+    assert_eq!((gw.kind, gw.host.as_str(), gw.verified), ("gateway", "infer.citrate.ai", true));
     let cog = s.iter().find(|v| v.id == "cognition").unwrap();
     assert_eq!((cog.kind, cog.adapter, cog.host.as_str()), ("delegate", Some("delegate"), "api.devin.ai"));
     assert!(!cog.key_configured);
     let openai = &s[0];
     assert!(openai.key_configured && openai.verified);
     assert_eq!(openai.host, "api.openai.com");
-    assert_eq!(openai.adapter, Some("openai-compatible"));
+    assert_eq!(openai.adapter, Some("native"));
     assert_eq!(openai.listed_models, vec!["gpt-known".to_string()]);
     assert!(openai.key_set_ms.is_some());
     let anthropic = &s[1];
     assert!(!anthropic.key_configured);
-    assert_eq!(anthropic.adapter, None, "no adapter yet is said, not hidden");
+    assert_eq!(anthropic.adapter, Some("native"));
+    assert!(
+        s.iter().filter(|v| v.kind == "vendor").all(|v| v.adapter == Some("native")),
+        "every vendor has its native adapter"
+    );
     // A custom endpoint is listed, unverified and unconfirmed.
     let c = custom_add(&rig.proxy, "Box", "https://llm.example.org/v1", vec!["m".into()]).unwrap();
     assert!(!c.confirmed && !c.verified);
     let s = status(&rig.proxy);
     let v = s.iter().find(|v| v.id == c.id).unwrap();
     assert_eq!((v.kind, v.verified, v.confirmed), ("custom", false, false));
+    assert_eq!(v.adapter, Some("openai-compatible"));
     let c2 = custom_confirm(&rig.proxy, &c.id, "https://llm.example.org/v1").unwrap();
     assert!(c2.confirmed && !c2.verified);
 }
@@ -100,7 +107,11 @@ fn usage_summary_comes_from_the_signed_log() {
     let o = u.providers.iter().find(|p| p.id == "openai").unwrap();
     assert_eq!(o.today.calls, 2);
     assert_eq!(o.today.tokens, 2 * (12 + 5));
-    assert_eq!(o.today.unpriced_calls, 2, "no price known: spend is unknown, not zero");
+    assert_eq!(o.today.unpriced_calls, 0);
+    let one = crate::model_proxy::tests::RIG_PRICE.cost(12, 5);
+    assert_eq!(o.today.spend_micros, 2 * one, "spend is the vendor's usage at the price");
+    assert_eq!(o.caps, Caps::default());
+    assert_eq!(o.caps.daily_micros, Some(5_000_000));
     assert_eq!(o.unsettled_calls, 0);
     // The log is intact, so it is not reset.
     assert!(usage_log_reset(&rig.proxy).is_err());

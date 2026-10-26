@@ -45,11 +45,11 @@ fn api_key_shape_helpers_do_not_expose_the_key() {
     assert!(k.starts_with("sk-test-"));
     assert!(k.appears_in(b"xx sk-test-0123456789abcdefABCDEF yy"));
     assert!(!k.appears_in(b"sk-test-0123"));
-    assert!(basic_key_shape(&k).is_ok());
+    assert!(KeyFormat::ANY.check(&k).is_ok());
     let short = ApiKey::from_secret(SecretString::new("abc".into()));
-    assert!(matches!(basic_key_shape(&short), Err(ProviderError::KeyFormat(_))));
+    assert!(matches!(KeyFormat::ANY.check(&short), Err(ProviderError::KeyFormat(_))));
     let spaced = ApiKey::from_secret(SecretString::new("sk-abc def 0123456789abcdef".into()));
-    assert!(basic_key_shape(&spaced).is_err());
+    assert!(KeyFormat::ANY.check(&spaced).is_err());
     let empty = ApiKey::from_secret(SecretString::new(String::new()));
     assert!(!empty.appears_in(b"anything"), "an empty key matches nothing");
 }
@@ -199,4 +199,81 @@ fn ctx_send_refuses_a_key_in_the_url_body_or_extra_headers() {
     });
     assert!(matches!(in_header, Err(ProviderError::Egress(_))));
     assert!(http.sent.lock().unwrap().is_empty(), "nothing was sent");
+}
+
+#[test]
+fn key_formats_are_data_checked_inside_core() {
+    let f = KeyFormat {
+        prefixes: &["sk-ant-"],
+        min_len: 30,
+        max_len: 200,
+        charset: KeyCharset::UrlSafe,
+    };
+    let ok = ApiKey::from_secret(SecretString::new(format!("sk-ant-{}", "a1_B-".repeat(6))));
+    assert!(f.check(&ok).is_ok());
+    for bad in [
+        format!("sk-{}", "a".repeat(40)),            // wrong prefix
+        "sk-ant-short".to_string(),                  // too short
+        format!("sk-ant-{}", "a".repeat(300)),       // too long
+        format!("sk-ant-{}!", "a".repeat(30)),       // outside the charset
+        format!("sk-ant-{}.x", "a".repeat(30)),      // a dot is not UrlSafe
+    ] {
+        let k = ApiKey::from_secret(SecretString::new(bad));
+        assert!(matches!(f.check(&k), Err(ProviderError::KeyFormat(_))), "must be refused");
+    }
+    let dotted = KeyFormat { charset: KeyCharset::UrlSafeDot, ..f };
+    let k = ApiKey::from_secret(SecretString::new(format!("sk-ant-{}.x", "a".repeat(30))));
+    assert!(dotted.check(&k).is_ok());
+    let any = KeyFormat { prefixes: &[], min_len: 20, max_len: 512, charset: KeyCharset::Printable };
+    let k = ApiKey::from_secret(SecretString::new(format!("LLM|{}", "x".repeat(20))));
+    assert!(any.check(&k).is_ok());
+    let spaced = ApiKey::from_secret(SecretString::new(format!("a b{}", "x".repeat(20))));
+    assert!(any.check(&spaced).is_err());
+}
+
+/// A transport that counts sends and answers with a body that arrives a line per read.
+struct TrickleHttp {
+    sends: std::sync::atomic::AtomicUsize,
+}
+
+impl ProviderHttp for TrickleHttp {
+    fn send(&self, _req: WireRequest<'_>) -> Result<InboundResponse, ProviderError> {
+        self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(InboundResponse {
+            status: 200,
+            content_type: "text/event-stream".into(),
+            body: Box::new(crate::provider_fixtures_tests::Trickle::new("a\nb\nc\n".into())),
+        })
+    }
+}
+
+#[test]
+fn a_cancelled_call_stops_reading_the_vendor_at_the_next_read_and_sends_nothing_more() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let ep = crate::provider_egress::resolve_vendor(Vendor::OpenAi).unwrap();
+    let key = ApiKey::from_secret(SecretString::new(format!("sk-{}", "C".repeat(30))));
+    let http = TrickleHttp {
+        sends: AtomicUsize::new(0),
+    };
+    let flag = std::sync::Arc::new(AtomicBool::new(false));
+    let ctx = ProviderCtx::new(&ep, &key, &http).with_cancel(flag.clone());
+    let get = || OutboundRequest {
+        method: Method::Get,
+        path: "/models".into(),
+        headers: vec![],
+        auth: AuthPlacement::Bearer,
+        body: None,
+    };
+    let mut resp = ctx.send(get()).unwrap();
+    let mut buf = [0u8; 16];
+    assert_eq!(resp.body.read(&mut buf).ok(), Some(2), "reads flow until cancelled");
+    flag.store(true, Ordering::SeqCst);
+    let after = resp.body.read(&mut buf);
+    assert_eq!(
+        after.map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::ConnectionAborted),
+        "the next read after a cancel fails, so the adapter stops and drops the connection"
+    );
+    assert!(matches!(ctx.send(get()), Err(ProviderError::Transport(_))));
+    assert_eq!(http.sends.load(Ordering::SeqCst), 1, "nothing is sent once cancelled");
 }

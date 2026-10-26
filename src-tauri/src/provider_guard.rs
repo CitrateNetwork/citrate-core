@@ -1,7 +1,7 @@
 //! D-11 (RC52) — the spend guard for cloud model calls. ADR-2026-10-26 P-7 (a) and (b).
 //!
-//! **Caps (P-7a).** Per provider: daily and monthly token caps and, when the member sets them,
-//! daily and monthly currency caps (micro-USD). They are checked **before every call** against what
+//! **Caps (P-7a).** Per provider: daily and monthly token caps and daily and monthly currency caps
+//! (micro-USD), on by default ([`Caps::default`]: 1M / 10M tokens, $5 / $50). They are checked **before every call** against what
 //! the signed usage log ([`crate::provider_usage_log`]) already holds for the current UTC day and
 //! UTC month, plus this call's worst case (an upper bound on its input tokens and its full output
 //! ceiling). Over a cap the call is refused with nothing sent: a hard stop, not a prompt. A currency
@@ -27,9 +27,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
-/// Out-of-the-box caps. Pending owner sign-off (ADR P-7 names the mechanism, not the numbers).
+/// Out-of-the-box caps per provider, a hard stop. Owner sign-off 2026-10-26 (ADR P-7a, fed#394):
+/// 1M tokens a day, 10M a month, $5 a day, $50 a month.
 pub const DEFAULT_DAILY_TOKENS: u64 = 1_000_000;
 pub const DEFAULT_MONTHLY_TOKENS: u64 = 10_000_000;
+pub const DEFAULT_DAILY_MICROS: u64 = 5_000_000;
+pub const DEFAULT_MONTHLY_MICROS: u64 = 50_000_000;
 /// The highest cap a member can set.
 pub const MAX_TOKEN_CAP: u64 = 10_000_000_000;
 pub const MAX_MICROS_CAP: u64 = 10_000_000_000; // 10,000 USD
@@ -71,8 +74,8 @@ impl Default for Caps {
         Caps {
             daily_tokens: Some(DEFAULT_DAILY_TOKENS),
             monthly_tokens: Some(DEFAULT_MONTHLY_TOKENS),
-            daily_micros: None,
-            monthly_micros: None,
+            daily_micros: Some(DEFAULT_DAILY_MICROS),
+            monthly_micros: Some(DEFAULT_MONTHLY_MICROS),
         }
     }
 }
@@ -287,6 +290,12 @@ pub fn day_of(ms: u64) -> u64 {
 }
 
 pub fn month_of(ms: u64) -> (i64, u32) {
+    let (y, m, _) = civil_of(ms);
+    (y, m)
+}
+
+/// UTC (year, month, day of month) of a millisecond timestamp.
+pub fn civil_of(ms: u64) -> (i64, u32, u32) {
     // Civil-from-days (Howard Hinnant), UTC.
     let z = (ms / DAY_MS) as i64 + 719_468;
     let era = z.div_euclid(146_097);
@@ -296,7 +305,8 @@ pub fn month_of(ms: u64) -> (i64, u32) {
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m)
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +322,11 @@ pub struct GuardBook {
     /// The file could not be trusted: every provider not yet reset by the member is halted.
     pub unreadable: bool,
     mac_key: Option<Zeroizing<Vec<u8>>>,
+    /// The keyring holding the anchor (the file's generation). `None` only in unit tests that
+    /// never save.
+    keyring: Option<std::sync::Arc<dyn AiKeyring>>,
+    /// The generation of the file this book was loaded from (or last saved).
+    generation: u64,
 }
 
 impl GuardBook {
@@ -357,6 +372,35 @@ impl GuardBook {
             .or(adapter)
     }
 
+    /// The pre-call check for a call core cannot price in tokens: a remote image, or a step of a
+    /// Cognition delegation (Devin bills its own usage units, which core cannot see beforehand).
+    /// The halt, the unknown-model check and the burst window apply; the token and currency caps
+    /// cannot, so they are not checked (an unknown cost is never counted as zero). The usage log
+    /// still records every such call.
+    pub fn admit_unmetered(
+        &mut self,
+        plan: &CallPlan,
+        adapter_models: &[String],
+        now_ms: u64,
+    ) -> Result<(), Refusal> {
+        if let Some(h) = self.get(&plan.provider).halt {
+            return Err(Refusal::Halted(h));
+        }
+        if !self.model_known(&plan.provider, &plan.model, adapter_models) {
+            let h = self.halt(
+                &plan.provider,
+                HaltReason::UnknownModel {
+                    model: plan.model.clone(),
+                },
+                now_ms,
+            );
+            return Err(Refusal::Halted(h));
+        }
+        self.burst_check(&plan.provider, now_ms)?;
+        self.entry(&plan.provider).recent_calls.push_back(now_ms);
+        Ok(())
+    }
+
     /// **The pre-call check.** Refuses (and halts, for an anomaly) before anything is sent.
     /// `today` / `month` are what the usage log holds for this provider, unsettled reservations
     /// included.
@@ -393,28 +437,7 @@ impl GuardBook {
             );
             return Err(Refusal::Halted(h));
         }
-        {
-            let e = self.entry(&plan.provider);
-            while e
-                .recent_calls
-                .front()
-                .is_some_and(|t| now_ms.saturating_sub(*t) >= BURST_WINDOW_MS || *t > now_ms)
-            {
-                e.recent_calls.pop_front();
-            }
-            if e.recent_calls.len() >= BURST_MAX_CALLS {
-                let calls = e.recent_calls.len() as u64 + 1;
-                let h = self.halt(
-                    &plan.provider,
-                    HaltReason::Burst {
-                        calls,
-                        window_ms: BURST_WINDOW_MS,
-                    },
-                    now_ms,
-                );
-                return Err(Refusal::Halted(h));
-            }
-        }
+        self.burst_check(&plan.provider, now_ms)?;
         let caps = g.caps;
         let call_tokens = plan.reserve_tokens();
         for (which, used, cap) in [
@@ -451,6 +474,49 @@ impl GuardBook {
             }
         }
         self.entry(&plan.provider).recent_calls.push_back(now_ms);
+        Ok(())
+    }
+
+    /// Halt (and refuse) when this call would make a burst. Does not record the call.
+    fn burst_check(&mut self, provider: &str, now_ms: u64) -> Result<(), Refusal> {
+        let e = self.entry(provider);
+        while e
+            .recent_calls
+            .front()
+            .is_some_and(|t| now_ms.saturating_sub(*t) >= BURST_WINDOW_MS || *t > now_ms)
+        {
+            e.recent_calls.pop_front();
+        }
+        if e.recent_calls.len() >= BURST_MAX_CALLS {
+            let calls = e.recent_calls.len() as u64 + 1;
+            let h = self.halt(
+                provider,
+                HaltReason::Burst {
+                    calls,
+                    window_ms: BURST_WINDOW_MS,
+                },
+                now_ms,
+            );
+            return Err(Refusal::Halted(h));
+        }
+        Ok(())
+    }
+
+    /// The guard for a live key test: refused while halted (when `respect_halt`), and counted
+    /// toward the burst halt like a model call.
+    pub fn admit_key_test(
+        &mut self,
+        provider: &str,
+        respect_halt: bool,
+        now_ms: u64,
+    ) -> Result<(), Refusal> {
+        if respect_halt {
+            if let Some(h) = self.get(provider).halt {
+                return Err(Refusal::Halted(h));
+            }
+        }
+        self.burst_check(provider, now_ms)?;
+        self.entry(provider).recent_calls.push_back(now_ms);
         Ok(())
     }
 
@@ -592,6 +658,10 @@ impl GuardBook {
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct GuardFile {
+    /// Bumped on every save and mirrored in the keyring anchor: a missing file, or an older one,
+    /// is detected.
+    #[serde(default)]
+    generation: u64,
     #[serde(default)]
     providers: BTreeMap<String, ProviderGuard>,
     #[serde(default)]
@@ -656,32 +726,39 @@ pub fn guard_path(dir: &Path) -> PathBuf {
     dir.join(GUARD_FILE)
 }
 
-/// Load the guard. Missing file: defaults. Unreadable, edited or unsealed file, or an unreadable
-/// keyring: `unreadable` (every provider halted until the member resets), the bad file kept aside.
-pub fn load(dir: &Path, keyring: &dyn AiKeyring, now_ms: u64) -> GuardBook {
+/// Load the guard. A fresh install (no file, no anchor): defaults. Fails closed (`unreadable`, every
+/// provider halted until the member resumes) when the keyring cannot be read, or the file is
+/// unreadable, edited or unsealed, or missing while the anchor says one was saved, or older than
+/// the anchored generation (a rolled-back copy). A file *newer* than the anchor is a crash between
+/// the two writes and is accepted (it cannot be sealed without the key).
+pub fn load(dir: &Path, keyring: std::sync::Arc<dyn AiKeyring>, now_ms: u64) -> GuardBook {
     use hmac::Mac as _;
-    let Ok(key) = mac_key(keyring, GUARD_MAC_ACCOUNT) else {
-        return GuardBook {
-            unreadable: true,
-            ..GuardBook::default()
-        };
+    let failed = |key: Option<Zeroizing<Vec<u8>>>,
+                  keyring: std::sync::Arc<dyn AiKeyring>,
+                  generation| GuardBook {
+        unreadable: true,
+        mac_key: key,
+        keyring: Some(keyring),
+        generation,
+        ..GuardBook::default()
+    };
+    let (Ok(key), Ok(anchor)) = (
+        mac_key(keyring.as_ref(), GUARD_MAC_ACCOUNT),
+        crate::provider_usage_log::read_anchor(keyring.as_ref()),
+    ) else {
+        return failed(None, keyring, 0);
     };
     let path = guard_path(dir);
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && anchor.guard_gen == 0 => {
             return GuardBook {
                 mac_key: Some(key),
+                keyring: Some(keyring),
                 ..GuardBook::default()
             }
         }
-        Err(_) => {
-            return GuardBook {
-                unreadable: true,
-                mac_key: Some(key),
-                ..GuardBook::default()
-            }
-        }
+        Err(_) => return failed(Some(key), keyring, anchor.guard_gen),
     };
     let parsed = serde_json::from_slice::<Sealed>(&bytes).ok().and_then(|s| {
         let tag = hex::decode(&s.mac).ok()?;
@@ -690,25 +767,23 @@ pub fn load(dir: &Path, keyring: &dyn AiKeyring, now_ms: u64) -> GuardBook {
         serde_json::from_str::<GuardFile>(&s.body).ok()
     });
     match parsed {
-        Some(f) => GuardBook {
+        Some(f) if f.generation >= anchor.guard_gen => GuardBook {
             providers: f.providers,
             customs: f.customs,
             unreadable: false,
             mac_key: Some(key),
+            keyring: Some(keyring),
+            generation: f.generation,
         },
-        None => {
+        _ => {
             let _ = std::fs::rename(&path, dir.join(format!("guard.unreadable-{now_ms}.json")));
-            GuardBook {
-                unreadable: true,
-                mac_key: Some(key),
-                ..GuardBook::default()
-            }
+            failed(Some(key), keyring, anchor.guard_gen)
         }
     }
 }
 
-/// Persist the guard, sealed.
-pub fn save(dir: &Path, g: &GuardBook) -> Result<(), String> {
+/// Persist the guard, sealed, with the next generation; then move the anchor to it.
+pub fn save(dir: &Path, g: &mut GuardBook) -> Result<(), String> {
     use hmac::Mac as _;
     if g.unreadable {
         return Err("the spend settings could not be verified; resume a provider first".into());
@@ -717,7 +792,16 @@ pub fn save(dir: &Path, g: &GuardBook) -> Result<(), String> {
         .mac_key
         .as_ref()
         .ok_or("the spend settings key is unavailable")?;
+    let keyring = g
+        .keyring
+        .clone()
+        .ok_or("the spend settings key is unavailable")?;
+    let anchored = crate::provider_usage_log::read_anchor(keyring.as_ref())
+        .map_err(|_| "the keychain could not be read".to_string())?
+        .guard_gen;
+    let generation = g.generation.max(anchored).saturating_add(1);
     let body = serde_json::to_string(&GuardFile {
+        generation,
         providers: g.providers.clone(),
         customs: g.customs.clone(),
     })
@@ -732,7 +816,10 @@ pub fn save(dir: &Path, g: &GuardBook) -> Result<(), String> {
         mac: hex::encode(mac),
     })
     .map_err(|_| "encode guard".to_string())?;
-    write_atomic(&guard_path(dir), &sealed)
+    write_atomic(&guard_path(dir), &sealed)?;
+    g.generation = generation;
+    crate::provider_usage_log::update_anchor(keyring.as_ref(), |a| a.guard_gen = generation)
+        .map_err(|_| "the spend settings anchor could not be written".to_string())
 }
 
 #[cfg(test)]

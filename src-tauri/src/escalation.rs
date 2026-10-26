@@ -960,7 +960,22 @@ pub fn store_proxied_key(
     proxy
         .approve_model(&pid, model)
         .map_err(|e| EscError::Invalid(e.to_string()))?;
+    proxy
+        .price_if_absent(
+            &pid,
+            model,
+            card_price(input.input_micros_per_mtok, input.output_micros_per_mtok),
+        )
+        .map_err(|e| EscError::Invalid(e.to_string()))?;
     Ok(pid)
+}
+
+/// The member's price card as the proxy's price.
+fn card_price(input: u64, output: u64) -> crate::provider_guard::Price {
+    crate::provider_guard::Price {
+        input_micros_per_mtok: input,
+        output_micros_per_mtok: output,
+    }
 }
 
 /// D-11: the proxy provider an https endpoint's requests go to, ready to call. A key stored here
@@ -1000,6 +1015,13 @@ pub fn proxied_provider(
     }
     proxy
         .approve_model(&pid, &e.model)
+        .map_err(|x| EscError::Invalid(x.to_string()))?;
+    proxy
+        .price_if_absent(
+            &pid,
+            &e.model,
+            card_price(e.input_micros_per_mtok, e.output_micros_per_mtok),
+        )
         .map_err(|x| EscError::Invalid(x.to_string()))?;
     Ok(pid)
 }

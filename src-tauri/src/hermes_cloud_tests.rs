@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::hermes::{ControlResp, HermesControl, HermesError, HermesManager};
-use crate::model_proxy::tests::{req, Rig};
+use crate::model_proxy::tests::{live, req, Rig};
 use crate::provider_fixtures_tests::fake_key;
 use std::sync::{Arc, Mutex};
 
@@ -76,7 +76,7 @@ fn a_cloud_session_gets_a_loopback_route_token_and_never_the_vendor_key() {
     assert!(route.session_id.starts_with(CLOUD_ROUTE_PREFIX));
     assert!(m.cloud.is_cloud("s-cloud-1"));
     // A model request on that route reaches the vendor through the proxy.
-    rig.proxy.call_routed(bearer, req("gpt-known", false), None, &mut |_| {}).expect("call");
+    rig.proxy.call_routed_until(bearer, req("gpt-known", false), None, live(), &mut |_| {}).expect("call");
     // Closing the session revokes the route.
     on_close(&m, Some(&rig.proxy), "s-cloud-1");
     assert!(rig.proxy.route_for(bearer).is_none());
@@ -100,7 +100,7 @@ fn local_model_only_refuses_the_open_and_every_later_request_of_a_running_sessio
     let bearer = v["llm"]["bearer"].as_str().unwrap().to_string();
     crate::chat_route::set(&rig.gate(), crate::chat_route::ChatRoute::LocalOnly, 3).unwrap();
     let before = rig.vendor.calls();
-    let r = rig.proxy.call_routed(&bearer, req("gpt-known", false), None, &mut |_| {});
+    let r = rig.proxy.call_routed_until(&bearer, req("gpt-known", false), None, live(), &mut |_| {});
     assert!(matches!(&r, Err(crate::model_proxy::ProxyError::Egress(m)) if m.contains("Local only")), "{r:?}");
     assert_eq!(rig.vendor.calls(), before, "nothing sent");
     assert!(check_send(&m, "s-cloud-2", &rig.gate()).is_err(), "no new turn starts either");
@@ -132,12 +132,14 @@ fn the_members_model_choice_is_approved_so_it_does_not_trip_the_unknown_model_ha
     let rig = Rig::new("hcloud-approve");
     let rec = recorder("s-cloud-4");
     let m = manager(&rec);
+    // (Priced by the member: the default currency caps refuse an unpriced model.)
+    rig.proxy.with_state(|g, _| g.set_price("openai", "gpt-chosen", Some(crate::model_proxy::tests::RIG_PRICE)).unwrap());
     open(&rig, &m, "openai", "gpt-chosen").expect("opened");
     let body = rec.posts.lock().unwrap().last().unwrap().1.clone();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let bearer = v["llm"]["bearer"].as_str().unwrap().to_string();
     rig.proxy
-        .call_routed(&bearer, req("gpt-chosen", false), None, &mut |_| {})
+        .call_routed_until(&bearer, req("gpt-chosen", false), None, live(), &mut |_| {})
         .expect("an approved model is not halted");
     on_close(&m, Some(&rig.proxy), "s-cloud-4");
 }

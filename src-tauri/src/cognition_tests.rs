@@ -107,7 +107,7 @@ fn a_devin_key_must_be_a_v3_cog_key_and_is_tested_on_get_self() {
         .proxy
         .set_key("cognition", crate::secret::SecretString::new(fake_key("apk_")), 1)
         .unwrap_err();
-    assert!(err.to_string().contains("cog_"), "{err}");
+    assert!(err.to_string().contains("prefix"), "{err}");
     assert_eq!(r.devin.seen.lock().unwrap().len(), n);
 }
 

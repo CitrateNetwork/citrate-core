@@ -155,7 +155,18 @@ impl Remote {
             kr.clone(),
             vendor.clone(),
         ));
+        // The default currency caps need a price for every model called (member-entered here).
+        proxy.with_state(|g, _| {
+            for (id, m) in [("openai", "gpt-4o"), ("gateway", "citrate-1")] {
+                g.set_price(id, m, Some(crate::model_proxy::tests::RIG_PRICE)).unwrap();
+            }
+        });
         Remote { _dir: dir, kr, vendor, proxy }
+    }
+
+    /// Price a model (the default currency caps refuse an unpriced one).
+    fn price(&self, id: &str, model: &str) {
+        self.proxy.with_state(|g, _| g.set_price(id, model, Some(crate::model_proxy::tests::RIG_PRICE)).unwrap());
     }
 
     /// The chat requests the vendor saw: (url, auth header, body).
@@ -165,7 +176,7 @@ impl Remote {
             .lock()
             .unwrap()
             .iter()
-            .filter(|s| s.url.ends_with("/chat/completions"))
+            .filter(|s| s.url.ends_with("/chat/completions") || s.url.ends_with("/responses"))
             .map(|s| (s.url.clone(), s.auth.clone(), s.body.clone().unwrap_or(Value::Null)))
             .collect()
     }
@@ -312,26 +323,28 @@ fn clear_provider_removes_config_and_default() {
 fn chat_posts_openai_body_to_stored_endpoint_with_bearer() {
     let r = Remote::new("ai-chat", "Your node is validating.");
     let mgr = mgr_no_http();
-    let key = oa_key();
-    mgr.set_provider(&r.proxy, "openai", OPENAI_BASE, "gpt-4o", &key)
+    // The gateway preset: an OpenAI chat-completions endpoint (OpenAI itself is served by its
+    // native Responses adapter; see a_provider_id_that_is_not_configured_…).
+    let key = gw_key();
+    mgr.set_provider(&r.proxy, "gateway", GATEWAY_BASE, "citrate-1", &key)
         .expect("seal");
 
     let messages = json!([{ "role": "user", "content": "how is my node?" }]).to_string();
     let context = json!({ "height": 131234, "nodeState": "validating" }).to_string();
     let out = mgr
-        .chat(&r.proxy, &permit_for("openai"), "openai", &messages, &context)
+        .chat(&r.proxy, &permit_for("gateway"), "gateway", &messages, &context)
         .expect("chat");
     assert_eq!(out, "Your node is validating.");
 
     let calls = r.chats();
     assert_eq!(calls.len(), 1);
     let (url, auth, body) = &calls[0];
-    // Endpoint = the vendor's pinned base + /chat/completions (no double slash).
-    assert_eq!(url, "https://api.openai.com/v1/chat/completions");
+    // Endpoint = the pinned base + /chat/completions (no double slash).
+    assert_eq!(url, "https://infer.citrate.ai/v1/chat/completions");
     // The proxy attached the key from its own store, in the auth header only.
     assert_eq!(auth, &format!("authorization: Bearer {key}"));
     assert!(!body.to_string().contains(&key));
-    assert_eq!(body["model"], "gpt-4o");
+    assert_eq!(body["model"], "citrate-1");
     assert_eq!(body["stream"], false);
     assert_eq!(body["max_tokens"], AI_MAX_TOKENS);
     let msgs = body["messages"].as_array().unwrap();
@@ -378,11 +391,11 @@ fn chat_on_unconfigured_provider_fails_closed() {
 fn bad_completion_shape_is_bad_response_not_fabricated() {
     let r = Remote::new("ai-shape", "x");
     let mgr = mgr_no_http();
-    mgr.set_provider(&r.proxy, "openai", OPENAI_BASE, "gpt-4o", &oa_key())
+    mgr.set_provider(&r.proxy, "gateway", GATEWAY_BASE, "citrate-1", &gw_key())
         .expect("seal");
     *r.vendor.raw_reply.lock().unwrap() = Some(json!({ "choices": [] }).to_string());
     let err = mgr
-        .chat(&r.proxy, &permit_for("openai"), "openai", &convo("q"), &json!({}).to_string())
+        .chat(&r.proxy, &permit_for("gateway"), "gateway", &convo("q"), &json!({}).to_string())
         .unwrap_err();
     assert!(err.contains("unusable"), "{err}");
 }
@@ -435,7 +448,8 @@ fn a_provider_id_that_is_not_configured_cannot_borrow_another_providers_key() {
     mgr.chat(&r.proxy, &permit_for("openai"), "openai", &convo("q"), &json!({}).to_string())
         .expect("chat a");
     let (url, auth, _) = r.chats().pop().unwrap();
-    assert_eq!(url, "https://api.openai.com/v1/chat/completions");
+    // OpenAI is served by its native adapter (the Responses API) on its pinned host.
+    assert_eq!(url, "https://api.openai.com/v1/responses");
     assert_eq!(auth, format!("authorization: Bearer {oa}"));
 }
 
@@ -511,6 +525,7 @@ fn a_custom_preset_is_refused_until_the_member_confirms_its_url_then_uses_the_mi
     let custom = r.proxy.custom_for_base(base).expect("custom endpoint made");
     assert!(r.proxy.key_configured(&custom));
     r.proxy.confirm_custom(custom.as_str(), base).unwrap();
+    r.price(custom.as_str(), "my-model");
     let out = mgr
         .chat(&r.proxy, &permit_for("custom"), "custom", &convo("q"), "{}")
         .expect("confirmed");

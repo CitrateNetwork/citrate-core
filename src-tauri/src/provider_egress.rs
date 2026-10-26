@@ -28,7 +28,10 @@ pub struct VendorSpec {
     pub revoke_page: &'static str,
 }
 
-/// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts.
+/// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts, checked
+/// against each vendor's own API docs on 2026-10-26 (sources in each adapter's module docs).
+/// Meta: the Meta Model API serving the Muse models is `https://api.meta.ai/v1`
+/// (<https://dev.meta.ai/docs/overview>); the earlier Llama API host is not used.
 pub const VENDORS: &[VendorSpec] = &[
     VendorSpec {
         vendor: Vendor::OpenAi,
@@ -61,16 +64,16 @@ pub const VENDORS: &[VendorSpec] = &[
     VendorSpec {
         vendor: Vendor::DeepSeek,
         name: "DeepSeek",
-        base_url: "https://api.deepseek.com",
+        base_url: "https://api.deepseek.com/v1",
         key_page: "https://platform.deepseek.com/api_keys",
         revoke_page: "https://platform.deepseek.com/api_keys",
     },
     VendorSpec {
         vendor: Vendor::Meta,
         name: "Meta",
-        base_url: "https://api.llama.com/v1",
-        key_page: "https://llama.developer.meta.com",
-        revoke_page: "https://llama.developer.meta.com",
+        base_url: "https://api.meta.ai/v1",
+        key_page: "https://dev.meta.ai/platform",
+        revoke_page: "https://dev.meta.ai/platform",
     },
 ];
 
@@ -313,11 +316,35 @@ pub struct CustomEndpoint {
     pub created_ms: u64,
 }
 
+/// The host rules for a custom endpoint, on top of [`parse_base_url`]: a DNS name (no IP literal),
+/// not a local-only name, no trailing dot.
+pub fn check_custom_host(base_url: &str) -> Result<(), ProviderError> {
+    let u = parse_base_url(base_url)?;
+    let Some(url::Host::Domain(host)) = u.host() else {
+        return Err(ProviderError::Egress(
+            "a custom endpoint needs a host name, not an IP address",
+        ));
+    };
+    let host = host.to_ascii_lowercase();
+    const LOCAL_SUFFIXES: &[&str] = &[".localhost", ".local", ".internal", ".lan", ".home.arpa"];
+    if host.ends_with('.')
+        || !host.contains('.')
+        || host == "localhost"
+        || LOCAL_SUFFIXES.iter().any(|s| host.ends_with(s))
+    {
+        return Err(ProviderError::Egress(
+            "a custom endpoint needs a public host name (no local names or trailing dot)",
+        ));
+    }
+    Ok(())
+}
+
 /// The endpoint a custom provider resolves to. Refused until the member confirmed it.
 pub fn resolve_custom(c: &CustomEndpoint) -> Result<ResolvedEndpoint, ProviderError> {
     let id = ProviderId::parse(&c.id)
         .filter(ProviderId::is_custom)
         .ok_or(ProviderError::Egress("not a custom endpoint id"))?;
+    check_custom_host(&c.base_url)?;
     resolved(id, parse_base_url(&c.base_url)?, false)
 }
 

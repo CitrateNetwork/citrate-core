@@ -92,16 +92,17 @@ fn looks_secret(t: &str) -> bool {
 }
 
 /// D-11: the key shapes of every governed model vendor (OpenAI/DeepSeek `sk-`, Anthropic `sk-ant-`,
-/// Gemini `AIza`, xAI `xai-`, Meta `LLM|`, Cognition `cog_` and its deprecated `apk_`), the Citrate
-/// gateway (`cgk_`), Stripe, and the model proxy's route tokens (`cmp_`).
+/// Gemini `AIza`, xAI `xai-`, Meta `LLM_` (and the retired Llama API's `LLM|`), Cognition `cog_`
+/// (and the legacy `apk_`)), the Citrate gateway (`cgk_`), Stripe, and the model proxy's route
+/// tokens (`cmp_`).
 const KEY_PREFIXES: &[&str] = &[
-    "sk-", "sk_live_", "sk_test_", "cgk_", "xai-", "AIza", "apk_", "cog_", "cmp_", "LLM|",
+    "sk-", "sk_live_", "sk_test_", "cgk_", "xai-", "AIza", "apk_", "cog_", "cmp_", "LLM|", "LLM_",
 ];
 
 /// The shapes of keys that must never cross into the Hermes sidecar (every prefix above except
 /// the proxy's own route token, which is what the sidecar holds instead of a key).
 const VENDOR_KEY_PREFIXES: &[&str] = &[
-    "sk-", "sk_live_", "sk_test_", "cgk_", "xai-", "AIza", "apk_", "cog_", "LLM|",
+    "sk-", "sk_live_", "sk_test_", "cgk_", "xai-", "AIza", "apk_", "cog_", "LLM|", "LLM_",
 ];
 
 fn is_key_char(c: char) -> bool {

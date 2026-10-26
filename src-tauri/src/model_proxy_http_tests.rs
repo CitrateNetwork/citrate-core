@@ -131,7 +131,7 @@ fn a_stream_whose_record_cannot_be_written_never_says_done() {
 fn a_refused_stream_is_a_plain_error_status() {
     let rig = Rig::new("http-refused");
     rig.proxy.with_state(|g, _| g.member_halt("openai", 1));
-    let _ = rig.proxy.with_state(|g, _| rig.proxy.save_guard(g));
+    let _ = rig.proxy.with_state(|g, _| rig.proxy.save_guard(&mut *g));
     let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     let resp = serve(&rig, &post(g.bearer.expose(), chat_body("gpt-known", true), &[]));
     assert_eq!(status_of(&resp), 423, "{resp}");
@@ -176,11 +176,11 @@ fn requests_are_bounded() {
         "POST {CHAT_PATH} HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Length: {}\r\n\r\n",
         MAX_BODY_BYTES + 1
     );
-    assert_eq!(read_request(&mut big.as_bytes()).unwrap_err().0, 413);
+    assert_eq!(read_soon(&mut big.as_bytes()).unwrap_err().0, 413);
     let chunked = format!("POST {CHAT_PATH} HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n");
-    assert_eq!(read_request(&mut chunked.as_bytes()).unwrap_err().0, 411);
+    assert_eq!(read_soon(&mut chunked.as_bytes()).unwrap_err().0, 411);
     let huge_headers = format!("GET / HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(MAX_HEADER_BYTES));
-    assert_eq!(read_request(&mut huge_headers.as_bytes()).unwrap_err().0, 431);
+    assert_eq!(read_soon(&mut huge_headers.as_bytes()).unwrap_err().0, 431);
 }
 
 #[test]
@@ -205,4 +205,49 @@ fn the_server_binds_loopback_and_answers_over_a_socket() {
     s.read_to_string(&mut resp).unwrap();
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
     assert!(resp.contains("hello from the vendor"));
+}
+
+#[test]
+fn a_request_past_its_whole_deadline_is_refused() {
+    let raw = format!("POST {CHAT_PATH} HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Length: 2\r\n\r\n{{}}");
+    let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let r = read_request_until(&mut raw.as_bytes(), past);
+    assert!(matches!(r, Err((408, _))), "a request past its deadline must be refused: {r:?}");
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    assert!(read_request_until(&mut raw.as_bytes(), future).is_ok());
+}
+
+fn read_soon(stream: &mut dyn Read) -> Result<HttpReq, (u16, &'static str)> {
+    read_request_until(stream, std::time::Instant::now() + std::time::Duration::from_secs(5))
+}
+
+/// A client socket that hangs up once the first piece of text reached it.
+struct HangsUp {
+    got: Vec<u8>,
+}
+
+impl Write for HangsUp {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if String::from_utf8_lossy(&self.got).contains("hello ") {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.got.extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_client_that_disconnects_mid_stream_cancels_the_vendor_call() {
+    let rig = Rig::new("http-hangup");
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
+    let mut out = HangsUp { got: Vec::new() };
+    serve_one(&rig.proxy, &post(g.bearer.expose(), chat_body("gpt-known", true), &[]), 1, &mut out);
+    let got = String::from_utf8_lossy(&out.got).to_string();
+    assert!(got.contains("hello ") && !got.contains("[DONE]"), "{got}");
+    let log = std::fs::read_to_string(log_path(&rig.dir.0)).unwrap_or_default();
+    let last = log.lines().last().unwrap_or_default();
+    assert!(last.contains("\"cancelled\""), "the vendor call was stopped: {last}");
 }

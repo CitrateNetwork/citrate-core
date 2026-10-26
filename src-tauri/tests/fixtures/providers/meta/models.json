@@ -1,0 +1,17 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "muse-spark-1.3",
+      "object": "model",
+      "created": 1786000000,
+      "owned_by": "meta"
+    },
+    {
+      "id": "muse-wonder-1.0",
+      "object": "model",
+      "created": 1786000000,
+      "owned_by": "meta"
+    }
+  ]
+}

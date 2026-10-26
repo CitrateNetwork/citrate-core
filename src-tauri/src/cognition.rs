@@ -41,13 +41,22 @@
 //! and the HIC outbox). Session state and results: the Devin API, live.
 
 use crate::model_provider::{
-    basic_key_shape, ApiKey, AuthPlacement, ChatRequest, ChatResponse, KeyTest, Method, ModelInfo,
-    ModelProvider, OutboundRequest, ProviderCtx, ProviderError, ProviderId,
+    AuthPlacement, ChatRequest, ChatResponse, KeyFormat, KeyTest, Method, ModelInfo, ModelProvider,
+    OutboundRequest, ProviderCtx, ProviderError, ProviderId,
 };
 use crate::model_proxy::{ModelProxy, ProxyError, DELEGATE_MODEL};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+/// A Devin v3 key: a service user key or personal access token, `cog_…` (the v1 `apk_` keys are
+/// deprecated and refused). The documentation gives no character set, so any printable ASCII.
+pub const COGNITION_KEY_FORMAT: KeyFormat = KeyFormat {
+    prefixes: &["cog_"],
+    min_len: 20,
+    max_len: 512,
+    charset: crate::model_provider::KeyCharset::Printable,
+};
 
 /// How long an opened approval may be answered.
 pub const APPROVAL_TTL_MS: u64 = 10 * 60 * 1000;
@@ -89,14 +98,8 @@ impl ModelProvider for CognitionAdapter {
         }]
     }
 
-    fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)?;
-        if !key.starts_with("cog_") {
-            return Err(ProviderError::KeyFormat(
-                "a Devin API key starts with cog_ (a service user key or personal access token from Devin's Settings › Devin API)",
-            ));
-        }
-        Ok(())
+    fn key_format(&self) -> KeyFormat {
+        COGNITION_KEY_FORMAT
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {
