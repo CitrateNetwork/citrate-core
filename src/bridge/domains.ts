@@ -127,6 +127,14 @@ export interface SigningDomain {
    * real tx hash + block (never key material). Same explicit-id / raw-ack /
    * single-use / fail-closed invariants as `approve`. */
   broadcast(id: string, rawAck: boolean): Promise<BroadcastResult>;
+  /**
+   * Join-8 — the same approval as `broadcast`, split in two so the caller learns the tx hash
+   * BEFORE anything is sent: `prepare` approves + signs (sends nothing) and returns the hash
+   * (keccak256 of the signed raw); `sendPrepared` sends that signed tx once and polls its receipt.
+   * One approval, one signature, at most one send. Tauri → `sign_prepare` / `sign_send_prepared`.
+   */
+  prepare(id: string, rawAck: boolean): Promise<{ txHash: string }>;
+  sendPrepared(id: string): Promise<BroadcastResult>;
   /** Reject a pending ceremony — consumes it, produces no signature. */
   reject(id: string): Promise<void>;
 }
@@ -282,6 +290,66 @@ export interface NodeStatusView {
   miningHold?: string;
 }
 
+/**
+ * Join-8 — everything the "Activate validator" onboarding step reads, in one call. Each field
+ * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
+ * Wei as decimal strings. Mirrors the Rust `validator_activation::ActivationStatus`.
+ */
+export interface ActivationStatusView {
+  /** `MembershipStakeVault.bondOf(member)` (CREATE2: present even before the bond exists). */
+  bondAddress: string | null;
+  /** Code at `bondAddress`. */
+  bondDeployed: boolean | null;
+  /** `MemberBond.activated()`. */
+  bondActivated: boolean | null;
+  /** `MemberBond.principal()`. */
+  principalWei: string | null;
+  /** `MemberBond.unlockBlock()` / `unlockTimestamp()` (unix seconds). */
+  unlockBlock: number | null;
+  unlockTimestamp: number | null;
+  /** `MemberBond.memberTokenId()`. */
+  memberTokenId: string | null;
+  /** `CitrateMemberSBT.isActive(memberTokenId)`. */
+  membershipActive: boolean | null;
+  /** The key the registry reads use: the bond's registered key once activated, else this node's. */
+  validatorPubkey: string | null;
+  pubkeySource: "bond" | "node" | null;
+  /** This node has a proposer key on disk. */
+  nodeKeyReady: boolean;
+  /** This node's proposer key, when it has one. */
+  nodePubkey: string | null;
+  /** `MemberBond.pubkey()`: the key the bond registered with (null before activation). */
+  bondPubkey: string | null;
+  /** `ValidatorRegistry.validatorInfo(pubkey).status`: 0 None, 1 Active, 2 Exiting, 3 Slashed. */
+  registryStatus: 0 | 1 | 2 | 3 | null;
+  /** `validatorInfo(pubkey).actEpoch`. */
+  activationEpoch: number | null;
+  /** `ValidatorRegistry.isActive(pubkey)`. */
+  registryActive: boolean | null;
+  /** `ValidatorRegistry.EPOCH()`. */
+  epochBlocks: number | null;
+  /**
+   * `ValidatorRegistry.currentEpoch()`. `isActive` is already true at registration (chain#319), so
+   * "Validator active" also needs `activationEpoch <= currentEpoch`.
+   */
+  currentEpoch: number | null;
+  /** Public `eth_blockNumber` (`0x0` is read as unknown). */
+  headBlock: number | null;
+  /** Measured: timestamp delta over the last 100 public blocks, in ms per block. */
+  blockTimeMs: number | null;
+  /** This node's `eth_blockNumber` / `eth_syncing` (true while it returns an object). */
+  localBlock: number | null;
+  localSyncing: boolean | null;
+  /** `eth_getTransactionReceipt` for a sent activation (null when none was sent). */
+  tx: { hash: string; included: boolean | null; blockNumber: number | null; success: boolean | null } | null;
+  /**
+   * The member's latest activation send to this bond as the durable submitted-tx record names it
+   * (written and fsync'd in Rust BEFORE the send; #347). Null when none is recorded, or it was
+   * forgotten. This, not localStorage, is how the step resumes to Pending after a restart.
+   */
+  recordedTx: { hash: string; atMs: number | null } | null;
+}
+
 export interface NodeDomain {
   status(): Promise<NodeStatusView>;
   start(): Promise<void>;
@@ -293,6 +361,19 @@ export interface NodeDomain {
    * `node_register_validator`; the sim shim is honestly Unavailable (no node/key).
    */
   registerValidator(): Promise<CeremonyView>;
+  /**
+   * Join-8 — the Activate-validator step's one read (pure; signs nothing). `memberAddress` is the
+   * member wallet the bond was granted to; `txHash` a sent activation to look up. Tauri →
+   * `validator_activation_status`; the sim shim is honestly Unavailable (no chain, no node).
+   */
+  activationStatus(memberAddress: string, txHash?: string | null): Promise<ActivationStatusView>;
+  /**
+   * Join-8 — Forget a recorded activation send (S7's Forget after 10 minutes unseen, or Try again
+   * after a revert): marks it forgotten in the durable record so a restart does not bring it back.
+   * Resolves true when the record held it; rejects when the write fails. Tauri →
+   * `validator_activation_forget`; the sim shim is honestly Unavailable.
+   */
+  activationForget(txHash: string): Promise<boolean>;
   /**
    * The most recent supervised-node crash, or null if it has never crashed.
    * Used by the liveness watchdog to name the REAL reason a node stopped.
