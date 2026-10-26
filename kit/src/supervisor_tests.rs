@@ -1133,8 +1133,10 @@ fn ring_survives_restart() {
     let tmp = TmpDir::new("logs-restart");
     let crash_file = tmp.path("crashes.jsonl");
     // Each run prints a UNIQUE marker so we can tell the runs apart. The marker
-    // includes the pid so run-1 and run-2 differ.
-    let script = "echo RUN_MARKER_$$; sleep 60".to_string();
+    // includes the pid so run-1 and run-2 differ. `exec` makes the killed pid the only holder of
+    // the output pipe: a forked `sleep` would outlive the kill holding it, and the supervisor
+    // rightly waits for held readers before every retry (core#397).
+    let script = "echo RUN_MARKER_$$; exec sleep 60".to_string();
     let spec = SidecarSpec::new("restarter", sh_bin(), vec!["-c".into(), script]);
     let mut cfg = SupervisorConfig::new(spec, &crash_file);
     cfg.backoff = BackoffPolicy {

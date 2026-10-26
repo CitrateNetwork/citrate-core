@@ -1089,6 +1089,11 @@ describe("store.resumeSession — launch session re-establish", () => {
 
 describe("activateValidator — arms block production before it needs the key", () => {
   afterEach(() => vi.restoreAllMocks());
+  // These pin the arming order. The reconciling read every entry makes first (Join-8) is
+  // covered in activateValidatorStep.store.test.ts; here it reads fresh with nothing recorded.
+  beforeEach(() => {
+    vi.spyOn(store, "refreshActivation").mockResolvedValue(true);
+  });
 
   it("calls armMining BEFORE registerValidator", async () => {
     const order: string[] = [];

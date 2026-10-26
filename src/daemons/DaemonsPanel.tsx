@@ -2,9 +2,10 @@
 // citrate-core — Daemons card on the Hermes home (HUP-S10.3, US-10.3 AC2)
 //
 // Create a recurring Hermes task: a name, the task, a schedule (local time) and a budget. Each row
-// shows its status, today's runs and tokens (measured or estimated) against the budget, spend (always 0), the
+// shows its status, today's runs and tokens (measured or estimated) against the budget, the
 // next run and the last outcome, with Pause / Resume and Remove. "Pause all" stops every daemon.
-// The budget defaults are conservative placeholders, pending owner sign-off.
+// The budget defaults are conservative placeholders, pending owner sign-off. Daemons can't spend
+// SALT, and the card says so in those words, never as a "0 SALT" figure (chain-team ruling 5).
 // =====================================================================
 import { useEffect, useState } from "react";
 import { daemonsSlice } from "./slice";
@@ -44,7 +45,10 @@ const input = { width: "100%", boxSizing: "border-box" as const, fontSize: 12, p
 const fmt = (n: number) => n.toLocaleString("en-US");
 const when = (ms: number | null) => (ms === null ? "not scheduled" : new Date(ms).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" }));
 
-export function DaemonsPanel({ actions = appDaemonActions() }: { actions?: DaemonActions }) {
+/** The ruling-5 sentence: what a daemon can spend, without a SALT figure. */
+export const DAEMONS_NO_SALT = "Daemons can’t spend SALT.";
+
+export function DaemonsPanel({ actions = appDaemonActions(), onRuns }: { actions?: DaemonActions; /** Open this daemon's run history (Hermes › Controls › 3 · Records). */ onRuns?: (id: string) => void }) {
   const st = daemonsSlice.use();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -93,7 +97,7 @@ export function DaemonsPanel({ actions = appDaemonActions() }: { actions?: Daemo
         </span>
       </div>
       <p style={{ ...small, margin: 0, padding: "8px 16px 0" }}>
-        Recurring Hermes tasks on this machine, on the local model. Anything a daemon wants to change waits for your approval. Spend is 0.
+        Recurring Hermes tasks on this machine, on the local model. Anything a daemon wants to change waits for your approval. {DAEMONS_NO_SALT}
       </p>
       {blocked && view && view.daemons.length > 0 ? (
         <p data-testid="daemons-blocked" style={{ ...small, margin: 0, padding: "4px 16px 0" }}>
@@ -145,7 +149,7 @@ export function DaemonsPanel({ actions = appDaemonActions() }: { actions?: Daemo
               <input aria-label="Tokens a run" type="number" min={1} value={budget.maxTokensPerRun} onChange={(e) => setBudget({ ...budget, maxTokensPerRun: Number(e.target.value) })} style={input} />
             </label>
           </div>
-          <span style={small}>Spend: 0 SALT (daemons cannot spend). Default limits are placeholders, pending owner sign-off. Tokens are measured from the model server when it reports usage, otherwise estimated.</span>
+          <span style={small}>{DAEMONS_NO_SALT} Default limits are placeholders, pending owner sign-off. Tokens are measured from the model server when it reports usage, otherwise estimated.</span>
           <button className="btn btn-sm" type="submit" data-testid="daemons-save">
             Save daemon
           </button>
@@ -168,7 +172,7 @@ export function DaemonsPanel({ actions = appDaemonActions() }: { actions?: Daemo
               {d.schedule} · next {when(d.nextRunMs)}
             </span>
             <span className="mono" data-testid="daemon-budget" style={{ fontSize: 10, color: "var(--tx-3)" }}>
-              {d.runsToday} of {d.budget.maxRunsPerDay} runs · {fmt(d.tokensToday)} of {fmt(d.budget.maxTokensPerDay)} tokens ({d.lastTokenSource === "measured" ? "last run measured" : "estimated"}) · spend {d.spendTodaySalt} SALT
+              {d.runsToday} of {d.budget.maxRunsPerDay} runs · {fmt(d.tokensToday)} of {fmt(d.budget.maxTokensPerDay)} tokens ({d.lastTokenSource === "measured" ? "last run measured" : "estimated"})
               {d.skippedToday > 0 ? ` · ${d.skippedToday} skipped (budget)` : ""}
             </span>
             {d.lastOutcome ? (
@@ -190,6 +194,11 @@ export function DaemonsPanel({ actions = appDaemonActions() }: { actions?: Daemo
               <button className="btn btn-sm" data-testid="daemon-remove" onClick={() => void actions.remove(d.id).then(done)}>
                 Remove
               </button>
+              {onRuns ? (
+                <button className="btn btn-sm btn-ghost" data-testid="daemon-runs" onClick={() => onRuns(d.id)}>
+                  Runs
+                </button>
+              ) : null}
             </span>
           </div>
         ))

@@ -192,11 +192,12 @@ describe("a Hermes start waits for a start-time setting write already in flight"
   });
 });
 
-// Tripwire: every app write of a setting Hermes reads at start (web settings, learning) goes
+// Tripwire: every app write of a setting Hermes reads at start (web settings, learning, the MCP
+// allowlist) goes
 // through the start-time settings lock (`...UnlessStarting(`), so a start waits for it and a write
 // asked for during a start is held. A new writer that calls core directly fails here.
 describe("tripwire: start-time setting writes go through the lock", () => {
-  it("every saveWebSettings / setTrajectoryConsent call in src/ sits inside an ...UnlessStarting( block", async () => {
+  it("every saveWebSettings / setTrajectoryConsent / mcpSet call in src/ sits inside an ...UnlessStarting( block", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const srcDir = path.resolve(__dirname, "../..");
@@ -217,13 +218,14 @@ describe("tripwire: start-time setting writes go through the lock", () => {
       if (rel.startsWith("bridge" + path.sep) || rel === path.join("agent", "webSearch.ts")) continue;
       const lines = fs.readFileSync(f, "utf8").split("\n");
       lines.forEach((l: string, i: number) => {
-        if (!/(\bsaveWebSettings|\.setTrajectoryConsent)\(/.test(l) || /^\s*(\/\/|\*|import\b)/.test(l)) return;
+        if (!/(\bsaveWebSettings|\.setTrajectoryConsent|\.mcpSet)\(/.test(l) || /^\s*(\/\/|\*|import\b)/.test(l)) return;
         calls++;
         const window = lines.slice(Math.max(0, i - 8), i + 1).join("\n");
         if (!/UnlessStarting\(/.test(window)) offenders.push(`${rel}:${i + 1}`);
       });
     }
-    expect(calls).toBeGreaterThanOrEqual(4);
+    // patchWebSettings (the one web writer) and the two learning writers.
+    expect(calls).toBeGreaterThanOrEqual(3);
     expect(offenders).toEqual([]);
   });
 });

@@ -15,11 +15,24 @@
 //   node scripts/component-pins.mjs artifact <id> <target>     print the artifact record (JSON)
 //   node scripts/component-pins.mjs digest <id> <target>       print the pinned sha256; exit 1 if none
 //   node scripts/component-pins.mjs check [--root <dir>]       consistency check (CI)
+//   node scripts/component-pins.mjs requires <id> --checkout <dir>
+//                                                              the pinned rev contains every `requires`
+//                                                              rev (git ancestry); exit 1 if not or unknown
+//   node scripts/component-pins.mjs verify-bytes <id> <file>   the bytes carry every `requires` marker
+//   node scripts/component-pins.mjs verify-staged <dir> <target>
+//                                                              verify-bytes for every component with
+//                                                              `requires`, staged as <dir>/<bin>-<target>
+//
+// `requires` (on a component) lists what citrate-core depends on in that component's source:
+// [{ rev, marker, why }]. `rev` is the first source commit that has it, so the pinned source.rev
+// must contain it; `marker` is a string the built bytes must contain (an env var or usage string
+// only that code has). A re-pin to an older rev, or a stale runtime-deps upload, then fails closed.
 // CITRATE_COMPONENTS_MANIFEST overrides the manifest path; the repo root is then the manifest's
 // grandparent directory (<root>/release/components.json).
 //
-// Zero dependencies: node:fs, node:path only.
+// Zero dependencies: node built-ins only (git for the `requires` ancestry check).
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,6 +102,80 @@ export function pinnedDigest(manifest, pins, id, target) {
     return d[0];
   }
   throw new Error(`'${id}' ${target}: artifact has neither sha256 nor runtime_deps_asset`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// requires: what the app depends on in a component's source
+// ---------------------------------------------------------------------------------------------
+
+/** Shape errors of a component's `requires` list. */
+export function requirementShapeErrors(c) {
+  const errors = [];
+  if (c.requires === undefined) return errors;
+  if (!Array.isArray(c.requires) || c.requires.length === 0) return [`'${c.id}': requires must be a non-empty list`];
+  for (const [i, r] of c.requires.entries()) {
+    const at = `'${c.id}' requires[${i}]`;
+    if (!HEX40.test((r && r.rev) || "")) errors.push(`${at}: rev must be a full 40-hex commit`);
+    if (!(r && typeof r.marker === "string" && r.marker.length >= 8)) errors.push(`${at}: marker must be a string of at least 8 characters`);
+    if (!(r && typeof r.why === "string" && r.why.trim())) errors.push(`${at}: why missing`);
+  }
+  return errors;
+}
+
+/**
+ * Whether commit `rev` contains commit `ancestor` in the git checkout `dir`: true, false, or null
+ * when it cannot tell (no checkout, or either commit is missing from it).
+ */
+export function revContains(dir, ancestor, rev) {
+  if (!dir || !fs.existsSync(dir)) return null;
+  const git = (args) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+  try {
+    git(["cat-file", "-e", `${ancestor}^{commit}`]);
+    git(["cat-file", "-e", `${rev}^{commit}`]);
+  } catch {
+    return null;
+  }
+  try {
+    git(["merge-base", "--is-ancestor", ancestor, rev]);
+    return true;
+  } catch (e) {
+    if (e.status === 1) return false;
+    return null;
+  }
+}
+
+/**
+ * Ancestry errors of a component's `requires` against a checkout of its source. With `strict`, a
+ * checkout that cannot answer (missing, or without the commits) is an error too.
+ */
+export function requirementRevErrors(c, dir, { strict = false } = {}) {
+  const errors = [];
+  const rev = c.source && c.source.rev;
+  for (const r of Array.isArray(c.requires) ? c.requires : []) {
+    const has = revContains(dir, r.rev, rev);
+    if (has === false) errors.push(`'${c.id}': pinned rev ${rev} predates ${r.rev}, which it requires (${r.why})`);
+    else if (has === null && strict) errors.push(`'${c.id}': cannot tell whether ${rev} contains ${r.rev} (${r.why}): ${dir} lacks one of the commits`);
+  }
+  return errors;
+}
+
+/** Marker errors of built or staged bytes for one component. */
+export function requirementByteErrors(c, file) {
+  if (!fs.existsSync(file)) return [`'${c.id}': ${file} does not exist`];
+  const bytes = fs.readFileSync(file);
+  const errors = [];
+  for (const r of Array.isArray(c.requires) ? c.requires : []) {
+    if (!bytes.includes(Buffer.from(r.marker))) errors.push(`'${c.id}': ${file} does not carry ${r.marker}, so it predates ${r.rev} (${r.why})`);
+  }
+  return errors;
+}
+
+/** verify-bytes for every component with `requires`, staged as <dir>/<bin>-<target>. */
+export function stagedRequirementErrors(manifest, dir, target) {
+  const ext = target.includes("-windows-") ? ".exe" : "";
+  return (manifest.components || [])
+    .filter((c) => Array.isArray(c.requires) && c.requires.length)
+    .flatMap((c) => requirementByteErrors(c, path.join(dir, `${path.basename(c.external_bin)}-${target}${ext}`)));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -232,6 +319,12 @@ export function check(root) {
       } catch (e) {
         err(e.message);
       }
+      // A cargo build's runtime-deps asset is named after the rev it was built from, so a rev
+      // bump that keeps the old bytes fails here.
+      if (b.kind === "cargo" && a.runtime_deps_asset) {
+        const want = `${path.basename(c.external_bin || "")}-${t}-${(src.rev || "").slice(0, 12)}`;
+        if (a.runtime_deps_asset !== want) err(`'${c.id}' ${t}: runtime-deps asset ${a.runtime_deps_asset} is not the build of the pinned rev (expected ${want})`);
+      }
       if (b.kind === "download") {
         if (!/^https:\/\//.test(a.url || "")) err(`'${c.id}' ${t}: download url must be https`);
         if (!HEX64.test(a.archive_sha256 || "")) err(`'${c.id}' ${t}: archive_sha256 missing or not 64 hex`);
@@ -239,6 +332,14 @@ export function check(root) {
         if (a.url && src.version && !a.url.includes(src.version)) err(`'${c.id}' ${t}: url does not name version ${src.version}`);
       }
     }
+  }
+
+  // `requires`: well formed, and (where a checkout of the source sits beside this repo, as on the
+  // release Mac) the pinned rev contains each required rev. build-component.sh checks the
+  // ancestry strictly, and the built and staged bytes for the markers.
+  for (const c of comps) {
+    for (const e of requirementShapeErrors(c)) err(e);
+    if (c.requires && c.source && c.source.checkout) for (const e of requirementRevErrors(c, path.join(root, "..", c.source.checkout))) err(e);
   }
 
   // Overlay coverage: every externalBin of every overlay is a component, and vice versa.
@@ -295,6 +396,9 @@ export function check(root) {
     for (const a of known) if (!pins.has(a)) err(`runtime-deps asset ${a} (named in release/components.json) has no pin in src-tauri/runtime-deps.sha256`);
   }
 
+  if (wf && comps.some((c) => c.requires) && !/component-pins\.mjs verify-staged src-tauri\/binaries aarch64-apple-darwin/.test(wf)) {
+    err("release.yml does not run `component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin` on the staged sidecars");
+  }
   if (wf) for (const e of dryRunGuardErrors(wf)) err(e);
 
   // The node sidecar rev is the rev the app's own chain crates and build-sidecar.sh's
@@ -384,7 +488,30 @@ function main(argv) {
       process.stdout.write(pinnedDigest(m, pinsFor(root), id, target) + "\n");
       return;
     }
-    die("usage: component-pins.mjs field|artifact|digest|check ...");
+    if (cmd === "requires") {
+      const [id, flag, dir] = rest;
+      if (!id || flag !== "--checkout" || !dir) die("usage: requires <id> --checkout <dir>");
+      const c = component(m, id);
+      const errors = [...requirementShapeErrors(c), ...requirementRevErrors(c, path.resolve(dir), { strict: true })];
+      if (errors.length) die(errors.join("\n"));
+      return;
+    }
+    if (cmd === "verify-bytes") {
+      const [id, file] = rest;
+      if (!id || !file) die("usage: verify-bytes <id> <file>");
+      const errors = requirementByteErrors(component(m, id), file);
+      if (errors.length) die(errors.join("\n"));
+      return;
+    }
+    if (cmd === "verify-staged") {
+      const [dir, target] = rest;
+      if (!dir || !target) die("usage: verify-staged <dir> <target>");
+      const errors = stagedRequirementErrors(m, dir, target);
+      if (errors.length) die(errors.join("\n"));
+      process.stdout.write("component requires: staged sidecars OK\n");
+      return;
+    }
+    die("usage: component-pins.mjs field|artifact|digest|check|requires|verify-bytes|verify-staged ...");
   } catch (e) {
     die(e.message);
   }

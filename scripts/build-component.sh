@@ -94,6 +94,8 @@ case "$KIND" in
       git -C "$CHECKOUT" cat-file -e "${REV}^{commit}" 2>/dev/null \
         || die "$CHECKOUT does not have the pinned commit $REV of $REPO (git -C \"$CHECKOUT\" fetch origin)"
     fi
+    # The pinned rev must contain every rev the app requires of this source (`requires`).
+    "${PINS[@]}" requires "$ID" --checkout "$CHECKOUT" || die "$ID: the pinned rev lacks code this app requires; nothing built"
     W="$BUILD_ROOT/${ID}-${REV:0:12}"
     SRC="$W/src"
     if [ -d "$SRC" ]; then
@@ -166,6 +168,9 @@ $LEAKS"
     fi ;;
   esac
 fi
+
+# The bytes must carry every `requires` marker (fails closed on a build of an older source).
+"${PINS[@]}" verify-bytes "$ID" "$STAGE" || die "$ID: the built bytes lack an interface this app requires. Nothing installed."
 
 DIGEST="$(sha256_of "$STAGE")"
 if [ "$PRINT" -eq 1 ]; then
