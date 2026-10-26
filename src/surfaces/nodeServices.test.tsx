@@ -64,7 +64,7 @@ function snap(services: ServiceEntry[]): ServicesSnapshot {
 
 const noop = () => {};
 const render = (s: ServicesSnapshot | null, extra: Partial<Parameters<typeof ServicesView>[0]> = {}) =>
-  renderToStaticMarkup(<ServicesView snapshot={s} error={null} pending={{}} onControl={noop} onOpenLogs={noop} {...extra} />);
+  renderToStaticMarkup(<ServicesView snapshot={s} error={null} pending={{}} refusals={{}} onControl={noop} onOpenLogs={noop} {...extra} />);
 
 /** The HTML of one service's row. */
 function rowHtml(html: string, id: ServiceId): string {
@@ -184,6 +184,30 @@ describe("Node › Services renders the registry snapshot", () => {
     expect(r).toContain("Stop requested");
     expect(r).toMatch(/data-control="stop"[^>]*disabled/);
     expect(stateWords(r)).toEqual([PHASE_LABEL.alive]);
+  });
+
+  it("a Failed or a still-held Stopped service offers Reset (its owner's stop releases the supervisor), never a Start the owner would refuse", () => {
+    const html = render(snap([observed("node", "failed"), observed("memory", "stopped"), observed("hermes", "backoff")]));
+    for (const id of ["node", "memory"] as const) {
+      const r = rowHtml(html, id);
+      expect(r).toMatch(/data-control="reset"[^>]*>Reset</);
+      expect(r).not.toMatch(/data-control="start"/);
+    }
+    expect(rowHtml(html, "hermes")).toMatch(/data-control="stop"/);
+  });
+
+  it("a refused control shows its reason on the row; the state word stays the snapshot's", () => {
+    const r = rowHtml(
+      render(snap([row("node")]), { refusals: { node: { action: "start", reason: "the node binary is not bundled" } } }),
+      "node",
+    );
+    expect(r).toMatch(/role="alert"[^>]*>[^<]*Start refused: the node binary is not bundled/);
+    expect(stateWords(r)).toEqual([OBSERVATION_LABEL.notSupervised]);
+    const reset = rowHtml(
+      render(snap([observed("memory", "failed")]), { refusals: { memory: { action: "reset", reason: "busy" } } }),
+      "memory",
+    );
+    expect(reset).toContain("Reset refused: busy");
   });
 
   it("an unreadable snapshot shows the reason and no rows", () => {

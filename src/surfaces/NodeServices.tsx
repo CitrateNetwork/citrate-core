@@ -51,7 +51,13 @@ const READINESS_LABEL: Record<ServiceReadiness, string> = {
   unavailable: "Unavailable",
 };
 
-export type ControlAction = "start" | "stop";
+export type ControlAction = "start" | "stop" | "reset";
+
+/** The last refused control on a row and the owner's reason. */
+export interface Refusal {
+  action: ControlAction;
+  reason: string;
+}
 
 /**
  * The owner paths Node › Services drives, for exactly the registry rows marked `controls: true`
@@ -59,7 +65,7 @@ export type ControlAction = "start" | "stop";
  * the owner's own checks and side effects (node intent, memory import, Hermes settings snapshot)
  * still apply.
  */
-export const SERVICE_CONTROLS: Partial<Record<ServiceId, (store: Store) => Record<ControlAction, () => Promise<void>>>> = {
+export const SERVICE_CONTROLS: Partial<Record<ServiceId, (store: Store) => Partial<Record<ControlAction, () => Promise<string | null | void>>>>> = {
   node: (store) => ({
     start: async () => store.startNode(),
     stop: async () => store.stopNode(),
@@ -245,6 +251,7 @@ export function ServicesView({
   snapshot: ServicesSnapshot | null;
   error: string | null;
   pending: Partial<Record<ServiceId, ControlAction>>;
+  refusals?: Partial<Record<ServiceId, Refusal>>;
   onControl: (id: ServiceId, action: ControlAction) => void;
   onOpenLogs: () => void;
 }) {
@@ -314,8 +321,7 @@ export function NodeServices({ store }: SurfaceProps) {
       const control = SERVICE_CONTROLS[id];
       if (!control) return;
       setPending((p) => ({ ...p, [id]: action }));
-      void control(store)
-        [action]()
+      void (control(store)[action] ?? (async () => {}))()
         .catch((e: unknown) => store.toast(`${action === "start" ? "Start" : "Stop"} failed: ${errorText(e)}`))
         .finally(() => {
           if (live.current) setPending((p) => ({ ...p, [id]: undefined }));
