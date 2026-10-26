@@ -8,7 +8,7 @@ a wrapper script that sets STAND_IN_CFG and execs this file), because cold-sync.
 with a minimal environment and nothing else would reach it.
 
 Config keys: record (path), chainId, genesis, seed, rate (blocks/s), headMax, forkAt, forkSeed,
-exitAfter (s), noRpc, peers, encMeta.
+missing ([from, to]: no block served in that range), exitAfter (s), noRpc, peers, encMeta.
 Block hash at height h > 0: 0x + sha256("<seed>:<h>"); block 0 is `genesis`.
 """
 import hashlib
@@ -38,7 +38,7 @@ if key_file and os.path.exists(key_file):
     key_file_mode = oct(os.stat(key_file).st_mode & 0o777)
     key_len = len(open(key_file).read().strip())
 with open(cfg["record"], "w") as f:
-    json.dump({"argv": argv, "env": env, "config": config_text, "keyFileMode": key_file_mode,
+    json.dump({"pid": os.getpid(), "argv": argv, "env": env, "config": config_text, "keyFileMode": key_file_mode,
                "keyLen": key_len, "cwd": os.getcwd()}, f)
 
 if data_dir and cfg.get("encMeta", True):
@@ -87,7 +87,11 @@ class H(BaseHTTPRequestHandler):
         elif method == "eth_getBlockByNumber":
             tag = params[0]
             h = head() if tag == "latest" else int(tag, 16)
-            result = None if h > head() else {"number": hex(h), "hash": block_hash(h)}
+            gap = cfg.get("missing")
+            if h > head() or (gap and gap[0] <= h <= gap[1]):
+                result = None
+            else:
+                result = {"number": hex(h), "hash": block_hash(h)}
         else:
             result = None
         body = json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": result}).encode()

@@ -18,7 +18,7 @@
 // 4. Tripwire: no script outside the K6 profile and the member config carries a bootnode key or a
 //    literal `--network testnet`, so a stale copy of the network cannot come back.
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -40,16 +40,16 @@ const OTHER = "0x" + "cd".repeat(32);
 const REGISTRY = "0x1111111111111111111111111111111111111111";
 const hashAt = (seed, h) => (h === 0 ? remote.genesis : "0x" + crypto.createHash("sha256").update(`${seed}:${h}`).digest("hex"));
 
-function py(args) {
+function py(args, opts = {}) {
   return new Promise((resolve) => {
-    execFile(PY, args, { timeout: 60_000 }, (err, stdout, stderr) => {
+    execFile(PY, args, { timeout: 60_000, ...opts }, (err, stdout, stderr) => {
       resolve({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr });
     });
   });
 }
 
 // ── the network RPC stand-in ─────────────────────────────────────────────────────────────────────
-const remote = { chainId: 40204, genesis: GENESIS, head: 100000, seed: "main" };
+const remote = { chainId: 40204, genesis: GENESIS, head: 100000, seed: "main", missing: null };
 const server = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -60,7 +60,8 @@ const server = http.createServer((req, res) => {
     else if (method === "eth_blockNumber") result = "0x" + remote.head.toString(16);
     else if (method === "eth_getBlockByNumber") {
       const h = params[0] === "latest" ? remote.head : parseInt(params[0], 16);
-      result = h > remote.head ? null : { number: "0x" + h.toString(16), hash: hashAt(remote.seed, h) };
+      const gap = remote.missing;
+      result = h > remote.head || (gap && gap[0] <= h && h <= gap[1]) ? null : { number: "0x" + h.toString(16), hash: hashAt(remote.seed, h) };
     }
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
@@ -72,7 +73,7 @@ afterAll(() => new Promise((r) => server.close(r)));
 
 let dir;
 beforeEach(() => {
-  Object.assign(remote, { chainId: 40204, genesis: GENESIS, head: 100000, seed: "main" });
+  Object.assign(remote, { chainId: 40204, genesis: GENESIS, head: 100000, seed: "main", missing: null });
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "cold-sync-test-"));
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -328,6 +329,104 @@ describe("sync", () => {
     expect(r.code).toBe(2);
     expect(r.rec).toBeNull();
   });
+});
+
+describe("every scheduled height is compared (review round 1, item 1)", () => {
+  for (const side of ["network", "node"]) {
+    it(`fails when the ${side} has no block at scheduled heights below both heads`, async () => {
+      if (side === "network") remote.missing = [1, 1000];
+      const r = await run({ blocks: "1500", every: "100", timeout: "4", behaviour: side === "node" ? { missing: [1, 1000] } : {} });
+      expect(r.code).toBe(1);
+      expect(r.v.verdict).toBe("FAIL");
+      expect(failed(r.v)).toEqual(["agrees"]);
+      expect(r.v.sync.missing).toEqual([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
+    });
+  }
+
+  it("compares every K-th height up to the last safe height, and that height itself", async () => {
+    const r = await run({ blocks: "1000", every: "100" });
+    expect(r.code).toBe(0);
+    const safe = Math.min(r.v.sync.final_head, r.v.sync.remote_head) - r.v.sync.lag;
+    const want = [];
+    for (let h = 0; h <= safe; h += 100) want.push(h);
+    if (want[want.length - 1] !== safe) want.push(safe);
+    expect(r.v.sync.checked_heights).toEqual(want);
+    expect(r.v.sync.missing).toEqual([]);
+  });
+});
+
+describe("every error path writes a verdict (review round 1, item 2)", () => {
+  it("accepts a relative --node-bin", async () => {
+    const { bin } = node();
+    const out = path.join(dir, "out");
+    const args = [script, "--node-bin", "./" + path.basename(bin), "--profile", writeJson("profile.json", profile()),
+      "--address-book", book(), "--out", out, "--blocks", "300", "--every", "100", "--poll", "0.2"];
+    const r = await py(args, { cwd: dir });
+    expect(r.code, r.stderr).toBe(0);
+    const v = JSON.parse(fs.readFileSync(path.join(out, "verdict.json"), "utf8"));
+    expect(v.verdict).toBe("PASS");
+    expect(path.isAbsolute(v.node.bin)).toBe(true);
+  });
+
+  it("writes a FAIL verdict when the node cannot be started, and removes the temp dir", async () => {
+    const { bin } = node();
+    fs.writeFileSync(bin, "#!/nonexistent/interpreter\n", { mode: 0o755 });
+    const out = path.join(dir, "out");
+    const work = fs.mkdtempSync(path.join(dir, "work-"));
+    const r = await py([script, "--node-bin", bin, "--profile", writeJson("profile.json", profile()),
+      "--address-book", book(), "--out", out, "--blocks", "300", "--work-root", work]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).not.toMatch(/Traceback/);
+    const v = JSON.parse(fs.readFileSync(path.join(out, "verdict.json"), "utf8"));
+    expect(v.verdict).toBe("FAIL");
+    expect(failed(v)).toContain("node_alive");
+    expect(fs.readdirSync(work)).toEqual([]);
+  });
+
+  it("writes a FAIL verdict when the member config cannot be read", async () => {
+    const { bin, record } = node();
+    const out = path.join(dir, "out");
+    const r = await py([script, "--node-bin", bin, "--profile", writeJson("profile.json", profile()),
+      "--address-book", book(), "--out", out, "--member-config", path.join(dir, "missing.toml")]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).not.toMatch(/Traceback/);
+    expect(fs.existsSync(record)).toBe(false);
+    const v = JSON.parse(fs.readFileSync(path.join(out, "verdict.json"), "utf8"));
+    expect(v.rules.find((x) => x.rule === "launch").status).toBe("FAIL");
+  });
+});
+
+describe("a signal stops the node and removes the temp dir (review round 1, item 3)", () => {
+  for (const sig of ["SIGHUP", "SIGINT", "SIGTERM"]) {
+    it(`${sig}: the node is stopped, the temp dir (with the key file) is gone, a verdict is written`, async () => {
+      const { bin, record } = node({ rate: 5 });
+      const out = path.join(dir, "out");
+      const work = fs.mkdtempSync(path.join(dir, "work-"));
+      const child = spawn(PY, [script, "--node-bin", bin, "--profile", writeJson("profile.json", profile()),
+        "--address-book", book(), "--out", out, "--blocks", "100000", "--timeout", "60", "--poll", "0.2",
+        "--work-root", work], { stdio: "ignore" });
+      const exited = new Promise((res) => child.on("exit", (code, signal) => res({ code, signal })));
+      let rec = null;
+      for (let i = 0; i < 100 && !(rec && rec.argv.includes("--network")); i++) {
+        await new Promise((res) => setTimeout(res, 100));
+        try { rec = JSON.parse(fs.readFileSync(record, "utf8")); } catch { rec = null; }
+      }
+      expect(rec?.argv).toContain("--network");
+      await new Promise((res) => setTimeout(res, 500));
+      child.kill(sig);
+      const { code, signal } = await exited;
+      expect(signal).toBeNull();
+      expect(code).toBe(1);
+      let alive = true;
+      try { process.kill(rec.pid, 0); } catch { alive = false; }
+      expect(alive).toBe(false);
+      expect(fs.readdirSync(work)).toEqual([]);
+      const v = JSON.parse(fs.readFileSync(path.join(out, "verdict.json"), "utf8"));
+      expect(v.verdict).toBe("FAIL");
+      expect(v.rules.find((x) => x.rule === "node_alive").detail).toMatch(/interrupted/);
+      expect(v.data_dir_removed).toBe(true);
+    });
+  }
 });
 
 describe("tripwire: the network lives in the K6 profile and the member config only", () => {
