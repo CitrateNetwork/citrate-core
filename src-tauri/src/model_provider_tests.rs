@@ -45,11 +45,11 @@ fn api_key_shape_helpers_do_not_expose_the_key() {
     assert!(k.starts_with("sk-test-"));
     assert!(k.appears_in(b"xx sk-test-0123456789abcdefABCDEF yy"));
     assert!(!k.appears_in(b"sk-test-0123"));
-    assert!(basic_key_shape(&k).is_ok());
+    assert!(KeyFormat::ANY.check(&k).is_ok());
     let short = ApiKey::from_secret(SecretString::new("abc".into()));
-    assert!(matches!(basic_key_shape(&short), Err(ProviderError::KeyFormat(_))));
+    assert!(matches!(KeyFormat::ANY.check(&short), Err(ProviderError::KeyFormat(_))));
     let spaced = ApiKey::from_secret(SecretString::new("sk-abc def 0123456789abcdef".into()));
-    assert!(basic_key_shape(&spaced).is_err());
+    assert!(KeyFormat::ANY.check(&spaced).is_err());
     let empty = ApiKey::from_secret(SecretString::new(String::new()));
     assert!(!empty.appears_in(b"anything"), "an empty key matches nothing");
 }

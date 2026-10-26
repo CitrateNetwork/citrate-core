@@ -167,20 +167,21 @@ impl AdapterKind {
 /// served by [`OpenAiCompatAdapter`] until their native adapter lands (WP-S1-PROV-ADAPT replaces
 /// these entries); Anthropic, Gemini and Meta have no adapter yet and report "not available".
 pub fn vendor_adapter(v: Vendor) -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
-    let compat = |prefix: &'static str| -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
-        Some((
-            Arc::new(OpenAiCompatAdapter::new(
-                ProviderId::Vendor(v),
-                prefix,
-                vec![],
-            )),
-            AdapterKind::OpenAiCompatible,
-        ))
-    };
+    let compat =
+        |prefixes: &'static [&'static str]| -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
+            Some((
+                Arc::new(OpenAiCompatAdapter::new(
+                    ProviderId::Vendor(v),
+                    prefixes,
+                    vec![],
+                )),
+                AdapterKind::OpenAiCompatible,
+            ))
+        };
     match v {
-        Vendor::OpenAi => compat("sk-"),
-        Vendor::Xai => compat("xai-"),
-        Vendor::DeepSeek => compat("sk-"),
+        Vendor::OpenAi => compat(&["sk-"]),
+        Vendor::Xai => compat(&["xai-"]),
+        Vendor::DeepSeek => compat(&["sk-"]),
         Vendor::Anthropic | Vendor::Gemini | Vendor::Meta => None,
     }
 }
@@ -283,8 +284,8 @@ impl ModelProxy {
     /// Open the proxy's state in `dir` (`<app data>/providers`).
     pub fn new(dir: PathBuf, keyring: Arc<dyn AiKeyring>, http: Arc<dyn ProviderHttp>) -> Self {
         let now = now_ms();
-        let guard = crate::provider_guard::load(&dir, keyring.as_ref(), now);
-        let log = UsageLog::open(&dir, keyring.as_ref());
+        let guard = crate::provider_guard::load(&dir, keyring.clone(), now);
+        let log = UsageLog::open(&dir, keyring.clone());
         ModelProxy {
             dir,
             keyring,
@@ -348,7 +349,7 @@ impl ModelProxy {
                     })
                     .collect();
                 Ok((
-                    Arc::new(OpenAiCompatAdapter::new(id.clone(), "", models)),
+                    Arc::new(OpenAiCompatAdapter::new(id.clone(), &[], models)),
                     AdapterKind::OpenAiCompatible,
                     ep,
                 ))
@@ -426,6 +427,7 @@ impl ModelProxy {
             let mut inner = self.inner();
             let Inner { guard, log } = &mut *inner;
             log.ready().map_err(ProxyError::LogUnavailable)?;
+            log.check_clock(now).map_err(ProxyError::LogUnavailable)?;
             let plan = CallPlan {
                 provider: provider.clone(),
                 model: req.model.clone(),
@@ -568,18 +570,28 @@ impl ModelProxy {
         r
     }
 
-    /// Record a live key test (a use of the key) and require the log to be writable first.
+    /// Record a live key test (a use of the key). The log must be writable, and the test counts
+    /// toward the burst halt. Testing the stored key also respects a halt; setting a new key does
+    /// not (replacing a key while paused is how a member recovers).
     fn key_test_logged(
         &self,
         pid: &ProviderId,
         ep: &ResolvedEndpoint,
         adapter: &dyn ModelProvider,
         key: &ApiKey,
+        respect_halt: bool,
     ) -> Result<KeyTest, ProxyError> {
-        self.inner()
-            .log
-            .ready()
-            .map_err(ProxyError::LogUnavailable)?;
+        {
+            let now = now_ms();
+            let mut inner = self.inner();
+            let Inner { guard, log } = &mut *inner;
+            log.ready().map_err(ProxyError::LogUnavailable)?;
+            log.check_clock(now).map_err(ProxyError::LogUnavailable)?;
+            if let Err(r) = guard.admit_key_test(pid.as_str(), respect_halt, now) {
+                let _ = crate::provider_guard::save(&self.dir, guard);
+                return Err(ProxyError::Refused(r));
+            }
+        }
         let res = adapter
             .test_key(&ProviderCtx::new(ep, key, self.http.as_ref()))
             .map_err(ProxyError::Provider);
@@ -618,15 +630,16 @@ impl ModelProxy {
         let (adapter, _, ep) = self.resolve(&pid)?;
         let key = ApiKey::from_secret(key);
         adapter
-            .check_key_format(&key)
+            .key_format()
+            .check(&key)
             .map_err(ProxyError::Provider)?;
-        let test = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key)?;
+        let test = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key, false)?;
         self.keyring
             .set(&Self::key_account(&pid, &ep), key.expose_for_keychain())
             .map_err(|_| ProxyError::Storage("the keychain could not be written".into()))?;
         let mut inner = self.inner();
         inner.guard.key_set(pid.as_str(), test.models.clone(), now);
-        let _ = crate::provider_guard::save(&self.dir, &inner.guard);
+        let _ = crate::provider_guard::save(&self.dir, &mut inner.guard);
         Ok(test)
     }
 
@@ -635,10 +648,10 @@ impl ModelProxy {
         let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
         let (adapter, _, ep) = self.resolve(&pid)?;
         let key = self.read_key(&pid, &ep)?;
-        let t = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key)?;
+        let t = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key, true)?;
         let mut inner = self.inner();
         inner.guard.key_set(pid.as_str(), t.models.clone(), now);
-        let _ = crate::provider_guard::save(&self.dir, &inner.guard);
+        let _ = crate::provider_guard::save(&self.dir, &mut inner.guard);
         Ok(t)
     }
 
@@ -658,7 +671,7 @@ impl ModelProxy {
         self.revoke_provider(&pid);
         let mut inner = self.inner();
         inner.guard.key_removed(pid.as_str());
-        let _ = crate::provider_guard::save(&self.dir, &inner.guard);
+        let _ = crate::provider_guard::save(&self.dir, &mut inner.guard);
         Ok(())
     }
 
@@ -715,6 +728,8 @@ impl ModelProxy {
                 "give the endpoint a name of 1 to 80 characters".into(),
             ));
         }
+        crate::provider_egress::check_custom_host(base_url)
+            .map_err(|e| ProxyError::Egress(e.to_string()))?;
         let url = crate::provider_egress::parse_base_url(base_url)
             .map_err(|e| ProxyError::Egress(e.to_string()))?;
         let models: Vec<String> = models
@@ -749,7 +764,7 @@ impl ModelProxy {
             created_ms: now,
         };
         inner.guard.customs.push(c.clone());
-        crate::provider_guard::save(&self.dir, &inner.guard).map_err(ProxyError::Storage)?;
+        crate::provider_guard::save(&self.dir, &mut inner.guard).map_err(ProxyError::Storage)?;
         Ok(c)
     }
 
@@ -768,7 +783,7 @@ impl ModelProxy {
             ));
         }
         c.confirmed = true;
-        crate::provider_guard::save(&self.dir, &inner.guard).map_err(ProxyError::Storage)
+        crate::provider_guard::save(&self.dir, &mut inner.guard).map_err(ProxyError::Storage)
     }
 
     /// Remove a custom endpoint and its key.
@@ -785,7 +800,7 @@ impl ModelProxy {
         let mut inner = self.inner();
         inner.guard.customs.retain(|c| c.id != id);
         inner.guard.providers.remove(id);
-        crate::provider_guard::save(&self.dir, &inner.guard).map_err(ProxyError::Storage)
+        crate::provider_guard::save(&self.dir, &mut inner.guard).map_err(ProxyError::Storage)
     }
 
     // ---- routes ----------------------------------------------------------------------------
@@ -868,7 +883,7 @@ impl ModelProxy {
         f(guard, log)
     }
 
-    pub(crate) fn save_guard(&self, g: &GuardBook) -> Result<(), String> {
+    pub(crate) fn save_guard(&self, g: &mut GuardBook) -> Result<(), String> {
         crate::provider_guard::save(&self.dir, g)
     }
 

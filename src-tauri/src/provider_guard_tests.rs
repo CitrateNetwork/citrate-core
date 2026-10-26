@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::provider_fixtures_tests::{MemKeyring, TmpDir};
+use std::sync::Arc;
 
 const T0: u64 = 20_752 * DAY_MS + 3_600_000; // 2026-10-26 01:00 UTC
 
@@ -232,39 +233,39 @@ fn caps_are_validated() {
 #[test]
 fn state_persists_sealed_and_an_edited_file_fails_closed() {
     let dir = TmpDir::new("guard-seal");
-    let kr = MemKeyring::default();
-    let mut g = load(&dir.0, &kr, T0);
+    let kr = Arc::new(MemKeyring::default());
+    let mut g = load(&dir.0, kr.clone(), T0);
     assert!(!g.unreadable);
     g.set_caps("openai", Caps { daily_tokens: Some(777), monthly_tokens: Some(7_777), daily_micros: None, monthly_micros: None })
         .unwrap();
     g.member_halt("xai", T0);
-    save(&dir.0, &g).unwrap();
-    let g2 = load(&dir.0, &kr, T0);
+    save(&dir.0, &mut g).unwrap();
+    let g2 = load(&dir.0, kr.clone(), T0);
     assert_eq!(g2.get("openai").caps.daily_tokens, Some(777));
     assert!(g2.get("xai").halt.is_some());
     // An edit made outside the app (raise the cap) is detected: every provider is halted.
     let p = guard_path(&dir.0);
     let text = std::fs::read_to_string(&p).unwrap().replace("777", "999");
     std::fs::write(&p, text).unwrap();
-    let mut g3 = load(&dir.0, &kr, T0);
+    let mut g3 = load(&dir.0, kr.clone(), T0);
     assert!(g3.unreadable, "an edited guard file must not be trusted");
     assert!(matches!(
         g3.admit(&plan("gpt-known", 1, 1), &known(), used(0, 0), used(0, 0), T0),
         Err(Refusal::Halted(Halt { reason: HaltReason::GuardUnreadable, .. }))
     ));
-    assert!(save(&dir.0, &g3).is_err(), "nothing is saved until the member resumes");
+    assert!(save(&dir.0, &mut g3).is_err(), "nothing is saved until the member resumes");
     // Resuming is the member's acknowledgement: defaults, readable again.
     g3.member_resume("openai").unwrap();
     assert!(!g3.unreadable);
     assert_eq!(g3.get("openai").caps, Caps::default());
-    save(&dir.0, &g3).unwrap();
-    assert!(!load(&dir.0, &kr, T0).unreadable);
+    save(&dir.0, &mut g3).unwrap();
+    assert!(!load(&dir.0, kr.clone(), T0).unreadable);
 }
 
 #[test]
 fn an_unreadable_keyring_fails_closed() {
     let dir = TmpDir::new("guard-kr");
-    let mut g = load(&dir.0, &MemKeyring::failing(), T0);
+    let mut g = load(&dir.0, Arc::new(MemKeyring::failing()), T0);
     assert!(g.unreadable);
     assert!(g
         .admit(&plan("gpt-known", 1, 1), &known(), used(0, 0), used(0, 0), T0)
@@ -302,46 +303,46 @@ fn owner_default_caps_include_currency_and_an_unknown_price_is_refused() {
 #[test]
 fn a_deleted_or_rolled_back_guard_file_fails_closed() {
     let dir = TmpDir::new("guard-rollback");
-    let kr = MemKeyring::default();
-    let mut g = load(&dir.0, &kr, T0);
+    let kr = Arc::new(MemKeyring::default());
+    let mut g = load(&dir.0, kr.clone(), T0);
     g.set_caps("openai", Caps { daily_tokens: Some(10), monthly_tokens: Some(10), daily_micros: None, monthly_micros: None })
         .unwrap();
-    save(&dir.0, &g).unwrap();
+    save(&dir.0, &mut g).unwrap();
     let old = std::fs::read(guard_path(&dir.0)).unwrap();
     g.member_halt("openai", T0);
-    save(&dir.0, &g).unwrap();
-    assert!(load(&dir.0, &kr, T0).get("openai").halt.is_some());
+    save(&dir.0, &mut g).unwrap();
+    assert!(load(&dir.0, kr.clone(), T0).get("openai").halt.is_some());
     // Rolled back to the older (validly sealed) copy: the halt would silently vanish.
     std::fs::write(guard_path(&dir.0), &old).unwrap();
-    let g2 = load(&dir.0, &kr, T0);
+    let g2 = load(&dir.0, kr.clone(), T0);
     assert!(g2.unreadable, "an older sealed guard file must not load as current");
     // Deleted: the caps would silently revert to defaults.
     let dir = TmpDir::new("guard-deleted");
-    let kr = MemKeyring::default();
-    let mut g = load(&dir.0, &kr, T0);
+    let kr = Arc::new(MemKeyring::default());
+    let mut g = load(&dir.0, kr.clone(), T0);
     g.member_halt("openai", T0);
-    save(&dir.0, &g).unwrap();
+    save(&dir.0, &mut g).unwrap();
     std::fs::remove_file(guard_path(&dir.0)).unwrap();
-    assert!(load(&dir.0, &kr, T0).unreadable, "a deleted guard file must not load as defaults");
+    assert!(load(&dir.0, kr.clone(), T0).unreadable, "a deleted guard file must not load as defaults");
     // A fresh install has neither file nor anchor and loads normally.
     let fresh = TmpDir::new("guard-fresh");
-    assert!(!load(&fresh.0, &MemKeyring::default(), T0).unreadable);
+    assert!(!load(&fresh.0, Arc::new(MemKeyring::default()), T0).unreadable);
 }
 
 #[test]
 fn a_crash_between_the_guard_write_and_the_anchor_update_is_not_a_rollback() {
     let dir = TmpDir::new("guard-ahead");
-    let kr = MemKeyring::default();
-    let mut g = load(&dir.0, &kr, T0);
-    save(&dir.0, &g).unwrap();
+    let kr = Arc::new(MemKeyring::default());
+    let mut g = load(&dir.0, kr.clone(), T0);
+    save(&dir.0, &mut g).unwrap();
     let anchor = kr.map.lock().unwrap().get(crate::provider_usage_log::ANCHOR_ACCOUNT).cloned().unwrap_or_default();
     g.member_halt("openai", T0);
-    save(&dir.0, &g).unwrap();
+    save(&dir.0, &mut g).unwrap();
     kr.map
         .lock()
         .unwrap()
         .insert(crate::provider_usage_log::ANCHOR_ACCOUNT.to_string(), anchor);
-    let g2 = load(&dir.0, &kr, T0);
+    let g2 = load(&dir.0, kr.clone(), T0);
     assert!(!g2.unreadable);
     assert!(g2.get("openai").halt.is_some());
 }

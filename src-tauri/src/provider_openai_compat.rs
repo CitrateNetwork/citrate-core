@@ -7,8 +7,8 @@
 //! core ([`ProviderCtx::send`]).
 
 use crate::model_provider::{
-    basic_key_shape, read_sse, status_error, ApiKey, AuthPlacement, ChatRequest, ChatResponse,
-    FinishReason, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx,
+    read_sse, status_error, AuthPlacement, ChatRequest, ChatResponse, FinishReason, KeyCharset,
+    KeyFormat, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx,
     ProviderError, ProviderId, Role, ToolCall, Usage,
 };
 use serde_json::{json, Value};
@@ -19,16 +19,20 @@ pub const MAX_MODEL_ID_LEN: usize = 200;
 
 pub struct OpenAiCompatAdapter {
     id: ProviderId,
-    /// Required key prefix (`sk-` for OpenAI/DeepSeek, `xai-` for xAI); empty = any.
-    key_prefix: &'static str,
+    /// Accepted key prefixes (`sk-` for OpenAI/DeepSeek, `xai-` for xAI); empty = any.
+    key_prefixes: &'static [&'static str],
     models: Vec<ModelInfo>,
 }
 
 impl OpenAiCompatAdapter {
-    pub fn new(id: ProviderId, key_prefix: &'static str, models: Vec<ModelInfo>) -> Self {
+    pub fn new(
+        id: ProviderId,
+        key_prefixes: &'static [&'static str],
+        models: Vec<ModelInfo>,
+    ) -> Self {
         OpenAiCompatAdapter {
             id,
-            key_prefix,
+            key_prefixes,
             models,
         }
     }
@@ -310,14 +314,12 @@ impl ModelProvider for OpenAiCompatAdapter {
         self.models.clone()
     }
 
-    fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        basic_key_shape(key)?;
-        if !self.key_prefix.is_empty() && !key.starts_with(self.key_prefix) {
-            return Err(ProviderError::KeyFormat(
-                "that key does not have this provider's prefix (check you picked the right provider)",
-            ));
+    fn key_format(&self) -> KeyFormat {
+        KeyFormat {
+            prefixes: self.key_prefixes,
+            charset: KeyCharset::Printable,
+            ..KeyFormat::ANY
         }
-        Ok(())
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {

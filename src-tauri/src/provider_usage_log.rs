@@ -16,13 +16,24 @@
 //!
 //! The per-provider day and month totals the spend guard checks are computed from this log, so the
 //! caps rest on the signed record rather than on a separate counter.
+//!
+//! **Anchor.** A chain detects edits, but not a file cut short or removed while the app is closed.
+//! So every append also writes an [`Anchor`] to the OS keyring: the last sequence number and MAC,
+//! the latest record time, and each provider's day and month totals. At open, a file shorter than
+//! its anchor, one whose record at the anchored sequence has a different MAC, or a missing file
+//! while the anchor is non-zero, is broken (every cloud call refused). A file one or more records
+//! *ahead* of the anchor is a crash between the two writes and is accepted (records cannot be made
+//! without the MAC key). A reset after a break carries the anchored day and month totals into the
+//! new chain, so starting a new log never resets spend. The guard file's generation lives in the
+//! same anchor ([`crate::provider_guard`]). The keyring is the trust root for both.
 
 use crate::ai::AiKeyring;
-use crate::provider_guard::{day_of, month_of, PeriodUse};
+use crate::provider_guard::{civil_of, day_of, month_of, PeriodUse};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use zeroize::Zeroizing;
 
 pub const LOG_FILE: &str = "usage.jsonl";
@@ -32,6 +43,60 @@ pub const LOG_MAC_ACCOUNT: &str = "provider-usage-log-mac-v1";
 /// closed.
 pub const ANCHOR_ACCOUNT: &str = "provider-anchor-v1";
 const RECORD_VERSION: u32 = 1;
+/// How far the clock may read before the last record before calls are refused (skew allowance).
+pub const CLOCK_SKEW_MS: u64 = 10 * 60 * 1000;
+
+/// One provider's totals as of its latest record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnchorTotals {
+    pub day: u64,
+    /// `year * 100 + month`.
+    pub month: i64,
+    pub day_tokens: u64,
+    pub day_micros: u64,
+    pub month_tokens: u64,
+    pub month_micros: u64,
+}
+
+/// What the keyring remembers about the usage log and the guard file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Anchor {
+    #[serde(default)]
+    pub log_seq: u64,
+    #[serde(default)]
+    pub log_head: String,
+    #[serde(default)]
+    pub last_ts: u64,
+    #[serde(default)]
+    pub guard_gen: u64,
+    #[serde(default)]
+    pub totals: BTreeMap<String, AnchorTotals>,
+}
+
+/// Read the anchor. Absent = a fresh install (all zero). `Err` = the keyring is unreadable or the
+/// value is not an anchor.
+pub fn read_anchor(keyring: &dyn AiKeyring) -> Result<Anchor, ()> {
+    match keyring.get(ANCHOR_ACCOUNT) {
+        Err(_) => Err(()),
+        Ok(None) => Ok(Anchor::default()),
+        Ok(Some(s)) => serde_json::from_str(&s).map_err(|_| ()),
+    }
+}
+
+/// Read-modify-write the anchor. Callers hold the proxy's state lock, so writers do not race.
+pub fn update_anchor(keyring: &dyn AiKeyring, f: impl FnOnce(&mut Anchor)) -> Result<(), ()> {
+    let mut a = read_anchor(keyring)?;
+    f(&mut a);
+    let s = serde_json::to_string(&a).map_err(|_| ())?;
+    keyring.set(ANCHOR_ACCOUNT, &s).map_err(|_| ())
+}
+
+fn month_code(ms: u64) -> i64 {
+    let (y, m) = month_of(ms);
+    y * 100 + i64::from(m)
+}
 /// The MAC a chain starts from.
 pub const GENESIS_PREV: &str = "genesis";
 
@@ -48,6 +113,8 @@ pub enum Kind {
     KeyTest,
     /// A new chain started after a broken one (names the archived file).
     Reset,
+    /// Spend carried into a new chain from the anchor (a reset never resets spend).
+    Carry,
 }
 
 /// One usage record. Closed field set; no content, no key.
@@ -110,6 +177,8 @@ pub enum LogError {
     KeyUnavailable,
     /// The chain is broken at this line (1-based), or the file could not be read.
     Broken(String),
+    /// The clock reads well before the last record.
+    ClockBehind,
     /// The record could not be written.
     Write(String),
 }
@@ -119,6 +188,9 @@ impl std::fmt::Display for LogError {
         match self {
             LogError::KeyUnavailable => f.write_str("the usage log key is unavailable"),
             LogError::Broken(m) => write!(f, "the usage log failed verification ({m})"),
+            LogError::ClockBehind => f.write_str(
+                "this computer's clock reads earlier than the last recorded call; check the date and time",
+            ),
             LogError::Write(m) => write!(f, "the usage log could not be written ({m})"),
         }
     }
@@ -149,7 +221,9 @@ impl CallAgg {
 
 pub struct UsageLog {
     path: PathBuf,
+    keyring: Arc<dyn AiKeyring>,
     key: Option<Zeroizing<Vec<u8>>>,
+    last_ts: u64,
     broken: Option<String>,
     head: String,
     next_seq: u64,
@@ -174,31 +248,44 @@ pub fn log_path(dir: &Path) -> PathBuf {
 impl UsageLog {
     /// Open and verify the log in `dir`. Never fails: a problem is recorded and reported by
     /// [`UsageLog::ready`], which refuses every call until it is resolved.
-    pub fn open(dir: &Path, keyring: &dyn AiKeyring) -> UsageLog {
+    pub fn open(dir: &Path, keyring: Arc<dyn AiKeyring>) -> UsageLog {
         let mut log = UsageLog {
             path: log_path(dir),
+            keyring,
             key: None,
+            last_ts: 0,
             broken: None,
             head: GENESIS_PREV.into(),
             next_seq: 1,
             calls: BTreeMap::new(),
             records: 0,
         };
-        let Ok(key) = crate::provider_guard::mac_key(keyring, LOG_MAC_ACCOUNT) else {
+        let Ok(key) = crate::provider_guard::mac_key(log.keyring.as_ref(), LOG_MAC_ACCOUNT) else {
+            return log;
+        };
+        let Ok(anchor) = read_anchor(log.keyring.as_ref()) else {
             return log;
         };
         log.key = Some(key);
-        log.replay();
+        log.replay(&anchor);
         log
     }
 
-    fn replay(&mut self) {
+    fn replay(&mut self, anchor: &Anchor) {
         let Some(key) = self.key.clone() else {
             return;
         };
         let text = match std::fs::read_to_string(&self.path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if anchor.log_seq > 0 {
+                    self.broken = Some(format!(
+                        "the log file is missing; {} records were written",
+                        anchor.log_seq
+                    ));
+                }
+                return;
+            }
             Err(e) => {
                 self.broken = Some(format!("unreadable: {}", e.kind()));
                 return;
@@ -223,6 +310,10 @@ impl UsageLog {
                 self.broken = Some(format!("line {n} is out of sequence"));
                 return;
             }
+            if line.r.seq == anchor.log_seq && line.mac != anchor.log_head {
+                self.broken = Some(format!("line {n} is not the anchored record"));
+                return;
+            }
             self.apply(&line.r);
             self.head = line.mac;
             self.next_seq += 1;
@@ -230,11 +321,31 @@ impl UsageLog {
         }
         if !text.is_empty() && !text.ends_with('\n') {
             self.broken = Some("the last line is incomplete".into());
+            return;
+        }
+        if self.records < anchor.log_seq {
+            self.broken = Some(format!(
+                "the log ends at record {} but {} were written",
+                self.records, anchor.log_seq
+            ));
         }
     }
 
     fn apply(&mut self, r: &Record) {
+        self.last_ts = self.last_ts.max(r.ts);
         match r.kind {
+            Kind::Carry => {
+                self.calls.insert(
+                    r.call.clone(),
+                    CallAgg {
+                        provider: r.provider.clone(),
+                        ts: r.ts,
+                        reserve_tokens: r.tokens_in.unwrap_or(0),
+                        reserve_micros: r.cost_micros,
+                        settled: Some((r.tokens_in.unwrap_or(0), r.cost_micros)),
+                    },
+                );
+            }
             Kind::Begin => {
                 self.calls.insert(
                     r.call.clone(),
@@ -283,7 +394,9 @@ impl UsageLog {
     /// Refuse when the clock reads well before the log's last record (a clock moved back would
     /// move calls out of the current day or month).
     pub fn check_clock(&self, now_ms: u64) -> Result<(), LogError> {
-        let _ = now_ms;
+        if now_ms.saturating_add(CLOCK_SKEW_MS) < self.last_ts {
+            return Err(LogError::ClockBehind);
+        }
         Ok(())
     }
 
@@ -332,7 +445,30 @@ impl UsageLog {
         self.head = mac;
         self.next_seq += 1;
         self.records += 1;
-        Ok(())
+        // The anchor follows the file. If it cannot be written the record still stands (the file
+        // is ahead of the anchor, which open accepts), but the caller treats the append as failed.
+        let (seq, head, last_ts) = (r.seq, self.head.clone(), self.last_ts);
+        // Totals as of the latest record time (a carried record may be dated earlier).
+        let totals = (!r.provider.is_empty()).then(|| {
+            let (d, m) = self.period_use(&r.provider, last_ts);
+            AnchorTotals {
+                day: day_of(last_ts),
+                month: month_code(last_ts),
+                day_tokens: d.tokens,
+                day_micros: d.micros,
+                month_tokens: m.tokens,
+                month_micros: m.micros,
+            }
+        });
+        update_anchor(self.keyring.as_ref(), |a| {
+            a.log_seq = seq;
+            a.log_head = head;
+            a.last_ts = a.last_ts.max(last_ts);
+            if let Some(t) = totals {
+                a.totals.insert(r.provider.clone(), t);
+            }
+        })
+        .map_err(|_| LogError::Write("the usage log anchor could not be written".into()))
     }
 
     /// What this provider used in the UTC day and UTC month of `now_ms`, unsettled reservations
@@ -407,6 +543,14 @@ impl UsageLog {
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
+        let carried = read_anchor(self.keyring.as_ref())
+            .map_err(|_| LogError::KeyUnavailable)?
+            .totals;
+        update_anchor(self.keyring.as_ref(), |a| {
+            a.log_seq = 0;
+            a.log_head = String::new();
+        })
+        .map_err(|_| LogError::KeyUnavailable)?;
         self.broken = None;
         self.head = GENESIS_PREV.into();
         self.next_seq = 1;
@@ -431,6 +575,47 @@ impl UsageLog {
             cost_micros: None,
             outcome: Some(format!("archived {aside_name}")),
         })?;
+        // Carry this month's anchored spend into the new chain: today's part at `now`, the rest of
+        // the month at the month's first instant (or at `now` on the 1st, which only over-counts).
+        let (day, month) = (day_of(now_ms), month_code(now_ms));
+        let (_, _, dom) = civil_of(now_ms);
+        let month_start = (day - (u64::from(dom) - 1)) * crate::provider_guard::DAY_MS;
+        for (provider, t) in carried.into_iter().filter(|(_, t)| t.month == month) {
+            let (d_tok, d_mic) = if t.day == day {
+                (t.day_tokens, t.day_micros)
+            } else {
+                (0, 0)
+            };
+            let parts = [
+                (now_ms, d_tok, d_mic),
+                (
+                    if month_start < day * crate::provider_guard::DAY_MS {
+                        month_start
+                    } else {
+                        now_ms
+                    },
+                    t.month_tokens.saturating_sub(d_tok),
+                    t.month_micros.saturating_sub(d_mic),
+                ),
+            ];
+            for (i, (ts, tokens, micros)) in parts.into_iter().enumerate() {
+                if tokens == 0 && micros == 0 {
+                    continue;
+                }
+                let mut r = record(
+                    Kind::Carry,
+                    &format!("carry-{i}-{provider}"),
+                    &provider,
+                    "",
+                    "reset",
+                    ts,
+                );
+                r.tokens_in = Some(tokens);
+                r.cost_micros = Some(micros);
+                r.outcome = Some("carried".into());
+                self.append(r)?;
+            }
+        }
         Ok(aside_name)
     }
 }

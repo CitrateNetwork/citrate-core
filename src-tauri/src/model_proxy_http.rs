@@ -8,7 +8,7 @@
 //! Guards: `Authorization: Bearer <route token>` on every request; the `Host` header must name this
 //! loopback endpoint (DNS-rebinding guard); any `Origin` header is refused (no browser may call it,
 //! no CORS headers are sent); one request per connection; bounded headers (16 KiB), body (4 MiB),
-//! connections (16) and request deadline (15 s). `stream: true` answers server-sent events; the
+//! connections (16) and a 15 s deadline for the whole request (headers and body), not per read. `stream: true` answers server-sent events; the
 //! final `data: [DONE]` is written only after the usage record is.
 
 use crate::model_provider::{ChatMessage, ChatRequest, ChatResponse, Role, ToolCall, ToolDef};
@@ -47,18 +47,37 @@ impl HttpReq {
     }
 }
 
-/// Read one request from a stream (bounded).
-pub fn read_request(stream: &mut dyn Read) -> Result<HttpReq, (u16, &'static str)> {
+/// Read one request from a stream (bounded), optionally under a whole-request deadline.
+fn read_request_inner(
+    stream: &mut dyn Read,
+    deadline: Option<std::time::Instant>,
+) -> Result<HttpReq, (u16, &'static str)> {
+    let late = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
+    let timed_out = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        )
+    };
     let mut reader = std::io::BufReader::new(stream);
     let mut line = String::new();
     let mut total = 0usize;
     let mut next_line = |reader: &mut std::io::BufReader<&mut dyn Read>, line: &mut String| {
         line.clear();
+        if late() {
+            return Err((408, "request timeout"));
+        }
         let n = reader
             .by_ref()
             .take((MAX_HEADER_BYTES + 1) as u64)
             .read_line(line)
-            .map_err(|_| (400, "bad request"))?;
+            .map_err(|e| {
+                if timed_out(&e) {
+                    (408, "request timeout")
+                } else {
+                    (400, "bad request")
+                }
+            })?;
         total += n;
         if total > MAX_HEADER_BYTES {
             return Err((431, "headers too large"));
@@ -101,10 +120,36 @@ pub fn read_request(stream: &mut dyn Read) -> Result<HttpReq, (u16, &'static str
         return Err((411, "content-length required"));
     }
     req.body = vec![0u8; len];
-    reader
-        .read_exact(&mut req.body)
-        .map_err(|_| (400, "body cut off"))?;
+    if late() {
+        return Err((408, "request timeout"));
+    }
+    reader.read_exact(&mut req.body).map_err(|e| {
+        if timed_out(&e) {
+            (408, "request timeout")
+        } else {
+            (400, "body cut off")
+        }
+    })?;
     Ok(req)
+}
+
+/// A socket whose every read is bounded by what is left of one whole-request deadline.
+struct DeadlineStream<'a> {
+    stream: &'a TcpStream,
+    deadline: std::time::Instant,
+}
+
+impl Read for DeadlineStream<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(buf)
+    }
 }
 
 /// [`read_request`] under a whole-request deadline (headers and body), not only per read.
@@ -112,8 +157,7 @@ pub fn read_request_until(
     stream: &mut dyn Read,
     deadline: std::time::Instant,
 ) -> Result<HttpReq, (u16, &'static str)> {
-    let _ = deadline;
-    read_request(stream)
+    read_request_inner(stream, Some(deadline))
 }
 
 /// Host and Origin guards. The `Host` must be the loopback endpoint at `port`; any `Origin` is
@@ -330,6 +374,7 @@ fn reason(status: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
+        408 => "Request Timeout",
         411 => "Length Required",
         413 => "Payload Too Large",
         423 => "Locked",
@@ -453,9 +498,16 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
 }
 
 fn handle(proxy: &ModelProxy, mut stream: TcpStream, port: u16) {
-    let _ = stream.set_read_timeout(Some(SOCKET_TIMEOUT));
     let _ = stream.set_write_timeout(Some(SOCKET_TIMEOUT));
-    let req = match read_request(&mut stream) {
+    let deadline = std::time::Instant::now() + SOCKET_TIMEOUT;
+    let read = read_request_until(
+        &mut DeadlineStream {
+            stream: &stream,
+            deadline,
+        },
+        deadline,
+    );
+    let req = match read {
         Ok(r) => r,
         Err((status, msg)) => {
             return write_json(

@@ -39,7 +39,7 @@ impl Rig {
         // The default currency caps need a price ($2 / $8 per million tokens, member-entered).
         proxy.with_state(|g, _| {
             g.set_price("openai", "gpt-known", Some(RIG_PRICE)).unwrap();
-            proxy.save_guard(g).unwrap();
+            proxy.save_guard(&mut *g).unwrap();
         });
         Rig {
             dir,

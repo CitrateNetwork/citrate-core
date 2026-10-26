@@ -135,28 +135,26 @@ impl ApiKey {
         ApiKey(SecretString::new(s.expose().trim().to_string()))
     }
 
-    /// Length in bytes (for a vendor format check).
-    pub fn len(&self) -> usize {
+    // Every accessor below is private to this module (pinned by
+    // `api_key_has_no_public_accessor_beyond_construction_and_the_keychain_write`): code holding
+    // `&ApiKey` elsewhere cannot read it, not even piecewise. Formats are checked by `KeyFormat`.
+
+    fn len(&self) -> usize {
         self.0.expose().len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.0.expose().is_empty()
-    }
-
-    /// Whether the key starts with `prefix` (for a vendor format check).
-    pub fn starts_with(&self, prefix: &str) -> bool {
+    fn starts_with(&self, prefix: &str) -> bool {
         self.0.expose().starts_with(prefix)
     }
 
-    /// Whether every byte satisfies `f` (for a vendor format check).
-    pub fn all_bytes(&self, f: impl Fn(u8) -> bool) -> bool {
+    /// A non-capturing predicate only: it can test bytes but cannot collect them.
+    fn all_bytes(&self, f: fn(u8) -> bool) -> bool {
         self.0.expose().bytes().all(f)
     }
 
-    /// Whether `haystack` contains the key (used by the transport and the tripwires to refuse a
-    /// URL, body or log line that carries it). An empty key matches nothing.
-    pub fn appears_in(&self, haystack: &[u8]) -> bool {
+    /// Whether `haystack` contains the key (the transport refuses a URL, header or body that
+    /// carries it). An empty key matches nothing.
+    fn appears_in(&self, haystack: &[u8]) -> bool {
         let k = self.0.expose().as_bytes();
         !k.is_empty() && haystack.windows(k.len()).any(|w| w == k)
     }
@@ -176,9 +174,12 @@ impl ApiKey {
 /// The characters a vendor's keys are made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyCharset {
+    // UrlSafe / UrlSafeDot are for the native adapters (WP-S1-PROV-ADAPT); tested here.
     /// `A-Z a-z 0-9 - _`
+    #[cfg_attr(not(test), allow(dead_code))]
     UrlSafe,
     /// `A-Z a-z 0-9 - _ .`
+    #[cfg_attr(not(test), allow(dead_code))]
     UrlSafeDot,
     /// Any printable ASCII except whitespace (custom endpoints).
     Printable,
@@ -195,26 +196,36 @@ pub struct KeyFormat {
 }
 
 impl KeyFormat {
-    /// Check `key` against this format.
+    /// What a custom endpoint accepts: 20..=512 printable ASCII bytes, any prefix.
+    pub const ANY: KeyFormat = KeyFormat {
+        prefixes: &[],
+        min_len: 20,
+        max_len: 512,
+        charset: KeyCharset::Printable,
+    };
+
+    /// Check `key` against this format, inside core. Nothing is sent and nothing is stored when
+    /// it fails.
     pub fn check(&self, key: &ApiKey) -> Result<(), ProviderError> {
-        let _ = key;
+        let charset_ok = key.all_bytes(match self.charset {
+            KeyCharset::UrlSafe => |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_',
+            KeyCharset::UrlSafeDot => {
+                |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'
+            }
+            KeyCharset::Printable => |b: u8| b.is_ascii_graphic(),
+        });
+        if key.len() < self.min_len.max(1) || key.len() > self.max_len.min(512) || !charset_ok {
+            return Err(ProviderError::KeyFormat(
+                "that does not look like an API key for this provider (check you copied all of it)",
+            ));
+        }
+        if !self.prefixes.is_empty() && !self.prefixes.iter().any(|p| key.starts_with(p)) {
+            return Err(ProviderError::KeyFormat(
+                "that key does not have this provider's prefix (check you picked the right provider)",
+            ));
+        }
         Ok(())
     }
-}
-
-/// A plain shape check every vendor format check starts from: 20..=512 printable ASCII bytes,
-/// no whitespace.
-pub fn basic_key_shape(key: &ApiKey) -> Result<(), ProviderError> {
-    if key.is_empty()
-        || key.len() < 20
-        || key.len() > 512
-        || !key.all_bytes(|b| b.is_ascii_graphic())
-    {
-        return Err(ProviderError::KeyFormat(
-            "that does not look like an API key (check you copied all of it)",
-        ));
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -583,8 +594,9 @@ pub trait ModelProvider: Send + Sync {
     /// member's approved extras) trips the anomaly halt.
     fn models(&self) -> Vec<ModelInfo>;
 
-    /// The vendor-specific key format check, run before the key is stored or sent anywhere.
-    fn check_key_format(&self, key: &ApiKey) -> Result<(), ProviderError>;
+    /// The vendor's key format, as data. Core checks it before the key is stored or sent; the
+    /// adapter never receives the key.
+    fn key_format(&self) -> KeyFormat;
 
     /// A live test with a free endpoint (such as the model list). A key that fails is not stored.
     /// Returns the model ids the vendor listed for this key (empty when the endpoint lists none);
