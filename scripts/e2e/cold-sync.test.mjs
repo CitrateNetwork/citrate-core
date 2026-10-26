@@ -419,6 +419,7 @@ describe("a signal stops the node and removes the temp dir (review round 1, item
       expect(code).toBe(1);
       let alive = true;
       try { process.kill(rec.pid, 0); } catch { alive = false; }
+      if (alive) process.kill(rec.pid, "SIGKILL"); // never leave a stand-in running
       expect(alive).toBe(false);
       expect(fs.readdirSync(work)).toEqual([]);
       const v = JSON.parse(fs.readFileSync(path.join(out, "verdict.json"), "utf8"));
@@ -427,6 +428,17 @@ describe("a signal stops the node and removes the temp dir (review round 1, item
       expect(v.data_dir_removed).toBe(true);
     });
   }
+});
+
+describe("a node that dies late is not read as alive (#524)", () => {
+  it("fails node_alive when the node exits during the final agreement checks", async () => {
+    const r = await run({ blocks: "300", every: "100", behaviour: { exitOffGrid: 100 } });
+    expect(r.code).toBe(1);
+    expect(r.v.verdict).toBe("FAIL");
+    expect(failed(r.v)).toContain("node_alive");
+    expect(r.v.rules.find((x) => x.rule === "node_alive").detail).toMatch(/exited/);
+    expect(r.v.data_dir_removed).toBe(true);
+  });
 });
 
 describe("tripwire: the network lives in the K6 profile and the member config only", () => {

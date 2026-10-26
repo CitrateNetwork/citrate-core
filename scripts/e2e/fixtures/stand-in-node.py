@@ -8,7 +8,8 @@ a wrapper script that sets STAND_IN_CFG and execs this file), because cold-sync.
 with a minimal environment and nothing else would reach it.
 
 Config keys: record (path), chainId, genesis, seed, rate (blocks/s), headMax, forkAt, forkSeed,
-missing ([from, to]: no block served in that range), exitAfter (s), noRpc, peers, encMeta.
+missing ([from, to]: no block served in that range), exitAfter (s), exitOffGrid (exit right after
+serving a block whose height is not a multiple of it: the harness reads one only in its final checks), noRpc, peers, encMeta.
 Block hash at height h > 0: 0x + sha256("<seed>:<h>"); block 0 is `genesis`.
 """
 import hashlib
@@ -53,6 +54,7 @@ if not m:
     sys.exit("stand-in: no [rpc] listen_addr in the config")
 host, port = m.group(1), int(m.group(2))
 start = time.time()
+exit_now = False
 
 
 def head():
@@ -92,6 +94,9 @@ class H(BaseHTTPRequestHandler):
                 result = None
             else:
                 result = {"number": hex(h), "hash": block_hash(h)}
+                if cfg.get("exitOffGrid") and h % cfg["exitOffGrid"] != 0:
+                    global exit_now
+                    exit_now = True
         else:
             result = None
         body = json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": result}).encode()
@@ -108,3 +113,5 @@ while True:
     if cfg.get("exitAfter") is not None and time.time() - start > cfg["exitAfter"]:
         sys.exit(3)
     srv.handle_request()
+    if exit_now:
+        sys.exit(4)
