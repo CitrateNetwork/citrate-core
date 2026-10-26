@@ -21,6 +21,8 @@ import { InviteLinks, YourInviteLinks } from "./InviteLinks";
 import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
 import { reachedStep } from "../privacy/joinFunnel";
 import { RelayStatusChip } from "./RelayStatusChip";
+import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
+import { GroupRoundsCard } from "../fl/GroupRoundsCard";
 import {
   groupsSlice,
   refreshGroups,
@@ -681,6 +683,7 @@ export function Groups({ store, s }: SurfaceProps) {
           {/* ---- Conversation ---- */}
           {tab === "chat" && (
             <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "14px 24px 20px", gap: 12 }}>
+              {flRoundCardsEnabled() && <GroupRoundsCard variant="chat" />}
               <div className="surface" style={{ flex: 1, minHeight: 280, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
                 {visibleMessages.length === 0 ? (
                   <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: "auto", textAlign: "center", maxWidth: 340 }}>

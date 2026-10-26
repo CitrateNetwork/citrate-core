@@ -52,10 +52,12 @@ impl TrustRoot {
         Ok(Self { key, fingerprint })
     }
 
-    /// [`Self::from_base64`], refusing any key in `forbidden` (compared as trimmed key lines).
+    /// [`Self::from_base64`], refusing any key in `forbidden`. Keys are compared by their
+    /// decoded Ed25519 public key, so the same key under another key id (a different base64
+    /// line) is still refused; a forbidden entry that does not decode is compared as a line.
     pub fn from_base64_checked(b64: &str, forbidden: &[&str]) -> Result<Self, ComponentError> {
         let line = b64.trim();
-        if forbidden.iter().any(|f| f.trim() == line) {
+        if is_same_key_as_any(line, forbidden) {
             return Err(ComponentError::BadKey(
                 "the component key must not be the app-updater key".into(),
             ));
@@ -67,6 +69,28 @@ impl TrustRoot {
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
+}
+
+/// The raw 32-byte Ed25519 public key of a minisign key line (`Ed` ‖ key id ‖ key), or `None`
+/// when the line is not one.
+pub fn ed25519_public_key(line: &str) -> Option<[u8; 32]> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(line.trim())
+        .ok()?;
+    if raw.len() != 42 || raw.get(..2) != Some(b"Ed".as_slice()) {
+        return None;
+    }
+    raw.get(10..42)?.try_into().ok()
+}
+
+/// Whether `line` is the same public key as any entry of `forbidden` (decoded comparison; an
+/// entry or line that does not decode falls back to comparing trimmed lines).
+pub fn is_same_key_as_any(line: &str, forbidden: &[&str]) -> bool {
+    let mine = ed25519_public_key(line);
+    forbidden.iter().any(|f| {
+        f.trim() == line.trim()
+            || matches!((mine, ed25519_public_key(f)), (Some(a), Some(b)) if a == b)
+    })
 }
 
 /// The app-updater public key line from `tauri.conf.json` (`plugins.updater.pubkey` is the
