@@ -17,7 +17,8 @@
 //!
 //! Wire facts this adapter relies on:
 //! - `POST /v1/responses` with `Authorization: Bearer`; `store: false` (nothing kept at the
-//!   vendor); `max_output_tokens` (covers reasoning and visible output).
+//!   vendor); `max_output_tokens` (covers reasoning and visible output); `service_tier: default`
+//!   (standard pricing), and a reply served at another tier is refused.
 //! - `input` items: `{role, content}` messages (`developer` for system text, which keeps its
 //!   place in the transcript), `{type: function_call, call_id, name, arguments}` for a replayed
 //!   call and `{type: function_call_output, call_id, output}` for its result.
@@ -68,6 +69,21 @@ pub fn catalog() -> Vec<ModelInfo> {
 
 pub struct OpenAiAdapter;
 
+/// The tier every call asks for ("processed with the standard pricing and performance").
+pub const STANDARD_TIER: &str = "default";
+
+/// The reply names the tier that served it; any other tier is billed off the catalog price, so
+/// the call fails closed (the guard then charges the reservation).
+fn check_tier(response: &Value) -> Result<(), ProviderError> {
+    match response.get("service_tier").and_then(Value::as_str) {
+        None => Ok(()),
+        Some(t) if t == STANDARD_TIER => Ok(()),
+        Some(_) => Err(ProviderError::BadResponse(
+            "the provider served the call outside the standard tier",
+        )),
+    }
+}
+
 /// The Responses body for a request.
 pub fn to_wire(req: &ChatRequest) -> Result<Value, ProviderError> {
     let mut input = Vec::with_capacity(req.messages.len());
@@ -107,6 +123,9 @@ pub fn to_wire(req: &ChatRequest) -> Result<Value, ProviderError> {
     body.insert("input".into(), Value::Array(input));
     body.insert("max_output_tokens".into(), json!(req.max_tokens));
     body.insert("store".into(), json!(false));
+    // The standard tier, explicitly: without it a project whose default is Fast is billed above
+    // the catalog price ("When not set, the default behavior is 'auto'").
+    body.insert("service_tier".into(), json!(STANDARD_TIER));
     if !req.tools.is_empty() {
         body.insert(
             "tools".into(),
@@ -191,6 +210,7 @@ pub fn parse_response(v: &Value) -> Result<ChatResponse, ProviderError> {
     if v.get("status").and_then(Value::as_str) == Some("failed") {
         return Err(error_of(v.pointer("/error/code").and_then(Value::as_str)));
     }
+    check_tier(v)?;
     let mut content = String::new();
     let mut tool_calls = Vec::new();
     let mut refused = false;
@@ -290,6 +310,7 @@ pub fn read_stream(
     let Some(response) = last else {
         return Err(ProviderError::Transport("the answer stream ended early"));
     };
+    check_tier(&response)?;
     if content.is_empty() && tool_calls.is_empty() {
         return Err(ProviderError::BadResponse("empty assistant message"));
     }
@@ -311,8 +332,9 @@ impl ModelProvider for OpenAiAdapter {
         catalog()
     }
 
+    /// `max_output_tokens` is "an upper bound for the number of tokens that can be generated for
+    /// a response, including visible output tokens and reasoning tokens" (Responses reference).
     fn output_bound(&self, req: &ChatRequest) -> u64 {
-        // RED STUB: the old behaviour (the visible-output cap).
         u64::from(req.max_tokens)
     }
 

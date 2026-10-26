@@ -79,7 +79,8 @@ pub const VENDORS: &[VendorSpec] = &[
     VendorSpec {
         vendor: Vendor::DeepSeek,
         name: "DeepSeek",
-        base_url: "https://api.deepseek.com/v1",
+        // The documented base (<https://api-docs.deepseek.com/>): the bare host.
+        base_url: "https://api.deepseek.com",
         key_page: "https://platform.deepseek.com/api_keys",
         revoke_page: "https://platform.deepseek.com/api_keys",
         paths: CHAT_PATHS,
@@ -199,10 +200,27 @@ pub fn resolve_vendor(v: Vendor) -> Result<ResolvedEndpoint, ProviderError> {
     )
 }
 
-/// Join an adapter's path to the endpoint and check the result stays on the pinned host and port,
-/// over https, with no userinfo or fragment. The path must start with a single `/` and may carry a
-/// query; it may not climb out of the base path (`..`), and may not hold whitespace, control
-/// characters, a backslash, `@` or `#`.
+/// Whether `path` is one of the endpoint's exact paths (`{model}` matching one model id).
+pub fn path_allowed(paths: &[&str], path: &str) -> bool {
+    paths.iter().any(|p| match p.split_once("{model}") {
+        None => *p == path,
+        Some((pre, post)) => path
+            .strip_prefix(pre)
+            .and_then(|rest| rest.strip_suffix(post))
+            .is_some_and(|m| {
+                !m.is_empty()
+                    && m.len() <= 128
+                    && !m.starts_with('.')
+                    && m.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            }),
+    })
+}
+
+/// Join an adapter's path to the endpoint. The path must be one of the endpoint's exact
+/// endpoint paths ([`VendorSpec::paths`], or [`CHAT_PATHS`] for a custom endpoint), which holds
+/// for a bare-host base as much as for one with a path; the joined URL is then re-checked to be
+/// on the pinned host and port, over https, with no userinfo or fragment.
 pub fn join_checked(ep: &ResolvedEndpoint, path: &str) -> Result<url::Url, ProviderError> {
     let bad = |m| Err(ProviderError::Egress(m));
     if !path.starts_with('/') || path.starts_with("//") {
@@ -215,20 +233,13 @@ pub fn join_checked(ep: &ResolvedEndpoint, path: &str) -> Result<url::Url, Provi
     {
         return bad("an adapter path has characters that are not allowed");
     }
-    let (p, _query) = path.split_once('?').unwrap_or((path, ""));
-    if p.split('/').any(|seg| seg == ".." || seg == ".") {
-        return bad("an adapter path may not climb out of the API base");
+    if !path_allowed(ep.paths, path) {
+        return bad("that is not one of this provider's API endpoints");
     }
     let mut joined = ep.base_url.as_str().trim_end_matches('/').to_string();
     joined.push_str(path);
     let url = url::Url::parse(&joined).map_err(|_| ProviderError::Egress("bad path"))?;
     check_on_endpoint(ep, &url)?;
-    if !url
-        .path()
-        .starts_with(ep.base_url.path().trim_end_matches('/'))
-    {
-        return bad("an adapter path may not climb out of the API base");
-    }
     Ok(url)
 }
 

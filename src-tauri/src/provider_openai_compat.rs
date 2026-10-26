@@ -325,8 +325,9 @@ impl ModelProvider for OpenAiCompatAdapter {
         self.models.clone()
     }
 
+    /// A custom endpoint's own semantics are unknown; `max_tokens` is what it is asked to keep
+    /// to (the endpoint is shown as unverified everywhere).
     fn output_bound(&self, req: &ChatRequest) -> u64 {
-        // RED STUB: the old behaviour (the visible-output cap).
         u64::from(req.max_tokens)
     }
 

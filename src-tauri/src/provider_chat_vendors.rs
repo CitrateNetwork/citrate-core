@@ -5,17 +5,18 @@
 //!
 //! | | xAI | DeepSeek | Meta Model API |
 //! |---|---|---|---|
-//! | base | `https://api.x.ai/v1` | `https://api.deepseek.com/v1` (the docs show the bare host) | `https://api.meta.ai/v1` |
+//! | base | `https://api.x.ai/v1` | `https://api.deepseek.com` | `https://api.meta.ai/v1` |
 //! | output cap field | `max_completion_tokens` (`max_tokens` deprecated) | `max_tokens` | `max_completion_tokens` (`max_tokens` a deprecated alias) |
 //! | reasoning tokens | NOT in `completion_tokens` (added here) | in `completion_tokens` | in `completion_tokens` |
 //! | streamed usage | running total on every chunk | on the last chunk | final chunk with `include_usage` |
 //! | tool-call deltas | one whole call per chunk | OpenAI-style pieces | OpenAI-style pieces, by `index` |
 //! | key | `xai-…` | `sk-…` | `LLM_<id>_<secret>` |
 //!
-//! DeepSeek's thinking mode is on by default and, when a request carries `tools`, it requires
-//! every earlier turn's `reasoning_content` back or answers 400. The internal format does not
-//! carry reasoning, so a DeepSeek request with tools turns thinking off
-//! (`thinking: {type: disabled}`); a request without tools keeps the vendor default.
+//! DeepSeek's thinking mode is on by default. With `tools` it requires every earlier turn's
+//! `reasoning_content` back or answers 400 (the internal format does not carry reasoning), and
+//! its chain of thought has no documented cap apart from the context length. So every DeepSeek
+//! request turns thinking off (`thinking: {type: disabled}`), and `max_tokens` then bounds all
+//! output.
 //!
 //! Vendor sources (fetched 2026-10-26):
 //! - xAI: <https://docs.x.ai/developers/rest-api-reference/inference/chat-completions>,
@@ -30,7 +31,7 @@
 //!   <https://api-docs.deepseek.com/guides/thinking_mode>, <https://api-docs.deepseek.com/guides/tool_calls>,
 //!   <https://api-docs.deepseek.com/api/list-models>, <https://api-docs.deepseek.com/quick_start/error_codes>,
 //!   <https://api-docs.deepseek.com/quick_start/rate_limit> (`: keep-alive` SSE comments, skipped
-//!   by the SSE reader), prices <https://api-docs.deepseek.com/quick_start/pricing>.
+//!   by the SSE reader), prices <https://api-docs.deepseek.com/quick_start/pricing/>.
 //! - Meta: <https://dev.meta.ai/docs/overview>, <https://dev.meta.ai/docs/authentication>,
 //!   <https://dev.meta.ai/docs/protocols/chat-completions>,
 //!   <https://dev.meta.ai/docs/api-reference/chat-completions/schemas>,
@@ -59,6 +60,44 @@ struct Dialect {
     /// `max_completion_tokens` or `max_tokens`.
     max_field: &'static str,
     usage: UsageFn,
+    /// The most output tokens (reasoning included) one call can be billed for.
+    output_bound: fn(&ChatRequest) -> u64,
+}
+
+/// `max_tokens` / `max_completion_tokens` bounds all output (DeepSeek with thinking off; Meta,
+/// whose `max_completion_tokens` "counts both reasoning and visible tokens").
+fn requested_output(req: &ChatRequest) -> u64 {
+    u64::from(req.max_tokens)
+}
+
+/// xAI context windows, from <https://docs.x.ai/developers/pricing> ("Context") and the model
+/// pages (grok-4.7: "Context window 500,000 tokens"), 2026-10-26.
+const XAI_CONTEXT: &[(&str, u64)] = &[
+    ("grok-4.7", 500_000),
+    ("grok-4.6", 500_000),
+    ("grok-4.5", 500_000),
+    ("grok-4.3", 1_000_000),
+    ("grok-4.20-0309-reasoning", 1_000_000),
+    ("grok-4.20-0309-non-reasoning", 1_000_000),
+];
+
+/// xAI: `max_completion_tokens` "only applies to visible output tokens (i.e. does not apply to
+/// tokens used for reasoning…)", reasoning cannot be disabled, and no reasoning cap is
+/// documented. The only documented bound on what one call can generate is the model's context
+/// window, so that is what the guard reserves (the largest window for a model outside the
+/// table). Under the default $5/day cap this refuses a grok-4.7 call until the member raises
+/// xAI's cap.
+fn xai_output_bound(req: &ChatRequest) -> u64 {
+    let largest = XAI_CONTEXT
+        .iter()
+        .map(|(_, c)| *c)
+        .max()
+        .unwrap_or(1_000_000);
+    XAI_CONTEXT
+        .iter()
+        .find(|(m, _)| *m == req.model)
+        .map_or(largest, |(_, c)| *c)
+        .max(u64::from(req.max_tokens))
 }
 
 /// xAI: `completion_tokens` excludes reasoning tokens (documented example: 32 prompt + 9
@@ -82,6 +121,7 @@ const XAI: Dialect = Dialect {
     key_charset: KeyCharset::UrlSafe,
     max_field: "max_completion_tokens",
     usage: xai_usage,
+    output_bound: xai_output_bound,
 };
 
 const DEEPSEEK: Dialect = Dialect {
@@ -90,6 +130,7 @@ const DEEPSEEK: Dialect = Dialect {
     key_charset: KeyCharset::UrlSafe,
     max_field: "max_tokens",
     usage: usage_from,
+    output_bound: requested_output,
 };
 
 const META: Dialect = Dialect {
@@ -98,6 +139,7 @@ const META: Dialect = Dialect {
     key_charset: KeyCharset::Printable,
     max_field: "max_completion_tokens",
     usage: usage_from,
+    output_bound: requested_output,
 };
 
 /// The models each vendor serves for chat, with published prices (micro-USD per million tokens,
@@ -199,7 +241,7 @@ impl ChatVendorAdapter {
                 o.remove("max_tokens");
                 o.insert(self.d.max_field.into(), json!(req.max_tokens));
             }
-            if self.d.vendor == Vendor::DeepSeek && !req.tools.is_empty() {
+            if self.d.vendor == Vendor::DeepSeek {
                 o.insert("thinking".into(), json!({"type": "disabled"}));
             }
         }
@@ -217,8 +259,7 @@ impl ModelProvider for ChatVendorAdapter {
     }
 
     fn output_bound(&self, req: &ChatRequest) -> u64 {
-        // RED STUB: the old behaviour (the visible-output cap).
-        u64::from(req.max_tokens)
+        (self.d.output_bound)(req)
     }
 
     fn key_format(&self) -> KeyFormat {

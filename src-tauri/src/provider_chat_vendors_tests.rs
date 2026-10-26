@@ -44,7 +44,7 @@ fn call(
 fn request_bytes_match_each_vendors_golden_on_its_pinned_host() {
     for (v, model, url) in [
         (Vendor::Xai, "grok-4.7", "https://api.x.ai/v1/chat/completions"),
-        (Vendor::DeepSeek, "deepseek-flash", "https://api.deepseek.com/v1/chat/completions"),
+        (Vendor::DeepSeek, "deepseek-flash", "https://api.deepseek.com/chat/completions"),
         (Vendor::Meta, "muse-spark-1.3", "https://api.meta.ai/v1/chat/completions"),
     ] {
         let http = Recorded::one(200, JSON, &fixture("deepseek/response.json"));
@@ -196,7 +196,7 @@ fn errors_map_per_vendor_including_deepseeks_insufficient_balance() {
 fn key_tests_list_models_and_key_formats_follow_each_vendor() {
     for (v, url, first) in [
         (Vendor::Xai, "https://api.x.ai/v1/models", "grok-4.7"),
-        (Vendor::DeepSeek, "https://api.deepseek.com/v1/models", "deepseek-flash"),
+        (Vendor::DeepSeek, "https://api.deepseek.com/models", "deepseek-flash"),
         (Vendor::Meta, "https://api.meta.ai/v1/models", "muse-spark-1.3"),
     ] {
         let http = Recorded::one(200, JSON, &fixture(&format!("{}/models.json", v.id())));

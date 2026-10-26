@@ -439,8 +439,9 @@ impl ModelProvider for AnthropicAdapter {
         catalog()
     }
 
+    /// `max_tokens` bounds the whole output, extended thinking included ("`max_tokens` …
+    /// includes your thinking budget", <https://platform.claude.com/docs/en/build-with-claude/extended-thinking>).
     fn output_bound(&self, req: &ChatRequest) -> u64 {
-        // RED STUB: the old behaviour (the visible-output cap).
         u64::from(req.max_tokens)
     }
 

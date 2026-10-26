@@ -451,7 +451,8 @@ impl ModelProxy {
                 provider: provider.clone(),
                 model: req.model.clone(),
                 reserve_in: input_token_bound(&req),
-                reserve_out: u64::from(req.max_tokens),
+                // The adapter's true bound: reasoning a vendor does not cap is included.
+                reserve_out: adapter.output_bound(&req),
                 price: guard.price_for(
                     &provider,
                     &req.model,

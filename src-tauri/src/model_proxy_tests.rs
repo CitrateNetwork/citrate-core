@@ -506,10 +506,12 @@ fn an_xai_call_whose_reasoning_could_pass_the_default_cap_is_refused_with_nothin
         session_id: "sess-x".into(),
     };
     let r = rig.proxy.call(&route, req("grok-4.7", false), None, &mut |_| {});
-    assert!(
-        matches!(r, Err(ProxyError::Refused(Refusal::CapExceeded { .. }))),
-        "500k reserved output tokens at $12/M is over the $5/day default: {r:?}"
-    );
+    // 500k reserved output tokens at $12/M is $6, over the $5/day default.
+    match r {
+        Err(ProxyError::Refused(Refusal::CapExceeded { call, .. })) => {
+            assert!(call >= 6_000_000, "the reservation covers the whole window: {call}")
+        }
+        other => panic!("expected a cap refusal, got {other:?}"),
+    }
     assert_eq!(rig.vendor.calls(), before, "nothing reached the vendor");
-    assert!(rig.log_text().contains("\"reserveOut\":500000"), "{}", rig.log_text());
 }
