@@ -69,6 +69,8 @@ jobs:
           # below fails if anything else ever pulls a zip older than 9. Remove these ignores
           # when the updater moves to zip >= 9.
           python3 scripts/check-zip-users.py
+          python3 scripts/test_check_crypto_bigint_users.py
+          python3 scripts/check-crypto-bigint-users.py
           cargo audit --ignore RUSTSEC-2025-0055 \
             --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369
 
