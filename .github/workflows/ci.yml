@@ -91,6 +91,10 @@ jobs:
       # pin must agree; a component script that builds outside the pinned engine fails here.
       - name: release component pins
         run: node scripts/component-pins.mjs check
+      # K6: every network profile is well formed, an unset value always has a reason, and the
+      # active one is release-ready (the same check release.yml runs as the G0 gate).
+      - name: network profile
+        run: scripts/check-network-profile.sh --release
       - name: typecheck
         run: npm run typecheck
       - name: test

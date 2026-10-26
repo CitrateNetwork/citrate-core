@@ -239,6 +239,13 @@ fn check_hash(s: &str) -> Option<String> {
     Some(format!("0x{}", hex.to_ascii_lowercase()))
 }
 
+/// Exactly `len` lowercase hex digits, not all zero (a digest or a full commit id).
+fn is_lower_hex_nonzero(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && s.bytes().any(|b| b != b'0')
+}
+
 /// `noise_<64 hex>@<host>:<port>`, the form the node verifies at the Noise handshake.
 pub fn is_bootnode(s: &str) -> bool {
     let Some(rest) = s.strip_prefix("noise_") else {
@@ -281,6 +288,8 @@ impl NetworkProfile {
         miss("faucetUrl", self.faucet_url.is_none());
         miss("bootnodes", self.bootnodes.is_none());
         miss("addressBook", self.address_book.is_none());
+        miss("addressBookSha256", self.address_book_sha256.is_none());
+        miss("minChainRev", self.min_chain_rev.is_none());
         out
     }
 
@@ -340,6 +349,20 @@ impl NetworkProfile {
         if address_book.is_empty() {
             return Err(invalid("addressBook", "empty".into()));
         }
+        let address_book_sha256 = self.address_book_sha256.clone().unwrap_or_default();
+        if !is_lower_hex_nonzero(&address_book_sha256, 64) {
+            return Err(invalid(
+                "addressBookSha256",
+                format!("{address_book_sha256:?} is not a sha256 digest (64 lowercase hex)"),
+            ));
+        }
+        let min_chain_rev = self.min_chain_rev.clone().unwrap_or_default();
+        if !is_lower_hex_nonzero(&min_chain_rev, 40) {
+            return Err(invalid(
+                "minChainRev",
+                format!("{min_chain_rev:?} is not a commit (40 lowercase hex)"),
+            ));
+        }
         Ok(ReadyNetwork {
             id: self.id.clone(),
             label: self.label.clone(),
@@ -351,8 +374,8 @@ impl NetworkProfile {
             faucet_url,
             bootnodes,
             address_book,
-            address_book_sha256: self.address_book_sha256.clone().unwrap_or_default(),
-            min_chain_rev: self.min_chain_rev.clone().unwrap_or_default(),
+            address_book_sha256,
+            min_chain_rev,
         })
     }
 
