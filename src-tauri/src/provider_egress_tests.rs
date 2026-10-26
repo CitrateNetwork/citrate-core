@@ -148,3 +148,33 @@ fn a_custom_endpoint_resolves_unverified_and_on_its_own_host_only() {
     http.base_url = "http://llm.example.org/v1".into();
     assert!(resolve_custom(&http).is_err());
 }
+
+#[test]
+fn custom_endpoints_refuse_ip_literals_local_names_and_trailing_dots() {
+    for bad in [
+        "https://169.254.169.254/v1",
+        "https://127.0.0.1/v1",
+        "https://10.0.0.5/v1",
+        "https://[::1]/v1",
+        "https://[fe80::1]/v1",
+        "https://localhost/v1",
+        "https://box.localhost/v1",
+        "https://llm.example.org./v1",
+        "https://printer.local/v1",
+    ] {
+        assert!(check_custom_host(bad).is_err(), "{bad} must be refused for a custom endpoint");
+    }
+    assert!(check_custom_host("https://llm.example.org/v1").is_ok());
+}
+
+#[test]
+fn every_vendor_base_has_a_path_to_stay_under() {
+    for v in Vendor::ALL {
+        let e = ep(v);
+        assert!(
+            e.base_url.path().trim_end_matches('/').len() > 1,
+            "{v:?}: the base needs a path so an adapter cannot leave it"
+        );
+        assert!(join_checked(&e, "/../x").is_err());
+    }
+}

@@ -173,6 +173,35 @@ impl ApiKey {
     }
 }
 
+/// The characters a vendor's keys are made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyCharset {
+    /// `A-Z a-z 0-9 - _`
+    UrlSafe,
+    /// `A-Z a-z 0-9 - _ .`
+    UrlSafeDot,
+    /// Any printable ASCII except whitespace (custom endpoints).
+    Printable,
+}
+
+/// A vendor's key format, as data: core evaluates it, so an adapter never holds the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyFormat {
+    /// The key must start with one of these (empty = any).
+    pub prefixes: &'static [&'static str],
+    pub min_len: usize,
+    pub max_len: usize,
+    pub charset: KeyCharset,
+}
+
+impl KeyFormat {
+    /// Check `key` against this format.
+    pub fn check(&self, key: &ApiKey) -> Result<(), ProviderError> {
+        let _ = key;
+        Ok(())
+    }
+}
+
 /// A plain shape check every vendor format check starts from: 20..=512 printable ASCII bytes,
 /// no whitespace.
 pub fn basic_key_shape(key: &ApiKey) -> Result<(), ProviderError> {

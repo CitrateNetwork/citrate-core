@@ -298,3 +298,50 @@ fn owner_default_caps_include_currency_and_an_unknown_price_is_refused() {
     let r = g.admit(&p, &known(), used(0, 0), used(0, 49_500_000), T0);
     assert!(matches!(r, Err(Refusal::CapExceeded { which: "monthly spend", cap: 50_000_000, .. })), "{r:?}");
 }
+
+#[test]
+fn a_deleted_or_rolled_back_guard_file_fails_closed() {
+    let dir = TmpDir::new("guard-rollback");
+    let kr = MemKeyring::default();
+    let mut g = load(&dir.0, &kr, T0);
+    g.set_caps("openai", Caps { daily_tokens: Some(10), monthly_tokens: Some(10), daily_micros: None, monthly_micros: None })
+        .unwrap();
+    save(&dir.0, &g).unwrap();
+    let old = std::fs::read(guard_path(&dir.0)).unwrap();
+    g.member_halt("openai", T0);
+    save(&dir.0, &g).unwrap();
+    assert!(load(&dir.0, &kr, T0).get("openai").halt.is_some());
+    // Rolled back to the older (validly sealed) copy: the halt would silently vanish.
+    std::fs::write(guard_path(&dir.0), &old).unwrap();
+    let g2 = load(&dir.0, &kr, T0);
+    assert!(g2.unreadable, "an older sealed guard file must not load as current");
+    // Deleted: the caps would silently revert to defaults.
+    let dir = TmpDir::new("guard-deleted");
+    let kr = MemKeyring::default();
+    let mut g = load(&dir.0, &kr, T0);
+    g.member_halt("openai", T0);
+    save(&dir.0, &g).unwrap();
+    std::fs::remove_file(guard_path(&dir.0)).unwrap();
+    assert!(load(&dir.0, &kr, T0).unreadable, "a deleted guard file must not load as defaults");
+    // A fresh install has neither file nor anchor and loads normally.
+    let fresh = TmpDir::new("guard-fresh");
+    assert!(!load(&fresh.0, &MemKeyring::default(), T0).unreadable);
+}
+
+#[test]
+fn a_crash_between_the_guard_write_and_the_anchor_update_is_not_a_rollback() {
+    let dir = TmpDir::new("guard-ahead");
+    let kr = MemKeyring::default();
+    let mut g = load(&dir.0, &kr, T0);
+    save(&dir.0, &g).unwrap();
+    let anchor = kr.map.lock().unwrap().get(crate::provider_usage_log::ANCHOR_ACCOUNT).cloned().unwrap_or_default();
+    g.member_halt("openai", T0);
+    save(&dir.0, &g).unwrap();
+    kr.map
+        .lock()
+        .unwrap()
+        .insert(crate::provider_usage_log::ANCHOR_ACCOUNT.to_string(), anchor);
+    let g2 = load(&dir.0, &kr, T0);
+    assert!(!g2.unreadable);
+    assert!(g2.get("openai").halt.is_some());
+}

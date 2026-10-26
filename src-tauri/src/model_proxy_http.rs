@@ -107,6 +107,15 @@ pub fn read_request(stream: &mut dyn Read) -> Result<HttpReq, (u16, &'static str
     Ok(req)
 }
 
+/// [`read_request`] under a whole-request deadline (headers and body), not only per read.
+pub fn read_request_until(
+    stream: &mut dyn Read,
+    deadline: std::time::Instant,
+) -> Result<HttpReq, (u16, &'static str)> {
+    let _ = deadline;
+    read_request(stream)
+}
+
 /// Host and Origin guards. The `Host` must be the loopback endpoint at `port`; any `Origin` is
 /// refused.
 pub fn request_allowed(req: &HttpReq, port: u16) -> Result<(), (u16, &'static str)> {

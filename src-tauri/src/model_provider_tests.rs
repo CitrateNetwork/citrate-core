@@ -194,3 +194,33 @@ fn ctx_send_refuses_a_key_in_the_url_body_or_extra_headers() {
     assert!(matches!(in_header, Err(ProviderError::Egress(_))));
     assert!(http.sent.lock().unwrap().is_empty(), "nothing was sent");
 }
+
+#[test]
+fn key_formats_are_data_checked_inside_core() {
+    let f = KeyFormat {
+        prefixes: &["sk-ant-"],
+        min_len: 30,
+        max_len: 200,
+        charset: KeyCharset::UrlSafe,
+    };
+    let ok = ApiKey::from_secret(SecretString::new(format!("sk-ant-{}", "a1_B-".repeat(6))));
+    assert!(f.check(&ok).is_ok());
+    for bad in [
+        format!("sk-{}", "a".repeat(40)),            // wrong prefix
+        "sk-ant-short".to_string(),                  // too short
+        format!("sk-ant-{}", "a".repeat(300)),       // too long
+        format!("sk-ant-{}!", "a".repeat(30)),       // outside the charset
+        format!("sk-ant-{}.x", "a".repeat(30)),      // a dot is not UrlSafe
+    ] {
+        let k = ApiKey::from_secret(SecretString::new(bad));
+        assert!(matches!(f.check(&k), Err(ProviderError::KeyFormat(_))), "must be refused");
+    }
+    let dotted = KeyFormat { charset: KeyCharset::UrlSafeDot, ..f };
+    let k = ApiKey::from_secret(SecretString::new(format!("sk-ant-{}.x", "a".repeat(30))));
+    assert!(dotted.check(&k).is_ok());
+    let any = KeyFormat { prefixes: &[], min_len: 20, max_len: 512, charset: KeyCharset::Printable };
+    let k = ApiKey::from_secret(SecretString::new(format!("LLM|{}", "x".repeat(20))));
+    assert!(any.check(&k).is_ok());
+    let spaced = ApiKey::from_secret(SecretString::new(format!("a b{}", "x".repeat(20))));
+    assert!(any.check(&spaced).is_err());
+}

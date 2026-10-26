@@ -206,3 +206,13 @@ fn the_server_binds_loopback_and_answers_over_a_socket() {
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
     assert!(resp.contains("hello from the vendor"));
 }
+
+#[test]
+fn a_request_past_its_whole_deadline_is_refused() {
+    let raw = format!("POST {CHAT_PATH} HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Length: 2\r\n\r\n{{}}");
+    let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let r = read_request_until(&mut raw.as_bytes(), past);
+    assert!(matches!(r, Err((408, _))), "a request past its deadline must be refused: {r:?}");
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    assert!(read_request_until(&mut raw.as_bytes(), future).is_ok());
+}

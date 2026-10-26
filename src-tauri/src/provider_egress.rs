@@ -291,6 +291,12 @@ pub struct CustomEndpoint {
     pub created_ms: u64,
 }
 
+/// The host rules for a custom endpoint, on top of [`parse_base_url`]: a DNS name (no IP literal),
+/// not a local-only name, no trailing dot.
+pub fn check_custom_host(base_url: &str) -> Result<(), ProviderError> {
+    parse_base_url(base_url).map(|_| ())
+}
+
 /// The endpoint a custom provider resolves to. Refused until the member confirmed it.
 pub fn resolve_custom(c: &CustomEndpoint) -> Result<ResolvedEndpoint, ProviderError> {
     let id = ProviderId::parse(&c.id)

@@ -360,3 +360,27 @@ fn under_the_default_currency_caps_an_unpriced_model_is_refused_with_nothing_sen
         serde_json::from_str(rig.log_text().lines().last().unwrap()).unwrap();
     assert_eq!(last["r"]["costMicros"], RIG_PRICE.cost(12, 5));
 }
+
+#[test]
+fn key_tests_respect_a_halt_and_count_toward_the_burst() {
+    let rig = Rig::new("proxy-kt-halt");
+    rig.proxy.with_state(|g, _| g.member_halt("openai", now_ms()));
+    let before = rig.vendor.seen.lock().unwrap().len();
+    let r = rig.proxy.test_key("openai", now_ms());
+    assert!(matches!(r, Err(ProxyError::Refused(Refusal::Halted(_)))), "{r:?}");
+    assert_eq!(rig.vendor.seen.lock().unwrap().len(), before, "nothing sent while halted");
+    rig.proxy.with_state(|g, _| g.member_resume("openai").unwrap());
+    for _ in 0..crate::provider_guard::BURST_MAX_CALLS {
+        let _ = rig.proxy.test_key("openai", now_ms());
+    }
+    let r = rig.proxy.test_key("openai", now_ms());
+    assert!(matches!(r, Err(ProxyError::Refused(Refusal::Halted(_)))), "{r:?}");
+}
+
+#[test]
+fn custom_endpoints_with_ip_or_local_hosts_are_refused_at_add() {
+    let rig = Rig::new("proxy-custom-host");
+    for bad in ["https://169.254.169.254/v1", "https://localhost/v1", "https://llm.example.org./v1"] {
+        assert!(rig.proxy.add_custom("x", bad, vec!["m".into()], 1).is_err(), "{bad}");
+    }
+}

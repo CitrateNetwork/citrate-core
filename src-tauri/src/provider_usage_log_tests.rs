@@ -200,3 +200,80 @@ fn the_log_file_is_owner_only() {
     let mode = std::fs::metadata(log_path(&dir.0)).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
 }
+
+#[test]
+fn dropping_the_last_lines_or_the_whole_file_is_detected() {
+    // Trailing lines removed while the app is closed.
+    for n in [1usize, 2, 3] {
+        let dir = TmpDir::new(&format!("log-tail-{n}"));
+        let kr = MemKeyring::default();
+        drop(three_calls(&dir, &kr));
+        let log = reopen_after(&dir, &kr, |mut l| {
+            l.truncate(l.len() - n);
+            l
+        });
+        assert!(
+            matches!(log.ready(), Err(LogError::Broken(_))),
+            "dropping the last {n} line(s) must break the log"
+        );
+    }
+    // The whole file removed after records were written.
+    let dir = TmpDir::new("log-gone");
+    let kr = MemKeyring::default();
+    drop(three_calls(&dir, &kr));
+    std::fs::remove_file(log_path(&dir.0)).unwrap();
+    let log = UsageLog::open(&dir.0, &kr);
+    assert!(matches!(log.ready(), Err(LogError::Broken(_))), "a removed log must not reopen empty");
+    // A brand-new install (no anchor, no file) is fine.
+    let fresh = TmpDir::new("log-fresh");
+    assert!(UsageLog::open(&fresh.0, &MemKeyring::default()).ready().is_ok());
+}
+
+#[test]
+fn a_crash_between_the_append_and_the_anchor_update_is_not_a_break() {
+    // The file may be one record ahead of the anchor (written, then the app stopped).
+    let dir = TmpDir::new("log-ahead");
+    let kr = MemKeyring::default();
+    drop(three_calls(&dir, &kr));
+    let anchor = kr.map.lock().unwrap().get(ANCHOR_ACCOUNT).cloned().unwrap_or_default();
+    let mut log = UsageLog::open(&dir.0, &kr);
+    log.append(end("c2", "openai", T0 + 11, Some((1, 1)), None)).unwrap();
+    drop(log);
+    kr.map
+        .lock()
+        .unwrap()
+        .insert(ANCHOR_ACCOUNT.to_string(), anchor);
+    let log = UsageLog::open(&dir.0, &kr);
+    assert!(log.ready().is_ok(), "{:?}", log.broken_reason());
+    assert_eq!(log.records(), 4);
+}
+
+#[test]
+fn a_reset_carries_the_day_and_month_totals_forward() {
+    let dir = TmpDir::new("log-carry");
+    let kr = MemKeyring::default();
+    let log = three_calls(&dir, &kr);
+    let (d0, m0) = log.period_use("openai", T0 + 20);
+    drop(log);
+    std::fs::remove_file(log_path(&dir.0)).unwrap();
+    let mut log = UsageLog::open(&dir.0, &kr);
+    assert!(log.ready().is_err());
+    log.reset_broken(T0 + 30).unwrap();
+    let (d, m) = log.period_use("openai", T0 + 40);
+    assert!(d.tokens >= d0.tokens && m.tokens >= m0.tokens, "a reset must not reset spend: {d:?} {m:?}");
+    assert!(d.micros >= d0.micros && m.micros >= m0.micros);
+    // And the carry survives a reopen.
+    let log = UsageLog::open(&dir.0, &kr);
+    assert!(log.ready().is_ok());
+    assert!(log.period_use("openai", T0 + 40).1.tokens >= m0.tokens);
+}
+
+#[test]
+fn a_clock_well_behind_the_last_record_is_refused() {
+    let dir = TmpDir::new("log-clock");
+    let kr = MemKeyring::default();
+    let log = three_calls(&dir, &kr);
+    assert!(log.check_clock(T0 + 20).is_ok());
+    assert!(log.check_clock(T0 - 60_000).is_ok(), "small skew is tolerated");
+    assert!(log.check_clock(T0 - DAY_MS).is_err(), "a clock moved back a day is refused");
+}

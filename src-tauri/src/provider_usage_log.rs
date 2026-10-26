@@ -27,6 +27,10 @@ use zeroize::Zeroizing;
 
 pub const LOG_FILE: &str = "usage.jsonl";
 pub const LOG_MAC_ACCOUNT: &str = "provider-usage-log-mac-v1";
+/// Keyring account holding the anchor: the log's last sequence number and MAC, its day and month
+/// totals, and the guard file's generation. A file shorter than, or older than, its anchor fails
+/// closed.
+pub const ANCHOR_ACCOUNT: &str = "provider-anchor-v1";
 const RECORD_VERSION: u32 = 1;
 /// The MAC a chain starts from.
 pub const GENESIS_PREV: &str = "genesis";
@@ -273,6 +277,13 @@ impl UsageLog {
         if let Some(b) = &self.broken {
             return Err(LogError::Broken(b.clone()));
         }
+        Ok(())
+    }
+
+    /// Refuse when the clock reads well before the log's last record (a clock moved back would
+    /// move calls out of the current day or month).
+    pub fn check_clock(&self, now_ms: u64) -> Result<(), LogError> {
+        let _ = now_ms;
         Ok(())
     }
 
