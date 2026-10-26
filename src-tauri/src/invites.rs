@@ -594,9 +594,10 @@ pub(crate) fn tag_join_code(invites: &mut [PendingInvite], token: &str, code: &s
 pub(crate) fn close_relay_for_join_code(
     app: &tauri::AppHandle,
     code: &str,
+    close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     revoke_relay: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<bool, String> {
-    close_relay_for_code_at(&store_path(app)?, code, revoke_relay)
+    close_relay_for_code_at(&store_path(app)?, code, close, revoke_relay)
 }
 
 /// Close (revoke at the relay) the relay invite sealed inside the short code `code`, if this
@@ -610,6 +611,7 @@ pub(crate) fn close_relay_for_join_code(
 pub(crate) fn close_relay_for_code_at(
     path: &std::path::Path,
     code: &str,
+    _close: impl FnOnce(String) -> Result<(), crate::rendezvous::RvError>,
     revoke_relay: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<bool, String> {
     if code.is_empty() {
@@ -2380,10 +2382,15 @@ mod tests {
             &[pending("grp_a", &t1), tagged("grp_a", &t2, "Ab3dE7gh")],
         );
         let mut sent = Vec::new();
-        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |h| {
-            sent.push(h);
-            Ok(())
-        });
+        let closed = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| panic!("no rendezvous recorded"),
+            |h| {
+                sent.push(h);
+                Ok(())
+            },
+        );
         assert_eq!(closed, Ok(true));
         assert_eq!(
             sent,
@@ -2393,12 +2400,20 @@ mod tests {
         let v = super::view_pending_at(&path).unwrap();
         assert!(v[1].relay_closed && !v[0].relay_closed);
         // A retry (the service revoke failed) doesn't call the relay again.
-        let again = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
-            panic!("the relay was called twice")
-        });
+        let again = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| panic!("no rendezvous recorded"),
+            |_| panic!("the relay was called twice"),
+        );
         assert_eq!(again, Ok(true));
         // A code this device has no record of changes nothing at the relay.
-        let none = super::close_relay_for_code_at(&path, "Zz9yX8wv", |_| panic!("no record"));
+        let none = super::close_relay_for_code_at(
+            &path,
+            "Zz9yX8wv",
+            |_| panic!("no rendezvous recorded"),
+            |_| panic!("no record"),
+        );
         assert_eq!(none, Ok(false));
         super::update_pending_at(&path, |v| super::forget_join_code(v, "Ab3dE7gh")).unwrap();
         let v = super::view_pending_at(&path).unwrap();
@@ -2411,9 +2426,12 @@ mod tests {
     fn a_relay_failure_stops_the_revoke_and_keeps_the_record_open() {
         let t = crate::connections::random_state();
         let path = store_with("close-fail", &[tagged("grp_a", &t, "Ab3dE7gh")]);
-        let out = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
-            Err("comms: relay unreachable".to_string())
-        });
+        let out = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| panic!("no rendezvous recorded"),
+            |_| Err("comms: relay unreachable".to_string()),
+        );
         assert_eq!(out, Err("comms: relay unreachable".to_string()));
         assert!(!super::view_pending_at(&path).unwrap()[0].relay_closed);
         super::update_pending_at(&path, |v| super::forget_join_code(v, "Ab3dE7gh")).unwrap();
@@ -2441,16 +2459,96 @@ mod tests {
         // Invitee: Review opened the envelope; it now holds the relay invite link.
         let opened = format!("citrate://invite?g={group}&t={t}&k={}", "02".repeat(33));
         // Inviter: Revoke from "Your invite links".
-        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |h| {
-            relay.remove(&h);
-            Ok(())
-        });
+        let closed = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| panic!("no rendezvous recorded"),
+            |h| {
+                relay.remove(&h);
+                Ok(())
+            },
+        );
         // Invitee: Join sends hex of the token's bytes; the relay hashes them and looks it up.
         let req = super::redeem_request(&opened).expect("request");
         let bytes = hex::decode(req.token.as_hex()).expect("hex");
         let hash = hex::encode(blake3::hash(&bytes).as_bytes());
         assert!(!relay.contains(&hash), "the revoked invite still redeems");
         assert_eq!(closed, Ok(true), "the inviter is told it was closed");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// #373 + #355: revoking a short code whose relay invite has a rendezvous closes the rendezvous
+    /// too (someone holding the opened link could otherwise still be admitted through it), and the
+    /// record is kept, revoking and keyless, until the relay confirms the close.
+    #[test]
+    fn revoking_a_code_closes_the_rendezvous_of_its_relay_invite() {
+        let t = crate::connections::random_state();
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let mut rec = minted("g", &t, d);
+        rec.join_code = "Ab3dE7gh".into();
+        let path = store_with("code-rendezvous", &[rec]);
+        let closed_lookup = std::cell::RefCell::new(None);
+        let r = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |l| {
+                *closed_lookup.borrow_mut() = Some(l);
+                Ok(())
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(r, Ok(true));
+        assert_eq!(
+            closed_lookup.into_inner().as_deref(),
+            Some(LOOKUP),
+            "the rendezvous was not closed"
+        );
+        let v = super::view_pending_at(&path).unwrap();
+        assert!(
+            v[0].revoking,
+            "the record must stay revoking until the relay confirms"
+        );
+        assert!(
+            v[0].priv_key.is_empty(),
+            "the key is dropped with the claimability"
+        );
+        // The code's forget step keeps it for the tick; a confirmed close then drops it.
+        super::update_pending_at(&path, |v| super::forget_join_code(v, "Ab3dE7gh")).unwrap();
+        let v = super::view_pending_at(&path).unwrap();
+        assert_eq!(
+            v.len(),
+            1,
+            "a rendezvous record is settled by the tick, not forgotten"
+        );
+        let settled = super::settle_revocations(
+            v,
+            &[invite_view(LOOKUP, crate::rendezvous::InviteState::Revoked)],
+            2,
+        );
+        assert!(settled.is_empty());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A rendezvous close that fails stops the code revoke and leaves the invite as it was.
+    #[test]
+    fn a_failed_rendezvous_close_stops_the_code_revoke() {
+        let t = crate::connections::random_state();
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let mut rec = minted("g", &t, d);
+        rec.join_code = "Ab3dE7gh".into();
+        let path = store_with("code-rendezvous-fail", &[rec]);
+        let r = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| Err(RvError::DaemonUnsupported),
+            |_| Ok(()),
+        );
+        assert!(r.is_err(), "{r:?}");
+        let v = super::view_pending_at(&path).unwrap();
+        assert!(
+            !v[0].relay_closed && !v[0].revoking,
+            "nothing is marked closed"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -2551,9 +2649,12 @@ mod tests {
         let t = crate::connections::random_state();
         let path = store_with("b1-create", &[tagged("grp_a", &t, "Ab3dE7gh")]);
         let fresh = crate::connections::random_state();
-        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
-            super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh)))
-        });
+        let closed = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| panic!("no rendezvous recorded"),
+            |_| super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh))),
+        );
         assert_eq!(closed, Ok(true));
         let v = super::view_pending_at(&path).unwrap();
         assert!(
@@ -2579,9 +2680,12 @@ mod tests {
             "b1-consume",
             &[tagged("grp_a", &t, "Ab3dE7gh"), pending("grp_a", &other)],
         );
-        let closed = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
-            super::update_pending_at(&path, |v| v.retain(|i| i.token != t && i.token != other))
-        });
+        let closed = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| panic!("no rendezvous recorded"),
+            |_| super::update_pending_at(&path, |v| v.retain(|i| i.token != t && i.token != other)),
+        );
         assert_eq!(closed, Ok(true), "the relay invite was closed");
         assert!(
             super::view_pending_at(&path).unwrap().is_empty(),
@@ -2596,10 +2700,15 @@ mod tests {
         let t = crate::connections::random_state();
         let path = store_with("b1-fail", &[tagged("grp_a", &t, "Ab3dE7gh")]);
         let fresh = crate::connections::random_state();
-        let out = super::close_relay_for_code_at(&path, "Ab3dE7gh", |_| {
-            super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh)))?;
-            Err("comms: relay unreachable".to_string())
-        });
+        let out = super::close_relay_for_code_at(
+            &path,
+            "Ab3dE7gh",
+            |_| panic!("no rendezvous recorded"),
+            |_| {
+                super::update_pending_at(&path, |v| v.push(pending("grp_b", &fresh)))?;
+                Err("comms: relay unreachable".to_string())
+            },
+        );
         assert_eq!(out, Err("comms: relay unreachable".to_string()));
         let v = super::view_pending_at(&path).unwrap();
         assert!(
