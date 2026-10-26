@@ -513,7 +513,11 @@ pub struct ProviderCtx<'a> {
     endpoint: &'a crate::provider_egress::ResolvedEndpoint,
     key: &'a ApiKey,
     http: &'a dyn ProviderHttp,
+    cancel: Option<CancelFlag>,
 }
+
+/// Set by core when the caller of a call has gone away (the loopback client disconnected).
+pub type CancelFlag = std::sync::Arc<std::sync::atomic::AtomicBool>;
 
 impl<'a> ProviderCtx<'a> {
     pub(crate) fn new(
@@ -525,7 +529,14 @@ impl<'a> ProviderCtx<'a> {
             endpoint,
             key,
             http,
+            cancel: None,
         }
+    }
+
+    /// RED STUB: stores the flag, nothing reads it yet.
+    pub(crate) fn with_cancel(mut self, flag: CancelFlag) -> Self {
+        self.cancel = Some(flag);
+        self
     }
 
     /// Compose, check and send. Fails closed (nothing sent) when the joined URL leaves the pinned

@@ -74,6 +74,8 @@ pub enum ProxyError {
     NotConfigured,
     /// No adapter for this provider in this build.
     NotAvailable,
+    /// The caller went away mid-call; the vendor call was stopped.
+    Cancelled,
     /// Egress refused (unknown or unconfirmed endpoint, off-host URL).
     Egress(String),
     /// The spend guard refused (cap, halt, unpriced model under a currency cap).
@@ -97,6 +99,7 @@ impl std::fmt::Display for ProxyError {
             ProxyError::NotAvailable => {
                 f.write_str("this provider is not available in this version yet")
             }
+            ProxyError::Cancelled => f.write_str("the caller went away; the vendor call was stopped"),
             ProxyError::Egress(m) => write!(f, "blocked: {m}"),
             ProxyError::Refused(r) => write!(f, "refused: {r}"),
             ProxyError::LogUnavailable(e) => write!(f, "refused: {e}; nothing was sent"),
@@ -115,6 +118,7 @@ impl ProxyError {
             ProxyError::Provider(ProviderError::BadRequest(_)) => (400, "bad_request"),
             ProxyError::NotConfigured => (409, "not_configured"),
             ProxyError::NotAvailable => (501, "not_available"),
+            ProxyError::Cancelled => (499, "cancelled"),
             ProxyError::Egress(_) => (403, "egress_refused"),
             ProxyError::Refused(Refusal::Halted(_)) => (423, "provider_halted"),
             ProxyError::Refused(_) => (429, "cap_exceeded"),
@@ -133,6 +137,7 @@ impl ProxyError {
             }
             ProxyError::NotConfigured => "not_configured",
             ProxyError::NotAvailable => "not_available",
+            ProxyError::Cancelled => "cancelled",
             ProxyError::Egress(_) => "egress_refused",
             ProxyError::Refused(Refusal::Halted(_)) => "halted",
             ProxyError::Refused(Refusal::PriceUnknown) => "price_unknown",
@@ -389,6 +394,18 @@ impl ModelProxy {
     ) -> Result<ChatResponse, ProxyError> {
         let (prepared, req) = self.prepare(route, req, conversation)?;
         self.execute(prepared, &req, on_text)
+    }
+
+    /// RED STUB: [`Self::call`], ignoring the cancel flag.
+    pub fn call_until(
+        &self,
+        route: &ProxyRoute,
+        req: ChatRequest,
+        conversation: Option<String>,
+        _cancel: crate::model_provider::CancelFlag,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ChatResponse, ProxyError> {
+        self.call(route, req, conversation, on_text)
     }
 
     /// Steps 1-5: everything that can refuse before anything is sent. The loopback endpoint calls

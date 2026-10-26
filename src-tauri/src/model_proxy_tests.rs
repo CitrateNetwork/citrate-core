@@ -457,3 +457,36 @@ fn custom_endpoints_with_ip_or_local_hosts_are_refused_at_add() {
         assert!(rig.proxy.add_custom("x", bad, vec!["m".into()], 1).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn a_caller_that_goes_away_stops_the_vendor_call_and_is_logged_as_cancelled() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let rig = Rig::new("proxy-cancel");
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut pieces = Vec::new();
+    let r = rig.proxy.call_until(
+        &rig.route("gpt-known"),
+        req("gpt-known", true),
+        None,
+        flag.clone(),
+        &mut |t| {
+            pieces.push(t.to_string());
+            // The caller's connection broke while this piece was being forwarded.
+            flag.store(true, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(r.err(), Some(ProxyError::Cancelled));
+    assert_eq!(pieces, vec!["hello ".to_string()], "no vendor read after the cancel");
+    let log = rig.log_text();
+    assert!(log.contains("\"cancelled\""), "the end record says cancelled: {log}");
+    assert_eq!(ProxyError::Cancelled.outcome(), "cancelled");
+    // A call that is not cancelled is unaffected.
+    let ok = rig.proxy.call_until(
+        &rig.route("gpt-known"),
+        req("gpt-known", true),
+        None,
+        Arc::new(AtomicBool::new(false)),
+        &mut |_| {},
+    );
+    assert_eq!(ok.map(|r| r.content).ok().as_deref(), Some("hello from the vendor"));
+}

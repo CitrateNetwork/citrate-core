@@ -224,3 +224,50 @@ fn key_formats_are_data_checked_inside_core() {
     let spaced = ApiKey::from_secret(SecretString::new(format!("a b{}", "x".repeat(20))));
     assert!(any.check(&spaced).is_err());
 }
+
+/// A transport that counts sends and answers with a body that arrives a line per read.
+struct TrickleHttp {
+    sends: std::sync::atomic::AtomicUsize,
+}
+
+impl ProviderHttp for TrickleHttp {
+    fn send(&self, _req: WireRequest<'_>) -> Result<InboundResponse, ProviderError> {
+        self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(InboundResponse {
+            status: 200,
+            content_type: "text/event-stream".into(),
+            body: Box::new(crate::provider_fixtures_tests::Trickle::new("a\nb\nc\n".into())),
+        })
+    }
+}
+
+#[test]
+fn a_cancelled_call_stops_reading_the_vendor_at_the_next_read_and_sends_nothing_more() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let ep = crate::provider_egress::resolve_vendor(Vendor::OpenAi).unwrap();
+    let key = ApiKey::from_secret(SecretString::new(format!("sk-{}", "C".repeat(30))));
+    let http = TrickleHttp {
+        sends: AtomicUsize::new(0),
+    };
+    let flag = std::sync::Arc::new(AtomicBool::new(false));
+    let ctx = ProviderCtx::new(&ep, &key, &http).with_cancel(flag.clone());
+    let get = || OutboundRequest {
+        method: Method::Get,
+        path: "/models".into(),
+        headers: vec![],
+        auth: AuthPlacement::Bearer,
+        body: None,
+    };
+    let mut resp = ctx.send(get()).unwrap();
+    let mut buf = [0u8; 16];
+    assert_eq!(resp.body.read(&mut buf).ok(), Some(2), "reads flow until cancelled");
+    flag.store(true, Ordering::SeqCst);
+    let after = resp.body.read(&mut buf);
+    assert_eq!(
+        after.map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::ConnectionAborted),
+        "the next read after a cancel fails, so the adapter stops and drops the connection"
+    );
+    assert!(matches!(ctx.send(get()), Err(ProviderError::Transport(_))));
+    assert_eq!(http.sends.load(Ordering::SeqCst), 1, "nothing is sent once cancelled");
+}

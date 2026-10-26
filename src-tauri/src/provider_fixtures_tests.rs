@@ -139,7 +139,7 @@ impl ProviderHttp for ScriptedVendor {
             Ok(InboundResponse {
                 status,
                 content_type: ct.into(),
-                body: Box::new(std::io::Cursor::new(s.into_bytes())),
+                body: Box::new(Trickle::new(s)),
             })
         };
         if req.url.path().ends_with("/models") {
@@ -225,8 +225,38 @@ impl ScriptedVendor {
         Ok(InboundResponse {
             status,
             content_type: ct.into(),
-            body: Box::new(std::io::Cursor::new(text.into_bytes())),
+            body: Box::new(Trickle::new(text)),
         })
+    }
+}
+
+/// A body that hands out at most one line per read, as a network stream delivers an SSE answer
+/// piece by piece (an in-memory `Cursor` would hand the whole answer to the first read).
+pub(crate) struct Trickle {
+    data: Vec<u8>,
+    pos: usize,
+}
+
+impl Trickle {
+    pub(crate) fn new(s: String) -> Trickle {
+        Trickle {
+            data: s.into_bytes(),
+            pos: 0,
+        }
+    }
+}
+
+impl std::io::Read for Trickle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let rest = &self.data[self.pos..];
+        let line = rest
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(rest.len(), |i| i + 1);
+        let n = line.min(buf.len());
+        buf[..n].copy_from_slice(&rest[..n]);
+        self.pos += n;
+        Ok(n)
     }
 }
 
