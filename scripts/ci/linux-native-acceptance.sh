@@ -183,6 +183,10 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
   for d in "$ROOT" "$ROOT/src" "$ROOT/scripts" "$ROOT/.git" "$PWD" "$HOME"; do
     [ -e "$d" ] && echo "$(stat -L -c '%d:%i' -- "$d") $d"
   done >"$RUN/logs/host-dir-ids.txt"
+  # Paths outside the namespace the caller can write (their own files, world-writable ones), on
+  # every real filesystem to a small depth, plus the checkout, cwd, HOME and the package sources.
+  # Inside, none of them may be writable.
+  host_writable_paths "$DEB" "$DEB_FROM" "$AI" "$AI_FROM" >"$RUN/logs/host-writable.txt"
   echo "▶ enter: unshare --user --map-root-user --pid --fork --mount-proc --net --ipc --uts setsid"
   unshare --user --map-root-user --pid --fork --mount-proc --net --ipc --uts \
     setsid env -i PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin LANG=C.UTF-8 \
@@ -197,6 +201,26 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
   local rc=$?
   [ -f "$RUN/logs/summary.txt" ] && cat "$RUN/logs/summary.txt"
   return "$rc"
+}
+
+host_writable_paths() { # extra-path ...
+  local p mp fstype
+  {
+    for p in "$ROOT" "$ROOT/src" "$ROOT/.git" "$PWD" "$HOME" "$@"; do
+      [ -n "$p" ] && [ -e "$p" ] && [ -w "$p" ] && echo "$p"
+    done
+    # Pseudo and network filesystems are skipped (autofs would mount on lookup); /home, /tmp,
+    # /var/tmp, /run and /root are covered by the hidden-directory probes.
+    while read -r mp fstype; do
+      case "$fstype" in
+        proc|sysfs|cgroup|cgroup2|devtmpfs|devpts|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs) continue ;;
+        fusectl|binfmt_misc|hugetlbfs|autofs|efivarfs|rpc_pipefs|nsfs|nfs|nfs4|cifs|smb3|fuse.*) continue ;;
+      esac
+      case "$mp" in /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/home|/home/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*|/run|/run/*|/root|/root/*) continue ;; esac
+      find "$mp" -xdev -maxdepth 3 \( -path /home -o -path /tmp -o -path /var/tmp -o -path /run -o -path /root \) -prune \
+        -o \( -type d -o -type f \) -writable -print 2>/dev/null | head -n 2000
+    done < <(findmnt -rn -o TARGET,FSTYPE)
+  } | sort -u
 }
 
 # --------------------------------------------------------------------------------------------
@@ -268,6 +292,7 @@ fail() { say "FAIL $*"; FAILED=1; }
 seal() {
   # Private mounts only: unshare --mount-proc made this mount namespace with private propagation,
   # so nothing here reaches the host's mount table.
+  INHERITED_MOUNT_IDS=" $(awk '{print $1}' /proc/self/mountinfo | tr '\n' ' ')"
   mount -t tmpfs -o mode=0755 tmpfs /mnt || return 1
   mkdir /mnt/work && mount --bind "$K1L_RUN" /mnt/work || return 1
   local d
@@ -421,6 +446,40 @@ p_checkout_unreachable() {
   local hits; hits="$(reaches_host .)"
   [ -n "$hits" ] && echo "reachable from the working directory ($(readlink /proc/1/cwd)):" && echo "$hits"
   [ -z "$hits" ]
+}
+# Paths the scan reads on stdin that are writable here.
+writable_of() { local p; while IFS= read -r p; do [ -n "$p" ] && [ -e "$p" ] && [ -w "$p" ] && echo "$p"; done; }
+p_writable_scan_control() {
+  # Negative control: the scan must flag a path that is writable here (the run dir's logs).
+  [ "$(printf '%s\n' "$W/logs" | writable_of)" = "$W/logs" ]
+}
+p_host_paths_readonly() {
+  local hits
+  hits="$(writable_of <"$W/logs/host-writable.txt")"
+  echo "caller-writable host paths recorded: $(grep -c . "$W/logs/host-writable.txt"), writable here: $(grep -c . <<<"$hits")"
+  [ -n "$hits" ] && echo "$hits" | head -n 50
+  [ -z "$hits" ]
+}
+p_inherited_readonly() {
+  # Every mount the namespace inherited from the host is read-only here, except the namespace's
+  # own /proc; the seal's own tmpfs mounts and the run dir are the only writable places.
+  local id mp opts procid bad=0
+  procid="$(findmnt -n -o ID -T /proc | head -n 1)"
+  while read -r id _ _ _ mp opts _; do
+    [[ "$INHERITED_MOUNT_IDS" == *" $id "* ]] || continue
+    [ "$id" = "$procid" ] && continue
+    case ",$opts," in *,ro,*) ;; *) echo "writable inherited mount: $mp ($opts)"; bad=1 ;; esac
+  done </proc/self/mountinfo
+  [ "$bad" -eq 0 ]
+}
+p_staged_readonly() {
+  # The staged packages may be hard links to the caller's files, and the harness copy is what PID 1
+  # is running: neither may be writable from inside.
+  local f bad=0
+  for f in "$W/pkgs" "$W/pkgs/"* "$W/harness" "$W/harness/scripts/ci/linux-native-acceptance.sh"; do
+    [ -e "$f" ] && [ -w "$f" ] && { echo "writable: $f"; bad=1; }
+  done
+  [ "$bad" -eq 0 ]
 }
 p_socket_scan_control() {
   local before after
@@ -808,6 +867,10 @@ inner_main() {
   drop_preseal_handles
   probe "working directory inside the run dir; no process holds a hidden directory" p_cwd_sealed || ok=0
   probe "caller's checkout, cwd and HOME unreachable by relative path or symlink" p_checkout_unreachable || ok=0
+  probe "writable-path scan sees a writable path (negative control)" p_writable_scan_control || ok=0
+  probe "every mount inherited from the host is read-only" p_inherited_readonly || ok=0
+  probe "no caller-writable host path is writable here" p_host_paths_readonly || ok=0
+  probe "staged packages and the harness copy are read-only" p_staged_readonly || ok=0
   probe "stray-process scan sees a leaked sleep (negative control)" p_stray_scan_control || ok=0
   probe "listening-socket scan sees a new listener (negative control)" p_socket_scan_control || ok=0
   if [ "$ok" -ne 1 ]; then
