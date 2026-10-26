@@ -33,7 +33,7 @@ the same entry as K1-F plus `--net --ipc --uts`), and then, inside them:
 | The systemd user manager and the session bus | `/run` is a private tmpfs (no `/run/user/<uid>`, no system bus socket); the network namespace makes the host's abstract sockets (`@…/bus/systemd/bus-api-user`, `@/tmp/.X11-unix/X1`, …) unreachable; the app gets its own `dbus-daemon` and `gnome-keyring-daemon` |
 | cgroup kills | `/sys/fs/cgroup` is a private tmpfs |
 | The desktop's X server and GPU | `/tmp` is private, the abstract X socket is unreachable, `/dev` is a minimal tmpfs (null, zero, full, random, urandom, tty, own devpts; no `/dev/dri`, no `/dev/nvidia*`); the app draws on a private `Xvfb :77` |
-| Your files | `/home`, `/root`, `/tmp`, `/var/tmp`, `/dev/shm` are private tmpfs; HOME and every XDG dir point into the run directory; the harness moves into the run directory before anything runs, so no working directory still points at a mounted-over directory |
+| Your files | Every mount inherited from the host is read-only inside (one recursive `mount_setattr`, other mount flags unchanged; only the namespace's own `/proc` stays writable), so files you own anywhere, such as data directories under `/opt` or `/var/lib`, cannot be changed; `/home`, `/root`, `/tmp`, `/var/tmp`, `/dev/shm` are private tmpfs; the run directory is the only writable host directory, and its staged packages (possibly hard links to your downloads) and the harness copy are read-only binds; HOME and every XDG dir point into the run directory; the harness moves into the run directory before anything runs, so no working directory still points at a mounted-over directory |
 | The network (and production RPC) | Loopback only |
 
 Before the first launch the harness checks each of these and records it in `summary.txt`
@@ -47,7 +47,13 @@ directory) may resolve to the caller's checkout, working directory or HOME, comp
 device and inode recorded before entry. Their negative controls use handles taken before the
 seal (on the host `/tmp` and on the checkout), which both scans must flag. A checkout outside
 the hidden directories (for example under `/opt`) stays reachable, so that probe fails and the
-harness refuses to run. **If any probe fails, the app is not started** and the run exits 2.
+harness refuses to run. Three probes cover writes: every inherited mount must be read-only; no
+path the caller can write outside the namespace (their own and world-writable files and
+directories, found per real filesystem to depth 3 before entry, plus the checkout, working
+directory, HOME and package sources) may be writable inside, checked with `access(W_OK)` and, for
+files, an open for appending that writes nothing; and the staged packages and the harness copy
+must be read-only. Their negative control is a directory and a file in the run directory, which
+the scan must flag as writable. **If any probe fails, the app is not started** and the run exits 2.
 
 Mounts are made in the run's private mount namespace and never propagate to the host. When the
 run's PID 1 exits, the kernel ends every process left in the namespace, so nothing outlives a run
