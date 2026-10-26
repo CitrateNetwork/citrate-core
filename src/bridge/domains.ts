@@ -515,6 +515,13 @@ export interface MemoryDomain {
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
  * id, https baseURL, model, and a `configured` flag — NEVER the API key or the
  * Authorization header (invariant 1). Mirrors the Rust `ProviderStatus`. */
+/** K2: a core-minted, one-time consent to send one held message to a remote provider. */
+export interface ChatConsent {
+  consentId: string;
+  providerId: string;
+  expiresAtMs: number;
+}
+
 export interface AiProviderStatus {
   id: string;
   baseURL: string;
@@ -549,7 +556,13 @@ export interface ChatDomain {
    * completion. The webview can NEVER supply the URL (exfil-binding, invariant 3).
    * The Tauri impl invokes `ai_chat`; the sim impl is honestly Unavailable.
    */
-  infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
+  infer(providerId: string, messagesJson: string, contextJson: string, consentId: string): Promise<string>;
+  /**
+   * K2 — the app is asking the member whether to send a held message to the gateway. Core mints
+   * the one-time consent that `infer` / `inferTools` need for that message (`chat_consent_prepare`);
+   * a remote send without it is refused in core. The sim impl is honestly Unavailable.
+   */
+  consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
@@ -562,6 +575,7 @@ export interface ChatDomain {
     messagesJson: string,
     toolsJson: string,
     contextJson: string,
+    consentId: string,
   ): Promise<string>;
   /**
    * BC-3.2 — REAL LOCAL inference against the bundled `llama-server` (llama.cpp)
@@ -590,6 +604,26 @@ export interface ChatDomain {
    * Tauri impl invokes `model_inference_state`; the sim impl returns `demo`.
    */
   inferenceState(gatewayConfigured: boolean): Promise<string>;
+  /** K2: the member's chat route, stored in core (chat_route.rs). An unreadable setting reads as
+   *  `local_only` with `loadError` set (a read error never widens what may leave the device).
+   *  Tauri invokes `chat_route_get`; sim reports the default. */
+  route(): Promise<ChatRouteStatus>;
+  /** K2: store the chat route. Tauri invokes `chat_route_set`; sim is Unavailable. */
+  setRoute(route: ChatRoute): Promise<ChatRouteStatus>;
+}
+
+/** K2: where chat may go. `ask_first` (default): ask before each message goes to the gateway.
+ *  `local_only`: never to the gateway. Mirrors Rust `chat_route::ChatRoute` (snake_case). */
+export type ChatRoute = "local_only" | "ask_first";
+export interface ChatRouteStatus {
+  route: ChatRoute;
+  loadError: string | null;
+}
+/** K2: what the held-message card may offer: start the local model, and/or send this message to
+ *  the gateway this time. */
+export interface RouteAskOptions {
+  restart: boolean;
+  gateway: boolean;
 }
 
 /**
@@ -1933,6 +1967,70 @@ export interface InviteClaim {
   address: string;
 }
 
+// ── v2 invite links (GROW-S1 task 10): a short code at citrate.ai plus a sealed envelope that only
+// the share link opens. Mirrors the Rust `citrate_core_kit::join` views. The webview never sees the
+// link key, the envelope, the relay token or the session bearer: the only value carrying the key is
+// `JoinMinted.shareUrl` (`https://citrate.ai/join/<code>#<key>`), meant to be copied and shared.
+// Not yet registered on CxBridge: the inviter UI (task 11) and invitee path (task 12) wire it.
+export type JoinKind = "direct" | "referral";
+export type JoinGoal = "storage" | "training" | "inference" | "dapps" | "general";
+export interface JoinMintRequest {
+  kind: JoinKind;
+  /** Inviter-approved display name (the service filters reserved names: HTTP 422). */
+  clusterName: string;
+  goal: JoinGoal;
+  ttlSeconds?: number;
+  maxResolves?: number;
+}
+export interface JoinMinted {
+  code: string;
+  kind: JoinKind;
+  /** `valid` once usable; `pending` = reserved but the envelope isn't attached (retry `attach`). */
+  status: "valid" | "pending";
+  /** ISO expiry. */
+  exp: string;
+  /** The link to share. Present only when `status === "valid"`. */
+  shareUrl: string | null;
+  /** Why a direct code is still pending. */
+  attachError: string | null;
+}
+export interface JoinResolved {
+  code: string;
+  kind: JoinKind;
+  clusterName: string | null;
+  goal: string | null;
+  inviter: string | null;
+  inviterVerified: boolean;
+  exp: string;
+  /** A direct invite that opened and is held (in Rust) for `redeem`. */
+  actionable: boolean;
+  /** A direct invite whose link arrived without its key. */
+  keyMissing: boolean;
+}
+export interface JoinCodeEntry {
+  code: string;
+  kind: JoinKind;
+  status: "pending" | "valid" | "expired" | "revoked" | "exhausted";
+  exp: string;
+  resolveCount: number;
+}
+export interface JoinDomain {
+  /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
+  mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
+  /** Retry attaching a pending direct code's envelope (idempotent). */
+  attach(code: string): Promise<JoinMinted>;
+  /** Resolve + verify a link (or bare code). Each call counts against the code's resolve limit
+   *  (direct 1–50, default 50); resolve on the member's action, not on a preview. */
+  resolve(link: string): Promise<JoinResolved>;
+  /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
+   *  stays held (until it expires), so calling it again retries. */
+  redeem(code: string): Promise<void>;
+  /** Revoke one of the member's codes. */
+  revoke(code: string): Promise<void>;
+  /** The member's codes, newest first. */
+  list(): Promise<JoinCodeEntry[]>;
+}
+
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
  *  caller-supplied + compiled — the app never fabricates contract code (Rule 1). */
 export interface ContractDeployInput {
@@ -2186,6 +2284,9 @@ export interface EscalationQuote {
   costMicros: number;
   costLabel: string;
   withinBudget: boolean;
+  /** K2: core will ask before this escalation runs whatever the budget (the member's route is
+   *  ask first). Absent from an older core. */
+  asksFirst?: boolean;
   remainingMicros: number;
   capMicros: number;
   maxTokens: number;

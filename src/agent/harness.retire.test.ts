@@ -17,7 +17,7 @@ import {
   type TurnActivityEvent,
 } from "./harness";
 
-const ctx = { height: 1, peers: 2, finalityAge: 3, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" };
+const ctx = { height: 1, peers: 2, nodeState: "synced", staked: 0, liquid: 0, claimable: 0, earningsToday: 0, walletAddr: "0x0", tier: "T0" };
 const src = (p: string) => readFileSync(resolve(__dirname, "..", "..", p), "utf8");
 
 function opts(text: string, onToolCall = vi.fn(async () => "ok")) {

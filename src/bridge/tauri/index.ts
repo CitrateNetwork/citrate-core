@@ -31,11 +31,14 @@ import type {
   SeedReport,
   PendingWithdrawalsRead,
   AiProviderStatus,
+  ChatConsent,
   GrantStatus,
   ModelStatus,
   NodeLogLine,
   NodeStatusView,
   ConnectionInfo,
+  ChatRoute,
+  ChatRouteStatus,
 } from "../domains";
 import { Unavailable } from "../types";
 import { tauriImportKnowledge } from "./knowledge";
@@ -392,8 +395,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async clearProvider(providerId: string): Promise<void> {
         await invoke("ai_clear_provider", { providerId });
       },
-      async infer(providerId: string, messagesJson: string, contextJson: string): Promise<string> {
-        return invoke<string>("ai_chat", { providerId, messagesJson, contextJson });
+      async infer(providerId: string, messagesJson: string, contextJson: string, consentId: string): Promise<string> {
+        return invoke<string>("ai_chat", { providerId, messagesJson, contextJson, consentId });
+      },
+      // K2 — core mints the one-time consent for one held message (the remote send needs it).
+      async consentPrepare(providerId: string, message: string): Promise<ChatConsent> {
+        return invoke<ChatConsent>("chat_consent_prepare", { providerId, message });
       },
       // W3.3 — one agentic turn (tools attached; returns the assistant message
       // JSON with any tool_calls). The webview runs the loop; Rust holds the key.
@@ -402,8 +409,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         messagesJson: string,
         toolsJson: string,
         contextJson: string,
+        consentId: string,
       ): Promise<string> {
-        return invoke<string>("ai_chat_tools", { providerId, messagesJson, toolsJson, contextJson });
+        return invoke<string>("ai_chat_tools", { providerId, messagesJson, toolsJson, contextJson, consentId });
       },
       // BC-3.2 — REAL LOCAL inference. The webview supplies ONLY messages +
       // context; Rust derives the loopback endpoint from the serve manager's
@@ -418,6 +426,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // real model status + serve health + the gateway-key presence.
       async inferenceState(gatewayConfigured: boolean): Promise<string> {
         return invoke<string>("model_inference_state", { gatewayConfigured });
+      },
+      // K2 — the member's chat route, stored in Rust (chat_route.rs).
+      async route(): Promise<ChatRouteStatus> {
+        return invoke<ChatRouteStatus>("chat_route_get");
+      },
+      async setRoute(route: ChatRoute): Promise<ChatRouteStatus> {
+        return invoke<ChatRouteStatus>("chat_route_set", { route });
       },
     },
     membership: {

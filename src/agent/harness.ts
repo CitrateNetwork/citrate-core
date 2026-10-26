@@ -33,7 +33,6 @@ export interface ToolCall {
 export interface AgentContext {
   height: number;
   peers: number;
-  finalityAge: number;
   nodeState: string;
   staked: number;
   liquid: number;
@@ -551,7 +550,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "widget_create",
-      description: "PROPOSE a small widget for the member's Hermes home: self-contained HTML with inline CSS and JS (no network, no external files; it runs in a sandbox). It can read live data only through `await citrate.query(name)` for the queries it declares: node.status {height, peers, state, finalityAgeSec}, wallet.summary {liquidSalt, stakedSalt, claimableSalt}, model.active {label, id}, daemons.summary {allPaused, total, running, paused, budgetUsedUp}. This is a WRITE: the member sees the source and approves before it is saved.",
+      description: "PROPOSE a small widget for the member's Hermes home: self-contained HTML with inline CSS and JS (no network, no external files; it runs in a sandbox). It can read live data only through `await citrate.query(name)` for the queries it declares: node.status {height, peers, state}, wallet.summary {liquidSalt, stakedSalt, claimableSalt}, model.active {label, id}, daemons.summary {allPaused, total, running, paused, budgetUsedUp}. This is a WRITE: the member sees the source and approves before it is saved.",
       parameters: {
         type: "object",
         properties: {
@@ -955,10 +954,13 @@ export const SIDECAR_DOWN_NOTICE =
  * the gateway and never fabricates a local reply.
  */
 export const LOCAL_STOPPED_LABEL = "local model · not running";
-export function createLocalStoppedProvider(): ChatProvider {
+/** K2: the held-route labels when the reason is not "the local model is stopped". */
+export const ASK_FIRST_NO_LOCAL_LABEL = "no local model · asks before the gateway";
+export const LOCAL_ONLY_LABEL = "local only · local model not running";
+export function createLocalStoppedProvider(label: string = LOCAL_STOPPED_LABEL): ChatProvider {
   return {
     kind: "local-stopped",
-    label: LOCAL_STOPPED_LABEL,
+    label,
     async send({ callbacks }) {
       callbacks.onStatus("error");
       throw new Error("the local model is not running; nothing was sent to the gateway");
@@ -1011,7 +1013,9 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("chain_read", { query: "network.vitals" })],
       compose: (c) =>
-        `Chain 40204 is at height **${fmt(c.height)}**, your node sees **${c.peers} peers**, and the last BFT checkpoint settled ${c.finalityAge}s ago (checkpoints land every ~50 blocks). Your node is **${c.nodeState}**.`,
+        // C1-V V1: checkpoint finality is specified but not running on 40204 (the finalized tag
+        // returns genesis), so the reply says so and never reports a checkpoint as settled.
+        `${c.height > 0 ? `Your node is at height **${fmt(c.height)}**` : "Your node has not reported a height yet"} and sees **${c.peers} direct peers**. Checkpoint finality is not running on betanet yet, so no block is final; a confirmation count is only a depth. Your node is **${c.nodeState}**.`,
     };
   }
   if (has("journal", "log this", "write this down", "worklog")) {
@@ -1067,7 +1071,7 @@ function routeIntent(t: string): Plan {
   return {
     toolCalls: [],
     compose: (c) =>
-      `I'm your member agent — grounded in your node, wallet, and memory graph. I can read your staking position, break down earnings, recall or (with your approval) write memory, link docs at your tier, and move you around the app. Your node is ${c.nodeState} at height ${fmt(c.height)}. What do you need?`,
+      `I'm your member agent — grounded in your node, wallet, and memory graph. I can read your staking position, break down earnings, recall or (with your approval) write memory, link docs at your tier, and move you around the app. Your node is ${c.nodeState}${c.height > 0 ? ` at height ${fmt(c.height)}` : ""}. What do you need?`,
   };
 }
 

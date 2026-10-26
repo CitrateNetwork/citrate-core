@@ -7,22 +7,39 @@
 // fast decisions on listed sites. Core stores them (hermes_web.rs) and passes them to the Hermes
 // sidecar when it starts. Everything is off or local until the member changes it, and every choice
 // that sends data to a third party says so on the card.
+//
+// Save writes only what the member changed in this form: it re-reads the saved settings, applies the
+// fields that differ from what the form loaded, and writes that. Another writer (Hermes › Controls,
+// mounted next to this form) may have changed other fields since the form loaded; those are kept.
 // =====================================================================
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke } from "../bridge/tauri/invoke";
+import { localOnlyDoesNotApply, remoteServiceLine } from "../agent/remoteServices";
+import { HELD_DURING_START, hermesRunningSlice, hermesStarting } from "../shell/slices/hermesRunning";
+import { subscribeWebSettings } from "../agent/webSettingsSync";
+import { patchWebSettings } from "../agent/startSettingsWrite";
 import {
   DEFAULT_WEB_SETTINGS,
   MAX_JEV_ORIGINS,
   isAbsolutePath,
   loadWebSettings,
   parseOrigins,
-  saveWebSettings,
   sendsToThirdParty,
   type HermesWebSettings,
   type HermesWebStatus,
   type WebSettingsIo,
 } from "../agent/webSearch";
+import { readWebSettingsUnlessSuperseded } from "../agent/webSettingsSync";
+
+/** The fields of `draft` that differ from `baseline` (what the form loaded or last saved). */
+export function changedFields(baseline: HermesWebSettings, draft: HermesWebSettings): Partial<HermesWebSettings> {
+  const out: Partial<HermesWebSettings> = {};
+  for (const k of Object.keys(draft) as (keyof HermesWebSettings)[]) {
+    if (JSON.stringify(draft[k]) !== JSON.stringify(baseline[k])) (out as Record<string, unknown>)[k] = draft[k];
+  }
+  return out;
+}
 
 const defaultIo: WebSettingsIo = {
   mode: BRIDGE_MODE === "tauri" ? "tauri" : "sim",
@@ -69,22 +86,49 @@ function PathField({
   );
 }
 
-export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
+export function WebSearchSettings({ io = defaultIo, localOnly = false }: { io?: WebSettingsIo; localOnly?: boolean }) {
   const desktop = io.mode === "tauri";
   const [status, setStatus] = useState<HermesWebStatus | null>(null);
   const [draft, setDraft] = useState<HermesWebSettings>(DEFAULT_WEB_SETTINGS);
+  // What the form loaded (or last saved): the baseline that tells which fields the member changed.
+  const [baseline, setBaseline] = useState<HermesWebSettings>(DEFAULT_WEB_SETTINGS);
   const [originsText, setOriginsText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // This form's id on the web-settings channel (webSettingsSync.ts), and its latest state for the
+  // listener below, which runs outside a render.
+  const [me] = useState(() => Symbol("web-search-form"));
+  const latest = useRef({ draft, baseline, originsText });
+  latest.current = { draft, baseline, originsText };
+
+  // Another view (the Controls panel's Web search switch) saved: show what core saved now, and
+  // re-baseline so Save compares against it. The member's own unsaved edits here are kept.
+  useEffect(
+    () =>
+      subscribeWebSettings((st, source) => {
+        if (source === me) return;
+        const cur = latest.current;
+        const edits = changedFields(cur.baseline, { ...cur.draft, jevOrigins: parseOrigins(cur.originsText).origins });
+        const next = { ...st.settings, ...edits };
+        setStatus(st);
+        setBaseline(st.settings);
+        setDraft(next);
+        if (!("jevOrigins" in edits)) setOriginsText(next.jevOrigins.join("\n"));
+      }),
+    [me],
+  );
 
   useEffect(() => {
     if (!desktop) return;
     let live = true;
-    loadWebSettings(io)
+    // Dropped (null) if the other view saved while this read was in flight: the subscription above
+    // already applied that newer value, and this answer is older.
+    readWebSettingsUnlessSuperseded(() => loadWebSettings(io))
       .then((st) => {
-        if (!live) return;
+        if (!live || !st) return;
         setStatus(st);
         setDraft(st.settings);
+        setBaseline(st.settings);
         setOriginsText(st.settings.jevOrigins.join("\n"));
       })
       .catch((e) => live && setError(String(e)));
@@ -98,14 +142,24 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
   const set = (patch: Partial<HermesWebSettings>) => setDraft((d) => ({ ...d, ...patch }));
   const disabled = !desktop || saving;
 
+  // Hermes reads these at start: while a start or restart is in flight, Save waits.
+  const held = hermesRunningSlice.use().starting > 0;
+
   const save = async () => {
-    if (parsed.bad.length || tooMany) return;
+    if (parsed.bad.length || tooMany || hermesStarting()) return;
     setSaving(true);
     setError(null);
     try {
-      const st = await saveWebSettings(io, { ...draft, jevOrigins: parsed.origins });
+      const edits = changedFields(baseline, { ...draft, jevOrigins: parsed.origins });
+      // One write at a time across every view (patchWebSettings, startSettingsWrite.ts): re-read, apply only the
+      // fields changed here, write, announce, then let the next writer in.
+      // Held (null) if a Hermes start began while this write waited: the draft stays unsaved and
+      // the "Hermes is starting" line shows; Save works again once Hermes is up.
+      const st = await patchWebSettings(io, edits, me);
+      if (!st) return;
       setStatus(st);
       setDraft(st.settings);
+      setBaseline(st.settings);
       setOriginsText(st.settings.jevOrigins.join("\n"));
     } catch (e) {
       setError(String(e));
@@ -183,6 +237,14 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
       {/* ---------- Jev ---------- */}
       <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
         <span className="eyebrow">Fast decisions</span>
+        <span style={hint} data-testid="jev-remote">
+          {remoteServiceLine("TypeSafe Jev")}
+        </span>
+        {localOnly && (
+          <span style={hint} data-testid="jev-local-only-note">
+            {localOnlyDoesNotApply("TypeSafe Jev")}
+          </span>
+        )}
         <span style={hint}>
           Hermes makes quick choices (which button to press, which result fits) with your local model. You can let TypeSafe Jev, a third-party service, make them instead for sites you list.
         </span>
@@ -233,9 +295,14 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
         </ul>
         <span style={hint}>Changes apply the next time Hermes starts.</span>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button className="btn btn-secondary btn-sm" data-testid="web-save" disabled={disabled || parsed.bad.length > 0 || tooMany} onClick={() => void save()}>
+          <button className="btn btn-secondary btn-sm" data-testid="web-save" disabled={disabled || held || parsed.bad.length > 0 || tooMany} onClick={() => void save()}>
             {saving ? "Saving…" : "Save"}
           </button>
+          {held && (
+            <span data-testid="web-held" style={hint}>
+              {HELD_DURING_START}
+            </span>
+          )}
           {error && (
             <span data-testid="web-error" style={hint}>
               {error}
