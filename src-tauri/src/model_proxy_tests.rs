@@ -85,6 +85,8 @@ fn a_call_reaches_the_pinned_host_with_the_key_only_in_its_auth_header() {
     let seen = rig.vendor.seen.lock().unwrap();
     let chat = seen.iter().find(|s| s.url.ends_with("/chat/completions")).unwrap();
     assert_eq!(chat.url, "https://api.openai.com/v1/chat/completions");
+    assert_eq!(chat.method, crate::model_provider::Method::Post);
+    assert!(chat.headers.iter().any(|(k, v)| k == "accept" && v == "application/json"));
     assert_eq!(chat.auth, format!("authorization: Bearer {}", rig.key));
     assert!(!chat.body.as_ref().unwrap().to_string().contains(&rig.key));
 }

@@ -9,9 +9,6 @@
 //!   ignores the proxy environment variables (`HTTPS_PROXY`, `ALL_PROXY`, …), and re-checks that the
 //!   URL it is about to open is on the endpoint's pinned host and port.
 
-// Interface commit: the proxy that uses these lands in the following commits of this PR.
-#![allow(dead_code)]
-
 use crate::model_provider::{
     InboundResponse, Method, ProviderError, ProviderHttp, ProviderId, Vendor, WireRequest,
 };
@@ -79,6 +76,8 @@ pub const VENDORS: &[VendorSpec] = &[
 
 /// A remote-agent delegate (ADR P-8). Not a chat model; listed so the delegate WP shares this
 /// egress table, the key store and the usage log.
+// Consumed by WP-S1-PROV-AGENT (the Cognition delegate); pinned by the egress tests here.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DelegateSpec {
     pub id: &'static str,
@@ -87,6 +86,7 @@ pub struct DelegateSpec {
     pub key_page: &'static str,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub const DELEGATES: &[DelegateSpec] = &[DelegateSpec {
     id: "cognition",
     name: "Cognition (Devin)",
@@ -168,25 +168,108 @@ pub fn resolve_vendor(v: Vendor) -> Result<ResolvedEndpoint, ProviderError> {
 }
 
 /// Join an adapter's path to the endpoint and check the result stays on the pinned host and port,
-/// over https, with no userinfo or fragment. The path must start with `/` and may carry a query.
+/// over https, with no userinfo or fragment. The path must start with a single `/` and may carry a
+/// query; it may not climb out of the base path (`..`), and may not hold whitespace, control
+/// characters, a backslash, `@` or `#`.
 pub fn join_checked(ep: &ResolvedEndpoint, path: &str) -> Result<url::Url, ProviderError> {
-    let _ = path;
-    // Interface stage: composes only (egress checks land with the egress WP commit).
-    let mut base = ep.base_url.as_str().trim_end_matches('/').to_string();
-    base.push_str(path);
-    url::Url::parse(&base).map_err(|_| ProviderError::Egress("bad path"))
+    let bad = |m| Err(ProviderError::Egress(m));
+    if !path.starts_with('/') || path.starts_with("//") {
+        return bad("an adapter path must start with a single /");
+    }
+    if path.len() > 2048
+        || path
+            .bytes()
+            .any(|b| !b.is_ascii_graphic() || matches!(b, b'\\' | b'@' | b'#'))
+    {
+        return bad("an adapter path has characters that are not allowed");
+    }
+    let (p, _query) = path.split_once('?').unwrap_or((path, ""));
+    if p.split('/').any(|seg| seg == ".." || seg == ".") {
+        return bad("an adapter path may not climb out of the API base");
+    }
+    let mut joined = ep.base_url.as_str().trim_end_matches('/').to_string();
+    joined.push_str(path);
+    let url = url::Url::parse(&joined).map_err(|_| ProviderError::Egress("bad path"))?;
+    check_on_endpoint(ep, &url)?;
+    if !url
+        .path()
+        .starts_with(ep.base_url.path().trim_end_matches('/'))
+    {
+        return bad("an adapter path may not climb out of the API base");
+    }
+    Ok(url)
 }
 
-/// Extra headers an adapter may set: non-secret protocol headers only.
+/// The URL is https, on the endpoint's exact host and port, with no userinfo or fragment.
+pub fn check_on_endpoint(ep: &ResolvedEndpoint, url: &url::Url) -> Result<(), ProviderError> {
+    let same_host = url
+        .host_str()
+        .is_some_and(|h| h.eq_ignore_ascii_case(&ep.host));
+    if url.scheme() != "https"
+        || !same_host
+        || url.port_or_known_default() != Some(ep.port)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ProviderError::Egress(
+            "the request would leave the provider's pinned host",
+        ));
+    }
+    Ok(())
+}
+
+/// Headers an adapter may never set: auth (core places the key), routing, framing and cookies.
+const FORBIDDEN_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "x-goog-api-key",
+    "api-key",
+    "cookie",
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "upgrade",
+    "te",
+    "trailer",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+];
+
+/// Extra headers an adapter may set: non-secret protocol headers only, with a token name and a
+/// printable value (no header injection).
 pub fn check_extra_header(name: &str, value: &str) -> Result<(), ProviderError> {
-    let _ = (name, value);
+    let lname = name.to_ascii_lowercase();
+    if name.is_empty()
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        || FORBIDDEN_HEADERS.contains(&lname.as_str())
+    {
+        return Err(ProviderError::Egress("an adapter may not set that header"));
+    }
+    if value.len() > 1024 || value.bytes().any(|b| b.is_ascii_control()) {
+        return Err(ProviderError::Egress(
+            "a header value has characters that are not allowed",
+        ));
+    }
     Ok(())
 }
 
-/// The auth header names an adapter may place the key in.
+/// The headers a vendor key may be placed in: the vendors' own auth headers.
+pub const AUTH_HEADERS: &[&str] = &["x-api-key", "x-goog-api-key"];
+
+/// The auth header names an adapter may place the key in (besides `Authorization: Bearer`).
 pub fn check_auth_header_name(name: &str) -> Result<(), ProviderError> {
-    let _ = name;
-    Ok(())
+    if AUTH_HEADERS.contains(&name) {
+        Ok(())
+    } else {
+        Err(ProviderError::Egress(
+            "a key may only go in the vendor's own auth header",
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,9 +308,15 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whole-call deadline (a long streamed answer included).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// The transport's configuration.
+/// The transport's configuration: https only; no redirect is followed (a 3xx comes back as an
+/// answer and the adapter maps it to [`ProviderError::Redirect`]); no proxy, whatever
+/// `HTTPS_PROXY` / `ALL_PROXY` say (ureq reads them by default); statuses are read, not raised.
 pub fn pinned_config() -> ureq::config::Config {
     ureq::Agent::config_builder()
+        .https_only(true)
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .proxy(None)
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_global(Some(CALL_TIMEOUT))
         .http_status_as_error(false)
@@ -239,6 +328,9 @@ pub struct PinnedHttp;
 
 impl ProviderHttp for PinnedHttp {
     fn send(&self, req: WireRequest<'_>) -> Result<InboundResponse, ProviderError> {
+        // Defence in depth: the composed URL is re-checked against the endpoint here, at the
+        // last point before a socket opens.
+        check_on_endpoint(req.endpoint, &req.url)?;
         let agent: ureq::Agent = pinned_config().into();
         let url = req.url.as_str();
         let resp = match (req.method, &req.body) {

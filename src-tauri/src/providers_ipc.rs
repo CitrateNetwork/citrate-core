@@ -239,7 +239,13 @@ pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummary
         .collect();
     UsageSummaryView {
         log_intact: log.ready().is_ok(),
-        log_problem: log.ready().err().map(|e| e.to_string()),
+        log_problem: match log.ready() {
+            Ok(()) => None,
+            Err(e) => Some(
+                log.broken_reason()
+                    .map_or_else(|| e.to_string(), |b| format!("{e}: {b}")),
+            ),
+        },
         records: log.records(),
         as_of_ms: now,
         providers,

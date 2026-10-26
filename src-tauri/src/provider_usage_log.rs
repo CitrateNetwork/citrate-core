@@ -210,11 +210,22 @@ impl UsageLog {
                 self.broken = Some(format!("line {n} could not be re-encoded"));
                 return;
             };
-            let _ = (&key, rj);
+            let expect = mac_hex(&key, &self.head, &rj);
+            if line.prev != self.head || expect.as_deref() != Some(line.mac.as_str()) {
+                self.broken = Some(format!("line {n} does not match the chain"));
+                return;
+            }
+            if line.r.seq != self.next_seq || line.r.v != RECORD_VERSION {
+                self.broken = Some(format!("line {n} is out of sequence"));
+                return;
+            }
             self.apply(&line.r);
             self.head = line.mac;
             self.next_seq += 1;
             self.records += 1;
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            self.broken = Some("the last line is incomplete".into());
         }
     }
 

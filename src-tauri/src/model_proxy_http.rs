@@ -110,7 +110,20 @@ pub fn read_request(stream: &mut dyn Read) -> Result<HttpReq, (u16, &'static str
 /// Host and Origin guards. The `Host` must be the loopback endpoint at `port`; any `Origin` is
 /// refused.
 pub fn request_allowed(req: &HttpReq, port: u16) -> Result<(), (u16, &'static str)> {
-    let _ = (req, port);
+    if req.header("origin").is_some() {
+        return Err((403, "browser requests are not accepted"));
+    }
+    let host = req.header("host").unwrap_or("");
+    let ok = [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+    ]
+    .iter()
+    .any(|h| h.eq_ignore_ascii_case(host));
+    if !ok {
+        return Err((403, "the Host header must name this loopback endpoint"));
+    }
     Ok(())
 }
 

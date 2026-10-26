@@ -368,15 +368,118 @@ impl GuardBook {
         month: PeriodUse,
         now_ms: u64,
     ) -> Result<(), Refusal> {
-        let _ = (plan, adapter_models, today, month, now_ms);
+        let g = self.get(&plan.provider);
+        if let Some(h) = g.halt {
+            return Err(Refusal::Halted(h));
+        }
+        if !self.model_known(&plan.provider, &plan.model, adapter_models) {
+            let h = self.halt(
+                &plan.provider,
+                HaltReason::UnknownModel {
+                    model: plan.model.clone(),
+                },
+                now_ms,
+            );
+            return Err(Refusal::Halted(h));
+        }
+        if plan.reserve_in > SPIKE_INPUT_CEILING {
+            let h = self.halt(
+                &plan.provider,
+                HaltReason::TokenSpike {
+                    tokens: plan.reserve_in,
+                    threshold: SPIKE_INPUT_CEILING,
+                },
+                now_ms,
+            );
+            return Err(Refusal::Halted(h));
+        }
+        {
+            let e = self.entry(&plan.provider);
+            while e
+                .recent_calls
+                .front()
+                .is_some_and(|t| now_ms.saturating_sub(*t) >= BURST_WINDOW_MS || *t > now_ms)
+            {
+                e.recent_calls.pop_front();
+            }
+            if e.recent_calls.len() >= BURST_MAX_CALLS {
+                let calls = e.recent_calls.len() as u64 + 1;
+                let h = self.halt(
+                    &plan.provider,
+                    HaltReason::Burst {
+                        calls,
+                        window_ms: BURST_WINDOW_MS,
+                    },
+                    now_ms,
+                );
+                return Err(Refusal::Halted(h));
+            }
+        }
+        let caps = g.caps;
+        let call_tokens = plan.reserve_tokens();
+        for (which, used, cap) in [
+            ("daily token", today.tokens, caps.daily_tokens),
+            ("monthly token", month.tokens, caps.monthly_tokens),
+        ] {
+            if let Some(cap) = cap {
+                if used.saturating_add(call_tokens) > cap {
+                    return Err(Refusal::CapExceeded {
+                        which,
+                        used,
+                        call: call_tokens,
+                        cap,
+                    });
+                }
+            }
+        }
+        if caps.daily_micros.is_some() || caps.monthly_micros.is_some() {
+            let call_micros = plan.reserve_micros().ok_or(Refusal::PriceUnknown)?;
+            for (which, used, cap) in [
+                ("daily spend", today.micros, caps.daily_micros),
+                ("monthly spend", month.micros, caps.monthly_micros),
+            ] {
+                if let Some(cap) = cap {
+                    if used.saturating_add(call_micros) > cap {
+                        return Err(Refusal::CapExceeded {
+                            which,
+                            used,
+                            call: call_micros,
+                            cap,
+                        });
+                    }
+                }
+            }
+        }
+        self.entry(&plan.provider).recent_calls.push_back(now_ms);
         Ok(())
     }
 
     /// After a call finished: record its tokens; halt on a spike against the trailing mean.
     /// Returns the halt when one was raised.
     pub fn observe(&mut self, provider: &str, total_tokens: u64, now_ms: u64) -> Option<Halt> {
-        let _ = (provider, total_tokens, now_ms);
-        None
+        let e = self.entry(provider);
+        let n = e.recent_totals.len();
+        let spike = if n >= SPIKE_MIN_SAMPLES {
+            let mean = e.recent_totals.iter().sum::<u64>() / n as u64;
+            let threshold = mean.saturating_mul(SPIKE_FACTOR).max(SPIKE_FLOOR);
+            (total_tokens > threshold).then_some(threshold)
+        } else {
+            None
+        };
+        e.recent_totals.push_back(total_tokens);
+        while e.recent_totals.len() > SPIKE_WINDOW {
+            e.recent_totals.pop_front();
+        }
+        spike.map(|threshold| {
+            self.halt(
+                provider,
+                HaltReason::TokenSpike {
+                    tokens: total_tokens,
+                    threshold,
+                },
+                now_ms,
+            )
+        })
     }
 
     /// The member pauses a provider.
@@ -538,7 +641,12 @@ pub fn guard_path(dir: &Path) -> PathBuf {
 /// keyring: `unreadable` (every provider halted until the member resets), the bad file kept aside.
 pub fn load(dir: &Path, keyring: &dyn AiKeyring, now_ms: u64) -> GuardBook {
     use hmac::Mac as _;
-    let key = mac_key(keyring, GUARD_MAC_ACCOUNT).unwrap_or_default();
+    let Ok(key) = mac_key(keyring, GUARD_MAC_ACCOUNT) else {
+        return GuardBook {
+            unreadable: true,
+            ..GuardBook::default()
+        };
+    };
     let path = guard_path(dir);
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
@@ -557,7 +665,9 @@ pub fn load(dir: &Path, keyring: &dyn AiKeyring, now_ms: u64) -> GuardBook {
         }
     };
     let parsed = serde_json::from_slice::<Sealed>(&bytes).ok().and_then(|s| {
-        let _ = &s.mac;
+        let tag = hex::decode(&s.mac).ok()?;
+        mac_of(&key, &s.body)?.verify_slice(&tag).ok()?;
+        (s.v == SEALED_VERSION).then_some(())?;
         serde_json::from_str::<GuardFile>(&s.body).ok()
     });
     match parsed {

@@ -26,9 +26,6 @@
 //! Streaming hands each piece of assistant text to `on_text` as it arrives; the returned
 //! [`ChatResponse`] is always the whole turn, tool calls included.
 
-// Interface commit: the proxy that uses these lands in the following commits of this PR.
-#![allow(dead_code)]
-
 use crate::secret::SecretString;
 use serde_json::Value;
 use std::io::Read;
@@ -179,7 +176,11 @@ impl ApiKey {
 /// A plain shape check every vendor format check starts from: 20..=512 printable ASCII bytes,
 /// no whitespace.
 pub fn basic_key_shape(key: &ApiKey) -> Result<(), ProviderError> {
-    if key.len() < 20 || key.len() > 512 || !key.all_bytes(|b| b.is_ascii_graphic()) {
+    if key.is_empty()
+        || key.len() < 20
+        || key.len() > 512
+        || !key.all_bytes(|b| b.is_ascii_graphic())
+    {
         return Err(ProviderError::KeyFormat(
             "that does not look like an API key (check you copied all of it)",
         ));
@@ -392,6 +393,8 @@ pub enum Method {
 pub enum AuthPlacement {
     /// `Authorization: Bearer <key>` (OpenAI, xAI, DeepSeek, Meta, OpenAI-compatible).
     Bearer,
+    // Consumed by WP-S1-PROV-ADAPT (Anthropic `x-api-key`, Gemini `x-goog-api-key`).
+    #[cfg_attr(not(test), allow(dead_code))]
     /// A named header carrying the bare key (`x-api-key` for Anthropic, `x-goog-api-key` for
     /// Gemini).
     Header(&'static str),
@@ -482,10 +485,6 @@ impl<'a> ProviderCtx<'a> {
             key,
             http,
         }
-    }
-
-    pub fn endpoint(&self) -> &crate::provider_egress::ResolvedEndpoint {
-        self.endpoint
     }
 
     /// Compose, check and send. Fails closed (nothing sent) when the joined URL leaves the pinned

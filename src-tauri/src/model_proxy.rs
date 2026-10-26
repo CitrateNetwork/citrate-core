@@ -39,7 +39,7 @@ use crate::provider_openai_compat::OpenAiCompatAdapter;
 use crate::provider_usage_log::{Kind, LogError, UsageLog};
 use crate::secret::SecretString;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// App-data subdirectory for the guard file and the usage log.
@@ -52,7 +52,10 @@ pub const MAX_OUTPUT_TOKENS: u32 = 65_536;
 /// Tokens added per message for the chat template, on top of its UTF-8 bytes.
 pub const PER_MESSAGE_OVERHEAD: u64 = 16;
 /// Route tokens: lifetime and how many may be live at once.
+// Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const ROUTE_TTL_MS: u64 = 12 * 60 * 60 * 1000;
+#[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_ROUTES: usize = 64;
 /// Custom endpoints a member may add.
 pub const MAX_CUSTOM_ENDPOINTS: usize = 8;
@@ -149,14 +152,12 @@ impl ProxyError {
 /// How a provider is served in this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterKind {
-    Native,
     OpenAiCompatible,
 }
 
 impl AdapterKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            AdapterKind::Native => "native",
             AdapterKind::OpenAiCompatible => "openai-compatible",
         }
     }
@@ -197,6 +198,8 @@ pub struct ProxyRoute {
 }
 
 /// What the sidecar gets: the loopback base URL and a bearer for this route only.
+// Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct ProxyGrant {
     pub base_url: String,
     pub bearer: SecretString,
@@ -292,10 +295,6 @@ impl ModelProxy {
         }
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -311,6 +310,10 @@ impl ModelProxy {
         match id {
             ProviderId::Vendor(v) => {
                 let (a, k) = vendor_adapter(*v).ok_or(ProxyError::NotAvailable)?;
+                // A registry slip must never send one vendor's key through another's adapter.
+                if a.id() != *id {
+                    return Err(ProxyError::NotAvailable);
+                }
                 let ep = crate::provider_egress::resolve_vendor(*v)
                     .map_err(|e| ProxyError::Egress(e.to_string()))?;
                 Ok((a, k, ep))
@@ -397,25 +400,80 @@ impl ModelProxy {
         mut req: ChatRequest,
         conversation: Option<String>,
     ) -> Result<(Prepared, ChatRequest), ProxyError> {
-        let _ = (&route, &conversation);
+        // 1. The route decides the provider and model; the body may only repeat the model.
         if req.model.is_empty() {
             req.model = route.model.clone();
+        }
+        if req.model != route.model {
+            return Err(ProxyError::BadRequest(
+                "the request names a different model than its route".into(),
+            ));
         }
         if req.max_tokens == 0 {
             req.max_tokens = DEFAULT_MAX_OUTPUT;
         }
+        req.max_tokens = req.max_tokens.min(MAX_OUTPUT_TOKENS);
+        let conversation = conversation.filter(|c| valid_label(c, 64));
+        // 2. Egress: a pinned vendor host, or a confirmed custom endpoint.
         let (adapter, _kind, endpoint) = self.resolve(&route.provider)?;
-        let key = self.read_key(&route.provider, &endpoint)?;
-        let plan = CallPlan {
-            provider: route.provider.to_string(),
-            model: req.model.clone(),
-            reserve_in: input_token_bound(&req),
-            reserve_out: u64::from(req.max_tokens),
-            price: None,
+        // 3-4. Guard and the begin record, under the state lock (so concurrent calls see each
+        //      other's reservations).
+        let provider = route.provider.to_string();
+        let adapter_models: Vec<String> = adapter.models().into_iter().map(|m| m.id).collect();
+        let call_id = format!("pc-{:016x}", rand::random::<u64>());
+        let now = now_ms();
+        let plan = {
+            let mut inner = self.inner();
+            let Inner { guard, log } = &mut *inner;
+            log.ready().map_err(ProxyError::LogUnavailable)?;
+            let plan = CallPlan {
+                provider: provider.clone(),
+                model: req.model.clone(),
+                reserve_in: input_token_bound(&req),
+                reserve_out: u64::from(req.max_tokens),
+                price: guard.price_for(
+                    &provider,
+                    &req.model,
+                    Self::adapter_price(adapter.as_ref(), &req.model),
+                ),
+            };
+            let (today, month) = log.period_use(&provider, now);
+            if let Err(refusal) = guard.admit(&plan, &adapter_models, today, month, now) {
+                let err = ProxyError::Refused(refusal);
+                let mut r = Self::record_for(Kind::Refused, &call_id, route, &endpoint, now);
+                r.conversation = conversation.clone();
+                r.outcome = Some(err.outcome().into());
+                // Best effort: the refusal stands whether or not it could be recorded.
+                let _ = log.append(r);
+                let _ = crate::provider_guard::save(&self.dir, guard);
+                return Err(err);
+            }
+            let mut r = Self::record_for(Kind::Begin, &call_id, route, &endpoint, now);
+            r.conversation = conversation.clone();
+            r.reserve_in = Some(plan.reserve_in);
+            r.reserve_out = Some(plan.reserve_out);
+            r.reserve_micros = plan.reserve_micros();
+            log.append(r).map_err(ProxyError::LogUnavailable)?;
+            plan
+        };
+        // 5. The key, last: a refused call never reads it.
+        let key = match self.read_key(&route.provider, &endpoint) {
+            Ok(k) => k,
+            Err(e) => {
+                self.finish(
+                    &call_id,
+                    route,
+                    &endpoint,
+                    &plan,
+                    &conversation,
+                    &Err(e.clone()),
+                )?;
+                return Err(e);
+            }
         };
         Ok((
             Prepared {
-                call_id: format!("pc-{:016x}", rand::random::<u64>()),
+                call_id,
                 endpoint,
                 key,
                 adapter,
@@ -427,17 +485,129 @@ impl ModelProxy {
         ))
     }
 
-    /// Steps 6-7: the vendor call and the end record.
+    /// Steps 6-7: the vendor call and the end record. The reply is returned only once the end
+    /// record is written.
     fn execute(
         &self,
         p: Prepared,
         req: &ChatRequest,
         on_text: &mut dyn FnMut(&str),
     ) -> Result<ChatResponse, ProxyError> {
-        let ctx = ProviderCtx::new(&p.endpoint, &p.key, self.http.as_ref());
-        p.adapter
-            .complete(&ctx, req, on_text)
-            .map_err(ProxyError::Provider)
+        let result = {
+            let ctx = ProviderCtx::new(&p.endpoint, &p.key, self.http.as_ref());
+            p.adapter
+                .complete(&ctx, req, on_text)
+                .map_err(ProxyError::Provider)
+        };
+        drop(p.key);
+        self.finish(
+            &p.call_id,
+            &p.route,
+            &p.endpoint,
+            &p.plan,
+            &p.conversation,
+            &result,
+        )?;
+        result
+    }
+
+    /// Write a call's end record (and run the spike check). `Err` = it could not be written, so
+    /// the caller must not return the reply.
+    fn finish(
+        &self,
+        call_id: &str,
+        route: &ProxyRoute,
+        endpoint: &ResolvedEndpoint,
+        plan: &CallPlan,
+        conversation: &Option<String>,
+        result: &Result<ChatResponse, ProxyError>,
+    ) -> Result<(), ProxyError> {
+        let now = now_ms();
+        let mut inner = self.inner();
+        let Inner { guard, log } = &mut *inner;
+        let mut r = Self::record_for(Kind::End, call_id, route, endpoint, now);
+        r.conversation = conversation.clone();
+        let usage = result.as_ref().ok().and_then(|resp| resp.usage);
+        if let Some(u) = usage {
+            r.tokens_in = Some(u.input_tokens);
+            r.tokens_out = Some(u.output_tokens);
+            r.cost_micros = plan
+                .price
+                .map(|pr| pr.cost(u.input_tokens, u.output_tokens));
+        }
+        r.outcome = Some(match result {
+            Ok(_) => "ok".into(),
+            Err(e) => e.outcome().into(),
+        });
+        log.append(r).map_err(ProxyError::LogUnavailable)?;
+        if let Some(u) = usage {
+            if guard.observe(&plan.provider, u.total(), now).is_some() {
+                let _ = crate::provider_guard::save(&self.dir, guard);
+            }
+        }
+        Ok(())
+    }
+
+    /// A usage record for this route and endpoint.
+    fn record_for(
+        kind: Kind,
+        call_id: &str,
+        route: &ProxyRoute,
+        endpoint: &ResolvedEndpoint,
+        now: u64,
+    ) -> crate::provider_usage_log::Record {
+        let mut r = crate::provider_usage_log::record(
+            kind,
+            call_id,
+            route.provider.as_str(),
+            &route.model,
+            &route.session_id,
+            now,
+        );
+        r.verified = endpoint.verified;
+        r
+    }
+
+    /// Record a live key test (a use of the key) and require the log to be writable first.
+    fn key_test_logged(
+        &self,
+        pid: &ProviderId,
+        ep: &ResolvedEndpoint,
+        adapter: &dyn ModelProvider,
+        key: &ApiKey,
+    ) -> Result<KeyTest, ProxyError> {
+        self.inner()
+            .log
+            .ready()
+            .map_err(ProxyError::LogUnavailable)?;
+        let res = adapter
+            .test_key(&ProviderCtx::new(ep, key, self.http.as_ref()))
+            .map_err(ProxyError::Provider);
+        let route = ProxyRoute {
+            provider: pid.clone(),
+            model: String::new(),
+            session_id: "settings".into(),
+        };
+        let mut r = Self::record_for(
+            Kind::KeyTest,
+            &format!("kt-{:016x}", rand::random::<u64>()),
+            &route,
+            ep,
+            now_ms(),
+        );
+        r.outcome = Some(match &res {
+            Ok(_) => "ok".into(),
+            Err(e) => e.outcome().into(),
+        });
+        self.inner()
+            .log
+            .append(r)
+            .map_err(ProxyError::LogUnavailable)?;
+        res.map(|mut t| {
+            t.models
+                .truncate(crate::provider_openai_compat::MAX_LISTED_MODELS);
+            t
+        })
     }
 
     // ---- keys (one way) ---------------------------------------------------------------------
@@ -450,9 +620,7 @@ impl ModelProxy {
         adapter
             .check_key_format(&key)
             .map_err(ProxyError::Provider)?;
-        let test = adapter
-            .test_key(&ProviderCtx::new(&ep, &key, self.http.as_ref()))
-            .map_err(ProxyError::Provider)?;
+        let test = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key)?;
         self.keyring
             .set(&Self::key_account(&pid, &ep), key.expose_for_keychain())
             .map_err(|_| ProxyError::Storage("the keychain could not be written".into()))?;
@@ -464,13 +632,14 @@ impl ModelProxy {
 
     /// Test the stored key live.
     pub fn test_key(&self, id: &str, now: u64) -> Result<KeyTest, ProxyError> {
-        let _ = now;
         let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
         let (adapter, _, ep) = self.resolve(&pid)?;
         let key = self.read_key(&pid, &ep)?;
-        adapter
-            .test_key(&ProviderCtx::new(&ep, &key, self.http.as_ref()))
-            .map_err(ProxyError::Provider)
+        let t = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key)?;
+        let mut inner = self.inner();
+        inner.guard.key_set(pid.as_str(), t.models.clone(), now);
+        let _ = crate::provider_guard::save(&self.dir, &inner.guard);
+        Ok(t)
     }
 
     /// Delete the stored key (and revoke every route to this provider).
@@ -505,6 +674,8 @@ impl ModelProxy {
                 .get(&Self::key_account(id, &ep))
                 .ok()
                 .flatten()
+                // Presence only: the value is wiped at once.
+                .map(zeroize::Zeroizing::new)
                 .is_some()
         })
     }
@@ -574,7 +745,7 @@ impl ModelProxy {
             label: label.to_string(),
             base_url: url.as_str().trim_end_matches('/').to_string(),
             models,
-            confirmed: true,
+            confirmed: false,
             created_ms: now,
         };
         inner.guard.customs.push(c.clone());
@@ -584,8 +755,20 @@ impl ModelProxy {
 
     /// The member confirms a custom endpoint by echoing its exact URL.
     pub fn confirm_custom(&self, id: &str, base_url_echo: &str) -> Result<(), ProxyError> {
-        let _ = (id, base_url_echo);
-        Ok(())
+        let mut inner = self.inner();
+        let c = inner
+            .guard
+            .customs
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or_else(|| ProxyError::Egress("that custom endpoint is not set up".into()))?;
+        if base_url_echo.trim().trim_end_matches('/') != c.base_url {
+            return Err(ProxyError::BadRequest(
+                "the URL does not match the endpoint being confirmed".into(),
+            ));
+        }
+        c.confirmed = true;
+        crate::provider_guard::save(&self.dir, &inner.guard).map_err(ProxyError::Storage)
     }
 
     /// Remove a custom endpoint and its key.
@@ -611,10 +794,14 @@ impl ModelProxy {
         self.port.store(port, std::sync::atomic::Ordering::SeqCst);
     }
 
+    // Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn port(&self) -> u16 {
         self.port.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    // Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
+    #[cfg_attr(not(test), allow(dead_code))]
     /// Mint a bearer bound to one provider, model and session. In-process only: no command
     /// returns one. The sidecar gets it in its session's `LlmEndpoint`.
     pub fn mint_route(&self, route: ProxyRoute) -> Result<ProxyGrant, ProxyError> {
@@ -661,6 +848,8 @@ impl ModelProxy {
             .map(|r| r.route.clone())
     }
 
+    // Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn revoke_session(&self, session_id: &str) {
         let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
         routes.retain(|_, r| r.route.session_id != session_id);
@@ -703,9 +892,6 @@ impl ModelProxy {
             ProviderId::Custom(_) => Some(AdapterKind::OpenAiCompatible),
         }
     }
-
-    #[allow(dead_code)]
-    fn log_kind_unused(_: Kind) {}
 }
 
 #[cfg(test)]

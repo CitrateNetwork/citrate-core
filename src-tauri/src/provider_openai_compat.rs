@@ -6,9 +6,6 @@
 //! (WP-S1-PROV-ADAPT) replaces it. The key travels only as `Authorization: Bearer`, attached by
 //! core ([`ProviderCtx::send`]).
 
-// Interface commit: the proxy that uses these lands in the following commits of this PR.
-#![allow(dead_code)]
-
 use crate::model_provider::{
     basic_key_shape, read_sse, status_error, ApiKey, AuthPlacement, ChatRequest, ChatResponse,
     FinishReason, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx,

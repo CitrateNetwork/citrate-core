@@ -172,7 +172,7 @@ fn the_diagnostics_bundle_scrubs_every_vendor_key_shape() {
         let crash =
             format!("panicked at provider call: key={k} status=401\nBearer {k}\n{{\"k\":\"{k}\"}}");
         let b = crate::telemetry::build_bundle(
-            "rpt_test".into(),
+            "rpt_0a1b2c".into(),
             "0.5.2",
             "macos",
             &crash,
