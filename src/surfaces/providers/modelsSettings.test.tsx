@@ -297,6 +297,7 @@ describe("Settings › Models: model prices under the default spending caps", ()
     expect(c).toContain('data-testid="enter-price-gpt-c"');
     expect(c).toMatch(/data-testid="enter-price-gpt-c"[^>]*>Enter price</);
     expect(c).toMatch(/data-testid="enter-price-gpt-b"[^>]*>Change price</);
+    expect(c).toMatch(/data-testid="enter-price-gpt-a"[^>]*>Override price</);
   });
 
   it("with no spending cap, an unpriced model is not called refused", () => {
@@ -356,5 +357,21 @@ describe("Settings › Models: fail-closed states pause every provider", () => {
     expect(html).toContain("clock reads earlier than the last recorded call");
     expect(html).toContain("Check again");
     expect(render()).not.toContain("failclosed-clock");
+  });
+});
+
+describe("Settings › Models: vendor-specific key guidance (core #530)", () => {
+  it("Anthropic steers toward a workspace-scoped, spend-limited key", () => {
+    const html = render({ statuses: [vendor({ id: "anthropic", name: "Anthropic", host: "api.anthropic.com", adapter: "native" })] });
+    const c = card(html, "anthropic");
+    expect(c).toContain("workspace-scoped key");
+    expect(c).toContain("spend limit");
+    expect(c).toContain("native adapter");
+  });
+
+  it("Gemini says there is no fixed key format, so the live test decides", () => {
+    const c = card(render({ statuses: [vendor({ id: "gemini", name: "Google Gemini", host: "generativelanguage.googleapis.com", adapter: "native" })] }), "gemini");
+    expect(c).toContain("no fixed key format");
+    expect(c).toContain("the live test with Google decides");
   });
 });
