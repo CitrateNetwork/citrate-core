@@ -9,6 +9,11 @@ import { join } from "node:path";
 import { loadState, freshState, PERSIST_KEYS, STORAGE_KEY, type AppState } from "./state";
 import { store } from "./store";
 
+// D-9 (2026-10-26): the keys a 0.5.1 save used for the retired liquid staking pool self-stake.
+const RETIRED_POOL_KEYS: string[] = JSON.parse(
+  readFileSync(join(__dirname, "../../fixtures/retired/liquid-staking-pool.json"), "utf8"),
+).persistedKeys;
+
 const DIR = join(__dirname, "../../fixtures/upgrade-v0.5.1/webview");
 const fixture = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(DIR, `localStorage.citrate-core-proto-v2.${name}.json`), "utf8"));
@@ -99,5 +104,36 @@ describe("0.5.1 saved state loads in this build", () => {
       expect({ key: k, value: written[k] }).toEqual({ key: k, value: MEMBER[k] });
     }
     expect(written.telemetryConsentVersion).toBe(1);
+  });
+
+  // D-9: a 0.5.1 member who self-staked in the pool saved that figure. The pool is retired, so the
+  // figure is not current: it is dropped on load, never reaches app state, and is not written back.
+  it("a 0.5.1 pool self-stake is dropped on load and never written back", () => {
+    expect(RETIRED_POOL_KEYS.length).toBeGreaterThan(0);
+    for (const k of RETIRED_POOL_KEYS) expect(k in MEMBER).toBe(true);
+    const blob: Record<string, unknown> = { ...MEMBER };
+    for (const k of RETIRED_POOL_KEYS) blob[k] = 2500;
+    const s = loadFrom(blob) as unknown as Record<string, unknown>;
+    for (const k of RETIRED_POOL_KEYS) expect({ key: k, inState: k in s }).toEqual({ key: k, inState: false });
+    // Everything else the member had still loads.
+    expect(s.hasGrant).toBe(true);
+    expect(s.liquid).toBe(MEMBER.liquid);
+    vi.useFakeTimers();
+    store.state = s as unknown as AppState;
+    localStorage.clear();
+    store.save();
+    vi.advanceTimersByTime(1000);
+    const written = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Record<string, unknown>;
+    for (const k of RETIRED_POOL_KEYS) expect(k in written).toBe(false);
+  });
+
+  it("a damaged pool self-stake value (not a number) loads without error and is dropped", () => {
+    for (const bad of [null, "2500", { shares: "1" }, -1, Number.NaN]) {
+      const blob: Record<string, unknown> = { ...MEMBER };
+      for (const k of RETIRED_POOL_KEYS) blob[k] = bad;
+      const s = loadFrom(blob) as unknown as Record<string, unknown>;
+      for (const k of RETIRED_POOL_KEYS) expect(k in s).toBe(false);
+      expect(s.stage).toBe("done");
+    }
   });
 });

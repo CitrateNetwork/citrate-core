@@ -64,7 +64,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
 
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   // HONEST staked = REAL attributed stake (MembershipStakeVault.attributedStake →
-  // s5StakeWei) + self-stake — NOT a hardcoded 32,000. Under the current bond-fund
+  // s5StakeWei) — NOT a hardcoded 32,000, and no self-stake (D-9 retired the pool). Under the current bond-fund
   // model the grant funds the EOA LIQUID (attributedStake reads 0), so a just-granted
   // member honestly shows 0 staked and their 32k in "liquid"; once the grant is
   // actually staked (the 1-year-lock model) attributedStake carries it and this shows
@@ -77,7 +77,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
       return 0;
     }
   })();
-  const staked = grantStakedSalt + s.selfStake;
+  const staked = grantStakedSalt;
   // REGISTERED validator = the member's bond clone is the registry's staker, which
   // the store folds as `bondedStake` from grantStatus. Distinct from `staked`
   // (attributed grant principal): a funded member is not yet a validator.
@@ -114,7 +114,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Finality", value: "—", sub: "not running yet", color: "var(--tx-3)", tip: "Checkpoint finality is specified but not running on betanet: the finalized tag still returns the genesis block. A confirmation count is a depth, not finality.", vsize: "21px" },
     { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: validatorCount != null ? "network · active set" : "reading…", color: "var(--tx-1)", tip: "ValidatorRegistry.activeCount() — the active consensus validator set securing the whole network (on-chain, reads the same from every node), not this node's local peer count", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
-    { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "LiquidStakingPool shares", vsize: "21px" },
+    { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "Your membership grant, attributed by MembershipStakeVault. Staking is through your validator bond.", vsize: "21px" },
     // The SUBTITLE used to read "not validating" whenever earnToday === 0 — i.e. it
     // reported EARNINGS as validator STATUS. A member who had just bonded 32,000
     // SALT and was producing blocks saw "0.00 / not validating" (2026-08-06). Status

@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawalsRead, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo, ChatRouteStatus } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo, ChatRouteStatus } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import book from "../../../src-tauri/addresses/40204.json";
@@ -346,14 +346,8 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async balances() {
         assertSimAllowed("wallet.balances");
         const st = s();
-        // `staked` = the SELF-stake only (the atomic chain fact the tauri bridge
-        // reads via LiquidStakingPool.balanceOf). The vaulted membership grant is
-        // an entitlement the store/UI layers on top (hasGrant ? 32000 : 0), so it
-        // is NOT included here — keeping the field's meaning identical in sim and
-        // tauri (self-stake), which the store folds into AppState.selfStake.
         return {
           liquid: st.liquid,
-          staked: st.selfStake,
           claimable: st.claimable,
           address: st.walletAddr,
         };
@@ -369,18 +363,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async send(to: string, amountWei: string): Promise<CeremonyView> {
         assertSimAllowed("wallet.send");
         return simWalletCeremony({ action: `Send ${weiToSalt(amountWei)}`, cost: "gas settles in the desktop app", destination: to });
-      },
-      async stake(amountWei: string): Promise<CeremonyView> {
-        assertSimAllowed("wallet.stake");
-        return simWalletCeremony({ action: `Stake ${weiToSalt(amountWei)} (LiquidStakingPool deposit)`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
-      },
-      async requestWithdrawal(amountWei: string): Promise<CeremonyView> {
-        assertSimAllowed("wallet.requestWithdrawal");
-        return simWalletCeremony({ action: `Request withdrawal of ${weiToSalt(amountWei)}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
-      },
-      async claimWithdrawal(id: string): Promise<CeremonyView> {
-        assertSimAllowed("wallet.claimWithdrawal");
-        return simWalletCeremony({ action: `Claim matured withdrawal #${id}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
       async deviceId(): Promise<string> {
         // No custody vault in web-dev, so there is no real device key to fingerprint.
@@ -408,12 +390,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       async linkReject(): Promise<void> {
         assertSimAllowed("wallet.linkReject");
-      },
-      async pendingWithdrawals(): Promise<PendingWithdrawalsRead> {
-        // The web shim reaches no chain — there is no real pending queue to read.
-        // No rows, and not confirmed (Rule 1): nothing was read, so it is not "none".
-        assertSimAllowed("wallet.pendingWithdrawals");
-        return { withdrawals: [], confirmed: false, complete: true, note: "the web preview reaches no chain" };
       },
     },
 

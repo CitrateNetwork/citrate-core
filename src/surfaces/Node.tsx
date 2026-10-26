@@ -65,7 +65,7 @@ export function Node({ store, s }: SurfaceProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.hasGrant]);
 
-  const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
+  const staked = s.hasGrant ? 32000 : 0;
 
   // ----- header / tabs -----
   const ntabs: [string, string][] = [
