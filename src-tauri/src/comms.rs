@@ -1305,6 +1305,33 @@ pub async fn groups_roster(
     }
 }
 
+/// The member-facing reason a role change can't be made (#495). The UI shows the same words
+/// (`src/surfaces/groupRoles.ts`).
+pub(crate) const ROLE_GRANTS_NOT_AVAILABLE: &str =
+    "Role changes aren't available yet: signed role grants aren't built.";
+
+/// Why a role change can't be made in this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoleGrantError {
+    /// The pinned comms-member-daemon accepts a role change only with a signed role assertion,
+    /// and no part of core or the daemon signs one yet.
+    NotAvailable,
+}
+
+impl std::fmt::Display for RoleGrantError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoleGrantError::NotAvailable => f.write_str(ROLE_GRANTS_NOT_AVAILABLE),
+        }
+    }
+}
+
+/// Whether this build can sign a role grant.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn role_grants_available() -> std::result::Result<(), RoleGrantError> {
+    Ok(())
+}
+
 /// **groups_assign_role** — owner-signed role grant.
 #[tauri::command]
 pub async fn groups_assign_role(
