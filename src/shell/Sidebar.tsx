@@ -3,94 +3,20 @@ import { Store } from "./store";
 import { AppState, nodeLabel } from "./state";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { agentSlice } from "./slices/agent";
+import { PLACES, ROUTABLE, locate } from "./places";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
-// [id, label, iconA, iconB] — verbatim from the design's NAVI list. Ordering/grouping is finalized
-// in CX-S7 via SECTIONS below (this stays the flat item registry the sections index into).
-export const NAVI: [string, string, string, string][] = [
-  ["dashboard", "Hermes", "M3 11 L12 3 L21 11 V20 H14 V14 H10 V20 H3 Z", "M0 0"],
-  ["wallet", "Wallet", "M3 7 V17 A2 2 0 0 0 5 19 H19 A2 2 0 0 0 21 17 V9 A2 2 0 0 0 19 7 Z M3 7 A2 2 0 0 1 5 5 H16", "M15.5 13 H17.5"],
-  ["node", "Node", "M4 5 H20 V11 H4 Z M4 13 H20 V19 H4 Z", "M7 8 H7.01 M7 16 H7.01"],
-  ["storage", "Storage", "M12 3 C7 3 4 4.5 4 6.5 C4 8.5 7 10 12 10 C17 10 20 8.5 20 6.5 C20 4.5 17 3 12 3 Z", "M4 6.5 V17.5 C4 19.5 7 21 12 21 C17 21 20 19.5 20 17.5 V6.5 M4 12 C4 14 7 15.5 12 15.5 C17 15.5 20 14 20 12"],
-  ["journal", "Journal", "M6 3 H19 V21 H6 A2 2 0 0 1 4 19 V5 A2 2 0 0 1 6 3 Z", "M9 3 V21 M12.5 8 H16 M12.5 12 H15"],
-  ["comms", "Comms", "M18 16 V11 A6 6 0 0 0 6 11 V16 L4 18 H20 Z", "M10 21 A2 2 0 0 0 14 21"],
-  ["commissary", "Store", "M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z", "M3 8 L12 13 L21 8 M12 13 V21"],
-  ["settings", "Settings", "M4 7 H20 M4 12 H20 M4 17 H20", "M9 5 V9 M15 10 V14 M8 15 V19"],
-  ["models", "Models", "M4 7 L12 3 L20 7 L12 11 Z", "M4 12 L12 16 L20 12 M4 17 L12 21 L20 17"],
-  ["files", "Files", "M6 3 H14 L18 7 V21 H6 Z", "M14 3 V7 H18 M9 12 H15 M9 16 H15"],
-  // K4: storage components, routed as tabs under Files (Node › Storage in the five-place IA).
-  ["pins", "Pins", "M12 3 V14 M8 10 L12 14 L16 10", "M5 21 H19"],
-  ["backup", "Backup", "M4 14 V19 H20 V14", "M12 4 V14 M8 10 L12 14 L16 10"],
-  ["people", "People", "M12 12 A4 4 0 1 0 12 4 A4 4 0 0 0 12 12 Z M4 21 A8 8 0 0 1 20 21", "M0 0"],
-  ["groups", "Groups", "M8 11 A3 3 0 1 0 8 5 A3 3 0 0 0 8 11 Z M2 20 A6 6 0 0 1 14 20", "M16 11 A3 3 0 0 0 16 5 M18 20 A6 6 0 0 0 15 15"],
-  ["cluster", "Cluster", "M12 5 A2 2 0 1 0 12 4.99 M5 18 A2 2 0 1 0 5 17.99 M19 18 A2 2 0 1 0 19 17.99", "M12 7 L6 16 M12 7 L18 16"],
-  ["train", "Train", "M4 18 L9 12 L13 15 L20 6", "M4 20 H20 M4 4 V20"],
-  ["agent", "Agent", "M8 4 H16 V10 A4 4 0 0 1 8 10 Z M6 20 A6 6 0 0 1 18 20", "M10 7 H10.01 M14 7 H14.01"],
-  ["connections", "Connections", "M8 8 A4 4 0 0 0 8 16 H10 M16 8 A4 4 0 0 1 16 16 H14", "M8.5 12 H15.5"],
-  ["community", "Community", "M12 3 L14.5 8.5 L20.5 9.2 L16 13.3 L17.3 19.2 L12 16.1 L6.7 19.2 L8 13.3 L3.5 9.2 L9.5 8.5 Z", "M0 0"],
-];
+// Five-place navigation (0.5.2) — Hermes, Groups, Wallet, Node, Store, then Settings. Supersedes the
+// HUP-S0.8 sectioned sidebar. No surface was removed: every old route id still opens, inside the
+// place that now holds it (src/shell/places.ts; docs/nav/FIVE_PLACE_ROUTE_MAP.md). ALF is a Groups
+// tab for members, not a sidebar item.
 
-// HUP-S0.8 (D-34, owner-approved 2026-09-30) — the consolidated IA. Supersedes CX-S7.1's
-// "You / Your Groups" layout (18 items, six overlapping social entries). Hermes is home; the rest is
-// grouped by intent. Sub-surfaces are NOT removed: they stay routable (deep links work) and appear as
-// TABS under their parent (see NESTED / HUBS). "alf" is appended to People for ALF members.
-export const SECTIONS: { title: string; ids: string[] }[] = [
-  { title: "", ids: ["dashboard"] },
-  { title: "Build", ids: ["agent", "files", "models"] },
-  { title: "Money", ids: ["wallet"] },
-  { title: "Network", ids: ["node"] },
-  { title: "People", ids: ["groups"] },
-  { title: "More", ids: ["journal", "commissary", "settings"] },
-];
+/** Every deep-linkable route (the hash router's allowlist): canonical routes plus every old id. */
+export const ROUTES: string[] = ROUTABLE;
 
-/** HUP-S0.8 — surfaces that live as a tab under a top-level parent (child → parent). */
-export const NESTED: Record<string, string> = {
-  storage: "files",
-  pins: "files",
-  backup: "files",
-  people: "groups",
-  cluster: "groups",
-  train: "groups",
-  comms: "groups",
-  connections: "settings",
-};
-
-/** HUP-S0.8 — the tab strip shown on a parent and each of its nested surfaces. */
-export const HUBS: Record<string, { id: string; label: string }[]> = {
-  files: [
-    { id: "files", label: "Files" },
-    { id: "storage", label: "Memory" },
-    { id: "pins", label: "Pins" },
-    { id: "backup", label: "Backup" },
-  ],
-  groups: [
-    { id: "groups", label: "Chat" },
-    { id: "people", label: "Members" },
-    { id: "cluster", label: "Cluster" },
-    { id: "train", label: "Training" },
-    { id: "comms", label: "Alerts" },
-  ],
-  settings: [
-    { id: "settings", label: "Settings" },
-    { id: "connections", label: "Connections" },
-  ],
-};
-
-/** HUP-S0.8 — routable but not in the nav until wired (Rule 1: no placeholder in the main nav). */
-export const HIDDEN: string[] = ["community"];
-
-/** Every deep-linkable route (the hash router's allowlist). */
-export const ROUTES: string[] = [...NAVI.map(([id]) => id), "alf"];
-
-/** The top-level nav item a route highlights (a nested surface lights up its parent). */
-export const navParent = (route: string): string => NESTED[route] ?? route;
-
-// ALF cooperative workbench — appended to the nav ONLY for ALF members (gated on
-// s.alfMember, a claim). Graduation-cap glyph. See src/surfaces/ALF.tsx (ALF-ND-A).
-const ALF_NAV: [string, string, string, string] = [
-  "alf", "ALF", "M12 3 L22 8 L12 13 L2 8 Z", "M6 10.5 V15 C6 16.5 9 18 12 18 C15 18 18 16.5 18 15 V10.5",
-];
+/** The sidebar place a route highlights (an old id lights up the place that now holds it). */
+export const navParent = (route: string): string => locate(route).place;
 
 const nodeColors: Record<string, string> = {
   off: "var(--tx-3)",
@@ -105,15 +31,16 @@ const nodeColors: Record<string, string> = {
 
 export function Sidebar({ store, s }: { store: Store; s: AppState }) {
   const P = store.identity();
-  // The Agent item carries a live count of approvals awaiting the human, so a pending
+  // The Hermes item carries a live count of approvals awaiting the human, so a pending
   // action is never something the owner has to go hunting for (AGENT-US-4).
   const agentPending = agentSlice.use().approvals.length;
+  const here = navParent(s.route);
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   const tierText = effTier === "free" ? "public tier" : effTier === "enterprise" ? "enterprise · " + (s.org || "") : "pilot member";
   const tierColor = s.entitlement === "active" ? "rgba(205,231,214,.6)" : s.entitlement === "lapsed" ? "#dd7259" : "#ffbd10";
   const sideDotColor = s.node === "off" ? "rgba(205,231,214,.35)" : nodeColors[s.node];
   const sideDotAnim = s.node === "validating" || s.node === "syncing" ? "ccPulse 2.4s var(--ease-standard) infinite" : "none";
-  const sideNodeText = s.node === "off" ? "node off" : s.node === "syncing" ? "syncing " + (s.syncPct | 0) + "%" : nodeLabel(s.node) + " · " + fmtI(s.height);
+  const sideNodeText = s.node === "off" ? "node off" : s.node === "syncing" ? "syncing " + (s.syncPct | 0) + "%" : nodeLabel(s.node) + " · " + (s.height > 0 ? fmtI(s.height) : "—"); // 0 = not read (C1-V V10)
 
   return (
     <aside style={{ background: "var(--deep-evergreen)", color: "#cde7d6", display: "flex", flexDirection: "column", padding: "18px 12px 12px", minHeight: 0 }}>
@@ -124,73 +51,56 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
         </span>
       </div>
       <nav style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
-        {(() => {
-          // Index the flat NAVI registry by id, and append ALF to "You" for members (CX-S7.1).
-          const byId: Record<string, [string, string, string, string]> = {};
-          for (const item of s.alfMember ? [...NAVI, ALF_NAV] : NAVI) byId[item[0]] = item;
-          const sections = s.alfMember
-            ? SECTIONS.map((sec) => (sec.title === "People" ? { ...sec, ids: [...sec.ids, "alf"] } : sec))
-            : SECTIONS;
-          return sections.map((sec, si) => (
-            <div key={si}>
-              {sec.title && (
-                <div
-                  className="mono"
-                  style={{ padding: "0 12px 6px", fontSize: 9, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(205,231,214,.4)" }}
-                >
-                  {sec.title}
-                </div>
-              )}
-              <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-                {sec.ids.map((id) => {
-                  const item = byId[id];
-                  if (!item) return null;
-                  const [, label, iconA, iconB] = item;
-                  const active = navParent(s.route) === id;
-                  // Group alerts (the former Comms item) now surface as a dot on Groups.
-                  const dot = id === "groups" && s.stage === "done";
-                  const badge = id === "agent" && agentPending > 0 ? agentPending : 0;
-                  return (
-                    <li key={id}>
-                      <a
-                        href={"#/" + id}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          store.go(id);
-                        }}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 12,
-                          padding: "9px 12px",
-                          borderRadius: "var(--r-1)",
-                          fontSize: 13,
-                          fontWeight: active ? 500 : 400,
-                          color: active ? "#0e0f0c" : "#cde7d6",
-                          background: active ? "var(--citrate-green)" : "transparent",
-                          transition: "background var(--dur-fast) var(--ease-standard)",
-                          textDecoration: "none",
-                        }}
-                      >
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                          <path d={iconA}></path>
-                          <path d={iconB}></path>
-                        </svg>
-                        <span style={{ flex: 1 }}>{label}</span>
-                        {badge > 0 && (
-                          <span className="mono tabular" style={{ fontSize: 9.5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
-                            {badge}
-                          </span>
-                        )}
-                        {dot && badge === 0 && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
-                      </a>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ));
-        })()}
+        {[PLACES.filter((p) => p.id !== "settings"), PLACES.filter((p) => p.id === "settings")].map((group, gi) => (
+          <ul key={gi} style={{ listStyle: "none", padding: 0, margin: gi ? "auto 0 0" : 0, display: "flex", flexDirection: "column", gap: 2 }}>
+            {group.map((place) => {
+              const id = place.id;
+              const [iconA, iconB] = place.icon;
+              const href = place.tabs[0].route;
+              const active = here === id;
+              // Group alerts surface as a dot on Groups; approvals awaiting the human badge Hermes.
+              const dot = id === "groups" && s.stage === "done";
+              const badge = id === "hermes" && agentPending > 0 ? agentPending : 0;
+              return (
+                <li key={id}>
+                  <a
+                    href={"#/" + href}
+                    aria-current={active ? "page" : undefined}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      store.go(href);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "9px 12px",
+                      borderRadius: "var(--r-1)",
+                      fontSize: 13,
+                      fontWeight: active ? 500 : 400,
+                      color: active ? "#0e0f0c" : "#cde7d6",
+                      background: active ? "var(--citrate-green)" : "transparent",
+                      transition: "background var(--dur-fast) var(--ease-standard)",
+                      textDecoration: "none",
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                      <path d={iconA}></path>
+                      <path d={iconB}></path>
+                    </svg>
+                    <span style={{ flex: 1 }}>{place.label}</span>
+                    {badge > 0 && (
+                      <span aria-label={badge + " awaiting your review"} className="mono tabular" style={{ fontSize: 9.5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+                        {badge}
+                      </span>
+                    )}
+                    {dot && badge === 0 && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        ))}
       </nav>
       <div style={{ borderTop: "1px solid rgba(205,231,214,.12)", padding: "12px 8px 4px", display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

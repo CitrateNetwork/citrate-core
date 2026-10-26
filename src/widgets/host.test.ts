@@ -6,7 +6,7 @@ import { createWidgetHost, type FrameLike, type WidgetHostDeps } from "./host";
 import { resolveQuery, WIDGET_QUERIES, type WidgetSources } from "./catalog";
 
 const sources: WidgetSources = {
-  context: () => ({ height: 120_345, peers: 7, finalityAge: 3, nodeState: "synced", staked: 32_000, liquid: 12.5, claimable: 1.25, earningsToday: 0.5, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "T1" }),
+  context: () => ({ height: 120_345, peers: 7, nodeState: "synced", staked: 32_000, liquid: 12.5, claimable: 1.25, earningsToday: 0.5, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "T1" }),
   model: () => ({ label: "Gemma 4 E4B", id: "local:gemma" }),
   daemons: () => ({ allPaused: false, total: 2, running: 1, paused: 0, budgetUsedUp: 1 }),
 };
@@ -27,7 +27,7 @@ const q = (id: number, query: string) => ({ v: 1, type: "widget.query", id, quer
 describe("widget query catalog", () => {
   it("is the same list Rust serves and resolves only from app state", () => {
     expect([...WIDGET_QUERIES]).toEqual(["node.status", "wallet.summary", "model.active", "daemons.summary"]);
-    expect(resolveQuery("node.status", sources)).toEqual({ height: 120_345, peers: 7, state: "synced", finalityAgeSec: 3 });
+    expect(resolveQuery("node.status", sources)).toEqual({ height: 120_345, peers: 7, state: "synced" });
     expect(resolveQuery("model.active", sources)).toEqual({ label: "Gemma 4 E4B", id: "local:gemma" });
     expect(resolveQuery("daemons.summary", sources)).toEqual({ allPaused: false, total: 2, running: 1, paused: 0, budgetUsedUp: 1 });
   });
@@ -43,7 +43,7 @@ describe("widget host bridge", () => {
   it("answers a declared catalog query from its own frame", () => {
     const { f, h } = host(["node.status"]);
     h.onMessage({ source: f, data: q(1, "node.status") });
-    expect(f.sent).toEqual([{ v: 1, type: "widget.result", id: 1, ok: true, data: { height: 120_345, peers: 7, state: "synced", finalityAgeSec: 3 } }]);
+    expect(f.sent).toEqual([{ v: 1, type: "widget.result", id: 1, ok: true, data: { height: 120_345, peers: 7, state: "synced" } }]);
   });
 
   it("refuses a catalog query the widget did not declare", () => {

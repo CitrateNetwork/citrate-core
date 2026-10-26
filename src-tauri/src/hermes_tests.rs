@@ -551,6 +551,46 @@ fn a_decided_effect_is_not_re_bridged_into_a_second_broadcast() {
 }
 
 #[test]
+fn an_expired_bridged_ceremony_is_bridged_again_as_a_fresh_request() {
+    // A ceremony that expired unapproved signed nothing, so re-bridging the same head effect
+    // cannot double-broadcast. The member gets a fresh request instead of a head that reads as
+    // "decided" and no longer has a card.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    let mgr = control_manager(chain_effect_mock());
+    let wall = Arc::new(AtomicU64::new(1_790_000_000_000));
+    let base = std::time::Instant::now();
+    let w2 = Arc::clone(&wall);
+    let ceremony = SignatureCeremony::with_clock(
+        crate::ceremony::PENDING_TTL,
+        Box::new(move || {
+            let ms = w2.load(Ordering::SeqCst);
+            crate::ceremony::ClockReading {
+                mono: base + std::time::Duration::from_millis(ms - 1_790_000_000_000),
+                wall_ms: ms,
+            }
+        }),
+    );
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        rpc_ok(serde_json::json!("0x8000")),
+        rpc_ok(serde_json::json!("0x8000")),
+    ]));
+    let c1 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .unwrap();
+    wall.fetch_add(crate::ceremony::PENDING_TTL_MS, Ordering::SeqCst);
+    assert!(ceremony.status(&c1.id).is_none(), "the first request expired");
+    let c2 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .expect("an expired request is replaced by a fresh one");
+    assert_ne!(c2.id, c1.id);
+    assert!(ceremony.status(&c2.id).is_some());
+}
+
+#[test]
 fn bridge_pending_skips_a_non_chain_effect() {
     // An approval with no to/data (a code/shell effect) has no chain signature to bridge.
     let mut mock = MockControl::new();

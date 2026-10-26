@@ -1,0 +1,121 @@
+{
+  "persona": "p1",
+  "tier": "member",
+  "org": null,
+  "citrateRole": "member",
+  "entitlement": "active",
+  "stage": "done",
+  "s2": "verified",
+  "s3": "settled",
+  "s5": "settled",
+  "s5n": 32000,
+  "hasGrant": true,
+  "hasSbt": true,
+  "liquid": 41.5,
+  "selfStake": 0,
+  "bondedStake": 0,
+  "earnVal": 12.5,
+  "earnPin": 0.75,
+  "earnComp": 3.25,
+  "earnToday": 0.5,
+  "claimable": 1.25,
+  "activity": [
+    {
+      "id": "a1",
+      "kind": "Grant + stake ceremony",
+      "amount": "32,000 SALT",
+      "hash": "0xabababababababababababababababababababababababababababababababab",
+      "ts": 1792300000000,
+      "status": 1,
+      "direction": "in"
+    },
+    {
+      "id": "a2",
+      "kind": "Claim rewards",
+      "amount": "+1.25 SALT",
+      "hash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "ts": 1792310000000
+    }
+  ],
+  "node": "validating",
+  "nodeIntent": "run",
+  "syncPct": 100,
+  "peers": 9,
+  "gwKey": null,
+  "rpc": "local",
+  "net": "testnet",
+  "cpuCap": 50,
+  "autolock": 30,
+  "sigPolicy": "allow",
+  "channel": "stable",
+  "telemetry": true,
+  "storageMode": "lexical",
+  "coachDone": true,
+  "dataDir": "~/.citrate/core",
+  "coreMembershipUrl": "https://core-membership.vercel.app",
+  "s5StakeWei": "32000000000000000000000",
+  "s5BondStatus": "Staked · unlocks at block 2,700,000",
+  "walletAddr": "0x1111111111111111111111111111111111111111",
+  "commsAddr": "0x2222222222222222222222222222222222222222",
+  "socketPath": "~/.citrate/core/memory/dana.sock",
+  "activeModelId": "qwen3-4b-instruct-q4_k_m",
+  "kycOutcome": "verified",
+  "chatBackend": "local",
+  "crashes": [
+    {
+      "when": "2026-10-19 08:00",
+      "note": "node exited 1"
+    }
+  ],
+  "wTab": "overview",
+  "nTab": "ops",
+  "cTab": "apps",
+  "sSec": "account",
+  "route": "dashboard",
+  "deviceId": "dev-upgrade-fixture",
+  "pins": [
+    {
+      "cid": "bafybeigdyrztq7v7zv6fixturefixturefixturefixturefixture",
+      "bond": 0,
+      "cadH": 24,
+      "nextIn": 3,
+      "last": "ok"
+    }
+  ],
+  "userSkills": [
+    {
+      "id": "sk-1",
+      "name": "Summarise",
+      "description": "",
+      "instruction": "Summarise the page."
+    }
+  ],
+  "jPages": [
+    {
+      "id": "pg-1",
+      "title": "Notes",
+      "kind": "page",
+      "pinned": true,
+      "blocks": [
+        "first block"
+      ]
+    }
+  ],
+  "jSel": "pg-1",
+  "connections": {
+    "github": true
+  },
+  "aiDefault": "local",
+  "hermesSidecarLoop": false,
+  "hermesSidecarLoopDefaultApplied": true,
+  "hermesTerminal": false,
+  "hermesTerminalDefaultApplied": true,
+  "hermesBrief": null,
+  "hermesPersona": null,
+  "customPersonas": [],
+  "hermesReadAloud": true,
+  "journalAutoSummary": true,
+  "journalAutoSummaryDay": "2026-10-20",
+  "sponsorUnits": 3,
+  "blocksProposed": 0
+}

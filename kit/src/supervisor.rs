@@ -25,10 +25,22 @@
 //! ## Design (matches the repo's blocking-thread + Mutex pattern)
 //! Each [`Supervisor`] owns a monitor thread (like `rpc.rs`'s spawned blocking
 //! thread) that spawns the child, waits for exit, and — unless the exit was an
-//! intentional stop — records a crash and schedules a backed-off restart. Shared
-//! state (the [`SupervisorStatus`] + a control channel) is a `Mutex`/`Arc`
-//! (like `custody.rs`). Time is taken from an injected [`Clock`] so tests are
-//! deterministic (no wall-clock races — the B1.1-F-4 lesson).
+//! intentional stop — records a crash and schedules a backed-off restart. Time is
+//! taken from an injected [`Clock`] so tests are deterministic (no wall-clock
+//! races — the B1.1-F-4 lesson).
+//!
+//! ## Acknowledged controls (SCL-S2, SC1)
+//! Controls and the monitor share one lifecycle cell per service (`Mutex` +
+//! `Condvar`, std only, no async runtime: D-4). A control commits the latest
+//! intent (Start or Stop) with a new intent sequence and raises one coalescing
+//! wake bit; there is no message queue. The monitor is the only writer of process
+//! state and re-reads the intent at bounded points. A Stop wins in every phase and
+//! a repeated Stop joins the pending one, so it can never respawn the child.
+//! [`Supervisor::request_stop`] and [`Supervisor::request_start`] return a
+//! [`ControlResult`]; `Accepted` is not completion: the [`Receipt`] says whether a
+//! Stop was `Complete` or `Incomplete`. [`Supervisor::lifecycle`] returns the
+//! D-12 [`LifecycleSnapshot`] (phase with `stopping` and `quarantined`, a separate
+//! readiness field, counters as decimal strings).
 //!
 //! ## Platform note (honesty)
 //! Graceful stop is SIGTERM → wait → SIGKILL on Unix (macOS + Linux), via a
@@ -45,8 +57,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -341,6 +352,20 @@ impl SidecarSpec {
         }
     }
 
+    /// The bytes this descriptor holds: name, binary path, every argument, every environment
+    /// key and value, and the working directory. Bounded by [`MAX_DESCRIPTOR_BYTES`].
+    pub fn descriptor_bytes(&self) -> usize {
+        let args: usize = self.args.iter().map(String::len).sum();
+        let env: usize = self.env.iter().map(|(k, v)| k.len() + v.len()).sum();
+        let workdir = self.workdir.as_ref().map_or(0, |w| w.as_os_str().len());
+        self.name
+            .len()
+            .saturating_add(self.bin.as_os_str().len())
+            .saturating_add(args)
+            .saturating_add(env)
+            .saturating_add(workdir)
+    }
+
     /// Build the `std::process::Command` for this spec. **This is the single
     /// spawn-construction site**, and it is shell-free by construction:
     /// `Command::new(path)` + `.args(vec)` never invokes a shell, so argv is
@@ -493,6 +518,272 @@ pub struct SupervisorStatus {
 }
 
 // ---------------------------------------------------------------------------
+// SCL-S2 (SC1): lifecycle identity, acknowledged controls, receipts.
+// ---------------------------------------------------------------------------
+
+/// The most bytes a service descriptor (name, binary path, argv, environment, working
+/// directory) may hold. A larger descriptor is rejected before anything is spawned
+/// (SPEC-001 "Ownership, intent and generations": 64 KiB).
+pub const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024;
+
+/// How long a control or a snapshot read may wait for the lifecycle cell before it answers
+/// `Busy` instead of blocking on the monitor (SPEC-001: bounded try-lock, never wait on an owner).
+const CONTROL_LOCK_BUDGET: Duration = Duration::from_millis(5);
+
+/// After a stop's teardown, how long the monitor waits for the child's log readers to reach
+/// end of file before it reports the stop `Incomplete` and quarantines the service.
+const READER_DRAIN: Duration = Duration::from_millis(250);
+
+/// While quarantined, how often the monitor re-checks whether the held work has ended.
+const QUARANTINE_POLL: Duration = Duration::from_millis(50);
+
+/// Distinguishes supervisor instances within one app run; never reused.
+static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// This application run's identity. Ephemeral: it orders controls and receipts within one run
+/// and is never a credential or a persistent replay id.
+fn app_epoch() -> u64 {
+    static EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(|| SystemClock.now_unix_ms().max(1))
+}
+
+/// What the latest accepted control asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Desired {
+    Running,
+    Stopped,
+}
+
+/// The lifecycle phase (D-12). `Alive` proves process existence only; readiness is separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Phase {
+    /// No owned resources from the completed control.
+    Stopped,
+    /// A spawn is admitted and has not been published yet.
+    Starting,
+    /// A child exists.
+    Alive,
+    /// The child ended unexpectedly; a retry is scheduled.
+    Backoff,
+    /// The retry budget is spent; a fresh explicit Start is needed.
+    Failed,
+    /// A Stop is accepted and its teardown has not settled.
+    Stopping,
+    /// A Stop settled `Incomplete`: owned work is still running. Starts are refused until it
+    /// really ends.
+    Quarantined,
+}
+
+/// Readiness, independent of the phase (D-12). SC1 assesses no readiness, so every service
+/// reports `NotAssessed`; the probe-backed values arrive with SC2 (SCL-S3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Readiness {
+    NotAssessed,
+    Awaiting,
+    Ready,
+    Stale,
+    Unavailable,
+}
+
+/// Identifies one accepted control: this app run plus the service's intent sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ControlToken {
+    pub app_epoch: u64,
+    /// The supervisor instance that issued it (unique within the app run, never reused), so
+    /// equal sequences from two services, or from a replacement supervisor, never collide.
+    pub instance: u64,
+    pub intent_sequence: u64,
+}
+
+/// The answer to a control call. It says what was committed, never what has finished:
+/// `Accepted` is not `Complete`; read the [`Receipt`] for that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlResult {
+    /// A new intent was committed (or the call joined the pending one with the same aim).
+    Accepted(ControlToken),
+    /// Nothing to do: the service already is what was asked.
+    AlreadySatisfied(LifecycleSnapshot),
+    /// The supervisor is shutting down; no new start is admitted.
+    RejectedClosing,
+    /// The lifecycle cell was contended; this call committed nothing.
+    Busy,
+    /// Owned work from an earlier stop is still running; no start until it ends.
+    Quarantined(String),
+    /// The intent was committed, but the monitor that acts on it is not running, so its outcome
+    /// cannot be observed. Never a success.
+    ObservationUnknown(ControlToken, String),
+}
+
+/// What became of an accepted control.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum Receipt {
+    /// Accepted, not settled yet.
+    Pending,
+    /// A Start: its child was spawned and published.
+    Started {
+        #[serde(serialize_with = "decimal_u64")]
+        incarnation: u64,
+    },
+    /// A Start: the retry budget ran out before a child stayed up.
+    Failed { reason: String },
+    /// A Stop: everything named in `scope` was observed finished.
+    Complete { scope: Vec<String> },
+    /// A Stop: the named resources were still running when the stop settled.
+    Incomplete {
+        remaining: Vec<String>,
+        reason: String,
+    },
+    /// A later control replaced this one before it settled.
+    Superseded,
+    /// Not retained (an older token, or one from another app run).
+    Expired,
+    /// The cell could not be read in bounded time; nothing is claimed.
+    Unknown { reason: String },
+}
+
+/// A cached copy of a service's lifecycle cell (D-12). Counters cross to JavaScript as decimal
+/// strings and must be compared numerically (BigInt), never as strings.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleSnapshot {
+    pub name: String,
+    pub phase: Phase,
+    pub readiness: Readiness,
+    pub desired: Desired,
+    /// This application run.
+    #[serde(serialize_with = "decimal_u64")]
+    pub app_epoch: u64,
+    /// This supervisor instance (unique within the app run, never reused).
+    #[serde(serialize_with = "decimal_u64")]
+    pub instance: u64,
+    /// Bumped by every distinct accepted Start or Stop.
+    #[serde(serialize_with = "decimal_u64")]
+    pub intent_sequence: u64,
+    /// Committed service configuration. One per supervisor until replacement lands (SC5, SC6).
+    #[serde(serialize_with = "decimal_u64")]
+    pub generation: u64,
+    /// Bumped by every spawn, retries included.
+    #[serde(serialize_with = "decimal_u64")]
+    pub incarnation: u64,
+    /// Bumped by every published change of this cell.
+    #[serde(serialize_with = "decimal_u64")]
+    pub revision: u64,
+    /// Legacy recorded-failure counter (the old `restarts` field), kept during migration.
+    #[serde(serialize_with = "decimal_u32")]
+    pub restarts: u32,
+    pub pid: Option<u32>,
+    /// Why the service is quarantined, when it is.
+    pub quarantine: Option<String>,
+}
+
+fn decimal_u64<S: serde::Serializer>(v: &u64, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&v.to_string())
+}
+
+fn decimal_u32<S: serde::Serializer>(v: &u32, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&v.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntentKind {
+    Start,
+    Stop,
+}
+
+/// The lifecycle cell: the one latest intent, the coalescing wake bit, the identity counters,
+/// the legacy status view and at most one pending and one settled receipt. No queue.
+struct Cell {
+    status: SupervisorStatus,
+    phase: Phase,
+    desired: Desired,
+    intent_sequence: u64,
+    generation: u64,
+    incarnation: u64,
+    revision: u64,
+    wake: bool,
+    closing: bool,
+    quarantine: Option<String>,
+    active: Option<(ControlToken, IntentKind)>,
+    settled: Option<(ControlToken, Receipt)>,
+    /// This supervisor instance, carried in every token it issues.
+    instance: u64,
+}
+
+impl Cell {
+    fn snapshot(&self, epoch: u64) -> LifecycleSnapshot {
+        LifecycleSnapshot {
+            name: self.status.name.clone(),
+            phase: self.phase,
+            readiness: Readiness::NotAssessed,
+            desired: self.desired,
+            app_epoch: epoch,
+            instance: self.instance,
+            intent_sequence: self.intent_sequence,
+            generation: self.generation,
+            incarnation: self.incarnation,
+            revision: self.revision,
+            restarts: self.status.restarts,
+            pid: self.status.pid,
+            quarantine: self.quarantine.clone(),
+        }
+    }
+
+    fn touch(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    /// Commit a new latest intent: supersede the pending receipt, bump the sequence, raise the
+    /// wake bit. Returns the new token.
+    fn commit(&mut self, epoch: u64, desired: Desired, kind: IntentKind) -> ControlToken {
+        if let Some((old, _)) = self.active.take() {
+            self.settled = Some((old, Receipt::Superseded));
+        }
+        self.intent_sequence = self.intent_sequence.saturating_add(1);
+        self.desired = desired;
+        let token = ControlToken {
+            app_epoch: epoch,
+            instance: self.instance,
+            intent_sequence: self.intent_sequence,
+        };
+        self.active = Some((token, kind));
+        self.wake = true;
+        self.touch();
+        token
+    }
+
+    /// The answer to a Stop when a Stop is already the latest intent. It joins a pending Stop;
+    /// it is `AlreadySatisfied` only when the service is Stopped and owns nothing; while owned
+    /// work from that Stop is still running it is `Quarantined`, never "already satisfied".
+    fn repeated_stop(&self, epoch: u64) -> ControlResult {
+        if let Some((token, IntentKind::Stop)) = self.active {
+            return ControlResult::Accepted(token);
+        }
+        if let Some(reason) = &self.quarantine {
+            return ControlResult::Quarantined(reason.clone());
+        }
+        if self.phase == Phase::Stopped {
+            return ControlResult::AlreadySatisfied(self.snapshot(epoch));
+        }
+        ControlResult::Busy
+    }
+
+    /// Settle the pending receipt if it belongs to intent `seq` and is of `kind`.
+    fn settle(&mut self, seq: u64, kind: IntentKind, receipt: Receipt) {
+        if let Some((token, k)) = self.active {
+            if token.intent_sequence == seq && k == kind {
+                self.active = None;
+                self.settled = Some((token, receipt));
+                self.touch();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Config for the supervisor.
 // ---------------------------------------------------------------------------
 
@@ -555,41 +846,104 @@ impl SupervisorConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Internal control messages (monitor thread <- controller).
+// Shared state between the controller handle and the monitor thread.
 // ---------------------------------------------------------------------------
 
-enum ControlMsg {
-    /// Ask the monitor to gracefully stop the child and go Off (no restart).
-    Stop,
-    /// Ask the monitor thread to exit its loop entirely (teardown).
-    Shutdown,
-}
-
-/// Shared state between the controller handle and the monitor thread.
+/// Shared between the controller handle and the monitor. The monitor is the only writer of
+/// process state; controls only commit intent into the cell and raise its wake bit.
 struct Shared {
-    status: Mutex<SupervisorStatus>,
-    /// The injected clock, shared so `backoff_or_control` can anchor
-    /// `Backoff { next_retry_ms }` on the same time source as crash records.
-    /// (The monitor OWNS the `Child` and does all signalling; the controller
-    /// never signals a child by pid — it sends control messages instead.)
+    cell: Mutex<Cell>,
+    /// Signalled whenever the wake bit is raised. One per service; it carries no payload.
+    wake: Condvar,
+    /// The injected clock, shared so the backoff wait can anchor `Backoff { next_retry_ms }`
+    /// on the same time source as crash records.
     clock: Arc<dyn Clock>,
-    /// The bounded ring of the most recent captured stdout/stderr lines. Reader
-    /// threads push; the `logs()` accessor snapshots it. SURVIVES restarts (it
-    /// is not cleared on respawn) so a crash+restart keeps the tail visible.
+    /// The bounded ring of the most recent captured stdout/stderr lines. Reader threads push;
+    /// the `logs()` accessor snapshots it. Survives restarts.
     logs: LogRing,
+    epoch: u64,
 }
 
 impl Shared {
+    /// The cell, for the monitor's short critical sections. Poison-tolerant.
+    fn lock(&self) -> MutexGuard<'_, Cell> {
+        self.cell.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The cell, or `None` if it stays contended for [`CONTROL_LOCK_BUDGET`]. Controls and
+    /// cached reads use this, so they never wait on the monitor.
+    fn lock_bounded(&self) -> Option<MutexGuard<'_, Cell>> {
+        let deadline = std::time::Instant::now() + CONTROL_LOCK_BUDGET;
+        loop {
+            match self.cell.try_lock() {
+                Ok(g) => return Some(g),
+                Err(TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+                Err(TryLockError::WouldBlock) => {
+                    if std::time::Instant::now() >= deadline {
+                        return None;
+                    }
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+
     fn set_state(&self, state: SupervisorState) {
-        let mut s = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        s.state = state;
+        let mut c = self.lock();
+        // A committed Stop owns the phase until it settles (`Stopping`, then `Stopped` or
+        // `Quarantined`); a late state write from the monitor does not overwrite it.
+        let stop_pending = c.desired == Desired::Stopped
+            && matches!(c.phase, Phase::Stopping | Phase::Quarantined);
+        c.status.state = state.clone();
+        c.touch();
+        if stop_pending {
+            return;
+        }
+        c.phase = match state {
+            SupervisorState::Off => Phase::Stopped,
+            SupervisorState::Starting => Phase::Starting,
+            SupervisorState::Running => Phase::Alive,
+            SupervisorState::Backoff { .. } => Phase::Backoff,
+            SupervisorState::Failed => Phase::Failed,
+        };
     }
 
     fn snapshot(&self) -> SupervisorStatus {
-        self.status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.lock().status.clone()
+    }
+
+    /// The current intent: its sequence, what it asks for, and whether shutdown has begun.
+    fn intent(&self) -> (u64, Desired, bool) {
+        let c = self.lock();
+        (c.intent_sequence, c.desired, c.closing)
+    }
+
+    /// Whether a newer intent than `seq` was committed, or shutdown began.
+    fn intent_changed(&self, seq: u64) -> bool {
+        let c = self.lock();
+        c.closing || c.intent_sequence != seq
+    }
+
+    /// Wait for the wake bit (or `timeout`), then clear it. Spurious wakeups are harmless: the
+    /// monitor re-reads the intent after every return.
+    fn wait_wake(&self, timeout: Option<Duration>) {
+        let mut c = self.lock();
+        if !c.wake {
+            c = match timeout {
+                None => self.wake.wait(c).unwrap_or_else(|e| e.into_inner()),
+                Some(t) => {
+                    self.wake
+                        .wait_timeout(c, t)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                }
+            };
+        }
+        c.wake = false;
+    }
+
+    fn notify(&self) {
+        self.wake.notify_all();
     }
 }
 
@@ -597,61 +951,102 @@ impl Shared {
 // The Supervisor handle.
 // ---------------------------------------------------------------------------
 
-/// The controller handle for a supervised sidecar. Owns the monitor thread's
-/// join handle + a control channel. Dropping it (or calling [`Supervisor::stop`]
-/// / [`Supervisor::shutdown`]) tears the child down — no orphans.
+/// The controller handle for a supervised sidecar. Owns the monitor thread's join handle.
+/// Dropping it (or calling [`Supervisor::stop`] / [`Supervisor::shutdown`]) tears the child
+/// down: no orphans.
 pub struct Supervisor {
     shared: Arc<Shared>,
-    control: Sender<ControlMsg>,
     monitor: Option<JoinHandle<()>>,
     name: String,
     /// Hard cap on how long teardown blocks joining the monitor thread (F-2).
     join_timeout: Duration,
+    /// This supervisor instance (see [`ControlToken::instance`]).
+    instance: u64,
 }
 
 impl Supervisor {
-    /// Spawn the sidecar and start supervising it. Returns immediately; the
-    /// monitor thread does the spawning + waiting + restarting. The initial
-    /// status is `Starting`. Returns `Err` if the OS refuses the monitor thread
-    /// (e.g. thread exhaustion) — no `.expect`, so the caller decides (F-2 LOW).
+    /// Spawn the sidecar and start supervising it. Returns immediately; the monitor thread does
+    /// the spawning, waiting and restarting. The initial status is `Starting` and the first
+    /// Start intent (sequence 1) is pending. Returns `Err` if the descriptor is larger than
+    /// [`MAX_DESCRIPTOR_BYTES`] (`InvalidInput`, nothing spawned) or if the OS refuses the
+    /// monitor thread. No `.expect`, so the caller decides (F-2 LOW).
     pub fn start(config: SupervisorConfig) -> std::io::Result<Self> {
+        let bytes = config.spec.descriptor_bytes();
+        if bytes > MAX_DESCRIPTOR_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "service descriptor for '{}' is {bytes} bytes; the limit is {MAX_DESCRIPTOR_BYTES}",
+                    config.spec.name
+                ),
+            ));
+        }
         let name = config.spec.name.clone();
         let join_timeout = config.join_timeout;
+        let epoch = app_epoch();
+        let instance = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let first = ControlToken {
+            app_epoch: epoch,
+            instance,
+            intent_sequence: 1,
+        };
         let shared = Arc::new(Shared {
-            status: Mutex::new(SupervisorStatus {
-                name: name.clone(),
-                state: SupervisorState::Starting,
-                pid: None,
-                restarts: 0,
-                last_crash: None,
+            cell: Mutex::new(Cell {
+                status: SupervisorStatus {
+                    name: name.clone(),
+                    state: SupervisorState::Starting,
+                    pid: None,
+                    restarts: 0,
+                    last_crash: None,
+                },
+                phase: Phase::Starting,
+                desired: Desired::Running,
+                intent_sequence: 1,
+                generation: 1,
+                incarnation: 0,
+                revision: 1,
+                wake: false,
+                closing: false,
+                quarantine: None,
+                active: Some((first, IntentKind::Start)),
+                settled: None,
+                instance,
             }),
+            wake: Condvar::new(),
             clock: config.clock.clone(),
             logs: LogRing::new(),
+            epoch,
         });
-        let (tx, rx) = std::sync::mpsc::channel();
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
             .name(format!("supervisor:{name}"))
-            .spawn(move || run_monitor(config, monitor_shared, rx))?;
+            .spawn(move || run_monitor(config, monitor_shared))?;
         Ok(Supervisor {
             shared,
-            control: tx,
             monitor: Some(monitor),
             name,
             join_timeout,
+            instance,
         })
     }
 
-    /// A cloneable, read-only status snapshot. Safe to poll from the Tauri
+    /// A cloneable, read-only status snapshot (the legacy view). Safe to poll from the Tauri
     /// runtime while the monitor thread runs (takes the lock briefly, clones).
     pub fn status(&self) -> SupervisorStatus {
         self.shared.snapshot()
     }
 
-    /// A snapshot of the recent captured stdout/stderr lines (oldest→newest,
-    /// bounded at [`LOG_RING_CAPACITY`]). Safe to poll from the Tauri runtime;
-    /// the `node_logs` command folds this into the Node LOG panel so a packaged
-    /// build shows REAL node output (Q-A.2/Q-B.2), never a fabricated template.
+    /// The lifecycle cell (D-12): phase, readiness, intent and identity counters. A bounded
+    /// read: `None` means the cell was contended and nothing is claimed.
+    pub fn lifecycle(&self) -> Option<LifecycleSnapshot> {
+        self.shared
+            .lock_bounded()
+            .map(|c| c.snapshot(self.shared.epoch))
+    }
+
+    /// A snapshot of the recent captured stdout/stderr lines (oldest→newest, bounded at
+    /// [`LOG_RING_CAPACITY`]). Safe to poll from the Tauri runtime; the `node_logs` command
+    /// folds this into the Node LOG panel so a packaged build shows REAL node output.
     pub fn logs(&self) -> Vec<LogLine> {
         self.shared.logs.snapshot()
     }
@@ -661,43 +1056,171 @@ impl Supervisor {
         &self.name
     }
 
-    /// Gracefully stop the child (SIGTERM → grace → SIGKILL) and leave the
-    /// supervisor `Off` with NO restart. An intentional stop is NOT a crash:
-    /// the monitor marks it so and does not write a crash record or respawn.
-    /// Idempotent — stopping an already-stopped supervisor is a no-op.
-    pub fn stop(&self) {
-        // Best-effort: if the monitor already exited, the send fails harmlessly.
-        let _ = self.control.send(ControlMsg::Stop);
-        // Block until the monitor acknowledges by reaching Off/Failed, bounded
-        // by a generous timeout so a wedged child cannot hang the caller. The
-        // monitor's own SIGKILL escalation guarantees the child dies within
-        // grace.
-        self.wait_until(
-            |st| matches!(st, SupervisorState::Off | SupervisorState::Failed),
-            Duration::from_secs(10),
-        );
+    /// Whether the monitor thread is still running. It ends only on shutdown, or if a caller's
+    /// hook panicked on it.
+    pub fn monitor_running(&self) -> bool {
+        self.monitor.as_ref().is_some_and(|h| !h.is_finished())
     }
 
-    /// Tear the supervisor down entirely: stop the child and join the monitor
-    /// thread. Called by `Drop`; exposed so callers can join deterministically.
+    /// Commit a Stop intent (SC1). Non-blocking and bounded: it never waits for the teardown.
     ///
-    /// The join is BOUNDED by `join_timeout` (F-2): a `JoinHandle` has no timed
-    /// join in std, so we poll `is_finished()` up to the bound and only `join()`
-    /// once it has finished (an immediate, non-blocking join). If the monitor
-    /// has not finished within the bound — which cannot happen from a hung child
-    /// (SIGKILL escalation kills it within `stop_grace`) but could in principle
-    /// from a wedged detached probe thread — we DETACH rather than block teardown
-    /// forever. The detached monitor holds no supervisor lock and owns no live
-    /// child at that point (it terminates the child before exiting), so this is
-    /// safe: teardown returns and the process is not hung.
+    /// - A Stop on a stopped service is `AlreadySatisfied`; a Stop while one is pending joins
+    ///   it (`Accepted` with the same token). A repeated Stop never respawns and never starts a
+    ///   second teardown.
+    /// - Otherwise the Stop wins in every phase (Starting, Alive, Backoff, Failed): the monitor
+    ///   tears down what it owns and admits no further spawn for the earlier intent.
+    /// - `Accepted` is not `Complete`: read [`Supervisor::receipt`].
+    pub fn request_stop(&self) -> ControlResult {
+        let Some(mut c) = self.shared.lock_bounded() else {
+            return ControlResult::Busy;
+        };
+        if c.closing {
+            return ControlResult::RejectedClosing;
+        }
+        if c.desired == Desired::Stopped {
+            let joined = c.repeated_stop(self.shared.epoch);
+            drop(c);
+            // Joining a pending Stop is only Accepted while a monitor can settle it.
+            return match joined {
+                ControlResult::Accepted(token) => self.observed(token),
+                other => other,
+            };
+        }
+        let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
+        if c.phase != Phase::Quarantined {
+            c.phase = Phase::Stopping;
+        }
+        drop(c);
+        self.shared.notify();
+        self.observed(token)
+    }
+
+    /// Commit a Start intent (SC1). Non-blocking and bounded.
+    ///
+    /// - Refused as `RejectedClosing` after shutdown began, and as `Quarantined` while owned
+    ///   work from an earlier stop is still running.
+    /// - A Start on a live service is `AlreadySatisfied` while its monitor runs; one while a
+    ///   Start is pending joins it. With the monitor gone it is `ObservationUnknown`.
+    /// - After a Stop (or after `Failed`) it commits a new intent: the monitor finishes any
+    ///   teardown first, then spawns exactly one new incarnation with a fresh retry budget.
+    pub fn request_start(&self) -> ControlResult {
+        let Some(mut c) = self.shared.lock_bounded() else {
+            return ControlResult::Busy;
+        };
+        if c.closing {
+            return ControlResult::RejectedClosing;
+        }
+        if let Some(reason) = &c.quarantine {
+            return ControlResult::Quarantined(reason.clone());
+        }
+        // A pending Start is joined in every phase (the phase can still read Failed until the
+        // monitor picks the new intent up), so identical concurrent Starts never supersede each
+        // other.
+        if let Some((token, IntentKind::Start)) = c.active {
+            drop(c);
+            // Joining a pending Start is only Accepted while a monitor can settle it.
+            return self.observed(token);
+        }
+        // Satisfied only while a monitor supervises the running service. Without one the cached
+        // process state can no longer be maintained, so the Start is committed and reported as
+        // ObservationUnknown (core#398).
+        if c.desired == Desired::Running && c.phase != Phase::Failed && self.monitor_running() {
+            return ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch));
+        }
+        let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
+        drop(c);
+        self.shared.notify();
+        self.observed(token)
+    }
+
+    /// `Accepted(token)` if the monitor is there to act on the committed intent, otherwise
+    /// `ObservationUnknown`: the intent stays committed and visible, nothing is claimed.
+    fn observed(&self, token: ControlToken) -> ControlResult {
+        if self.monitor_running() {
+            ControlResult::Accepted(token)
+        } else {
+            ControlResult::ObservationUnknown(
+                token,
+                "the service monitor is not running; the intent is recorded but its outcome cannot be observed"
+                    .to_string(),
+            )
+        }
+    }
+
+    /// What became of the control `token`. A bounded read that never waits on the monitor.
+    /// Only the pending and the most recently settled receipt are kept; older tokens and tokens
+    /// from another app run are `Expired`.
+    pub fn receipt(&self, token: ControlToken) -> Receipt {
+        // A token from another app run or another supervisor instance is never answered here,
+        // even when its sequence matches one of ours.
+        if token.app_epoch != self.shared.epoch || token.instance != self.instance {
+            return Receipt::Expired;
+        }
+        let Some(c) = self.shared.lock_bounded() else {
+            return Receipt::Unknown {
+                reason: "the lifecycle cell is busy".to_string(),
+            };
+        };
+        match (&c.active, &c.settled) {
+            (Some((t, _)), _) if *t == token => Receipt::Pending,
+            (_, Some((t, r))) if *t == token => r.clone(),
+            _ => Receipt::Expired,
+        }
+    }
+
+    /// Gracefully stop the child (SIGTERM → grace → SIGKILL) and leave the supervisor `Off`
+    /// with NO restart. An intentional stop is NOT a crash: no crash record, no respawn.
+    ///
+    /// Legacy form of [`Supervisor::request_stop`]: it commits the Stop, then blocks until the
+    /// receipt settles (or a 10 s bound). Calling it again on a stopped supervisor is a no-op;
+    /// it never respawns the child (bug (a), SCL-S2.2). New callers should use
+    /// `request_stop` and read the receipt, which distinguishes `Complete` from `Incomplete`.
+    pub fn stop(&self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let token = loop {
+            match self.request_stop() {
+                ControlResult::Accepted(t) => break t,
+                ControlResult::Busy if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                // Already stopped, shutting down, monitor gone or still busy at the bound:
+                // nothing this call can wait for.
+                _ => return,
+            }
+        };
+        while std::time::Instant::now() < deadline {
+            match self.receipt(token) {
+                Receipt::Pending | Receipt::Unknown { .. } => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => return,
+            }
+        }
+    }
+
+    /// Tear the supervisor down entirely: stop the child and join the monitor thread. Called by
+    /// `Drop`; exposed so callers can join deterministically. After this every Start is
+    /// `RejectedClosing`.
+    ///
+    /// The join is BOUNDED by `join_timeout` (F-2): a `JoinHandle` has no timed join in std, so
+    /// we poll `is_finished()` up to the bound and only `join()` once it has finished. If the
+    /// monitor has not finished within the bound we DETACH rather than block teardown forever.
+    /// The detached monitor holds no supervisor lock and owns no live child at that point (it
+    /// terminates the child before exiting), so this is safe.
     pub fn shutdown(&mut self) {
-        let _ = self.control.send(ControlMsg::Shutdown);
+        {
+            let mut c = self.shared.lock();
+            if !c.closing {
+                c.closing = true;
+                c.wake = true;
+                c.touch();
+            }
+        }
+        self.shared.notify();
         if let Some(handle) = self.monitor.take() {
             let deadline = std::time::Instant::now() + self.join_timeout;
             while !handle.is_finished() {
                 if std::time::Instant::now() >= deadline {
-                    // Bound exceeded: detach (drop the handle) instead of an
-                    // unbounded `join()`. No orphan/lock is leaked (see doc).
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -706,9 +1229,8 @@ impl Supervisor {
         }
     }
 
-    /// Poll the status until `pred` holds or `timeout` elapses. Test/helper
-    /// convenience; uses a short sleep between polls (the monitor updates status
-    /// under the lock). Returns the final snapshot.
+    /// Poll the status until `pred` holds or `timeout` elapses. Test/helper convenience; uses a
+    /// short sleep between polls. Returns the final snapshot.
     pub fn wait_until(
         &self,
         pred: impl Fn(&SupervisorState) -> bool,
@@ -729,8 +1251,8 @@ impl Supervisor {
 }
 
 impl Drop for Supervisor {
-    /// No-orphan guarantee: dropping the supervisor tells the monitor to stop
-    /// the child and joins it, so the child is dead before the process exits.
+    /// No-orphan guarantee: dropping the supervisor tells the monitor to stop the child and
+    /// joins it, so the child is dead before the process exits.
     fn drop(&mut self) {
         self.shutdown();
     }
@@ -746,20 +1268,26 @@ fn spawn_child(spec: &SidecarSpec) -> std::io::Result<Child> {
     spec.to_command().spawn()
 }
 
-/// Take the child's piped stdout + stderr and spawn one DETACHED reader thread
-/// per stream that reads lines and pushes each into the shared log ring. The
-/// threads are detached (not joined on teardown) so they can NEVER stall
-/// shutdown (F-2 liveness): a reader blocked on a read simply unblocks with EOF
-/// when the pipe closes as the child dies (SIGKILL escalation guarantees that),
-/// then exits on its own. They hold only an `Arc<Shared>` (no supervisor lock is
-/// held across a blocking read), so a lingering reader leaks nothing and blocks
-/// nothing. Best-effort: if the OS refuses a reader thread the stream is simply
-/// not captured (a missing log line is never a supervision failure).
-fn spawn_log_readers(child: &mut Child, name: &str, shared: &Arc<Shared>) {
+/// One log reader thread, named for the receipt that reports it.
+struct Reader {
+    name: &'static str,
+    handle: JoinHandle<()>,
+}
+
+/// Take the child's piped stdout + stderr and spawn one reader thread per stream that reads
+/// lines and pushes each into the shared log ring. The monitor keeps the handles: a stop is
+/// `Complete` only once both readers have reached end of file (SC1). A reader never blocks
+/// teardown itself; it ends with EOF when the last holder of the pipe closes it, which for an
+/// ordinary child is the child's own exit. A descendant that inherited the pipe can keep it
+/// open, and then the stop reports the reader as remaining. They hold only an `Arc<Shared>`
+/// (no supervisor lock is held across a blocking read). Best-effort: if the OS refuses a reader
+/// thread the stream is simply not captured.
+fn spawn_log_readers(child: &mut Child, name: &str, shared: &Arc<Shared>) -> Vec<Reader> {
     use std::io::{BufRead, BufReader};
+    let mut readers = Vec::new();
     if let Some(out) = child.stdout.take() {
         let shared = shared.clone();
-        let _ = std::thread::Builder::new()
+        if let Ok(handle) = std::thread::Builder::new()
             .name(format!("supervisor:log-out:{name}"))
             .spawn(move || {
                 let reader = BufReader::new(out);
@@ -770,11 +1298,17 @@ fn spawn_log_readers(child: &mut Child, name: &str, shared: &Arc<Shared>) {
                         line,
                     });
                 }
+            })
+        {
+            readers.push(Reader {
+                name: "reader:stdout",
+                handle,
             });
+        }
     }
     if let Some(err) = child.stderr.take() {
         let shared = shared.clone();
-        let _ = std::thread::Builder::new()
+        if let Ok(handle) = std::thread::Builder::new()
             .name(format!("supervisor:log-err:{name}"))
             .spawn(move || {
                 let reader = BufReader::new(err);
@@ -785,8 +1319,36 @@ fn spawn_log_readers(child: &mut Child, name: &str, shared: &Arc<Shared>) {
                         line,
                     });
                 }
+            })
+        {
+            readers.push(Reader {
+                name: "reader:stderr",
+                handle,
             });
+        }
     }
+    readers
+}
+
+/// Join every finished reader and return the names of those still running. Waits up to
+/// `window` for them to finish first.
+fn drain_readers(readers: &mut Vec<Reader>, window: Duration) -> Vec<String> {
+    let deadline = std::time::Instant::now() + window;
+    while readers.iter().any(|r| !r.handle.is_finished()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut remaining = Vec::new();
+    let mut kept = Vec::new();
+    for r in readers.drain(..) {
+        if r.handle.is_finished() {
+            let _ = r.handle.join();
+        } else {
+            remaining.push(r.name.to_string());
+            kept.push(r);
+        }
+    }
+    *readers = kept;
+    remaining
 }
 
 /// The BOUNDED stderr tail for a crash record, derived from the recent `err`
@@ -883,21 +1445,31 @@ fn append_crash_record(path: &std::path::Path, record: &CrashRecord) {
 /// in the dependency tree (via tauri/tokio), so this adds no new crate. A failure
 /// (e.g. the process already reaped) is ignored — the caller re-checks liveness.
 #[cfg(unix)]
-fn signal_pid(pid: u32, signal: i32) {
-    // SAFETY: `kill(2)` with a pid and a signal number is a well-defined libc
-    // call with no memory effects. A stale pid returns ESRCH which we ignore.
-    unsafe {
-        libc::kill(pid as libc::pid_t, signal);
-    }
+fn signal_pid(pid: u32, signal: i32) -> bool {
+    let Some(target) = checked_pid(pid) else {
+        return false;
+    };
+    // SAFETY: `kill(2)` with a positive pid and a signal number is a well-defined libc call
+    // with no memory effects. A stale pid returns ESRCH, which the caller handles by
+    // re-checking liveness.
+    unsafe { libc::kill(target, signal) == 0 }
+}
+
+/// `pid` as a positive `pid_t`, or `None`. Zero would address the caller's own process group
+/// and a value above `i32::MAX` would wrap to a negative pid (a group, or every process for
+/// -1), so neither is ever passed to `kill(2)`.
+#[cfg(unix)]
+fn checked_pid(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)
 }
 
 /// Whether `pid` is still alive on Unix (signal 0 = existence probe, sends no
 /// signal). Used to confirm SIGTERM took effect before the grace timeout.
 #[cfg(unix)]
 fn pid_alive(pid: u32) -> bool {
-    // SAFETY: `kill(pid, 0)` performs the permission/existence check without
-    // delivering a signal. Returns 0 if the process exists and we may signal it.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    // SAFETY: `kill(p, 0)` on a positive pid performs the existence check without delivering a
+    // signal.
+    checked_pid(pid).is_some_and(|p| unsafe { libc::kill(p, 0) == 0 })
 }
 
 /// Gracefully terminate a child: SIGTERM, wait up to `grace` for exit, then
@@ -912,7 +1484,7 @@ fn terminate_child(child: &mut Child, grace: Duration, watch: Option<&ChildWatch
         if let Some(w) = watch {
             (w.observe)(pid);
         }
-        signal_pid(pid, libc::SIGTERM);
+        let _ = signal_pid(pid, libc::SIGTERM);
         let deadline = std::time::Instant::now() + grace;
         loop {
             // Non-blocking reap: if the child has exited, `try_wait` returns Some.
@@ -931,7 +1503,7 @@ fn terminate_child(child: &mut Child, grace: Duration, watch: Option<&ChildWatch
         if let Some(w) = watch {
             (w.observe)(pid);
         }
-        signal_pid(pid, libc::SIGKILL);
+        let _ = signal_pid(pid, libc::SIGKILL);
         let _ = child.wait();
     }
     #[cfg(not(unix))]
@@ -957,10 +1529,93 @@ pub fn terminate_unsupervised(child: &mut Child, grace: Duration) {
     terminate_child(child, grace, None);
 }
 
-/// The monitor loop. Owns the child. Spawns → waits → on unexpected exit records
-/// a crash + backs off + respawns, bounded by the backoff policy. Reacts to
-/// `Stop` (graceful stop, go Off, no restart) and `Shutdown` (stop + exit loop).
-fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<ControlMsg>) {
+/// The monitor's hold on the current child. Every normal path reaps the child before this goes
+/// out of scope, so the drop finds it reaped and does nothing. If the monitor unwinds instead
+/// (a `ChildWatch` hook panicked), the drop kills and reaps the child, so nothing outlives the
+/// supervisor (the no-orphan guarantee) and no unreaped child is left behind.
+struct OwnedChild(Child);
+
+impl std::ops::Deref for OwnedChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        // `Child` remembers a reaped status, so this never signals a pid that was reused.
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+/// Installed first in [`run_monitor`], so it drops last. If the monitor unwinds (a `ChildWatch`
+/// hook panicked), the [`OwnedChild`] drop has already killed and reaped the child; this marks
+/// the cell so it no longer reports a supervised process: Starting, Alive and Backoff become
+/// Failed with no pid, Stopping becomes Quarantined (its cleanup can no longer be observed), and
+/// a pending receipt is settled. A normal
+/// exit (shutdown) leaves the cell to `finish_closing`.
+struct MonitorExit(Arc<Shared>);
+
+impl Drop for MonitorExit {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let reason = "the service monitor ended; nothing supervises the service";
+        let mut c = self.0.lock();
+        c.status.pid = None;
+        match c.phase {
+            Phase::Starting | Phase::Alive | Phase::Backoff => {
+                c.status.state = SupervisorState::Failed;
+                c.phase = Phase::Failed;
+            }
+            // A Stop's teardown can no longer be observed to finish: never Stopped.
+            Phase::Stopping => {
+                c.status.state = SupervisorState::Off;
+                c.phase = Phase::Quarantined;
+                c.quarantine = Some(reason.to_string());
+            }
+            Phase::Stopped | Phase::Failed | Phase::Quarantined => {}
+        }
+        if let Some((token, kind)) = c.active {
+            let receipt = match kind {
+                IntentKind::Start => Receipt::Failed {
+                    reason: reason.to_string(),
+                },
+                IntentKind::Stop => Receipt::Incomplete {
+                    remaining: vec!["readers".to_string()],
+                    reason: reason.to_string(),
+                },
+            };
+            c.settle(token.intent_sequence, kind, receipt);
+        }
+        c.touch();
+    }
+}
+
+/// The monitor loop: the sole owner of the child and the sole writer of process state.
+///
+/// Every turn reads the latest intent from the cell (SC1):
+/// - **Stop**: the child was already torn down where it was owned; the Stop is settled
+///   (`Complete` once the log readers have ended, else `Incomplete` and Quarantined) and the
+///   monitor idles until the next wake. It never spawns from here, whatever the phase, so a
+///   repeated Stop cannot respawn (bug (a)).
+/// - **Start**: spawn, supervise, and on an unexpected exit record a crash and retry under the
+///   backoff bound. Each spawn is admitted against the intent it serves: a newer intent seen
+///   before the spawn admits nothing, and one seen right after the OS call returns sends the new
+///   child straight to teardown, unpublished.
+/// - **Shutdown**: tear down, settle what is pending, exit.
+fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     let SupervisorConfig {
         spec,
         backoff,
@@ -970,12 +1625,11 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
         join_timeout: _join_timeout,
         clock,
     } = config;
+    // Dropped last: marks the cell if this thread unwinds (core#398).
+    let _exit = MonitorExit(shared.clone());
 
-    // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap.
-    // Reset to 0 once a respawned child stays Running for `healthy_after` (F-1),
-    // so an intermittently-crashing-but-recovering child is never permanently
-    // Failed — while a fast crash-loop (which never reaches `healthy_after`)
-    // never resets and still hits the cap.
+    // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap. Reset to 0 once a
+    // respawned child stays Running for `healthy_after` (F-1), and for every new Start intent.
     let mut consecutive_failures: u32 = 0;
     let watch = spec.child_watch.clone();
     // After every end of a child (reaped): the caller's cleanup of what the child started.
@@ -984,16 +1638,79 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
             (w.ended)();
         }
     };
+    // Log readers of every incarnation that have not been joined yet.
+    let mut readers: Vec<Reader> = Vec::new();
+    // The Start intent whose retry budget `consecutive_failures` counts.
+    let mut budget_seq: u64 = 0;
+    // The Start intent whose budget ran out; the monitor idles in Failed until a newer intent.
+    let mut failed_seq: Option<u64> = None;
+    // The Stop intent already settled; the monitor idles, re-checking a quarantine.
+    let mut settled_stop: Option<u64> = None;
+    // Whether a child was torn down since the last settled Stop (names "child" in the scope).
+    let mut tore_down_child = false;
 
     loop {
-        // --- spawn ---
-        shared.set_state(SupervisorState::Starting);
+        let (seq, desired, closing) = shared.intent();
+        if closing {
+            finish_closing(&shared, &mut readers, tore_down_child);
+            return;
+        }
+
+        if desired == Desired::Stopped {
+            if settled_stop != Some(seq) {
+                if settle_stop(&shared, seq, &mut readers, tore_down_child, watch.is_some()) {
+                    settled_stop = Some(seq);
+                    tore_down_child = false;
+                }
+                continue;
+            }
+            let quarantined = shared.lock().quarantine.is_some();
+            if quarantined && drain_readers(&mut readers, Duration::ZERO).is_empty() {
+                // The held work really ended: ownership is reconciled. The receipt keeps what
+                // was observed when the Stop settled; a fresh explicit Start is now admitted.
+                let mut c = shared.lock();
+                c.quarantine = None;
+                c.phase = Phase::Stopped;
+                c.touch();
+                continue;
+            }
+            shared.wait_wake(quarantined.then_some(QUARANTINE_POLL));
+            continue;
+        }
+
+        // desired == Running
+        if failed_seq == Some(seq) {
+            shared.wait_wake(None);
+            continue;
+        }
+        // Before every spawn: the first one for a new Start intent and every automatic retry
+        // under the same intent (core#397). However the previous incarnation ended (a Stop's
+        // teardown that this Start superseded, a crash, or a failed health check), its child is
+        // gone but its readers (and any process holding its output pipe) may not be. Reconcile
+        // them before admitting the spawn; until then the service is Quarantined and nothing is
+        // spawned. A pending Start stays pending; a retry keeps its budget position.
+        let remaining = drain_readers(&mut readers, READER_DRAIN);
+        if !remaining.is_empty() {
+            hold_start_for_cleanup(&shared, seq, &remaining);
+            shared.wait_wake(Some(QUARANTINE_POLL));
+            continue;
+        }
+        release_start_hold(&shared, seq);
+        tore_down_child = false;
+        if budget_seq != seq {
+            budget_seq = seq;
+            consecutive_failures = 0;
+        }
+
+        // --- spawn admission: only for the intent that is still current ---
+        if !admit_spawn(&shared, seq) {
+            continue;
+        }
         let mut child = match spawn_child(&spec) {
-            Ok(c) => c,
+            Ok(c) => OwnedChild(c),
             Err(e) => {
-                // Spawn itself failed (bad path / EACCES). Treat as a crash so
-                // the same bounded backoff applies — a bad binary path cannot
-                // fork-bomb either.
+                // Spawn itself failed (bad path / EACCES). Treat as a crash so the same bounded
+                // backoff applies — a bad binary path cannot fork-bomb either.
                 let record = CrashRecord {
                     name: spec.name.clone(),
                     at_unix_ms: clock.now_unix_ms(),
@@ -1005,82 +1722,61 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
                 record_crash_status(&shared, &record);
                 consecutive_failures += 1;
                 if consecutive_failures > backoff.max_retries {
-                    shared.set_state(SupervisorState::Failed);
-                    return;
+                    enter_failed(&shared, seq, "the binary could not be started");
+                    failed_seq = Some(seq);
+                    continue;
                 }
-                if backoff_or_control(
+                backoff_wait(
                     &shared,
-                    &control,
+                    seq,
                     backoff.delay_for(consecutive_failures),
                     clock.as_ref(),
-                ) == LoopSignal::Terminate
-                {
-                    return;
-                }
+                );
                 continue;
             }
         };
 
-        // Stream stdout + stderr into the shared log ring via detached reader
-        // threads (Q-A.2). Done BEFORE publishing Running so no early line is
-        // missed. The threads own the pipes; the crash tail is later derived
-        // from the ring's `err` lines (not a re-read of child.stderr).
-        spawn_log_readers(&mut child, &spec.name, &shared);
+        // Stream stdout + stderr into the shared log ring (Q-A.2). Done BEFORE publishing so no
+        // early line is missed. The crash tail is later derived from the ring's `err` lines.
+        // Earlier incarnations' readers were all joined by the reconcile above.
+        readers.extend(spawn_log_readers(&mut child, &spec.name, &shared));
 
-        // Publish Running + the live pid.
-        {
-            let mut s = shared.status.lock().unwrap_or_else(|e| e.into_inner());
-            s.state = SupervisorState::Running;
-            s.pid = Some(child.id());
+        // --- publication admission: a newer intent that arrived during the OS call wins ---
+        if !publish_alive(&shared, seq, child.id()) {
+            terminate_child(&mut child, stop_grace, watch.as_ref());
+            ended(&watch);
+            after_teardown(&shared);
+            tore_down_child = true;
+            continue;
         }
 
-        // --- supervise: wait for exit OR a control message OR a health failure ---
+        // --- supervise: wait for exit OR a newer intent OR a health failure ---
         let report = supervise_running(
             &mut child,
-            &control,
+            &shared,
+            seq,
             spec.health_check.as_ref(),
             watch.as_ref(),
             healthy_after,
             clock.as_ref(),
         );
-        // F-1: a run that stayed healthy long enough resets the consecutive
-        // counter, so the NEXT crash starts a fresh backoff ramp and an
-        // intermittently-crashing child is never permanently Failed.
+        // F-1: a run that stayed healthy long enough resets the consecutive counter.
         if report.sustained_healthy {
             consecutive_failures = 0;
         }
 
         match report.outcome {
-            RunOutcome::Stopped => {
-                // Intentional stop: NOT a crash. No record, no restart. Off.
+            RunOutcome::IntentChanged => {
+                // A Stop (or shutdown): not a crash. No record, no restart.
                 terminate_child(&mut child, stop_grace, watch.as_ref());
                 ended(&watch);
-                clear_pid(&shared);
-                shared.set_state(SupervisorState::Off);
-                // Wait for a resume/shutdown; C1.0 has no resume, so we block on
-                // the channel until Shutdown (or the handle drops → channel
-                // closes). This keeps the monitor alive to own no child.
-                match control.recv() {
-                    Ok(ControlMsg::Shutdown) | Err(_) => return,
-                    Ok(ControlMsg::Stop) => {
-                        // Already stopped; stay Off, keep waiting.
-                        continue;
-                    }
-                }
-            }
-            RunOutcome::Shutdown => {
-                terminate_child(&mut child, stop_grace, watch.as_ref());
-                ended(&watch);
-                clear_pid(&shared);
-                shared.set_state(SupervisorState::Off);
-                return;
+                after_teardown(&shared);
+                tore_down_child = true;
             }
             RunOutcome::Crashed { status } => {
-                // Unexpected exit → crash record + backoff + restart. Reap first,
-                // then give the detached stderr reader a brief window to drain the
-                // now-closed pipe to EOF so the ring holds the final lines, then
-                // derive the bounded tail from the ring's `err` lines (the reader
-                // owns the pipe now — we no longer re-read child.stderr).
+                // Unexpected exit → crash record + backoff + restart. Reap first, then give the
+                // stderr reader a brief window to drain the now-closed pipe so the ring holds the
+                // final lines, then derive the bounded tail from the ring's `err` lines.
                 let _ = child.wait(); // reap (already exited)
                 ended(&watch);
                 drain_grace(&shared);
@@ -1098,21 +1794,25 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
 
                 consecutive_failures += 1;
                 if consecutive_failures > backoff.max_retries {
-                    // The fork-bomb bound: give up. Terminal Failed, no respawn.
-                    shared.set_state(SupervisorState::Failed);
-                    return;
+                    // The fork-bomb bound: give up. Failed, no respawn for this intent.
+                    enter_failed(
+                        &shared,
+                        seq,
+                        "the child kept exiting; the retry budget is spent",
+                    );
+                    failed_seq = Some(seq);
+                    continue;
                 }
-                let delay = backoff.delay_for(consecutive_failures);
-                if backoff_or_control(&shared, &control, delay, clock.as_ref())
-                    == LoopSignal::Terminate
-                {
-                    return;
-                }
-                // else: loop → respawn.
+                backoff_wait(
+                    &shared,
+                    seq,
+                    backoff.delay_for(consecutive_failures),
+                    clock.as_ref(),
+                );
             }
             RunOutcome::Unhealthy => {
-                // Health check failed: stop the (still-alive) child and treat it
-                // as a crash so the same bounded backoff applies.
+                // Health check failed: stop the (still-alive) child and treat it as a crash so
+                // the same bounded backoff applies.
                 terminate_child(&mut child, stop_grace, watch.as_ref());
                 ended(&watch);
                 let record = CrashRecord {
@@ -1128,28 +1828,191 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
 
                 consecutive_failures += 1;
                 if consecutive_failures > backoff.max_retries {
-                    shared.set_state(SupervisorState::Failed);
-                    return;
+                    enter_failed(
+                        &shared,
+                        seq,
+                        "the health check kept failing; the retry budget is spent",
+                    );
+                    failed_seq = Some(seq);
+                    continue;
                 }
-                let delay = backoff.delay_for(consecutive_failures);
-                if backoff_or_control(&shared, &control, delay, clock.as_ref())
-                    == LoopSignal::Terminate
-                {
-                    return;
-                }
+                backoff_wait(
+                    &shared,
+                    seq,
+                    backoff.delay_for(consecutive_failures),
+                    clock.as_ref(),
+                );
             }
         }
     }
+}
+
+/// The previous incarnation still holds `remaining`: quarantine the service while the next spawn
+/// for intent `seq` (an accepted Start or an automatic retry) waits. Nothing is spawned meanwhile.
+fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
+    let mut c = shared.lock();
+    if c.closing || c.intent_sequence != seq || c.quarantine.is_some() {
+        return;
+    }
+    c.status.state = SupervisorState::Off;
+    c.status.pid = None;
+    c.phase = Phase::Quarantined;
+    c.quarantine = Some(format!(
+        "the previous incarnation is not cleaned up yet ({}): its output is still open, so \
+         another process (for example one it started) may hold the pipe; the next start waits \
+         until it ends",
+        remaining.join(", ")
+    ));
+    c.touch();
+}
+
+/// The previous incarnation is reconciled: lift the hold placed for intent `seq`.
+fn release_start_hold(shared: &Shared, seq: u64) {
+    let mut c = shared.lock();
+    if c.intent_sequence == seq && c.desired == Desired::Running && c.quarantine.is_some() {
+        c.quarantine = None;
+        c.phase = Phase::Starting;
+        c.touch();
+    }
+}
+
+/// Spawn admission (SC1 ticket check): admit a spawn only while intent `seq` is still the
+/// latest and shutdown has not begun, and publish `Starting` in the same critical section.
+fn admit_spawn(shared: &Shared, seq: u64) -> bool {
+    let mut c = shared.lock();
+    if c.closing || c.intent_sequence != seq {
+        return false;
+    }
+    c.status.state = SupervisorState::Starting;
+    c.phase = Phase::Starting;
+    c.touch();
+    true
+}
+
+/// Count the new incarnation, then publish it `Alive` only if intent `seq` is still current.
+/// Settles a pending Start receipt as `Started`. Returns false when a newer intent (or shutdown)
+/// arrived while the OS call ran: the caller tears the child down without publishing it.
+fn publish_alive(shared: &Shared, seq: u64, pid: u32) -> bool {
+    let mut c = shared.lock();
+    c.incarnation = c.incarnation.saturating_add(1);
+    c.touch();
+    if c.closing || c.intent_sequence != seq {
+        return false;
+    }
+    c.status.state = SupervisorState::Running;
+    c.status.pid = Some(pid);
+    c.phase = Phase::Alive;
+    let incarnation = c.incarnation;
+    c.settle(seq, IntentKind::Start, Receipt::Started { incarnation });
+    true
+}
+
+/// After a teardown (the child is reaped): the legacy view shows Off with no pid at once. The
+/// phase stays `Stopping` until the Stop settles.
+fn after_teardown(shared: &Shared) {
+    let mut c = shared.lock();
+    c.status.state = SupervisorState::Off;
+    c.status.pid = None;
+    c.touch();
+}
+
+/// The retry budget for intent `seq` is spent: Failed, and a pending Start receipt says why.
+fn enter_failed(shared: &Shared, seq: u64, reason: &str) {
+    shared.set_state(SupervisorState::Failed);
+    shared.lock().settle(
+        seq,
+        IntentKind::Start,
+        Receipt::Failed {
+            reason: reason.to_string(),
+        },
+    );
+}
+
+/// Settle Stop intent `seq` after its teardown: `Complete` once every log reader has ended,
+/// otherwise `Incomplete` naming the readers, and the service is Quarantined. Returns false if a
+/// newer intent arrived meanwhile (the caller handles that one instead).
+fn settle_stop(
+    shared: &Shared,
+    seq: u64,
+    readers: &mut Vec<Reader>,
+    tore_down_child: bool,
+    has_watch: bool,
+) -> bool {
+    let remaining = drain_readers(readers, READER_DRAIN);
+    let mut c = shared.lock();
+    if c.closing || c.intent_sequence != seq {
+        return false;
+    }
+    c.status.state = SupervisorState::Off;
+    c.status.pid = None;
+    if remaining.is_empty() {
+        let mut scope = Vec::new();
+        if tore_down_child {
+            scope.push("child".to_string());
+            if has_watch {
+                scope.push("childWatch".to_string());
+            }
+        }
+        scope.push("readers".to_string());
+        c.phase = Phase::Stopped;
+        c.quarantine = None;
+        c.settle(seq, IntentKind::Stop, Receipt::Complete { scope });
+    } else {
+        let reason = "the child ended but its output is still open: a log reader has not reached \
+                      end of file, so another process (for example one the child started) may \
+                      still hold the pipe"
+            .to_string();
+        c.phase = Phase::Quarantined;
+        c.quarantine = Some(reason.clone());
+        c.settle(
+            seq,
+            IntentKind::Stop,
+            Receipt::Incomplete { remaining, reason },
+        );
+    }
+    c.touch();
+    true
+}
+
+/// Shutdown: the child is already torn down. Settle what is pending without waiting (teardown
+/// is bounded by the join timeout), leave the legacy view Off, and let the monitor exit.
+fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: bool) {
+    let remaining = drain_readers(readers, Duration::ZERO);
+    let mut c = shared.lock();
+    c.status.state = SupervisorState::Off;
+    c.status.pid = None;
+    if let Some((token, kind)) = c.active {
+        let receipt = match kind {
+            IntentKind::Start => Receipt::Superseded,
+            IntentKind::Stop if remaining.is_empty() => {
+                let mut scope = Vec::new();
+                if tore_down_child {
+                    scope.push("child".to_string());
+                }
+                scope.push("readers".to_string());
+                Receipt::Complete { scope }
+            }
+            IntentKind::Stop => Receipt::Incomplete {
+                remaining: remaining.clone(),
+                reason: "shutdown: a log reader had not reached end of file".to_string(),
+            },
+        };
+        c.settle(token.intent_sequence, kind, receipt);
+    }
+    c.phase = if remaining.is_empty() {
+        Phase::Stopped
+    } else {
+        Phase::Quarantined
+    };
+    c.touch();
 }
 
 /// The result of a `supervise_running` wait.
 enum RunOutcome {
     /// The child exited on its own (unexpected) → crash path.
     Crashed { status: std::process::ExitStatus },
-    /// A `Stop` control message arrived.
-    Stopped,
-    /// A `Shutdown` control message arrived.
-    Shutdown,
+    /// A newer intent (a Stop) was committed, or shutdown began.
+    IntentChanged,
     /// A health-check probe failed (returned `false`) or hung past its timeout.
     Unhealthy,
 }
@@ -1216,7 +2079,8 @@ impl ProbeRunner {
 /// the run was SUSTAINED-healthy (F-1 reset trigger).
 fn supervise_running(
     child: &mut Child,
-    control: &Receiver<ControlMsg>,
+    shared: &Shared,
+    seq: u64,
     health: Option<&HealthCheck>,
     watch: Option<&ChildWatch>,
     healthy_after: Duration,
@@ -1262,28 +2126,12 @@ fn supervise_running(
 
     loop {
         refresh_health!();
-        // 1) control message (non-blocking).
-        match control.try_recv() {
-            Ok(ControlMsg::Stop) => {
-                return RunReport {
-                    outcome: RunOutcome::Stopped,
-                    sustained_healthy,
-                }
-            }
-            Ok(ControlMsg::Shutdown) => {
-                return RunReport {
-                    outcome: RunOutcome::Shutdown,
-                    sustained_healthy,
-                }
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                // Controller dropped → treat as shutdown (no orphan).
-                return RunReport {
-                    outcome: RunOutcome::Shutdown,
-                    sustained_healthy,
-                };
-            }
+        // 1) a newer intent (Stop) or shutdown, read from the cell at this bounded point.
+        if shared.intent_changed(seq) {
+            return RunReport {
+                outcome: RunOutcome::IntentChanged,
+                sustained_healthy,
+            };
         }
         // 2) child exit (non-blocking reap).
         match child.try_wait() {
@@ -1385,57 +2233,47 @@ fn default_failed_status() -> std::process::ExitStatus {
     }
 }
 
-/// A control signal from the backoff wait: keep looping, or terminate the
-/// monitor.
-#[derive(PartialEq, Eq)]
-enum LoopSignal {
-    Continue,
-    Terminate,
-}
-
-/// Sleep out the backoff delay, but wake early on a control message. Publishes
-/// `Backoff { next_retry_ms }` so a poller sees when the next attempt is due.
-/// A `Stop` during backoff cancels the pending restart (Off, terminate the
-/// monitor's restart intent by going Off and waiting); a `Shutdown` or a closed
-/// channel terminates the monitor.
-fn backoff_or_control(
-    shared: &Arc<Shared>,
-    control: &Receiver<ControlMsg>,
-    delay: Duration,
-    clock: &dyn Clock,
-) -> LoopSignal {
+/// Sleep out the backoff delay for intent `seq`, waking early when a newer intent (a Stop, or
+/// shutdown) is committed. Publishes `Backoff { next_retry_ms }` so a poller sees when the next
+/// attempt is due. The wait is measured on the monotonic clock; a wakeup never restarts it.
+/// The caller's loop then re-reads the intent: a Stop cancels the pending retry.
+fn backoff_wait(shared: &Shared, seq: u64, delay: Duration, clock: &dyn Clock) {
     let next_retry_ms = clock.now_unix_ms().saturating_add(delay.as_millis() as u64);
-    shared.set_state(SupervisorState::Backoff { next_retry_ms });
-    match control.recv_timeout(delay) {
-        // Timed out → time to retry: keep looping (respawn).
-        Err(RecvTimeoutError::Timeout) => LoopSignal::Continue,
-        // Stop during backoff: cancel the pending restart. Go Off and wait for a
-        // shutdown (mirrors the Stopped arm — no orphan child exists here).
-        Ok(ControlMsg::Stop) => {
-            shared.set_state(SupervisorState::Off);
-            match control.recv() {
-                Ok(ControlMsg::Shutdown) | Err(_) => LoopSignal::Terminate,
-                Ok(ControlMsg::Stop) => LoopSignal::Terminate,
-            }
+    {
+        let mut c = shared.lock();
+        if c.closing || c.intent_sequence != seq {
+            return;
         }
-        Ok(ControlMsg::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
-            shared.set_state(SupervisorState::Off);
-            LoopSignal::Terminate
+        c.status.state = SupervisorState::Backoff { next_retry_ms };
+        c.phase = Phase::Backoff;
+        c.touch();
+    }
+    let deadline = std::time::Instant::now() + delay;
+    loop {
+        if shared.intent_changed(seq) {
+            return;
         }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return;
+        }
+        shared.wait_wake(Some(deadline - now));
     }
 }
 
 /// Record a crash into the shared status (bumps `restarts`, sets `last_crash`).
-fn record_crash_status(shared: &Arc<Shared>, record: &CrashRecord) {
-    let mut s = shared.status.lock().unwrap_or_else(|e| e.into_inner());
-    s.restarts = s.restarts.saturating_add(1);
-    s.last_crash = Some(record.clone());
+fn record_crash_status(shared: &Shared, record: &CrashRecord) {
+    let mut c = shared.lock();
+    c.status.restarts = c.status.restarts.saturating_add(1);
+    c.status.last_crash = Some(record.clone());
+    c.touch();
 }
 
 /// Clear the live pid from the status (child is gone).
-fn clear_pid(shared: &Arc<Shared>) {
-    let mut s = shared.status.lock().unwrap_or_else(|e| e.into_inner());
-    s.pid = None;
+fn clear_pid(shared: &Shared) {
+    let mut c = shared.lock();
+    c.status.pid = None;
+    c.touch();
 }
 
 #[cfg(test)]
@@ -1445,4 +2283,7 @@ mod tests {
 
     #[cfg(windows)]
     include!("supervisor_windows_tests.rs");
+
+    // The lifecycle cell (SC1): platform-neutral, so it runs on every OS lane.
+    include!("supervisor_lifecycle_tests.rs");
 }

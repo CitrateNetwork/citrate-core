@@ -98,15 +98,20 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
       heightValue = fmtI(Number(liveHeight));
       heightSub = "rpc.citrate.ai · live";
     }
-  } else {
+  } else if (s.height > 0) {
     heightValue = fmtI(s.height);
     heightSub = "local node";
+  } else {
+    // C1-V V10: no reading before the first poll (and eth_blockNumber's 0x0 is not a height).
+    heightValue = "—";
+    heightSub = "local node · not read yet";
   }
 
   const vitals = [
     { label: "Height", value: heightValue, sub: heightSub, color: "var(--tx-1)", tip: "eth_blockNumber", vsize: "21px" },
     { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "direct P2P", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "Direct P2P peers your node is dialed into (bootnodes + sequencer + discovered members) — not the whole network's node count (net_peerCount)", vsize: "21px" },
-    { label: "Finality", value: s.finAge < 0 ? "—" : Math.round(s.finAge) + "s", sub: s.finAge < 0 ? "no source yet" : "checkpoint age", color: "var(--tx-1)", tip: "BFT checkpoint every ~50 blocks", vsize: "21px" },
+    // C1-V V1: checkpoint finality is specified but not running on 40204 (UI truth contract §4).
+    { label: "Finality", value: "—", sub: "not running yet", color: "var(--tx-3)", tip: "Checkpoint finality is specified but not running on betanet: the finalized tag still returns the genesis block. A confirmation count is a depth, not finality.", vsize: "21px" },
     { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: validatorCount != null ? "network · active set" : "reading…", color: "var(--tx-1)", tip: "ValidatorRegistry.activeCount() — the active consensus validator set securing the whole network (on-chain, reads the same from every node), not this node's local peer count", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "LiquidStakingPool shares", vsize: "21px" },

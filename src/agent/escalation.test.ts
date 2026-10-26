@@ -13,6 +13,7 @@ import {
   runEscalationTool,
   withEscalationTool,
   type EscalationDeps,
+  escalationOffered,
 } from "./escalation";
 import { UNTRUSTED_CLOSE, UNTRUSTED_OPEN } from "./untrusted";
 import { AGENT_TOOLS } from "./harness";
@@ -168,6 +169,43 @@ describe("runEscalationTool — price first, then the budget or the member decid
     const out = await runEscalationTool(d, { question: "q" });
     expect(order).toEqual(["quote", "notice", "run", "prepare", "confirm", "run"]);
     expect(out).toContain("approved by the member");
+  });
+
+  // K2: the member's chat route applies to escalation (it sends to the member's own endpoint).
+  it("ask first: a quote that asks first opens the card even within budget, and the run carries core's id", async () => {
+    const { d, order } = deps({ quote: vi.fn(async () => quote({ withinBudget: true, asksFirst: true })) });
+    await runEscalationTool(d, { question: "q" });
+    expect(order).toEqual(["prepare", "confirm", "run"]);
+    expect(d.notice).not.toHaveBeenCalled();
+    const reason = (d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+    expect(reason).toContain("asks before");
+    expect(d.run).toHaveBeenCalledWith("q-1", 31_000, "c-core-1", false);
+  });
+
+  it("ask first, declined: nothing runs", async () => {
+    const { d } = deps({ quote: vi.fn(async () => quote({ asksFirst: true })), confirm: vi.fn(async () => "rejected") });
+    const out = await runEscalationTool(d, { question: "q" });
+    expect(d.run).not.toHaveBeenCalled();
+    expect(out).toContain("nothing was sent");
+  });
+
+  it("local only: core refuses the quote; the reason is shown and nothing is asked or sent", async () => {
+    const { d } = deps({
+      quote: vi.fn(async () => {
+        throw new Error("Local only is on, so this escalation was refused and nothing was sent.");
+      }),
+    });
+    const out = await runEscalationTool(d, { question: "q" });
+    expect(out).toContain("Local only is on");
+    expect(d.prepareConfirm).not.toHaveBeenCalled();
+    expect(d.confirm).not.toHaveBeenCalled();
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it("the escalate_plan tool is not offered under local only", () => {
+    expect(escalationOffered(1, "ask_first")).toBe(true);
+    expect(escalationOffered(1, "local_only")).toBe(false);
+    expect(escalationOffered(0, "ask_first")).toBe(false);
   });
 
   it("no endpoint, no question, or a failed quote: honest text, nothing sent", async () => {
