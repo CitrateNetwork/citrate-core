@@ -163,6 +163,8 @@ mod invites;
 mod join;
 mod model_catalog;
 mod model_delete;
+// GROW-S1 task 12: the pending v2 invite, held in the keyring until the member acts on it.
+mod pending_join;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
@@ -360,6 +362,8 @@ pub fn run() {
             app.manage(oidc::build_auth_state());
             // v2 invite links: the join client (pending attaches + opened invites, memory only).
             app.manage(join::build_join_state());
+            // The pending invite (code + link key) waiting for the member's Join: keyring only.
+            app.manage(pending_join::build_pending_join_state(app.handle().clone()));
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -544,10 +548,14 @@ pub fn run() {
             // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
             join::join_mint,
             join::join_attach,
-            join::join_resolve,
             join::join_redeem,
             join::join_revoke,
             join::join_list,
+            join::join_share_qr,
+            pending_join::pending_join_set,
+            pending_join::pending_join_get,
+            pending_join::pending_join_clear,
+            pending_join::pending_join_resolve,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
