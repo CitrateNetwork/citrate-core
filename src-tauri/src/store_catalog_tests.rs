@@ -1475,6 +1475,13 @@ fn tripwire_the_store_never_touches_a_file_with_a_models_marker() {
     assert!(clean.find("models_download_left(").expect("marker check") < clean.find("remove_file(").expect("delete"));
     let rec = body("fn reconcile_models(");
     assert!(rec.find("models_download_left(").expect("marker check") < rec.find(".verify_held(").expect("verify"));
+    // #463: the marker branch only confirms a match (no quarantine), then leaves the loop.
+    let marked = &rec[rec.find("if models_download_left(").expect("marker branch")..];
+    let marked = &marked[..marked.find("continue;").expect("leaves the loop")];
+    assert!(marked.contains(".confirm_held(&lock)"), "a match is confirmed under the lock");
+    for touch in [".verify_held(", ".verify()", "remove_unverified_model", "remove_file("] {
+        assert!(!marked.contains(touch), "the marker branch never runs {touch}");
+    }
     // The only other file removal is the single-use review stage (not a model).
     let stage = body("fn take_stage(");
     assert_eq!(

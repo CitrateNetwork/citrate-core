@@ -569,7 +569,8 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
 }
 
 /// Download + verify the catalog model `desc` (catalog id `id`) into `models_dir` as the Models
-/// screen does: its resume marker records which catalog id owns the `.part` (so a restart can resume it), and is
+/// screen does. Its resume marker records which catalog id owns the `.part` (so a restart can
+/// resume it): it is written only by the download that holds the file's download lock, and is
 /// forgotten once the model is verified.
 pub(crate) fn download_tracked(
     models_dir: &std::path::Path,
@@ -579,13 +580,20 @@ pub(crate) fn download_tracked(
     on_progress: impl FnMut(u64, u64),
 ) -> Result<(), String> {
     let local_file = local_file_name(&desc.file);
-    write_download_marker(models_dir, &local_file, id, desc.size_bytes)?;
     let mgr =
         crate::model::ModelManager::from_descriptor(models_dir.to_path_buf(), transport, desc);
     // Download and verify as one operation under the file's download lock (shared with the
-    // Store): a different verified model already saved under this name is never replaced.
-    mgr.download_and_verify(crate::model::ExistingFile::ResumeUnverified, on_progress)
-        .map_err(|e| e.to_string())?;
+    // Store): a different verified model already saved under this name is never replaced. The
+    // marker is written once that lock is held, so a request the lock refuses leaves none (#489).
+    mgr.download_and_verify(
+        crate::model::ExistingFile::ResumeUnverified,
+        || {
+            write_download_marker(models_dir, &local_file, id, desc.size_bytes)
+                .map_err(crate::model::ModelError::Io)
+        },
+        on_progress,
+    )
+    .map_err(|e| e.to_string())?;
     clear_download_marker(models_dir, &local_file);
     Ok(())
 }
