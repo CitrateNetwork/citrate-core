@@ -61,7 +61,7 @@ work/
 ├── citrate-core            # this repo
 ├── citrate-chain           # → citrate node   (bin: citrate)
 ├── citrate-node-agent      # → node-agent
-├── citrate-memories        # → mem-mcp   (0e9d488 or later: implements import-corpus; features rocksdb,transformer)
+├── citrate-memories        # → mem-mcp   (5aeda317 or later: import-corpus and the store key file; features rocksdb,transformer)
 ├── citrate-comms           # → comms-member-daemon
 ├── citrate-cluster         # → cluster-daemon
 └── citrate-agent-runtime   # → hermes (agent-sidecar)
@@ -78,6 +78,8 @@ sha256 matches the pin. They default to the sibling source dir, so with the layo
 pass `--target`. Run each on the Linux host so it produces the Linux triple natively. The Linux pins
 are the 0.5.1 builds: if a rebuild on this host does not reproduce them, the script stops; record
 the new digests with `--print-digest` and pin them in a reviewed PR before building with them.
+mem-mcp has no Linux pin yet: it moved to citrate-memories 5aeda317 (the store key file), so
+record its Linux digests with `--print-digest` first.
 
 ```bash
 cd citrate-core
@@ -106,7 +108,7 @@ DEST=citrate-core/src-tauri/binaries
 ( cd ../citrate-node-agent && cargo build --release --bin node-agent )
 cp ../citrate-node-agent/target/release/node-agent "$DEST/node-agent-$TRIPLE"
 
-# mem-mcp — from citrate-memories @ 0e9d488 or later (import-corpus), rocksdb+transformer features
+# mem-mcp — from citrate-memories @ 5aeda317 or later (import-corpus, store key file), rocksdb+transformer features
 ( cd ../citrate-memories && cargo build --release -p mem-mcp --bin mem-mcp --features rocksdb,transformer )
 cp ../citrate-memories/target/release/mem-mcp "$DEST/mem-mcp-$TRIPLE"
 
@@ -159,8 +161,10 @@ step still packages, with a README-only corpus (first run: `skipped: no-bundle`)
 pinned corpus against **this platform's** `mem-mcp`, then run the pre-bundle check; both refuse
 anything that is not the pinned, verified corpus.
 
-The `mem-mcp` built above must implement `import-corpus` (citrate-memories `0e9d488` or later,
-features `rocksdb,transformer`); the stager refuses an older one.
+The `mem-mcp` built above must implement `import-corpus` and read its store key from the file
+citrate-core names (citrate-memories `5aeda317` or later, features `rocksdb,transformer`); the
+stager refuses one without `import-corpus`, and `node scripts/component-pins.mjs verify-bytes
+mem-mcp <binary>` refuses one without the key file.
 
 ```bash
 cd citrate-core

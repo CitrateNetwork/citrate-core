@@ -90,7 +90,7 @@ the `runtime_deps_asset` of each component), which release.yml downloads and ver
 ```bash
 mkdir -p /tmp/rd
 for f in citrate-aarch64-apple-darwin-c384fc982882 node-agent-aarch64-apple-darwin-1d8cb8e4e24a \
-  mem-mcp-aarch64-apple-darwin-0e9d48822054 comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c \
+  mem-mcp-aarch64-apple-darwin-5aeda3172369 comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c \
   cluster-daemon-aarch64-apple-darwin-755cf2172260 hermes-aarch64-apple-darwin-626486b8a7db; do
   cp "src-tauri/binaries/${f%-*}" "/tmp/rd/$f"
 done
