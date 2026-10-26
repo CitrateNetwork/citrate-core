@@ -1438,7 +1438,7 @@ impl HermesManager {
             }
             map.remove(&key);
         }
-        let view = ceremony.request(hermes_intent(&to, &data, &from, gas));
+        let view = ceremony.request_watched(hermes_intent(&to, &data, &from, gas));
         map.insert(key.clone(), view.id.clone());
         self.bridged_by_call
             .lock()
