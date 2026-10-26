@@ -778,6 +778,7 @@ pub fn run() {
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
             chat_consent::chat_consent_prepare,
+            chat_consent::chat_consent_drop,
             chat_consent::media_consent_prepare,
             chat_route::chat_route_get,
             chat_route::chat_route_set,

@@ -116,8 +116,9 @@ fn message_hash(text: &str) -> [u8; 32] {
 /// Whether a consent minted at `minted` has outlived [`CONSENT_TTL_MS`] at `now`. The larger of
 /// the monotonic and the wall-clock elapsed time counts.
 fn expired(minted: &ClockReading, now: &ClockReading) -> bool {
-    Duration::from_millis(now.wall_ms.saturating_sub(minted.wall_ms))
-        >= Duration::from_millis(CONSENT_TTL_MS)
+    let mono = now.mono.saturating_duration_since(minted.mono);
+    let wall = Duration::from_millis(now.wall_ms.saturating_sub(minted.wall_ms));
+    mono.max(wall) >= Duration::from_millis(CONSENT_TTL_MS)
 }
 
 /// The last `user` message's text in an OpenAI-style messages array, if any.
@@ -173,8 +174,10 @@ impl ConsentBook {
     }
 
     /// Drop the open consent `consent_id`, if there is one. True when one was dropped.
-    pub fn drop_consent(&mut self, _consent_id: &str) -> bool {
-        false
+    pub fn drop_consent(&mut self, consent_id: &str) -> bool {
+        let before = self.open.len();
+        self.open.retain(|o| !ct_eq(&o.consent_id, consent_id));
+        self.open.len() != before
     }
 
     /// One remote chat send: `consent_id` must be open, unexpired, for `provider_id`, and minted
@@ -261,7 +264,7 @@ pub(crate) fn authorize(
     messages_json: &str,
     now: ClockReading,
 ) -> Result<RemoteSendPermit, String> {
-    let _ = route_dir;
+    crate::chat_route::remote_chat_allowed(route_dir)?;
     state
         .0
         .lock()
@@ -279,7 +282,7 @@ pub(crate) fn authorize_once(
     prompt: &str,
     now: ClockReading,
 ) -> Result<RemoteSendPermit, String> {
-    let _ = route_dir;
+    crate::chat_route::remote_chat_allowed(route_dir)?;
     state
         .0
         .lock()
@@ -309,6 +312,23 @@ pub async fn chat_consent_prepare(
             new_consent_id(),
         );
         Ok(view)
+    })
+    .await
+}
+
+/// **chat_consent_drop**: the question for a held message closed without "Send this message to
+/// the gateway this time" (cancelled, stopped, or the local model answers instead). Core drops
+/// the consent minted for it, so it cannot be used later. Data source: the in-memory book. An id
+/// that is not open (already used, expired or dropped) is not an error.
+#[tauri::command]
+pub async fn chat_consent_drop(app: tauri::AppHandle, consent_id: String) -> Result<(), String> {
+    crate::blocking::off_main(move || {
+        let st = tauri::Manager::try_state::<ChatConsentState>(&app)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        st.0.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drop_consent(&consent_id);
+        Ok(())
     })
     .await
 }

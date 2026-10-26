@@ -202,15 +202,23 @@ fn the_commands_are_registered_and_in_the_main_window_acl() {
 
 #[test]
 fn the_remote_chat_commands_check_the_route() {
+    // The route check is part of obtaining the remote-send permit (`chat_consent::authorize`,
+    // pinned by `chat_consent::tests::every_remote_send_takes_a_permit_from_the_consent_book`);
+    // the commands hand it the real route folder.
     let ai = include_str!("ai.rs");
-    for f in ["pub async fn ai_chat(", "pub async fn ai_chat_tools("] {
+    for (f, sync) in [
+        ("pub async fn ai_chat(", "ai_chat_sync("),
+        ("pub async fn ai_chat_tools(", "ai_chat_tools_sync("),
+    ] {
         let at = ai.find(f).expect(f);
-        let body = &ai[at..at + 900.min(ai.len() - at)];
-        assert!(
-            body.contains("chat_route::remote_chat_allowed"),
-            "{f} checks the route"
-        );
+        let body = &ai[at..at + ai[at..].find("\n}\n").expect("end")];
+        assert!(body.contains("chat_route::route_dir(&app_h)"), "{f} reads the route folder");
+        let call = &body[body.find(sync).expect(sync)..];
+        assert!(call.contains("&route_dir,"), "{f} passes the route folder");
     }
+    let me = include_str!("chat_consent.rs");
+    let at = me.find("pub(crate) fn authorize(").expect("authorize");
+    assert!(me[at..].contains("chat_route::remote_chat_allowed(route_dir)?"));
     let serve = include_str!("serve.rs");
     assert!(
         serve.contains("chat_route::select_route"),

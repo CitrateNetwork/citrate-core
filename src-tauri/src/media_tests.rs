@@ -676,7 +676,8 @@ fn local_model_only_marks_provider_routes_unavailable_with_the_reason() {
 }
 
 /// The media commands check the route before anything remote: `media_options` marks provider
-/// routes and `media_generate_image` refuses a non-local route before the consent and the post.
+/// routes, and `media_generate_image` posts only through `remote_image_post`, whose permit
+/// (`chat_consent::authorize_once`) checks the route folder it is given before the consent.
 #[test]
 fn media_commands_check_local_model_only_before_anything_remote() {
     let src = include_str!("media.rs");
@@ -687,7 +688,10 @@ fn media_commands_check_local_model_only_before_anything_remote() {
     let opts = body("pub async fn media_options(");
     assert!(opts.contains("media_remote_allowed(") && opts.contains("with_remote_blocked("));
     let gen = body("pub async fn media_generate_image(");
-    let allowed = gen.find("media_remote_allowed(").expect("route check");
-    let post = gen.find("remote_image_post(").expect("remote post");
-    assert!(allowed < post, "the route check runs before the remote post");
+    assert!(gen.contains("chat_route::route_dir(&app)"), "the real route folder");
+    let post = &gen[gen.find("remote_image_post(").expect("remote post")..];
+    assert!(post.contains("&route_dir,"), "the post gets the route folder");
+    let send = body("pub(crate) fn remote_image_post(");
+    let permit = send.find("chat_consent::authorize_once(").expect("permit");
+    assert!(permit < send.find("post_to_provider(").expect("post"), "permit before the post");
 }
