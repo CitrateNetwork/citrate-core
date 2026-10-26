@@ -11,7 +11,7 @@
 // =====================================================================
 
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
-import type { ActivationStatusView, Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
+import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -212,7 +212,7 @@ export interface CerSpec {
 
 /**
  * Q-E.1 (@rule8, P0) — the PENDING wallet-review state. A money action
- * (send/stake/withdraw-request/withdraw-claim/claim) builds its ceremony via the
+ * (send/stake/claim) builds its ceremony via the
  * bridge and STOPS here: it holds the decoded `CeremonyView` (what will be
  * signed — action / destination / cost, or an undecodable raw-mode warning) for
  * a HUMAN to Approve or Reject. Only an explicit approve calls signing.broadcast
@@ -221,7 +221,7 @@ export interface CerSpec {
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
+  kind: "send" | "stake" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
@@ -422,7 +422,6 @@ export interface AppState {
   peerRows: PeerRow[];
   crashes: Crash[];
   liquid: number;
-  selfStake: number;
   /**
    * The member's REAL validator bond in the `ValidatorRegistry` (SALT), read from
    * live chain state (`pubkeyOfStaker(bond)` → `stakeOf`) via refreshNode / the grant
@@ -435,25 +434,6 @@ export interface AppState {
    * Rule 1: a funded bond is not the same as an activated one).
    */
   bondedStake: number;
-  /**
-   * CORE WP2 — the wallet's PENDING (unclaimed) LiquidStakingPool withdrawals,
-   * read from live chain state (getLogs WithdrawalRequested + withdrawals(id) +
-   * block_number) via refreshPendingWithdrawals(). NOT persisted — the source of
-   * truth is chain, re-read on Wallet mount + after a settle. A fresh wallet
-   * honestly reads [] (Rule 1 — never fabricated).
-   */
-  pendingWithdrawals: PendingWithdrawal[];
-  /**
-   * C1-W — why `pendingWithdrawals` is not a complete chain read: "not read yet" before the first
-   * read, the failed eth_getLogs window, or "still reading chain history" while the first paged scan
-   * runs. null = the list is a complete read. Never shown as an empty queue. Not persisted.
-   */
-  pendingWithdrawalsError: string | null;
-  /** C1-W — the last read gave no evidence of how far the node executed: the rows shown are real,
-   * but withdrawals in blocks the node has not served yet may be missing. Not persisted. */
-  pendingWithdrawalsUnconfirmed: boolean;
-  /** C1-W — why the last read is not confirmed, in words from the scan (null when confirmed). */
-  pendingWithdrawalsNote: string | null;
   hasGrant: boolean;
   hasSbt: boolean;
   earnVal: number;
@@ -835,12 +815,7 @@ export function freshState(pid: string): AppState {
     peerRows: [],
     crashes: [],
     liquid: 0,
-    selfStake: 0,
     bondedStake: 0,
-    pendingWithdrawals: [],
-    pendingWithdrawalsError: "not read yet",
-    pendingWithdrawalsUnconfirmed: false,
-    pendingWithdrawalsNote: null,
     hasGrant: false,
     hasSbt: false,
     earnVal: 0,
@@ -1025,9 +1000,8 @@ export function freshState(pid: string): AppState {
       s.earnPin = 21.7;
       s.earnComp = 9.31;
       s.earnToday = 3.86;
-      s.selfStake = 2500;
       s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
-      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Add stake|−2,500.00 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
       s.liquid = 58.02;
@@ -1045,8 +1019,7 @@ export function freshState(pid: string): AppState {
       s.earnPin = 51.2;
       s.earnComp = 22.8;
       s.earnToday = 5.12;
-      s.selfStake = 8000;
-      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Add stake|−8,000.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Grant + stake ceremony|32,000 SALT"]);
     }
     // Packaged app (tauri): never seed the sim persona's name into the greeting.
     // Real identity folds in on sign-in; until then greet neutrally (Rule 1).
@@ -1063,7 +1036,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // Every launch starts signed-out; identity is re-derived only from a live
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
-  "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
+  "liquid", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "nodeIntent", "rpc", "net", "cpuCap", "autolock", "channel",
   "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
@@ -1074,6 +1047,10 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
+
+/** D-9 (2026-10-26): the liquid staking pool is retired. A 0.5.1 save may still carry its
+ *  self-stake figure; it is not current, so it is dropped on load and never reaches AppState. */
+export const RETIRED_KEYS: readonly string[] = ["selfStake"];
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1086,6 +1063,7 @@ export function loadState(): AppState {
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
+  if (saved) for (const k of RETIRED_KEYS) delete (saved as Record<string, unknown>)[k];
   // D-11 (P-9d): older builds persisted a gateway key display (`gwKey`, `gwKeyFull`). Provider keys
   // live only in the OS keychain, so drop both from the loaded state and rewrite storage without them.
   if (saved && ("gwKey" in saved || "gwKeyFull" in saved)) {

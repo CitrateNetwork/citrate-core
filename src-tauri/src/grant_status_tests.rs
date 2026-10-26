@@ -379,7 +379,7 @@ fn grant_status_serializes_camelcase_decimal_strings() {
     assert_eq!(
         json["attributedStakeWei"],
         REQUIREMENT_WEI.to_string(),
-        "wei as a decimal string, camelCase key (like PendingWithdrawal)"
+        "wei as a decimal string, camelCase key"
     );
     assert_eq!(json["attributedPrincipalWei"], REQUIREMENT_WEI.to_string());
     assert_eq!(json["hasSbt"], true);

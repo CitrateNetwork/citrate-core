@@ -992,7 +992,7 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("chain_read", { query: "staking.position" })],
       compose: (c) =>
-        `You have **${fmt(c.staked)} SALT** staked in the LiquidStakingPool — your full membership grant, vaulted and attributed to your validator. That meets the 32,000 SALT minimum, so your node ${c.nodeState === "validating" ? "is validating and earning" : "is eligible to validate once running"}. The granted principal stays vaulted until mainnet release; rewards your node earns are yours. Withdrawals of self-added stake carry a 7-day lockup.`,
+        `Your membership grant is **${fmt(c.staked)} SALT**, held in your validator bond. Staking is through that bond: there is no separate stake to add or withdraw. Your node ${c.nodeState === "validating" ? "is validating" : "can validate once the bond is activated and the node is running"}. The granted principal stays locked until the bond unlocks; rewards for blocks your node produces are yours.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {

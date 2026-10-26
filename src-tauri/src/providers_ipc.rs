@@ -73,7 +73,7 @@ pub struct ProviderView {
     pub verified: bool,
     pub base_url: String,
     pub host: String,
-    /// `native`, `openai-compatible`, or `None` when this build has no adapter for it yet.
+    /// `native` (a governed vendor) or `openai-compatible` (a custom endpoint).
     pub adapter: Option<&'static str>,
     pub key_configured: bool,
     pub key_set_ms: Option<u64>,
@@ -245,9 +245,7 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
             };
             let (published, extra) = match &id {
                 ProviderId::Vendor(v) => (
-                    crate::model_proxy::vendor_adapter(*v)
-                        .map(|(a, _)| a.models())
-                        .unwrap_or_default(),
+                    crate::model_proxy::vendor_adapter(*v).0.models(),
                     Vec::new(),
                 ),
                 ProviderId::Custom(cid) => (

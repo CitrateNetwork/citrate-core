@@ -44,7 +44,6 @@ function runningState(over: Partial<AppState> = {}): AppState {
   s.cpu = 23;
   s.ram = 780;
   s.hasGrant = true;
-  s.selfStake = 500;
   return { ...s, ...over };
 }
 

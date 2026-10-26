@@ -831,7 +831,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
           <div className="tabular" style={{ fontFamily: "var(--font-display)", fontWeight: 380, fontSize: 72, lineHeight: 1, letterSpacing: "-0.022em", color: "var(--tx-1)" }}>
             {fmtI(s.s5n)}
           </div>
-          <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → LiquidStakingPool</div>
+          <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → MemberBond</div>
           <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
             treasury UserOp · gas sponsored · first-op category
           </div>
@@ -858,7 +858,6 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
             </div>
             <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
               Principal locked for the membership term and until mainnet release policy unlocks vaulted grants. Validator rewards from your node's work accrue to you.
-              Self-added stake carries a 7-day withdrawal lockup.
             </p>
           </div>
           <div>
