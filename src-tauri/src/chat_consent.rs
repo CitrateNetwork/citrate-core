@@ -5,24 +5,36 @@
 //! work (`escalation::Book::prepare_confirmation`): when the app asks the member about a held
 //! message, core mints a one-time consent id bound to the provider and to that message
 //! ([`chat_consent_prepare`]); `ai::ai_chat` and `ai::ai_chat_tools` send nothing without a valid,
-//! unexpired consent for the same provider and message ([`ConsentBook::authorize`]).
+//! unexpired consent for the same provider and message ([`authorize`]).
 //!
 //! One consent covers one member message: the agent loop's model requests for that message (at
 //! most [`MAX_SENDS_PER_CONSENT`], the app's turn cap) within [`CONSENT_TTL_MS`]. The next
-//! message needs a new one. Every remote chat send goes through a [`RemoteSendPermit`], which
-//! only [`ConsentBook::authorize`] can create, and the `ai` remote send methods take one.
+//! message needs a new one. Every remote chat send goes through a [`RemoteSendPermit`], and the
+//! `ai` remote send methods take one. A permit is obtained only through [`authorize`] or
+//! [`authorize_once`], which check "Local model only" (`chat_route::remote_chat_allowed`) before
+//! the consent book is asked, so no caller can get a permit while the setting is on.
+//!
+//! A consent expires when either the monotonic or the wall-clock time since it was minted reaches
+//! [`CONSENT_TTL_MS`] (the ceremony TTL rule, `ceremony::Ceremony`): setting the wall clock back
+//! cannot extend one, and sleep still expires it. The app drops a consent it no longer needs
+//! ([`chat_consent_drop`]) when the member closes the question without sending.
 //!
 //! Remote image generation (`media::media_generate_image` on a provider route) uses the same
 //! book with [`Purpose::Media`]: one consent per image, bound to the prompt
-//! ([`media_consent_prepare`], [`ConsentBook::authorize_once`]).
+//! ([`media_consent_prepare`], [`authorize_once`]).
 //!
 //! Data sources (Rule 7): the consent book is in memory only (nothing is written to disk); the
-//! message binding is the last `user` message of the request the webview sends.
+//! message binding is the last `user` message of the request the webview sends; the route is
+//! `<app data>/escalation/route.json` (`chat_route`).
 
+use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+use crate::ceremony::ClockReading;
 
 /// How long a minted consent stays usable.
 pub const CONSENT_TTL_MS: u64 = 10 * 60 * 1000;
@@ -34,15 +46,15 @@ pub const MAX_SENDS_PER_CONSENT: u32 = 8;
 /// Consents kept open at once (the oldest is dropped first).
 pub const MAX_OPEN: usize = 16;
 
-/// Proof that a remote chat send was authorized for one provider. Only
-/// [`ConsentBook::authorize`] creates one.
+/// Proof that a remote chat send was authorized for one provider. Only [`authorize`] and
+/// [`authorize_once`] hand one out.
 #[derive(Debug)]
 pub struct RemoteSendPermit {
     provider_id: String,
 }
 
 impl RemoteSendPermit {
-    /// Only the consent book's authorize methods call this.
+    /// Only the consent book's permit methods call this.
     fn new(provider_id: &str) -> Self {
         RemoteSendPermit {
             provider_id: provider_id.to_string(),
@@ -84,7 +96,7 @@ struct Open {
     consent_id: String,
     provider_id: String,
     message_hash: [u8; 32],
-    expires_at_ms: u64,
+    minted: ClockReading,
     sends: u32,
 }
 
@@ -99,6 +111,13 @@ fn message_hash(text: &str) -> [u8; 32] {
     h.update(b"citrate/chat-consent/v1\0");
     h.update(text.as_bytes());
     h.finalize().into()
+}
+
+/// Whether a consent minted at `minted` has outlived [`CONSENT_TTL_MS`] at `now`. The larger of
+/// the monotonic and the wall-clock elapsed time counts.
+fn expired(minted: &ClockReading, now: &ClockReading) -> bool {
+    Duration::from_millis(now.wall_ms.saturating_sub(minted.wall_ms))
+        >= Duration::from_millis(CONSENT_TTL_MS)
 }
 
 /// The last `user` message's text in an OpenAI-style messages array, if any.
@@ -131,51 +150,65 @@ impl ConsentBook {
         purpose: Purpose,
         provider_id: &str,
         message: &str,
-        now_ms: u64,
+        now: ClockReading,
         consent_id: String,
     ) -> ConsentView {
-        self.open.retain(|o| o.expires_at_ms > now_ms);
+        self.open.retain(|o| !expired(&o.minted, &now));
         while self.open.len() >= MAX_OPEN {
             self.open.remove(0);
         }
-        let expires_at_ms = now_ms.saturating_add(CONSENT_TTL_MS);
         self.open.push(Open {
             purpose,
             consent_id: consent_id.clone(),
             provider_id: provider_id.to_string(),
             message_hash: message_hash(message),
-            expires_at_ms,
+            minted: now,
             sends: 0,
         });
         ConsentView {
             consent_id,
             provider_id: provider_id.to_string(),
-            expires_at_ms,
+            expires_at_ms: now.wall_ms.saturating_add(CONSENT_TTL_MS),
         }
     }
 
-    /// Authorize one remote send: `consent_id` must be open, unexpired, for `provider_id`, and
-    /// minted for the last user message in `messages_json`. A consent that fails a check is
-    /// spent; one that reaches [`MAX_SENDS_PER_CONSENT`] is spent after that send.
-    pub fn authorize(
+    /// Drop the open consent `consent_id`, if there is one. True when one was dropped.
+    pub fn drop_consent(&mut self, _consent_id: &str) -> bool {
+        false
+    }
+
+    /// One remote chat send: `consent_id` must be open, unexpired, for `provider_id`, and minted
+    /// for the last user message in `messages_json`. A consent that fails a check is spent; one
+    /// that reaches [`MAX_SENDS_PER_CONSENT`] is spent after that send. Reached only through
+    /// [`authorize`], which checks the route first.
+    fn permit_chat(
         &mut self,
         consent_id: &str,
         provider_id: &str,
         messages_json: &str,
-        now_ms: u64,
+        now: ClockReading,
     ) -> Result<RemoteSendPermit, String> {
         let text = last_user_text(messages_json);
-        let i = self.check(
-            Purpose::Chat,
-            consent_id,
-            provider_id,
-            text.as_deref(),
-            now_ms,
-        )?;
+        let i = self.check(Purpose::Chat, consent_id, provider_id, text.as_deref(), now)?;
         self.open[i].sends += 1;
         if self.open[i].sends >= MAX_SENDS_PER_CONSENT {
             self.open.remove(i);
         }
+        Ok(RemoteSendPermit::new(provider_id))
+    }
+
+    /// One remote image: the consent must be open, unexpired, minted for media, for `provider_id`
+    /// and for exactly `prompt`. It is spent by this call whatever the outcome. Reached only
+    /// through [`authorize_once`], which checks the route first.
+    fn permit_media(
+        &mut self,
+        consent_id: &str,
+        provider_id: &str,
+        prompt: &str,
+        now: ClockReading,
+    ) -> Result<RemoteSendPermit, String> {
+        let i = self.check(Purpose::Media, consent_id, provider_id, Some(prompt), now)?;
+        self.open.remove(i);
         Ok(RemoteSendPermit::new(provider_id))
     }
 
@@ -187,9 +220,9 @@ impl ConsentBook {
         consent_id: &str,
         provider_id: &str,
         message: Option<&str>,
-        now_ms: u64,
+        now: ClockReading,
     ) -> Result<usize, String> {
-        self.open.retain(|o| o.expires_at_ms > now_ms);
+        self.open.retain(|o| !expired(&o.minted, &now));
         let Some(i) = self
             .open
             .iter()
@@ -207,38 +240,9 @@ impl ConsentBook {
     }
 }
 
-impl ConsentBook {
-    /// Authorize one remote image: the consent must be open, unexpired, minted for media, for
-    /// `provider_id` and for exactly `prompt`. It is spent by this call whatever the outcome.
-    pub fn authorize_once(
-        &mut self,
-        consent_id: &str,
-        provider_id: &str,
-        prompt: &str,
-        now_ms: u64,
-    ) -> Result<RemoteSendPermit, String> {
-        let i = self.check(
-            Purpose::Media,
-            consent_id,
-            provider_id,
-            Some(prompt),
-            now_ms,
-        )?;
-        self.open.remove(i);
-        Ok(RemoteSendPermit::new(provider_id))
-    }
-}
-
 /// The managed consent book.
 #[derive(Default)]
 pub struct ChatConsentState(pub Mutex<ConsentBook>);
-
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 fn new_consent_id() -> String {
     use rand::RngCore;
@@ -247,20 +251,40 @@ fn new_consent_id() -> String {
     format!("cc_{}", hex::encode(b))
 }
 
-/// Authorize a remote chat send against the managed book.
+/// A permit for one remote chat send. Refused under Local model only (or an unreadable route
+/// setting, `route_dir`) before the consent book is asked; then the consent must hold.
 pub(crate) fn authorize(
     state: &ChatConsentState,
+    route_dir: &Path,
     consent_id: &str,
     provider_id: &str,
     messages_json: &str,
-    now_ms: u64,
+    now: ClockReading,
 ) -> Result<RemoteSendPermit, String> {
-    state.0.lock().unwrap_or_else(|e| e.into_inner()).authorize(
-        consent_id,
-        provider_id,
-        messages_json,
-        now_ms,
-    )
+    let _ = route_dir;
+    state
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .permit_chat(consent_id, provider_id, messages_json, now)
+}
+
+/// A permit for one remote image. Refused under Local model only (or an unreadable route
+/// setting, `route_dir`) before the consent book is asked; then the media consent must hold.
+pub(crate) fn authorize_once(
+    state: &ChatConsentState,
+    route_dir: &Path,
+    consent_id: &str,
+    provider_id: &str,
+    prompt: &str,
+    now: ClockReading,
+) -> Result<RemoteSendPermit, String> {
+    let _ = route_dir;
+    state
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .permit_media(consent_id, provider_id, prompt, now)
 }
 
 /// **chat_consent_prepare**: the app is asking the member whether to send a held message to the
@@ -281,7 +305,7 @@ pub async fn chat_consent_prepare(
             Purpose::Chat,
             &provider_id,
             &message,
-            now_ms(),
+            crate::ceremony::system_clock(),
             new_consent_id(),
         );
         Ok(view)
@@ -306,12 +330,22 @@ pub async fn media_consent_prepare(
             Purpose::Media,
             &provider_id,
             &prompt,
-            now_ms(),
+            crate::ceremony::system_clock(),
             new_consent_id(),
         );
         Ok(view)
     })
     .await
+}
+
+/// Tests only: a clock reading `mono_ms` after a fixed monotonic base and at wall time `wall_ms`.
+#[cfg(test)]
+pub(crate) fn test_clock(mono_ms: u64, wall_ms: u64) -> ClockReading {
+    static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    ClockReading {
+        mono: *BASE.get_or_init(std::time::Instant::now) + Duration::from_millis(mono_ms),
+        wall_ms,
+    }
 }
 
 #[cfg(test)]
