@@ -1,152 +1,119 @@
 #!/usr/bin/env python3
-"""Guard for the time-boxed RUSTSEC-2026-0387 (crypto-bigint) audit ignore.
+"""Keep the RUSTSEC-2026-0387 audit ignore honest (crypto-bigint < 0.7.6).
 
-The advisory is ignored by ID in the audit configuration because crypto-bigint
-below 0.7.6 reaches this repo only through the upstream elliptic-curve 0.13
-stack (k256 / p256 0.13 and the crates built on them), which has no release on
-a patched crypto-bigint yet. That reasoning covers those parents only, and only
-for a limited time, so this check fails CI when:
+The advisory is fixed only in crypto-bigint 0.7.6. Here it comes in through
+elliptic-curve 0.13 (the k256 / p256 / p384 0.13 line), and no 0.13.x release
+accepts crypto-bigint 0.7, so the lockfile cannot move it. The audit step
+ignores the advisory, and this check fails CI when the reason for that ignore
+stops being true:
 
-  1. in any Cargo.lock in the repo, a crate outside ALLOWED depends directly on
-     a crypto-bigint below the first patched release (0.7.6);
-  2. the ignore is still present in an audit config after EXPIRES;
-  3. the ignore is present but no crypto-bigint below 0.7.6 is left in any
-     lockfile (the ignore is stale: remove it, and this check with it).
+1. a crate other than elliptic-curve 0.13.x depends on a crypto-bigint below
+   0.7.6 (the ignore does not cover a new user);
+2. no crypto-bigint below 0.7.6 is left in Cargo.lock (the ignore is stale:
+   delete it, and this check with it);
+3. today is after EXPIRES (decide again; do not renew by reflex).
 
-The ignore is by advisory ID, so it would also hide 0.6.x and 0.7.0-0.7.5;
-the check therefore compares against the patched floor, not "< 0.7".
-
-  python3 <this script>                       # check the repo
-  python3 <this script> --today 2027-02-01    # what CI will do after expiry
-
-Self-test: test_check_crypto_bigint_users.py next to this file.
+Usage: check-crypto-bigint-users.py [--lock Cargo.lock] [--self-test]
 """
-from __future__ import annotations
-
 import argparse
-import datetime as dt
-import subprocess
 import sys
 import tomllib
-from pathlib import Path
+from datetime import date
 
 ADVISORY = "RUSTSEC-2026-0387"
-# Hard expiry. After this date the ignore must be gone (upgrade landed) or be
-# renewed in a reviewed PR that moves this date.
-EXPIRES = dt.date(2027, 1, 31)
-PATCHED = (0, 7, 6)
-
-# Crates allowed to depend directly on a crypto-bigint below PATCHED. k256,
-# p256, ecdsa, bip32 and the rest reach it only through elliptic-curve.
-ALLOWED = frozenset({"elliptic-curve"})
-
-# Audit configs (repo-relative) that may carry the ignore.
-IGNORE_FILES: tuple[str, ...] = (
-    ".github/workflows/ci.yml",
-)
-
-HERE = Path(__file__).resolve().parent
+EXPIRES = date(2026, 11, 9)
+FIXED = (0, 7, 6)
+ALLOWED_USER = "elliptic-curve"
+ALLOWED_USER_LINE = (0, 13)
 
 
-def repo_root() -> Path:
-    out = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=HERE, check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    return Path(out)
+def vtuple(v: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in v.split("-")[0].split("+")[0].split(".")[:3])
 
 
-def repo_lockfiles(root: Path) -> list[Path]:
-    out = subprocess.run(
-        ["git", "ls-files", "--", "Cargo.lock", "*/Cargo.lock"],
-        cwd=root, check=True, capture_output=True, text=True,
-    ).stdout.split()
-    return [root / p for p in out]
-
-
-def _version(v: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in v.split("+", 1)[0].split("-", 1)[0].split("."))
-
-
-def vulnerable_parents(lock_text: str, where: str = "Cargo.lock") -> tuple[dict[str, set[str]], bool]:
-    """Return ({parent name: {vulnerable crypto-bigint versions}}, any vulnerable present)."""
-    pkgs = tomllib.loads(lock_text).get("package", [])
-    cb_versions = [p["version"] for p in pkgs if p["name"] == "crypto-bigint"]
-    any_vulnerable = any(_version(v) < PATCHED for v in cb_versions)
-    out: dict[str, set[str]] = {}
+def check(lock: dict, today: date) -> list[str]:
+    """Return the failures for one parsed Cargo.lock (empty list = pass)."""
+    pkgs = lock.get("package", [])
+    versions = [p["version"] for p in pkgs if p.get("name") == "crypto-bigint"]
+    old = {v for v in versions if vtuple(v) < FIXED}
+    errors = []
+    if today > EXPIRES:
+        errors.append(f"the {ADVISORY} ignore expired on {EXPIRES}: decide again")
+    if not old:
+        errors.append(
+            f"no crypto-bigint below {'.'.join(map(str, FIXED))} in Cargo.lock: "
+            f"the {ADVISORY} ignore is stale, remove it and this check"
+        )
+        return errors
     for p in pkgs:
         for dep in p.get("dependencies", []):
-            # Entries are "name", "name version" or "name version (source)";
-            # the bare form means the lockfile holds exactly one version.
-            parts = dep.split(" ")
+            parts = dep.split()
             if parts[0] != "crypto-bigint":
                 continue
-            if len(parts) >= 2:
-                ver = parts[1]
-            elif len(cb_versions) == 1:
-                ver = cb_versions[0]
-            else:
-                raise ValueError(f"{where}: ambiguous dependency {dep!r} in {p['name']}")
-            if _version(ver) < PATCHED:
-                out.setdefault(p["name"], set()).add(ver)
-    return out, any_vulnerable
+            # A bare name means the lock holds exactly one crypto-bigint.
+            dv = parts[1] if len(parts) > 1 else (versions[0] if len(versions) == 1 else None)
+            if dv is not None and dv not in old:
+                continue
+            ok = p["name"] == ALLOWED_USER and vtuple(p["version"])[:2] == ALLOWED_USER_LINE
+            if not ok:
+                errors.append(
+                    f"{p['name']} {p['version']} -> crypto-bigint {dv or '?'}: "
+                    f"not covered by the {ADVISORY} ignore"
+                )
+    return errors
 
 
-def check(lockfiles: list[Path], ignore_files: list[Path], allowed: frozenset[str],
-          today: dt.date) -> tuple[list[str], list[str]]:
-    """Return (failures, parents seen). An empty failure list is a pass."""
-    errors: list[str] = []
-    seen: set[str] = set()
-    any_vulnerable = False
-    floor = ".".join(map(str, PATCHED))
-    for lf in lockfiles:
-        parents, vuln = vulnerable_parents(lf.read_text(), str(lf))
-        any_vulnerable |= vuln
-        seen |= parents.keys()
-        for name in sorted(set(parents) - allowed):
-            errors.append(
-                f"{lf}: {name} -> crypto-bigint {', '.join(sorted(parents[name]))} "
-                f"(< {floor}) is not covered by the {ADVISORY} ignore"
-            )
-    present = [f for f in ignore_files if f.is_file() and ADVISORY in f.read_text()]
-    if present and today > EXPIRES:
-        errors.append(
-            f"the {ADVISORY} ignore expired on {EXPIRES} but is still in "
-            + ", ".join(str(p) for p in present)
-            + ": upgrade crypto-bigint, or renew the ignore and EXPIRES in a reviewed PR"
-        )
-    if present and not any_vulnerable:
-        errors.append(
-            f"no crypto-bigint below {floor} is left in any lockfile: the {ADVISORY} "
-            "ignore is stale, remove it (and this check)"
-        )
-    return errors, sorted(seen)
+def _lock(*pkgs: tuple[str, str, list[str]]) -> dict:
+    return {"package": [{"name": n, "version": v, "dependencies": d} for n, v, d in pkgs]}
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="RUSTSEC-2026-0387 ignore guard")
-    ap.add_argument("--lockfile", action="append", type=Path, help="default: every tracked Cargo.lock")
-    ap.add_argument("--ignore-file", action="append", type=Path, help="default: IGNORE_FILES")
-    ap.add_argument("--allow", action="append", help="override ALLOWED (self-test only)")
-    ap.add_argument("--today", type=dt.date.fromisoformat, default=dt.date.today())
-    a = ap.parse_args(argv)
+def self_test() -> None:
+    ok_day = date(2026, 10, 25)
+    base = [("crypto-bigint", "0.5.5", []), ("elliptic-curve", "0.13.8", ["crypto-bigint"])]
+    cases = [
+        ("allowed user only", _lock(*base), ok_day, 0),
+        ("expired", _lock(*base), date(2026, 11, 10), 1),
+        ("new direct user", _lock(*base, ("rsa", "0.9.8", ["crypto-bigint"])), ok_day, 1),
+        ("elliptic-curve 0.14 on old bigint",
+         _lock(("crypto-bigint", "0.5.5", []), ("elliptic-curve", "0.14.3", ["crypto-bigint"])), ok_day, 1),
+        ("stale: only fixed bigint",
+         _lock(("crypto-bigint", "0.7.10", []), ("elliptic-curve", "0.14.3", ["crypto-bigint"])), ok_day, 1),
+        ("two versions, new user on the fixed one",
+         _lock(("crypto-bigint", "0.5.5", []), ("crypto-bigint", "0.7.10", []),
+               ("elliptic-curve", "0.13.8", ["crypto-bigint 0.5.5"]),
+               ("rsa", "0.10.0", ["crypto-bigint 0.7.10"])), ok_day, 0),
+        ("two versions, new user on the old one",
+         _lock(("crypto-bigint", "0.5.5", []), ("crypto-bigint", "0.7.10", []),
+               ("elliptic-curve", "0.13.8", ["crypto-bigint 0.5.5"]),
+               ("rsa", "0.9.8", ["crypto-bigint 0.5.5"])), ok_day, 1),
+    ]
+    bad = []
+    for name, lock, day, want in cases:
+        got = len(check(lock, day))
+        if got != want:
+            bad.append(f"{name}: expected {want} failure(s), got {got}")
+    if bad:
+        print("self-test FAILED:", *bad, sep="\n  ")
+        sys.exit(1)
+    print(f"self-test: {len(cases)} cases pass")
 
-    root = None if (a.lockfile and a.ignore_file) else repo_root()
-    lockfiles = a.lockfile or repo_lockfiles(root)
-    ignore_files = a.ignore_file or [root / p for p in IGNORE_FILES]
-    allowed = frozenset(a.allow) if a.allow else ALLOWED
 
-    errors, seen = check(lockfiles, ignore_files, allowed, a.today)
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--lock", default="Cargo.lock")
+    ap.add_argument("--self-test", action="store_true")
+    args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return
+    with open(args.lock, "rb") as f:
+        lock = tomllib.load(f)
+    errors = check(lock, date.today())
     if errors:
-        print(f"{ADVISORY} guard FAILED:", *errors, sep="\n  ")
-        return 1
-    print(
-        f"{ADVISORY} guard ok: {len(lockfiles)} lockfile(s); parents of crypto-bigint "
-        f"< {'.'.join(map(str, PATCHED))}: {seen} (allowed: {sorted(allowed)}); "
-        f"ignore expires {EXPIRES}"
-    )
-    return 0
+        print(f"{ADVISORY} ignore check failed:", *errors, sep="\n  ")
+        sys.exit(1)
+    print(f"{ADVISORY}: crypto-bigint < 0.7.6 only via {ALLOWED_USER} 0.13; ignore expires {EXPIRES}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
