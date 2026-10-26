@@ -104,6 +104,12 @@ the app's request (portal, gvfs, at-spi, dconf). The bus runs as a child subreap
 its descendants; they are listed in the summary as "session services … (not counted)". On a
 desktop they belong to the login session, not to Citrate.
 
+7. `update-e2e` (only with `--update-e2e DIR`, RC52 G8): the app's own updater on a test
+   AppImage that pins a throwaway key: it installs a signed newer build from a loopback feed and
+   restarts into it, and refuses an altered signature, another key, an altered artifact and a feed
+   that is not newer. How the inputs are built, the cases and the checklist mapping:
+   [UPDATER_E2E.md](UPDATER_E2E.md).
+
 ## Limits
 
 - **AppImage runs extracted.** Inside an unprivileged user namespace the setuid `fusermount`
@@ -119,6 +125,7 @@ desktop they belong to the login session, not to Citrate.
 
 `.github/workflows/linux-native-acceptance.yml` runs the self-test on `ubuntu-24.04`, then the
 packaged scenarios on `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), fetching the
-packages pinned in `scripts/ci/linux-native-acceptance/pins.txt`. As with K1-F, the job lifts
+packages pinned in `scripts/ci/linux-native-acceptance/pins.txt`. The `update-e2e` job builds its own two
+test AppImages first ([UPDATER_E2E.md](UPDATER_E2E.md)). As with K1-F, the job lifts
 `kernel.apparmor_restrict_unprivileged_userns` only on the throwaway runner and only if the
 `unshare` probe fails. Never change that sysctl on a desktop.
