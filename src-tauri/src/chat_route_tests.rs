@@ -306,7 +306,7 @@ fn concurrent_sets_never_fail_and_leave_one_written_value() {
     const SETS: u64 = 30;
     let d = tmp("concurrent");
     let route_of = |t: u64| {
-        if t % 2 == 0 {
+        if t.is_multiple_of(2) {
             ChatRoute::LocalOnly
         } else {
             ChatRoute::AskFirst

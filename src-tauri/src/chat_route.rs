@@ -87,7 +87,7 @@ pub fn status(dir: &Path) -> RouteStatus {
     }
 }
 
-/// Store the member's choice (written to a temp file, then renamed).
+/// Store the member's choice (written to a temp file unique to this write, then renamed).
 pub fn set(dir: &Path, route: ChatRoute, now_ms: u64) -> Result<RouteStatus, String> {
     std::fs::create_dir_all(dir).map_err(|_| "cannot create the settings folder".to_string())?;
     let s = RouteSettings {
@@ -95,10 +95,7 @@ pub fn set(dir: &Path, route: ChatRoute, now_ms: u64) -> Result<RouteStatus, Str
         changed_at_ms: Some(now_ms),
     };
     let text = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("{ROUTE_FILE}.tmp"));
-    std::fs::write(&tmp, text)
-        .map_err(|_| "cannot write the Local model only setting".to_string())?;
-    std::fs::rename(&tmp, dir.join(ROUTE_FILE))
+    crate::atomic_file::replace(&dir.join(ROUTE_FILE), text.as_bytes())
         .map_err(|_| "cannot write the Local model only setting".to_string())?;
     Ok(RouteStatus {
         route,

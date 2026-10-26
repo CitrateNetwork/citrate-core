@@ -247,7 +247,7 @@ fn concurrent_saves_never_fail_and_leave_one_written_value() {
                     (0..SAVES)
                         .filter_map(|i| {
                             let st = TerminalSettings {
-                                enabled: t % 2 == 0,
+                                enabled: t.is_multiple_of(2),
                                 changed_at_ms: Some(t * 1000 + i),
                             };
                             save(&d, &st).err()
@@ -271,7 +271,7 @@ fn concurrent_saves_never_fail_and_leave_one_written_value() {
     let back = load(&d).expect("the stored setting parses");
     let at = back.changed_at_ms.expect("a written value carries its time");
     assert!(
-        at / 1000 < THREADS && at % 1000 < SAVES && back.enabled == ((at / 1000) % 2 == 0),
+        at / 1000 < THREADS && at % 1000 < SAVES && back.enabled == (at / 1000).is_multiple_of(2),
         "the stored setting is one of the values written: {back:?}"
     );
     let leftovers: Vec<String> = std::fs::read_dir(&d)
