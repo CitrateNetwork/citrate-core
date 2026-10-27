@@ -61,7 +61,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
     ["s2", "Verify identity"],
     ["s3", "Membership"],
     ["s4", "Wallet ready"],
-    ["s5", "Grant + stake"],
+    ["s5", "Membership grant"],
     ["s6", "Node ignition"],
     ["s7", "Activate validator"],
   ];
@@ -778,7 +778,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
   const ckLabels = ["authenticated sub — token live", "payment settled — webhook proof", "entitlement raised — tier set by KYC state"];
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={eyebrow}>S5 · Grant + stake ceremony</div>
+      <div style={eyebrow}>S5 · Membership grant</div>
       {s.s5 === "idle" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           <div style={h1}>Your 32,000 SALT membership grant</div>
@@ -856,8 +856,8 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
               <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT grant · locked in your bond</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
-              {/* F1 (Rule 1): every row traces to a real read. Staked position is the
-                  REAL attributedStake (wei→SALT); the SBT row shows only "minted"
+              {/* F1 (Rule 1): every row traces to a real read. The grant figure is the
+                  REAL attributedStake (wei→SALT), locked in the bond and not stake (C1-V V5); the SBT row shows only "minted"
                   (confirmed by balanceOf==1 — the token id was never read); the
                   honest on-chain anchor is the member/vault address, NOT a fabricated
                   tx hash (this app does not broadcast the grant tx). */}

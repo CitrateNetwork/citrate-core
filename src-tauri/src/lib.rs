@@ -608,7 +608,7 @@ pub fn run() {
             // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
             // the REAL on-chain grant: MembershipStakeVault.attributedStake +
             // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
-            // eth_call on 40204. The S5 grant+stake ceremony settles ONLY from these
+            // eth_call on 40204. The S5 membership grant ceremony settles ONLY from these
             // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
             // nothing and returns only decoded public chain data (@rule8 / Rule 3).
             grant_status::membership_grant_status,

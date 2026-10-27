@@ -1,7 +1,7 @@
 //! citrate-core — BC-1.3: the REAL on-chain membership grant-status read.
 //! @rule8 · T1 money-path surface.
 //!
-//! The S5 onboarding step (grant + stake ceremony) settles ONLY when the
+//! The S5 onboarding step (membership grant ceremony) settles ONLY when the
 //! 32,000-SALT membership grant is genuinely on-chain. This module reads that
 //! truth from the live 40204 RPC via `eth_call` — it NEVER fabricates a settlement
 //! (Rule 1). A fresh/never-granted member honestly reads 0 stake / 0 shares / no

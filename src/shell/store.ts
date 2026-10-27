@@ -2317,7 +2317,7 @@ export class Store {
     // the member activates the bond (C1-V V5). The model gets both figures (the locked grant and the
     // registry stake) plus the bond status (which carries the unlock block), so it can explain a
     // member with 0 spendable, 0 staked and a locked grant.
-    const grantStakedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
+    const grantLockedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
     return {
       height: s.height,
       peers: s.peers,
@@ -2330,17 +2330,17 @@ export class Store {
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
       // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
-      grant: s.hasGrant && grantStakedSalt > 0 ? { amountSalt: grantStakedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
+      grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
       membership: {
-        grantStakedSalt, // the recoverable grant, locked (e.g. 32000)
+        grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
         bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
         validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
-        locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
+        locked: grantLockedSalt > 0 && s.bondedStake < grantLockedSalt,
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
         note:
-          grantExplanation({ amountSalt: grantStakedSalt > 0 ? grantStakedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
+          grantExplanation({ amountSalt: grantLockedSalt > 0 ? grantLockedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
           " Locked SALT is not spendable and is separate from the liquid balance.",
       },
     };

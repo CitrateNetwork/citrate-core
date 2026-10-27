@@ -1035,19 +1035,19 @@ export function freshState(pid: string): AppState {
       s.liquid = 142.63;
       s.claimable = 9.41;
       s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
-      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
       s.liquid = 58.02;
       s.claimable = 2.14;
       s.gwKey = "cgk_9f31•••••••••••••7f2a";
-      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
       s.node = "validating";
       s.peers = 26;
       s.liquid = 301.44;
       s.claimable = 18.92;
-      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Membership grant ceremony|32,000 SALT"]);
     }
     // Packaged app (tauri): never seed the sim persona's name into the greeting.
     // Real identity folds in on sign-in; until then greet neutrally (Rule 1).

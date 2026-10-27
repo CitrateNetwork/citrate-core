@@ -48,12 +48,12 @@ describe("grant stake surfacing — locked 32k is not '0 staked' (Rule 1)", () =
     } as never);
     const snap = store.snapshot() as {
       staked: number;
-      membership: { grantStakedSalt: number; validatorBondedSalt: number; locked: boolean; bondStatus: string; note: string };
+      membership: { grantLockedSalt: number; validatorBondedSalt: number; locked: boolean; bondStatus: string; note: string };
     };
     // C1-V V7 (UI truth contract §2): "staked" is ValidatorRegistry.stakeOf only. The locked grant
     // is reported to the model under `membership`, not as stake, until the bond is activated.
     expect(snap.staked).toBe(0);
-    expect(snap.membership.grantStakedSalt).toBe(32000);
+    expect(snap.membership.grantLockedSalt).toBe(32000);
     expect(snap.membership.validatorBondedSalt).toBe(0); // honest: not validating yet
     expect(snap.membership.locked).toBe(true);
     expect(snap.membership.bondStatus).toMatch(/until block/);
