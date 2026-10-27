@@ -97,6 +97,8 @@ const IS_KYC_VERIFIED_SELECTOR: [u8; 4] = [0xb2, 0x0e, 0xa7, 0x04];
 /// `MemberBond.activated()` — `keccak256("activated()")[..4]`. PINNED. True once
 /// the member has bonded their principal into the registry via the ceremony.
 const ACTIVATED_SELECTOR: [u8; 4] = [0x18, 0x66, 0x01, 0xca];
+/// `MemberBond.pubkey()` — keccak256("pubkey()")[..4].
+const BOND_PUBKEY_SELECTOR: [u8; 4] = [0x48, 0x4d, 0x59, 0xe6];
 
 /// 4-byte selector for `VALIDATOR_STAKE_REQUIREMENT()` (no args) —
 /// `keccak256("VALIDATOR_STAKE_REQUIREMENT()")[..4]`. PINNED + drift-tested. The
@@ -168,6 +170,11 @@ pub fn is_kyc_verified_selector() -> [u8; 4] {
 /// Selector for `MemberBond.activated()`.
 pub fn activated_selector() -> [u8; 4] {
     ACTIVATED_SELECTOR
+}
+
+/// Selector for `MemberBond.pubkey()`.
+pub fn bond_pubkey_selector() -> [u8; 4] {
+    BOND_PUBKEY_SELECTOR
 }
 
 /// Selector for `VALIDATOR_STAKE_REQUIREMENT()`.
@@ -261,6 +268,15 @@ pub struct GrantStatus {
     /// (`MemberBond.claimRewards`). None = no bond, or the read failed.
     #[serde(rename = "bondActivated")]
     pub bond_activated: Option<bool>,
+    /// C1-V5 — `MemberBond.pubkey()`: the validator key the bond activated with, kept after an
+    /// exit (unlike `pubkeyOfStaker`, which the registry clears). None = zero (not activated), no
+    /// bond, or the read failed.
+    #[serde(rename = "bondPubkey")]
+    pub bond_pubkey: Option<String>,
+    /// `MemberBond.isUnlocked()` as read (chain#331: `activate` reverts `ActivationWindowClosed`
+    /// once it is true). None = no bond, or the value did not decode: unread, never "locked".
+    #[serde(rename = "bondUnlocked")]
+    pub bond_unlocked: Option<bool>,
 }
 
 /// Whether the member's validator rewards are claimed through their bond
@@ -508,6 +524,9 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         is_unlocked,
         is_kyc_verified,
         bond_activated,
+        // Red stub: not read yet.
+        bond_pubkey: None,
+        bond_unlocked: None,
     })
 }
 

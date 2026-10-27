@@ -49,6 +49,8 @@ pub const MEMBER_TOKEN_ID: [u8; 4] = [0x5f, 0xce, 0x5d, 0xf8];
 pub const BOND_PUBKEY: [u8; 4] = [0x48, 0x4d, 0x59, 0xe6];
 /// `MemberBond.unlockBlock()`.
 pub const UNLOCK_BLOCK: [u8; 4] = [0xea, 0x35, 0xdf, 0x16];
+/// `MemberBond.isUnlocked()` (either lock leg elapsed; chain#331: `activate` reverts once true).
+pub const IS_UNLOCKED: [u8; 4] = [0x83, 0x80, 0xed, 0xb7];
 /// `MemberBond.unlockTimestamp()`.
 pub const UNLOCK_TIMESTAMP: [u8; 4] = [0xaa, 0x08, 0x2a, 0x9d];
 /// `CitrateMemberSBT.isActive(uint256)`.
@@ -97,6 +99,8 @@ pub struct ActivationStatus {
     pub principal_wei: Option<String>,
     pub unlock_block: Option<u64>,
     pub unlock_timestamp: Option<u64>,
+    /// `MemberBond.isUnlocked()` as read. None = no bond, or the read failed (unread, never locked).
+    pub bond_unlocked: Option<bool>,
     pub member_token_id: Option<String>,
     pub membership_active: Option<bool>,
     /// The key the registry reads are keyed on (`0x` + 64 hex).

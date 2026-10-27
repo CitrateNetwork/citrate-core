@@ -474,6 +474,16 @@ export interface AppState {
    * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
    */
   bondActivated: boolean | null;
+  /**
+   * C1-V5 — `MemberBond.pubkey()` from the grant read: the member's validator key once the bond has
+   * activated (kept after an exit). null = not read, not activated, or no bond. Observed, never persisted.
+   */
+  bondPubkey: string | null;
+  /**
+   * `MemberBond.isUnlocked()` from the grant read (owner decision 2026-10-19 / chain#331: activation
+   * only inside the lock). null = not read. Observed, never persisted.
+   */
+  bondUnlocked: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
@@ -869,6 +879,8 @@ export function freshState(pid: string): AppState {
     validatorActivation: null,
     validatorCounts: null,
     bondActivated: null,
+    bondPubkey: null,
+    bondUnlocked: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,

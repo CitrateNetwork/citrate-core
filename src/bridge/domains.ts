@@ -258,6 +258,8 @@ export interface ActivationStatusView {
   /** `MemberBond.unlockBlock()` / `unlockTimestamp()` (unix seconds). */
   unlockBlock: number | null;
   unlockTimestamp: number | null;
+  /** `MemberBond.isUnlocked()` as read (chain#331: activation reverts once true); null = unread. */
+  bondUnlocked: boolean | null;
   /** `MemberBond.memberTokenId()`. */
   memberTokenId: string | null;
   /** `CitrateMemberSBT.isActive(memberTokenId)`. */
@@ -705,6 +707,17 @@ export interface GrantStatus {
    * key's matured rewards. null = no bond, or the read failed. Optional for older backends.
    */
   bondActivated?: boolean | null;
+  /**
+   * C1-V5 — `MemberBond.pubkey()`: the validator key the bond activated with, kept after an exit
+   * (unlike `pubkeyOfStaker`). null = not activated, no bond, or the read failed. Optional for
+   * older backends (absent = unread).
+   */
+  bondPubkey?: string | null;
+  /**
+   * `MemberBond.isUnlocked()` AS READ (chain#331: `activate` reverts once true). null = no bond or
+   * the read did not decode; absent = an older backend. Both are unread, never "locked".
+   */
+  bondUnlocked?: boolean | null;
   /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
   unlockBlock: number | null;
   /** `MemberBond.isUnlocked()` — either leg elapsed. Eligibility, not a payout. */

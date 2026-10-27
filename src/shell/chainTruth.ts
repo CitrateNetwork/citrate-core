@@ -307,7 +307,7 @@ export function readsValidatorRewards(bondedStake: number, bondActivated: boolea
 }
 
 /** The §1 validator words this app can derive today (contract v1.1). */
-export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
+export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Unlocked · not activated" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
 
 /**
  * The validator state word, from the registry only (contract v1.1 §1 Validators).
@@ -320,7 +320,7 @@ export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | `R
  * activation has not been read, or the registry reads are inconsistent: the caller shows "—".
  * No other stake figure is an input: only the registry makes a validator.
  */
-export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null): ValidatorWord | null {
+export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, _bondUnlocked?: boolean | null): ValidatorWord | null {
   // C1-V2: the registry status comes first. A full exit moves the bonded stake to escrow, so
   // `stakeOf` reads 0 while the status is Exiting (or Slashed); a stake check first would hide it.
   if (activation?.status === 2) return "Exiting";
@@ -337,7 +337,7 @@ export function validatorWord(stakeSalt: number, activation: ValidatorActivation
 }
 
 /** The validator word, or "— · <reason>" when it can't be stated (#348 review). */
-export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null): string {
+export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, _bondUnlocked?: boolean | null): string {
   const w = validatorWord(stakeSalt, activation, hasGrant, bondActivated);
   if (w) return w;
   if (!(stakeSalt > 0) && hasGrant && bondActivated == null) return "— · bond state not read yet";
@@ -346,6 +346,6 @@ export function validatorDash(stakeSalt: number, activation: ValidatorActivation
 }
 
 /** Stake / activate is offered only for a bond that reads not activated, with no registered stake. */
-export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, bondActivated?: boolean | null): boolean {
+export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, bondActivated?: boolean | null, _bondUnlocked?: boolean | null): boolean {
   return !(stakeSalt > 0) && bondActivated === false && activation?.status !== 2 && activation?.status !== 3;
 }

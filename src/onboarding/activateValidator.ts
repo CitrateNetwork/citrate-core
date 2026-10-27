@@ -31,12 +31,13 @@ export const ACTIVATE_EXPLANATION =
 export type ValidatorWord =
   | "Not a validator"
   | "Bond locked · not staked"
+  | "Unlocked · not activated"
   | `Registered · active from epoch ${number}`
   | "Validator active"
   | "Exiting"
   | "Slashed";
 
-export type GateKey = "wallet" | "membership" | "bond" | "synced" | "notValidator" | "key";
+export type GateKey = "wallet" | "membership" | "bond" | "lock" | "synced" | "notValidator" | "key";
 
 export interface GateCheck {
   key: GateKey;
