@@ -405,3 +405,67 @@ fn a_key_test_keeps_the_date_the_key_was_set() {
         Some(set_at + 31 * 86_400_000)
     );
 }
+
+/// Remove the anchor and every provider file: what "fake a fresh install" would take, short of
+/// also deleting the keys.
+fn wipe_anchor_and_files(rig: &Rig) {
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    for f in [
+        crate::provider_usage_log::log_path(&rig.dir.0),
+        crate::provider_guard::guard_path(&rig.dir.0),
+    ] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+fn fails_closed(rig: &Rig) -> (bool, bool) {
+    rig.proxy
+        .with_state(|g, l| (g.unreadable, l.ready().is_err()))
+}
+
+#[test]
+fn a_missing_anchor_while_keys_remain_is_not_a_fresh_install() {
+    // MAC keys and a vendor key remain: both the guard and the log fail closed.
+    let mut rig = Rig::new("proxy-anchor-keys");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    wipe_anchor_and_files(&rig);
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true), "guard unreadable, log broken");
+    let before = rig.vendor.calls();
+    let r = rig
+        .proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {});
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(rig.vendor.calls(), before, "nothing is sent");
+}
+
+#[test]
+fn a_missing_anchor_with_only_a_vendor_key_left_still_fails_closed() {
+    let mut rig = Rig::new("proxy-anchor-vendor");
+    wipe_anchor_and_files(&rig);
+    {
+        let mut m = rig.kr.map.lock().unwrap();
+        m.remove(crate::provider_usage_log::LOG_MAC_ACCOUNT);
+        m.remove(crate::provider_guard::GUARD_MAC_ACCOUNT);
+    }
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+}
+
+#[test]
+fn a_first_launch_with_no_calls_reopens_cleanly() {
+    // A fresh install opens (creating the MAC keys) and closes with nothing recorded: the next
+    // launch is not mistaken for a wiped anchor.
+    let dir = crate::provider_fixtures_tests::TmpDir::new("proxy-anchor-fresh");
+    let kr = Arc::new(MemKeyring::default());
+    let vendor = ScriptedVendor::new(&["gpt-known"], "x", None);
+    drop(ModelProxy::new(dir.0.clone(), kr.clone(), vendor.clone()));
+    let p = ModelProxy::new(dir.0.clone(), kr.clone(), vendor);
+    assert_eq!(p.with_state(|g, l| (g.unreadable, l.ready().is_err())), (false, false));
+}
