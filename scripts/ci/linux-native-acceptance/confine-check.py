@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# created: 2026-10-27 | branch: ci/rc52-updater-e2e | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# created: 2026-10-27 | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
 # status: active (K1-L harness tripwire; run by `linux-native-acceptance.sh --self-test`).
 """Structural check: every process the K1-L harness starts after the seal goes through CONFINE.
 
