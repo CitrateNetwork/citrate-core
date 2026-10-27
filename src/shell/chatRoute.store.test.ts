@@ -37,6 +37,7 @@ vi.mock("../bridge", () => ({
       inferenceState: async () => route.inference,
       inferTools: (...a: unknown[]) => inferToolsMock(...a),
       consentPrepare: (...a: unknown[]) => consentPrepareMock(...a),
+      consentDrop: async () => {},
       inferLocal: (...a: unknown[]) => inferLocalMock(...a),
       route: async () => ({ route: route.chatRoute, loadError: null }),
       setRoute: (r: "ask_first" | "local_only") => setRouteMock(r),
