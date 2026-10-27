@@ -166,15 +166,6 @@ export interface LogLine {
   line: string;
   id: number;
 }
-export interface PeerRow {
-  id: string;
-  dir: string;
-  lat: string;
-}
-export interface Crash {
-  when: string;
-  note: string;
-}
 export interface Pin {
   cid: string;
   bond: number;
@@ -398,7 +389,6 @@ export interface AppState {
   kycOutcome: "verified" | "failed" | "review";
   route: string;
   wTab: string;
-  nTab: string;
   cTab: string;
   sSec: string;
   coach: number;
@@ -432,11 +422,13 @@ export interface AppState {
   /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
   miningHold: string | null;
   syncPct: number;
-  cpu: number;
-  ram: number;
   logs: LogLine[];
-  peerRows: PeerRow[];
-  crashes: Crash[];
+  /**
+   * K3: when the node_status answer behind `node` / `height` / `peers` was read, set by the poll
+   * that committed them (ms since epoch); null = not read this session. Node › Status reads its
+   * freshness from this. Observed, never persisted.
+   */
+  nodeStatusAt: number | null;
   liquid: number;
   /**
    * The member's REAL validator bond in the `ValidatorRegistry` (SALT), read from
@@ -862,7 +854,6 @@ export function freshState(pid: string): AppState {
     kycOutcome: "verified",
     route: "dashboard",
     wTab: "overview",
-    nTab: "ops",
     cTab: "apps",
     sSec: "account",
     coach: -1,
@@ -878,11 +869,8 @@ export function freshState(pid: string): AppState {
     nodeBlocked: null,
     miningHold: null,
     syncPct: 0,
-    cpu: 0,
-    ram: 0,
     logs: [],
-    peerRows: [],
-    crashes: [],
+    nodeStatusAt: null,
     liquid: 0,
     bondedStake: 0,
     hasGrant: false,
@@ -1076,7 +1064,6 @@ export function freshState(pid: string): AppState {
       s.peers = 23;
       s.liquid = 142.63;
       s.claimable = 9.41;
-      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
       s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
@@ -1109,19 +1096,21 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "liquid", "bondedStake", "claimable", "activity",
   "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "channel",
   "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
-  "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
+  "kycOutcome", "chatBackend", "wTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
   "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
-export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
+export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height", "nodeStatusAt"];
 
 /** Keys earlier builds persisted that are retired, dropped from a save when it loads:
  *  - D-9 (2026-10-26): the liquid staking pool is retired, so its self-stake figure is not current.
- *  - C1-V V8: the off-chain earnings estimates (earnVal / earnPin / earnComp / earnToday). */
-export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday"];
+ *  - C1-V V8: the off-chain earnings estimates (earnVal / earnPin / earnComp / earnToday).
+ *  - K3: the 0.5.1 Node screen's own tab switch (nTab) and its seeded crash rows (crashes); the
+ *    Node place's tabs are routes, and the last crash record is read from node_last_crash. */
+export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "nTab", "crashes"];
 
 export function loadState(): AppState {
   let saved: Partial<AppState> | null = null;
