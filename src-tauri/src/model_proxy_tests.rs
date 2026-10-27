@@ -469,3 +469,58 @@ fn a_first_launch_with_no_calls_reopens_cleanly() {
     let p = ModelProxy::new(dir.0.clone(), kr.clone(), vendor);
     assert_eq!(p.with_state(|g, l| (g.unreadable, l.ready().is_err())), (false, false));
 }
+
+#[test]
+fn resuming_the_guard_alone_does_not_legitimise_a_cut_short_log() {
+    // Anchor removed and the log cut short while provider keys remain: halted and broken.
+    let mut rig = Rig::new("proxy-anchor-resume");
+    for _ in 0..3 {
+        rig.proxy
+            .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+            .unwrap();
+    }
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    let p = crate::provider_usage_log::log_path(&rig.dir.0);
+    let kept: Vec<String> = std::fs::read_to_string(&p)
+        .unwrap_or_default()
+        .lines()
+        .take(3)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&p, kept.concat()).unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+    // The member resumes the guard only (what the halt message offers), then the app restarts.
+    let _ = crate::providers_ipc::resume(&rig.proxy, "openai");
+    rig.reopen();
+    assert!(
+        rig.proxy.with_state(|_, l| l.ready().is_err()),
+        "a guard resume must not make a cut-short log valid; only a log reset may"
+    );
+    // The log reset is the way back: it archives the file and starts a new chain.
+    rig.proxy
+        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
+        .unwrap();
+    let _ = crate::providers_ipc::resume(&rig.proxy, "openai");
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (false, false));
+}
+
+#[test]
+fn a_first_launch_that_cannot_write_its_anchor_fails_closed() {
+    let dir = crate::provider_fixtures_tests::TmpDir::new("proxy-anchor-nowrite");
+    let kr = Arc::new(MemKeyring::default());
+    *kr.fail_set_account.lock().unwrap() =
+        Some(crate::provider_usage_log::ANCHOR_ACCOUNT.to_string());
+    let vendor = ScriptedVendor::new(&["gpt-known"], "x", None);
+    let p = ModelProxy::new(dir.0.clone(), kr.clone(), vendor);
+    assert_eq!(
+        p.with_state(|g, l| (g.unreadable, l.ready().is_err())),
+        (true, true),
+        "without an anchor the first launch must not go on as if it had one"
+    );
+}
