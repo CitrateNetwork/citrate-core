@@ -277,8 +277,12 @@ fn guard_change(
 ) -> Result<ProviderView, String> {
     known_id(proxy, id)?;
     proxy.with_state(|g, _| {
+        let was_unreadable = g.unreadable;
         f(g)?;
-        proxy.save_guard(g)
+        // A change that cannot be saved does not take effect: an unreadable guard stays halted.
+        proxy
+            .save_guard(g)
+            .inspect_err(|_| g.unreadable |= was_unreadable)
     })?;
     one(proxy, id)
 }

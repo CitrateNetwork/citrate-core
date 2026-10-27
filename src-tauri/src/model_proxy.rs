@@ -289,11 +289,9 @@ impl ModelProxy {
         // removed: faking a fresh install would also take deleting those keys.
         let anchor_missing = match crate::provider_usage_log::read_anchor_opt(keyring.as_ref()) {
             Ok(None) if Self::keychain_has_provider_keys(keyring.as_ref()) => true,
-            Ok(None) => {
-                // A fresh install: anchor first, then the MAC keys (created by the opens below).
-                let _ = crate::provider_usage_log::update_anchor(keyring.as_ref(), |_| {});
-                false
-            }
+            // A fresh install: anchor first, then the MAC keys (created by the opens below). If the
+            // anchor cannot be written, this launch fails closed instead of going on without one.
+            Ok(None) => crate::provider_usage_log::create_anchor(keyring.as_ref()).is_err(),
             _ => false,
         };
         let mut guard = crate::provider_guard::load(&dir, keyring.clone(), now);
