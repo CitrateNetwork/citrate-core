@@ -13,7 +13,9 @@
 // (it runs from `Drop`). It signals a pid only after checking that the pid's current command
 // line still carries the marker, so a pid that was reused by an unrelated process is reported
 // as foreign and left alone. After the recorded pids it sweeps once more for any process that
-// carries the marker (pgrep), so nothing the fixture started can outlive the test.
+// carries the marker (pgrep, matched as a fixed string), so nothing the fixture started can
+// outlive the test. A harness control can turn the sweep off ([`OwnedFixture::without_sweep`]),
+// so the suite proves the recorded-pid kill on its own instead of leaning on the sweep.
 
 #![allow(dead_code)]
 
@@ -83,6 +85,9 @@ pub struct OwnedFixture {
     extra: Mutex<Vec<u32>>,
     children: Mutex<Vec<Child>>,
     cleaned: Mutex<Option<CleanupReport>>,
+    /// Whether cleanup sweeps for marked processes after the recorded pids. Always on except in
+    /// the harness control that proves the recorded-pid kill alone.
+    sweep: bool,
 }
 
 impl OwnedFixture {
@@ -112,7 +117,17 @@ impl OwnedFixture {
             extra: Mutex::new(Vec::new()),
             children: Mutex::new(Vec::new()),
             cleaned: Mutex::new(None),
+            sweep: true,
         }
+    }
+
+    /// A fixture whose cleanup kills only the recorded pids and does not sweep for other marked
+    /// processes. It still reports every live marked process as left over. Only the harness
+    /// control for the recorded-pid kill uses it: everywhere else the sweep is the safety net.
+    pub fn without_sweep(tag: &str) -> Self {
+        let mut fx = OwnedFixture::new(tag);
+        fx.sweep = false;
+        fx
     }
 
     pub fn marker(&self) -> &str {
@@ -344,6 +359,9 @@ impl OwnedFixture {
         let deadline = Deadline::after(Duration::from_secs(5));
         let mut quiet = 0;
         loop {
+            if !self.sweep {
+                break;
+            }
             let live: Vec<u32> = pgrep(&self.marker)
                 .into_iter()
                 .filter(|p| pid_alive(*p))
@@ -386,7 +404,11 @@ impl OwnedFixture {
         });
         // A last sweep for anything that became visible only now (a shell that was mid-exec
         // during the sweep above); it is killed and counted as swept, not left over.
-        let late: Vec<u32> = self.live_marked();
+        let late: Vec<u32> = if self.sweep {
+            self.live_marked()
+        } else {
+            Vec::new()
+        };
         for &pid in &late {
             if !report.recorded.contains(&pid) && !report.swept.contains(&pid) {
                 report.swept.push(pid);
@@ -499,7 +521,10 @@ fn ps_field(pid: u32, field: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Pids whose full command line contains `pattern` (fixed string), excluding this process.
+/// Pids whose full command line contains `pattern` as a fixed string, excluding this process.
+/// `pgrep -f` matches an extended regular expression, so its candidates are filtered by the
+/// command line `ps` reports: a `.` in `pattern` matches only a `.`, and a process that exited
+/// between the two reads is dropped.
 pub fn pgrep(pattern: &str) -> Vec<u32> {
     let out = match Command::new("pgrep")
         .args(["-f", pattern])
@@ -515,6 +540,24 @@ pub fn pgrep(pattern: &str) -> Vec<u32> {
         .lines()
         .filter_map(|l| l.trim().parse::<u32>().ok())
         .filter(|p| *p != me)
+        .filter(|p| command_line(*p).is_some_and(|c| c.contains(pattern)))
+        .collect()
+}
+
+/// The direct children of `pid` (`pgrep -P`).
+pub fn children_of(pid: u32) -> Vec<u32> {
+    let out = match Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => panic!("INCONCLUSIVE: pgrep unavailable: {e}"),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
         .collect()
 }
 

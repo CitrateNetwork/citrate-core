@@ -1165,6 +1165,11 @@ pub struct SupervisorConfig {
     /// lifecycle fixtures hold the monitor there to delay collection past the freshness limit.
     /// `None` in production.
     pub collect_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor inside a Stop's settle window each time it keeps waiting with every
+    /// log reader done and a publication ticket still open. A fault-injection seam: the
+    /// lifecycle fixtures release the ticket there, so they prove the window waits for
+    /// publications and not only for readers. `None` in production.
+    pub settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SupervisorConfig {
@@ -1183,6 +1188,7 @@ impl SupervisorConfig {
             failed_barrier: None,
             budget_barrier: None,
             collect_barrier: None,
+            settle_barrier: None,
         }
     }
 }
@@ -1206,6 +1212,8 @@ struct Shared {
     epoch: u64,
     /// See [`SupervisorConfig::failed_barrier`].
     failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// See [`SupervisorConfig::settle_barrier`].
+    settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Shared {
@@ -1391,6 +1399,7 @@ impl Supervisor {
             logs: LogRing::new(),
             epoch,
             failed_barrier: config.failed_barrier.clone(),
+            settle_barrier: config.settle_barrier.clone(),
         });
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
@@ -2366,6 +2375,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         failed_barrier: _failed_barrier,
         budget_barrier,
         collect_barrier,
+        settle_barrier: _settle_barrier,
     } = config;
     // Dropped last: marks the cell if this thread unwinds (core#398).
     let _exit = MonitorExit(shared.clone());
@@ -2852,6 +2862,11 @@ fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornD
             || std::time::Instant::now() >= deadline
         {
             break (remaining, publications);
+        }
+        if remaining.is_empty() {
+            if let Some(barrier) = &shared.settle_barrier {
+                barrier();
+            }
         }
         std::thread::sleep(Duration::from_millis(5));
     };
