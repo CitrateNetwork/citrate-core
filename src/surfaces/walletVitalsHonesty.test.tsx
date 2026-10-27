@@ -68,13 +68,16 @@ describe("Wallet — Q-A.4b tauri display honesty", () => {
     // NEGATIVE CONTROL — the fabricated accrued sum (96.42+21.7+9.31 = 127.43) must NOT render.
     expect(html).not.toContain("127.43");
     // POSITIVE — honest em-dash on the accrued line.
-    expect(html).toContain("rewards accrued · —");
+    // C1-V V8: the line now names its one source (rewardsOf.total) as "validator rewards".
+    expect(html).toContain("validator rewards · —");
   });
 
   it("Staked renders the REAL attributed stake (s5StakeWei), not a hardcoded 32,000", () => {
     const html = renderToStaticMarkup(<Wallet store={stubStore} s={walletState("staking")} />);
-    // POSITIVE — the real read (33,500) is the staked total (no self-stake: D-9).
-    expect(html).toMatch(/>33,500</);
+    // C1-V V7: "staked" is ValidatorRegistry.stakeOf only (0 here: the bond is not activated); the
+    // grant is not shown as staked, and there is no self-stake (D-9).
+    expect(html).not.toContain("34,000");
+    expect(html).not.toMatch(/Validator stake[^<]*<\/span><span[^>]*>33,500/);
     // POSITIVE — the "Membership grant · vaulted" row renders the REAL attributed
     // stake (33,500), not the hardcoded 32,000 constant.
     expect(html).toContain("33,500 SALT");
