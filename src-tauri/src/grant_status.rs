@@ -490,7 +490,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
     let bond_activated = if bond_deployed {
         rpc.eth_call(bond_nullary_call(&bond_address, activated_selector()))
             .ok()
-            .and_then(|r| decode_uint256_word(&r).ok())
+            .and_then(|r| decode_u128(&r).ok())
             .map(|v| v == 1)
     } else {
         None
