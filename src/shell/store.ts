@@ -27,6 +27,7 @@ import {
   makeHash,
   WalletReview,
 } from "./state";
+import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
 import { SignedTxExpired } from "../bridge/types";
 import { broadcastFailure } from "./broadcastOutcome";
@@ -1366,6 +1367,7 @@ export class Store {
     } catch {
       return; // transient RPC error — keep the last honest state, never fabricate
     }
+    this.markNetRead("grant");
     // Membership-renew safeguard FIRST — a real on-chain SBT must not be overridden by
     // a thin /userinfo claim into a false "renew". This runs even when onboarding is
     // already settled, because the wrongful lapse happens post-onboarding, on reopen.
@@ -1467,6 +1469,13 @@ export class Store {
       if (st.notice && !this.nodeChainResetNotified) {
         this.nodeChainResetNotified = true;
         this.toast(st.notice);
+        // RC52: the toast is easy to miss, so Node also keeps the notice until it is dismissed.
+        const at = Date.now();
+        const notice = st.notice;
+        this.setState((s) => ({
+          networkNotice: { ...(s.networkNotice ?? { at, from: s.netKey, to: s.netKey, archived: true }), node: notice },
+        }));
+        this.save();
       }
       // REAL validator bond (SALT) from the ValidatorRegistry (pubkeyOfStaker(bond)
       // → stakeOf, via grantStatus, keyed on the member's MemberBond clone). This —
@@ -1492,6 +1501,7 @@ export class Store {
       // grant existed, and this was the only other read — but it folded ONLY the validator bond (0
       // pre-activation), so the 32k attributed stake never surfaced until a relaunch.
       let grantPatch: Partial<AppState> | null = null;
+      let grantRead = false;
       let bondActivated = this.state.bondActivated;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
@@ -1503,6 +1513,7 @@ export class Store {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
+          grantRead = true;
           bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
           // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
           bondActivated = g.bondActivated ?? null;
@@ -1598,6 +1609,8 @@ export class Store {
         /* honest no-op: keep the last real log tail, never a fabricated one */
       }
       this.setState(patch);
+      // RC52: the grant and bond shown now come from this network's chain.
+      if (grantRead) this.markNetRead("grant");
       // 0.5.2 Join funnel: the node reached sync (real poll only; the step id only, no height).
       if (patch.node === "synced" || patch.node === "validating") reachedStep("node_synced");
       // Re-seed the memory graph's personal/stake facts the moment the grant first surfaces (the
@@ -1869,6 +1882,7 @@ export class Store {
         if (BRIDGE_MODE === "tauri") patch.earnSource = "chain";
       }
       this.setState(patch);
+      this.markNetRead("balances");
     } catch {
       /* honest no-op */
     }
@@ -1891,6 +1905,7 @@ export class Store {
     try {
       const real = await bridge.wallet.activity();
       this.setState((s) => ({ activity: mergeActivity(real, s.activity) }));
+      this.markNetRead("activity");
     } catch {
       /* honest no-op: keep the last real/optimistic list, never a fabricated one */
     }
@@ -2160,6 +2175,19 @@ export class Store {
    * its own OIDC login today; a real signed-in handoff (shared-authority SSO) is
    * work-order WO-6. Honest toast on failure — never a silent dead click.
    */
+  /** RC52: dismiss the genesis-switch notice on Node. */
+  dismissNetworkNotice(): void {
+    this.setState({ networkNotice: null });
+    this.save();
+  }
+
+  /** RC52: a chain read owed after a genesis switch was made; its values are current again. */
+  private markNetRead(read: NetRead): void {
+    if (!this.state.netUnread.includes(read)) return;
+    this.setState((s) => ({ netUnread: s.netUnread.filter((r) => r !== read) }));
+    this.save();
+  }
+
   async openExternal(url: string): Promise<void> {
     try {
       await bridge.shell.openExternal(url);
@@ -2322,6 +2350,8 @@ export class Store {
     const s = this.state;
     const keep: Record<string, unknown> = {};
     for (const k of PERSIST_KEYS) keep[k] = s[k];
+    // RC52: the save names the genesis its chain reads belong to (netScope.ts).
+    keep[NET_STAMP_FIELD] = s.netKey;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));
     } catch {
