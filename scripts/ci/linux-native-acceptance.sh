@@ -175,7 +175,7 @@ stage_and_enter() { # run deb deb_from ai ai_from quit
   # under /tmp or /home, which the namespace hides.
   mkdir -p "$RUN/harness/scripts/ci/lib" "$RUN/harness/scripts/ci/linux-native-acceptance"
   cp "$SELF" "$RUN/harness/scripts/ci/" && cp "$ROOT/scripts/ci/lib/pidns.sh" "$RUN/harness/scripts/ci/lib/" &&
-    cp "$HERE/x11_windows.py" "$RUN/harness/scripts/ci/linux-native-acceptance/" || return 2
+    cp "$HERE/x11_windows.py" "$HERE/unseal-attempt.sh" "$RUN/harness/scripts/ci/linux-native-acceptance/" || return 2
   awk '$8 ~ /^@/ {print substr($8, 2)}' /proc/net/unix | sort -u >"$RUN/logs/host-abstract-sockets.txt"
   # Identity (device:inode) of the caller's directories: the checkout, its top-level dirs, the
   # caller's working directory and HOME. Inside, no path (relative, symlinked or absolute) may
@@ -355,6 +355,10 @@ seal() {
   # before anything else runs; the app and every probe inherit it.
   cd -P "$W" || return 1
 }
+
+# Every process the harness starts after the seal (the app, the package's install scripts, the
+# private display, bus and keyring) is started through this prefix.
+CONFINE=()
 
 # Isolation checks. Each one has a positive or negative control so a check that cannot see what
 # it looks for does not pass silently.
@@ -539,6 +543,26 @@ p_socket_scan_control() {
   kill -KILL "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
   [ "$after" != "$before" ] && [ "$(listening)" = "$before" ]
 }
+
+p_unseal_refused() {
+  # A fixture started exactly as the app is (the same launcher, in the background, from the run
+  # dir) tries to undo the seal with mount operations; every attempt must be refused. It must also
+  # run with no effective capability, with no_new_privs, and in a user and mount namespace of its
+  # own (not PID 1's).
+  local out="$W/logs/unseal-attempt.log" rc caps nnp user mnt
+  "${CONFINE[@]}" env -i PATH="$PATH" HOME="$W" bash "$HERE/unseal-attempt.sh" </dev/null >"$out" 2>&1 &
+  wait "$!"; rc=$?
+  cat "$out"
+  read -r _ caps _ nnp < <(grep '^caps:' "$out")
+  read -r _ _ user _ mnt < <(grep '^ns:' "$out")
+  [ "$rc" -eq 0 ] || { echo "an attempt to undo the seal succeeded (rc=$rc)"; return 1; }
+  [ "$(grep -c ': refused$' "$out")" -eq 9 ] || { echo "expected 9 refused attempts"; return 1; }
+  [ "$caps" = 0000000000000000 ] || { echo "effective capabilities: $caps"; return 1; }
+  [ "$nnp" = 1 ] || { echo "no_new_privs not set"; return 1; }
+  [ -n "$user" ] && [ "$user" != "$(readlink /proc/self/ns/user)" ] || { echo "same user namespace as PID 1"; return 1; }
+  [ -n "$mnt" ] && [ "$mnt" != "$(readlink /proc/self/ns/mnt)" ] || { echo "same mount namespace as PID 1"; return 1; }
+}
+p_seal_intact() { p_inherited_readonly && p_home_hidden && p_staged_readonly; }
 
 listening() { # [exempt-pid ...]: listening TCP/UDP/unix sockets in this network namespace,
   # sorted, leaving out sockets held only by the exempt pids (the session's own services).
@@ -920,6 +944,8 @@ inner_main() {
   probe "every mount inherited from the host is read-only" p_inherited_readonly || ok=0
   probe "no caller-writable host path is writable here" p_host_paths_readonly || ok=0
   probe "staged packages and the harness copy are read-only" p_staged_readonly || ok=0
+  probe "a process started like the app cannot undo the seal (remount, mount_setattr, umount, setns)" p_unseal_refused || ok=0
+  probe "the seal is unchanged after that attempt" p_seal_intact || ok=0
   probe "stray-process scan sees a leaked sleep (negative control)" p_stray_scan_control || ok=0
   probe "listening-socket scan sees a new listener (negative control)" p_socket_scan_control || ok=0
   if [ "$ok" -ne 1 ]; then
