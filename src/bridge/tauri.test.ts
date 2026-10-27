@@ -179,7 +179,7 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       return undefined;
     case "memory_recall":
     case "memory_search":
-      return { tenant: (args?.tenant as string) ?? "personal", totalInTenant: 2, hits: [{ id: "0a1b2c3d4e", kind: "ChainContract", title: "LiquidStakingPool" }] };
+      return { tenant: (args?.tenant as string) ?? "personal", totalInTenant: 2, hits: [{ id: "0a1b2c3d4e", kind: "ChainContract", title: "ValidatorRegistry" }] };
     case "memory_neighbors":
       return [{ direction: "out", kind: "References", title: "chain 40204 params", proposed: false }];
     case "memory_constellation":
@@ -198,14 +198,12 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         walletAddress: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
         contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
       };
-    // CORE wallet balances — REAL native liquid (eth_getBalance) + claimable +
-    // self-stake (LiquidStakingPool.balanceOf). Wei strings; the adapter converts
-    // each to a SALT number (no -1 sentinel now that self-stake is grounded).
+    // CORE wallet balances — REAL native liquid (eth_getBalance) + claimable. Wei
+    // strings; the adapter converts each to a SALT number.
     case "wallet_balances":
       return {
         liquidWei: "1500000000000000000", // 1.5 SALT
         claimableWei: earningsMock.claimableWei,
-        stakedWei: "5000000000000000000", // 5 SALT self-staked
         address: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
       };
     // CORE wallet_ensure_ready — seamless device provisioning + first-run mint.
@@ -229,58 +227,6 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       signMock.map.set(id, view);
       return view;
     }
-    // CORE wallet_stake — a LiquidStakingPool deposit() bridged into a PENDING
-    // ceremony; returns the decoded view (approved via sign_and_broadcast).
-    case "wallet_stake": {
-      const id = String(signMock.next++);
-      const view = {
-        id,
-        origin: "local-user",
-        kind: "transaction",
-        chainId: 40204,
-        decoded: { action: "Call LiquidStakingPool with 4 bytes calldata", cost: "deposit", destination: "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e" },
-        requiresRawAck: false,
-      };
-      signMock.map.set(id, view);
-      return view;
-    }
-    // CORE WP2 wallet_request_withdrawal — a LiquidStakingPool requestWithdrawal
-    // (shares) bridged into a PENDING ceremony (approved via sign_and_broadcast).
-    // The SALT→shares conversion is done in Rust; this returns the decoded view.
-    case "wallet_request_withdrawal": {
-      const id = String(signMock.next++);
-      const view = {
-        id,
-        origin: "local-user",
-        kind: "transaction",
-        chainId: 40204,
-        decoded: { action: "Call LiquidStakingPool with 36 bytes calldata", cost: "requestWithdrawal", destination: "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e" },
-        requiresRawAck: false,
-      };
-      signMock.map.set(id, view);
-      return view;
-    }
-    // CORE WP2 wallet_claim_withdrawal — a claimWithdrawal(id) bridged into a
-    // PENDING ceremony (approved via sign_and_broadcast).
-    case "wallet_claim_withdrawal": {
-      const id = String(signMock.next++);
-      const view = {
-        id,
-        origin: "local-user",
-        kind: "transaction",
-        chainId: 40204,
-        decoded: { action: "Call LiquidStakingPool with 36 bytes calldata", cost: "claimWithdrawal", destination: "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e" },
-        requiresRawAck: false,
-      };
-      signMock.map.set(id, view);
-      return view;
-    }
-    // CORE WP2 wallet_pending_withdrawals — the wallet's real on-chain queue.
-    case "wallet_pending_withdrawals":
-      return [
-        { id: "1", saltWei: "10000000000000000000", requestBlock: 100, claimableAtBlock: 50500, claimable: true },
-        { id: "2", saltWei: "3000000000000000000", requestBlock: 100000, claimableAtBlock: 150400, claimable: false },
-      ];
     // CORE item 4 wallet_activity — the REAL indexed 40204 tx history from the
     // CitrateScan `txlist` endpoint (public read). The Rust command returns rows
     // with {id,kind,amount,hash,ts,status,direction}; the adapter maps them down to
@@ -338,6 +284,8 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       const a = (args ?? {}) as { providerId: string; message: string };
       return { consentId: "cc_minted", providerId: a.providerId, expiresAtMs: 1 };
     }
+    case "chat_consent_drop":
+      return null;
     case "ai_chat": {
       const a = (args ?? {}) as { providerId: string; messagesJson: string; contextJson: string };
       if (!aiMock.map.has(a.providerId)) throw "ai: no provider configured for that id";
@@ -428,7 +376,7 @@ describe("tauri adapter — config round-trip proof (A1.4, frontend half)", () =
 });
 
 describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
-  it("invokes wallet_balances and converts wei→SALT incl. real self-stake (balanceOf)", async () => {
+  it("invokes wallet_balances and converts wei→SALT (no stake figure: D-9)", async () => {
     const bridge = createTauriBridge();
     // Uses the shared earningsMock default for claimable (do NOT mutate it — other
     // tests assert against the default). liquid is the mock's 1.5 SALT.
@@ -436,8 +384,8 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(invokeMock).toHaveBeenCalledWith("wallet_balances", undefined);
     expect(b.liquid).toBeCloseTo(1.5, 9);
     expect(b.claimable).toBeCloseTo(Number(BigInt(earningsMock.claimableWei)) / 1e18, 9);
-    expect(b.staked).toBeCloseTo(5, 9); // real LiquidStakingPool.balanceOf (self-stake), no -1 sentinel
     expect(b.address).toBe("0x9858effd232b4033e47d90003d41ec34ecaeda94");
+    expect(Object.keys(b).sort()).toEqual(["address", "claimable", "liquid"]);
   });
 
   it("wallet.ensureReady invokes wallet_ensure_ready and passes the public address + created flag through", async () => {
@@ -448,16 +396,6 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(r.created).toBe(true);
     // @rule8 / I-2: the boundary carries ONLY the address + a flag — no key/seed.
     expect(Object.keys(r).sort()).toEqual(["address", "created"]);
-  });
-
-  it("wallet.stake invokes wallet_stake with {amountWei} and returns a pending CeremonyView", async () => {
-    const bridge = createTauriBridge();
-    const view = await bridge.wallet.stake("3000000000000000000");
-    expect(invokeMock).toHaveBeenCalledWith("wallet_stake", { amountWei: "3000000000000000000" });
-    expect(view.id).toBeTruthy();
-    expect(view.origin).toBe("local-user");
-    expect(view.kind).toBe("transaction");
-    expect(view.requiresRawAck).toBe(false);
   });
 
   it("shell.openExternal invokes open_external with the url", async () => {
@@ -475,37 +413,6 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(view.decoded.destination).toBe(to); // signs nothing; human approves via broadcast
   });
 
-  // CORE WP2 (@rule8) — the withdraw path. requestWithdrawal builds a pending
-  // ceremony from the SALT amount (shares conversion done in Rust); claimWithdrawal
-  // builds a pending ceremony for a matured id; pendingWithdrawals reads the real
-  // on-chain queue. None settle here — the human approves via sign_and_broadcast.
-  it("wallet.requestWithdrawal invokes wallet_request_withdrawal with {amountWei}", async () => {
-    const bridge = createTauriBridge();
-    const view = await bridge.wallet.requestWithdrawal("2500000000000000000");
-    expect(invokeMock).toHaveBeenCalledWith("wallet_request_withdrawal", { amountWei: "2500000000000000000" });
-    expect(view.id).toBeTruthy();
-    expect(view.decoded.destination).toBe("0xfd272195b55cb4f5a240a5be75aabab0d1c5685e");
-    expect(view.requiresRawAck).toBe(false);
-  });
-
-  it("wallet.claimWithdrawal invokes wallet_claim_withdrawal with {requestId}", async () => {
-    const bridge = createTauriBridge();
-    const view = await bridge.wallet.claimWithdrawal("7");
-    expect(invokeMock).toHaveBeenCalledWith("wallet_claim_withdrawal", { requestId: "7" });
-    expect(view.id).toBeTruthy();
-    expect(view.decoded.destination).toBe("0xfd272195b55cb4f5a240a5be75aabab0d1c5685e");
-  });
-
-  it("wallet.pendingWithdrawals invokes wallet_pending_withdrawals and returns the real queue", async () => {
-    const bridge = createTauriBridge();
-    const list = await bridge.wallet.pendingWithdrawals();
-    expect(invokeMock).toHaveBeenCalledWith("wallet_pending_withdrawals", undefined);
-    expect(list).toHaveLength(2);
-    expect(list[0].id).toBe("1");
-    expect(list[0].claimable).toBe(true);
-    expect(list[1].claimable).toBe(false);
-    expect(list[0].saltWei).toBe("10000000000000000000");
-  });
 });
 
 // CORE item 4 — wallet.activity now invokes the REAL `wallet_activity` command
@@ -810,7 +717,7 @@ describe("tauri adapter — memory domain is wired to the real mcp_serve daemon 
     const r = await bridge.memory.recall("chain-state", 15);
     expect(invokeMock).toHaveBeenCalledWith("memory_recall", { tenant: "chain-state", budget: 15 });
     expect(r.tenant).toBe("chain-state");
-    expect(r.hits[0].title).toBe("LiquidStakingPool");
+    expect(r.hits[0].title).toBe("ValidatorRegistry");
     await bridge.memory.search("personal", "telemetry");
     expect(invokeMock).toHaveBeenCalledWith("memory_search", { tenant: "personal", query: "telemetry", budget: undefined });
     // HUP-S3.1: knowledge passages ride the same command, only when asked for.
@@ -949,6 +856,12 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
     const c = await bridge.chat.consentPrepare("gateway", "hello");
     expect(invokeMock).toHaveBeenCalledWith("chat_consent_prepare", { providerId: "gateway", message: "hello" });
     expect(c.consentId).toBe("cc_minted");
+  });
+
+  it("consentDrop invokes chat_consent_drop with only the consent id", async () => {
+    const bridge = createTauriBridge();
+    await bridge.chat.consentDrop("cc_minted");
+    expect(invokeMock).toHaveBeenCalledWith("chat_consent_drop", { consentId: "cc_minted" });
   });
 
   it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {

@@ -691,8 +691,8 @@ fn node_healthy_after_is_tuned_longer_than_default() {
 
 // ---------------------------------------------------------------------------
 // WP3 (live) — real citrate-node bounded-sync proof. Heavy (ark/zk build +
-// live testnet). `#[ignore]` so CI stays fast; run explicitly with the proof
-// script (src-tauri/scripts/c1_1_node_sync_proof.sh) or:
+// live testnet). `#[ignore]` so CI stays fast; run explicitly with the cold-sync
+// harness on the K6 profile (scripts/e2e/cold-sync.py, RC52 G4) or:
 //   CITRATE_NODE_BIN=/path/to/citrate \
 //     cargo test --locked node::tests::live_bounded_sync_proof -- --ignored --nocapture
 //

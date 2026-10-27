@@ -1,8 +1,9 @@
 //! Social identity — OAuth link + wallet-signed verification (Connections · social discovery).
 //! Privacy model: ADR-2026-08-30.
 //!
-//! LINK (public-client PKCE, no secret): OAuth ownership proof → keyring-sealed token → a
-//! DEVICE-LOCAL, private, UNVERIFIED record. VERIFY (D3): the wallet signs an `IdentityBinding`
+//! LINK (public-client PKCE, no secret): OAuth ownership proof → the access token is used once to
+//! read the handle and then dropped (nothing reads it later, so it is not kept) → a DEVICE-LOCAL,
+//! private, UNVERIFIED record. VERIFY (D3): the wallet signs an `IdentityBinding`
 //! challenge {network, handle, address, nonce} through the Signature Ceremony (Rule 3 — the vault
 //! key signs at `ceremony.approve`, nothing here); the resulting EIP-191 signature IS by the wallet
 //! address by construction, so recording it flips `verified` and gives group members something they
@@ -13,11 +14,11 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
-use zeroize::Zeroize;
 
 use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
 use crate::connections::{capture_public_pkce, random_state, ConnError, OAUTH_REDIRECT_URI};
 use crate::oidc::HttpClient;
+use crate::secret::SecretString;
 
 const CHAIN_ID: u64 = 40204;
 
@@ -141,7 +142,9 @@ fn save_links(app: &tauri::AppHandle, links: &[StoredLink]) -> Result<(), String
     std::fs::write(p, bytes).map_err(|e| e.to_string())
 }
 
-/// The OS-keyring slot the sealed OAuth token lives in (never leaves the vault).
+/// The vault slot earlier builds sealed the OAuth token in. Nothing writes it now; disconnect still
+/// clears it so a token kept by an earlier build is removed, and the invoke path keeps the
+/// `social.` namespace reserved so the webview cannot plant one.
 pub(crate) fn keyring_slot(network: &str) -> String {
     format!("social.{network}")
 }
@@ -210,24 +213,10 @@ fn authorize_url(cfg: &NetCfg, state: &str, challenge: &str) -> String {
     )
 }
 
-#[derive(Deserialize)]
+/// The provider's token response: only the access token is read (for the profile request).
+#[derive(Deserialize, Debug)]
 struct TokenResp {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    scope: Option<String>,
-    #[serde(default)]
-    expires_in: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct SealedToken<'a> {
-    access_token: &'a str,
-    refresh_token: Option<&'a str>,
-    scope: Option<&'a str>,
-    expires_at: Option<u64>,
-    linked_at: u64,
+    access_token: SecretString,
 }
 
 #[derive(Deserialize)]
@@ -279,11 +268,7 @@ fn fetch_handle(
     Ok(handle)
 }
 
-fn do_link(
-    app: &tauri::AppHandle,
-    custody: &crate::custody::CustodyVault,
-    network: &str,
-) -> Result<LinkedIdentity, String> {
+fn do_link(app: &tauri::AppHandle, network: &str) -> Result<LinkedIdentity, String> {
     let cfg =
         net_cfg(network).ok_or_else(|| format!("{network} isn't configured for linking yet"))?;
     let http = crate::oidc::UreqClient;
@@ -311,27 +296,16 @@ fn do_link(
         ("redirect_uri", OAUTH_REDIRECT_URI),
         ("code_verifier", verifier.as_str()),
     ];
-    let body = http
-        .post_form(cfg.token, &form)
-        .map_err(|_| "the provider rejected the sign-in (token exchange failed)".to_string())?;
+    // The body holds the token: keep it in a wiping buffer.
+    let body =
+        zeroize::Zeroizing::new(http.post_form(cfg.token, &form).map_err(|_| {
+            "the provider rejected the sign-in (token exchange failed)".to_string()
+        })?);
     let tok: TokenResp =
         serde_json::from_str(&body).map_err(|_| "the token response was unparsable".to_string())?;
 
     let linked_at = now_unix();
-    let expires_at = tok.expires_in.map(|e| linked_at.saturating_add(e));
-    let sealed = SealedToken {
-        access_token: &tok.access_token,
-        refresh_token: tok.refresh_token.as_deref(),
-        scope: tok.scope.as_deref(),
-        expires_at,
-        linked_at,
-    };
-    let mut bytes = serde_json::to_vec(&sealed).map_err(|e| e.to_string())?;
-    let put = custody.put(&keyring_slot(network), &mut bytes);
-    bytes.zeroize();
-    put.map_err(|_| "could not seal the token in the keyring".to_string())?;
-
-    let handle = fetch_handle(&http, network, &cfg, &tok.access_token)?;
+    let handle = fetch_handle(&http, network, &cfg, tok.access_token.expose())?;
     let mut links = load_links(app);
     links.retain(|l| l.network != network);
     let stored = StoredLink {
@@ -480,14 +454,13 @@ pub fn social_status_sync(app: tauri::AppHandle) -> Result<Vec<LinkedIdentity>, 
 }
 
 /// `social_start` — run the public-client OAuth link in the SYSTEM browser (async: the loopback
-/// blocks off the main thread). Returns the unverified, private link; the token seals in the keyring.
+/// blocks off the main thread). Returns the unverified, private link; the token is not kept.
 #[tauri::command]
 pub async fn social_start(
     app: tauri::AppHandle,
-    custody: tauri::State<'_, crate::custody::CustodyState>,
     network: String,
 ) -> Result<LinkedIdentity, String> {
-    do_link(&app, &custody.0, &network)
+    do_link(&app, &network)
 }
 
 /// `social_set_visibility` — set a link's visibility (private | groups). Narrowing takes effect now.
@@ -544,6 +517,7 @@ pub fn social_disconnect_sync(
     custody: tauri::State<'_, crate::custody::CustodyState>,
     network: String,
 ) -> Result<(), String> {
+    // Remove a token an earlier build sealed for this network (see `keyring_slot`).
     let _ = custody.0.clear_slot(&keyring_slot(&network));
     let mut links = load_links(&app);
     links.retain(|l| l.network != network);
@@ -1156,6 +1130,19 @@ pub fn directory_search_sync(
 
 #[cfg(test)]
 mod tests {
+    /// The provider's token response never prints its token in `Debug`.
+    #[test]
+    fn token_response_debug_carries_no_token() {
+        let tok: super::TokenResp =
+            serde_json::from_str(r#"{"access_token":"FIXTURE-SOCIAL-VALUE","scope":"identify"}"#)
+                .unwrap();
+        let dbg = format!("{tok:?}");
+        assert!(
+            !dbg.contains("FIXTURE-SOCIAL-VALUE"),
+            "token in Debug: {dbg}"
+        );
+    }
+
     use super::*;
 
     #[test]
