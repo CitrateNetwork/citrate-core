@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "id": "grok-4.7",
+      "created": 1786000000,
+      "object": "model",
+      "owned_by": "xai"
+    }
+  ],
+  "object": "list"
+}

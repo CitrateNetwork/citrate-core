@@ -32,6 +32,7 @@
 //!
 //! Keyless (Rule 3): nothing here holds a key or signs.
 
+use crate::secret::SecretString;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -80,21 +81,12 @@ pub const NODE_PORT_ENV: &str = "CITRATE_NODE_MCP_PORT";
 
 /// Where the node entry runs: this executable as the stdio shim, the node server's loopback port,
 /// and the connect token minted for Hermes.
-#[derive(Clone, PartialEq, Eq)]
+/// The token is a [`SecretString`]: wiped on drop, never printed by `Debug`.
+#[derive(Clone, Debug)]
 pub struct NodeTarget {
     pub exe: PathBuf,
     pub port: u16,
-    pub token: String,
-}
-
-impl std::fmt::Debug for NodeTarget {
-    // Never print the token.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeTarget")
-            .field("exe", &self.exe)
-            .field("port", &self.port)
-            .finish_non_exhaustive()
-    }
+    pub token: SecretString,
 }
 
 /// Where the memory bridge runs: this executable, pointed at the mem-mcp socket.
@@ -146,13 +138,13 @@ pub fn render_config(
         }));
     }
     if settings.node {
-        if let Some(t) = node.filter(|t| t.exe.is_absolute() && !t.token.is_empty()) {
+        if let Some(t) = node.filter(|t| t.exe.is_absolute() && !t.token.expose().is_empty()) {
             servers.push(json!({
                 "name": NODE_SERVER_NAME,
                 "transport": "stdio",
                 "command": t.exe.to_string_lossy(),
                 "args": [crate::node_mcp_http::STDIO_FLAG],
-                "env": { NODE_TOKEN_ENV: t.token, NODE_PORT_ENV: t.port.to_string() },
+                "env": { NODE_TOKEN_ENV: t.token.expose(), NODE_PORT_ENV: t.port.to_string() },
                 "timeout_ms": CALL_TIMEOUT_MS,
                 // PENDING OWNER SIGN-OFF (A24): read tools only today. Writes would only create
                 // requests the member approves, but offering them to Hermes is the owner's call.
@@ -163,9 +155,17 @@ pub fn render_config(
     (!servers.is_empty()).then(|| json!({ "servers": servers }))
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// The temp file [`write_private`] writes before renaming it over `path`.
+pub(crate) fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension("json.tmp")
+}
+
+/// Write `bytes` to `path` atomically: a `0600` temp file, synced, renamed over it. The temp file
+/// may hold secrets, so it is removed on every error path after it was created (a kill in between
+/// is covered by the sweeps of `mcp_servers::sweep_runtime_files`).
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = temp_path(path);
     let _ = std::fs::remove_file(&tmp);
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -175,66 +175,154 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts.open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
+    let written = f
+        .write_all(bytes)
+        .and_then(|()| f.sync_all())
+        .and_then(|()| {
+            drop(f);
+            std::fs::rename(&tmp, path)
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
-/// HUP-S4.3 + S4.4: the file the child gets when both the built-in servers (this module) and the
-/// member's reviewed servers (`mcp_servers.rs`) are on. It sits next to them in the Hermes dir.
+/// HUP-S4.3 + S4.4: the allowlist the child gets when the member has servers on (joined with the
+/// built-in ones, which come first). RC52 P-9a: it holds those servers' env values, taken from the
+/// keychain, so it exists only around a spawn ([`spawn_file_watch`]).
 pub const EFFECTIVE_FILE: &str = "mcp-effective.json";
 
+/// How often the spawn-time allowlist is checked for removal while the child runs.
+pub const SPAWN_FILE_CHECK: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// HUP-S4.3 + S4.4: the one allowlist the sidecar reads (its MCP host reads exactly one file).
-/// Neither file: `None` (no MCP). One file: that file as is. Both: their `servers` lists joined into
-/// [`EFFECTIVE_FILE`] (0600), built-in servers first; member names never clash with the built-in
-/// ones (they are reserved). If either file cannot be read, nothing is passed (fail closed). A
-/// joined file left from an earlier start is removed whenever it is not needed, since it can hold
-/// the member's server credentials.
-pub fn effective_allowlist(builtin: Option<&Path>, user: Option<&Path>) -> Option<PathBuf> {
+/// No built-in file and no member server on: `None` (no MCP). Built-in servers only: that file as
+/// is. Member servers on: [`EFFECTIVE_FILE`] (0600), written now with the built-in servers and the
+/// members' servers with their env values from the keychain. If anything cannot be read, nothing
+/// is passed (fail closed). A spawn-time file left from an earlier start is removed whenever it is
+/// not needed.
+pub fn effective_allowlist(
+    builtin: Option<&Path>,
+    user: Option<&crate::mcp_servers::McpStore>,
+) -> Option<PathBuf> {
     let dir = builtin
-        .or(user)
         .and_then(Path::parent)
-        .map(Path::to_path_buf);
+        .map(Path::to_path_buf)
+        .or_else(|| user.map(|u| u.dir().to_path_buf()));
     let joined = dir.as_ref().map(|d| d.join(EFFECTIVE_FILE));
     let drop_joined = || {
         if let Some(j) = &joined {
             let _ = std::fs::remove_file(j);
         }
     };
-    let b = builtin.filter(|p| p.is_file());
-    let u = user.filter(|p| p.is_file());
-    let (b, u) = match (b, u) {
-        (None, None) => {
+    let members_on = match user.map(|u| u.load()) {
+        None => false,
+        Some(Ok(reg)) => crate::mcp_servers::enabled_servers(&reg).next().is_some(),
+        Some(Err(e)) => {
+            eprintln!("hermes: {e}; Hermes starts without MCP servers");
             drop_joined();
             return None;
         }
-        (Some(only), None) | (None, Some(only)) => {
-            drop_joined();
-            return Some(only.to_path_buf());
-        }
-        (Some(b), Some(u)) => (b, u),
     };
-    let read = |p: &Path| -> Option<Vec<Value>> {
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
-        v.get("servers")?.as_array().cloned()
-    };
-    let (Some(mut servers), Some(more), Some(path)) = (read(b), read(u), joined.clone()) else {
-        eprintln!("hermes: an MCP allowlist could not be read; Hermes starts without MCP servers");
-        drop_joined();
-        return None;
-    };
-    servers.extend(more);
-    let written = serde_json::to_vec_pretty(&json!({ "servers": servers }))
-        .map_err(std::io::Error::other)
-        .and_then(|text| write_private(&path, &text));
-    match written {
-        Ok(()) => Some(path),
-        Err(e) => {
-            eprintln!("hermes: could not write the joined MCP allowlist ({e}); Hermes starts without MCP servers");
+    let b = builtin.filter(|p| p.is_file());
+    match (b, members_on, user, joined.clone()) {
+        (None, false, _, _) => {
             drop_joined();
             None
         }
+        (Some(only), false, _, _) => {
+            drop_joined();
+            Some(only.to_path_buf())
+        }
+        (b, true, Some(store), Some(path)) => match write_spawn_file(b, store, &path) {
+            Ok(()) => Some(path),
+            Err(e) => {
+                eprintln!("hermes: could not write the MCP allowlist ({e}); Hermes starts without MCP servers");
+                drop_joined();
+                None
+            }
+        },
+        _ => {
+            drop_joined();
+            None
+        }
+    }
+}
+
+/// Whether `path` is the spawn-time allowlist of `store` (the one that holds env values).
+pub fn is_spawn_file(path: &Path, store: &crate::mcp_servers::McpStore) -> bool {
+    path == store.dir().join(EFFECTIVE_FILE)
+}
+
+/// Write [`EFFECTIVE_FILE`] at `dest`: the built-in servers, then the member's enabled, reviewed
+/// servers with their env values from the keychain (an empty list when none is left).
+pub fn write_spawn_file(
+    builtin: Option<&Path>,
+    store: &crate::mcp_servers::McpStore,
+    dest: &Path,
+) -> Result<(), String> {
+    let builtin_servers: Vec<Value> = match builtin.filter(|p| p.is_file()) {
+        None => Vec::new(),
+        Some(p) => std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.get("servers")?.as_array().cloned())
+            .ok_or_else(|| "the built-in MCP allowlist could not be read".to_string())?,
+    };
+    let reg = store.load()?;
+    let text = crate::mcp_servers::runtime_allowlist_json(&reg, store.secrets(), &builtin_servers)?
+        .unwrap_or_else(|| zeroize::Zeroizing::new("{\"servers\":[]}".to_string()));
+    write_private(dest, text.as_bytes()).map_err(|e| e.kind().to_string())
+}
+
+/// RC52 P-9a: the child watch for a spawn-time allowlist at `path`. All three hooks run on the
+/// supervisor's monitor thread, so they never race each other:
+/// - `prepare` (right before every spawn attempt) writes it, so a restart still gets the member's
+///   servers;
+/// - `observe` (while the child runs) removes it once `/health` answers: the sidecar loads its MCP
+///   allowlist before it binds its control port, so by then it has been read;
+/// - `ended` (after every end, including a failed spawn and the last crash before the supervisor
+///   gives up) removes it.
+///
+/// `HermesManager::stop` and the app-start sweep remove it too. `browser` (the managed-browser
+/// watch) keeps its own hooks.
+pub fn spawn_file_watch(
+    browser: Option<crate::supervisor::ChildWatch>,
+    path: PathBuf,
+    builtin: Option<PathBuf>,
+    store: crate::mcp_servers::McpStore,
+    healthy: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+) -> crate::supervisor::ChildWatch {
+    let interval = browser.as_ref().map_or(SPAWN_FILE_CHECK, |b| b.interval);
+    let (b_observe, b_ended) = match &browser {
+        Some(b) => (Some(b.observe.clone()), Some(b.ended.clone())),
+        None => (None, None),
+    };
+    let observe_path = path.clone();
+    let ended_path = path.clone();
+    crate::supervisor::ChildWatch {
+        interval,
+        observe: std::sync::Arc::new(move |pid| {
+            if let Some(o) = &b_observe {
+                o(pid);
+            }
+            if observe_path.exists() && healthy() {
+                let _ = std::fs::remove_file(&observe_path);
+            }
+        }),
+        ended: std::sync::Arc::new(move || {
+            if let Some(e) = &b_ended {
+                e();
+            }
+            let _ = std::fs::remove_file(&ended_path);
+        }),
+        prepare: Some(std::sync::Arc::new(move || {
+            if let Err(e) = write_spawn_file(builtin.as_deref(), &store, &path) {
+                eprintln!("hermes: could not write the MCP allowlist ({e}); Hermes starts without MCP servers");
+                let _ = std::fs::remove_file(&path);
+            }
+        })),
     }
 }
 
@@ -305,15 +393,17 @@ pub struct McpView {
 
 /// The node token in the allowlist file Hermes was last given, if any (so a still-live token is
 /// kept instead of cutting a running Hermes off).
-pub fn current_node_token(dir: &Path) -> Option<String> {
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(config_path(dir)).ok()?).ok()?;
+pub fn current_node_token(dir: &Path) -> Option<SecretString> {
+    // The file holds the token: read it into a wiping buffer.
+    let text = zeroize::Zeroizing::new(std::fs::read_to_string(config_path(dir)).ok()?);
+    let v: Value = serde_json::from_str(&text).ok()?;
     v.get("servers")?
         .as_array()?
         .iter()
         .find(|s| s.get("name").and_then(Value::as_str) == Some(NODE_SERVER_NAME))?
         .pointer(&format!("/env/{NODE_TOKEN_ENV}"))?
         .as_str()
-        .map(str::to_string)
+        .map(|t| SecretString::new(t.to_string()))
 }
 
 pub fn build_view(
@@ -427,7 +517,7 @@ fn node_target<R: tauri::Runtime>(
     }
     let exe = std::env::current_exe().ok()?;
     let current = current_node_token(dir);
-    match node.hermes_token(current.as_deref()) {
+    match node.hermes_token(current.as_ref().map(SecretString::expose)) {
         Ok(token) => Some(NodeTarget {
             exe,
             port: node.bound_port(),

@@ -35,6 +35,7 @@ pub mod fsutil;
 pub mod join;
 pub mod oidc;
 pub mod rpc;
+pub mod secret;
 pub mod siwe;
 pub mod submitted_log;
 pub mod supervisor;

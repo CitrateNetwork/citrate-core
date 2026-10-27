@@ -336,13 +336,28 @@ fn tripwire_a_store_daemon_open_is_bound_to_one_sidecar_generation() {
         &rest[..rest.find(end).expect("ends")]
     };
     let check = body(daemons, "pub(crate) fn check_store_daemon_open(");
-    assert!(check.find("m.generation()").expect("generation") < check.find("m.started_env()").expect("env"));
+    assert!(check.find("m.generation()").expect("generation") < check.find("sidecar_facts(app)").expect("facts"));
     let cmd = body(hermes, "pub async fn hermes_session_open_unattended(");
-    assert!(cmd.contains("open_local_session_in(") && cmd.contains("generation"));
-    assert!(body(hermes, "fn open_local_session_in(").contains("session_open_in(g, &body)"));
+    assert!(cmd.contains("m.in_generation(generation, |m| m.session_open_store(body, &sets))"), "scoped open");
+    assert!(cmd.contains("m.session_open_in(generation, body)"), "env-hold open");
     for sig in ["    pub fn start(&self) -> Result<()> {", "    pub fn stop(&self) {"] {
         assert!(body(hermes, sig).contains("self.open_gate.write()"), "{sig}");
     }
-    let open_in = body(hermes, "    pub fn session_open_in(");
-    assert!(open_in.find("open_gate.read()").expect("gate") < open_in.find("self.generation()").expect("compare"));
+    let gate = body(hermes, "    pub fn in_generation<T>(");
+    assert!(gate.find("open_gate.read()").expect("gate") < gate.find("self.generation()").expect("compare"));
+    assert!(body(hermes, "    pub fn session_open_in(").contains("self.in_generation(generation"));
+}
+
+#[test]
+fn a_scoped_store_open_is_refused_after_a_restart_between_check_and_open() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    *rec.reply.lock().unwrap() = vec![(201, r#"{"id":"s1-abc","toolSets":[],"promptSnapshot":false}"#.into())];
+    let m = mgr(rec.clone());
+    let body = build_session_body("p", "[]", "http://127.0.0.1:1/v1", "", "m", 8192).unwrap();
+    let checked = m.generation();
+    m.stop();
+    m.set_token_for_test("a-new-bearer");
+    let r = m.in_generation(checked, |m| m.session_open_store(&body, &[]));
+    assert!(matches!(r, Err(HermesError::Restarted)), "{r:?}");
+    assert!(rec.posts.lock().unwrap().is_empty(), "nothing reached the restarted sidecar");
 }
