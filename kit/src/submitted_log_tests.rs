@@ -928,3 +928,339 @@ fn upgrade_a_corrupt_record_is_never_bounded() {
     let again = SubmittedTxLog::open(t.file(), G);
     assert_eq!(again.try_record_call(&h(3), A, 9, NonceSource::Fetched, None), Ok(false));
 }
+
+// ---- #511 lane design (MAC lead, 2026-10-27): one section per network ----
+//
+// 1. Each network's section holds its entries AND its #507 upgrade bound; a network switch
+//    archives the whole section, read-only.
+// 2. latest_call, forget and every current-network decision read only the current section.
+// 3. A new file (RECORD_FILE, format 3). The legacy file's sends (r1005) are migrated into r1005's
+//    section, and the legacy file is set aside, never deleted and never read as empty. A build
+//    that reads only the legacy file can't misread the new one.
+// 4. #507's semantics are unchanged within a section.
+
+impl Tmp {
+    fn record(&self) -> std::path::PathBuf {
+        self.0.join(RECORD_FILE)
+    }
+    fn legacy(&self) -> std::path::PathBuf {
+        self.0.join(LEGACY_FILE)
+    }
+}
+
+/// The section of `genesis` in a RECORD_FILE body (current or archived), if any.
+fn section_of(d: &serde_json::Value, genesis: &str) -> Option<serde_json::Value> {
+    if d["current"]["genesis"] == genesis {
+        return Some(d["current"].clone());
+    }
+    d["previous_networks"]
+        .as_array()?
+        .iter()
+        .find(|s| s["genesis"] == genesis)
+        .cloned()
+}
+
+fn record_json(t: &Tmp) -> serde_json::Value {
+    std::fs::read(t.record())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// A legacy record as the last builds before the per-network record wrote it: Join-8 fields, an
+/// eviction mark, and #507's upgrade bound (written with `uncertain: true` as its marker).
+fn legacy_body() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "entries": [
+            { "hash": h(1), "sender": MEMBER, "nonce": 5, "to": activate_call().to, "selector": activate_call().selector, "at_ms": 1_700_000_000_000u64 },
+            { "hash": h(2), "sender": A, "nonce": 400 }
+        ],
+        "evicted": { A: 300 },
+        "uncertain": true,
+        "upgrade_bound": { MEMBER: 5 }
+    }))
+    .expect("json")
+}
+
+#[test]
+fn d1_the_upgrade_bound_belongs_to_its_network_and_is_archived_with_it() {
+    let t = upgraded("d1-bound-archived");
+    let r1005 = SubmittedTxLog::open(t.record(), G);
+    assert_eq!(r1005.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false), "r1005: the first send after the upgrade is unknown");
+    drop(r1005);
+    let new = SubmittedTxLog::open(t.record(), NEW);
+    assert!(!new.is_uncertain(), "r1005's bound is not the new network's");
+    assert_eq!(new.try_record_call(&h(2), A, 0, NonceSource::Fetched, None), Ok(true), "new-network nonce 0 is not under r1005's bound 7");
+    drop(new);
+    let archived = section_of(&record_json(&t), G).expect("r1005's section is archived");
+    assert_eq!(archived["upgrade_bound"][A], 7, "the bound moved to the archive with its section: {archived}");
+    let back = SubmittedTxLog::open(t.record(), G);
+    assert_eq!(back.try_record_call(&h(3), A, 6, NonceSource::Fetched, None), Ok(false), "back on r1005 its bound applies again");
+    assert_eq!(back.try_record_call(&h(4), A, 8, NonceSource::Fetched, None), Ok(true));
+}
+
+#[test]
+fn d1_a_profile_upgraded_on_a_new_network_keeps_r1005_bounded_too() {
+    // 0.5.1 (no record) -> 0.5.2 starting on the new genesis: 0.5.1's unknown sends were r1005's.
+    let t = upgraded("d1-new-then-r1005");
+    let new = SubmittedTxLog::open(t.record(), NEW);
+    assert!(new.is_uncertain(), "the first launch after 0.5.1 is upgrade-bounded");
+    assert_eq!(new.try_record_call(&h(1), A, 0, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(new.try_record_call(&h(2), A, 1, NonceSource::Fetched, None), Ok(true));
+    drop(new);
+    let r1005 = SubmittedTxLog::open(t.record(), G);
+    assert!(r1005.is_uncertain(), "r1005 holds 0.5.1's unrecorded sends");
+    assert_eq!(r1005.try_record_call(&h(3), A, 5, NonceSource::Fetched, None), Ok(false), "r1005's own bound is set by its own first send");
+    assert_eq!(r1005.try_record_call(&h(4), A, 6, NonceSource::Fetched, None), Ok(true));
+}
+
+#[test]
+fn d2_latest_call_and_forget_never_reach_a_previous_network() {
+    let t = Tmp::new("d2-current-only");
+    let r1005 = SubmittedTxLog::open(t.record(), G);
+    assert_eq!(r1005.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
+    drop(r1005);
+    let new = SubmittedTxLog::open(t.record(), NEW);
+    assert_eq!(new.latest_call(MEMBER, &activate_call()), None, "an activation sent on r1005 is not outstanding here");
+    assert_eq!(new.forget(&h(1)), Ok(false), "a previous network's send can't be forgotten from this one");
+    drop(new);
+    let back = SubmittedTxLog::open(t.record(), G);
+    assert_eq!(back.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)), "r1005's section is unchanged");
+}
+
+#[test]
+fn d2_a_resend_of_bytes_sent_on_a_previous_network_is_recorded_on_this_one() {
+    let t = Tmp::new("d2-resend-archived");
+    let r1005 = SubmittedTxLog::open(t.record(), G);
+    assert_eq!(r1005.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
+    drop(r1005);
+    let new = SubmittedTxLog::open(t.record(), NEW);
+    assert_eq!(new.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(false), "identical bytes are never provably first (same chain id)");
+    assert_eq!(new.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)), "sent on this network now");
+    assert_eq!(new.forget(&h(1)), Ok(true), "and forgotten on this network");
+    drop(new);
+    let cur = section_of(&record_json(&t), NEW).expect("current section");
+    assert_eq!(cur["entries"][0]["hash"], h(1), "{cur}");
+    let back = SubmittedTxLog::open(t.record(), G);
+    assert_eq!(back.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)), "forgetting on the new network leaves r1005's send alone");
+}
+
+/// Tripwire (design 2): an archived section never changes an answer about the current network.
+/// The same current-network history, with and without a rich archive (an outstanding activation,
+/// eviction marks, an uncertain flag and an upgrade bound, all on r1005), gives the same answers to
+/// every query, except that byte-identical bytes are never first.
+#[test]
+fn d2_an_archived_section_never_changes_a_current_network_answer() {
+    let with = upgraded("d2-with-archive");
+    {
+        let r1005 = SubmittedTxLog::open(with.record(), G);
+        r1005.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())).expect("record");
+        for n in 0..=(CAPACITY as u32) {
+            r1005.try_record_call(&h(1_000 + n), A, u64::from(n), NonceSource::Fetched, None).expect("record");
+        }
+        r1005.try_record(&h(9)).expect("record");
+    }
+    let without = Tmp::new("d2-without-archive");
+    let a = SubmittedTxLog::open(with.record(), NEW);
+    let b = SubmittedTxLog::open(without.record(), NEW);
+    assert_eq!(a.is_uncertain(), b.is_uncertain());
+    assert_eq!(a.len(), b.len());
+    assert_eq!(a.latest_call(MEMBER, &activate_call()), b.latest_call(MEMBER, &activate_call()));
+    assert_eq!(a.forget(&h(1)), b.forget(&h(1)));
+    for (i, (who, nonce, src)) in [
+        (A, 0u64, NonceSource::Fetched),
+        (A, 3, NonceSource::Supplied),
+        (MEMBER, 5, NonceSource::Fetched),
+        (B, 0, NonceSource::Fetched),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let hash = h(50_000 + i as u32);
+        assert_eq!(a.try_record_call(&hash, who, nonce, src, None), b.try_record_call(&hash, who, nonce, src, None), "{who} at {nonce}");
+    }
+    assert_eq!(a.try_record(&h(50_100)), b.try_record(&h(50_100)));
+    assert_eq!(a.latest_call(MEMBER, &activate_call()), b.latest_call(MEMBER, &activate_call()));
+}
+
+#[test]
+fn d3_a_legacy_record_is_migrated_into_r1005_and_set_aside() {
+    let t = Tmp::new("d3-migrate");
+    std::fs::write(t.legacy(), legacy_body()).expect("legacy");
+    let new = SubmittedTxLog::open(t.record(), NEW);
+    assert_eq!(new.len(), 0);
+    assert!(!new.is_uncertain(), "r1005's history is not the new network's");
+    drop(new);
+    assert!(!t.legacy().exists(), "the legacy file is not read again as the record");
+    let aside = t.0.join(format!("{LEGACY_FILE}.migrated"));
+    assert_eq!(std::fs::read(&aside).ok(), Some(legacy_body()), "set aside byte for byte, never deleted");
+    let d = record_json(&t);
+    assert_eq!(d["format"], 3, "{d}");
+    assert_eq!(d["current"]["genesis"], NEW);
+    let r = section_of(&d, LEGACY_GENESIS).expect("r1005 section");
+    assert_eq!(r["entries"].as_array().map(Vec::len), Some(2), "{r}");
+    assert_eq!(r["entries"][0]["selector"], activate_call().selector, "Join-8 fields kept: {r}");
+    assert_eq!(r["evicted"][A], 300);
+    assert_eq!(r["upgrade_bound"][MEMBER], 5, "#507's bound migrated with its section: {r}");
+    assert_eq!(r["uncertain"], false, "the bound, not a damaged history");
+    // Back on r1005 the migrated section is the current one, as it was.
+    let back = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert_eq!(back.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)));
+    assert_eq!(back.try_record_for(&h(2), A, 400), Ok(false));
+    assert_eq!(back.try_record_call(&h(3), MEMBER, 6, NonceSource::Fetched, None), Ok(true), "above the migrated bound");
+    assert_eq!(back.try_record_call(&h(4), A, 300, NonceSource::Supplied, None), Ok(false), "at the migrated eviction mark");
+}
+
+#[test]
+fn d3_on_r1005_the_legacy_record_is_the_current_section() {
+    let t = Tmp::new("d3-same");
+    std::fs::write(t.legacy(), legacy_body()).expect("legacy");
+    let log = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert_eq!(log.len(), 2);
+    assert!(log.is_uncertain(), "upgrade-bounded");
+    assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)));
+    assert!(t.0.join(format!("{LEGACY_FILE}.migrated")).exists());
+    assert_ne!(t.record(), t.legacy());
+}
+
+#[test]
+fn d3_a_legacy_file_written_again_by_an_older_build_is_merged_again() {
+    let t = Tmp::new("d3-remerge");
+    std::fs::write(t.legacy(), legacy_body()).expect("legacy");
+    drop(SubmittedTxLog::open(t.record(), NEW));
+    // An older build ran in between: it found no legacy file and wrote a new one with its send.
+    let older = serde_json::json!({ "entries": [{ "hash": h(9), "sender": A, "nonce": 401 }], "evicted": {}, "uncertain": true });
+    std::fs::write(t.legacy(), serde_json::to_vec(&older).expect("json")).expect("legacy again");
+    let new = SubmittedTxLog::open(t.record(), NEW);
+    assert_eq!(new.len(), 0);
+    drop(new);
+    assert!(t.0.join(format!("{LEGACY_FILE}.migrated-2")).exists(), "the first set-aside is kept too");
+    let r = section_of(&record_json(&t), LEGACY_GENESIS).expect("r1005 section");
+    let hashes: Vec<&str> = r["entries"].as_array().expect("entries").iter().filter_map(|e| e["hash"].as_str()).collect();
+    assert_eq!(hashes, vec![h(1).as_str(), h(2).as_str(), h(9).as_str()]);
+    assert_eq!(r["uncertain"], true, "the older build's uncertain record keeps r1005 uncertain");
+}
+
+#[test]
+fn d3_the_legacy_file_is_set_aside_only_after_the_record_is_durable() {
+    let t = Tmp::new("d3-durable-first");
+    std::fs::write(t.legacy(), legacy_body()).expect("legacy");
+    let block = t.0.join(format!(".{RECORD_FILE}.tmp-{}", std::process::id()));
+    std::fs::create_dir(&block).expect("block tmp");
+    let log = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert_eq!(log.len(), 2, "the legacy history is used in memory");
+    drop(log);
+    assert_eq!(std::fs::read(t.legacy()).ok(), Some(legacy_body()), "not set aside: the record could not be written");
+    assert!(!t.0.join(format!("{LEGACY_FILE}.migrated")).exists());
+    std::fs::remove_dir(&block).expect("unblock");
+    let log = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert_eq!(log.len(), 2);
+    assert!(!t.legacy().exists() && t.0.join(format!("{LEGACY_FILE}.migrated")).exists());
+}
+
+#[test]
+fn d3_an_unparsable_legacy_file_is_never_read_as_empty() {
+    let t = Tmp::new("d3-legacy-corrupt");
+    std::fs::write(t.legacy(), b"{not json").expect("legacy");
+    let log = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert!(log.is_uncertain());
+    assert_eq!(log.try_record_call(&h(1), A, 9, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(2), A, 10, NonceSource::Fetched, None), Ok(false), "a damaged history is never bounded");
+    assert_eq!(std::fs::read(t.0.join(format!("{LEGACY_FILE}.migrated"))).ok(), Some(b"{not json".to_vec()));
+}
+
+/// The readers of the last legacy builds, copied as they were (c7db777e), plus the two older shapes.
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct OldReader {
+    entries: Vec<serde_json::Value>,
+    #[serde(default)]
+    evicted: std::collections::BTreeMap<String, u64>,
+    uncertain: bool,
+    #[serde(default)]
+    upgrade_bound: Option<std::collections::BTreeMap<String, u64>>,
+}
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct OldReaderV2 {
+    hashes: Vec<String>,
+    uncertain: bool,
+}
+
+#[test]
+fn d3_a_build_that_reads_only_the_legacy_record_can_not_misread_the_new_one() {
+    assert_ne!(RECORD_FILE, LEGACY_FILE, "older builds never open the new file by name");
+    let t = upgraded("d3-old-reader");
+    let log = SubmittedTxLog::open(t.record(), G);
+    log.try_record_call(&h(1), A, 7, NonceSource::Fetched, Some(&activate_call())).expect("record");
+    drop(log);
+    drop(SubmittedTxLog::open(t.record(), NEW));
+    let bytes = std::fs::read(t.record()).expect("record");
+    assert!(serde_json::from_slice::<OldReader>(&bytes).is_err(), "an older reader must fail (closed), not read an empty or partial history");
+    assert!(serde_json::from_slice::<OldReaderV2>(&bytes).is_err());
+    assert!(serde_json::from_slice::<Vec<String>>(&bytes).is_err());
+}
+
+#[test]
+fn d3_a_record_in_an_unknown_format_is_set_aside_and_every_network_is_uncertain() {
+    let t = Tmp::new("d3-future");
+    let future = serde_json::to_vec(&serde_json::json!({ "format": 4, "current": { "genesis": NEW, "entries": [], "uncertain": false } })).expect("json");
+    std::fs::write(t.record(), &future).expect("future");
+    let log = SubmittedTxLog::open(t.record(), NEW);
+    assert!(log.is_uncertain(), "a format this build can't read is never read as empty");
+    drop(log);
+    assert_eq!(std::fs::read(t.0.join(format!("{RECORD_FILE}.unreadable"))).ok(), Some(future), "kept, not overwritten");
+    let other = SubmittedTxLog::open(t.record(), G);
+    assert!(other.is_uncertain(), "the lost record may have held this network's sends too");
+}
+
+#[test]
+fn d4_within_a_section_the_bound_keeps_507s_semantics_after_migration_and_a_switch() {
+    let t = Tmp::new("d4-507");
+    std::fs::write(t.legacy(), legacy_body()).expect("legacy");
+    drop(SubmittedTxLog::open(t.record(), NEW));
+    let log = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    // MEMBER's bound is 5: at or below unknown, above first; supplied never bounded.
+    assert_eq!(log.try_record_call(&h(10), MEMBER, 5, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(11), MEMBER, 4, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(12), MEMBER, 60, NonceSource::Supplied, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(13), MEMBER, 6, NonceSource::Fetched, None), Ok(true));
+    // B has no bound yet: its first fetched send sets it (unknown), the next above it is first.
+    assert_eq!(log.try_record_call(&h(14), B, 2, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(15), B, 3, NonceSource::Fetched, None), Ok(true));
+    drop(log);
+    let r = section_of(&record_json(&t), LEGACY_GENESIS).expect("r1005 section");
+    assert_eq!(r["upgrade_bound"], serde_json::json!({ MEMBER: 5, B: 2 }), "{r}");
+}
+
+/// Tripwire (design 2): outside tests, the archive (`Inner::previous`) is touched only to load,
+/// write and migrate the record and by `sent_on_a_previous_network`, which may only take
+/// first-ness away (`&& !...`). A new read of an archived section in a decision path fails here.
+#[test]
+fn tripwire_no_decision_path_reads_an_archived_section() {
+    let src = include_str!("submitted_log.rs");
+    let prod = &src[..src.find("#[cfg(test)]\nmod tests").expect("tests module")];
+    let allowed = ["new", "sent_on_a_previous_network", "to_disk", "read_record", "open_with"];
+    let mut offenders = Vec::new();
+    for (at, _) in prod.match_indices(".previous") {
+        let before = &prod[..at];
+        let name = before
+            .rfind("fn ")
+            .map(|f| before[f + 3..].split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or(""))
+            .unwrap_or("");
+        if !allowed.contains(&name) {
+            offenders.push(format!("fn {name} reads the archive"));
+        }
+    }
+    let calls: Vec<_> = prod.match_indices("sent_on_a_previous_network(").map(|(i, _)| i).collect();
+    for i in calls {
+        let line_start = prod[..i].rfind('\n').map_or(0, |p| p + 1);
+        let line = &prod[line_start..i];
+        let is_def = line.trim_start().starts_with("fn ");
+        let narrows = line.trim_end().ends_with("&& !g.");
+        if !(is_def || narrows) {
+            offenders.push(format!("sent_on_a_previous_network used outside `&& !`: {}", line.trim()));
+        }
+    }
+    assert!(offenders.is_empty(), "{}", offenders.join("\n"));
+}
