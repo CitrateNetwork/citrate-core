@@ -23,8 +23,13 @@ describe("networkCompat", () => {
     expect(networkCompat("", A)).toBe("unknown");
   });
 
-  it("the embedded address book pins a real genesis hash", () => {
+  it("the active network profile pins a real genesis hash", () => {
     expect(EXPECTED_GENESIS).toMatch(/^0x[0-9a-f]{64}$/);
     expect(EXPECTED_GENESIS).not.toBe("0x" + "0".repeat(64));
+  });
+
+  it("a build with no genesis set is 'unset', whatever the live chain says (K6)", () => {
+    expect(networkCompat(null, A)).toBe("unset");
+    expect(networkCompat(null, null)).toBe("unset");
   });
 });

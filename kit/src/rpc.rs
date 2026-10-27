@@ -31,6 +31,164 @@ pub const CITRATE_RPC_URL: &str = "https://rpc.citrate.ai";
 /// The Citrate chain id used for EIP-155 replay protection.
 pub const CITRATE_CHAIN_ID: u64 = 40204;
 
+/// The network a signing path must be talking to before it signs or sends (K6 network switch).
+///
+/// A reroll or a new genesis can keep chain id 40204, so the chain id alone (EIP-155) does not
+/// tell two networks apart: the block-0 hash does. `None` in either field means the build has no
+/// value for it yet (an explicit "not set", never a placeholder), and every check against it
+/// refuses. The app installs one with [`install_network_gate`] at startup from its network
+/// profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedNetwork {
+    /// The profile name, for messages.
+    pub name: String,
+    /// The EIP-155 chain id, or `None` when not set.
+    pub chain_id: Option<u64>,
+    /// The block-0 hash (`0x` + 64 lowercase hex), or `None` when not set.
+    pub genesis_hash: Option<String>,
+}
+
+static NETWORK_GATE: std::sync::OnceLock<ExpectedNetwork> = std::sync::OnceLock::new();
+
+/// Install the process-wide network gate. The first install wins; returns `false` when one was
+/// already installed (the earlier one stays). Every transaction sent through
+/// [`RpcClient::send_raw_transaction`] and every ceremony signature is checked against it.
+/// A process that never installs one (tests, other apps on this kit) is not gated.
+pub fn install_network_gate(expected: ExpectedNetwork) -> bool {
+    NETWORK_GATE.set(expected).is_ok()
+}
+
+/// The installed network gate, if any.
+pub fn network_gate() -> Option<&'static ExpectedNetwork> {
+    NETWORK_GATE.get()
+}
+
+impl ExpectedNetwork {
+    /// Both values are set and well formed. A gate that is not set refuses every signature.
+    pub fn is_set(&self) -> bool {
+        self.chain_id.is_some_and(|c| c != 0)
+            && self
+                .genesis_hash
+                .as_deref()
+                .is_some_and(|g| is_nonzero_block_hash(&g.to_ascii_lowercase()))
+    }
+}
+
+/// What a wallet-key signature commits to, for the signing gate ([`check_wallet_signing`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureScope {
+    /// The signature commits to no chain: a plain `personal_sign` (EIP-191) message. It cannot be
+    /// checked against a network, so it is NOT network-bound; it is still refused while the
+    /// network is not set.
+    Unbound,
+    /// The signature commits to this EIP-155 chain id: a transaction, a Sign-In with Ethereum
+    /// message (`Chain ID:`), or EIP-712 typed data (`domain.chainId`). It must be the chain id
+    /// of the network this build targets.
+    Chain(u64),
+}
+
+thread_local! {
+    /// Gates added for the current thread by [`with_added_network_gate`].
+    static ADDED_GATES: std::cell::RefCell<Vec<ExpectedNetwork>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with `extra` checked as well as the process-wide gate, on this thread. It can only add
+/// a check: the installed gate still applies, so this never loosens signing. Tests use it to put
+/// a not-set or another network in front of a signing entry point without touching the
+/// process-wide gate.
+pub fn with_added_network_gate<R>(extra: ExpectedNetwork, f: impl FnOnce() -> R) -> R {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            ADDED_GATES.with(|g| {
+                g.borrow_mut().pop();
+            });
+        }
+    }
+    ADDED_GATES.with(|g| g.borrow_mut().push(extra));
+    let _pop = Pop;
+    f()
+}
+
+fn check_one(gate: &ExpectedNetwork, scope: SignatureScope) -> Result<(), RpcError> {
+    let name = &gate.name;
+    if !gate.is_set() {
+        return Err(RpcError::WrongNetwork(format!(
+            "this build has no network set (profile {name:?}), so the wallet signs nothing; \
+             update Citrate Core"
+        )));
+    }
+    if let SignatureScope::Chain(c) = scope {
+        let want = gate.chain_id.unwrap_or_default();
+        if c != want {
+            return Err(RpcError::WrongNetwork(format!(
+                "the signature is for chain {c}, this build targets chain {want} ({name})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// **The one gate on wallet-key signing (K6).** Every signer in `wallet.rs` calls this (through
+/// `wallet::signing_key`) before the wallet key is derived, whatever path reached it: a ceremony
+/// approval, the budgeted sign-in, a transaction broadcast. It checks, locally and with no RPC
+/// call, the installed gate and any added for this thread:
+/// - a gate that is not set refuses every signature, of any kind;
+/// - a chain-committing signature ([`SignatureScope::Chain`]) must name the gate's chain id.
+///
+/// The RPC genesis check ([`RpcClient::verify_network`]) is separate and applies where a signature
+/// goes to an endpoint (transactions). A process with no gate installed and none added (other
+/// apps on this kit) is not gated.
+pub fn check_wallet_signing(scope: SignatureScope) -> Result<(), RpcError> {
+    if let Some(g) = network_gate() {
+        check_one(g, scope)?;
+    }
+    ADDED_GATES.with(|gates| {
+        for g in gates.borrow().iter() {
+            check_one(g, scope)?;
+        }
+        Ok(())
+    })
+}
+
+/// **No RPC without a network (K6, invariant P3).** Every JSON-RPC request made through
+/// [`HttpTransport`] calls this first. It refuses, before any connection is made, while the
+/// installed gate or a gate added for this thread ([`with_added_network_gate`]) is not set: a
+/// build whose network profile is not ready reads nothing from any chain. A process with no gate
+/// installed and none added (other apps on this kit) is not gated.
+pub fn check_rpc_allowed() -> Result<(), RpcError> {
+    let one = |g: &ExpectedNetwork| {
+        if g.is_set() {
+            Ok(())
+        } else {
+            Err(RpcError::WrongNetwork(format!(
+                "this build has no network set (profile {:?}), so no RPC request is made; \
+                 update Citrate Core",
+                g.name
+            )))
+        }
+    };
+    if let Some(g) = network_gate() {
+        one(g)?;
+    }
+    ADDED_GATES.with(|gates| {
+        for g in gates.borrow().iter() {
+            one(g)?;
+        }
+        Ok(())
+    })
+}
+
+/// Whether `s` is a `0x`-prefixed 32-byte hex hash that is not all zeros (the K6 network gate:
+/// a block-0 hash of zeros is never a real network). Distinct from [`is_block_hash`] (logs).
+fn is_nonzero_block_hash(s: &str) -> bool {
+    s.len() == 66
+        && s.starts_with("0x")
+        && s[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        && !s[2..].bytes().all(|b| b == b'0')
+}
+
 /// Errors from the JSON-RPC client. Coarse + secret-free (this client never
 /// touches key material, so no variant can carry it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +204,9 @@ pub enum RpcError {
     MissingField(String),
     /// The receipt did not appear within the poll budget.
     ReceiptTimeout,
+    /// The network check refused this endpoint: it is not the network this build targets, or
+    /// the build has no network set (see [`ExpectedNetwork`]). Nothing was signed or sent.
+    WrongNetwork(String),
     /// The node's rate limiter answered HTTP 429 before the request reached a handler.
     RateLimited,
 }
@@ -58,6 +219,7 @@ impl std::fmt::Display for RpcError {
             RpcError::Node(m) => write!(f, "rpc node error: {m}"),
             RpcError::MissingField(m) => write!(f, "rpc missing/invalid field: {m}"),
             RpcError::ReceiptTimeout => write!(f, "rpc receipt not found within poll budget"),
+            RpcError::WrongNetwork(m) => write!(f, "network check refused: {m}"),
             RpcError::RateLimited => write!(f, "rpc rate limited (HTTP 429)"),
         }
     }
@@ -122,6 +284,8 @@ pub(crate) fn map_ureq_error(e: ureq::Error) -> RpcError {
 
 impl RpcTransport for HttpTransport {
     fn call(&self, body: Value) -> Result<Value, RpcError> {
+        // K6 (P3): no request at all while this build has no network set.
+        check_rpc_allowed()?;
         // Never follow a redirect: a loopback fork target checked by URL must not be able to send
         // the request (or the next one) to another host. A 3xx is an error, not an answer.
         let resp = ureq::post(&self.url)
@@ -304,6 +468,80 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_hex_quantity(&result, "eth_blockNumber")
     }
 
+    /// `eth_chainId` → the endpoint's EIP-155 chain id.
+    pub fn chain_id(&self) -> Result<u64, RpcError> {
+        let result = self.request("eth_chainId", json!([]))?;
+        parse_hex_quantity(&result, "eth_chainId")
+    }
+
+    /// The hash of block 0 (`eth_getBlockByNumber("0x0", false).hash`), lowercase.
+    pub fn genesis_hash(&self) -> Result<String, RpcError> {
+        let result = self.request("eth_getBlockByNumber", json!(["0x0", false]))?;
+        let hash = result
+            .get("hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::MissingField("block 0 hash".into()))?
+            .to_ascii_lowercase();
+        if !is_nonzero_block_hash(&hash) {
+            return Err(RpcError::MissingField(format!("block 0 hash: {hash}")));
+        }
+        Ok(hash)
+    }
+
+    /// Check that this endpoint is `expected`: its chain id and its block-0 hash must both match.
+    /// Fails closed: a value the build has not set, or an endpoint that cannot be read, refuses.
+    /// Reads `eth_chainId` and block 0 only; nothing is signed or sent.
+    pub fn verify_network(&self, expected: &ExpectedNetwork) -> Result<(), RpcError> {
+        let name = &expected.name;
+        let want_id = expected.chain_id.ok_or_else(|| {
+            RpcError::WrongNetwork(format!(
+                "this build has no chain id set for network {name:?}"
+            ))
+        })?;
+        let want_genesis = expected
+            .genesis_hash
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .filter(|g| is_nonzero_block_hash(g))
+            .ok_or_else(|| {
+                RpcError::WrongNetwork(format!(
+                    "this build has no genesis hash set for network {name:?}"
+                ))
+            })?;
+        let got_id = self.chain_id()?;
+        if got_id != want_id {
+            return Err(RpcError::WrongNetwork(format!(
+                "the endpoint is chain {got_id}, this build targets chain {want_id} ({name})"
+            )));
+        }
+        let got_genesis = self.genesis_hash()?;
+        if got_genesis != want_genesis {
+            return Err(RpcError::WrongNetwork(format!(
+                "the endpoint's block 0 is {got_genesis}, this build targets {want_genesis} \
+                 ({name}); update Citrate Core"
+            )));
+        }
+        Ok(())
+    }
+
+    /// [`Self::send_raw_transaction`] against an explicit gate: with `Some`, the endpoint is
+    /// checked first ([`Self::verify_network`]) and nothing is sent unless it passes.
+    pub fn send_raw_transaction_gated(
+        &self,
+        raw: &[u8],
+        gate: Option<&ExpectedNetwork>,
+    ) -> Result<String, RpcError> {
+        if let Some(expected) = gate {
+            self.verify_network(expected)?;
+        }
+        let raw_hex = format!("0x{}", hex::encode(raw));
+        let result = self.request("eth_sendRawTransaction", json!([raw_hex]))?;
+        result
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| RpcError::MissingField("sendRawTransaction hash".into()))
+    }
+
     /// `net_peerCount` → the node's live peer count (real value; CORE-C1.1
     /// NodeDomain status). Returned as a `0x`-prefixed hex quantity.
     pub fn peer_count(&self) -> Result<u64, RpcError> {
@@ -324,13 +562,11 @@ impl<T: RpcTransport> RpcClient<T> {
 
     /// `eth_sendRawTransaction(rawHex)` → the tx hash the node accepted. `raw`
     /// is the RLP-signed tx bytes; we submit the canonical `0x…` hex form.
+    ///
+    /// K6: when the app installed a network gate ([`install_network_gate`]), the endpoint's
+    /// chain id and block-0 hash are checked first and nothing is sent unless they match.
     pub fn send_raw_transaction(&self, raw: &[u8]) -> Result<String, RpcError> {
-        let raw_hex = format!("0x{}", hex::encode(raw));
-        let result = self.request("eth_sendRawTransaction", json!([raw_hex]))?;
-        result
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| RpcError::MissingField("sendRawTransaction hash".into()))
+        self.send_raw_transaction_gated(raw, network_gate())
     }
 
     /// `eth_getTransactionReceipt(txHash)` → `Some(Receipt)` once mined, `None`
