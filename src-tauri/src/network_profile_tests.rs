@@ -527,3 +527,88 @@ fn the_sidecar_min_chain_rev_is_the_active_profiles() {
         net.min_chain_rev
     );
 }
+
+// ---- the genesis the bundled node builds (RC52: the 0.5.2 RC runs its node on r1006) ----
+
+/// Block 0 of r1006 (citrate-chain 9a32147e `R1006_GENESIS`; DGX G4 cold-sync, fed#331).
+const R1006_GENESIS: &str = "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
+
+/// The `[chain] genesis_profile` of the member node config rendered for `net` (None: not set).
+fn rendered_genesis_profile(net: &ReadyNetwork) -> Option<String> {
+    let out = render_node_network(include_str!("../config/member-node.toml"), net)
+        .replace("{{DATA_DIR}}", "/tmp/x");
+    let t: toml::Table = out.parse().expect("rendered config is valid TOML");
+    t["chain"]
+        .get("genesis_profile")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// The embedded profiles file with `edit` applied to its parsed JSON.
+fn profiles_json_with(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(PROFILES_JSON).expect("profiles.json");
+    edit(&mut v);
+    v.to_string()
+}
+
+/// Red first (RC52): without `[chain] genesis_profile` the node builds the chain-id default
+/// genesis, which on 40204 is r1005's (0x1dcfc490…), not r1006's. The node config the app
+/// writes must name the genesis profile of the network it targets.
+#[test]
+fn the_node_config_names_the_genesis_profile_of_its_network() {
+    let r1006 = r1006_filled()
+        .ready()
+        .expect("filled r1006 is ready");
+    assert_eq!(
+        rendered_genesis_profile(&r1006).as_deref(),
+        Some("r1006"),
+        "an r1006 node must be told to build the r1006 genesis"
+    );
+    assert_eq!(
+        rendered_genesis_profile(&ready_alpha()).as_deref(),
+        Some("testnet_beta"),
+        "the r1005 network names the genesis profile its block 0 comes from"
+    );
+}
+
+/// Red first (RC52), fail closed: a profile naming a genesis profile the bundled node does not
+/// build (a typo, or a network whose genesis is not in this node) is not ready, so no node starts
+/// and nothing is signed. An unset one is "not set". A known one is ready.
+#[test]
+fn a_genesis_profile_the_bundled_node_does_not_build_is_refused() {
+    let fill = |v: &mut serde_json::Value, gp: serde_json::Value| {
+        let p = &mut v["profiles"]["r1006"];
+        p["genesisHash"] = R1006_GENESIS.into();
+        p["addressBookSha256"] = "5c".repeat(32).into();
+        p["minChainRev"] = "9a32147e2aac60d388356ecc67488d717aa84c41".into();
+        p["genesisProfile"] = gp;
+        p["pending"] = serde_json::json!({});
+    };
+    let r1006_of = |json: String| -> Result<ReadyNetwork, ProfileError> {
+        let (_, ps) = parse(&json)?;
+        ps.into_iter()
+            .find(|p| p.id == "r1006")
+            .ok_or_else(|| ProfileError::UnknownProfile("r1006".into()))?
+            .ready()
+    };
+    let unknown = r1006_of(profiles_json_with(|v| fill(v, "r9999".into())));
+    assert!(
+        matches!(&unknown, Err(ProfileError::Invalid { field: "genesisProfile", .. })),
+        "a genesis profile the node does not build must be refused: {unknown:?}"
+    );
+    let unset = r1006_of(profiles_json_with(|v| {
+        fill(v, serde_json::Value::Null);
+        v["profiles"]["r1006"]["pending"] =
+            serde_json::json!({"genesisProfile": "set at the reroll"});
+    }));
+    assert!(
+        matches!(&unset, Err(ProfileError::NotSet { missing, .. })
+            if missing.iter().any(|(k, _)| k == "genesisProfile")),
+        "an unset genesis profile is not set: {unset:?}"
+    );
+    let known = r1006_of(profiles_json_with(|v| fill(v, "r1006".into())));
+    assert!(
+        matches!(&known, Ok(r) if r.genesis_hash == R1006_GENESIS),
+        "r1006 naming the r1006 genesis profile is ready: {known:?}"
+    );
+}

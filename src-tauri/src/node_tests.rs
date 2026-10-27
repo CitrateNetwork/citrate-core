@@ -1754,3 +1754,138 @@ fn k6_an_unrecorded_database_interrupted_after_the_wipe_never_keeps_the_old_conf
         Some(REROLL_NEW_GENESIS)
     );
 }
+
+// ---------------------------------------------------------------------------
+// RC52: the bundled node runs r1006 (genesis profile + activation overrides)
+// ---------------------------------------------------------------------------
+
+/// Block 0 of r1006 (citrate-chain 9a32147e `R1006_GENESIS`).
+const R1006_GENESIS_HASH: &str =
+    "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
+
+/// The shipped r1006 profile with its reroll values filled (what fill-network-profile.sh writes).
+fn r1006_network() -> crate::network_profile::ReadyNetwork {
+    let mut p = crate::network_profile::profile("r1006")
+        .expect("the r1006 profile exists")
+        .clone();
+    p.genesis_hash = Some(R1006_GENESIS_HASH.to_string());
+    p.address_book_sha256 = Some("5c".repeat(32));
+    p.min_chain_rev = Some("9a32147e2aac60d388356ecc67488d717aa84c41".to_string());
+    p.pending.clear();
+    p.ready().expect("filled r1006 is ready")
+}
+
+fn env_of<'a>(spec: &'a SidecarSpec, k: &str) -> Option<&'a str> {
+    spec.env
+        .iter()
+        .find(|(n, _)| n == k)
+        .map(|(_, v)| v.as_str())
+}
+
+fn written_genesis_profile(data: &std::path::Path) -> Option<String> {
+    let cfg = std::fs::read_to_string(data.join("node.toml")).expect("node.toml written");
+    let t: toml::Table = cfg.parse().expect("valid TOML");
+    t["chain"]
+        .get("genesis_profile")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Red first (RC52): on r1006 the ValidatorRegistry and its activation height are compiled into
+/// the genesis (genesis-keyed activation table, citrate-chain #398), and the node refuses to start
+/// on an env value that differs (r1006 compiles 1000; the app passed r1005's 2000). The app passes
+/// neither override there, and its node config names the r1006 genesis profile.
+#[test]
+fn r1006_spawn_passes_no_validator_override_and_names_the_r1006_genesis() {
+    let (mgr, _fake, data) = stub_manager("r1006-env");
+    let mgr = mgr.with_network(Ok(r1006_network()));
+    let spec = mgr.build_spec();
+    assert_eq!(
+        env_of(&spec, NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV),
+        None,
+        "the r1006 genesis compiles its activation height; an env value is refused by the node"
+    );
+    assert_eq!(
+        env_of(&spec, NODE_VALIDATOR_REGISTRY_ENV),
+        None,
+        "the r1006 genesis compiles its ValidatorRegistry"
+    );
+    assert_eq!(env_of(&spec, NODE_BLOCK_V2_ENV), Some("1"), "v2 headers stay explicit");
+    assert!(env_of(&spec, NODE_STORAGE_KEY_FILE_ENV).is_some());
+    assert_eq!(written_genesis_profile(&data).as_deref(), Some("r1006"));
+}
+
+/// Control (RC52): the r1005 network keeps its fleet env (activation 2000 and the registry from
+/// the address book), and its config names the genesis profile its block 0 comes from.
+#[test]
+fn r1005_spawn_keeps_its_validator_env_and_names_its_genesis_profile() {
+    let (mgr, _fake, data) = stub_manager("r1005-env");
+    let net = crate::network_profile::profile("alpha-r1005")
+        .expect("alpha-r1005")
+        .ready()
+        .expect("ready");
+    let mgr = mgr.with_network(Ok(net));
+    let spec = mgr.build_spec();
+    assert_eq!(env_of(&spec, NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV), Some("2000"));
+    assert_eq!(
+        env_of(&spec, NODE_VALIDATOR_REGISTRY_ENV),
+        Some(node_validator_registry_value())
+    );
+    assert_eq!(written_genesis_profile(&data).as_deref(), Some("testnet_beta"));
+}
+
+/// Red first (RC52), fail closed: a node.toml already in the data dir (kept across restarts so
+/// operator edits survive) that names another genesis profile, or none where the node's default
+/// is not the network's genesis, would make the node build another block 0. The start is refused
+/// with an error that names both and what to do; nothing is spawned.
+#[test]
+fn an_existing_node_config_for_another_genesis_profile_refuses_the_start() {
+    for (tag, edit) in [
+        ("other", Some("genesis_profile = \"testnet_beta\"")),
+        ("absent", None),
+    ] {
+        let (mgr, _fake, data) = stub_manager(&format!("r1006-cfg-{tag}"));
+        let mgr = mgr.with_network(Ok(r1006_network()));
+        mgr.start().expect("first start writes node.toml");
+        mgr.stop();
+        let cfg = std::fs::read_to_string(data.join("node.toml")).expect("node.toml");
+        let kept: Vec<&str> = cfg
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("genesis_profile"))
+            .collect();
+        let mut edited = kept.join("\n");
+        if let Some(line) = edit {
+            edited = edited.replacen("[chain]\n", &format!("[chain]\n{line}\n"), 1);
+        }
+        std::fs::write(data.join("node.toml"), &edited).expect("edit node.toml");
+        let second = mgr.start();
+        mgr.stop();
+        let msg = second.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            second.is_err() && msg.contains("genesis_profile") && msg.contains("r1006"),
+            "{tag}: a node.toml for another genesis must refuse the start, got {second:?}"
+        );
+    }
+}
+
+/// Control: on r1005 a node.toml with no genesis_profile (every config written before 0.5.2) is
+/// kept, because the node's chain-id default on 40204 is the r1005 genesis profile.
+#[test]
+fn an_existing_r1005_node_config_without_a_genesis_profile_still_starts() {
+    let (mgr, _fake, data) = stub_manager("r1005-cfg-absent");
+    let net = crate::network_profile::profile("alpha-r1005")
+        .expect("alpha-r1005")
+        .ready()
+        .expect("ready");
+    let mgr = mgr.with_network(Ok(net));
+    mgr.start().expect("first start");
+    mgr.stop();
+    let cfg = std::fs::read_to_string(data.join("node.toml")).expect("node.toml");
+    let kept: Vec<&str> = cfg
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("genesis_profile"))
+        .collect();
+    std::fs::write(data.join("node.toml"), kept.join("\n")).expect("edit");
+    mgr.start().expect("an r1005 config with no genesis_profile still starts");
+    mgr.stop();
+}
