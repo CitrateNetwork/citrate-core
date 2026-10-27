@@ -466,7 +466,7 @@ impl NodeManager {
     /// Fails closed on a bad book genesis or when a node still answers on the
     /// local RPC while a reset is needed.
     fn prepare_data_dir_for_genesis(&self) -> Result<()> {
-        use crate::node_genesis::{reconcile_genesis, GenesisOutcome, CHAIN_RESET_NOTICE};
+        use crate::node_genesis::{reconcile_genesis, GenesisOutcome};
         let outcome = reconcile_genesis(&self.data_dir, &self.book_genesis, || {
             self.head_height().is_some()
         })
@@ -496,20 +496,26 @@ impl NodeManager {
                     &crate::node_genesis::kept_entries(&self.data_dir),
                 )
             );
-            *self
-                .chain_reset_notice
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(CHAIN_RESET_NOTICE.to_string());
             // K6: reconcile_genesis set the old node.toml (the old network's bootnodes and
             // chain id) aside BEFORE committing the new marker; the spawn writes a fresh one
-            // from the active profile.
-            if let Some(kept) = retired_config {
+            // from the active profile. A launch finishing an interrupted switch finds it already
+            // set aside. Either way the member is told where it is (RC52 G2: nothing dropped
+            // silently).
+            let kept = retired_config.or_else(|| {
+                crate::node_genesis::set_aside_node_config(&self.data_dir, previous.as_deref())
+            });
+            if let Some(kept) = &kept {
                 eprintln!(
                     "[node] the previous network's node.toml was kept as {}; a new one is written \
                      from the network profile",
                     kept.display()
                 );
             }
+            *self
+                .chain_reset_notice
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) =
+                Some(crate::node_genesis::reset_notice(kept.as_deref()));
         }
         Ok(())
     }
