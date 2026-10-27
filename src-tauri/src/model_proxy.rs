@@ -947,6 +947,16 @@ impl ModelProxy {
         f(guard, log)
     }
 
+    /// The member starts a new usage log (only when the current one is broken). Returns the name
+    /// the broken file was archived under.
+    pub fn reset_usage_log(&self, now: u64) -> Result<String, ProxyError> {
+        let mut inner = self.inner();
+        inner
+            .log
+            .reset_broken(now)
+            .map_err(ProxyError::LogUnavailable)
+    }
+
     pub(crate) fn save_guard(&self, g: &mut GuardBook) -> Result<(), String> {
         crate::provider_guard::save(&self.dir, g)
     }

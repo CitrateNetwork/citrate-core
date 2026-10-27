@@ -741,3 +741,47 @@ fn a_log_reset_with_its_anchor_intact_keeps_the_current_guard() {
     assert_eq!(fails_closed(&rig), (false, false));
     assert!(rig.proxy.with_state(|g, _| g.get("xai").halt.is_some()), "the halt is kept");
 }
+
+#[test]
+fn a_guard_file_kept_elsewhere_fails_its_seal_after_an_anchorless_reset() {
+    // A sealed guard copied out before the anchor was removed, put back after the member's reset
+    // and resume, must not load: the reset re-keys the guard seal.
+    let mut rig = Rig::new("proxy-gen-elsewhere");
+    let guard = crate::provider_guard::guard_path(&rig.dir.0);
+    crate::providers_ipc::caps_set(
+        &rig.proxy,
+        "openai",
+        crate::provider_guard::Caps {
+            daily_tokens: Some(700_000),
+            monthly_tokens: Some(7_000_000),
+            daily_micros: Some(5_000_000),
+            monthly_micros: Some(50_000_000),
+        },
+    )
+    .unwrap();
+    let kept = std::fs::read(&guard).unwrap();
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    std::fs::remove_file(&guard).unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+    rig.proxy.reset_usage_log(now_ms()).unwrap();
+    crate::providers_ipc::resume(&rig.proxy, "openai").unwrap();
+    std::fs::write(&guard, &kept).unwrap();
+    rig.reopen();
+    assert!(
+        rig.proxy.with_state(|g, _| g.unreadable),
+        "a guard sealed before the reset must fail its seal"
+    );
+    // Resuming again seals a fresh guard that loads, without the old 700K cap.
+    crate::providers_ipc::resume(&rig.proxy, "openai").unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (false, false));
+    assert_ne!(
+        rig.proxy.with_state(|g, _| g.get("openai").caps.daily_tokens),
+        Some(700_000)
+    );
+}
