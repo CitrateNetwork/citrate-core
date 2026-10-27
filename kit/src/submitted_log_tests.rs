@@ -1267,3 +1267,98 @@ fn tripwire_no_decision_path_reads_an_archived_section() {
     }
     assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }
+
+// ---- Review of 0cffe02 (lead decision (i)): a new network's section starts bounded when any
+// archived section is uncertain, bounded or has eviction marks. Decided once, when the section is
+// created; no decision path reads the archive.
+
+#[test]
+fn p1_an_evicted_send_of_a_previous_network_replayed_here_is_never_first() {
+    let t = Tmp::new("p1-evicted-replay");
+    let r1005 = SubmittedTxLog::open(t.record(), G);
+    // CAPACITY + 1 sends from A on r1005: h(0) at nonce 0 is evicted from the section.
+    evict_a_nonce_0(&r1005);
+    drop(r1005);
+    let new = SubmittedTxLog::open(t.record(), NEW);
+    assert!(new.is_uncertain(), "an archive with eviction marks leaves the new network bounded");
+    assert_eq!(new.try_record_call(&h(0), A, 0, NonceSource::Fetched, None), Ok(false), "the evicted r1005 bytes, sent again here, are never a first send");
+    assert_eq!(new.try_record_call(&h(70_000), A, 0, NonceSource::Supplied, None), Ok(false));
+    // After A's first fetched-nonce send here (the bound), a fetched send above it is first again.
+    assert_eq!(new.try_record_call(&h(70_001), A, 1, NonceSource::Fetched, None), Ok(true));
+}
+
+#[test]
+fn both_upgrade_paths_from_0_5_1_bound_the_new_network_alike() {
+    // Direct: 0.5.1 (wallet, no record) opens on the new genesis.
+    let direct = upgraded("p2-direct");
+    // Via a #507-era build: its legacy record carries an upgrade bound on r1005.
+    let via = upgraded("p2-via-507");
+    std::fs::write(
+        via.legacy(),
+        serde_json::to_vec(&serde_json::json!({ "entries": [{ "hash": h(1), "sender": A, "nonce": 3 }], "evicted": {}, "uncertain": true, "upgrade_bound": { A: 3 } })).expect("json"),
+    )
+    .expect("legacy");
+    for t in [&direct, &via] {
+        let log = SubmittedTxLog::open(t.record(), NEW);
+        assert!(log.is_uncertain(), "{}", t.0.display());
+        assert_eq!(log.try_record_call(&h(10), B, 9, NonceSource::Supplied, None), Ok(false), "{}", t.0.display());
+        assert_eq!(log.try_record_call(&h(11), B, 4, NonceSource::Fetched, None), Ok(false), "{}", t.0.display());
+        assert_eq!(log.try_record_call(&h(12), B, 5, NonceSource::Fetched, None), Ok(true), "{}", t.0.display());
+        drop(log);
+        let r1005 = section_of(&record_json(t), G).expect("r1005 section");
+        assert!(r1005["upgrade_bound"].is_object(), "r1005 bounded on both paths: {r1005}");
+    }
+}
+
+#[cfg(unix)]
+fn chmod(p: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).expect("chmod");
+}
+
+/// Item 3: a record that can't be READ (an I/O error) is set aside like an unparsable one, never
+/// overwritten by the next write.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_record_is_set_aside_never_overwritten() {
+    let t = Tmp::new("unreadable-aside");
+    let log = SubmittedTxLog::open(t.record(), G);
+    log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())).expect("record");
+    drop(log);
+    let original = std::fs::read(t.record()).expect("record");
+    chmod(&t.record(), 0o000);
+    if std::fs::read(t.record()).is_ok() {
+        return; // running as a user that reads through permissions: nothing to test
+    }
+    let log = SubmittedTxLog::open(t.record(), G);
+    assert!(log.is_uncertain());
+    assert_eq!(log.try_record(&h(2)), Ok(false));
+    drop(log);
+    let aside = t.0.join(format!("{RECORD_FILE}.unreadable"));
+    let _ = std::fs::set_permissions(&aside, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    assert_eq!(std::fs::read(&aside).ok(), Some(original), "the unreadable record is kept byte for byte");
+}
+
+/// Item 3: if the unreadable record can't be set aside either, nothing overwrites it: every write
+/// is refused, so the caller sends nothing.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_record_that_can_not_be_set_aside_refuses_every_write() {
+    let t = Tmp::new("unreadable-stuck");
+    let dir = t.0.join("app");
+    std::fs::create_dir(&dir).expect("dir");
+    let record = dir.join(RECORD_FILE);
+    std::fs::write(&record, b"{\"format\":3}").expect("record");
+    chmod(&record, 0o000);
+    chmod(&dir, 0o500);
+    let readable = std::fs::read(&record).is_ok();
+    let log = SubmittedTxLog::open(record.clone(), G);
+    let r = log.try_record(&h(3));
+    chmod(&dir, 0o700);
+    chmod(&record, 0o600);
+    if readable {
+        return;
+    }
+    assert!(r.as_ref().is_err_and(|e| e.contains("could not be read")), "no write while the record can't be read: {r:?}");
+    assert_eq!(std::fs::read(&record).ok(), Some(b"{\"format\":3}".to_vec()));
+}

@@ -3337,6 +3337,32 @@ fn after_a_genesis_switch_the_previous_networks_history_does_not_decide_new_send
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// Review of 0cffe02 (lead decision (i)): a send evicted from r1005's section, refused
+// `NonceTooLow` when its identical bytes are sent after the switch, may have been mined: it reads
+// "outcome unknown", never "not sent".
+#[test]
+fn a_send_evicted_on_r1005_then_refused_nonce_too_low_after_a_switch_is_outcome_unknown() {
+    const NEW: &str = "0x2026120100000000000000000000000000000000000000000000000000000c52";
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-xgenesis-evicted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let me = canonical_addr_lower();
+    let r1005 = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    // Sent on r1005 (the node's answer doesn't matter here: the bytes are recorded before the send).
+    let (_first, hash) = send_once(&r1005, &v, node_error("Failed to submit transaction: Full"));
+    for n in 1..=(crate::submitted_log::CAPACITY as u64) {
+        r1005.submitted_log().try_record_for(&format!("0x{n:064x}"), &me, n).expect("record");
+    }
+    drop(r1005);
+    let switched = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, NEW));
+    let (again, again_hash) = send_once(&switched, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
+    assert_eq!(again_hash, hash, "the same nonce and gas price sign the same bytes");
+    assert_eq!(submitted_outcome_unknown(&again), Some(hash), "may have been mined: {again:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Rule 3 tripwire: the ONLY path that signs without a per-request approval of a CeremonyId is the
 /// budgeted web sign-in (`request_siwe_budgeted`, ADR-2026-09-30). Every gated-signer call in the
 /// production ceremony code must sit inside `approve`, `approve_and_broadcast_gated` (both consume
