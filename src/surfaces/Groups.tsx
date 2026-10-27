@@ -18,6 +18,7 @@ import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
+import { approvalStep } from "./claimApproval";
 import { InviteLinks, YourInviteLinks } from "./InviteLinks";
 import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
 import { reachedStep } from "../privacy/joinFunnel";
@@ -277,8 +278,9 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast("To invite by @handle, use “Invite by @handle” below — Citrate never looks up an address from a handle.");
       return;
     }
+    if (!selected) return;
     if (addrRef.current) addrRef.current.value = "";
-    void addMemberToGroup(v);
+    void addMemberToGroup(selected.id, v);
   };
 
   // #61 find-via-X — resolve a social handle to its published address via the opt-in directory. Only
@@ -317,14 +319,9 @@ export function Groups({ store, s }: SurfaceProps) {
   const approveRequest = async (req: { group: string; token: string; address: string }) => {
     if (!selected) return;
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, req.token);
-      if (!ok) {
-        store.toast("That request's invite is invalid or already used.");
-        await refreshInvites();
-        return;
-      }
-      void addMemberToGroup(req.address);
-      store.toast("Request approved — adding them to the group.");
+      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, req.token, req.address));
+      if (step.add) void addMemberToGroup(selected.id, req.address);
+      store.toast(step.toast);
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
@@ -373,14 +370,10 @@ export function Groups({ store, s }: SurfaceProps) {
       return;
     }
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, claim.token);
-      if (!ok) {
-        store.toast("That invite token is invalid or already used.");
-        return;
-      }
+      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, claim.token, claim.address));
+      if (step.add) void addMemberToGroup(selected.id, claim.address);
+      store.toast(step.toast);
       if (claimRef.current) claimRef.current.value = "";
-      void addMemberToGroup(claim.address);
-      store.toast("Invite accepted — adding them to the group.");
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
@@ -438,13 +431,27 @@ export function Groups({ store, s }: SurfaceProps) {
     }
     store.toast("That doesn't look like an invite link or code.");
   };
-  const doRole = (address: string, role: GroupRole) => {
+  /** The name shown for a group in an approval, so the approval says which group it acts on. */
+  const groupNameFor = (groupId: string): string => {
+    const g = st.groups.find((x) => x.id === groupId);
+    return g ? groupLabel(st, g) : groupId;
+  };
+  /** #389: an approval acts on the group it was proposed for. If the selected group changed while the
+   *  approval was open, refuse and send nothing, so an action is never applied to a group the member
+   *  is no longer looking at. */
+  const stillOnGroup = (groupId: string): boolean => {
+    if (groupsSlice.get().selectedId === groupId) return true;
+    store.toast(`The selected group changed after this was proposed, so nothing was sent to ${groupNameFor(groupId)}. Open that group and try again.`);
+    return false;
+  };
+  const doRole = (groupId: string, address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
     void store.requestSig({
       origin: "user wallet action",
       requester: "you · group admin",
       title: next === "admin" ? "Make this member an admin" : "Return this admin to member",
       rows: [
+        { k: "Group", v: groupNameFor(groupId) },
         { k: "Member", v: shortAddr(address) },
         { k: "New role", v: next },
         { k: "Effect", v: "the member's role in this group changes" },
@@ -453,15 +460,18 @@ export function Groups({ store, s }: SurfaceProps) {
       sponsor: "you approve · one role change",
       sponsorColor: "var(--ok)",
       chainless: true,
-      apply: () => void assignRole(address, next),
+      apply: () => {
+        if (stillOnGroup(groupId)) void assignRole(groupId, address, next);
+      },
     });
   };
-  const doOffboard = (address: string) => {
+  const doOffboard = (groupId: string, address: string) => {
     void store.requestSig({
       origin: "user wallet action",
       requester: "you · group admin",
       title: "Offboard this member",
       rows: [
+        { k: "Group", v: groupNameFor(groupId) },
         { k: "Member", v: shortAddr(address) },
         { k: "Effect", v: "removed from messaging, roster, cluster, and roles" },
       ],
@@ -471,7 +481,8 @@ export function Groups({ store, s }: SurfaceProps) {
       chainless: true,
       warning: "This removes them across all planes in one epoch and rotates the group secret — they lose access everywhere at once. This cannot be undone.",
       apply: () => {
-        void offboardMember(address);
+        if (!stillOnGroup(groupId)) return;
+        void offboardMember(groupId, address);
         store.toast("Offboarding — the group secret rotates.");
       },
     });
@@ -750,7 +761,7 @@ export function Groups({ store, s }: SurfaceProps) {
                                 <span style={{ fontSize: 12.5, fontWeight: 500 }}>{face ? `@${face.handle}` : shortAddr(p.address)}</span>
                                 {p.groups.length > 0 && <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)" }}>{p.groups.map((g) => g.name).slice(0, 2).join(", ")}</span>}
                               </span>
-                              <button className="btn btn-secondary btn-sm" onClick={() => { void addMemberToGroup(p.address); store.toast(`Adding ${face ? "@" + face.handle : shortAddr(p.address)} to the group…`); }}>Add</button>
+                              <button className="btn btn-secondary btn-sm" onClick={() => { if (!selected) return; void addMemberToGroup(selected.id, p.address); store.toast(`Adding ${face ? "@" + face.handle : shortAddr(p.address)} to the group…`); }}>Add</button>
                             </div>
                           );
                         })}
@@ -811,7 +822,7 @@ export function Groups({ store, s }: SurfaceProps) {
                         {canManage && r.role !== "owner" && !you && !isAgent && (
                           <>
                             {ROLE_CHANGES_AVAILABLE ? (
-                              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doRole(r.address, r.role)}>
+                              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => selected && doRole(selected.id, r.address, r.role)}>
                                 {r.role === "admin" ? "Make member" : "Make admin"}
                               </button>
                             ) : (
@@ -819,7 +830,7 @@ export function Groups({ store, s }: SurfaceProps) {
                                 {r.role === "admin" ? "Make member" : "Make admin"}
                               </button>
                             )}
-                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doOffboard(r.address)} style={{ color: "var(--danger)" }}>Offboard</button>
+                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => selected && doOffboard(selected.id, r.address)} style={{ color: "var(--danger)" }}>Offboard</button>
                           </>
                         )}
                       </div>
@@ -848,7 +859,7 @@ export function Groups({ store, s }: SurfaceProps) {
                           <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{h.handle}{h.displayName ? <span style={{ color: "var(--tx-3)", fontWeight: 400 }}> · {h.displayName}</span> : null}</span>
                           <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>{shortAddr(h.address)} · self-published</span>
                         </span>
-                        <button className="btn btn-primary btn-sm" onClick={() => { void addMemberToGroup(h.address); store.toast(`Adding @${h.handle} to the group.`); }}>Add</button>
+                        <button className="btn btn-primary btn-sm" onClick={() => { if (!selected) return; void addMemberToGroup(selected.id, h.address); store.toast(`Adding @${h.handle} to the group.`); }}>Add</button>
                       </div>
                     ))}
                     <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "4px 16px 12px", lineHeight: 1.5 }}>

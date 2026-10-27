@@ -100,6 +100,8 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+// K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
+mod network_profile;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
 // internal format, and the pinned egress table.
 pub(crate) mod model_provider;
@@ -176,13 +178,15 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
-// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
 // GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
 mod join;
 mod model_catalog;
+// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod model_delete;
+// GROW-S2 (Join 9): relay rendezvous join, app side (IPC views, tick, join://state).
+mod rendezvous;
 // GROW-S1 task 12: the pending v2 invite, held in the keyring until the member acts on it.
 mod pending_join;
 mod social;
@@ -206,6 +210,9 @@ mod privacy_contract_tests;
 // HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
 #[cfg(test)]
 mod hello_mint_e2e_tests;
+// G7: core's money paths on citrate-chain's genesis contract set (scripts/e2e/moneypath-anvil.sh).
+#[cfg(test)]
+mod moneypath_e2e_tests;
 // SCL-S0.5: shutdown coverage (embedding server stops with Hermes; workers exit on stdin close).
 #[cfg(test)]
 mod shutdown_coverage_tests;
@@ -322,6 +329,11 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
+            // K6 — install the network gate before anything can sign. Every wallet signature is
+            // checked locally against the active network profile (refused when no network is set,
+            // or when it commits to another chain id). Transaction sends additionally check the
+            // RPC's chain id and block-0 hash against the profile before broadcasting.
+            network_profile::install_network_gate();
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
             // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,
@@ -386,6 +398,9 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // GROW-S2 (Join 9, M4): tick the relay rendezvous at app start and every 30 s while open
+            // (starts the comms daemon only when this device minted invites or has a join in flight).
+            rendezvous::spawn_ticker(app.handle().clone());
             // v2 invite links: the join client (pending attaches + opened invites, memory only).
             app.manage(join::build_join_state());
             // The pending invite (code + link key) waiting for the member's Join: keyring only.
@@ -574,6 +589,10 @@ pub fn run() {
             invites::group_invite_revoke,
             invites::group_referral_log,
             invites::group_referral_export,
+            // GROW-S2 (Join 9): relay rendezvous views (no secrets cross invoke).
+            rendezvous::rendezvous_tick,
+            rendezvous::rendezvous_cancel,
+            rendezvous::rendezvous_forget,
             // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
             join::join_mint,
             join::join_attach,

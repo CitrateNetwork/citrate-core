@@ -133,9 +133,12 @@ pub struct JoinRevoked {
 #[tauri::command]
 pub async fn join_revoke(app: tauri::AppHandle, code: String) -> Result<JoinRevoked, String> {
     crate::blocking::off_main(move || {
-        let closed = crate::invites::close_relay_for_join_code(&app, &code, |hash| {
-            crate::comms::revoke_invite(&app, hash)
-        })?;
+        let closed = crate::invites::close_relay_for_join_code(
+            &app,
+            &code,
+            |lookup| crate::comms::rendezvous_close(&app, lookup),
+            |hash| crate::comms::revoke_invite(&app, hash),
+        )?;
         with_states(&app, |join, auth| join.revoke(&auth.0, &code))?;
         crate::invites::update_pending(&app, |v| crate::invites::forget_join_code(v, &code))?;
         Ok(JoinRevoked {
