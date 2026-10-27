@@ -347,6 +347,9 @@ struct Pending {
 pub struct AnchorCeremony {
     pending: Mutex<BTreeMap<u64, Pending>>,
     next_id: AtomicU64,
+    /// The app's record of submitted signed bytes (shared with the signature ceremony, persisted
+    /// across restarts). In memory until the app hands over its record.
+    submitted: Mutex<std::sync::Arc<crate::submitted_log::SubmittedTxLog>>,
 }
 
 impl Default for AnchorCeremony {
@@ -381,7 +384,15 @@ impl AnchorCeremony {
         AnchorCeremony {
             pending: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
+            submitted: Mutex::new(std::sync::Arc::new(
+                crate::submitted_log::SubmittedTxLog::unpersisted(),
+            )),
         }
+    }
+
+    /// Use the app's shared record of submitted signed bytes (C1-V6).
+    pub fn use_submitted_log(&self, log: std::sync::Arc<crate::submitted_log::SubmittedTxLog>) {
+        *self.submitted.lock().unwrap_or_else(|e| e.into_inner()) = log;
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Pending>> {
