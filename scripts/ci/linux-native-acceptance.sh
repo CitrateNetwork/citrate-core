@@ -274,6 +274,15 @@ self_test() { # work logdir
   local work="$1" logdir="$2" mode want rc run fails=0
   mkdir -p "$logdir"
   : >"$logdir/self-test.txt"
+  # Structural: every process this script starts after the seal goes through CONFINE (with
+  # controls: each confined launch, unconfined, must be flagged).
+  if python3 -I "$HERE/confine-check.py" "$SELF" >"$logdir/confine-check.txt" 2>&1; then
+    echo "self-test confine-check: $(tail -n 1 "$logdir/confine-check.txt") -> ok" | tee -a "$logdir/self-test.txt"
+  else
+    sed 's/^/self-test confine-check: /' "$logdir/confine-check.txt" | tee -a "$logdir/self-test.txt"
+    echo "self-test confine-check: -> WRONG" | tee -a "$logdir/self-test.txt"
+    fails=$((fails + 1))
+  fi
   # mode → the scenario that must fail ("" = everything passes)
   for spec in "good:" "leak-on-quit:quit" "no-restart:restart" "no-sweep:reap" "dup-no-restart:restart"; do
     mode="${spec%%:*}"; want="${spec#*:}"

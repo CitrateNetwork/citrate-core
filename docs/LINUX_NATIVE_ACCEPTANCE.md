@@ -89,6 +89,16 @@ only; "does not stop an earlier run's orphans" fails `reap` only; "runs two inst
 restart target and restarts neither" fails `restart` only (an instance that was already running
 before the kill does not count as the restart).
 
+Before the five modes, the self-test runs a structural check,
+`scripts/ci/linux-native-acceptance/confine-check.py`: every process the harness starts after
+the seal (the app, an AppImage or its extraction, install scripts, the display, bus, keyring,
+the update-e2e feed server, and every X, bus or Python helper) must be started through the
+`CONFINE` prefix. It flags any program run by path or variable, any interpreter or session
+program, `dpkg` with an install action, `--appimage-extract`, and anything started in the
+background with `&`, unless the command starts with `"${CONFINE[@]}"`. The seal itself and the
+isolation probes are exempt (they check the seal from PID 1's view, before anything launches).
+Its controls remove each `CONFINE` prefix in turn and require that copy to be flagged.
+
 A run takes about 10 minutes per package kind. `K1L_KEEP=1` keeps the run directory (the app's
 HOME, logs, the installed tree) for inspection; otherwise only `logs/` is kept.
 
