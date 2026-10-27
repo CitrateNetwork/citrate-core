@@ -64,6 +64,28 @@ fn a_failed_replace_keeps_the_target_and_removes_its_temp() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+#[test]
+fn a_private_replace_lands_the_bytes_owner_only_and_leaves_no_temp_file() {
+    let d = tmp_dir("private");
+    let target = d.join("catalog.bin");
+    std::fs::write(&target, b"old").expect("seed");
+    replace_private(&target, b"new bytes").expect("replace");
+    assert_eq!(std::fs::read(&target).expect("read"), b"new bytes");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&target).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "owner-only even over a looser file");
+    }
+    let names: Vec<String> = std::fs::read_dir(&d)
+        .expect("dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(names, vec!["catalog.bin".to_string()]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
 // ---------------------------------------------------------------------------
 // Tripwire: fixed temp-file names in production code.
 // ---------------------------------------------------------------------------

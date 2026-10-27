@@ -85,6 +85,10 @@ mod grant_status;
 mod hermes_mcp;
 mod hermes_schedule;
 mod hf_auth;
+// AMC-H1 (0.5.3, P-11) — the local encrypted conversation history and artifacts store.
+mod history;
+mod history_ipc;
+mod history_recorder;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
@@ -418,6 +422,13 @@ pub fn run() {
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             app.manage(faucet::build_faucet_state(app.handle()));
+            // AMC-H1 (0.5.3, P-11) — conversation history. Off unless CITRATE_AMC_HISTORY=1: then
+            // the encrypted store opens and retention runs; otherwise nothing is opened or touched.
+            app.manage(match app.path().app_data_dir() {
+                Ok(dir) => history_recorder::HistoryState::from_env(&dir),
+                Err(_) => history_recorder::HistoryState::off(),
+            });
+            history_recorder::spawn_retention(app.handle().clone());
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
@@ -1004,6 +1015,19 @@ pub fn run() {
             media::media_gallery,
             media::media_read,
             media::media_save_copy,
+            // AMC-H1 (0.5.3, P-11) — the encrypted conversation history (answers "off" unless enabled).
+            history_ipc::history_status,
+            history_ipc::history_list,
+            history_ipc::history_read,
+            history_ipc::history_search,
+            history_ipc::history_artifact_read,
+            history_ipc::history_artifact_add,
+            history_ipc::history_rename,
+            history_ipc::history_delete,
+            history_ipc::history_set_retention,
+            history_ipc::history_rotate_key,
+            history_ipc::history_export,
+            history_ipc::history_start_chat,
             // HUP-S5.5 — signed first-run components. Update refuses until the component key is set.
             components::components_status,
             components::components_update,

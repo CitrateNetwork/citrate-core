@@ -2578,8 +2578,14 @@ pub async fn hermes_session_close(
     app: tauri::AppHandle,
     id: String,
 ) -> std::result::Result<(), String> {
-    crate::blocking::off_main(move || manager(&app)?.session_close(&id).map_err(|e| e.to_string()))
-        .await
+    crate::blocking::off_main(move || {
+        manager(&app)?
+            .session_close(&id)
+            .map_err(|e| e.to_string())?;
+        crate::history_recorder::on_session_close(&app, &id);
+        Ok(())
+    })
+    .await
 }
 
 /// **hermes_session_open** — open a sidecar agent session on the LOCAL model. The endpoint + key are
@@ -2618,9 +2624,12 @@ pub async fn hermes_session_open(
         // change saved meanwhile is still sent to this session.
         let store = crate::agent_grants::GrantStore::for_app(&app)?;
         let m = manager(&app)?;
-        crate::agent_grants::open_with_grants(&store, &body, |b| {
+        let id = crate::agent_grants::open_with_grants(&store, &body, |b| {
             m.session_open(b).map_err(|e| e.to_string())
-        })
+        })?;
+        // AMC-H1: a no-op while conversation history is off.
+        crate::history_recorder::on_session_open(&app, &id, &serve.0.current_model_file());
+        Ok(id)
     })
     .await
 }
@@ -2635,7 +2644,10 @@ pub async fn hermes_session_send(
     crate::blocking::off_main(move || {
         manager(&app)?
             .session_send(&id, &text)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // AMC-H1: a no-op while conversation history is off.
+        crate::history_recorder::on_session_send(&app, &id, &text);
+        Ok(())
     })
     .await
 }
@@ -2653,6 +2665,8 @@ pub async fn hermes_session_events(
         let page = manager(&app)?
             .session_events(&id, after, wait_ms)
             .map_err(|e| e.to_string())?;
+        // AMC-H1: a no-op while conversation history is off.
+        crate::history_recorder::on_session_events(&app, &id, &page);
         // HUP-S1.1 (US-1.1 AC3): the view is watching this session; calls it is shown are its own,
         // and a call the headless dispatcher already answered is marked so the view skips it.
         Ok(crate::hermes_headless::LEASES.view_page(&id, page, std::time::Instant::now()))
