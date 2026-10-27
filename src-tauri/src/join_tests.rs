@@ -165,3 +165,50 @@ fn the_only_resolve_path_is_the_held_invite() {
     }
     assert_eq!(callers, vec!["pending_join.rs".to_string()]);
 }
+
+// core#423 — owner decision 2026-10-27: v2 invite links are hidden in 0.5.2. While this build pins
+// no resolve-signing key, every v2 link would fail at resolve, so the app refuses to make one at
+// all (D-6: an honest "not available"), whatever the UI shows.
+
+/// A well-formed pin (32 bytes of unpadded base64url) for the tests below.
+fn a_pin() -> PinnedKey {
+    PinnedKey::new("join-1", &"A".repeat(43)).expect("pin")
+}
+
+#[test]
+fn with_no_pinned_key_this_build_refuses_to_make_v2_links() {
+    let refused = v2_links_refusal(&[]);
+    assert!(refused.is_some(), "a build with no pinned key refuses");
+    let refused = refused.unwrap_or_default();
+    assert!(refused.contains("not available"), "{refused}");
+}
+
+#[test]
+fn with_a_pinned_key_v2_links_may_be_made() {
+    assert_eq!(v2_links_refusal(&[a_pin()]), None);
+}
+
+#[test]
+fn the_production_pins_decide_the_refusal() {
+    assert_eq!(
+        v2_links_refusal(&PinnedKey::production()).is_some(),
+        PinnedKey::production().is_empty(),
+        "a release with no pinned key makes no v2 link"
+    );
+}
+
+/// Tripwire: every command that makes a v2 link asks first, before any service call.
+#[test]
+fn every_link_making_command_checks_the_pins_first() {
+    let src = include_str!("join.rs");
+    for sig in ["pub async fn join_mint(", "pub async fn join_attach("] {
+        let at = src.find(sig).unwrap_or_else(|| panic!("{sig}"));
+        let body = &src[at..at + src[at..].find("\n}\n").expect("end")];
+        let check = body.find("v2_links_refusal(&PinnedKey::production())");
+        let call = body.find("with_states(");
+        assert!(
+            matches!((check, call), (Some(c), Some(w)) if c < w),
+            "{sig} checks the pins before it calls the service"
+        );
+    }
+}

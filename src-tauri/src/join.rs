@@ -23,7 +23,7 @@
 
 use citrate_core_kit::join::{
     InvitePayload, JoinClient, JoinCodeEntry, JoinConfig, JoinError, JoinHttp, MintRequest,
-    MintView,
+    MintView, PinnedKey,
 };
 use citrate_core_kit::oidc::AuthState;
 use tauri::Manager;
@@ -57,6 +57,12 @@ fn with_states<T>(
     f(&join.0, &auth).map_err(err)
 }
 
+/// core#423 — why this build refuses to make a v2 invite link, or `None` when it may.
+pub(crate) fn v2_links_refusal(pins: &[PinnedKey]) -> Option<String> {
+    let _ = pins;
+    None
+}
+
 /// `join_mint` — reserve a code and, for `direct`, seal `invite_link` (the
 /// `citrate://invite?…` link from `group_invite_create`) and attach it. Returns the share URL once
 /// attached; a reserved-but-unattached direct code comes back `status: "pending"` with
@@ -67,6 +73,9 @@ pub async fn join_mint(
     request: MintRequest,
     invite_link: Option<String>,
 ) -> Result<MintView, String> {
+    if let Some(refused) = v2_links_refusal(&PinnedKey::production()) {
+        return Err(refused);
+    }
     crate::blocking::off_main(move || {
         let invite = invite_link
             .as_deref()
@@ -91,6 +100,9 @@ pub async fn join_mint(
 /// (the identical body, so a repeat is idempotent at the service).
 #[tauri::command]
 pub async fn join_attach(app: tauri::AppHandle, code: String) -> Result<MintView, String> {
+    if let Some(refused) = v2_links_refusal(&PinnedKey::production()) {
+        return Err(refused);
+    }
     crate::blocking::off_main(move || with_states(&app, |join, auth| join.attach(&auth.0, &code)))
         .await
 }
