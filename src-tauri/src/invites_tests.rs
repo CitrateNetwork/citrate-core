@@ -643,8 +643,10 @@ fn the_store_is_owner_only_in_an_owner_only_directory() {
 // Tripwires.
 // ---------------------------------------------------------------------------
 
+/// The production part of a source file: everything before its `#[cfg(test)] mod tests` block
+/// (a `#[cfg(test)]` on a single item, such as a test-only `mod` line, doesn't end it).
 fn prod(src: &str) -> &str {
-    src.split("#[cfg(test)]").next().unwrap_or(src)
+    src.split("#[cfg(test)]\nmod tests").next().unwrap_or(src)
 }
 
 fn read_src(rel: &str) -> String {
@@ -742,7 +744,8 @@ fn tripwire_there_is_one_invite_flow() {
 
 #[test]
 fn tripwire_the_scans_see_what_they_look_for() {
-    assert_eq!(prod("a\n#[cfg(test)]\nb"), "a\n");
+    assert_eq!(prod("a\n#[cfg(test)]\nmod tests {}"), "a\n");
+    assert_eq!(prod("a\n#[cfg(test)]\nmod x;\nb"), "a\n#[cfg(test)]\nmod x;\nb");
     let line = "rendezvous::rendezvous_tick,";
     assert!(line.trim_end_matches(',').rsplit("::").next().unwrap_or("").starts_with("rendezvous_"));
     let line = "join::join_mint,";
