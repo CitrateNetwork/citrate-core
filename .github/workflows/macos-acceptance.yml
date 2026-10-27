@@ -1,0 +1,141 @@
+# created: 2026-10-27 | branch: rc52/macos-acceptance | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# status: active (RC52 WP-H-MACOS, gate G1 g1-macos)
+#
+# macOS packaged acceptance harness (scripts/ci/macos-acceptance.mjs, docs/MACOS_ACCEPTANCE.md).
+# A GitHub-hosted macOS runner is a fresh, throwaway machine, so it can be marked as a test machine:
+# each job writes the marker for its own runner and nothing else. Never a self-hosted runner.
+#
+# - pull_request (harness files) and dispatch: the self-test (a stand-in app in good and broken
+#   modes; never Citrate Core).
+# - dispatch with dmg_url + dmg_sha256: the harness against a real DMG in the chosen mode, with
+#   the pinned sidecar bytes fetched from the runtime-deps prerelease and upstream kubo.
+name: macos-acceptance
+
+on:
+  pull_request:
+    paths:
+      - scripts/ci/macos-acceptance.mjs
+      - scripts/ci/macos-acceptance/**
+      - scripts/component-pins.mjs
+      - .github/workflows/macos-acceptance.yml
+  workflow_dispatch:
+    inputs:
+      dmg_url:
+        description: "Optional: URL of the DMG to accept (e.g. the RC release asset). Empty = self-test only"
+        required: false
+        default: ""
+      dmg_sha256:
+        description: "sha256 of that DMG (required with dmg_url)"
+        required: false
+        default: ""
+      mode:
+        description: "inspect | verify | full"
+        required: false
+        default: full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-test:
+    name: harness self-test (stand-in app)
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Mark this throwaway runner as a test machine
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/citrate"
+          hostname > "$HOME/.config/citrate/macos-acceptance-test-hosts"
+          chmod 600 "$HOME/.config/citrate/macos-acceptance-test-hosts"
+      - name: Self-test
+        env:
+          CITRATE_MACOS_ACCEPTANCE_TEST_MACHINE: "1"
+          MACOS_ACC_LAUNCH_TIMEOUT: "30"
+          MACOS_ACC_RESTART_TIMEOUT: "30"
+          MACOS_ACC_QUIT_TIMEOUT: "20"
+          MACOS_ACC_SETTLE_SECS: "2"
+        run: |
+          set -euo pipefail
+          node scripts/ci/macos-acceptance.mjs --self-test --work "$RUNNER_TEMP/macacc" --log-dir "$RUNNER_TEMP/macacc-logs"
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-acceptance-self-test-logs
+          path: ${{ runner.temp }}/macacc-logs
+          if-no-files-found: ignore
+
+  dmg:
+    name: acceptance of a DMG (${{ inputs.mode }})
+    if: github.event_name == 'workflow_dispatch' && inputs.dmg_url != ''
+    needs: self-test
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Fetch the DMG and the pinned sidecar bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG_URL: ${{ inputs.dmg_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dl" "$RUNNER_TEMP/pinned"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/dl/Citrate.dmg" "$DMG_URL"
+          # one line per component: "asset <name>" (runtime-deps prerelease) or "url <url> <archive sha256> <member>"
+          node -e '
+            const m = require("./release/components.json");
+            for (const c of m.components) {
+              const a = c.artifacts["aarch64-apple-darwin"];
+              if (a.runtime_deps_asset) console.log("asset", a.runtime_deps_asset);
+              else console.log("url", a.url, a.archive_sha256, a.member);
+            }' > "$RUNNER_TEMP/pins.txt"
+          while read -r kind a b c; do
+            if [ "$kind" = asset ]; then
+              gh release download runtime-deps --repo "$GITHUB_REPOSITORY" -p "$a" -D "$RUNNER_TEMP/pinned" --clobber
+            else
+              curl -fsSL --retry 3 -o "$RUNNER_TEMP/dl/archive.tgz" "$a"
+              echo "$b  $RUNNER_TEMP/dl/archive.tgz" | shasum -a 256 -c -
+              tar -xzf "$RUNNER_TEMP/dl/archive.tgz" -C "$RUNNER_TEMP/dl" "$c"
+              cp "$RUNNER_TEMP/dl/$c" "$RUNNER_TEMP/pinned/$(basename "$c")-upstream"
+            fi
+          done < "$RUNNER_TEMP/pins.txt"
+          ls -l "$RUNNER_TEMP/pinned"
+      - name: Mark this throwaway runner as a test machine
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/citrate"
+          hostname > "$HOME/.config/citrate/macos-acceptance-test-hosts"
+          chmod 600 "$HOME/.config/citrate/macos-acceptance-test-hosts"
+      - name: Acceptance
+        env:
+          CITRATE_MACOS_ACCEPTANCE_TEST_MACHINE: "1"
+          DMG_SHA256: ${{ inputs.dmg_sha256 }}
+          ACC_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          node scripts/ci/macos-acceptance.mjs --dmg "$RUNNER_TEMP/dl/Citrate.dmg" --sha256 "$DMG_SHA256" \
+            --mode "$ACC_MODE" --pinned-dir "$RUNNER_TEMP/pinned" \
+            --work "$RUNNER_TEMP/macacc" --log-dir "$RUNNER_TEMP/macacc-logs" --out "$RUNNER_TEMP/macacc-logs/verdict.json"
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-acceptance-dmg-logs
+          path: ${{ runner.temp }}/macacc-logs
+          if-no-files-found: ignore
