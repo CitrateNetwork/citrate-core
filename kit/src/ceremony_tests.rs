@@ -3083,7 +3083,7 @@ fn join8_tripwire_only_approve_and_sign_parks_a_signed_tx() {
 #[test]
 fn join8_tripwire_catches_evasions() {
     let real = include_str!("ceremony.rs");
-    let marker = "        let (_key, prepared, _hash) = self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id)?;\n        self.send_signed(rpc, prepared, cfg)";
+    let marker = "        let (_key, prepared, _hash) =\n            self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id, gate)?;\n        self.send_signed(rpc, prepared, cfg, gate)";
     assert!(real.contains(marker), "fixture anchor present");
     let anchor = "    /// **Step 2' — reject.**";
     assert!(real.contains(anchor), "insertion anchor present");
@@ -3091,22 +3091,22 @@ fn join8_tripwire_catches_evasions() {
     let injected: [(&str, &str, &str); 6] = [
         (
             "P1 fn pointer",
-            "        let f = Self::approve_and_sign;\n        f(self, vault, rpc, id, raw_ack, cfg.chain_id)?;\n        self.send_signed(rpc, prepared_tx(), cfg)",
+            "        let f = Self::approve_and_sign;\n        f(self, vault, rpc, id, raw_ack, cfg.chain_id)?;\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
             "",
         ),
         (
             "P2 field alias",
-            "        self.stash()?;\n        self.send_signed(rpc, prepared_tx(), cfg)",
+            "        self.stash()?;\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
             "\n    fn stash(&self) -> Result<()> {\n        let p = &self.prepared;\n        let _ = p;\n        Ok(())\n    }\n",
         ),
         (
             "P3 destructuring",
-            "        self.grab_store()?;\n        self.send_signed(rpc, prepared_tx(), cfg)",
+            "        self.grab_store()?;\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
             "\n    fn grab_store(&self) -> Result<()> {\n        let SignatureCeremony { prepared: p, .. } = self;\n        let _ = p;\n        Ok(())\n    }\n",
         ),
         (
             "P4 macro-hidden lock",
-            "        lp!(self, lock_prepared);\n        self.send_signed(rpc, prepared_tx(), cfg)",
+            "        lp!(self, lock_prepared);\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
             "",
         ),
         (
@@ -3138,7 +3138,7 @@ fn join8_tripwire_catches_evasions() {
         // A wrapper that parks the tx, then the public send.
         "        self.park_then(vault, rpc, id, raw_ack, cfg.chain_id)?;\n        SignatureCeremony::send_prepared(self, rpc, id, cfg)".to_string(),
     ];
-    let wrapper = "\n    fn park_then<T: crate::rpc::RpcTransport>(&self, vault: &CustodyVault, rpc: &crate::rpc::RpcClient<T>, id: &str, raw_ack: bool, chain_id: u64) -> Result<()> {\n        let (key, prepared, _h) = self.sign_consumed(vault, rpc, id, raw_ack, chain_id)?;\n        let mut m = self.prepared.lock().unwrap_or_else(|e| e.into_inner());\n        m.insert(key, prepared);\n        Ok(())\n    }\n";
+    let wrapper = "\n    fn park_then<T: crate::rpc::RpcTransport>(&self, vault: &CustodyVault, rpc: &crate::rpc::RpcClient<T>, id: &str, raw_ack: bool, chain_id: u64) -> Result<()> {\n        let (key, prepared, _h) = self.sign_consumed(vault, rpc, id, raw_ack, chain_id, crate::rpc::network_gate())?;\n        let mut m = self.prepared.lock().unwrap_or_else(|e| e.into_inner());\n        m.insert(key, prepared);\n        Ok(())\n    }\n";
     for (i, ev) in evasions.iter().enumerate() {
         let mut src = real.replacen(marker, ev, 1);
         if i == 1 {
@@ -3864,8 +3864,15 @@ fn network_gate_violations(src: &str) -> Vec<String> {
         Some(b) if b.contains("ifletSome(expected)=gate{rpc.verify_network(expected)") => {}
         _ => out.push("sign_consumed must check verify_network against its gate before signing".into()),
     }
+    // The Prepared parameter's binding name is not part of the rule (Join-8 calls it `tx`).
+    let gated_send = |b: &str| {
+        b.split("send_raw_transaction_gated(&").skip(1).any(|rest| {
+            rest.split_once(')')
+                .is_some_and(|(args, _)| args.ends_with(".raw,gate") && !args.contains("None"))
+        })
+    };
     match body("send_signed<") {
-        Some(b) if b.contains("send_raw_transaction_gated(&prepared.raw,gate)") => {}
+        Some(b) if gated_send(&b) => {}
         _ => out.push("send_signed must send with send_raw_transaction_gated(.., gate)".into()),
     }
     out
@@ -3878,7 +3885,9 @@ fn k6_tripwire_every_signing_and_sending_entry_passes_the_network_gate() {
     let src = include_str!("ceremony.rs");
     for (needle, replacement) in [
         ("            crate::rpc::network_gate(),\n        )?;", "            None,\n        )?;"),
-        ("self.send_signed(rpc, prepared, cfg, crate::rpc::network_gate())", "self.send_signed(rpc, prepared, cfg, None)"),
+        ("self.send_signed(rpc, tx, cfg, crate::rpc::network_gate())", "self.send_signed(rpc, tx, cfg, None)"),
+        ("send_raw_transaction_gated(&tx.raw, gate)", "send_raw_transaction_gated(&tx.raw, None)"),
+        ("rpc.send_raw_transaction_gated(&tx.raw, gate)", "rpc.send_raw_transaction(&tx.raw)"),
         ("self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, crate::rpc::network_gate())", "self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, None)"),
         ("self.send_signed(rpc, prepared, cfg, gate)", "self.send_signed(rpc, prepared, cfg, None)"),
     ] {
