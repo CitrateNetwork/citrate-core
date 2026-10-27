@@ -34,6 +34,11 @@ const NEW_BOOTNODES: [&str; 2] = [
     "noise_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1@boot1.rehearsal.invalid:30303",
     "noise_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2@seq.rehearsal.invalid:30303",
 ];
+/// Test-only address-book digest for the new network. Not the digest of a real book.
+const NEW_ADDRESS_BOOK_SHA256: &str =
+    "2026120100000000000000000000000000000000000000000000000000000c52";
+/// Test-only chain rev for the new network. Not a real citrate-chain commit.
+const NEW_MIN_CHAIN_REV: &str = "2026120100000000000000000000000000000c52";
 /// Where a switch from r1005 sets the previous `node.toml` aside (first 10 characters).
 const ASIDE: &str = "node.toml.0x1dcfc490";
 
@@ -127,6 +132,14 @@ fn new_network() -> crate::network_profile::ReadyNetwork {
     p.faucet_url = Some("https://faucet.rehearsal.invalid".to_string());
     p.bootnodes = Some(NEW_BOOTNODES.iter().map(|s| s.to_string()).collect());
     p.address_book = Some("addresses/40204.json".to_string());
+    p.address_book_sha256 = Some(NEW_ADDRESS_BOOK_SHA256.to_string());
+    p.min_chain_rev = Some(NEW_MIN_CHAIN_REV.to_string());
+    // A field the profile gains must be filled here too, or the switch is never exercised.
+    assert_eq!(
+        p.missing(),
+        Vec::<(String, String)>::new(),
+        "the test fill leaves a profile field unset"
+    );
     p.pending.clear();
     p.ready()
         .unwrap_or_else(|e| panic!("the filled profile must be ready: {e:?}"))
