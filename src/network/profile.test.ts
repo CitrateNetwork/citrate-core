@@ -52,6 +52,12 @@ describe("network profile (K6)", () => {
       [{ bootnodes: ["noise_" + "ab".repeat(31) + "@host:30303"] }, "bootnodes has a malformed entry"],
       [{ bootnodes: ["noise_" + "ab".repeat(32) + "@ho_st:30303"] }, "bootnodes has a malformed entry"],
       [{ genesisHash: "0x" + "0".repeat(64) }, "genesisHash is not a block hash"],
+      [{ addressBookSha256: null }, "addressBookSha256 not set"],
+      [{ addressBookSha256: "ab".repeat(31) }, "addressBookSha256 is not a sha256 digest"],
+      [{ addressBookSha256: "0".repeat(64) }, "addressBookSha256 is not a sha256 digest"],
+      [{ minChainRev: null }, "minChainRev not set"],
+      [{ minChainRev: "c384fc98" }, "minChainRev is not a commit"],
+      [{ minChainRev: "0".repeat(40) }, "minChainRev is not a commit"],
     ];
     for (const [patch, why] of cases) {
       const p = { ...base, ...patch };

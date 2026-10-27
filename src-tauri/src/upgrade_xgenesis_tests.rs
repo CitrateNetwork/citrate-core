@@ -34,6 +34,11 @@ const NEW_BOOTNODES: [&str; 2] = [
     "noise_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1@boot1.rehearsal.invalid:30303",
     "noise_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2@seq.rehearsal.invalid:30303",
 ];
+/// Test-only address-book digest for the new network. Not the digest of a real book.
+const NEW_ADDRESS_BOOK_SHA256: &str =
+    "2026120100000000000000000000000000000000000000000000000000000c52";
+/// Test-only chain rev for the new network. Not a real citrate-chain commit.
+const NEW_MIN_CHAIN_REV: &str = "2026120100000000000000000000000000000c52";
 /// Where a switch from r1005 sets the previous `node.toml` aside (first 10 characters).
 const ASIDE: &str = "node.toml.0x1dcfc490";
 
@@ -127,6 +132,14 @@ fn new_network() -> crate::network_profile::ReadyNetwork {
     p.faucet_url = Some("https://faucet.rehearsal.invalid".to_string());
     p.bootnodes = Some(NEW_BOOTNODES.iter().map(|s| s.to_string()).collect());
     p.address_book = Some("addresses/40204.json".to_string());
+    p.address_book_sha256 = Some(NEW_ADDRESS_BOOK_SHA256.to_string());
+    p.min_chain_rev = Some(NEW_MIN_CHAIN_REV.to_string());
+    // A field the profile gains must be filled here too, or the switch is never exercised.
+    assert_eq!(
+        p.missing(),
+        Vec::<(String, String)>::new(),
+        "the test fill leaves a profile field unset"
+    );
     p.pending.clear();
     p.ready()
         .unwrap_or_else(|e| panic!("the filled profile must be ready: {e:?}"))
@@ -355,10 +368,6 @@ fn a_v051_install_on_r1005_switches_to_the_new_genesis_and_keeps_everything_else
     let book = crate::daemons::load_book(&app.join("daemons.json"))
         .unwrap_or_else(|e| panic!("daemons: {e}"));
     assert_eq!(book.list(1_792_300_000_000, -420).len(), 1);
-    let invites: Vec<crate::invites::PendingInvite> =
-        serde_json::from_slice(&read(&app.join("invites/pending.json")))
-            .unwrap_or_else(|e| panic!("invites: {e}"));
-    assert_eq!(invites.len(), 2);
 
     // Golden: every file in the app data dir and every keychain slot after the switch.
     let got = manifest(
@@ -383,6 +392,42 @@ fn a_v051_install_on_r1005_switches_to_the_new_genesis_and_keeps_everything_else
         "post-upgrade manifest differs from {}",
         golden_path().display()
     );
+    // Invites (D-12): the switch kept the 0.5.1 `pending.json` byte for byte (golden above). This
+    // build has one invite flow and doesn't read 0.5.1 invites: its loader opens the switched dir
+    // as no invites, not an error, and sets the old file aside owner-only with its bytes kept.
+    // Checked after the golden because the loader moves the file.
+    let invites = app.join("invites/pending.json");
+    let old_invites = read(&invites);
+    assert_eq!(
+        old_invites,
+        read(&fixture_root().join("app-data/invites/pending.json")),
+        "the switch kept the 0.5.1 invites"
+    );
+    assert_eq!(
+        crate::invites::invite_views_at(
+            &invites,
+            "abababababababababababababababab",
+            1_800_000_000
+        ),
+        Ok(Vec::new()),
+        "0.5.1 invites open as no invites after the switch"
+    );
+    let aside: Vec<PathBuf> = names(&app.join("invites"))
+        .into_iter()
+        .filter(|n| n.starts_with("pending.json.earlier-"))
+        .map(|n| app.join("invites").join(n))
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert_eq!(read(&aside[0]), old_invites, "set aside byte for byte");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&aside[0])
+            .unwrap_or_else(|e| panic!("{e}"))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "owner-only: {mode:o}");
+    }
     // The member is told, and told where the previous node settings are.
     let notice = mgr
         .status()

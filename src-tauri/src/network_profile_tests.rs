@@ -49,6 +49,8 @@ fn the_next_genesis_profile_is_explicitly_not_set() {
         "faucetUrl",
         "bootnodes",
         "addressBook",
+        "addressBookSha256",
+        "minChainRev",
     ] {
         assert!(
             names.contains(&field),
@@ -64,7 +66,7 @@ fn the_next_genesis_profile_is_explicitly_not_set() {
     match p.ready() {
         Err(ProfileError::NotSet { profile, missing }) => {
             assert_eq!(profile, NEXT);
-            assert_eq!(missing.len(), 8);
+            assert_eq!(missing.len(), 10);
         }
         other => panic!("a not-set profile must not be ready: {other:?}"),
     }
@@ -143,6 +145,30 @@ fn ready_refuses_values_that_only_look_set() {
         (
             "addressBook",
             Box::new(|p| p.address_book = Some(String::new())),
+        ),
+        (
+            "addressBookSha256",
+            Box::new(|p| p.address_book_sha256 = Some("ab".repeat(31))),
+        ),
+        (
+            "addressBookSha256",
+            Box::new(|p| p.address_book_sha256 = Some("AB".repeat(32))),
+        ),
+        (
+            "addressBookSha256",
+            Box::new(|p| p.address_book_sha256 = Some("0".repeat(64))),
+        ),
+        (
+            "minChainRev",
+            Box::new(|p| p.min_chain_rev = Some("c384fc98".into())),
+        ),
+        (
+            "minChainRev",
+            Box::new(|p| p.min_chain_rev = Some("0".repeat(40))),
+        ),
+        (
+            "minChainRev",
+            Box::new(|p| p.min_chain_rev = Some("g".repeat(40))),
         ),
     ];
     for (field, mutate) in cases {
@@ -381,5 +407,133 @@ fn k6_app_build_script_sets_no_test_cfg() {
     assert_eq!(
         squashed, "fnmain(){tauri_build::build()}",
         "src-tauri/build.rs changed; re-check that it sets no cfg(test), then update this pin"
+    );
+}
+
+// ---- r1006 (RC52 D-2): the rerolled testnet the 0.5.2 RC targets ----
+
+const R1006: &str = "r1006";
+const FIXTURE_GENESIS: &str = "0x6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a";
+
+fn r1006() -> &'static NetworkProfile {
+    profile(R1006).expect("the r1006 profile exists")
+}
+
+/// r1006 with the reroll values filled by test fixtures (what `scripts/fill-network-profile.sh`
+/// writes after the reroll).
+fn r1006_filled() -> NetworkProfile {
+    let mut p = r1006().clone();
+    p.genesis_hash = Some(FIXTURE_GENESIS.into());
+    p.address_book_sha256 = Some("5c".repeat(32));
+    p.min_chain_rev = Some("1f".repeat(20));
+    p.pending.clear();
+    p
+}
+
+fn signs(gate: &crate::rpc::ExpectedNetwork, scope: crate::rpc::SignatureScope) -> bool {
+    crate::rpc::with_added_network_gate(gate.clone(), || {
+        crate::rpc::check_wallet_signing(scope)
+    })
+    .is_ok()
+}
+
+/// Every value known before the reroll is set: chain id 40204 (the reroll keeps it), the
+/// existing fleet's RPC, explorer and faucet, and its bootnodes (citrate-chain
+/// node/config/testnet-beta.toml; the Noise keys stay stable across a reroll). Only the values
+/// the reroll produces are unset, each with a reason.
+#[test]
+fn r1006_has_the_values_known_today_and_only_the_reroll_values_unset() {
+    let p = r1006();
+    assert_eq!(p.chain_id, Some(40204));
+    assert_eq!(p.node_network.as_deref(), Some("testnet"));
+    assert_eq!(p.rpc_url.as_deref(), Some("https://rpc.citrate.ai"));
+    assert_eq!(p.explorer_url.as_deref(), Some("https://explorer.citrate.ai"));
+    assert_eq!(p.faucet_url.as_deref(), Some("https://faucet.citrate.ai"));
+    assert_eq!(p.address_book.as_deref(), Some("addresses/40204.json"));
+    let nodes = p.bootnodes.clone().expect("bootnodes set");
+    assert_eq!(nodes.len(), 4);
+    assert!(nodes.iter().all(|b| is_bootnode(b)), "{nodes:?}");
+    let missing: Vec<String> = p.missing().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(missing, ["genesisHash", "addressBookSha256", "minChainRev"]);
+}
+
+/// Red first (K6, RC52): until the reroll values are filled, r1006 refuses every wallet
+/// signature (unbound and on its own chain) and every RPC read.
+#[test]
+fn r1006_unfilled_refuses_every_signature() {
+    let p = r1006();
+    match p.ready() {
+        Err(ProfileError::NotSet { profile, missing }) => {
+            assert_eq!(profile, R1006);
+            assert_eq!(missing.len(), 3, "{missing:?}");
+        }
+        other => panic!("unfilled r1006 must not be ready: {other:?}"),
+    }
+    let gate = p.expected_network();
+    assert!(!gate.is_set(), "{gate:?}");
+    assert!(!signs(&gate, crate::rpc::SignatureScope::Unbound));
+    assert!(!signs(&gate, crate::rpc::SignatureScope::Chain(40204)));
+    assert!(crate::rpc::with_added_network_gate(gate, crate::rpc::check_rpc_allowed).is_err());
+}
+
+/// Each reroll value on its own keeps r1006 refusing: the genesis hash alone is not enough.
+#[test]
+fn r1006_refuses_while_any_one_reroll_value_is_unset() {
+    type Unset = fn(&mut NetworkProfile);
+    let cases: [(&str, Unset); 3] = [
+        ("genesisHash", |p| p.genesis_hash = None),
+        ("addressBookSha256", |p| p.address_book_sha256 = None),
+        ("minChainRev", |p| p.min_chain_rev = None),
+    ];
+    for (field, unset) in cases {
+        let mut p = r1006_filled();
+        unset(&mut p);
+        match p.ready() {
+            Err(ProfileError::NotSet { missing, .. }) => {
+                assert_eq!(missing.len(), 1, "{field}: {missing:?}");
+                assert_eq!(missing[0].0, field);
+            }
+            other => panic!("{field} unset: expected NotSet, got {other:?}"),
+        }
+        let gate = p.expected_network();
+        assert!(!signs(&gate, crate::rpc::SignatureScope::Chain(40204)), "{field}");
+    }
+}
+
+/// Filled with fixture values, r1006 is ready and its gate signs on chain 40204 only.
+#[test]
+fn r1006_filled_with_fixture_values_signs_on_its_chain_only() {
+    let p = r1006_filled();
+    let r = p.ready().expect("filled r1006 is ready");
+    assert_eq!(r.genesis_hash, FIXTURE_GENESIS);
+    assert_eq!(r.min_chain_rev, "1f".repeat(20));
+    let gate = p.expected_network();
+    assert!(gate.is_set());
+    assert_eq!(gate.chain_id, Some(40204));
+    assert_eq!(gate.genesis_hash.as_deref(), Some(FIXTURE_GENESIS));
+    assert!(signs(&gate, crate::rpc::SignatureScope::Unbound));
+    assert!(signs(&gate, crate::rpc::SignatureScope::Chain(40204)));
+    assert!(!signs(&gate, crate::rpc::SignatureScope::Chain(1)));
+}
+
+/// The reroll is a new genesis: r1006 must never reuse r1005's block-0 hash.
+#[test]
+fn r1006_is_a_different_network_from_r1005() {
+    let alpha = profile("alpha-r1005").unwrap();
+    assert_ne!(r1006().genesis_hash, alpha.genesis_hash);
+    assert_ne!(Some(FIXTURE_GENESIS.to_string()), alpha.genesis_hash);
+}
+
+/// The bundled node must contain the active network's minimum chain rev: build-sidecar.sh pins
+/// the same commit (re-pinned together after the reroll).
+#[test]
+fn the_sidecar_min_chain_rev_is_the_active_profiles() {
+    let net = ready_alpha();
+    assert_eq!(net.min_chain_rev.len(), 40);
+    let sidecar = include_str!("../../scripts/build-sidecar.sh");
+    assert!(
+        sidecar.contains(&format!("MIN_CHAIN_REV=\"{}\"", net.min_chain_rev)),
+        "scripts/build-sidecar.sh MIN_CHAIN_REV must equal the active profile's minChainRev {}",
+        net.min_chain_rev
     );
 }
