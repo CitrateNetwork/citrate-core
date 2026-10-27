@@ -2297,6 +2297,77 @@ fn header_values_round_trip_through_the_base64_sentinel() {
     assert_eq!(dec("=?base64?!!!?=").as_deref(), None);
 }
 
+/// `encode_header_value` against the predicate it had before the clippy rewrite, on a table of
+/// named cases and on every 4-part concatenation of edge fragments (11^4 = 14,641 inputs). The
+/// old predicate is restated as an early-return chain, one rule per clause in its order, so it
+/// is structurally independent of the boolean expression it checks and is lint-clean on every
+/// toolchain (the nested `!(prefix && suffix)` form trips clippy's `nonminimal_bool` from 1.96).
+/// Each result also round-trips through `decode_header_value`.
+#[test]
+fn encode_header_value_matches_the_pre_rewrite_predicate() {
+    use crate::node_mcp_http::{decode_header_value as dec, encode_header_value as enc};
+    let was_plain = |v: &str| {
+        if v.is_empty() {
+            return false;
+        }
+        if !v.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+            return false;
+        }
+        if v.starts_with(' ') || v.ends_with(' ') {
+            return false;
+        }
+        if v.starts_with("=?base64?") && v.ends_with("?=") {
+            return false;
+        }
+        true
+    };
+    let sentinel = |v: &str| {
+        use base64::Engine as _;
+        format!("=?base64?{}?=", base64::engine::general_purpose::STANDARD.encode(v))
+    };
+    let check = |v: &str| {
+        let e = enc(v);
+        let want = if was_plain(v) { v.to_string() } else { sentinel(v) };
+        assert_eq!(e, want, "{v:?}");
+        assert_eq!(dec(&e).as_deref(), Some(v), "round trip {v:?}");
+    };
+    let table: &[(&str, &str, bool)] = &[
+        ("plain", "tools/call", true),
+        ("inner space", "a b", true),
+        ("empty", "", false),
+        ("leading space", " a", false),
+        ("trailing space", "a ", false),
+        ("non-ASCII", "h\u{e9}", false),
+        ("tab", "a\tb", false),
+        ("newline", "a\nb", false),
+        ("sentinel-shaped", "=?base64?abc?=", false),
+        ("bare sentinel", "=?base64??=", false),
+        ("prefix only", "=?base64?abc", true),
+        ("suffix only", "abc?=", true),
+        ("overlapping", "=?base64?=", false),
+    ];
+    for (name, v, plain) in table {
+        assert_eq!(was_plain(v), *plain, "table row {name}");
+        assert_eq!(enc(v) == *v, *plain, "table row {name}: {v:?}");
+        check(v);
+    }
+    let parts = [
+        "", " ", "a", "=?base64?", "?=", "=?", "?", "\u{e9}", "\t", "=?base64?=", "x y",
+    ];
+    let mut n = 0;
+    for a in parts {
+        for b in parts {
+            for c in parts {
+                for d in parts {
+                    check(&format!("{a}{b}{c}{d}"));
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, 14_641);
+}
+
 fn stateless_headers(token: &str, method: &str, name: Option<&str>) -> Vec<(&'static str, String)> {
     let mut h = vec![
         auth(token),
