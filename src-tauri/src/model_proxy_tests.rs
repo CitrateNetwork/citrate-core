@@ -686,3 +686,58 @@ fn a_first_launch_that_cannot_write_its_anchor_fails_closed() {
         "without an anchor the first launch must not go on as if it had one"
     );
 }
+
+#[test]
+fn after_a_log_reset_a_guard_file_saved_before_it_cannot_load() {
+    // An older sealed guard (before a halt) put back while the anchor is removed: after the
+    // member resets the log, that copy must not load as current.
+    let mut rig = Rig::new("proxy-gen-reset");
+    let guard = crate::provider_guard::guard_path(&rig.dir.0);
+    let older = std::fs::read(&guard).unwrap();
+    crate::providers_ipc::halt(&rig.proxy, "xai").unwrap();
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    std::fs::write(&guard, &older).unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+    rig.proxy
+        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
+        .unwrap();
+    rig.reopen();
+    assert!(
+        rig.proxy.with_state(|g, _| g.unreadable),
+        "a guard file saved before the log reset must not load"
+    );
+    // Resuming writes a fresh guard at a newer generation, which loads.
+    crate::providers_ipc::resume(&rig.proxy, "openai").unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (false, false));
+}
+
+#[test]
+fn a_log_reset_with_its_anchor_intact_keeps_the_current_guard() {
+    let mut rig = Rig::new("proxy-gen-intact");
+    crate::providers_ipc::halt(&rig.proxy, "xai").unwrap();
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    let p = crate::provider_usage_log::log_path(&rig.dir.0);
+    let t = std::fs::read_to_string(&p)
+        .unwrap_or_default()
+        .replace("\"tokensIn\":12", "\"tokensIn\":1");
+    std::fs::write(&p, t).unwrap();
+    rig.reopen();
+    assert!(rig.proxy.with_state(|_, l| l.ready().is_err()));
+    rig.proxy
+        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
+        .unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (false, false));
+    assert!(rig.proxy.with_state(|g, _| g.get("xai").halt.is_some()), "the halt is kept");
+}

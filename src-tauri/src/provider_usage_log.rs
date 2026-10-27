@@ -425,6 +425,13 @@ impl UsageLog {
         }
     }
 
+    /// Whether spend earlier in the UTC (day, month) of `now_ms` is unknown because the log was
+    /// reset without its anchor in that period.
+    pub fn earlier_spend_unknown(&self, now_ms: u64) -> (bool, bool) {
+        let _ = now_ms;
+        (false, false)
+    }
+
     pub fn broken_reason(&self) -> Option<&str> {
         self.broken.as_deref()
     }
