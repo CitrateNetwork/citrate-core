@@ -174,10 +174,9 @@ impl ApiKey {
 /// The characters a vendor's keys are made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyCharset {
-    // UrlSafe / UrlSafeDot are for the native adapters (WP-S1-PROV-ADAPT); tested here.
-    /// `A-Z a-z 0-9 - _`
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// `A-Z a-z 0-9 - _` (OpenAI, Anthropic, xAI, DeepSeek).
     UrlSafe,
+    // No governed vendor documents a dotted key today; kept for one that does, tested here.
     /// `A-Z a-z 0-9 - _ .`
     #[cfg_attr(not(test), allow(dead_code))]
     UrlSafeDot,
@@ -387,6 +386,9 @@ pub enum ProviderError {
     BadResponse(&'static str),
     /// The key failed the vendor's format check (nothing was sent).
     KeyFormat(&'static str),
+    /// The request cannot be put in the vendor's format (nothing was sent), such as a tool call in
+    /// the history whose arguments are not a JSON object, or a model id unsafe in a URL path.
+    BadRequest(&'static str),
 }
 
 impl std::fmt::Display for ProviderError {
@@ -402,6 +404,7 @@ impl std::fmt::Display for ProviderError {
             ProviderError::Egress(m) => write!(f, "blocked: {m}"),
             ProviderError::BadResponse(m) => write!(f, "the provider's answer was unusable: {m}"),
             ProviderError::KeyFormat(m) => f.write_str(m),
+            ProviderError::BadRequest(m) => write!(f, "the request could not be sent: {m}"),
         }
     }
 }
@@ -433,8 +436,6 @@ pub enum Method {
 pub enum AuthPlacement {
     /// `Authorization: Bearer <key>` (OpenAI, xAI, DeepSeek, Meta, OpenAI-compatible).
     Bearer,
-    // Consumed by WP-S1-PROV-ADAPT (Anthropic `x-api-key`, Gemini `x-goog-api-key`).
-    #[cfg_attr(not(test), allow(dead_code))]
     /// A named header carrying the bare key (`x-api-key` for Anthropic, `x-goog-api-key` for
     /// Gemini).
     Header(&'static str),
@@ -512,6 +513,28 @@ pub struct ProviderCtx<'a> {
     endpoint: &'a crate::provider_egress::ResolvedEndpoint,
     key: &'a ApiKey,
     http: &'a dyn ProviderHttp,
+    cancel: Option<CancelFlag>,
+}
+
+/// Set by core when the caller of a call has gone away (the loopback client disconnected).
+pub type CancelFlag = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
+/// A vendor answer body that fails its next read once the call is cancelled.
+struct CancelOnFlag {
+    inner: Box<dyn Read + Send>,
+    flag: CancelFlag,
+}
+
+impl Read for CancelOnFlag {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.flag.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "the call was cancelled",
+            ));
+        }
+        self.inner.read(buf)
+    }
 }
 
 impl<'a> ProviderCtx<'a> {
@@ -524,12 +547,31 @@ impl<'a> ProviderCtx<'a> {
             endpoint,
             key,
             http,
+            cancel: None,
         }
+    }
+
+    /// Stop this call when `flag` is set: nothing more is sent, and the vendor's answer body
+    /// fails at its next read, so every adapter's read loop ends and the vendor connection is
+    /// dropped (which stops the vendor generating). Bytes already buffered may still be parsed;
+    /// they are not forwarded by a caller that has gone.
+    pub(crate) fn with_cancel(mut self, flag: CancelFlag) -> Self {
+        self.cancel = Some(flag);
+        self
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Compose, check and send. Fails closed (nothing sent) when the joined URL leaves the pinned
     /// host, carries the key, or a header is not allowed.
     pub fn send(&self, req: OutboundRequest) -> Result<InboundResponse, ProviderError> {
+        if self.cancelled() {
+            return Err(ProviderError::Transport("the call was cancelled"));
+        }
         let url = crate::provider_egress::join_checked(self.endpoint, &req.path)?;
         if self.key.appears_in(url.as_str().as_bytes()) {
             return Err(ProviderError::Egress("a key may never travel in a URL"));
@@ -570,14 +612,21 @@ impl<'a> ProviderCtx<'a> {
                 )
             }
         };
-        self.http.send(WireRequest {
+        let mut resp = self.http.send(WireRequest {
             method: req.method,
             url,
             headers,
             auth_header,
             body,
             endpoint: self.endpoint,
-        })
+        })?;
+        if let Some(flag) = &self.cancel {
+            resp.body = Box::new(CancelOnFlag {
+                inner: resp.body,
+                flag: flag.clone(),
+            });
+        }
+        Ok(resp)
     }
 }
 
@@ -597,6 +646,11 @@ pub trait ModelProvider: Send + Sync {
     /// The vendor's key format, as data. Core checks it before the key is stored or sent; the
     /// adapter never receives the key.
     fn key_format(&self) -> KeyFormat;
+
+    /// The most output tokens (reasoning included) the vendor can bill for `req`. The spend guard
+    /// reserves against it before the call, so it must be a true upper bound: `req.max_tokens`
+    /// only where the vendor documents that its output cap covers reasoning.
+    fn output_bound(&self, req: &ChatRequest) -> u64;
 
     /// A live test with a free endpoint (such as the model list). A key that fails is not stored.
     /// Returns the model ids the vendor listed for this key (empty when the endpoint lists none);

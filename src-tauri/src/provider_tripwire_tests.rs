@@ -151,6 +151,10 @@ fn the_pinned_transport_is_the_only_vendor_transport() {
         "model_proxy.rs",
         "model_proxy_http.rs",
         "provider_openai_compat.rs",
+        "provider_openai.rs",
+        "provider_anthropic.rs",
+        "provider_gemini.rs",
+        "provider_chat_vendors.rs",
         "provider_guard.rs",
         "provider_usage_log.rs",
         "providers_ipc.rs",
@@ -205,14 +209,16 @@ fn negative_control_the_scans_can_fail() {
 fn planted() -> Vec<String> {
     let tail = "Z9".repeat(16);
     vec![
-        format!("sk-proj-{tail}"),      // OpenAI
-        format!("sk-ant-api03-{tail}"), // Anthropic
-        format!("AIza{tail}"),          // Gemini
-        format!("xai-{tail}"),          // xAI
-        format!("sk-{tail}"),           // DeepSeek
-        format!("LLM|{tail}"),          // Meta Llama API
-        format!("apk_user_{tail}"),     // Cognition
-        format!("cmp_{tail}"),          // a model-proxy route token
+        format!("sk-proj-{tail}"),              // OpenAI
+        format!("sk-ant-api03-{tail}"),         // Anthropic
+        format!("AIza{tail}"),                  // Gemini
+        format!("xai-{tail}"),                  // xAI
+        format!("sk-{tail}"),                   // DeepSeek
+        format!("LLM|{tail}"),                  // Meta Llama API (retired)
+        format!("LLM_1607358788850350_{tail}"), // Meta Model API (`LLM_<id>_<secret>`)
+        format!("apk_user_{tail}"),             // Cognition (legacy)
+        format!("cog_{tail}"),                  // Cognition API v3
+        format!("cmp_{tail}"),                  // a model-proxy route token
     ]
 }
 

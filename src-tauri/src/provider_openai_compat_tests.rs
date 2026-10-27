@@ -1,7 +1,7 @@
 // D-11 — the OpenAI-compatible adapter against recorded answers (no network).
 
 use super::*;
-use crate::model_provider::{ApiKey, ChatMessage, InboundResponse, ProviderHttp, ToolDef, Vendor, WireRequest};
+use crate::model_provider::{ApiKey, ChatMessage, InboundResponse, ProviderHttp, ToolDef, WireRequest};
 use crate::secret::SecretString;
 use std::sync::Mutex;
 
@@ -35,8 +35,21 @@ impl ProviderHttp for Replay {
     }
 }
 
+/// A confirmed custom endpoint (the only kind of endpoint this adapter serves).
+fn custom_ep() -> crate::provider_egress::ResolvedEndpoint {
+    crate::provider_egress::resolve_custom(&crate::provider_egress::CustomEndpoint {
+        id: "custom-box".into(),
+        label: "Box".into(),
+        base_url: "https://llm.example.org/v1".into(),
+        models: vec!["gpt-test".into()],
+        confirmed: true,
+        created_ms: 0,
+    })
+    .unwrap()
+}
+
 fn adapter() -> OpenAiCompatAdapter {
-    OpenAiCompatAdapter::new(ProviderId::Vendor(Vendor::OpenAi), &["sk-"], vec![])
+    OpenAiCompatAdapter::new(ProviderId::Custom("custom-box".into()), vec![])
 }
 
 fn key() -> ApiKey {
@@ -101,7 +114,7 @@ fn wire_body_carries_the_tool_protocol() {
 
 #[test]
 fn non_streamed_answer_with_tool_calls_and_usage() {
-    let ep = crate::provider_egress::resolve_vendor(Vendor::OpenAi).unwrap();
+    let ep = custom_ep();
     let k = key();
     let http = Replay::new(vec![(
         200,
@@ -117,12 +130,12 @@ fn non_streamed_answer_with_tool_calls_and_usage() {
     assert_eq!(r.tool_calls[0].arguments, "{\"a\":1}");
     assert_eq!(r.finish, FinishReason::ToolCalls);
     assert_eq!(r.usage, Some(Usage { input_tokens: 12, output_tokens: 3 }));
-    assert_eq!(http.seen.lock().unwrap()[0].0, "https://api.openai.com/v1/chat/completions");
+    assert_eq!(http.seen.lock().unwrap()[0].0, "https://llm.example.org/v1/chat/completions");
 }
 
 #[test]
 fn streamed_answer_hands_out_deltas_and_joins_tool_call_pieces() {
-    let ep = crate::provider_egress::resolve_vendor(Vendor::OpenAi).unwrap();
+    let ep = custom_ep();
     let k = key();
     let sse = [
         r#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#,
@@ -148,7 +161,7 @@ fn streamed_answer_hands_out_deltas_and_joins_tool_call_pieces() {
 
 #[test]
 fn a_stream_cut_off_before_it_finished_is_an_error_not_a_short_answer() {
-    let ep = crate::provider_egress::resolve_vendor(Vendor::OpenAi).unwrap();
+    let ep = custom_ep();
     let k = key();
     let http = Replay::new(vec![(
         200,
@@ -162,7 +175,7 @@ fn a_stream_cut_off_before_it_finished_is_an_error_not_a_short_answer() {
 
 #[test]
 fn key_test_lists_models_and_maps_rejection() {
-    let ep = crate::provider_egress::resolve_vendor(Vendor::OpenAi).unwrap();
+    let ep = custom_ep();
     let k = key();
     let http = Replay::new(vec![
         (
@@ -178,12 +191,16 @@ fn key_test_lists_models_and_maps_rejection() {
         vec!["gpt-a".to_string(), "gpt-b".to_string()]
     );
     assert_eq!(adapter().test_key(&ctx), Err(ProviderError::Unauthorized));
-    assert_eq!(http.seen.lock().unwrap()[0].0, "https://api.openai.com/v1/models");
+    assert_eq!(http.seen.lock().unwrap()[0].0, "https://llm.example.org/v1/models");
 }
 
 #[test]
-fn key_format_checks_the_prefix() {
+fn a_custom_endpoint_takes_any_well_shaped_key_but_not_a_malformed_one() {
     assert!(adapter().key_format().check(&key()).is_ok());
-    let wrong = ApiKey::from_secret(SecretString::new("xai-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()));
-    assert!(matches!(adapter().key_format().check(&wrong), Err(ProviderError::KeyFormat(_))));
+    let other = ApiKey::from_secret(SecretString::new("xai-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()));
+    assert!(adapter().key_format().check(&other).is_ok());
+    for bad in ["short", "has space aaaaaaaaaaaaaaaaaaaaaaa"] {
+        let k = ApiKey::from_secret(SecretString::new(bad.into()));
+        assert!(matches!(adapter().key_format().check(&k), Err(ProviderError::KeyFormat(_))));
+    }
 }
