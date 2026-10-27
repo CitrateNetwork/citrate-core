@@ -1,0 +1,525 @@
+{
+  "flow": "bond-exit",
+  "steps": [
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": false,
+          "releaseRequested": false
+        },
+        "head": 1001,
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "1",
+          "balanceWei": "32000000000000000000000",
+          "currentEpoch": "1",
+          "escrowUnlockEpoch": "0",
+          "escrowWei": "0",
+          "exitEpoch": "0",
+          "isActive": true,
+          "pubkeyOfStaker(bond)": "<nodePubkey>",
+          "stakeOfWei": "32000000000000000000000",
+          "status": "Active"
+        },
+        "vault": {
+          "attributedPrincipalWei": "32000000000000000000000",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Attributed"
+          }
+        }
+      },
+      "core": {
+        "grantStatus": {
+          "attributedPrincipalWei": "32000000000000000000000",
+          "attributedStakeWei": "32000000000000000000000",
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondedStakeWei": "32000000000000000000000",
+          "hasSbt": true,
+          "hasValidator": true,
+          "isKycVerified": true,
+          "isUnlocked": false,
+          "unlockBlock": 15725327
+        }
+      },
+      "does": "treasury attests KYC on the member's SBT",
+      "events": [
+        {
+          "args": {
+            "tokenId": "0",
+            "verified": true
+          },
+          "emitter": "CitrateMemberSBT",
+          "event": "KycVerifiedSet"
+        }
+      ],
+      "step": "kyc-attested"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": false,
+          "releaseRequested": false
+        },
+        "head": 1002,
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "1",
+          "balanceWei": "32000000000000000000000",
+          "currentEpoch": "1",
+          "escrowUnlockEpoch": "0",
+          "escrowWei": "0",
+          "exitEpoch": "0",
+          "isActive": true,
+          "pubkeyOfStaker(bond)": "<nodePubkey>",
+          "stakeOfWei": "32000000000000000000000",
+          "status": "Active"
+        },
+        "vault": {
+          "attributedPrincipalWei": "32000000000000000000000",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Attributed"
+          }
+        }
+      },
+      "core": {
+        "activationStatus": {
+          "activationEpoch": 1,
+          "blockTimeMs": "<not compared>",
+          "bondActivated": true,
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondPubkey": "<nodePubkey>",
+          "currentEpoch": 1,
+          "epochBlocks": 1000,
+          "headBlock": 1002,
+          "localBlock": null,
+          "localSyncing": null,
+          "memberTokenId": "0",
+          "membershipActive": true,
+          "nodeKeyReady": true,
+          "nodePubkey": "<nodePubkey>",
+          "principalWei": "32000000000000000000000",
+          "pubkeySource": "bond",
+          "recordedTx": null,
+          "registryActive": true,
+          "registryStatus": 1,
+          "tx": null,
+          "unlockBlock": 15725327,
+          "unlockTimestamp": "grantTs+31449600",
+          "validatorPubkey": "<nodePubkey>"
+        },
+        "broadcast": {
+          "blockNumber": 1002,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 0,
+          "to": "bond",
+          "txHash": "<tx:requestRelease-locked>",
+          "valueWei": "0"
+        },
+        "ceremony": {
+          "chainId": 40204,
+          "decoded": {
+            "action": "Unrecognized",
+            "cost": "0 wei",
+            "destination": "bond"
+          },
+          "id": "<ceremonyId>",
+          "kind": "transaction",
+          "origin": "local-user",
+          "requiresRawAck": true
+        }
+      },
+      "does": "member sends MemberBond.requestRelease inside the lock: mined, reverted, nothing moves",
+      "events": [],
+      "step": "release-inside-lock"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": false
+        },
+        "head": 1003,
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "1",
+          "balanceWei": "32000000000000000000000",
+          "currentEpoch": "1",
+          "escrowUnlockEpoch": "0",
+          "escrowWei": "0",
+          "exitEpoch": "0",
+          "isActive": true,
+          "pubkeyOfStaker(bond)": "<nodePubkey>",
+          "stakeOfWei": "32000000000000000000000",
+          "status": "Active"
+        },
+        "vault": {
+          "attributedPrincipalWei": "32000000000000000000000",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Attributed"
+          }
+        }
+      },
+      "core": {
+        "activationStatus": {
+          "activationEpoch": 1,
+          "blockTimeMs": "<not compared>",
+          "bondActivated": true,
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondPubkey": "<nodePubkey>",
+          "currentEpoch": 1,
+          "epochBlocks": 1000,
+          "headBlock": 1003,
+          "localBlock": null,
+          "localSyncing": null,
+          "memberTokenId": "0",
+          "membershipActive": true,
+          "nodeKeyReady": true,
+          "nodePubkey": "<nodePubkey>",
+          "principalWei": "32000000000000000000000",
+          "pubkeySource": "bond",
+          "recordedTx": null,
+          "registryActive": true,
+          "registryStatus": 1,
+          "tx": null,
+          "unlockBlock": 15725327,
+          "unlockTimestamp": "grantTs+31449600",
+          "validatorPubkey": "<nodePubkey>"
+        },
+        "grantStatus": {
+          "attributedPrincipalWei": "32000000000000000000000",
+          "attributedStakeWei": "32000000000000000000000",
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondedStakeWei": "32000000000000000000000",
+          "hasSbt": true,
+          "hasValidator": true,
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "unlockBlock": 15725327
+        }
+      },
+      "does": "364 days pass: the bond is unlocked; nothing moves until the member acts",
+      "events": [],
+      "step": "lock-elapsed"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": true
+        },
+        "head": 1005,
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "0",
+          "balanceWei": "32000000000000000000000",
+          "currentEpoch": "1",
+          "escrowUnlockEpoch": "7",
+          "escrowWei": "32000000000000000000000",
+          "exitEpoch": "1",
+          "isActive": false,
+          "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "stakeOfWei": "0",
+          "status": "Exiting"
+        },
+        "vault": {
+          "attributedPrincipalWei": "0",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Released"
+          }
+        }
+      },
+      "core": {
+        "activationStatus": {
+          "activationEpoch": 1,
+          "blockTimeMs": "<not compared>",
+          "bondActivated": true,
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondPubkey": "<nodePubkey>",
+          "currentEpoch": 1,
+          "epochBlocks": 1000,
+          "headBlock": 1005,
+          "localBlock": null,
+          "localSyncing": null,
+          "memberTokenId": "0",
+          "membershipActive": true,
+          "nodeKeyReady": true,
+          "nodePubkey": "<nodePubkey>",
+          "principalWei": "32000000000000000000000",
+          "pubkeySource": "bond",
+          "recordedTx": null,
+          "registryActive": false,
+          "registryStatus": 2,
+          "tx": null,
+          "unlockBlock": 15725327,
+          "unlockTimestamp": "grantTs+31449600",
+          "validatorPubkey": "<nodePubkey>"
+        },
+        "broadcast": {
+          "blockNumber": 1004,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 1,
+          "to": "bond",
+          "txHash": "<tx:requestRelease>",
+          "valueWei": "0"
+        },
+        "ceremony": {
+          "chainId": 40204,
+          "decoded": {
+            "action": "Unrecognized",
+            "cost": "0 wei",
+            "destination": "bond"
+          },
+          "id": "<ceremonyId>",
+          "kind": "transaction",
+          "origin": "local-user",
+          "requiresRawAck": true
+        },
+        "grantStatus": {
+          "attributedPrincipalWei": "0",
+          "attributedStakeWei": "0",
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondedStakeWei": "0",
+          "hasSbt": true,
+          "hasValidator": false,
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "unlockBlock": 15725327
+        }
+      },
+      "does": "member sends MemberBond.requestRelease (registry full unbond); the vault records the release",
+      "events": [
+        {
+          "args": {
+            "amount": "32000000000000000000000",
+            "pubkey": "<nodePubkey>",
+            "remaining": "0",
+            "unlockEpoch": "7"
+          },
+          "emitter": "ValidatorRegistry",
+          "event": "UnbondInitiated"
+        },
+        {
+          "args": {
+            "amount": "32000000000000000000000",
+            "member": "member",
+            "pubkey": "<nodePubkey>"
+          },
+          "emitter": "bond",
+          "event": "ReleaseRequested"
+        },
+        {
+          "args": {
+            "grantId": "0",
+            "member": "member"
+          },
+          "emitter": "MembershipStakeVault",
+          "event": "GrantReleased"
+        }
+      ],
+      "step": "release"
+    },
+    {
+      "chain": {
+        "bond": {
+          "activated": true,
+          "balanceWei": "0",
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "releaseRequested": true
+        },
+        "head": 1006,
+        "registry": {
+          "activationEpoch": "1",
+          "activeCount": "0",
+          "balanceWei": "32000000000000000000000",
+          "currentEpoch": "1",
+          "escrowUnlockEpoch": "7",
+          "escrowWei": "32000000000000000000000",
+          "exitEpoch": "1",
+          "isActive": false,
+          "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "stakeOfWei": "0",
+          "status": "Exiting"
+        },
+        "vault": {
+          "attributedPrincipalWei": "0",
+          "balanceWei": "0",
+          "grant0": {
+            "bond": "bond",
+            "member": "member",
+            "memberTokenId": "0",
+            "principalWei": "32000000000000000000000",
+            "state": "Released"
+          }
+        }
+      },
+      "core": {
+        "broadcast": {
+          "blockNumber": 1006,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 0,
+          "to": "bond",
+          "txHash": "<tx:withdrawToMember-early>",
+          "valueWei": "0"
+        }
+      },
+      "does": "member sends MemberBond.withdrawToMember before the registry exit lock: mined, reverted",
+      "events": [],
+      "step": "withdraw-too-early"
+    },
+    {
+      "chain": {
+        "memberReceivedWei": "32000000000000000000000",
+        "state": {
+          "bond": {
+            "activated": true,
+            "balanceWei": "0",
+            "isKycVerified": true,
+            "isUnlocked": true,
+            "releaseRequested": true
+          },
+          "head": 7001,
+          "registry": {
+            "activationEpoch": "1",
+            "activeCount": "0",
+            "balanceWei": "0",
+            "currentEpoch": "7",
+            "escrowUnlockEpoch": "7",
+            "escrowWei": "0",
+            "exitEpoch": "1",
+            "isActive": false,
+            "pubkeyOfStaker(bond)": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "stakeOfWei": "0",
+            "status": "Exiting"
+          },
+          "vault": {
+            "attributedPrincipalWei": "0",
+            "balanceWei": "0",
+            "grant0": {
+              "bond": "bond",
+              "member": "member",
+              "memberTokenId": "0",
+              "principalWei": "32000000000000000000000",
+              "state": "Released"
+            }
+          }
+        }
+      },
+      "core": {
+        "activationStatus": {
+          "activationEpoch": 1,
+          "blockTimeMs": "<not compared>",
+          "bondActivated": true,
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondPubkey": "<nodePubkey>",
+          "currentEpoch": 7,
+          "epochBlocks": 1000,
+          "headBlock": 7001,
+          "localBlock": null,
+          "localSyncing": null,
+          "memberTokenId": "0",
+          "membershipActive": true,
+          "nodeKeyReady": true,
+          "nodePubkey": "<nodePubkey>",
+          "principalWei": "32000000000000000000000",
+          "pubkeySource": "bond",
+          "recordedTx": null,
+          "registryActive": false,
+          "registryStatus": 2,
+          "tx": null,
+          "unlockBlock": 15725327,
+          "unlockTimestamp": "grantTs+31449600",
+          "validatorPubkey": "<nodePubkey>"
+        },
+        "broadcast": {
+          "blockNumber": 7001,
+          "effectiveGasPriceWei": "<gas>",
+          "gasUsed": "<gas>",
+          "origin": "local-user",
+          "status": 1,
+          "to": "bond",
+          "txHash": "<tx:withdrawToMember>",
+          "valueWei": "0"
+        },
+        "grantStatus": {
+          "attributedPrincipalWei": "0",
+          "attributedStakeWei": "0",
+          "bondAddress": "bond",
+          "bondDeployed": true,
+          "bondedStakeWei": "0",
+          "hasSbt": true,
+          "hasValidator": false,
+          "isKycVerified": true,
+          "isUnlocked": true,
+          "unlockBlock": 15725327
+        }
+      },
+      "does": "after 6 epochs the member withdraws: the principal returns to the member",
+      "events": [
+        {
+          "args": {
+            "amount": "32000000000000000000000",
+            "pubkey": "<nodePubkey>",
+            "staker": "bond"
+          },
+          "emitter": "ValidatorRegistry",
+          "event": "Withdrawn"
+        },
+        {
+          "args": {
+            "amount": "32000000000000000000000",
+            "member": "member"
+          },
+          "emitter": "bond",
+          "event": "PrincipalWithdrawn"
+        }
+      ],
+      "step": "exit-matured"
+    }
+  ]
+}
