@@ -133,7 +133,8 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
 
   it("Node: an exited validator's claimable rewards show and Claim is enabled", () => {
     const html = renderToStaticMarkup(
-      <Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true, rewards: { totalWei: wei(30), claimableWei: wei(20) } })} />,
+      // #362 B-1: the bond path's Claim needs MemberBond.isKycVerified() read true.
+      <Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true, bondKycVerified: true, rewards: { totalWei: wei(30), claimableWei: wei(20) } })} />,
     );
     expect(html).toContain("20.00");
     expect(html).toMatch(/<button[^>]*>\s*Claim/);

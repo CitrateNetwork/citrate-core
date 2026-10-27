@@ -6,6 +6,7 @@ import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
+import { bondClaimBlocked } from "../shell/store";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -156,6 +157,9 @@ export function Node({ store, s }: SurfaceProps) {
   const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? (s.rewardsError ?? "not read yet") : "Not a validator";
   const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
   const claimDisabled = rClaim == null || rClaim < 5;
+  // #362 B-1: on the bond path Claim is offered only once MemberBond.isKycVerified() reads true (the
+  // bond's claimRewards() reverts otherwise); until then the reason shows instead of the button.
+  const claimBlocked = bondClaimBlocked(s);
   const claimNote =
     rClaim == null
       ? "Validator rewards are paid to the block producer only."
@@ -483,11 +487,16 @@ export function Node({ store, s }: SurfaceProps) {
                   {v == null ? "—" : fmt2(v)}
                 </span>
                 <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>{v == null ? rewardsReason : "SALT · " + rewardsSrc}</span>
-                {label === "Claimable now" && (
-                  <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
-                    Claim
-                  </button>
-                )}
+                {label === "Claimable now" &&
+                  (claimBlocked ? (
+                    <span data-testid="claim-blocked" style={{ fontSize: 11.5, color: "var(--tx-2)", marginTop: 4, lineHeight: 1.45 }}>
+                      {claimBlocked}
+                    </span>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
+                      Claim
+                    </button>
+                  ))}
               </div>
             ))}
           </div>
