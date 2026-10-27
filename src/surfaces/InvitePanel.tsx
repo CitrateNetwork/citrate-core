@@ -6,7 +6,7 @@
 // src-tauri/src/invites.rs (this device's invites/pending.json and the relay's claims inbox).
 import { useEffect, useState } from "react";
 import { bridge } from "../bridge";
-import type { IncomingRequest, InviteView, ResolvedIdentity } from "../bridge/domains";
+import type { HeldCheck, IncomingRequest, InviteView } from "../bridge/domains";
 import type { Store } from "../shell/store";
 import { expiryText, shortAddress } from "./inviteLink";
 
@@ -25,8 +25,18 @@ export function revokedToast(notified: boolean): string {
     : "Invite revoked. It can't be used to join any more. Anyone waiting on it couldn't be told right now; their request shows as not approved once the link expires.";
 }
 
-export function checkedToast(_r: string): string {
-  return "";
+/** The member-facing words for a Check again on a held approval. */
+export function checkedToast(r: HeldCheck): string {
+  switch (r) {
+    case "added":
+      return "They're in the group. The invite is used up.";
+    case "released":
+      return "They aren't in the group, so the invite is open again. Approve their request again if you still want them in.";
+    case "expired":
+      return "They aren't in the group and the link has expired, so the invite is closed.";
+    default:
+      return "Nothing was waiting on this invite.";
+  }
 }
 
 function message(e: unknown): string {
@@ -37,14 +47,12 @@ export function InvitePanel({
   store,
   groupId,
   inviterName,
-  faceOf,
   onAdded,
 }: {
   store: Store;
   groupId: string;
   /** How the invitee's screen names you ("" for none). */
   inviterName: string;
-  faceOf?: (address: string) => ResolvedIdentity | undefined;
   /** A request was approved (reload the roster). */
   onAdded?: () => void;
 }) {
@@ -53,6 +61,7 @@ export function InvitePanel({
   const [requests, setRequests] = useState<IncomingRequest[]>([]);
   const [requestsError, setRequestsError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [label, setLabel] = useState("");
 
   const loadRequests = async () => {
     try {
@@ -100,7 +109,8 @@ export function InvitePanel({
   const invite = async () => {
     setBusy("create");
     try {
-      const made = await bridge.invites.create(groupId, "", inviterName);
+      const made = await bridge.invites.create(groupId, label.trim(), inviterName);
+      setLabel("");
       const copied = await copy(made.link);
       store.toast(
         (copied ? "Invite link copied. " : "Invite link made; copy it from Pending. ") +
@@ -128,8 +138,22 @@ export function InvitePanel({
     setBusy(r.inviteId + r.address);
     try {
       await bridge.invites.approve(groupId, r.inviteId, r.address);
-      store.toast(`Approved. ${who(r.address)} is added; their app finishes joining.`);
+      store.toast(`Approved. ${shortAddress(r.address)} is added; their app finishes joining.`);
       onAdded?.();
+    } catch (e) {
+      store.toast(message(e));
+    } finally {
+      setBusy(null);
+      await refresh();
+    }
+  };
+  /** Check again on a held invite: the roster settles it (added, open again, or closed). */
+  const check = async (inv: InviteView) => {
+    setBusy(inv.id);
+    try {
+      const r = await bridge.invites.check(groupId, inv.id);
+      store.toast(checkedToast(r));
+      if (r === "added") onAdded?.();
     } catch (e) {
       store.toast(message(e));
     } finally {
@@ -148,10 +172,6 @@ export function InvitePanel({
       await refresh();
     }
   };
-  const who = (address: string) => {
-    const f = faceOf?.(address);
-    return f ? `@${f.handle}` : shortAddress(address);
-  };
 
   const line = { display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderTop: "1px solid var(--line-1)" };
   return (
@@ -163,6 +183,7 @@ export function InvitePanel({
             You get a one-time link to send them. When they open it, they ask to join and you approve them here.
           </span>
         </span>
+        <input className="input" data-testid="invite-label" value={label} maxLength={64} placeholder="Who's it for? (optional)" style={{ width: 170 }} onChange={(e) => setLabel(e.target.value)} />
         <button className="btn btn-primary btn-sm" data-testid="invite-someone" disabled={busy === "create"} onClick={() => void invite()}>
           {busy === "create" ? "Making…" : "Invite someone"}
         </button>
@@ -182,14 +203,19 @@ export function InvitePanel({
         return (
           <div key={key} style={line} data-testid="invite-request-in">
             <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 12.5, fontWeight: 500 }}>{who(r.address)} wants to join</span>
-              <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>
-                {r.approving ? "being added · press Approve again if it didn't finish" : r.address}
+              <span style={{ fontSize: 12.5, fontWeight: 500 }}>A request to join from {shortAddress(r.address)}</span>
+              <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)", wordBreak: "break-all" }}>{r.address}</span>
+              <span style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
+                {r.approving
+                  ? "being added · settle it with Check again on the invite"
+                  : `asks to join through ${r.inviteLabel ? `“${r.inviteLabel}”` : "an invite link"} · confirm it's them before approving`}
               </span>
             </span>
-            <button className="btn btn-primary btn-sm" data-testid="invite-approve" disabled={busy === key} onClick={() => void approve(r)}>Approve</button>
             {!r.approving && (
-              <button className="btn btn-ghost btn-sm" data-testid="invite-decline" disabled={busy === key} onClick={() => void decline(r)} style={{ color: "var(--tx-3)" }}>Decline</button>
+              <>
+                <button className="btn btn-primary btn-sm" data-testid="invite-approve" disabled={busy === key} onClick={() => void approve(r)}>Approve</button>
+                <button className="btn btn-ghost btn-sm" data-testid="invite-decline" disabled={busy === key} onClick={() => void decline(r)} style={{ color: "var(--tx-3)" }}>Decline</button>
+              </>
             )}
           </div>
         );
@@ -204,12 +230,21 @@ export function InvitePanel({
           <span style={{ flex: 1, minWidth: 0 }}>
             <span style={{ fontSize: 12.5 }}>{inv.label ? `Invite link for ${inv.label}` : "Invite link"}</span>
             <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>
-              {inv.approving ? `adding ${who(inv.approving)}` : `one use · ${expiryText(inv.expiresAt)}`}
+              {inv.approving
+                ? `adding ${shortAddress(inv.approving)} · not confirmed yet`
+                : `one use · ${expiryText(inv.expiresAt)}`}
             </span>
           </span>
-          <button className="btn btn-ghost btn-sm" onClick={() => void copy(inv.link).then((ok) => store.toast(ok ? "Invite link copied." : "Couldn't copy the link."))}>Copy</button>
-          {!inv.approving && (
-            <button className="btn btn-ghost btn-sm" data-testid="invite-revoke" disabled={busy === inv.id} onClick={() => void revoke(inv)} style={{ color: "var(--tx-3)" }}>Revoke</button>
+          {inv.approving ? (
+            <>
+              <button className="btn btn-secondary btn-sm" data-testid="invite-check" disabled={busy === inv.id} onClick={() => void check(inv)}>Check again</button>
+              <button className="btn btn-ghost btn-sm" data-testid="invite-cancel" disabled={busy === inv.id} onClick={() => void revoke(inv)} style={{ color: "var(--tx-3)" }}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={() => void copy(inv.link).then((ok) => store.toast(ok ? "Invite link copied." : "Couldn't copy the link."))}>Copy</button>
+              <button className="btn btn-ghost btn-sm" data-testid="invite-revoke" disabled={busy === inv.id} onClick={() => void revoke(inv)} style={{ color: "var(--tx-3)" }}>Revoke</button>
+            </>
           )}
         </div>
       ))}

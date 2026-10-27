@@ -705,7 +705,7 @@ pub(crate) fn requests_at(
             out.push(IncomingRequest {
                 invite_id: invite_id(&inv.token),
                 group: inv.group.clone(),
-                invite_label: String::new(),
+                invite_label: inv.label.clone(),
                 approving: inv.approving == r.address,
                 address: r.address,
             });
@@ -781,23 +781,62 @@ pub enum HeldCheck {
 /// is used. Absent: the hold is released (or, past expiry, the invite is removed with its key). A
 /// roster that can't be read keeps the hold and is an error.
 pub(crate) fn check_held_at(
-    _path: &std::path::Path,
-    _group: &str,
-    _id: &str,
-    _now: u64,
-    _is_member: impl FnOnce(&str, &str) -> Result<bool, String>,
+    path: &std::path::Path,
+    group: &str,
+    id: &str,
+    now: u64,
+    is_member: impl FnOnce(&str, &str) -> Result<bool, String>,
 ) -> Result<HeldCheck, String> {
-    Ok(HeldCheck::NotHeld)
+    let _flight = InFlight::take(group, id)?;
+    let held = {
+        let mut s = view_store_at(path)?;
+        match find(&mut s, group, id) {
+            Some(i) if !i.approving.is_empty() => i.approving.clone(),
+            _ => return Ok(HeldCheck::NotHeld),
+        }
+    };
+    let present = is_member(group, &held).map_err(|e| format!("{UNKNOWN_OUTCOME} ({e})"))?;
+    update_store_at(path, |s| {
+        let Some(i) = find(s, group, id).filter(|i| i.approving == held) else {
+            return HeldCheck::NotHeld;
+        };
+        let outcome = if present {
+            HeldCheck::Added
+        } else if now >= i.expires_at {
+            HeldCheck::Expired
+        } else {
+            i.approving.clear();
+            return HeldCheck::Released;
+        };
+        s.invites
+            .retain(|i| !(i.group == group && invite_id(&i.token) == id));
+        outcome
+    })
 }
+
+/// One held invite's id and what checking it found.
+pub(crate) type HeldOutcome = (String, Result<HeldCheck, String>);
 
 /// At start-up: check every held approval against the roster ([`check_held_at`]). One that can't
 /// be settled now stays held, shown with Check again and Cancel.
 pub(crate) fn recheck_held_at(
-    _path: &std::path::Path,
-    _now: u64,
-    _is_member: impl FnMut(&str, &str) -> Result<bool, String>,
-) -> Result<Vec<(String, Result<HeldCheck, String>)>, String> {
-    Ok(Vec::new())
+    path: &std::path::Path,
+    now: u64,
+    mut is_member: impl FnMut(&str, &str) -> Result<bool, String>,
+) -> Result<Vec<HeldOutcome>, String> {
+    let held: Vec<(String, String)> = view_store_at(path)?
+        .invites
+        .iter()
+        .filter(|i| !i.approving.is_empty())
+        .map(|i| (i.group.clone(), invite_id(&i.token)))
+        .collect();
+    Ok(held
+        .into_iter()
+        .map(|(g, id)| {
+            let r = check_held_at(path, &g, &id, now, &mut is_member);
+            (id, r)
+        })
+        .collect())
 }
 
 /// Approve `address`'s request on invite `id`: add them (`add`, the AddMember / Welcome path) and
@@ -815,7 +854,7 @@ pub(crate) fn approve_at(
     id: &str,
     address: &str,
     now: u64,
-    _poll: impl FnOnce(String) -> Result<Vec<String>, String>,
+    poll: impl FnOnce(String) -> Result<Vec<String>, String>,
     add: impl FnOnce(&str, &str) -> Result<(), String>,
     mut is_member: impl FnMut(&str, &str) -> Result<bool, String>,
 ) -> Result<(), String> {
@@ -823,21 +862,45 @@ pub(crate) fn approve_at(
     if !address_ok(&member) {
         return Err("that isn't a member address".to_string());
     }
-    update_store_at(path, |s| {
-        let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
-        if inv.approving.is_empty() || inv.approving != member {
-            refuse_approval(inv, &member, now)?;
+    let _flight = InFlight::take(group, id)?;
+    let inv = {
+        let mut s = view_store_at(path)?;
+        find(&mut s, group, id)
+            .ok_or_else(|| INVITE_GONE.to_string())?
+            .clone()
+    };
+    let retry = inv.approving == member;
+    if !retry {
+        refuse_approval(&inv, &member, now)?;
+        let cts = poll(request_inbox(&inv.token))
+            .map_err(|e| format!("Couldn't check the request: {e}"))?;
+        if !open_requests(&inv, &cts)
+            .iter()
+            .any(|r| r.address == member)
+        {
+            return Err("There's no request from that address on this invite.".to_string());
         }
-        inv.approving = member.clone();
-        Ok::<(), String>(())
-    })??;
-    let added = match add(group, &member) {
-        Ok(()) => Ok(()),
-        Err(e) => match is_member(group, &member) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err((e, true)),
-            Err(_) => Err((format!("{e}. {UNKNOWN_OUTCOME}"), false)),
-        },
+        update_store_at(path, |s| {
+            let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
+            refuse_approval(inv, &member, now)?;
+            inv.approving = member.clone();
+            Ok::<(), String>(())
+        })??;
+    }
+    // On a retry the add may already have landed: ask the roster before sending it again.
+    let already =
+        retry && is_member(group, &member).map_err(|e| format!("{UNKNOWN_OUTCOME} ({e})"))?;
+    let added = if already {
+        Ok(())
+    } else {
+        match add(group, &member) {
+            Ok(()) => Ok(()),
+            Err(e) => match is_member(group, &member) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err((e, true)),
+                Err(_) => Err((format!("{e}. {UNKNOWN_OUTCOME}"), false)),
+            },
+        }
     };
     match added {
         Ok(()) => update_store_at(path, |s| {
@@ -847,6 +910,7 @@ pub(crate) fn approve_at(
         }),
         Err((e, not_added)) => {
             if not_added {
+                // Not added: the invite is open again for this or another request.
                 update_store_at(path, |s| {
                     if let Some(i) = find(s, group, id).filter(|i| i.approving == member) {
                         i.approving.clear();
@@ -895,6 +959,7 @@ pub(crate) fn decline_at(
     mut submit: impl FnMut(String, String) -> Result<(), String>,
 ) -> Result<Notice, String> {
     let member = address.to_ascii_lowercase();
+    let _flight = InFlight::take(group, id)?;
     let inv = update_store_at(path, |s| {
         let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
         if inv.approving == member {
@@ -928,17 +993,12 @@ pub(crate) fn revoke_at(
 ) -> Result<Notice, String> {
     // Refused only while an approval on it is in flight. A held approval whose outcome is unknown
     // can be revoked: that is Cancel, the way out when the roster can't settle it.
+    let _flight = InFlight::take(group, id)?;
     let inv = {
         let mut s = view_store_at(path)?;
-        let i = find(&mut s, group, id)
+        find(&mut s, group, id)
             .ok_or("no such invite (already revoked or used)")?
-            .clone();
-        if !i.approving.is_empty() {
-            return Err(
-                "This invite is being used to add someone, so it can't be revoked now.".into(),
-            );
-        }
-        i
+            .clone()
     };
     // Read the waiting requests while the key still exists (outside the lock: a network call).
     let waiting = poll(request_inbox(&inv.token)).map(|cts| open_requests(&inv, &cts));

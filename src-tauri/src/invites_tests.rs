@@ -854,8 +854,8 @@ const STORE_READS: &[&str] = &[
 /// The invite reads in `src` (production code) that turn a failure into something: a default, an
 /// empty list, `None`, or a skipped branch. One entry per offending call.
 fn lenient_reads(src: &str) -> Vec<String> {
-    const AFTER: &[&str] = &[".unwrap_or_default()", ".ok()"];
-    const BEFORE: &[&str] = &[];
+    const AFTER: &[&str] = &[".unwrap_or", ".ok()", ".ok()?", "Err(_)", "=> vec![]", "=> Vec::new()", ".unwrap()"];
+    const BEFORE: &[&str] = &["if let Ok(", "while let Ok(", "let Ok(", "matches!("];
     let mut out = Vec::new();
     for call in STORE_READS {
         for (i, _) in src.match_indices(call) {

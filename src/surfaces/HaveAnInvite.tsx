@@ -11,6 +11,7 @@ import type { AppState } from "../shell/state";
 import type { Store } from "../shell/store";
 import { reachedStep } from "../privacy/joinFunnel";
 import { expiryText, isInviteLink } from "./inviteLink";
+import { groupLabel, groupsSlice, refreshGroups } from "../shell/slices/groups";
 
 /** How often the requests this device sent are checked while this screen is open. */
 export const REQUEST_CHECK_MS = 15_000;
@@ -30,60 +31,58 @@ const small = { fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.5 };
 function groupOf(name: string): string {
   return name || "the group";
 }
-function inviterOf(name: string): string {
-  return name || "the person who invited you";
-}
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
+/** The link's own words about who sent it (display only; nothing checks it). */
+function fromLink(inviter: string): string {
+  return inviter ? ` The link says it's from ${inviter}.` : "";
 }
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e ?? "");
 }
 
-/** One request this device sent, as a card. */
-export function RequestCard({ r, onDismiss }: { r: MyInviteRequest; onDismiss: () => void }) {
+/** One request this device sent, as a card. `joinedName` is the group's name from this device's own
+ *  group list once joined (the link's name is only what the link said). */
+export function RequestCard({ r, onDismiss, joinedName }: { r: MyInviteRequest; onDismiss: () => void; joinedName?: string }) {
   const dismiss = (label: string) => (
     <button className="btn btn-ghost btn-sm" data-testid="invite-request-dismiss" onClick={onDismiss} style={{ color: "var(--tx-3)" }}>
       {label}
     </button>
   );
   const g = groupOf(r.groupName);
-  const who = inviterOf(r.inviter);
   switch (r.state) {
     case "joined":
       return (
         <div style={card("ok")} data-testid="invite-request" data-state="joined">
-          <span style={{ fontSize: 13 }}>You're in {g}.</span>
+          <span style={{ fontSize: 13 }}>You're in {joinedName || "the group"}.</span>
           <span style={row}>{dismiss("OK")}</span>
         </div>
       );
     case "declined":
       return (
         <div style={card("plain")} data-testid="invite-request" data-state="declined">
-          <span style={{ fontSize: 13 }}>{cap(who)} declined your request to join {g}.</span>
+          <span style={{ fontSize: 13 }}>Your request to join {g} was declined.</span>
           <span style={row}>{dismiss("Dismiss")}</span>
         </div>
       );
     case "revoked":
       return (
         <div style={card("plain")} data-testid="invite-request" data-state="revoked">
-          <span style={{ fontSize: 13 }}>{cap(who)} cancelled this invite to {g}. Ask them for a new link if you still want to join.</span>
+          <span style={{ fontSize: 13 }}>This invite to {g} was cancelled. Ask for a new link if you still want to join.</span>
           <span style={row}>{dismiss("Dismiss")}</span>
         </div>
       );
     case "expired":
       return (
         <div style={card("plain")} data-testid="invite-request" data-state="expired">
-          <span style={{ fontSize: 13 }}>Your invite to {g} expired before it was approved. Ask {who} for a new link.</span>
+          <span style={{ fontSize: 13 }}>Your invite to {g} expired before it was approved. Ask for a new link.</span>
           <span style={row}>{dismiss("Dismiss")}</span>
         </div>
       );
     default:
       return (
         <div style={card("accent")} data-testid="invite-request" data-state="waiting">
-          <span style={{ fontSize: 13 }}>Waiting for {who} to approve your request to join {g}…</span>
+          <span style={{ fontSize: 13 }}>Waiting for your request to join {g} to be approved…</span>
           <span className="mono" style={small}>
-            You're added once they approve. If they decline or cancel the link, you'll see it here. · link {expiryText(r.expiresAt)}
+            You're added once it's approved. If it's declined or the link is cancelled, you'll see it here.{fromLink(r.inviter)} · link {expiryText(r.expiresAt)}
           </span>
           {r.note && (
             <span className="mono" style={{ ...small, color: "var(--warn)" }} data-testid="invite-request-note">
@@ -160,7 +159,7 @@ export function JoinCard({
   if (p.expired) {
     return (
       <div style={card("warn")} data-testid="invite-join" data-phase="expired">
-        <span style={{ fontSize: 13 }}>This invite to {g} has expired. Ask {inviterOf(p.inviter)} for a new link.</span>
+        <span style={{ fontSize: 13 }}>This invite to {g} has expired. Ask for a new link.</span>
         <span style={row}>{close("Dismiss")}</span>
       </div>
     );
@@ -176,9 +175,9 @@ export function JoinCard({
   };
   return (
     <div style={card("accent")} data-testid="invite-join" data-phase={phase.kind}>
-      <span style={{ fontSize: 14, fontWeight: 500 }}>Join {g}?</span>
+      <span style={{ fontSize: 14, fontWeight: 500 }}>This link invites you to {p.groupName || "a group"}.</span>
       <span style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.55 }}>
-        {p.inviter ? `${p.inviter} invited you.` : "You were sent an invite."} Joining sends them a request; you're in once they approve it.
+        The group name and sender come from the link itself.{fromLink(p.inviter)} Joining sends a request; you're in once it's approved.
       </span>
       {phase.kind === "failed" && (
         <span role="alert" style={{ fontSize: 12, color: "var(--danger)", lineHeight: 1.5 }}>{phase.message}</span>
@@ -240,6 +239,11 @@ export function HaveAnInvite({ store, s, memberOf = [], onJoined }: { store: Sto
   const [requests, setRequests] = useState<MyInviteRequest[]>([]);
   // Joined requests are gone from Rust once the join finished; keep their card until dismissed.
   const [joined, setJoined] = useState<MyInviteRequest[]>([]);
+  const groups = groupsSlice.use();
+  const nameOf = (id: string) => {
+    const g = groups.groups.find((x) => x.id === id);
+    return g ? groupLabel(groups, g) : "";
+  };
   const onJoinedRef = useRef(onJoined);
   onJoinedRef.current = onJoined;
 
@@ -250,6 +254,8 @@ export function HaveAnInvite({ store, s, memberOf = [], onJoined }: { store: Sto
       if (done.length) {
         reachedStep("join_group");
         setJoined((j) => [...j, ...done]);
+        // The joined group's name comes from this device's own group list, not from the link.
+        await refreshGroups();
         onJoinedRef.current?.();
       }
       setRequests(all.filter((r) => r.state !== "joined"));
@@ -283,7 +289,7 @@ export function HaveAnInvite({ store, s, memberOf = [], onJoined }: { store: Sto
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }} data-testid="have-an-invite">
       {[...joined, ...requests].map((r) => (
-        <RequestCard key={r.id + r.state} r={r} onDismiss={() => void dismiss(r)} />
+        <RequestCard key={r.id + r.state} r={r} joinedName={r.state === "joined" ? nameOf(r.group) : undefined} onDismiss={() => void dismiss(r)} />
       ))}
       {s.inviteLink ? (
         <JoinCard
