@@ -87,7 +87,7 @@ export const CATALOG = {
 export const TUTORIALS = [
   { id: 't1', title: 'Run your first validator', minutes: 8, minTier: 'free', path: 'atlas/tutorials/first-validator' },
   { id: 't2', title: 'Point Claude at your memory graph', minutes: 5, minTier: 'pilot', path: 'atlas/tutorials/mcp-claude' },
-  { id: 't3', title: 'How claims batch — earnings mechanics', minutes: 4, minTier: 'pilot', path: 'atlas/tutorials/claims' },
+  { id: 't3', title: 'How claims batch — rewards mechanics', minutes: 4, minTier: 'pilot', path: 'atlas/tutorials/claims' },
   { id: 't4', title: 'x402 marketplace primer', minutes: 12, minTier: 'pilot', path: 'atlas/tutorials/x402' },
 ];
 

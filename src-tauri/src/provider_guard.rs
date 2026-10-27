@@ -835,8 +835,11 @@ pub fn save(dir: &Path, g: &mut GuardBook) -> Result<(), String> {
         .keyring
         .clone()
         .ok_or("the spend settings key is unavailable")?;
-    let anchored = crate::provider_usage_log::read_anchor(keyring.as_ref())
+    // Checked before the file is written: with the anchor missing nothing is saved, so the halt
+    // stays until the member resets the usage log (which restores the anchor).
+    let anchored = crate::provider_usage_log::read_anchor_opt(keyring.as_ref())
         .map_err(|_| "the keychain could not be read".to_string())?
+        .ok_or("start a new usage log first: its record of past use is missing")?
         .guard_gen;
     let generation = g.generation.max(anchored).saturating_add(1);
     let body = serde_json::to_string(&GuardFile {

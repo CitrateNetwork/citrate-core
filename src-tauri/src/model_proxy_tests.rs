@@ -718,3 +718,122 @@ fn a_migrated_key_does_not_restart_the_rotation_clock() {
         .unwrap();
     assert!(rig.proxy.with_state(|g, _| g.get(&c.id).key_set_ms).is_some_and(|t| t >= before));
 }
+
+/// Remove the anchor and every provider file: what "fake a fresh install" would take, short of
+/// also deleting the keys.
+fn wipe_anchor_and_files(rig: &Rig) {
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    for f in [
+        crate::provider_usage_log::log_path(&rig.dir.0),
+        crate::provider_guard::guard_path(&rig.dir.0),
+    ] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+fn fails_closed(rig: &Rig) -> (bool, bool) {
+    rig.proxy
+        .with_state(|g, l| (g.unreadable, l.ready().is_err()))
+}
+
+#[test]
+fn a_missing_anchor_while_keys_remain_is_not_a_fresh_install() {
+    // MAC keys and a vendor key remain: both the guard and the log fail closed.
+    let mut rig = Rig::new("proxy-anchor-keys");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    wipe_anchor_and_files(&rig);
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true), "guard unreadable, log broken");
+    let before = rig.vendor.calls();
+    let r = rig
+        .proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {});
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(rig.vendor.calls(), before, "nothing is sent");
+}
+
+#[test]
+fn a_missing_anchor_with_only_a_vendor_key_left_still_fails_closed() {
+    let mut rig = Rig::new("proxy-anchor-vendor");
+    wipe_anchor_and_files(&rig);
+    {
+        let mut m = rig.kr.map.lock().unwrap();
+        m.remove(crate::provider_usage_log::LOG_MAC_ACCOUNT);
+        m.remove(crate::provider_guard::GUARD_MAC_ACCOUNT);
+    }
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+}
+
+#[test]
+fn a_first_launch_with_no_calls_reopens_cleanly() {
+    // A fresh install opens (creating the MAC keys) and closes with nothing recorded: the next
+    // launch is not mistaken for a wiped anchor.
+    let dir = crate::provider_fixtures_tests::TmpDir::new("proxy-anchor-fresh");
+    let kr = Arc::new(MemKeyring::default());
+    let vendor = ScriptedVendor::new(&["gpt-known"], "x", None);
+    drop(ModelProxy::new(dir.0.clone(), kr.clone(), vendor.clone()));
+    let p = ModelProxy::new(dir.0.clone(), kr.clone(), vendor);
+    assert_eq!(p.with_state(|g, l| (g.unreadable, l.ready().is_err())), (false, false));
+}
+
+#[test]
+fn resuming_the_guard_alone_does_not_legitimise_a_cut_short_log() {
+    // Anchor removed and the log cut short while provider keys remain: halted and broken.
+    let mut rig = Rig::new("proxy-anchor-resume");
+    for _ in 0..3 {
+        rig.proxy
+            .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+            .unwrap();
+    }
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    let p = crate::provider_usage_log::log_path(&rig.dir.0);
+    let kept: Vec<String> = std::fs::read_to_string(&p)
+        .unwrap_or_default()
+        .lines()
+        .take(3)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&p, kept.concat()).unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+    // The member resumes the guard only (what the halt message offers), then the app restarts.
+    let _ = crate::providers_ipc::resume(&rig.proxy, "openai");
+    rig.reopen();
+    assert!(
+        rig.proxy.with_state(|_, l| l.ready().is_err()),
+        "a guard resume must not make a cut-short log valid; only a log reset may"
+    );
+    // The log reset is the way back: it archives the file and starts a new chain.
+    rig.proxy
+        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
+        .unwrap();
+    let _ = crate::providers_ipc::resume(&rig.proxy, "openai");
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (false, false));
+}
+
+#[test]
+fn a_first_launch_that_cannot_write_its_anchor_fails_closed() {
+    let dir = crate::provider_fixtures_tests::TmpDir::new("proxy-anchor-nowrite");
+    let kr = Arc::new(MemKeyring::default());
+    *kr.fail_set_account.lock().unwrap() =
+        Some(crate::provider_usage_log::ANCHOR_ACCOUNT.to_string());
+    let vendor = ScriptedVendor::new(&["gpt-known"], "x", None);
+    let p = ModelProxy::new(dir.0.clone(), kr.clone(), vendor);
+    assert_eq!(
+        p.with_state(|g, l| (g.unreadable, l.ready().is_err())),
+        (true, true),
+        "without an anchor the first launch must not go on as if it had one"
+    );
+}

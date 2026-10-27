@@ -48,6 +48,16 @@ const UNBOUNDED = new Set<string>([
 /** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so
  *  the Rust error (with its real cause) always arrives first and the UI never abandons a live turn. */
 const LONG: Record<string, number> = {
+  // GROW-S2 (Join 9): the rendezvous verbs have a 15 s daemon IPC bound (plus a ≤ 3 s connect).
+  // Create: publish (5 s) + open (15 s) + the group-name read (5 s), plus connects. Revoke: close
+  // (15 s) + the legacy revoke (5 s). Cancel / forget answer, then run one tick (15 s).
+  group_invite_create: 40_000,
+  group_invite_revoke: 30_000,
+  // Approving a claim closes the rendezvous and revokes the legacy record first, like revoke.
+  group_invite_verify_consume: 30_000,
+  rendezvous_tick: 20_000,
+  rendezvous_cancel: 40_000,
+  rendezvous_forget: 40_000,
   // One non-streaming model turn. Local: Rust bounds it at AI_REQUEST_TIMEOUT (300 s). Remote (D-11):
   // a core model proxy call, bounded at provider_egress::CALL_TIMEOUT (600 s); setting a preset
   // tests its key live through the same transport.

@@ -39,6 +39,8 @@ impl Drop for TmpDir {
 pub(crate) struct MemKeyring {
     pub map: Mutex<HashMap<String, String>>,
     pub fail: AtomicBool,
+    /// Writes to this one account fail (everything else works).
+    pub fail_set_account: Mutex<Option<String>>,
 }
 
 impl MemKeyring {
@@ -60,6 +62,9 @@ impl AiKeyring for MemKeyring {
         Ok(self.map.lock().unwrap().get(account).cloned())
     }
     fn set(&self, account: &str, value: &str) -> Result<(), AiError> {
+        if self.fail_set_account.lock().unwrap().as_deref() == Some(account) {
+            return Err(AiError::KeyringUnavailable);
+        }
         if self.fail.load(Ordering::SeqCst) {
             return Err(AiError::KeyringUnavailable);
         }
