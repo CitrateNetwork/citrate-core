@@ -707,35 +707,36 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
 }
 
 export function S4({ store, s }: { store: Store; s: AppState }) {
-  // Q-A.4b item 10 — for a SIGNED-IN user the wallet address must come from a REAL
-  // `wallet_address` claim (walletFromClaim). Without it, `s.walletAddr` is the
-  // deterministic persona `makeAddr` seed — a fabricated wallet for a real account
-  // — so we show "—"/pending instead. In the web-dev/persona path (signedIn=false)
-  // the labelled persona address is the honest preview and renders as before.
-  const walletKnown = !s.signedIn || s.walletFromClaim;
-  const walletDisplay = walletKnown ? s.walletAddr : "— · pending wallet_address claim";
+  // core#425 — the wallet in 0.5.2 is an EVM signing key sealed in this device's custody vault
+  // (custodyAddr). There is no smart account, passkey signer, guardian or recovery service, and
+  // losing the device loses the wallet (O-21). The card shows the device key's own address, never
+  // the identity's wallet_address claim: until the two are linked that claim is a different address
+  // this key cannot sign for. In the web-dev persona path (signedIn=false) the labelled persona
+  // address stands in, as before.
+  const deviceKey = s.custodyAddr || (!s.signedIn ? s.walletAddr : "");
+  const linkNote = deviceKey === "" ? "device key not read yet" : store.walletIsLinked() ? "linked to your identity" : "not linked to your identity yet";
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S4 · Wallet ready</div>
-      <div style={h1}>Your smart wallet already exists</div>
+      <div style={h1}>Your wallet is a key on this device</div>
       <p style={body}>
-        The address is deterministic from your identity — predicted before anything is deployed. The wallet itself deploys lazily with your first transaction, gas
-        sponsored.
+        Citrate Core made a signing key for you and sealed it in this computer&apos;s keychain. It signs only when you approve a request on screen. This version has no
+        recovery for it: if this computer or its keychain is lost, the wallet and everything in it is lost with it.
       </p>
       <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
-        <div className="lbl">Smart wallet · ERC-4337</div>
+        <div className="lbl">Wallet key on this device</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{walletDisplay}</span>
-          {walletKnown && (
-            <button className="btn btn-ghost btn-sm" onClick={() => store.copy(s.walletAddr, "Address copied")}>
+          <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{deviceKey || "—"}</span>
+          {deviceKey && (
+            <button className="btn btn-ghost btn-sm" onClick={() => store.copy(deviceKey, "Address copied")}>
               Copy
             </button>
           )}
         </div>
         <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          <Row k="Signer" v={<span style={{ fontSize: 13 }}>Passkey validator (WebAuthn P-256) — enrolled with your identity</span>} />
-          <Row k="Recovery" v={<span style={{ fontSize: 13 }}>Guardian module — configure guardians any time in Settings</span>} />
-          <Row k="Local key" v={<span style={{ fontSize: 13 }}>Optional signing key in this machine's keystore — create later in Keys &amp; security</span>} />
+          <Row k="Key" v={<span style={{ fontSize: 13 }}>EVM signing key · sealed in the custody vault · {linkNote}</span>} />
+          <Row k="Signing" v={<span style={{ fontSize: 13 }}>Only through the signature ceremony, after you approve</span>} />
+          <Row k="Recovery" v={<span style={{ fontSize: 13 }}>No recovery in this version: device loss is wallet loss</span>} />
         </div>
       </div>
       <div>
@@ -744,7 +745,7 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
         </button>
       </div>
       <div className="mono" style={dataSrc}>
-        Data source — wallet_address claim · /aa/address · EntryPoint 0x077F…54Ef
+        Data source — device key address (custody vault) · linked when your identity&apos;s wallet_address claim is the same address
       </div>
     </div>
   );
@@ -762,8 +763,8 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
           <div style={h1}>32,000 SALT — staked for you</div>
           <p style={body}>
             Your membership grant arrives already staked: the treasury deposits it into the MembershipStakeVault, attributed to your wallet, and the vault stakes it. It
-            covers your validator stake for the membership year. The principal stays vaulted until mainnet release; the rewards your node earns are yours. You approve a
-            single sponsored transaction.
+            covers your validator stake for the membership year. The principal stays vaulted until mainnet release; the rewards your node earns are yours. The membership treasury sends the grant; you
+            sign nothing here.
           </p>
           <div>
             <button className="btn btn-primary btn-lg" onClick={() => store.onS5Begin()}>
@@ -821,7 +822,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
           </div>
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → MemberBond</div>
           <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-            treasury UserOp · gas sponsored · first-op category
+            sent by the membership treasury, not by this app
           </div>
         </div>
       )}

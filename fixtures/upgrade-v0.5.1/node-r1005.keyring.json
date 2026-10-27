@@ -1,0 +1,7 @@
+{
+  "_comment": "The node storage key slot a 0.5.1 node holds in the OS keyring (service ai.citrate.core, account node-storage-key, node.rs KEYRING_NODE_STORAGE_ACCOUNT in v0.5.1). Synthetic test bytes, never a real key.",
+  "keyringService": "ai.citrate.core",
+  "keyring": {
+    "node-storage-key": "U1lOVEhFVElDLUZJWFRVUkUtTk9ERS1TVE9SQUdFMDE="
+  }
+}

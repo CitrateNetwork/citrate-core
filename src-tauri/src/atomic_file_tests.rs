@@ -199,7 +199,7 @@ const KNOWN_FIXED_TEMP_NAMES: &[(&str, usize, &str)] = &[
     ("local_data.rs", 1, "a name in the list of wallet files to remove, not a writer"),
     ("media.rs", 1, "unguarded: GalleryStore::record_item, store built per call; known, follow-up"),
     ("memory.rs", 1, "unguarded: save_seeded_chunks from memory_ingest_docs; known, follow-up"),
-    ("node_genesis.rs", 1, "write_marker runs under the NodeManager.sup Mutex in start()"),
+    ("node_genesis.rs", 1, "durable_tmp: write_durable (genesis marker, K6 migration intent) runs under the NodeManager.sup Mutex in start(); clear_intent removes the same leftover"),
     ("node_mcp_token.rs", 1, "write_private: tokens and faucet saves run under their store locks; node MCP save_config is unguarded; known, follow-up"),
     ("owned_browser.rs", 1, "unguarded: the child-watch thread can race start(); known, follow-up"),
     ("storage.rs", 1, "pins.json: replaced by a unique name under PIN_INDEX_LOCK in the #461 fix (fix/pin-index-writers)"),
