@@ -76,7 +76,10 @@ describe("P2.1 slow or flaky RPCs", () => {
     expect(h.pending).toHaveLength(2);
     h.pending[1].resolve(150_000);
     await flush();
-    h.pending[0].resolve(149_000); // the stale, out-of-order answer
+    now += 1000;
+    // The stale, out-of-order answer, far outside the noise band: without the generation check it
+    // would restart the head series at 120,000.
+    h.pending[0].resolve(120_000);
     await flush();
     now += 2000;
     const q = tr.fold(100_200, h.read);
@@ -100,12 +103,43 @@ describe("P2.1 slow or flaky RPCs", () => {
     expect(p.rate).toBeLessThan(41);
   });
 
-  it("a small local drop (a short reorg) keeps the series at its max", () => {
+  it("this node's height is never held at an earlier max: a 4,000-block rollback reads behind, not Synced or stalled (#569 review P1)", () => {
+    // A node at 500,000, within 3 blocks of the head, rolls back 4,000 blocks and then re-applies.
+    let s = emptySeries();
+    for (let sec = 0; sec <= 60; sec += 2) {
+      s = observe(s, "local", T0 + sec * 1000, 499_970 + sec / 2);
+      if (sec % 6 === 0) s = observe(s, "head", T0 + sec * 1000, 499_973 + sec / 2);
+    }
+    expect(syncProgress(s, T0 + 60_000).kind).toBe("synced");
+    s = observe(s, "local", T0 + 62_000, 496_000);
+    let p = syncProgress(s, T0 + 62_000);
+    expect(p.kind).toBe("syncing");
+    if (p.kind === "syncing") {
+      expect(p.local).toBe(496_000);
+      expect(p.behind).toBe(p.head - 496_000);
+    }
+    // It re-applies to 497,170 over the next 70 s: real height, real behind, not "Sync stalled".
+    let t = T0 + 62_000;
+    for (let i = 1; i <= 35; i++) {
+      t += 2000;
+      s = observe(s, "local", t, 496_000 + Math.round((1_170 * i) / 35));
+      if (i % 3 === 0) s = observe(s, "head", t, 500_003 + i);
+    }
+    p = syncProgress(s, t);
+    if (p.kind !== "syncing") throw new Error("expected syncing, got " + p.kind);
+    expect(p.local).toBe(497_170);
+    expect(p.behind).toBe(p.head - 497_170);
+    expect(p.behind).toBeGreaterThan(2_800);
+    expect(p.phase).not.toBe("stalled");
+    expect(syncLine(p)).not.toMatch(/^Synced|Sync stalled/);
+  });
+
+  it("a small local drop restarts the local series (only the public head gets the noise rule)", () => {
     let s = emptySeries();
     s = observe(s, "local", T0, 100_000);
     s = observe(s, "local", T0 + 2000, 100_080);
     s = observe(s, "local", T0 + 4000, 100_075);
-    expect(s.local.map((p) => p.v)).toEqual([100_000, 100_080, 100_080]);
+    expect(s.local).toEqual([{ t: T0 + 4000, v: 100_075 }]);
   });
 
   it("a drop of up to 8 blocks is small even at a low height; one of 9 restarts there", () => {
@@ -239,6 +273,31 @@ describe("P2.3 each sample gate holds on its own", () => {
 });
 
 describe("P2.4 contract words and timing", () => {
+  it("No peers (contract §1): net_peerCount 0 for 60 s while behind reads \"No peers\", not Sync stalled", () => {
+    const { s, now } = series({ seconds: 60, l0: 5_000, lr: 0, h0: 9_000, hr: 0.5 });
+    expect(syncLine(syncProgress(s, now, { noPeersForMs: 60_000 }))).toBe("No peers · 4,030 blocks behind");
+    expect(syncLine(syncProgress(s, now, { noPeersForMs: 58_000 }))).toBe("Sync stalled · 4,030 blocks behind");
+    const p = syncProgress(s, now, { noPeersForMs: 60_000 });
+    expect(p.kind === "syncing" && p.rate === null && p.etaSec === null).toBe(true);
+  });
+
+  it("the tracker times zero peers on its clock and clears on the first peer", async () => {
+    let now = T0;
+    const tr = new SyncTracker(() => now);
+    let head = 9_000;
+    const read = async () => (head += 2);
+    let p = tr.fold(5_000, read, 0);
+    for (let i = 0; i < 30; i++) {
+      await flush();
+      now += 2000;
+      p = tr.fold(5_000, read, 0);
+    }
+    expect(syncLine(p)).toMatch(/^No peers · /);
+    await flush();
+    now += 2000;
+    expect(syncLine(tr.fold(5_000, read, 1))).toMatch(/^Sync stalled · /);
+  });
+
   it("stalls at 60 s with the contract word, and no implied action", () => {
     expect(STALL_MS).toBe(60_000);
     const { s, now } = series({ seconds: 60, l0: 5_000, lr: 0, h0: 9_000, hr: 0.5 });

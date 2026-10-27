@@ -116,6 +116,34 @@ describe("refreshNode folds sync progress", () => {
     expect(p?.kind === "syncing" && p.phase).toBe("stalled");
   });
 
+  it("the store's stalled node state uses STALL_MS (60 s) on the monotonic clock (#569 review P2)", async () => {
+    wire(async () => 300_000);
+    await tick(0, "stopped");
+    store.setState({ node: "syncing" });
+    // The first frozen tick starts the timer; wall time then jumps back an hour.
+    await tick(100_000);
+    await tick(100_000);
+    const start = now;
+    vi.spyOn(Date, "now").mockImplementation(() => now - 3_600_000);
+    while (now - start < 58_000) await tick(100_000);
+    expect(store.state.node).toBe("syncing");
+    await tick(100_000); // 60 s frozen with peers: contract §1 Sync stalled
+    expect(now - start).toBe(60_000);
+    expect(store.state.node).toBe("stalled");
+  });
+
+  it("passes the peer count: 0 peers for 60 s reads No peers", async () => {
+    wire(async () => 300_000);
+    await tick(0, "stopped");
+    for (let i = 0; i < 32; i++) {
+      now += 2000;
+      vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 0, height: 100_000, syncPct: 50 });
+      await store.refreshNode();
+      await flush();
+    }
+    expect(store.state.syncProgress?.kind === "syncing" && store.state.syncProgress.phase).toBe("no-peers");
+  });
+
   it("a running node whose RPC answers 0x0 adds no reading (unknown is not zero)", async () => {
     wire(async () => 200_000);
     await tick(0, "stopped");
