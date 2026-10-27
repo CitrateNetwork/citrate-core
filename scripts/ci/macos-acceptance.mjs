@@ -49,7 +49,6 @@ export const BUNDLE_ID = "ai.citrate.core";
 export const APP_DIR_NAME = "Citrate Core.app";
 export const KEYCHAIN_SERVICES = ["ai.citrate.core", "ai.citrate.core.custody"];
 export const NODE_PORTS = [8545, 8546, 30303];
-export const EXPECTED_CHAIN_ID = 40204;
 export const TARGET = "aarch64-apple-darwin";
 export const MARKER_ENV = "CITRATE_MACOS_ACCEPTANCE_TEST_MACHINE";
 export const MODES = ["inspect", "verify", "full"];
@@ -58,6 +57,8 @@ export const REPO_ROOT = path.resolve(HERE, "..", "..");
 export const DATA_DIR = path.join(HERE, "macos-acceptance");
 // The overlay release.yml bundles with (a tripwire in the tests keeps the two in step).
 export const RELEASE_OVERLAY = "src-tauri/tauri.bundle-lite.conf.json";
+// The K6 network profiles the app reads (src-tauri/src/network_profile.rs include_str!).
+export const NETWORK_PROFILES = "src-tauri/network/profiles.json";
 
 export class UsageError extends Error {}
 
@@ -142,7 +143,8 @@ export function mayKill(proc, installApp, ownPids) {
   return isInside(proc.path, installApp) || ownPids.get(proc.pid) === proc.path;
 }
 
-/** `lsof -nP -iTCP -sTCP:LISTEN -iUDP -F pcPn` -> [{pid, command, proto, local}] */
+/** `lsof -nP -iTCP -sTCP:LISTEN -iUDP -F pcPn` -> [{pid, command, proto, local, remote}]. A UDP
+ *  socket with a remote side ("->") is connected: it receives only from that peer. */
 export function parseLsof(text) {
   const out = [];
   let pid = 0, command = "", proto = "";
@@ -152,7 +154,10 @@ export function parseLsof(text) {
     if (t === "p") { pid = Number(v); command = ""; proto = ""; }
     else if (t === "c") command = v;
     else if (t === "P") proto = v.toLowerCase();
-    else if (t === "n") out.push({ pid, command, proto, local: v.split("->")[0] });
+    else if (t === "n") {
+      const [local, remote = ""] = v.split("->");
+      out.push({ pid, command, proto, local, remote });
+    }
   }
   return out;
 }
@@ -191,21 +196,48 @@ export function parseAllowlist(text, columns) {
   return rows;
 }
 
-/** Listening sockets of the app's processes: every one must be loopback, or a documented
- *  wildcard bind (exe basename + proto + port in wildcard-allowlist.txt). External binds fail. */
-export function evaluateListeners(listeners, procPathByPid, allow) {
-  const bad = [], allowed = [], loopback = [];
+/** First port of the macOS ephemeral range (net.inet.ip.portrange.first). */
+export const EPHEMERAL_FIRST = 49152;
+
+/** listener-policy.txt: `<sidecar> <tcp|udp> <port|ephemeral> <wildcard|interface> <why>`. An
+ *  `ephemeral` port is allowed for UDP only (a TCP rule for any port would excuse any listener). */
+export function parseListenerPolicy(text) {
+  // RED STUB (core#558 review round): old behaviour
+  return parseAllowlist(text, ["exe", "proto", "port", "bind", "reason"]);
+}
+
+/** Normalise an address as lsof prints it: no brackets, no %zone, lower case, and the KAME
+ *  embedded scope of a link-local IPv6 address (fe80:4::1 for fe80::1 on interface 4) removed. */
+export function normalizeAddr(host) {
+  // RED STUB (core#558 review round): old behaviour
+  return String(host).replace(/^\[|\]$/g, "");
+}
+
+/** An address bound to one network interface on the LAN side: private or link-local IPv4,
+ *  link-local or unique-local IPv6, or one of this machine's own interface addresses. */
+export function isInterfaceAddress(host, ownAddrs = []) {
+  // RED STUB (core#558 review round): old behaviour
+  return false;
+}
+
+/** Sockets of the app's processes. Loopback passes. A connected UDP socket (it has a remote side)
+ *  is outbound, not a listener, and is reported only. Every other socket must match a policy rule
+ *  for the same sidecar, protocol, port (or the UDP ephemeral range) and bind scope (all
+ *  interfaces, or one LAN-side interface address). Anything else fails, including a documented
+ *  port held by another sidecar. */
+export function evaluateListeners(listeners, procPathByPid, policy, ownAddrs = []) {
+  // RED STUB (core#558 review round): old behaviour
+  const bad = [], allowed = [], loopback = [], outbound = [];
   for (const l of listeners) {
     const kind = classifyAddress(l.local);
     const exe = path.basename(procPathByPid.get(l.pid) || l.command || "");
     const { port } = splitHostPort(l.local);
     const row = { exe, pid: l.pid, proto: l.proto, local: l.local, kind };
     if (kind === "loopback") { loopback.push(row); continue; }
-    const doc = kind === "wildcard" && allow.find((a) => a.exe === exe && a.proto === l.proto && Number(a.port) === port);
-    if (doc) allowed.push({ ...row, reason: doc.reason });
-    else bad.push(row);
+    const doc = kind === "wildcard" && policy.find((a) => a.exe === exe && a.proto === l.proto && Number(a.port) === port);
+    if (doc) allowed.push({ ...row, reason: doc.reason }); else bad.push(row);
   }
-  return { ok: bad.length === 0, bad, allowed, loopback };
+  return { ok: bad.length === 0, bad, allowed, loopback, outbound };
 }
 
 /** `codesign -dvvv` (stderr) -> {identifier, teamId, authorities, runtime, adhoc} */
@@ -407,6 +439,21 @@ export function evaluateSidecarDigests(sidecars, pinned, bundled) {
   return { status: rows.length ? overall : "error", rows };
 }
 
+// ---------------------------------------------------------------- network profile (pure)
+/** The network this build targets, from src-tauri/network/profiles.json (the K6 source the app
+ *  reads): {id, chainId, genesisHash}. A profile with a missing value is not ready: throws. */
+export function activeNetwork(profiles) {
+  // RED STUB (core#558 review round): old behaviour
+  const p = profiles.profiles[profiles.active]; return { id: profiles.active, chainId: p.chainId, genesisHash: p.genesisHash };
+}
+
+/** The node answers for the profile's network: same chain id AND same genesis block hash (a
+ *  rerolled genesis keeps chain id 40204, so the chain id alone does not tell them apart). */
+export function evaluateRpc(answer, net) {
+  // RED STUB (core#558 review round): old behaviour
+  return answer.chainId === net.chainId ? { ok: true, why: [] } : { ok: false, why: [`eth_chainId ${answer.chainId}`] };
+}
+
 // ---------------------------------------------------------------- data locations (pure)
 /** data-locations.txt: `<path relative to HOME> | <why>` per line, `#` comments. */
 export function parseLocations(text) {
@@ -524,8 +571,8 @@ export function evaluateGuards(f) {
   if (!f.procs) r.push("process probe did not run");
   else for (const p of f.procs.filter((q) => q.path.includes(`/${APP_DIR_NAME}/`))) r.push(`Citrate Core is running: pid ${p.pid} ${p.path}`);
   if (!f.listeners) r.push("listener probe did not run");
-  else for (const l of f.listeners.filter((x) => NODE_PORTS.includes(splitHostPort(x.local).port))) {
-    r.push(`port ${splitHostPort(l.local).port} is in use (pid ${l.pid} ${l.command}): a node runs on this machine`);
+  else {
+    for (const l of f.listeners.filter((x) => NODE_PORTS.includes(splitHostPort(x.local).port))) r.push(`port ${splitHostPort(l.local).port} is in use (pid ${l.pid} ${l.command}): a node runs on this machine`);
   }
   for (const s of KEYCHAIN_SERVICES) {
     const k = f.keychain?.[s];
@@ -644,16 +691,23 @@ function snapshotListeners(rn) {
   return parseLsof(r.stdout);
 }
 
-async function rpcChainId(url) {
+async function rpcCall(url, method, params) {
   try {
     const res = await fetch(url, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
       signal: AbortSignal.timeout(3000),
     });
-    const j = await res.json();
-    return typeof j.result === "string" ? parseInt(j.result, 16) : null;
+    return (await res.json()).result ?? null;
   } catch { return null; }
+}
+
+/** The node's chain id and genesis block hash, or null until it answers both. */
+async function rpcNetwork(url) {
+  const cid = await rpcCall(url, "eth_chainId", []);
+  const g = await rpcCall(url, "eth_getBlockByNumber", ["0x0", false]);
+  if (typeof cid !== "string" || !g || typeof g.hash !== "string") return null;
+  return { chainId: parseInt(cid, 16), genesisHash: g.hash };
 }
 
 /** Code digests of the files in --pinned-dir, keyed by each file's sha256. */
@@ -800,7 +854,7 @@ export async function runAcceptance(ctx, o) {
   rn.mut("xattr", ["-dr", "com.apple.quarantine", installApp]);
 
   const appExe = path.join(macosDir(installApp), exe);
-  const wildAllow = parseAllowlist(fs.readFileSync(path.join(DATA_DIR, "wildcard-allowlist.txt"), "utf8"), ["exe", "proto", "port", "reason"]);
+  const policy = parseListenerPolicy(fs.readFileSync(path.join(DATA_DIR, "listener-policy.txt"), "utf8"));
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(tmp, { recursive: true });
   ctx.home = home;
@@ -854,17 +908,21 @@ export async function runAcceptance(ctx, o) {
   const alive = r1 && !r1.dead && snapshotProcs(rn).some((p) => p.pid === appPid);
   if (!add("launch.ready", alive ? "pass" : "fail", alive ? `required sidecars up (${o.required.join(", ")}) and the app alive after ${T.settle / 1000}s` : r1?.dead || r1 ? "the app exited during launch" : `required sidecars not up within ${T.launch / 1000}s`)) return finish();
   if (o.rpc) {
-    const cid = await waitFor(T.launch, () => rpcChainId("http://127.0.0.1:8545"));
-    add("launch.rpc", cid === EXPECTED_CHAIN_ID ? "pass" : "fail", cid === null ? "no eth_chainId answer on 127.0.0.1:8545" : `eth_chainId ${cid}`);
+    if (!ctx.spec.network) add("launch.rpc", "error", `no ready network profile to compare with: ${ctx.spec.networkError || "missing"}`);
+    else {
+      const ans = await waitFor(T.launch, () => rpcNetwork("http://127.0.0.1:8545"));
+      const rv = evaluateRpc(ans || {}, ctx.spec.network);
+      add("launch.rpc", rv.ok ? "pass" : "fail", rv.ok ? `chain ${ans.chainId}, genesis ${ans.genesisHash} = profile ${ctx.spec.network.id}` : `127.0.0.1:8545: ${rv.why.join("; ")}`, { answer: ans, profile: ctx.spec.network });
+    }
   } else smokeSkip("launch.rpc", "no node RPC in the stand-in");
   let procs = snapshotProcs(rn);
   const mine = ours(procs, appPid);
   const pathByPid = new Map(mine.map((p) => [p.pid, p.path]));
   const myListeners = snapshotListeners(rn).filter((l) => pathByPid.has(l.pid));
   const appPorts = new Set(myListeners.map((l) => `${l.proto} ${l.local}`));
-  const lv = evaluateListeners(myListeners, pathByPid, wildAllow);
+  const lv = evaluateListeners(myListeners, pathByPid, policy, deps.ifaceAddrs ? deps.ifaceAddrs() : []);
   add("launch.listeners_loopback", lv.ok ? "pass" : "fail",
-    lv.ok ? `${lv.loopback.length} loopback, ${lv.allowed.length} documented wildcard` : `not loopback: ${lv.bad.map((b) => `${b.exe} ${b.proto} ${b.local}`).join(", ")}`,
+    lv.ok ? `${lv.loopback.length} loopback, ${lv.allowed.length} per listener-policy.txt, ${lv.outbound.length} connected (outbound) UDP` : `not allowed: ${lv.bad.map((b) => `${b.exe} ${b.proto} ${b.local} (${b.kind})`).join(", ")}`,
     { sidecars: sidecarsOf(procs, appPid).map((p) => path.basename(p.path)), listeners: lv });
 
   // --- restart: SIGKILL the node sidecar; the supervisor must start a new one under the app
@@ -1008,6 +1066,8 @@ function restoreKeychain(ctx) {
 }
 
 // ---------------------------------------------------------------- self-test (stand-in app)
+// The stand-in's ipfs holds an unconnected UDP socket on an ephemeral port on all interfaces, as
+// kubo does with mDNS on, so the good mode exercises listener-policy.txt against real lsof output.
 // A stand-in Citrate Core.app (bash main executable; its two sidecars are one small C program
 // compiled here, so they are thin arm64/x86_64 binaries an ad hoc signature can run) packed into a
 // real DMG and run in a good mode and broken modes. The good one must give pass-unsigned-smoke;
@@ -1017,6 +1077,7 @@ export const SELF_TEST_MODES = [
   { mode: "good", run: "full", expectFail: [] },
   { mode: "leak", run: "full", expectFail: ["quit.clean"] },
   { mode: "wildcard", run: "full", expectFail: ["launch.listeners_loopback"] },
+  { mode: "udp-wrong-sidecar", run: "full", expectFail: ["launch.listeners_loopback"] },
   { mode: "norestart", run: "full", expectFail: ["restart.sidecar"] },
   { mode: "noreap", run: "full", expectFail: ["reap.orphans"] },
   { mode: "stray-file", run: "full", expectFail: ["uninstall.outside_files"] },
@@ -1053,7 +1114,16 @@ int main(int argc, char **argv) {
     if (bind(s, (struct sockaddr *)&a, sizeof a) != 0 || listen(s, 8) != 0) return 3;
     for (;;) { int c = accept(s, 0, 0); if (c >= 0) close(c); }
   }
-  if (argc == 2) { sleep((unsigned)atoi(argv[1])); return 0; }
+  if (argc == 4 && strcmp(argv[1], "udp") == 0) {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short)atoi(argv[3]));
+    if (inet_pton(AF_INET, argv[2], &a.sin_addr) != 1) return 2;
+    if (bind(s, (struct sockaddr *)&a, sizeof a) != 0) return 3;
+    for (;;) pause();
+  }
   return 64;
 }
 `;
@@ -1076,8 +1146,9 @@ node_loop() {
   done
 }
 node_loop & echo $! >> "$PF"
-"$D/ipfs" 100000 & IPFS=$!; echo $IPFS >> "$PF"
+"$D/ipfs" udp 0.0.0.0 0 & IPFS=$!; echo $IPFS >> "$PF"
 if [ "$MODE" = wildcard ]; then "$D/citrate" listen 0.0.0.0 $((PORT + 1)) & echo $! >> "$PF"; fi
+if [ "$MODE" = udp-wrong-sidecar ]; then "$D/citrate" udp 0.0.0.0 0 & echo $! >> "$PF"; fi
 if [ "$MODE" = stray-file ]; then : > "/private/tmp/citrate-selftest-stray-$PORT"; fi
 if [ "$MODE" = undocumented-data ]; then mkdir -p "$HOME/Library/citrate-undocumented" && : > "$HOME/Library/citrate-undocumented/x"; fi
 mkdir -p "$HOME/Library/Application Support/ai.citrate.core" && : > "$HOME/Library/Application Support/ai.citrate.core/selftest"
@@ -1201,11 +1272,14 @@ async function oneRun(base, o, label, spec) {
 
 /** The release's bundle spec from this checkout (run the harness from the RC's tag). */
 export function loadReleaseSpec(root = REPO_ROOT) {
-  return releaseBundleSpec({
+  const spec = releaseBundleSpec({
     manifest: loadManifest(path.join(root, "release", "components.json")),
     pinsText: fs.readFileSync(path.join(root, "src-tauri", "runtime-deps.sha256"), "utf8"),
     overlay: JSON.parse(fs.readFileSync(path.join(root, RELEASE_OVERLAY), "utf8")),
   });
+  try { spec.network = activeNetwork(JSON.parse(fs.readFileSync(path.join(root, NETWORK_PROFILES), "utf8"))); }
+  catch (e) { spec.network = null; spec.networkError = String(e.message || e); }
+  return spec;
 }
 
 export async function main(argv, deps) {
@@ -1292,6 +1366,7 @@ export function realDeps() {
   return {
     platform: process.platform, arch: process.arch, uid: process.getuid ? process.getuid() : -1,
     env: process.env, pwHome: os.userInfo().homedir, hostname: os.hostname(),
+    ifaceAddrs: () => Object.values(os.networkInterfaces()).flat().filter(Boolean).map((a) => a.address),
     exists: (p) => fs.existsSync(p),
     readHostsFile: (p) => {
       try {

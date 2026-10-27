@@ -122,38 +122,85 @@ describe("process parsing and kill safety", () => {
 });
 
 describe("listeners", () => {
-  const LSOF = [
-    "p501", "ccitrate", "f7", "PTCP", "n127.0.0.1:8545", "f8", "PTCP", "n*:30303",
-    "p503", "cipfs", "f3", "PTCP", "n[::1]:5001", "f4", "PUDP", "n*:4001", "f5", "PUDP", "n127.0.0.1:5353->224.0.0.251:5353",
-    "p504", "cllama-server", "f9", "PTCP", "n192.168.1.20:8080", "f10", "PTCP", "n*:9999",
-    "",
-  ].join("\n");
-  const allow = H.parseAllowlist("# c\ncitrate tcp 30303 node p2p\nipfs udp 4001 swarm quic # trailing\n", ["exe", "proto", "port", "reason"]);
-  it("parses lsof -F output, keeping the local side of a connected socket", () => {
-    const l = H.parseLsof(LSOF);
-    expect(l).toHaveLength(7);
-    expect(l[0]).toEqual({ pid: 501, command: "citrate", proto: "tcp", local: "127.0.0.1:8545" });
-    expect(l[4].local).toBe("127.0.0.1:5353");
-    expect(allow[1]).toEqual({ exe: "ipfs", proto: "udp", port: "4001", reason: "swarm quic" });
+  const policy = H.parseListenerPolicy(read(path.join(here, "macos-acceptance", "listener-policy.txt")));
+  const P = (exe) => `${INSTALL}/Contents/MacOS/${exe}`;
+  const paths = new Map([[501, P("citrate")], [700, P("ipfs")], [702, P("mem-mcp")], [704, P("llama-server")]]);
+  const lsof = (rows) => rows.map(([pid, cmd, socks]) => [`p${pid}`, `c${cmd}`, ...socks.flatMap(([proto, n], i) => [`f${i + 3}`, `P${proto}`, `n${n}`])]).flat().join("\n") + "\n";
+  // The 0.5.1 app's sockets as the core#558 review read them with lsof (read-only, nothing launched),
+  // LAN addresses replaced by documentation-style private ones. ipfs: swarm on 4001, six mDNS
+  // sockets on *:5353, two unconnected wildcard UDP on random ports, per-interface mDNS sockets
+  // (one LAN v4, nine link-local v6 in lsof's embedded-scope form, one unique-local v6).
+  const REVIEWED = lsof([
+    [501, "citrate", [["TCP", "127.0.0.1:8545"], ["TCP", "127.0.0.1:8546"], ["TCP", "*:30303"], ["UDP", "192.168.1.23:55012->1.1.1.1:53"]]],
+    [700, "ipfs", [
+      ["TCP", "*:4001"], ["TCP", "*:4001"], ["TCP", "127.0.0.1:5001"], ["TCP", "127.0.0.1:48080"],
+      ["UDP", "*:4001"], ["UDP", "*:4001"],
+      ...Array.from({ length: 6 }, () => ["UDP", "*:5353"]),
+      ["UDP", "*:61234"], ["UDP", "*:58211"],
+      ["UDP", "192.168.1.23:63001"],
+      ...Array.from({ length: 9 }, (_, i) => ["UDP", `[fe80:${(i + 4).toString(16)}::1c2b:3aff:fe11:22${10 + i}]:${64000 + i}`]),
+      ["UDP", "[fd7a:115c:a1e0::1]:62001"],
+    ]],
+    [702, "mem-mcp", [["TCP", "127.0.0.1:7071"]]],
+  ]);
+  // The same sidecar read on the MAC-lane machine 2026-10-27 (no per-interface sockets at that moment).
+  const LIVE = lsof([[700, "ipfs", [["TCP", "*:4001"], ["TCP", "*:4001"], ["TCP", "127.0.0.1:5001"], ["TCP", "127.0.0.1:48080"],
+    ["UDP", "*:4001"], ["UDP", "*:4001"], ["UDP", "*:5353"], ["UDP", "*:5353"], ["UDP", "*:5353"], ["UDP", "*:5353"]]]]);
+  const evalL = (text, own = []) => H.evaluateListeners(H.parseLsof(text), paths, policy, own);
+
+  it("parses lsof -F output and keeps the remote side of a connected socket", () => {
+    const l = H.parseLsof("p501\nccitrate\nf7\nPTCP\nn127.0.0.1:8545\nf8\nPUDP\nn127.0.0.1:5353->224.0.0.251:5353\n");
+    expect(l).toEqual([
+      { pid: 501, command: "citrate", proto: "tcp", local: "127.0.0.1:8545", remote: "" },
+      { pid: 501, command: "citrate", proto: "udp", local: "127.0.0.1:5353", remote: "224.0.0.251:5353" },
+    ]);
   });
-  it("classifies loopback, wildcard and external binds", () => {
+  it("classifies loopback, wildcard and interface addresses (lsof's embedded-scope link-local too)", () => {
     expect(H.classifyAddress("127.0.0.1:8545")).toBe("loopback");
     expect(H.classifyAddress("[::1]:5001")).toBe("loopback");
     expect(H.classifyAddress("*:30303")).toBe("wildcard");
-    expect(H.classifyAddress("0.0.0.0:1")).toBe("wildcard");
     expect(H.classifyAddress("[::]:1")).toBe("wildcard");
-    expect(H.classifyAddress("192.168.1.20:8080")).toBe("external");
-    expect(H.splitHostPort("[::1]:5001")).toEqual({ host: "::1", port: 5001 });
+    expect(H.splitHostPort("[fe80:4::1]:64000")).toEqual({ host: "fe80:4::1", port: 64000 });
+    expect(H.normalizeAddr("[fe80:4::1C2B]")).toBe("fe80::1c2b");
+    expect(H.normalizeAddr("fe80::1%en0")).toBe("fe80::1");
+    for (const a of ["192.168.1.23", "10.0.0.5", "172.20.1.1", "169.254.3.4", "fe80:4::1", "fd7a:115c:a1e0::1"]) expect(H.isInterfaceAddress(a), a).toBe(true);
+    for (const a of ["8.8.8.8", "172.32.0.1", "2001:db8::5", "100.64.0.1"]) expect(H.isInterfaceAddress(a), a).toBe(false);
+    expect(H.isInterfaceAddress("[2001:db8::5]", ["2001:db8::5"])).toBe(true); // this machine's own global v6
   });
-  it("passes loopback and documented wildcard binds, fails everything else", () => {
-    const l = H.parseLsof(LSOF);
-    const paths = new Map([[501, `${INSTALL}/Contents/MacOS/citrate`], [503, `${INSTALL}/Contents/MacOS/ipfs`], [504, `${INSTALL}/Contents/MacOS/llama-server`]]);
-    expect(H.evaluateListeners(l.filter((x) => x.pid !== 504), paths, allow).ok).toBe(true);
-    const bad = H.evaluateListeners(l, paths, allow);
-    expect(bad.ok).toBe(false);
-    expect(bad.bad.map((b) => b.local)).toEqual(["192.168.1.20:8080", "*:9999"]);
-    // the allowlist is per sidecar: the node's P2P port does not excuse another process
-    expect(H.evaluateListeners([{ pid: 504, command: "llama-server", proto: "tcp", local: "*:30303" }], paths, allow).ok).toBe(false);
+  it("the policy file parses, and refuses a TCP 'any port' rule or an unknown scope", () => {
+    expect(policy.map((r) => `${r.exe} ${r.proto} ${r.port} ${r.bind}`)).toEqual([
+      "citrate tcp 30303 wildcard", "ipfs tcp 4001 wildcard", "ipfs udp 4001 wildcard", "ipfs udp 5353 wildcard",
+      "ipfs udp ephemeral interface", "ipfs udp ephemeral wildcard",
+    ]);
+    expect(() => H.parseListenerPolicy("ipfs tcp ephemeral wildcard any\n")).toThrow(/udp only/);
+    expect(() => H.parseListenerPolicy("ipfs udp 5353 everywhere x\n")).toThrow(/bad bind/);
+    expect(() => H.parseListenerPolicy("ipfs udp * wildcard x\n")).toThrow(/bad port/);
+    expect(() => H.parseListenerPolicy("ipfs sctp 1 wildcard x\n")).toThrow(/bad proto/);
+  });
+  it("passes the 0.5.1 app's real sockets (review of core#558) and the live read", () => {
+    const r = evalL(REVIEWED);
+    expect(r.bad).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.outbound.map((o) => o.local)).toEqual(["192.168.1.23:55012"]);
+    expect(r.allowed.filter((a) => a.local === "*:5353")).toHaveLength(6);
+    expect(r.allowed.filter((a) => a.kind === "interface")).toHaveLength(11);
+    expect(r.loopback).toHaveLength(5);
+    expect(evalL(LIVE).ok).toBe(true);
+  });
+  it.each([
+    ["a non-ipfs sidecar on UDP 5353", [702, "mem-mcp", [["UDP", "*:5353"]]], "mem-mcp udp *:5353"],
+    ["an unexpected TCP listener on all interfaces", [700, "ipfs", [["TCP", "*:5002"]]], "ipfs tcp *:5002"],
+    ["ipfs TCP on an ephemeral port on an interface", [700, "ipfs", [["TCP", "192.168.1.23:63001"]]], "ipfs tcp 192.168.1.23:63001"],
+    ["ipfs UDP below the ephemeral range on an interface", [700, "ipfs", [["UDP", "192.168.1.23:5000"]]], "ipfs udp 192.168.1.23:5000"],
+    ["ipfs UDP below the ephemeral range on all interfaces", [700, "ipfs", [["UDP", "*:8000"]]], "ipfs udp *:8000"],
+    ["ipfs UDP on a public address", [700, "ipfs", [["UDP", "8.8.4.4:63001"]]], "ipfs udp 8.8.4.4:63001"],
+    ["ipfs 5353 on one interface (only the wildcard bind is documented)", [700, "ipfs", [["UDP", "192.168.1.23:5353"]]], "ipfs udp 192.168.1.23:5353"],
+    ["the node's ephemeral UDP on all interfaces", [501, "citrate", [["UDP", "*:61234"]]], "citrate udp *:61234"],
+    ["the node's P2P port held by llama-server", [704, "llama-server", [["TCP", "*:30303"]]], "llama-server tcp *:30303"],
+  ])("fails %s, even next to the real sockets", (_n, row, want) => {
+    const r = evalL(REVIEWED + lsof([row]));
+    expect(r.ok).toBe(false);
+    expect(r.bad.map((b) => `${b.exe} ${b.proto} ${b.local}`)).toEqual([want]);
   });
 });
 
@@ -494,7 +541,19 @@ describe("machine-safety guard", () => {
     expect(H.ownerPaths("/Users/o")).toEqual(expect.arrayContaining([
       "/Applications/Citrate Core.app", "/Users/o/Applications/Citrate Core.app",
       "/Users/o/Library/Application Support/ai.citrate.core", "/Users/o/.citrate",
+      "/Users/o/Library/Logs/ai.citrate.core", "/Users/o/Library/HTTPStorages/ai.citrate.core",
+      "/Users/o/Library/HTTPStorages/ai.citrate.core.binarycookies", "/Users/o/Library/Saved Application State/ai.citrate.core.savedState",
     ]));
+  });
+  it("prints each refusal once, one line per busy node port", () => {
+    const listeners = [];
+    for (let i = 0; i < 16; i++) listeners.push({ pid: 88, command: "citrate", proto: "tcp", local: `127.0.0.1:8545` });
+    listeners.push({ pid: 89, command: "citrate", proto: "tcp", local: "*:30303" });
+    const g = H.evaluateGuards({ ...cleanFacts(), listeners, existingOwnerPaths: ["/A", "/A"] });
+    expect(g.refusals.filter((r) => /port 8545/.test(r))).toEqual(["port 8545 is in use (pid 88 citrate): a node runs on this machine"]);
+    expect(g.refusals.filter((r) => /port 30303/.test(r))).toHaveLength(1);
+    expect(g.refusals.filter((r) => /here: \/A$/.test(r))).toHaveLength(1);
+    expect(new Set(g.refusals).size).toBe(g.refusals.length);
   });
 });
 
@@ -584,7 +643,11 @@ describe("guarded runner", () => {
     }
     for (const [c, a] of [["hdiutil", ["attach", "x"]], ["hdiutil", ["create", "x"]], ["codesign", ["--force", "-s", "-", "x"]], ["security", ["list-keychains", "-d", "user", "-s", "/k"]],
       ["security", ["delete-generic-password", "-s", "s"]], ["xcrun", ["stapler", "staple", "x"]], ["xcrun", ["clang", "x.c"]], ["spctl", ["--master-disable"]],
-      ["git", ["checkout", "x"]], ["rm", ["-rf", "/"]], ["/bin/rm", ["x"]]]) {
+      ["git", ["checkout", "x"]], ["rm", ["-rf", "/"]], ["/bin/rm", ["x"]],
+      ["security", ["find-generic-password", "-s", "s", "-g"]], ["security", ["find-generic-password", "-w", "-s", "s"]], ["security", ["find-generic-password", "-gs", "s"]],
+      ["security", ["dump-keychain", "-d", "/k"]], ["security", ["dump-keychain", "-r", "/k"]],
+      ["plutil", ["-extract", "k", "raw", "-o", "/tmp/out", "p"]], ["plutil", ["-extract", "k", "raw", "p"]],
+      ["plutil", ["-extract", "k", "raw", "-o", "-", "-o", "/tmp/x", "p"]], ["plutil", ["-extract", "k", "raw", "-o", "-", "-r", "p"]]]) {
       expect(() => rn.read(c, a), `${c} ${a.join(" ")}`).toThrow(/not a read-only command/);
     }
   });
@@ -661,6 +724,33 @@ describe("tripwire: the real CLI refuses on a machine without the test-machine m
     expect(iMarker).toBeLessThan(body.indexOf("gatherGuardFacts("));
     // no other way in: no CI-runner bypass, no flag
     expect(src).not.toMatch(/RUNNER_ENVIRONMENT|GITHUB_ACTIONS|testMachineFlag/);
+  });
+});
+
+// ------------------------------------------------------------------ network profile and RPC
+describe("network profile and RPC", () => {
+  const G = "0x" + "1d".repeat(32);
+  const prof = (p, active = "a") => ({ active, profiles: { a: { chainId: 40204, genesisHash: G, ...p } } });
+  it("reads the active profile's chain id and genesis, and refuses one that is not ready", () => {
+    expect(H.activeNetwork(prof({}))).toEqual({ id: "a", chainId: 40204, genesisHash: G });
+    expect(H.activeNetwork(prof({ genesisHash: G.toUpperCase().replace("0X", "0x") })).genesisHash).toBe(G);
+    expect(() => H.activeNetwork(prof({ genesisHash: null }))).toThrow(/not ready/);
+    expect(() => H.activeNetwork(prof({ chainId: null }))).toThrow(/not ready/);
+    expect(() => H.activeNetwork(prof({ genesisHash: "0x" + "0".repeat(64) }))).toThrow(/not ready/);
+    expect(() => H.activeNetwork(prof({}, "missing"))).toThrow(/not in profiles.json/);
+  });
+  it("the node must answer the profile's chain id AND genesis (a rerolled genesis keeps 40204)", () => {
+    const net = { id: "a", chainId: 40204, genesisHash: G };
+    expect(H.evaluateRpc({ chainId: 40204, genesisHash: G.toUpperCase().replace("0X", "0x") }, net).ok).toBe(true);
+    expect(H.evaluateRpc({ chainId: 40204, genesisHash: "0x" + "2e".repeat(32) }, net).why.join()).toMatch(/genesis 0x2e.* != 0x1d.*profile a/);
+    expect(H.evaluateRpc({ chainId: 1, genesisHash: G }, net).why.join()).toMatch(/eth_chainId 1 != 40204/);
+    expect(H.evaluateRpc({}, net).why).toEqual(["no eth_chainId answer", "no genesis block (eth_getBlockByNumber 0x0)"]);
+  });
+  it("this checkout's release spec carries its active profile (the one the app reads)", () => {
+    const profiles = JSON.parse(read(path.join(repo, H.NETWORK_PROFILES)));
+    const spec = H.loadReleaseSpec(repo);
+    expect(spec.network).toEqual(H.activeNetwork(profiles));
+    expect(read(path.join(repo, "src-tauri", "src", "network_profile.rs"))).toMatch(/include_str!\("\.\.\/network\/profiles\.json"\)/);
   });
 });
 
@@ -775,6 +865,12 @@ describe("tripwires", () => {
     const overlay = JSON.parse(read(path.join(repo, H.RELEASE_OVERLAY)));
     const manifest = JSON.parse(read(path.join(repo, "release", "components.json")));
     expect(manifest.components.map((c) => c.external_bin).sort()).toEqual([...overlay.bundle.externalBin].sort());
+  });
+  it("every sidecar the listener policy names is one the release bundles", () => {
+    const spec = H.loadReleaseSpec(repo);
+    const policy = H.parseListenerPolicy(read(path.join(here, "macos-acceptance", "listener-policy.txt")));
+    for (const r of policy) expect(spec.bins, r.exe).toContain(r.exe);
+    expect(fs.existsSync(path.join(here, "macos-acceptance", "wildcard-allowlist.txt"))).toBe(false);
   });
   it("process control and command execution live only in realDeps", () => {
     const src = read(path.join(here, "macos-acceptance.mjs"));
