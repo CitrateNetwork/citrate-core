@@ -50,6 +50,8 @@ struct RawProfile {
     faucet_url: Option<String>,
     bootnodes: Option<Vec<String>>,
     address_book: Option<String>,
+    address_book_sha256: Option<String>,
+    min_chain_rev: Option<String>,
     #[serde(default)]
     pending: BTreeMap<String, String>,
 }
@@ -71,6 +73,12 @@ pub struct NetworkProfile {
     pub bootnodes: Option<Vec<String>>,
     /// The generated address book, relative to `src-tauri/`.
     pub address_book: Option<String>,
+    /// sha256 (64 lowercase hex) of the frozen canonical citrate-chain address book this
+    /// profile's genesis was deployed with, as exported at the reroll.
+    pub address_book_sha256: Option<String>,
+    /// The citrate-chain commit (40 lowercase hex) the bundled node must contain for this
+    /// network; `MIN_CHAIN_REV` in `scripts/build-sidecar.sh` pins the active one.
+    pub min_chain_rev: Option<String>,
     /// For each unset field: what sets it.
     pub pending: BTreeMap<String, String>,
 }
@@ -90,6 +98,10 @@ pub struct ReadyNetwork {
     /// At least one, each `noise_<64 hex>@<host>:<port>`.
     pub bootnodes: Vec<String>,
     pub address_book: String,
+    /// 64 lowercase hex, not zero.
+    pub address_book_sha256: String,
+    /// 40 lowercase hex, not zero.
+    pub min_chain_rev: String,
 }
 
 /// Why a profile cannot be used.
@@ -173,6 +185,8 @@ fn parse(json: &str) -> Result<(String, Vec<NetworkProfile>), ProfileError> {
             faucet_url: p.faucet_url,
             bootnodes: p.bootnodes,
             address_book: p.address_book,
+            address_book_sha256: p.address_book_sha256,
+            min_chain_rev: p.min_chain_rev,
             pending: p.pending,
         })
         .collect();
@@ -225,6 +239,13 @@ fn check_hash(s: &str) -> Option<String> {
     Some(format!("0x{}", hex.to_ascii_lowercase()))
 }
 
+/// Exactly `len` lowercase hex digits, not all zero (a digest or a full commit id).
+fn is_lower_hex_nonzero(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && s.bytes().any(|b| b != b'0')
+}
+
 /// `noise_<64 hex>@<host>:<port>`, the form the node verifies at the Noise handshake.
 pub fn is_bootnode(s: &str) -> bool {
     let Some(rest) = s.strip_prefix("noise_") else {
@@ -267,6 +288,8 @@ impl NetworkProfile {
         miss("faucetUrl", self.faucet_url.is_none());
         miss("bootnodes", self.bootnodes.is_none());
         miss("addressBook", self.address_book.is_none());
+        miss("addressBookSha256", self.address_book_sha256.is_none());
+        miss("minChainRev", self.min_chain_rev.is_none());
         out
     }
 
@@ -326,6 +349,20 @@ impl NetworkProfile {
         if address_book.is_empty() {
             return Err(invalid("addressBook", "empty".into()));
         }
+        let address_book_sha256 = self.address_book_sha256.clone().unwrap_or_default();
+        if !is_lower_hex_nonzero(&address_book_sha256, 64) {
+            return Err(invalid(
+                "addressBookSha256",
+                format!("{address_book_sha256:?} is not a sha256 digest (64 lowercase hex)"),
+            ));
+        }
+        let min_chain_rev = self.min_chain_rev.clone().unwrap_or_default();
+        if !is_lower_hex_nonzero(&min_chain_rev, 40) {
+            return Err(invalid(
+                "minChainRev",
+                format!("{min_chain_rev:?} is not a commit (40 lowercase hex)"),
+            ));
+        }
         Ok(ReadyNetwork {
             id: self.id.clone(),
             label: self.label.clone(),
@@ -337,6 +374,8 @@ impl NetworkProfile {
             faucet_url,
             bootnodes,
             address_book,
+            address_book_sha256,
+            min_chain_rev,
         })
     }
 
