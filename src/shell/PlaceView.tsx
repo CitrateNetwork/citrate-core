@@ -18,7 +18,7 @@ import { GroupRoundsCard } from "../fl/GroupRoundsCard";
 import { FlRoundsPanel } from "../fl/FlRoundsPanel";
 import { bridge } from "../bridge";
 import { Models, StorageFiles, Groups, Cluster, Train, Connections, Community, People } from "../surfaces";
-import { StoragePins, StorageBackup } from "../surfaces";
+import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 
 function TabStrip({ id, items, active, store, sub, badges }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean; badges?: Record<string, number> }) {
   return (
@@ -131,14 +131,8 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "node/status":
       return <Node store={store} s={s} />;
     case "node/services":
-      return (
-        <NotAvailableYet
-          route={route}
-          title="Services"
-          body="A list of the processes this app supervises, each with its state, a restart control and a bounded log, is not available in this build. The node's own state is on the Status tab."
-          action={{ label: "Open Node › Status", go: () => store.go("node/status") }}
-        />
-      );
+      // K1a-2: the services registry snapshot (Rust `services_snapshot`).
+      return <NodeServices store={store} s={s} />;
     case "node/storage/files":
       return <StorageFiles store={store} s={s} />;
     case "node/storage/memory":

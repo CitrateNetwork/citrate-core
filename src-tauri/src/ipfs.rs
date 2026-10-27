@@ -53,6 +53,11 @@ pub struct IpfsManager {
 }
 
 impl IpfsManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     pub fn new(bin: PathBuf, repo_dir: PathBuf, crash_record_path: PathBuf) -> Self {
         IpfsManager {
             bin,

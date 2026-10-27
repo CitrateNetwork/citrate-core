@@ -1,0 +1,71 @@
+{
+  "model": "muse-spark-1.3",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are Hermes. Be brief."
+    },
+    {
+      "role": "user",
+      "content": "What is the weather in Boston and Paris?"
+    },
+    {
+      "role": "assistant",
+      "content": "Checking both.",
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\":\"Boston, MA\"}"
+          }
+        },
+        {
+          "id": "call_2",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\":\"Paris\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "{\"temp_c\":12}",
+      "tool_call_id": "call_1"
+    },
+    {
+      "role": "tool",
+      "content": "sunny",
+      "tool_call_id": "call_2"
+    },
+    {
+      "role": "user",
+      "content": "Thanks. Which is warmer?"
+    }
+  ],
+  "max_completion_tokens": 512,
+  "stream": false,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a location",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "location"
+          ]
+        }
+      }
+    }
+  ]
+}

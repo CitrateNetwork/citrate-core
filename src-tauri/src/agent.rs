@@ -469,6 +469,11 @@ fn map_state(state: &SupervisorState) -> &'static str {
 }
 
 impl AgentManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over explicit paths + a supervision transport. Production
     /// uses [`build_agent_state`]; tests inject a stub binary + temp paths + a
     /// mock/stub transport.
@@ -994,7 +999,7 @@ pub async fn user_claim(
     let grant = crate::grant_status::read_grant_status(&rpc, &wallet.address).ok();
     let is_validator = grant
         .as_ref()
-        .map(|g| g.bond_deployed && g.has_validator)
+        .map(crate::grant_status::claims_through_bond)
         .unwrap_or(false);
 
     let (to, claimable_wei) = if is_validator {

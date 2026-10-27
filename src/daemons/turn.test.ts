@@ -126,6 +126,10 @@ describe("a sidecar daemon turn", () => {
     expect(JSON.parse((sidecar.openUnattended.mock.calls[0] as unknown as [string, string])[1]).map((t: { function: { name: string } }) => t.function.name)).not.toContain("app_navigate");
     expect(d.handled).toEqual([["journal_append", { hic: "required", hicReason: expect.stringContaining("Node digest") }]]);
     expect(sidecar.close).toHaveBeenCalledWith("s1-ab");
+    // The open names the claimed run too, so core can bind the session to it.
+    const args = sidecar.openUnattended.mock.calls[0] as unknown as [string, string, string, string];
+    expect(args[2]).toBe(claim.daemonId);
+    expect(args[3]).toBe(claim.runId);
   });
 });
 
@@ -202,5 +206,16 @@ describe("a daemon session is opened for its daemon", () => {
     const sidecar = sidecarFake(done());
     await runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar }));
     expect((sidecar.openUnattended.mock.calls[0] as unknown as [string, string, string])[2]).toBe("d1");
+  });
+});
+
+describe("an open-time refusal", () => {
+  it("rejects the turn as DaemonNotStarted, so the run is recorded not_started", async () => {
+    const { DaemonNotStarted } = await import("./turn");
+    const sidecar = sidecarFake([]);
+    sidecar.openUnattended.mockRejectedValueOnce(new Error("Not started: the tools Hermes offers changed"));
+    const run = runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar }));
+    await expect(run).rejects.toBeInstanceOf(DaemonNotStarted);
+    await expect(run).rejects.toThrow(/Not started/);
   });
 });

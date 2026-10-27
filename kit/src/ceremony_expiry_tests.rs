@@ -602,3 +602,42 @@ fn tripwire_every_signer_call_is_preceded_by_the_expiry_and_chain_checks() {
     let removes = flat.matches("pending.remove(").count();
     assert_eq!(removes, 2, "the pending map is drained only by take_live and the sweep");
 }
+
+/// Expire `n` fresh requests on `c` (one TTL step), as other origins would in a busy process.
+fn expire_many(c: &SignatureCeremony, clock: &Arc<FakeClock>, n: usize) {
+    for i in 0..n {
+        c.request(personal_sign_intent(&format!("other {i}")));
+    }
+    clock.advance(PENDING_TTL_MS);
+    // Any read sweeps the expired requests.
+    assert!(c.status("0").is_none());
+}
+
+#[test]
+fn ttl_a_watched_expired_id_still_reads_expired_after_many_other_expiries() {
+    // #457: a caller that must tell "expired" from "decided" (the Hermes bridge) keeps that
+    // answer however many other requests expire in the same process.
+    let clock = FakeClock::new();
+    let c = ceremony_on(&clock);
+    let watched = c.request_watched(personal_sign_intent("bridged"));
+    clock.advance(PENDING_TTL_MS);
+    assert!(c.is_expired(&watched.id), "expired once the TTL passed");
+    expire_many(&c, &clock, EXPIRED_IDS_KEPT + 1);
+    assert!(
+        c.is_expired(&watched.id),
+        "a watched id stays expired after {} other expiries",
+        EXPIRED_IDS_KEPT + 1
+    );
+}
+
+#[test]
+fn ttl_unwatched_expired_ids_are_still_bounded() {
+    // Control: the memory of ordinary expired ids stays bounded (oldest forgotten first).
+    let clock = FakeClock::new();
+    let c = ceremony_on(&clock);
+    let plain = c.request(personal_sign_intent("plain"));
+    clock.advance(PENDING_TTL_MS);
+    assert!(c.is_expired(&plain.id));
+    expire_many(&c, &clock, EXPIRED_IDS_KEPT + 1);
+    assert!(!c.is_expired(&plain.id), "an unwatched id is forgotten past the bound");
+}

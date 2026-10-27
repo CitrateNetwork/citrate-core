@@ -7,11 +7,20 @@
 //   • Network stats + leaderboard → "—" / "lands with the indexer" (no invented figures).
 //   • The 2,000-run milestone program → real program FACTS (100 / 500 / 2,000 thresholds + reward
 //     tiers, settled through the ceremony) — design, not live data, so honest to show.
-//   • Referral link → REAL (built from your wallet address); joins land as signed roster assertions.
+//   • Public link → REAL: a referral code minted in Rust at the citrate.ai join service (GROW-S1
+//     task 11). It carries no group id and no wallet address.
 // The whole surface carries a "pending backend · illustrative" flag.
 // =====================================================================
+import { useState } from "react";
 import { SurfaceProps } from "./shared";
-import { buildJoinLink } from "./referral";
+import { bridge } from "../bridge";
+import type { JoinQr } from "../bridge/domains";
+import { QrCode } from "../fleet/FleetWizard";
+import { copyLink, YourInviteLinks } from "./InviteLinks";
+import { createPublicLink, expiryLabel, type PublicOutcome } from "./inviteFlow";
+
+/** The display name on a network-wide public link (there is no group behind it). */
+export const NETWORK_LINK_NAME = "Open network";
 
 const STATS: { label: string; sub: string }[] = [
   { label: "Nodes online", sub: "counted by the network indexer" },
@@ -26,20 +35,26 @@ const MILESTONES: { at: string; reward: string }[] = [
   { at: "2,000", reward: "the full 2,000-run reward, settled to every member" },
 ];
 
-export function Community({ store, s }: SurfaceProps) {
-  const wallet = typeof store.identity === "function" ? store.identity().wallet : "";
-  // GROW-S0 — a REAL referral link (full address for attribution; a general network invite, no
-  // specific cluster). Replaces the earlier lossy `?ref=<shortAddr>` (a truncated address can't be
-  // attributed). The web join page (GROW-S1) renders the CTA; joins route through the relay + ceremony.
-  const refLink = buildJoinLink({ inviter: wallet || s.walletAddr || "" });
-
-  const copyRef = () => {
-    const p = navigator.clipboard?.writeText(refLink);
-    if (p) {
-      p.then(() => store.toast("Invite link copied — share it to bring people onto the network under your referral."))
-        .catch(() => store.toast("Couldn't copy — the link is " + refLink));
-    } else {
-      store.toast("Couldn't copy — the link is " + refLink);
+export function Community({ store }: SurfaceProps) {
+  // GROW-S1 task 11 — a public link is a referral code from the join service (via Rust). It replaces
+  // the older self-built link format.
+  const [pub, setPub] = useState<PublicOutcome | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState<JoinQr | null>(null);
+  // Bumped after a mint so "Your invite links" (recovered from the service) reloads.
+  const [linksVersion, setLinksVersion] = useState(0);
+  const mint = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const out = await createPublicLink({ invites: bridge.invites, join: bridge.join }, NETWORK_LINK_NAME, "general");
+      setPub(out);
+      setLinksVersion((n) => n + 1);
+      if (out.kind === "link" && out.minted.shareUrl) {
+        bridge.join.shareQr(out.minted.shareUrl).then(setQr).catch(() => setQr(null));
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -98,14 +113,28 @@ export function Community({ store, s }: SurfaceProps) {
           </div>
 
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
-            <span className="eyebrow">Your invite link</span>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span className="mono" style={{ flex: 1, fontSize: 11, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", background: "var(--srf-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{refLink}</span>
-              <button className="btn btn-secondary btn-sm" onClick={copyRef}>Copy</button>
-            </div>
+            <span className="eyebrow">Your public link</span>
+            {pub?.kind === "link" && pub.minted.shareUrl ? (
+              <>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", background: "var(--srf-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pub.minted.shareUrl}</span>
+                  <button className="btn btn-secondary btn-sm" onClick={() => pub.minted.shareUrl && copyLink(store, pub.minted.shareUrl)}>Copy</button>
+                </div>
+                {qr && <QrCode qr={qr} px={3} testId="community-public-qr" label="Public link QR code" />}
+                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>{expiryLabel(pub.minted.exp)}</span>
+              </>
+            ) : (
+              <>
+                <button className="btn btn-secondary btn-sm" onClick={() => void mint()} disabled={busy} style={{ alignSelf: "flex-start" }}>
+                  {busy ? "Creating…" : "Create a public link"}
+                </button>
+                {pub?.kind === "error" && <span role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.5 }}>{pub.message}</span>}
+              </>
+            )}
             <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
-              joins through your link land in your group's roster as signed assertions — share it anywhere your socials reach
+              a short link that shows your name and points people to Citrate · no group id or wallet address in it · to add someone to a group, send a one-time link from Groups
             </p>
+            <YourInviteLinks store={store} version={linksVersion} />
           </div>
         </div>
       </div>
