@@ -2428,6 +2428,8 @@ export class Store {
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
+      // fxEARN: the reason Node › Rewards shows instead of Claim, so the agent never promises a claim the app refuses.
+      claimBlocked: bondClaimBlocked(s),
       // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
       grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,

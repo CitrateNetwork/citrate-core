@@ -42,6 +42,11 @@ export interface AgentContext {
   /** `ValidatorRegistry.rewardsOf(pubkey).total` in SALT; null = not a validator / not read. */
   rewardsTotal: number | null;
   /**
+   * Why Claim is not offered now (the Node page's own reason: e.g. MemberBond.isKycVerified() reads
+   * false, or the bond key isn't read), or null when it is. Optional: absent means not stated.
+   */
+  claimBlocked?: string | null;
+  /**
    * The member's membership grant as read from chain (C1-V V5): the amount in SALT, the bond's
    * `MemberBond.unlockBlock` (null = not read), and whether the bond is activated (staked). null =
    * no grant (free tier, or not granted yet). Optional so older callers default to "no grant".
