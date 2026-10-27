@@ -62,7 +62,7 @@ pub struct ProviderView {
     pub verified: bool,
     pub base_url: String,
     pub host: String,
-    /// `native`, `openai-compatible`, or `None` when this build has no adapter for it yet.
+    /// `native` (a governed vendor) or `openai-compatible` (a custom endpoint).
     pub adapter: Option<&'static str>,
     pub key_configured: bool,
     pub key_set_ms: Option<u64>,
@@ -277,8 +277,12 @@ fn guard_change(
 ) -> Result<ProviderView, String> {
     known_id(proxy, id)?;
     proxy.with_state(|g, _| {
+        let was_unreadable = g.unreadable;
         f(g)?;
-        proxy.save_guard(g)
+        // A change that cannot be saved does not take effect: an unreadable guard stays halted.
+        proxy
+            .save_guard(g)
+            .inspect_err(|_| g.unreadable |= was_unreadable)
     })?;
     one(proxy, id)
 }

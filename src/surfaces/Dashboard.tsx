@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
+import { PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, validatorDash } from "../shell/chainTruth";
 import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
@@ -12,7 +14,6 @@ import { appWidgetSources } from "../widgets/appSources";
 
 const RANK: Record<string, number> = { free: 0, pilot: 1, enterprise: 2 };
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
-const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
 const rel = (ts: number) => {
   const m = (Date.now() - ts) / 60000;
@@ -62,26 +63,27 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     query: { refetchInterval: 60_000 },
   });
 
+  // The producer sample (cached 5 min in the store): shown next to the active count so the gap
+  // between active and producing validators is visible (contract §2, §4).
+  useEffect(() => {
+    void store.refreshProducers();
+  }, [store]);
+  const shortfall = s.producers ? producerShortfall(s.producers) : null;
+  const producingSub = s.producers && shortfall
+    ? "producing: — · " + shortfall
+    : s.producers
+      ? s.producers.proposers.length + " producing · " + producerWindowLabel(s.producers)
+      : s.producersError ? "producing: — · sample unavailable" : "producing: — · not sampled yet";
+
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
-  // HONEST staked = REAL attributed stake (MembershipStakeVault.attributedStake →
-  // s5StakeWei) — NOT a hardcoded 32,000, and no self-stake (D-9 retired the pool). Under the current bond-fund
-  // model the grant funds the EOA LIQUID (attributedStake reads 0), so a just-granted
-  // member honestly shows 0 staked and their 32k in "liquid"; once the grant is
-  // actually staked (the 1-year-lock model) attributedStake carries it and this shows
-  // the real number. Matches Wallet.tsx (Rule 1 — never claim a stake that isn't there).
-  const grantStakedSalt = (() => {
-    if (!s.hasGrant || !s.s5StakeWei) return 0;
-    try {
-      return Number(BigInt(s.s5StakeWei) / 10n ** 18n);
-    } catch {
-      return 0;
-    }
-  })();
-  const staked = grantStakedSalt;
-  // REGISTERED validator = the member's bond clone is the registry's staker, which
-  // the store folds as `bondedStake` from grantStatus. Distinct from `staked`
-  // (attributed grant principal): a funded member is not yet a validator.
-  const isBondedValidator = s.bondedStake >= 32000;
+  // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
+  // folded as `bondedStake` from grantStatus. The membership grant sitting in a locked bond is not
+  // staked until the bond is activated.
+  const staked = s.bondedStake;
+  // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
+  // validator state gives the word or "— · <reason>".
+  const bondLockedNotStaked = s.hasGrant && !(staked > 0) && s.bondActivated === false;
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
 
   // Height vitals value: live chain read when node is off (reads fall back to
   // the public RPC in the design), sim height when the local node drives it.
@@ -112,22 +114,18 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "direct P2P", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "Direct P2P peers your node is dialed into (bootnodes + sequencer + discovered members) — not the whole network's node count (net_peerCount)", vsize: "21px" },
     // C1-V V1: checkpoint finality is specified but not running on 40204 (UI truth contract §4).
     { label: "Finality", value: "—", sub: "not running yet", color: "var(--tx-3)", tip: "Checkpoint finality is specified but not running on betanet: the finalized tag still returns the genesis block. A confirmation count is a depth, not finality.", vsize: "21px" },
-    { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: validatorCount != null ? "network · active set" : "reading…", color: "var(--tx-1)", tip: "ValidatorRegistry.activeCount() — the active consensus validator set securing the whole network (on-chain, reads the same from every node), not this node's local peer count", vsize: "21px" },
+    { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: (validatorCount != null ? "active · " : "active: reading… · ") + producingSub, color: "var(--tx-1)", tip: "Active: ValidatorRegistry.activeCount(), the active validator set (on-chain, the same from every node). Producing: distinct proposerPubkey over the last " + PRODUCER_SAMPLE_BLOCKS + " blocks on rpc.citrate.ai. Active does not imply producing.", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
-    { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "Your membership grant, attributed by MembershipStakeVault. Staking is through your validator bond.", vsize: "21px" },
-    // The SUBTITLE used to read "not validating" whenever earnToday === 0 — i.e. it
-    // reported EARNINGS as validator STATUS. A member who had just bonded 32,000
-    // SALT and was producing blocks saw "0.00 / not validating" (2026-08-06). Status
-    // now comes from the bond being the registry staker; the number stays whatever
-    // was really read (W1.4 rewardsOf for a registered validator).
     {
-      label: "Today",
-      value: isBondedValidator || s.earnToday > 0 ? fmt2(s.earnToday) : "—",
-      sub: isBondedValidator ? (s.earnToday > 0 ? "SALT earned" : "no rewards yet") : "not validating",
-      color: s.earnToday > 0 ? "var(--accent-text)" : "var(--tx-3)",
-      tip: isBondedValidator ? "ValidatorRegistry.rewardsOf" : "ContributionAccounting",
+      label: "Staked",
+      value: staked > 0 ? fmtI(staked) : bondLockedNotStaked ? "0" : "—",
+      sub: staked > 0 ? "SALT · stakeOf" : validatorStateText,
+      color: "var(--tx-1)",
+      tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond is not validator stake.",
       vsize: "21px",
     },
+    // C1-V V8: the "Today" tile is gone. No contract or RPC gives a per-day reward figure
+    // (UI truth contract §1 Rewards), so there is nothing to show; rewards live on Node > Earning.
   ];
 
   const actRows = s.activity.map((a, i) => ({
@@ -163,7 +161,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: "100%", boxSizing: "border-box" }}>
       {/* vitals strip */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, background: "var(--line-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-2)", overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${vitals.length},1fr)`, gap: 1, background: "var(--line-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-2)", overflow: "hidden" }}>
         {vitals.map((v) => (
           <div key={v.label} style={{ background: "var(--srf-1)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }} title={v.tip}>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)", whiteSpace: "nowrap" }}>

@@ -57,6 +57,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -539,11 +540,17 @@ const CONTROL_LOCK_BUDGET: Duration = Duration::from_millis(5);
 /// end of file before it reports the stop `Incomplete` and quarantines the service.
 const READER_DRAIN: Duration = Duration::from_millis(250);
 
+/// The most publication names one `Complete` scope lists.
+const MAX_SCOPE_PUBLICATIONS: usize = 16;
+
 /// While quarantined, how often the monitor re-checks whether the held work has ended.
 const QUARANTINE_POLL: Duration = Duration::from_millis(50);
 
-/// Distinguishes supervisor instances within one app run; never reused.
-static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+include!("supervisor_deadline.rs");
+
+/// Distinguishes supervisor instances within one app run; never reused. The same id names
+/// the instance in its tokens and in the deadline overlay.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 /// This application run's identity. Ephemeral: it orders controls and receipts within one run
 /// and is never a credential or a persistent replay id.
@@ -620,6 +627,9 @@ pub enum ControlResult {
     /// The intent was committed, but the monitor that acts on it is not running, so its outcome
     /// cannot be observed. Never a success.
     ObservationUnknown(ControlToken, String),
+    /// Deadline admission is unavailable: the deadline publisher could not be created or has
+    /// ended. Nothing was committed. Never retried by creating another publisher.
+    Unavailable(String),
 }
 
 /// What became of an accepted control.
@@ -646,6 +656,9 @@ pub enum Receipt {
     Superseded,
     /// Not retained (an older token, or one from another app run).
     Expired,
+    /// The control's deadline passed before it settled. Final: a later completion updates the
+    /// lifecycle snapshot but never turns this into `Complete`.
+    DeadlineExpired,
     /// The cell could not be read in bounded time; nothing is claimed.
     Unknown { reason: String },
 }
@@ -683,6 +696,9 @@ pub struct LifecycleSnapshot {
     pub pid: Option<u32>,
     /// Why the service is quarantined, when it is.
     pub quarantine: Option<String>,
+    /// Admitted spawn and publication tickets not yet resolved. A Stop settles only after they
+    /// are (or names them as remaining).
+    pub open_tickets: u32,
 }
 
 /// The most recent change of a service's [`Phase`] (K1a-2, the services registry). `from` is
@@ -736,6 +752,28 @@ struct Cell {
     quarantine: Option<String>,
     active: Option<(ControlToken, IntentKind)>,
     settled: Option<(ControlToken, Receipt)>,
+    /// This supervisor's id in the deadline overlay, and the publisher it arms.
+    owner: u64,
+    deadlines: Arc<DeadlinePublisher>,
+    /// The intent sequence of the pending control that armed a deadline record, set under this
+    /// lock when it is armed. Only that control can be `DeadlineExpired`; any other control
+    /// settles without reading the overlay, so another owner's record mid-write never turns it
+    /// into an expiry.
+    deadline_seq: Option<u64>,
+    /// A spawn admitted and not yet published or torn down (SCL-S2.3).
+    spawn_ticket: bool,
+    /// Admitted credential publications not yet committed or released:
+    /// (ticket id, intent sequence it was admitted under, name).
+    publications: Vec<(u64, u64, String)>,
+    /// Publications released while a Stop was pending, for that Stop's `Complete` scope
+    /// (bounded at [`MAX_SCOPE_PUBLICATIONS`]).
+    resolved_publications: Vec<String>,
+    next_ticket: u64,
+    /// Set once shutdown has finished: no monitor is left to reconcile a quarantine.
+    closed: bool,
+    /// Log readers still running when the monitor exited. Checked (and joined) by whoever next
+    /// touches the cell after shutdown: a ticket release or a snapshot read.
+    closed_readers: Vec<Reader>,
     /// This supervisor instance, carried in every token it issues.
     instance: u64,
     /// The most recent phase change and when it happened (K1a-2). Written only by `set_phase`.
@@ -773,7 +811,46 @@ impl Cell {
             restarts: self.status.restarts,
             pid: self.status.pid,
             quarantine: self.quarantine.clone(),
+            open_tickets: u32::try_from(self.publications.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(u32::from(self.spawn_ticket)),
         }
+    }
+
+    /// After shutdown, reconcile a quarantine without a monitor: join the readers that have
+    /// ended since, and once no reader and no ticket is left, the service is Stopped.
+    fn reconcile_after_close(&mut self) {
+        if !self.closed || self.quarantine.is_none() {
+            return;
+        }
+        if !self.closed_readers.is_empty() {
+            let _still = drain_readers(&mut self.closed_readers, Duration::ZERO);
+        }
+        if self.closed_readers.is_empty() && self.publications.is_empty() && !self.spawn_ticket {
+            self.quarantine = None;
+            self.set_phase(Phase::Stopped);
+            self.touch();
+        }
+    }
+
+    /// Publish a legacy state and its phase. A committed Stop owns the phase until it settles
+    /// (`Stopping`, then `Stopped` or `Quarantined`); a late state write from the monitor does
+    /// not overwrite it.
+    fn apply_state(&mut self, state: SupervisorState) {
+        let stop_pending = self.desired == Desired::Stopped
+            && matches!(self.phase, Phase::Stopping | Phase::Quarantined);
+        self.status.state = state.clone();
+        self.touch();
+        if stop_pending {
+            return;
+        }
+        self.set_phase(match state {
+            SupervisorState::Off => Phase::Stopped,
+            SupervisorState::Starting => Phase::Starting,
+            SupervisorState::Running => Phase::Alive,
+            SupervisorState::Backoff { .. } => Phase::Backoff,
+            SupervisorState::Failed => Phase::Failed,
+        });
     }
 
     fn touch(&mut self) {
@@ -784,10 +861,24 @@ impl Cell {
     /// wake bit. Returns the new token.
     fn commit(&mut self, epoch: u64, desired: Desired, kind: IntentKind) -> ControlToken {
         if let Some((old, _)) = self.active.take() {
-            self.settled = Some((old, Receipt::Superseded));
+            // DeadlineExpired is final: a control whose deadline already passed stays expired
+            // when a newer intent replaces it.
+            let expired = self.had_deadline(old.intent_sequence)
+                && self
+                    .deadlines
+                    .expired_at_settle(self.owner, old.app_epoch, old.intent_sequence);
+            self.deadlines
+                .release(self.owner, old.app_epoch, old.intent_sequence);
+            let receipt = if expired {
+                Receipt::DeadlineExpired
+            } else {
+                Receipt::Superseded
+            };
+            self.settled = Some((old, receipt));
         }
         self.intent_sequence = self.intent_sequence.saturating_add(1);
         self.desired = desired;
+        self.resolved_publications.clear();
         let token = ControlToken {
             app_epoch: epoch,
             instance: self.instance,
@@ -809,16 +900,34 @@ impl Cell {
         if let Some(reason) = &self.quarantine {
             return ControlResult::Quarantined(reason.clone());
         }
-        if self.phase == Phase::Stopped {
+        if self.phase == Phase::Stopped && !self.spawn_ticket && self.publications.is_empty() {
             return ControlResult::AlreadySatisfied(self.snapshot(epoch));
         }
         ControlResult::Busy
+    }
+
+    /// Whether the control of intent `seq` armed a deadline record; clears the mark, since the
+    /// caller is about to release that record.
+    fn had_deadline(&mut self, seq: u64) -> bool {
+        self.deadline_seq.take() == Some(seq)
     }
 
     /// Settle the pending receipt if it belongs to intent `seq` and is of `kind`.
     fn settle(&mut self, seq: u64, kind: IntentKind, receipt: Receipt) {
         if let Some((token, k)) = self.active {
             if token.intent_sequence == seq && k == kind {
+                // A settlement after the control's deadline is reported as expired, whatever was
+                // observed: the caller was promised an answer by then and did not get one.
+                let expired = self.had_deadline(seq)
+                    && self
+                        .deadlines
+                        .expired_at_settle(self.owner, token.app_epoch, seq);
+                self.deadlines.release(self.owner, token.app_epoch, seq);
+                let receipt = if expired {
+                    Receipt::DeadlineExpired
+                } else {
+                    receipt
+                };
                 self.active = None;
                 self.settled = Some((token, receipt));
                 self.touch();
@@ -872,6 +981,17 @@ pub struct SupervisorConfig {
     pub join_timeout: Duration,
     /// The clock (inject a fake in tests).
     pub clock: Arc<dyn Clock>,
+    /// The deadline publisher for deadline-bound controls. `None` uses the app-wide
+    /// [`DeadlinePublisher::global`].
+    pub deadlines: Option<Arc<DeadlinePublisher>>,
+    /// Runs on the monitor after a spawn is admitted and before the OS spawn call. A
+    /// fault-injection seam: the lifecycle fixtures hold a spawn "in flight" with it while they
+    /// commit a Stop or shutdown. `None` in production.
+    pub spawn_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor while it marks the service Failed, right after the Failed phase is
+    /// visible to controls. A fault-injection seam: the lifecycle fixtures hold the monitor
+    /// there while a Start races the transition. `None` in production.
+    pub failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SupervisorConfig {
@@ -885,6 +1005,9 @@ impl SupervisorConfig {
             healthy_after: DEFAULT_HEALTHY_AFTER,
             join_timeout: DEFAULT_JOIN_TIMEOUT,
             clock: Arc::new(SystemClock),
+            deadlines: None,
+            spawn_barrier: None,
+            failed_barrier: None,
         }
     }
 }
@@ -906,6 +1029,8 @@ struct Shared {
     /// the `logs()` accessor snapshots it. Survives restarts.
     logs: LogRing,
     epoch: u64,
+    /// See [`SupervisorConfig::failed_barrier`].
+    failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Shared {
@@ -933,23 +1058,7 @@ impl Shared {
     }
 
     fn set_state(&self, state: SupervisorState) {
-        let mut c = self.lock();
-        // A committed Stop owns the phase until it settles (`Stopping`, then `Stopped` or
-        // `Quarantined`); a late state write from the monitor does not overwrite it.
-        let stop_pending = c.desired == Desired::Stopped
-            && matches!(c.phase, Phase::Stopping | Phase::Quarantined);
-        c.status.state = state.clone();
-        c.touch();
-        if stop_pending {
-            return;
-        }
-        c.set_phase(match state {
-            SupervisorState::Off => Phase::Stopped,
-            SupervisorState::Starting => Phase::Starting,
-            SupervisorState::Running => Phase::Alive,
-            SupervisorState::Backoff { .. } => Phase::Backoff,
-            SupervisorState::Failed => Phase::Failed,
-        });
+        self.lock().apply_state(state);
     }
 
     fn snapshot(&self) -> SupervisorStatus {
@@ -1004,6 +1113,9 @@ pub struct Supervisor {
     name: String,
     /// Hard cap on how long teardown blocks joining the monitor thread (F-2).
     join_timeout: Duration,
+    /// This supervisor's id in the deadline overlay.
+    owner: u64,
+    deadlines: Arc<DeadlinePublisher>,
     /// This supervisor instance (see [`ControlToken::instance`]).
     instance: u64,
 }
@@ -1028,7 +1140,14 @@ impl Supervisor {
         let name = config.spec.name.clone();
         let join_timeout = config.join_timeout;
         let epoch = app_epoch();
-        let instance = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+        let owner = instance;
+        // The deadline publisher is reserved before any control is admitted. If it could not be
+        // created, deadline-bound controls report Unavailable; nothing replaces it.
+        let deadlines = config
+            .deadlines
+            .clone()
+            .unwrap_or_else(DeadlinePublisher::global);
         let first = ControlToken {
             app_epoch: epoch,
             instance,
@@ -1054,6 +1173,15 @@ impl Supervisor {
                 quarantine: None,
                 active: Some((first, IntentKind::Start)),
                 settled: None,
+                owner,
+                deadlines: deadlines.clone(),
+                spawn_ticket: false,
+                publications: Vec::new(),
+                resolved_publications: Vec::new(),
+                next_ticket: 1,
+                closed: false,
+                closed_readers: Vec::new(),
+                deadline_seq: None,
                 instance,
                 last_transition: PhaseTransition {
                     from: None,
@@ -1066,6 +1194,7 @@ impl Supervisor {
             clock: config.clock.clone(),
             logs: LogRing::new(),
             epoch,
+            failed_barrier: config.failed_barrier.clone(),
         });
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
@@ -1076,7 +1205,122 @@ impl Supervisor {
             monitor: Some(monitor),
             name,
             join_timeout,
+            owner,
+            deadlines,
             instance,
+        })
+    }
+
+    /// This supervisor's id in the deadline overlay (see [`DeadlinePublisher::record_state`]).
+    pub fn owner_id(&self) -> u64 {
+        self.owner
+    }
+
+    /// Commit a Stop that must settle within `within` (SCL-S2.4). The absolute monotonic
+    /// deadline is armed here, in the admission path, before the monitor is woken and before any
+    /// teardown work. If it passes before the Stop settles, the receipt is `DeadlineExpired`,
+    /// even if the publisher never ran, and stays so after a late completion.
+    ///
+    /// - `Unavailable` if the deadline publisher could not be created or has ended (nothing is
+    ///   committed, and no replacement publisher is created).
+    /// - `Busy` if the cell is contended or every deadline record is in use (nothing committed).
+    /// - A call while a Stop is pending joins it: a plain pending Stop gets this deadline, and a
+    ///   pending deadline is moved earlier if this one is tighter, never later (a later call
+    ///   never restarts the budget). Otherwise as [`Supervisor::request_stop`].
+    pub fn request_stop_within(&self, within: Duration) -> ControlResult {
+        if let Some(reason) = self.deadlines.unavailable() {
+            return ControlResult::Unavailable(reason);
+        }
+        let Some(mut c) = self.shared.lock_bounded() else {
+            return ControlResult::Busy;
+        };
+        if c.closing {
+            return ControlResult::RejectedClosing;
+        }
+        if c.desired == Desired::Stopped {
+            // Joining a pending Stop (plain or with a deadline) applies this deadline to it if
+            // it is the tighter one.
+            if let Some((token, IntentKind::Stop)) = c.active {
+                if !self.monitor_running() {
+                    // Nothing could settle the Stop or free a record: arm none.
+                    drop(c);
+                    return self.observed(token);
+                }
+                if !self.deadlines.arm_or_tighten(
+                    self.owner,
+                    token.app_epoch,
+                    token.intent_sequence,
+                    within,
+                ) {
+                    return ControlResult::Busy;
+                }
+                c.deadline_seq = Some(token.intent_sequence);
+                drop(c);
+                return self.observed(token);
+            }
+            let joined = c.repeated_stop(self.shared.epoch);
+            drop(c);
+            return match joined {
+                ControlResult::Accepted(token) => self.observed(token),
+                other => other,
+            };
+        }
+        let seq = c.intent_sequence.saturating_add(1);
+        // With the monitor gone nothing would ever settle (and so free) a deadline record: the
+        // Stop is committed without one and reported ObservationUnknown.
+        let monitor_alive = self.monitor_running();
+        if monitor_alive
+            && !self
+                .deadlines
+                .arm(self.owner, self.shared.epoch, seq, within)
+        {
+            return ControlResult::Busy;
+        }
+        let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
+        if monitor_alive {
+            c.deadline_seq = Some(token.intent_sequence);
+        }
+        if c.phase != Phase::Quarantined {
+            c.set_phase(Phase::Stopping);
+        }
+        drop(c);
+        self.shared.notify();
+        self.observed(token)
+    }
+
+    /// Admit a credential publication (for example a generation's bearer or seed file) under the
+    /// current intent (SCL-S2.3). Admission is refused unless the service is meant to be running
+    /// and not shutting down or quarantined. Write the file only after admission, then
+    /// [`PublicationTicket::commit`] it: only a ticket whose intent is still current may become
+    /// the active reference. A Stop settles only after every admitted ticket is resolved, or
+    /// names it as remaining.
+    pub fn admit_publication(
+        &self,
+        what: &str,
+    ) -> std::result::Result<PublicationTicket, PublicationRefused> {
+        let Some(mut c) = self.shared.lock_bounded() else {
+            return Err(PublicationRefused::Busy);
+        };
+        if c.closing {
+            return Err(PublicationRefused::Closing);
+        }
+        if let Some(reason) = &c.quarantine {
+            return Err(PublicationRefused::Quarantined(reason.clone()));
+        }
+        if c.desired != Desired::Running {
+            return Err(PublicationRefused::NotCurrent);
+        }
+        let id = c.next_ticket;
+        c.next_ticket = c.next_ticket.saturating_add(1);
+        let name: String = what.chars().take(64).collect();
+        let seq = c.intent_sequence;
+        c.publications.push((id, seq, name.clone()));
+        c.touch();
+        Ok(PublicationTicket {
+            shared: self.shared.clone(),
+            id,
+            seq: c.intent_sequence,
+            name,
         })
     }
 
@@ -1088,10 +1332,17 @@ impl Supervisor {
 
     /// The lifecycle cell (D-12): phase, readiness, intent and identity counters. A bounded
     /// read: `None` means the cell was contended and nothing is claimed.
+    ///
+    /// Not purely an observation after shutdown: with no monitor left, this read reconciles a
+    /// quarantine. It joins the log readers that have ended since shutdown, and once no reader
+    /// and no ticket is left it moves the phase from `Quarantined` to `Stopped` (bumping the
+    /// revision) before returning the snapshot. Before shutdown it changes nothing.
     pub fn lifecycle(&self) -> Option<LifecycleSnapshot> {
-        self.shared
-            .lock_bounded()
-            .map(|c| c.snapshot(self.shared.epoch))
+        self.shared.lock_bounded().map(|mut c| {
+            // After shutdown, a read is the only thing left that can observe late completion.
+            c.reconcile_after_close();
+            c.snapshot(self.shared.epoch)
+        })
     }
 
     /// The services registry read (K1a-2): the lifecycle cell, its last phase transition and its
@@ -1217,11 +1468,29 @@ impl Supervisor {
         if token.app_epoch != self.shared.epoch || token.instance != self.instance {
             return Receipt::Expired;
         }
+        // Compare the monotonic deadline directly, without any lock, so expiry is reported even
+        // when the publisher has not run and the cell is busy.
+        let torn = match self
+            .deadlines
+            .expired(self.owner, token.app_epoch, token.intent_sequence)
+        {
+            Some(true) => return Receipt::DeadlineExpired,
+            Some(false) => false,
+            None => true,
+        };
         let Some(c) = self.shared.lock_bounded() else {
             return Receipt::Unknown {
                 reason: "the lifecycle cell is busy".to_string(),
             };
         };
+        // A torn read leaves expiry undecided only for the pending control that armed its own
+        // record. Any other control has no record, so another owner's rewrite says nothing
+        // about it, and the cell answers.
+        if torn && c.deadline_seq == Some(token.intent_sequence) {
+            return Receipt::Unknown {
+                reason: "the deadline record was being rewritten".to_string(),
+            };
+        }
         match (&c.active, &c.settled) {
             (Some((t, _)), _) if *t == token => Receipt::Pending,
             (_, Some((t, r))) if *t == token => r.clone(),
@@ -1311,11 +1580,140 @@ impl Supervisor {
     }
 }
 
+/// Why a publication was not admitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicationRefused {
+    /// The service is not meant to be running (a Stop is committed), or a newer intent replaced
+    /// the ticket's own: the file must not become the active reference.
+    NotCurrent,
+    /// Shutdown has begun.
+    Closing,
+    /// Owned work from an earlier stop is still running.
+    Quarantined(String),
+    /// The lifecycle cell was contended; nothing was admitted.
+    Busy,
+}
+
+/// An admitted credential publication (SCL-S2.3). While it is open the service's Stop cannot
+/// settle `Complete`. It is resolved only by [`PublicationTicket::commit`] or
+/// [`PublicationTicket::withdraw`]. Dropping it (an ignored ticket, or a caller that unwinds
+/// after writing the file) releases nothing: what it wrote may still be on disk, so the Stop
+/// stays `Incomplete` naming the publication and the service stays Quarantined.
+#[must_use = "commit() or withdraw() the ticket; dropping it keeps the service's Stop open"]
+pub struct PublicationTicket {
+    shared: Arc<Shared>,
+    id: u64,
+    seq: u64,
+    name: String,
+}
+
+impl std::fmt::Debug for PublicationTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicationTicket")
+            .field("id", &self.id)
+            .field("intent_sequence", &self.seq)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl PublicationTicket {
+    /// Make the published file the active reference, if the ticket's intent is still current.
+    /// Otherwise the ticket stays open as a [`StaleTicket`]: remove what it wrote, then call
+    /// [`StaleTicket::cleaned`]. Dropping the `StaleTicket` instead keeps the publication open.
+    pub fn commit(self) -> std::result::Result<(), StaleTicket> {
+        // The currency check and the release are one critical section, so a Stop committed in
+        // between can never list this publication as resolved while it becomes active.
+        let current = {
+            let mut c = self.shared.lock();
+            let current =
+                !c.closing && c.desired == Desired::Running && c.intent_sequence == self.seq;
+            if current {
+                resolve_publication(&mut c, self.id);
+            }
+            current
+        };
+        if current {
+            self.shared.notify();
+            Ok(())
+        } else {
+            Err(StaleTicket {
+                shared: self.shared,
+                id: self.id,
+                name: self.name,
+            })
+        }
+    }
+
+    /// Nothing the ticket wrote remains (nothing was written, or the caller removed it): release
+    /// the ticket without making anything the active reference.
+    pub fn withdraw(self) {
+        release_publication(&self.shared, self.id);
+    }
+}
+
+/// A publication whose intent was superseded before it committed. It still holds the service's
+/// Stop open until the caller has removed what it wrote and said so with [`StaleTicket::cleaned`].
+/// Dropping it without that (an ignored error, or an unwind) releases nothing: the file may
+/// still be on disk, so the Stop stays `Incomplete` naming the publication and the service stays
+/// Quarantined.
+#[must_use = "remove what the ticket wrote, then call cleaned(); dropping it keeps the Stop open"]
+pub struct StaleTicket {
+    shared: Arc<Shared>,
+    id: u64,
+    name: String,
+}
+
+impl std::fmt::Debug for StaleTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StaleTicket")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl StaleTicket {
+    /// What the ticket was admitted for.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The stale file is gone: release the ticket.
+    pub fn cleaned(self) {
+        release_publication(&self.shared, self.id);
+    }
+}
+
+fn release_publication(shared: &Shared, id: u64) {
+    resolve_publication(&mut shared.lock(), id);
+    shared.notify();
+}
+
+/// Resolve publication `id` under the cell lock the caller holds. The caller notifies after it
+/// drops the lock.
+fn resolve_publication(c: &mut Cell, id: u64) {
+    let stop_pending = matches!(c.active, Some((_, IntentKind::Stop)));
+    if let Some(pos) = c.publications.iter().position(|(t, _, _)| *t == id) {
+        let (_, _, name) = c.publications.remove(pos);
+        if stop_pending && c.resolved_publications.len() < MAX_SCOPE_PUBLICATIONS {
+            c.resolved_publications.push(format!("publication:{name}"));
+        }
+    }
+    // After shutdown no monitor reconciles a quarantine: the release does, re-checking the
+    // readers itself.
+    c.reconcile_after_close();
+    c.wake = true;
+    c.touch();
+}
+
 impl Drop for Supervisor {
     /// No-orphan guarantee: dropping the supervisor tells the monitor to stop the child and
     /// joins it, so the child is dead before the process exits.
     fn drop(&mut self) {
         self.shutdown();
+        // Nothing can settle this supervisor's controls any more: free its deadline records.
+        self.deadlines.release_owner(self.owner);
     }
 }
 
@@ -1685,6 +2083,9 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         healthy_after,
         join_timeout: _join_timeout,
         clock,
+        deadlines: _deadlines,
+        spawn_barrier,
+        failed_barrier: _failed_barrier,
     } = config;
     // Dropped last: marks the cell if this thread unwinds (core#398).
     let _exit = MonitorExit(shared.clone());
@@ -1707,8 +2108,10 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     let mut failed_seq: Option<u64> = None;
     // The Stop intent already settled; the monitor idles, re-checking a quarantine.
     let mut settled_stop: Option<u64> = None;
-    // Whether a child was torn down since the last settled Stop (names "child" in the scope).
+    // What was torn down since the last settled Stop: a published child ("child") and a spawn
+    // admitted before the Stop that returned after it ("spawnTicket").
     let mut tore_down_child = false;
+    let mut late_spawn = false;
 
     loop {
         let (seq, desired, closing) = shared.intent();
@@ -1719,14 +2122,26 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         if desired == Desired::Stopped {
             if settled_stop != Some(seq) {
-                if settle_stop(&shared, seq, &mut readers, tore_down_child, watch.is_some()) {
+                let torn = TornDown {
+                    child: tore_down_child,
+                    spawn_ticket: late_spawn,
+                    watch: watch.is_some(),
+                };
+                if settle_stop(&shared, seq, &mut readers, torn) {
                     settled_stop = Some(seq);
                     tore_down_child = false;
+                    late_spawn = false;
                 }
                 continue;
             }
-            let quarantined = shared.lock().quarantine.is_some();
-            if quarantined && drain_readers(&mut readers, Duration::ZERO).is_empty() {
+            let (quarantined, publications_open) = {
+                let c = shared.lock();
+                (c.quarantine.is_some(), !c.publications.is_empty())
+            };
+            if quarantined
+                && drain_readers(&mut readers, Duration::ZERO).is_empty()
+                && !publications_open
+            {
                 // The held work really ended: ownership is reconciled. The receipt keeps what
                 // was observed when the Stop settled; a fresh explicit Start is now admitted.
                 let mut c = shared.lock();
@@ -1750,7 +2165,16 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         // gone but its readers (and any process holding its output pipe) may not be. Reconcile
         // them before admitting the spawn; until then the service is Quarantined and nothing is
         // spawned. A pending Start stays pending; a retry keeps its budget position.
-        let remaining = drain_readers(&mut readers, READER_DRAIN);
+        let mut remaining = drain_readers(&mut readers, READER_DRAIN);
+        // Publications admitted under an earlier intent are the old incarnation's too.
+        remaining.extend(
+            shared
+                .lock()
+                .publications
+                .iter()
+                .filter(|(_, admitted, _)| *admitted < seq)
+                .map(|(_, _, n)| format!("publication:{n}")),
+        );
         if !remaining.is_empty() {
             hold_start_for_cleanup(&shared, seq, &remaining);
             shared.wait_wake(Some(QUARANTINE_POLL));
@@ -1758,6 +2182,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         }
         release_start_hold(&shared, seq);
         tore_down_child = false;
+        late_spawn = false;
         if budget_seq != seq {
             budget_seq = seq;
             consecutive_failures = 0;
@@ -1767,6 +2192,9 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         if !admit_spawn(&shared, seq) {
             continue;
         }
+        if let Some(barrier) = &spawn_barrier {
+            barrier();
+        }
         if let Some(prepare) = watch.as_ref().and_then(|w| w.prepare.as_ref()) {
             prepare();
         }
@@ -1774,6 +2202,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
             Ok(c) => OwnedChild(c),
             Err(e) => {
                 ended(&watch);
+                end_spawn_ticket(&shared);
                 // Spawn itself failed (bad path / EACCES). Treat as a crash so the same bounded
                 // backoff applies — a bad binary path cannot fork-bomb either.
                 let record = CrashRecord {
@@ -1808,10 +2237,14 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         // --- publication admission: a newer intent that arrived during the OS call wins ---
         if !publish_alive(&shared, seq, child.id()) {
+            // The spawn ticket was admitted before the newer intent: its child is still owned
+            // and goes straight to teardown. The ticket closes only once the child is reaped.
             terminate_child(&mut child, stop_grace, watch.as_ref());
             ended(&watch);
             after_teardown(&shared);
+            end_spawn_ticket(&shared);
             tore_down_child = true;
+            late_spawn = true;
             continue;
         }
 
@@ -1950,8 +2383,16 @@ fn admit_spawn(shared: &Shared, seq: u64) -> bool {
     }
     c.status.state = SupervisorState::Starting;
     c.set_phase(Phase::Starting);
+    c.spawn_ticket = true;
     c.touch();
     true
+}
+
+/// The admitted spawn is resolved: published, failed, or its late child reaped.
+fn end_spawn_ticket(shared: &Shared) {
+    let mut c = shared.lock();
+    c.spawn_ticket = false;
+    c.touch();
 }
 
 /// Count the new incarnation, then publish it `Alive` only if intent `seq` is still current.
@@ -1967,6 +2408,7 @@ fn publish_alive(shared: &Shared, seq: u64, pid: u32) -> bool {
     c.status.state = SupervisorState::Running;
     c.status.pid = Some(pid);
     c.set_phase(Phase::Alive);
+    c.spawn_ticket = false;
     let incarnation = c.incarnation;
     c.settle(seq, IntentKind::Start, Receipt::Started { incarnation });
     true
@@ -1983,52 +2425,87 @@ fn after_teardown(shared: &Shared) {
 
 /// The retry budget for intent `seq` is spent: Failed, and a pending Start receipt says why.
 fn enter_failed(shared: &Shared, seq: u64, reason: &str) {
-    shared.set_state(SupervisorState::Failed);
-    shared.lock().settle(
-        seq,
-        IntentKind::Start,
-        Receipt::Failed {
-            reason: reason.to_string(),
-        },
-    );
+    // One critical section: a Start that lands after the Failed phase is visible must find the
+    // failing intent already settled, so it commits a fresh intent instead of joining this one.
+    {
+        let mut c = shared.lock();
+        c.apply_state(SupervisorState::Failed);
+        c.settle(
+            seq,
+            IntentKind::Start,
+            Receipt::Failed {
+                reason: reason.to_string(),
+            },
+        );
+    }
+    if let Some(barrier) = &shared.failed_barrier {
+        barrier();
+    }
 }
 
-/// Settle Stop intent `seq` after its teardown: `Complete` once every log reader has ended,
-/// otherwise `Incomplete` naming the readers, and the service is Quarantined. Returns false if a
-/// newer intent arrived meanwhile (the caller handles that one instead).
-fn settle_stop(
-    shared: &Shared,
-    seq: u64,
-    readers: &mut Vec<Reader>,
-    tore_down_child: bool,
-    has_watch: bool,
-) -> bool {
-    let remaining = drain_readers(readers, READER_DRAIN);
+/// What a Stop's teardown resolved, for its `Complete` scope.
+#[derive(Clone, Copy)]
+struct TornDown {
+    child: bool,
+    spawn_ticket: bool,
+    watch: bool,
+}
+
+/// Settle Stop intent `seq` after its teardown: `Complete` once every log reader has ended and
+/// every admitted publication ticket is resolved, otherwise `Incomplete` naming what remains,
+/// and the service is Quarantined. Returns false if a newer intent arrived meanwhile (the caller
+/// handles that one instead).
+fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornDown) -> bool {
+    let deadline = std::time::Instant::now() + READER_DRAIN;
+    let (mut remaining, publications) = loop {
+        let remaining = drain_readers(readers, Duration::ZERO);
+        let publications: Vec<String> = shared
+            .lock()
+            .publications
+            .iter()
+            .map(|(_, _, n)| format!("publication:{n}"))
+            .collect();
+        if (remaining.is_empty() && publications.is_empty())
+            || std::time::Instant::now() >= deadline
+        {
+            break (remaining, publications);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     let mut c = shared.lock();
     if c.closing || c.intent_sequence != seq {
         return false;
     }
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
-    if remaining.is_empty() {
+    if remaining.is_empty() && publications.is_empty() {
         let mut scope = Vec::new();
-        if tore_down_child {
+        if torn.child {
             scope.push("child".to_string());
-            if has_watch {
+            if torn.watch {
                 scope.push("childWatch".to_string());
             }
         }
+        if torn.spawn_ticket {
+            scope.push("spawnTicket".to_string());
+        }
         scope.push("readers".to_string());
+        scope.append(&mut c.resolved_publications);
         c.set_phase(Phase::Stopped);
         c.quarantine = None;
         c.settle(seq, IntentKind::Stop, Receipt::Complete { scope });
     } else {
-        let reason = "the child ended but its output is still open: a log reader has not reached \
-                      end of file, so another process (for example one the child started) may \
-                      still hold the pipe"
-            .to_string();
+        let reason = if remaining.is_empty() {
+            "a credential publication admitted before the Stop has not been resolved".to_string()
+        } else {
+            "the child ended but its output is still open: a log reader has not reached end of \
+             file, so another process (for example one the child started) may still hold the pipe"
+                .to_string()
+        };
+        remaining.extend(publications);
         c.set_phase(Phase::Quarantined);
         c.quarantine = Some(reason.clone());
+        c.resolved_publications.clear();
         c.settle(
             seq,
             IntentKind::Stop,
@@ -2039,13 +2516,25 @@ fn settle_stop(
     true
 }
 
-/// Shutdown: the child is already torn down. Settle what is pending without waiting (teardown
-/// is bounded by the join timeout), leave the legacy view Off, and let the monitor exit.
+/// Shutdown: the child is already torn down. Give its readers the same bounded window a Stop
+/// does, settle what is pending, leave the legacy view Off, and let the monitor exit. Readers
+/// still running are handed to the cell, so a later ticket release or snapshot read can
+/// reconcile the quarantine without a monitor.
 fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: bool) {
-    let remaining = drain_readers(readers, Duration::ZERO);
+    // The same bounded window a Stop gives its readers to reach end of file.
+    let held_readers = drain_readers(readers, READER_DRAIN);
     let mut c = shared.lock();
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
+    // Open publication tickets are owned work too: shutdown never reports them done.
+    let mut remaining = held_readers.clone();
+    remaining.extend(
+        c.publications
+            .iter()
+            .map(|(_, _, n)| format!("publication:{n}")),
+    );
+    c.closed = true;
+    c.closed_readers.append(readers);
     if let Some((token, kind)) = c.active {
         let receipt = match kind {
             IntentKind::Start => Receipt::Superseded,
@@ -2055,20 +2544,30 @@ fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: b
                     scope.push("child".to_string());
                 }
                 scope.push("readers".to_string());
+                scope.append(&mut c.resolved_publications);
                 Receipt::Complete { scope }
             }
             IntentKind::Stop => Receipt::Incomplete {
                 remaining: remaining.clone(),
-                reason: "shutdown: a log reader had not reached end of file".to_string(),
+                reason: "shutdown: owned work had not ended (a log reader still open, or a \
+                         credential publication not yet resolved)"
+                    .to_string(),
             },
         };
         c.settle(token.intent_sequence, kind, receipt);
     }
-    c.set_phase(if remaining.is_empty() {
-        Phase::Stopped
+    if remaining.is_empty() {
+        c.set_phase(Phase::Stopped);
+        c.quarantine = None;
     } else {
-        Phase::Quarantined
-    });
+        c.set_phase(Phase::Quarantined);
+        if c.quarantine.is_none() {
+            c.quarantine = Some(format!(
+                "shutdown left owned work running: {}",
+                remaining.join(", ")
+            ));
+        }
+    }
     c.touch();
 }
 

@@ -233,7 +233,7 @@ fn caps_are_validated() {
 #[test]
 fn state_persists_sealed_and_an_edited_file_fails_closed() {
     let dir = TmpDir::new("guard-seal");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut g = load(&dir.0, kr.clone(), T0);
     assert!(!g.unreadable);
     g.set_caps("openai", Caps { daily_tokens: Some(777), monthly_tokens: Some(7_777), daily_micros: None, monthly_micros: None })
@@ -303,7 +303,7 @@ fn owner_default_caps_include_currency_and_an_unknown_price_is_refused() {
 #[test]
 fn a_deleted_or_rolled_back_guard_file_fails_closed() {
     let dir = TmpDir::new("guard-rollback");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut g = load(&dir.0, kr.clone(), T0);
     g.set_caps("openai", Caps { daily_tokens: Some(10), monthly_tokens: Some(10), daily_micros: None, monthly_micros: None })
         .unwrap();
@@ -318,7 +318,7 @@ fn a_deleted_or_rolled_back_guard_file_fails_closed() {
     assert!(g2.unreadable, "an older sealed guard file must not load as current");
     // Deleted: the caps would silently revert to defaults.
     let dir = TmpDir::new("guard-deleted");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut g = load(&dir.0, kr.clone(), T0);
     g.member_halt("openai", T0);
     save(&dir.0, &mut g).unwrap();
@@ -332,7 +332,7 @@ fn a_deleted_or_rolled_back_guard_file_fails_closed() {
 #[test]
 fn a_crash_between_the_guard_write_and_the_anchor_update_is_not_a_rollback() {
     let dir = TmpDir::new("guard-ahead");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut g = load(&dir.0, kr.clone(), T0);
     save(&dir.0, &mut g).unwrap();
     let anchor = kr.map.lock().unwrap().get(crate::provider_usage_log::ANCHOR_ACCOUNT).cloned().unwrap_or_default();
@@ -350,7 +350,7 @@ fn a_crash_between_the_guard_write_and_the_anchor_update_is_not_a_rollback() {
 #[test]
 fn a_guard_file_with_no_anchor_fails_closed() {
     let dir = TmpDir::new("guard-noanchor");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut g = load(&dir.0, kr.clone(), T0);
     g.member_halt("openai", T0);
     save(&dir.0, &mut g).unwrap();
@@ -388,4 +388,11 @@ fn default_currency_caps_are_per_vendor_with_xai_overridden() {
     g.member_halt("xai", T0);
     g.member_resume("xai").unwrap();
     assert_eq!(g.get("xai").caps, xai, "an entry created by a halt keeps the vendor default");
+}
+
+/// A keychain as a fresh install leaves it: the empty anchor `ModelProxy::new` writes first.
+fn installed_kr() -> Arc<MemKeyring> {
+    let kr = Arc::new(MemKeyring::default());
+    crate::provider_usage_log::create_anchor(kr.as_ref()).unwrap();
+    kr
 }
