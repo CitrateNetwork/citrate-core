@@ -289,8 +289,22 @@ impl ModelProxy {
     /// Open the proxy's state in `dir` (`<app data>/providers`).
     pub fn new(dir: PathBuf, keyring: Arc<dyn AiKeyring>, http: Arc<dyn ProviderHttp>) -> Self {
         let now = now_ms();
-        let guard = crate::provider_guard::load(&dir, keyring.clone(), now);
-        let log = UsageLog::open(&dir, keyring.clone());
+        // The anchor is written before any provider key exists (below, on a fresh install), so a
+        // missing anchor while a MAC key or a vendor key is still in the keychain means it was
+        // removed: faking a fresh install would also take deleting those keys.
+        let anchor_missing = match crate::provider_usage_log::read_anchor_opt(keyring.as_ref()) {
+            Ok(None) if Self::keychain_has_provider_keys(keyring.as_ref()) => true,
+            // A fresh install: anchor first, then the MAC keys (created by the opens below). If the
+            // anchor cannot be written, this launch fails closed instead of going on without one.
+            Ok(None) => crate::provider_usage_log::create_anchor(keyring.as_ref()).is_err(),
+            _ => false,
+        };
+        let mut guard = crate::provider_guard::load(&dir, keyring.clone(), now);
+        let mut log = UsageLog::open(&dir, keyring.clone());
+        if anchor_missing {
+            guard.unreadable = true;
+            log.mark_broken("the usage log anchor is missing while provider keys remain");
+        }
         ModelProxy {
             dir,
             keyring,
@@ -299,6 +313,26 @@ impl ModelProxy {
             routes: Mutex::new(HashMap::new()),
             port: std::sync::atomic::AtomicU16::new(0),
         }
+    }
+
+    /// Whether the keychain holds either provider MAC key or any vendor key (presence only; an
+    /// unreadable keychain counts as present, which fails closed).
+    fn keychain_has_provider_keys(keyring: &dyn AiKeyring) -> bool {
+        let vendor_accounts = Vendor::ALL
+            .into_iter()
+            .map(|v| format!("{KEY_ACCOUNT_PREFIX}{}", v.id()));
+        [
+            crate::provider_usage_log::LOG_MAC_ACCOUNT.to_string(),
+            crate::provider_guard::GUARD_MAC_ACCOUNT.to_string(),
+        ]
+        .into_iter()
+        .chain(vendor_accounts)
+        .any(|a| {
+            !matches!(
+                keyring.get(&a).map(|v| v.map(zeroize::Zeroizing::new)),
+                Ok(None)
+            )
+        })
     }
 
     fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
