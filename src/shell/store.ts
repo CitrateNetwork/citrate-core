@@ -239,6 +239,12 @@ export function memberKeyRule(s: Pick<AppState, "hasGrant" | "bondActivated" | "
   return { kind: "node" };
 }
 
+/** fxEARN — `memberKeyRule` as one dependency value: the bond key, "node", or "unread". */
+export function memberKeyRuleKey(s: Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey">): string {
+  const r = memberKeyRule(s);
+  return r.kind === "bond" ? r.key : r.kind;
+}
+
 /**
  * #391 — whether a node_validator_earnings answer belongs to the member's validator key; null = it
  * does, otherwise why not. `expected` is the key that was asked for (`MemberBond.pubkey()`), or

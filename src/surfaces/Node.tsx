@@ -6,7 +6,7 @@ import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
-import { bondClaimBlocked } from "../shell/store";
+import { bondClaimBlocked, memberKeyRuleKey } from "../shell/store";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -63,9 +63,12 @@ export function Node({ store, s }: SurfaceProps) {
   // Read again when the reward eligibility changes while the tab is open (the stake or the bond's
   // activated flag reconciles after mount; #348 review).
   const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  // fxEARN (Codex P2): the key the rewards are read for (memberKeyRule); a key that resolves after
+  // mount re-reads them.
+  const rewardsKey = memberKeyRuleKey(s);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
-  }, [store, s.nTab, readsRewards]);
+  }, [store, s.nTab, readsRewards, rewardsKey]);
   // #406 — read the activation (and the durable record of a sent one) on mount, so a recorded
   // activation shows here with its way out (Try again / Forget), as on S7.
   useEffect(() => {
