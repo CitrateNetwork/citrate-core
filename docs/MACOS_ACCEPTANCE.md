@@ -26,7 +26,7 @@ first launch, quit leaves nothing."
 |---|---|---|
 | `inspect` (default, dry run) | Reads the DMG file. No mount, no copy, no launch. | `dmg.sha256` matches; `dmg.verify` (image checksum); reported: `dmg.format`, `dmg.signature` (DMG signature, staple, Gatekeeper "open" assessment) |
 | `verify` | `inspect`, then mounts the DMG read-only (`-nobrowse`). No copy, no launch. | `bundle.identity` (one `Citrate Core.app`, id `ai.citrate.core`, version = `release/components.json` `release`); `bundle.structure` (Contents/MacOS is exactly the main executable plus the externalBins of `src-tauri/tauri.bundle-lite.conf.json`, the overlay release.yml builds with); `sidecar.digests` (each sidecar's code equals its pinned bytes, see below); `sign.codesign` (deep, strict); `sign.developer_id` (Developer ID Application, team, hardened runtime; `--team-id` to pin the team); `sign.sidecars` (every sidecar signed by the same team, hardened runtime); `gatekeeper.spctl` (accepted, source "Notarized Developer ID"); `notarization.staple` (ticket stapled to the app); reported: `gatekeeper.syspolicy` |
-| `full` | `verify`, then installs into the run directory (never `/Applications`), with an isolated HOME and a throwaway keychain. | `install.copy`; `gatekeeper.quarantined` (the installed copy with a browser's quarantine flag is accepted as notarized); `launch.ready` (the required sidecars, default `citrate`, run under the app and the app is still alive after the settle time); `launch.rpc` (`eth_chainId` on 127.0.0.1:8545 is 40204); `launch.listeners_loopback` (every listening socket of the app is loopback or listed in `wildcard-allowlist.txt`); `restart.sidecar` (SIGKILL the node sidecar, a new one starts under the app); `quit.clean` + `quit.listeners` (Cmd-Q equivalent, `NSRunningApplication.terminate`: no process and no listener of the app left); `reap.orphans` (SIGKILL the app only; the next launch stops the sidecars it orphaned); `uninstall.processes` (bundle removed, nothing of it runs); `data.locations` (everything the app wrote in its HOME is under `data-locations.txt`); `uninstall.outside_files` (no Citrate file outside the run dir, except documented locations under your real home); `uninstall.keychain` (only the services in `keychain-allowlist.txt` were added) |
+| `full` | `verify`, then installs into the run directory (never `/Applications`), with an isolated HOME and a throwaway keychain. | `install.copy`; `gatekeeper.quarantined` (the installed copy with a browser's quarantine flag is accepted as notarized; `spctl --assess` does not read the quarantine flag, so this repeats `gatekeeper.spctl` on the copy, and the dialog itself is step 6); `launch.ready` (the required sidecars, default `citrate`, run under the app and the app is still alive after the settle time); `launch.rpc` (on 127.0.0.1:8545, `eth_chainId` and the genesis block hash from `eth_getBlockByNumber 0x0` both equal the active profile in `src-tauri/network/profiles.json`; a rerolled genesis keeps chain id 40204, so the chain id alone is not enough); `launch.listeners_loopback` (every socket of the app is loopback, connected (outbound) UDP, or matches a rule in `listener-policy.txt` for that sidecar, port and bind scope; see "LAN discovery" below); `restart.sidecar` (SIGKILL the node sidecar, a new one starts under the app); `quit.clean` + `quit.listeners` (Cmd-Q equivalent, `NSRunningApplication.terminate`: no process and no listener of the app left); `reap.orphans` (SIGKILL the app only; the next launch stops the sidecars it orphaned); `uninstall.processes` (bundle removed, nothing of it runs); `data.locations` (everything the app wrote in its HOME is under `data-locations.txt`); `uninstall.outside_files` (no Citrate file outside the run dir, except documented locations under your real home); `uninstall.keychain` (only the services in `keychain-allowlist.txt` were added) |
 
 Only a `full` run with `overall: pass` is G1 evidence: the verdict says so in `g1_evidence`.
 `inspect` and `verify` passing is useful (it proves the bytes and the signatures) but is not the gate.
@@ -39,6 +39,23 @@ binaries slice by slice). The pinned file itself is first matched by its sha256 
 `release/components.json` / `src-tauri/runtime-deps.sha256`, and `sign.sidecars` proves the code
 the signature covers is the code in the file. A sidecar that is missing, extra, unsigned or
 changed fails.
+
+**LAN discovery (mDNS) is expected.** Owner decision 2026-10-27: IPFS LAN discovery stays on in
+0.5.2. The ipfs sidecar holds, besides its swarm on 4001 (TCP and UDP, all interfaces):
+- UDP `*:5353` (mDNS);
+- unconnected UDP sockets on random ephemeral ports (>= 49152), on all interfaces;
+- the same on each LAN-side address (private or link-local IPv4, link-local or unique-local IPv6,
+  or the machine's own addresses).
+
+`scripts/ci/macos-acceptance/listener-policy.txt` allows exactly these for `ipfs` only, and
+allows `citrate` its P2P port 30303.
+- The same port held by another sidecar fails.
+- A TCP listener off the policy fails.
+- UDP below the ephemeral range on a non-policy port fails.
+- Anything on a public address that is not the machine's own fails.
+
+The unit tests pin the 0.5.1 app's real socket list (read with lsof in the core#558 review) and
+these failure cases.
 
 **Not covered** (as on Linux): sign-in (so Hermes, the local model, comms and cluster are not
 started), the update path from 0.5.1 (G2), peering and sync (G4). The first-launch Gatekeeper
@@ -138,13 +155,15 @@ bytes), and the Xcode command line tools for the self-test (`xcode-select --inst
   bypass: a CI job writes the marker for its own throwaway runner. A test runs the real CLI
   without the marker and requires exactly that refusal.
 - **Then read-only probes**, and it refuses (exit 2) on: not macOS; root; `/Applications/Citrate
-  Core.app` or `~/Applications/Citrate Core.app`; data under the account's real home (from the
+  Core.app` or `~/Applications/Citrate Core.app`; data under the account's real home (Application
+  Support, Caches, Logs, WebKit, HTTPStorages, Preferences, Saved Application State, `~/.citrate*`) (from the
   password database, so `HOME=` cannot hide it); a Citrate Core process; a listener on 8545, 8546
   or 30303; an `ai.citrate.core` keychain item; a Developer ID Application signing identity. A probe
   that fails counts as a refusal.
 - **Guarded runner.** Every command that changes anything (mount, copy, launch, keychain, signals)
   goes through a runner that throws until the guards pass; read-only commands are an explicit
-  list. Signals only ever go to processes inside the installed copy or started by this run (a
+  list, which refuses the secret-revealing or writing forms (`security … -g`/`-w`, `dump-keychain
+  -d`/`-r`, `plutil` with any `-o` other than `-o -`). Signals only ever go to processes inside the installed copy or started by this run (a
   reused pid is not), never by name or pattern.
 - **Isolation in a full run.** The app runs from `<work>/run.*/Applications` with
   `HOME`/`CFFIXED_USER_HOME`/`TMPDIR` inside the run directory. The user's default keychain is a
@@ -160,8 +179,8 @@ launchd. That is why the marker is mandatory and why the machine must be one you
 - `scripts/ci/macos-acceptance.test.mjs`: unit tests of its logic with fake dependencies, plus
   the tripwires (refusal without the marker, documented keychain services and data roots, the
   release overlay and pins, workflow safety). Runs in the normal `npm test`.
-- `scripts/ci/macos-acceptance/`: `wildcard-allowlist.txt` (listeners that may bind every
-  interface), `keychain-allowlist.txt` (keychain services that may stay after uninstall),
+- `scripts/ci/macos-acceptance/`: `listener-policy.txt` (the non-loopback sockets each sidecar
+  may hold), `keychain-allowlist.txt` (keychain services that may stay after uninstall),
   `data-locations.txt` (where the app may write under HOME).
 
 ## CI

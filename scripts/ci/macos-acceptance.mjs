@@ -202,22 +202,34 @@ export const EPHEMERAL_FIRST = 49152;
 /** listener-policy.txt: `<sidecar> <tcp|udp> <port|ephemeral> <wildcard|interface> <why>`. An
  *  `ephemeral` port is allowed for UDP only (a TCP rule for any port would excuse any listener). */
 export function parseListenerPolicy(text) {
-  // RED STUB (core#558 review round): old behaviour
-  return parseAllowlist(text, ["exe", "proto", "port", "bind", "reason"]);
+  const rows = parseAllowlist(text, ["exe", "proto", "port", "bind", "reason"]);
+  for (const r of rows) {
+    if (!["tcp", "udp"].includes(r.proto)) throw new Error(`listener policy: bad proto ${r.proto}`);
+    if (!["wildcard", "interface"].includes(r.bind)) throw new Error(`listener policy: bad bind ${r.bind}`);
+    if (r.port === "ephemeral") { if (r.proto !== "udp") throw new Error("listener policy: ephemeral ports are for udp only"); }
+    else if (!/^\d+$/.test(r.port) || Number(r.port) < 1 || Number(r.port) > 65535) throw new Error(`listener policy: bad port ${r.port}`);
+  }
+  return rows;
 }
 
 /** Normalise an address as lsof prints it: no brackets, no %zone, lower case, and the KAME
  *  embedded scope of a link-local IPv6 address (fe80:4::1 for fe80::1 on interface 4) removed. */
 export function normalizeAddr(host) {
-  // RED STUB (core#558 review round): old behaviour
-  return String(host).replace(/^\[|\]$/g, "");
+  const h = String(host).replace(/^\[|\]$/g, "").replace(/%.*$/, "").toLowerCase();
+  return h.replace(/^fe80:[0-9a-f]{1,4}::/, "fe80::");
 }
 
 /** An address bound to one network interface on the LAN side: private or link-local IPv4,
  *  link-local or unique-local IPv6, or one of this machine's own interface addresses. */
 export function isInterfaceAddress(host, ownAddrs = []) {
-  // RED STUB (core#558 review round): old behaviour
-  return false;
+  const h = normalizeAddr(host);
+  if (ownAddrs.map(normalizeAddr).includes(h)) return true;
+  const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(h);
+  if (v4) {
+    const a = Number(v4[1]), b = Number(v4[2]);
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  return /^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{2}:/.test(h);
 }
 
 /** Sockets of the app's processes. Loopback passes. A connected UDP socket (it has a remote side)
@@ -226,16 +238,19 @@ export function isInterfaceAddress(host, ownAddrs = []) {
  *  interfaces, or one LAN-side interface address). Anything else fails, including a documented
  *  port held by another sidecar. */
 export function evaluateListeners(listeners, procPathByPid, policy, ownAddrs = []) {
-  // RED STUB (core#558 review round): old behaviour
   const bad = [], allowed = [], loopback = [], outbound = [];
   for (const l of listeners) {
-    const kind = classifyAddress(l.local);
     const exe = path.basename(procPathByPid.get(l.pid) || l.command || "");
-    const { port } = splitHostPort(l.local);
-    const row = { exe, pid: l.pid, proto: l.proto, local: l.local, kind };
-    if (kind === "loopback") { loopback.push(row); continue; }
-    const doc = kind === "wildcard" && policy.find((a) => a.exe === exe && a.proto === l.proto && Number(a.port) === port);
-    if (doc) allowed.push({ ...row, reason: doc.reason }); else bad.push(row);
+    const { host, port } = splitHostPort(l.local);
+    const row = { exe, pid: l.pid, proto: l.proto, local: l.local };
+    if (l.remote) { outbound.push({ ...row, remote: l.remote }); continue; }
+    const kind = classifyAddress(l.local);
+    if (kind === "loopback") { loopback.push({ ...row, kind }); continue; }
+    const bind = kind === "wildcard" ? "wildcard" : isInterfaceAddress(host, ownAddrs) ? "interface" : "external";
+    const rule = policy.find((a) => a.exe === exe && a.proto === l.proto && a.bind === bind &&
+      (a.port === "ephemeral" ? Number.isInteger(port) && port >= EPHEMERAL_FIRST : Number(a.port) === port));
+    if (rule) allowed.push({ ...row, kind: bind, reason: rule.reason });
+    else bad.push({ ...row, kind: bind });
   }
   return { ok: bad.length === 0, bad, allowed, loopback, outbound };
 }
@@ -443,15 +458,26 @@ export function evaluateSidecarDigests(sidecars, pinned, bundled) {
 /** The network this build targets, from src-tauri/network/profiles.json (the K6 source the app
  *  reads): {id, chainId, genesisHash}. A profile with a missing value is not ready: throws. */
 export function activeNetwork(profiles) {
-  // RED STUB (core#558 review round): old behaviour
-  const p = profiles.profiles[profiles.active]; return { id: profiles.active, chainId: p.chainId, genesisHash: p.genesisHash };
+  const id = profiles.active;
+  const p = (profiles.profiles || {})[id];
+  if (!p) throw new Error(`active profile ${id} is not in profiles.json`);
+  const g = String(p.genesisHash || "").toLowerCase();
+  if (!Number.isInteger(p.chainId) || !/^0x[0-9a-f]{64}$/.test(g) || /^0x0+$/.test(g)) {
+    throw new Error(`active profile ${id} is not ready (chainId ${p.chainId}, genesisHash ${p.genesisHash})`);
+  }
+  return { id, chainId: p.chainId, genesisHash: g };
 }
 
 /** The node answers for the profile's network: same chain id AND same genesis block hash (a
  *  rerolled genesis keeps chain id 40204, so the chain id alone does not tell them apart). */
 export function evaluateRpc(answer, net) {
-  // RED STUB (core#558 review round): old behaviour
-  return answer.chainId === net.chainId ? { ok: true, why: [] } : { ok: false, why: [`eth_chainId ${answer.chainId}`] };
+  const why = [];
+  if (answer.chainId === null || answer.chainId === undefined) why.push("no eth_chainId answer");
+  else if (answer.chainId !== net.chainId) why.push(`eth_chainId ${answer.chainId} != ${net.chainId}`);
+  const g = typeof answer.genesisHash === "string" ? answer.genesisHash.toLowerCase() : null;
+  if (!g) why.push("no genesis block (eth_getBlockByNumber 0x0)");
+  else if (g !== net.genesisHash) why.push(`genesis ${g} != ${net.genesisHash} (profile ${net.id})`);
+  return { ok: why.length === 0, why };
 }
 
 // ---------------------------------------------------------------- data locations (pure)
@@ -555,6 +581,10 @@ export function ownerPaths(pwHome) {
     path.join(pwHome, "Library", "Caches", BUNDLE_ID),
     path.join(pwHome, "Library", "WebKit", BUNDLE_ID),
     path.join(pwHome, "Library", "Preferences", `${BUNDLE_ID}.plist`),
+    path.join(pwHome, "Library", "Logs", BUNDLE_ID),
+    path.join(pwHome, "Library", "HTTPStorages", BUNDLE_ID),
+    path.join(pwHome, "Library", "HTTPStorages", `${BUNDLE_ID}.binarycookies`),
+    path.join(pwHome, "Library", "Saved Application State", `${BUNDLE_ID}.savedState`),
     path.join(pwHome, ".citrate"),
     path.join(pwHome, ".citrate-wallet"),
   ];
@@ -572,7 +602,13 @@ export function evaluateGuards(f) {
   else for (const p of f.procs.filter((q) => q.path.includes(`/${APP_DIR_NAME}/`))) r.push(`Citrate Core is running: pid ${p.pid} ${p.path}`);
   if (!f.listeners) r.push("listener probe did not run");
   else {
-    for (const l of f.listeners.filter((x) => NODE_PORTS.includes(splitHostPort(x.local).port))) r.push(`port ${splitHostPort(l.local).port} is in use (pid ${l.pid} ${l.command}): a node runs on this machine`);
+    const byPort = new Map();
+    for (const l of f.listeners.filter((x) => NODE_PORTS.includes(splitHostPort(x.local).port))) {
+      const port = splitHostPort(l.local).port;
+      if (!byPort.has(port)) byPort.set(port, new Set());
+      byPort.get(port).add(`${l.pid} ${l.command}`);
+    }
+    for (const [port, who] of byPort) r.push(`port ${port} is in use (pid ${[...who].join(", pid ")}): a node runs on this machine`);
   }
   for (const s of KEYCHAIN_SERVICES) {
     const k = f.keychain?.[s];
@@ -581,7 +617,8 @@ export function evaluateGuards(f) {
   }
   if (!f.signingIdentities) r.push("signing-identity probe did not run");
   else for (const id of f.signingIdentities) r.push(`a release signing identity is in the keychain (${id}): this is a release machine`);
-  return { ok: r.length === 0, refusals: r };
+  const refusals = [...new Set(r)];
+  return { ok: refusals.length === 0, refusals };
 }
 
 /** Read-only probes. `pwHome` comes from the password database, so HOME=/elsewhere cannot hide
@@ -623,6 +660,14 @@ export function isReadOnly(cmd, args) {
   if (!first.includes(args[0])) return false;
   // list-keychains / default-keychain only read when they carry no -s.
   if (name === "security" && args.includes("-s") && args[0] !== "find-generic-password") return false;
+  // -g / -w print a secret (and can prompt); dump-keychain -d / -r dump secret data.
+  if (name === "security" && args[0] === "find-generic-password" && args.slice(1).some((a) => /^-[a-zA-Z]*[gw]/.test(a))) return false;
+  if (name === "security" && args[0] === "dump-keychain" && args.slice(1).some((a) => /^-[a-zA-Z]*[dr]/.test(a))) return false;
+  // plutil -extract writes wherever -o points: only -o - (stdout), exactly once, is a read.
+  if (name === "plutil") {
+    const outs = args.map((a, i) => (a === "-o" ? args[i + 1] : null)).filter((x) => x !== null);
+    if (outs.length !== 1 || outs[0] !== "-" || args.some((a) => a === "-r" || a === "-s")) return false;
+  }
   if (name === "xcrun" && args[1] !== "validate") return false;
   return true;
 }
