@@ -126,6 +126,7 @@ fn new_network() -> crate::network_profile::ReadyNetwork {
         .clone();
     p.chain_id = Some(40204);
     p.genesis_hash = Some(NEW_GENESIS.to_string());
+    p.genesis_profile = Some("r1006".to_string());
     p.node_network = Some("rehearsal".to_string());
     p.rpc_url = Some("https://rpc.rehearsal.invalid".to_string());
     p.explorer_url = Some("https://explorer.rehearsal.invalid".to_string());

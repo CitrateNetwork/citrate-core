@@ -43,6 +43,7 @@ fn the_next_genesis_profile_is_explicitly_not_set() {
     for field in [
         "chainId",
         "genesisHash",
+        "genesisProfile",
         "nodeNetwork",
         "rpcUrl",
         "explorerUrl",
@@ -66,7 +67,7 @@ fn the_next_genesis_profile_is_explicitly_not_set() {
     match p.ready() {
         Err(ProfileError::NotSet { profile, missing }) => {
             assert_eq!(profile, NEXT);
-            assert_eq!(missing.len(), 10);
+            assert_eq!(missing.len(), 11);
         }
         other => panic!("a not-set profile must not be ready: {other:?}"),
     }
@@ -170,6 +171,22 @@ fn ready_refuses_values_that_only_look_set() {
             "minChainRev",
             Box::new(|p| p.min_chain_rev = Some("g".repeat(40))),
         ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some("r9999".into())),
+        ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some(String::new())),
+        ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some("R1006".into())),
+        ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some("r1006\"\nx = 1".into())),
+        ),
     ];
     for (field, mutate) in cases {
         let mut p = base.clone();
@@ -220,6 +237,10 @@ fn not_set_error_names_the_missing_values() {
 fn the_template_has_no_network_values_of_its_own() {
     let t = include_str!("../config/member-node.toml");
     assert!(t.contains(CHAIN_ID_PLACEHOLDER), "chain id placeholder");
+    assert!(
+        t.contains(&format!("genesis_profile = \"{GENESIS_PROFILE_PLACEHOLDER}\"")),
+        "genesis profile placeholder"
+    );
     assert!(
         t.contains(BOOTNODES_PLACEHOLDER),
         "bootnode placeholder line"
@@ -420,6 +441,18 @@ fn r1006_filled() -> NetworkProfile {
     p
 }
 
+/// r1006 as shipped before the reroll fill: the three reroll values unset, each with a reason.
+fn r1006_unfilled() -> NetworkProfile {
+    let mut p = r1006().clone();
+    p.genesis_hash = None;
+    p.address_book_sha256 = None;
+    p.min_chain_rev = None;
+    for k in ["genesisHash", "addressBookSha256", "minChainRev"] {
+        p.pending.insert(k.into(), "set at the reroll".into());
+    }
+    p
+}
+
 fn signs(gate: &crate::rpc::ExpectedNetwork, scope: crate::rpc::SignatureScope) -> bool {
     crate::rpc::with_added_network_gate(gate.clone(), || {
         crate::rpc::check_wallet_signing(scope)
@@ -429,11 +462,11 @@ fn signs(gate: &crate::rpc::ExpectedNetwork, scope: crate::rpc::SignatureScope) 
 
 /// Every value known before the reroll is set: chain id 40204 (the reroll keeps it), the
 /// existing fleet's RPC, explorer and faucet, and its bootnodes (citrate-chain
-/// node/config/testnet-beta.toml; the Noise keys stay stable across a reroll). Only the values
-/// the reroll produces are unset, each with a reason.
+/// node/config/testnet-beta.toml; the Noise keys stay stable across a reroll; owner decision:
+/// boot1-3 + rpc.citrate.ai). Since the RC52 fill the reroll values are set too (next test).
 #[test]
 fn r1006_has_the_values_known_today_and_only_the_reroll_values_unset() {
-    let p = r1006();
+    let p = r1006_unfilled();
     assert_eq!(p.chain_id, Some(40204));
     assert_eq!(p.node_network.as_deref(), Some("testnet"));
     assert_eq!(p.rpc_url.as_deref(), Some("https://rpc.citrate.ai"));
@@ -447,11 +480,35 @@ fn r1006_has_the_values_known_today_and_only_the_reroll_values_unset() {
     assert_eq!(missing, ["genesisHash", "addressBookSha256", "minChainRev"]);
 }
 
+/// RC52 fill (scripts/fill-network-profile.sh): r1006 carries the reroll values and is the network
+/// this build targets. Genesis: DGX fleet_agree + G4 cold-sync (fed#331), = citrate-chain
+/// `R1006_GENESIS`; book: citrate-chain contracts/addresses/r1006/40204.json at a857443e; rev: the
+/// node the fleet runs.
+#[test]
+fn r1006_is_filled_with_the_reroll_values_and_active() {
+    let p = r1006();
+    assert_eq!(p.genesis_hash.as_deref(), Some(R1006_GENESIS));
+    assert_eq!(
+        p.address_book_sha256.as_deref(),
+        Some("724e3843f677588a6aac680554dd1f2db768d5c3ca2bea18bdc0c173c100b90b")
+    );
+    assert_eq!(
+        p.min_chain_rev.as_deref(),
+        Some("9a32147e2aac60d388356ecc67488d717aa84c41")
+    );
+    assert!(p.pending.is_empty(), "{:?}", p.pending);
+    assert_eq!(active_id().unwrap(), R1006);
+    let r = active_ready().expect("the active r1006 is ready");
+    assert_eq!(r.genesis_hash, R1006_GENESIS);
+    assert_eq!(r.node_genesis.name, "r1006");
+    assert_eq!(crate::addresses::genesis_hash(), R1006_GENESIS);
+}
+
 /// Red first (K6, RC52): until the reroll values are filled, r1006 refuses every wallet
 /// signature (unbound and on its own chain) and every RPC read.
 #[test]
 fn r1006_unfilled_refuses_every_signature() {
-    let p = r1006();
+    let p = r1006_unfilled();
     match p.ready() {
         Err(ProfileError::NotSet { profile, missing }) => {
             assert_eq!(profile, R1006);
@@ -526,4 +583,144 @@ fn the_sidecar_min_chain_rev_is_the_active_profiles() {
         "scripts/build-sidecar.sh MIN_CHAIN_REV must equal the active profile's minChainRev {}",
         net.min_chain_rev
     );
+}
+
+// ---- the genesis the bundled node builds (RC52: the 0.5.2 RC runs its node on r1006) ----
+
+/// Block 0 of r1006 (citrate-chain 9a32147e `R1006_GENESIS`; DGX G4 cold-sync, fed#331).
+const R1006_GENESIS: &str = "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
+
+/// The `[chain] genesis_profile` of the member node config rendered for `net` (None: not set).
+fn rendered_genesis_profile(net: &ReadyNetwork) -> Option<String> {
+    let out = render_node_network(include_str!("../config/member-node.toml"), net)
+        .replace("{{DATA_DIR}}", "/tmp/x");
+    let t: toml::Table = out.parse().expect("rendered config is valid TOML");
+    t["chain"]
+        .get("genesis_profile")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// The embedded profiles file with `edit` applied to its parsed JSON.
+fn profiles_json_with(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(PROFILES_JSON).expect("profiles.json");
+    edit(&mut v);
+    v.to_string()
+}
+
+/// Red first (RC52): without `[chain] genesis_profile` the node builds the chain-id default
+/// genesis, which on 40204 is r1005's (0x1dcfc490…), not r1006's. The node config the app
+/// writes must name the genesis profile of the network it targets.
+#[test]
+fn the_node_config_names_the_genesis_profile_of_its_network() {
+    let r1006 = r1006_filled()
+        .ready()
+        .expect("filled r1006 is ready");
+    assert_eq!(
+        rendered_genesis_profile(&r1006).as_deref(),
+        Some("r1006"),
+        "an r1006 node must be told to build the r1006 genesis"
+    );
+    let alpha = profile("alpha-r1005")
+        .unwrap()
+        .ready()
+        .expect("alpha-r1005 is ready");
+    assert_eq!(
+        rendered_genesis_profile(&alpha).as_deref(),
+        Some("testnet_beta"),
+        "the r1005 network names the genesis profile its block 0 comes from"
+    );
+}
+
+/// Red first (RC52), fail closed: a profile naming a genesis profile the bundled node does not
+/// build (a typo, or a network whose genesis is not in this node) is not ready, so no node starts
+/// and nothing is signed. An unset one is "not set". A known one is ready.
+#[test]
+fn a_genesis_profile_the_bundled_node_does_not_build_is_refused() {
+    let fill = |v: &mut serde_json::Value, gp: serde_json::Value| {
+        let p = &mut v["profiles"]["r1006"];
+        p["genesisHash"] = R1006_GENESIS.into();
+        p["addressBookSha256"] = "5c".repeat(32).into();
+        p["minChainRev"] = "9a32147e2aac60d388356ecc67488d717aa84c41".into();
+        p["genesisProfile"] = gp;
+        p["pending"] = serde_json::json!({});
+    };
+    let r1006_of = |json: String| -> Result<ReadyNetwork, ProfileError> {
+        let (_, ps) = parse(&json)?;
+        ps.into_iter()
+            .find(|p| p.id == "r1006")
+            .ok_or_else(|| ProfileError::UnknownProfile("r1006".into()))?
+            .ready()
+    };
+    let unknown = r1006_of(profiles_json_with(|v| fill(v, "r9999".into())));
+    assert!(
+        matches!(&unknown, Err(ProfileError::Invalid { field: "genesisProfile", .. })),
+        "a genesis profile the node does not build must be refused: {unknown:?}"
+    );
+    let unset = r1006_of(profiles_json_with(|v| {
+        fill(v, serde_json::Value::Null);
+        v["profiles"]["r1006"]["pending"] =
+            serde_json::json!({"genesisProfile": "set at the reroll"});
+    }));
+    assert!(
+        matches!(&unset, Err(ProfileError::NotSet { missing, .. })
+            if missing.iter().any(|(k, _)| k == "genesisProfile")),
+        "an unset genesis profile is not set: {unset:?}"
+    );
+    let known = r1006_of(profiles_json_with(|v| fill(v, "r1006".into())));
+    assert!(
+        matches!(&known, Ok(r) if r.genesis_hash == R1006_GENESIS),
+        "r1006 naming the r1006 genesis profile is ready: {known:?}"
+    );
+}
+
+/// Tripwire (RC52): every shipped profile whose genesis is set names the genesis profile that
+/// builds exactly that block 0, so the node can never be told to build another network's genesis
+/// (alpha-r1005 → testnet_beta 0x1dcfc490…, r1006 → r1006 0xa3651a27… once filled).
+#[test]
+fn every_shipped_genesis_is_the_block_0_its_genesis_profile_builds() {
+    let table = node_genesis_profiles().expect("nodeGenesisProfiles parses");
+    assert!(!table.is_empty());
+    for g in table {
+        assert!(is_genesis_profile_name(&g.name), "{g:?}");
+    }
+    let mut checked = 0;
+    for p in profiles().unwrap() {
+        let (Some(gh), Some(gp)) = (&p.genesis_hash, &p.genesis_profile) else {
+            continue;
+        };
+        let g = node_genesis(gp)
+            .unwrap_or_else(|| panic!("profile {}: genesis profile {gp:?} is not in the table", p.id));
+        assert_eq!(
+            gh.to_ascii_lowercase(),
+            g.genesis_hash,
+            "profile {}: its genesis is not the block 0 genesis profile {gp} builds",
+            p.id
+        );
+        checked += 1;
+    }
+    assert!(checked >= 1, "the active profile at least");
+    let built = node_genesis("r1006").expect("the bundled node builds r1006");
+    assert_eq!(built.genesis_hash, R1006_GENESIS);
+    assert!(built.compiled_activations && !built.node_default);
+    assert_eq!(r1006().genesis_profile.as_deref(), Some("r1006"));
+}
+
+/// The node genesis table is checked when it is read: a bad name or hash is a build defect.
+#[test]
+fn a_malformed_node_genesis_table_is_refused() {
+    for (what, edit) in [
+        ("a name the TOML string cannot carry as is", r#"{"r1006\"x": {"genesisHash": "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4", "nodeDefault": false, "compiledActivations": true}}"#),
+        ("a hash that is not a block hash", r#"{"r1006": {"genesisHash": "0x1234", "nodeDefault": false, "compiledActivations": true}}"#),
+        ("an unknown key", r#"{"r1006": {"genesisHash": "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4", "nodeDefault": false, "compiledActivations": true, "x": 1}}"#),
+    ] {
+        let json = profiles_json_with(|v| {
+            v["nodeGenesisProfiles"] = serde_json::from_str(edit).expect("edit is JSON");
+        });
+        assert!(
+            matches!(parse_node_genesis(&json), Err(ProfileError::Malformed(_))),
+            "{what}"
+        );
+    }
+    assert!(parse_node_genesis(PROFILES_JSON).is_ok());
 }

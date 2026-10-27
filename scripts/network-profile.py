@@ -25,10 +25,13 @@ fill <profile> --genesis-hash 0x<64 hex> --address-book <file> --min-chain-rev <
 
 check [--release] [--require-active <profile>] [--canonical-book <file>]
 
-    Every profile parses and its values are well formed where set, and `pending` names exactly
-    the unset values. With --release (the RC build gate G0): the active profile has NO unset
-    value, the embedded address book has its chain id and genesis, and build-sidecar.sh pins its
-    minChainRev. --require-active fails unless the active profile is the one named.
+    Every profile parses and its values are well formed where set, `pending` names exactly
+    the unset values, and a set genesis is the block 0 the profile's genesisProfile builds
+    (nodeGenesisProfiles: the genesis profiles the bundled node builds). With --release (the RC
+    build gate G0): the active profile has NO unset value, the embedded address book has its chain
+    id and genesis, the canonical book kept next to it (`<book>.canonical.json`, written by
+    sync-addresses.py) has the profile's addressBookSha256 (recomputed) and the embedded book is
+    exactly what sync-addresses.py generates from it, and build-sidecar.sh pins its minChainRev. --require-active fails unless the active profile is the one named.
     --canonical-book checks the active profile's addressBookSha256 against that file.
 
 Paths default to this repo; --profiles, --app-book-dir and --sidecar exist for tests.
@@ -53,6 +56,7 @@ SYNC = REPO / "scripts" / "sync-addresses.py"
 FIELDS = [
     "chainId",
     "genesisHash",
+    "genesisProfile",
     "nodeNetwork",
     "rpcUrl",
     "explorerUrl",
@@ -73,6 +77,8 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 REV = re.compile(r"[0-9a-f]{40}")
 ADDR = re.compile(r"0x[0-9a-fA-F]{40}")
 NETWORK = re.compile(r"[A-Za-z0-9_-]+")
+GENESIS_PROFILE = re.compile(r"[a-z0-9_]+")
+NODE_GENESIS_KEYS = {"genesisHash", "nodeDefault", "compiledActivations"}
 BOOTNODE = re.compile(r"noise_[0-9a-fA-F]{64}@[A-Za-z0-9.-]+:([0-9]+)")
 # The canonical book's required keys (citrate-chain contracts/addresses/schema.json).
 BOOK_REQUIRED = ["chainId", "chainName", "deployer", "contracts", "aaStack", "genesis"]
@@ -97,6 +103,19 @@ def load(path: Path) -> dict:
         raise Refused(f"{path} has no profiles")
     if not isinstance(data.get("active"), str):
         raise Refused(f"{path} has no active profile")
+    node = data.get("nodeGenesisProfiles")
+    if not isinstance(node, dict) or not node:
+        raise Refused(f"{path} has no nodeGenesisProfiles (the genesis profiles the bundled node builds)")
+    for name, g in node.items():
+        if not GENESIS_PROFILE.fullmatch(name):
+            raise Refused(f"nodeGenesisProfiles: {name!r} is not a genesis profile name")
+        if not isinstance(g, dict) or set(g) != NODE_GENESIS_KEYS:
+            raise Refused(f"nodeGenesisProfiles.{name} must have exactly {sorted(NODE_GENESIS_KEYS)}")
+        h = g["genesisHash"]
+        if not (isinstance(h, str) and HASH.fullmatch(h)) or set(h[2:]) == {"0"}:
+            raise Refused(f"nodeGenesisProfiles.{name}.genesisHash {h!r} is not a block hash")
+        if not all(isinstance(g[k], bool) for k in ("nodeDefault", "compiledActivations")):
+            raise Refused(f"nodeGenesisProfiles.{name}: nodeDefault and compiledActivations are true or false")
     for pid, p in data["profiles"].items():
         if not isinstance(p, dict):
             raise Refused(f"profile {pid} is not an object")
@@ -113,11 +132,11 @@ def unset(p: dict) -> list:
     return [f for f in FIELDS if p.get(f) is None]
 
 
-def problems(p: dict) -> list:
+def problems(p: dict, node: dict) -> list:
     """Why a profile is not ready: every unset value, else every malformed one.
 
     The same rule as network_profile.rs `NetworkProfile::ready` and profile.ts `profileProblems`;
-    scripts/fill-network-profile.test.mjs checks the three agree.
+    scripts/fill-network-profile.test.mjs checks the three agree. `node` is nodeGenesisProfiles.
     """
     missing = unset(p)
     if missing:
@@ -129,6 +148,9 @@ def problems(p: dict) -> list:
     g = p["genesisHash"]
     if not (isinstance(g, str) and HASH.fullmatch(g)) or set(g[2:]) == {"0"}:
         out.append("genesisHash is not a block hash")
+    gp = p["genesisProfile"]
+    if not (isinstance(gp, str) and GENESIS_PROFILE.fullmatch(gp) and gp in node):
+        out.append("genesisProfile is not a genesis profile the bundled node builds")
     n = p["nodeNetwork"]
     if not (isinstance(n, str) and NETWORK.fullmatch(n)):
         out.append("nodeNetwork is malformed")
@@ -167,13 +189,26 @@ def pending_problems(pid: str, p: dict) -> list:
     return out
 
 
-def set_problems(p: dict) -> list:
+def genesis_binding(p: dict, node: dict) -> list:
+    """A set genesis must be the block 0 the profile's genesis profile builds (RC52): the node is
+    told the genesis profile, so any other genesis is one this build's node never syncs."""
+    g, gp = p.get("genesisHash"), p.get("genesisProfile")
+    if not isinstance(g, str) or not isinstance(gp, str) or gp not in node:
+        return []
+    want = node[gp]["genesisHash"].lower()
+    if g.lower() != want:
+        return [f"genesisHash {g} is not the block 0 the bundled node builds for genesis profile {gp} ({want})"]
+    return []
+
+
+def set_problems(p: dict, node: dict) -> list:
     """Malformed values among those that ARE set (an unset profile may still be shipped inactive)."""
     probe = dict(p)
     # Stand-ins only for the unset values, so problems() checks the set ones.
     stand_in = {
         "chainId": 1,
         "genesisHash": "0x" + "1" * 64,
+        "genesisProfile": next(iter(node)),
         "nodeNetwork": "n",
         "rpcUrl": "https://x",
         "explorerUrl": "https://x",
@@ -185,7 +220,7 @@ def set_problems(p: dict) -> list:
     }
     for f in unset(p):
         probe[f] = stand_in[f]
-    return problems(probe)
+    return problems(probe, node)
 
 
 def check_book(path: Path, chain_id: int, genesis: str) -> bytes:
@@ -228,6 +263,37 @@ def check_book(path: Path, chain_id: int, genesis: str) -> bytes:
     if r.returncode != 0:
         raise Refused("address book fails scripts/sync-addresses.py --check: " + (r.stderr or r.stdout).strip())
     return raw
+
+
+def embedded_book_problems(book_path: Path, p: dict) -> list:
+    """The embedded book is bound to the canonical book the profile pins: the canonical copy kept
+    next to it has the profile's addressBookSha256 (recomputed here), and regenerating from that
+    copy gives the embedded book byte for byte. An edited, stale or hand-made embedded book fails."""
+    canon = book_path.with_name(book_path.stem + ".canonical.json")
+    try:
+        raw = canon.read_bytes()
+    except OSError as e:
+        return [f"canonical book {canon} cannot be read ({e}); regenerate the embedded book with scripts/sync-addresses.py"]
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != p["addressBookSha256"]:
+        return [f"canonical book {canon} sha256 {digest} != profile addressBookSha256 {p['addressBookSha256']} "
+                "(the embedded book was generated from another book; regenerate it from the pinned one)"]
+    try:
+        embedded = book_path.read_bytes()
+        router = "InferenceRouter" in (json.loads(embedded).get("addresses") or {})
+    except (OSError, ValueError) as e:
+        return [f"embedded book {book_path} cannot be read: {e}"]
+    with tempfile.TemporaryDirectory(prefix="network-profile-") as tmp:
+        out = Path(tmp) / book_path.name
+        cmd = [sys.executable, "-I", str(SYNC), "--book", str(canon), "--genesis", str(p["genesisHash"]).lower(),
+               "--out", str(out)] + (["--with-inference-router"] if router else [])
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            return [f"the canonical book {canon} does not generate a book: " + (r.stderr or r.stdout).strip()]
+        if out.read_bytes() != embedded:
+            return [f"embedded book {book_path} is not the book scripts/sync-addresses.py generates from the canonical "
+                    f"book (sha256 {digest}); regenerate it, never edit it"]
+    return []
 
 
 def write_atomic(path: Path, data: dict) -> None:
@@ -286,7 +352,7 @@ def cmd_fill(a) -> None:
     filled = dict(p)
     filled.update(new)
     filled["pending"] = {k: v for k, v in (p.get("pending") or {}).items() if k not in FILLED}
-    left = problems(filled) + pending_problems(pid, filled)
+    left = problems(filled, data["nodeGenesisProfiles"]) + pending_problems(pid, filled)
     if left:
         raise Refused(f"profile {pid} would not be ready after the fill: {left}")
 
@@ -311,8 +377,10 @@ def cmd_check(a) -> None:
     path = Path(a.profiles)
     data = load(path)
     errors = []
+    node = data["nodeGenesisProfiles"]
     for pid, p in data["profiles"].items():
-        errors += [f"profile {pid}: {e}" for e in set_problems(p)]
+        errors += [f"profile {pid}: {e}" for e in set_problems(p, node)]
+        errors += [f"profile {pid}: {e}" for e in genesis_binding(p, node)]
         errors += pending_problems(pid, p)
     active = data["active"]
     if active not in data["profiles"]:
@@ -326,7 +394,7 @@ def cmd_check(a) -> None:
                 "a profile that refuses to sign (fill it: scripts/fill-network-profile.sh)"
             )
         else:
-            errors += [f"active profile {active}: {e}" for e in problems(p)]
+            errors += [f"active profile {active}: {e}" for e in problems(p, node)]
             book_path = Path(a.app_book_dir) / p["addressBook"]
             try:
                 book = json.loads(book_path.read_text())
@@ -339,6 +407,7 @@ def cmd_check(a) -> None:
                     )
             except (OSError, ValueError) as e:
                 errors.append(f"embedded book {book_path} cannot be read: {e}")
+            errors += embedded_book_problems(book_path, p)
             try:
                 m = re.search(r'^MIN_CHAIN_REV="([0-9a-f]{40})"', Path(a.sidecar).read_text(), re.M)
                 if not m:

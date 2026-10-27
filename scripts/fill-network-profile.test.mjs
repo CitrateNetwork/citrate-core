@@ -29,9 +29,30 @@ const repo = path.resolve(here, "..");
 const fill = path.join(here, "fill-network-profile.sh");
 const check = path.join(here, "check-network-profile.sh");
 const realProfiles = path.join(repo, "src-tauri", "network", "profiles.json");
+// The values the RC52 fill wrote into the shipped r1006 profile, and their reasons before it.
+const R1006_FILLED = {
+  genesisHash: "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4",
+  addressBookSha256: "724e3843f677588a6aac680554dd1f2db768d5c3ca2bea18bdc0c173c100b90b",
+  minChainRev: "9a32147e2aac60d388356ecc67488d717aa84c41",
+};
+const PREFILL_REASONS = {
+  genesisHash: "recorded at the r1006 reroll (block 0 of the fleet after fleet_agree.sh); fill with scripts/fill-network-profile.sh",
+  addressBookSha256: "the canonical address book exported at the r1006 reroll; fill with scripts/fill-network-profile.sh",
+  minChainRev: "the citrate-chain rev the r1006 fleet runs (WP-S1-REPIN); fill with scripts/fill-network-profile.sh",
+};
+/** The shipped profiles as they were before the RC52 fill (r1006 unfilled, alpha-r1005 active):
+ * the fill and check cases below run on this, so they keep exercising an unfilled profile. */
+function prefillProfiles() {
+  const d = JSON.parse(fs.readFileSync(realProfiles, "utf8"));
+  d.active = "alpha-r1005";
+  Object.assign(d.profiles.r1006, { genesisHash: null, addressBookSha256: null, minChainRev: null, pending: { ...PREFILL_REASONS } });
+  return d;
+}
 const realSidecar = path.join(here, "build-sidecar.sh");
 
 const GENESIS = "0x" + "6a".repeat(32);
+// Block 0 of r1006: what the bundled node builds for genesis profile r1006 (citrate-chain 9a32147e).
+const R1006_GENESIS = "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
 const REV = "1f".repeat(20);
 const addr = (b) => "0x" + b.repeat(20);
 const canonicalBook = (over = {}) => ({
@@ -81,7 +102,7 @@ const SLOW = { timeout: 30_000 };
 beforeEach(() => {
   dir = fs.mkdtempSync("/tmp/dgx-fillprof-");
   profiles = path.join(dir, "profiles.json");
-  fs.copyFileSync(realProfiles, profiles);
+  fs.writeFileSync(profiles, JSON.stringify(prefillProfiles(), null, 2) + "\n");
   bookPath = writeBook(canonicalBook());
 });
 afterEach(() => {
@@ -89,8 +110,22 @@ afterEach(() => {
 });
 
 describe("the shipped r1006 profile", () => {
-  it("has every value known today and only the reroll values unset, each with a reason", () => {
-    const p = JSON.parse(fs.readFileSync(realProfiles, "utf8")).profiles.r1006;
+  it("is filled with the reroll values (RC52 fill) and is the active profile, ready by the app's rule", () => {
+    const d = JSON.parse(fs.readFileSync(realProfiles, "utf8"));
+    const p = d.profiles.r1006;
+    expect(d.active).toBe("r1006");
+    expect(p).toMatchObject({ ...R1006_FILLED, genesisProfile: "r1006", pending: {} });
+    expect(p.genesisHash).toBe(d.nodeGenesisProfiles.r1006.genesisHash);
+    // Owner decision: the bootnodes stay boot1-3 + rpc.citrate.ai.
+    expect(p.bootnodes.map((b) => b.split("@")[1])).toEqual(
+      ["boot1.citrate.ai:30303", "boot2.citrate.ai:30303", "boot3.citrate.ai:30303", "rpc.citrate.ai:30303"]);
+    expect(profileProblems({ id: "r1006", ...p })).toEqual([]);
+    // Restoring the three reroll values to null gives back exactly the pre-fill profile below.
+    expect(prefillProfiles().profiles.r1006).toMatchObject({ ...p, genesisHash: null, addressBookSha256: null, minChainRev: null });
+  });
+
+  it("before the fill: every value known then and only the reroll values unset, each with a reason", () => {
+    const p = prefillProfiles().profiles.r1006;
     expect(p).toBeDefined();
     expect(p.chainId).toBe(40204);
     expect(p.nodeNetwork).toBe("testnet");
@@ -98,6 +133,8 @@ describe("the shipped r1006 profile", () => {
     expect(p.explorerUrl).toBe("https://explorer.citrate.ai");
     expect(p.bootnodes.length).toBeGreaterThanOrEqual(4);
     expect(p.addressBook).toBe("addresses/40204.json");
+    // RC52: the node builds the r1006 block 0 only when told to (`[chain] genesis_profile`).
+    expect(p.genesisProfile).toBe("r1006");
     const unset = Object.keys(p).filter((k) => p[k] === null).sort();
     expect(unset).toEqual(["addressBookSha256", "genesisHash", "minChainRev"]);
     expect(Object.keys(p.pending).sort()).toEqual(unset);
@@ -250,10 +287,10 @@ describe("fill-network-profile.sh", SLOW, () => {
 });
 
 describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
-  it("positive control: the shipped profiles pass the release check", () => {
-    const r = run(check, ["--release"]);
+  it("positive control: the shipped profiles pass the release check, r1006 required (G0)", () => {
+    const r = run(check, ["--release", "--require-active", "r1006"]);
     expect(r.code, r.err).toBe(0);
-    expect(r.out).toMatch(/OK \(active alpha-r1005, release; not set \(inactive\): .*r1006/);
+    expect(r.out).toMatch(/OK \(active r1006, release; not set \(inactive\): genesis-2026-12\)/);
   });
 
   it("negative control: the shipped file with the unfilled r1006 active fails the release check", () => {
@@ -275,21 +312,23 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
   });
 
   it("a filled and activated r1006 passes once the embedded book and MIN_CHAIN_REV follow it", () => {
-    expect(run(fill, fillArgs({ extra: ["--activate"] })).code).toBe(0);
+    expect(run(fill, fillArgs({ genesis: R1006_GENESIS, extra: ["--activate"] })).code).toBe(0);
     const appDir = path.join(dir, "app");
     fs.mkdirSync(path.join(appDir, "addresses"), { recursive: true });
     const appBook = path.join(appDir, "addresses", "40204.json");
     const sidecar = path.join(dir, "build-sidecar.sh");
     const opts = ["--release", "--profiles", profiles, "--app-book-dir", appDir, "--sidecar", sidecar];
-    // Activated but not followed through: the old book and the old MIN_CHAIN_REV both fail.
-    fs.copyFileSync(path.join(repo, "src-tauri", "addresses", "40204.json"), appBook);
+    // Activated but not followed through: the old network's book and the old MIN_CHAIN_REV both fail.
+    const oldBook = JSON.parse(fs.readFileSync(path.join(repo, "src-tauri", "addresses", "40204.json"), "utf8"));
+    oldBook.genesisHash = prefillProfiles().profiles["alpha-r1005"].genesisHash;
+    fs.writeFileSync(appBook, JSON.stringify(oldBook, null, 2) + "\n");
     fs.copyFileSync(realSidecar, sidecar);
     const stale = run(check, opts);
     expect(stale.code).toBe(1);
     expect(stale.err).toMatch(/embedded book .* genesis .* != profile/);
     expect(stale.err).toMatch(/MIN_CHAIN_REV .* != profile minChainRev/);
     // Followed through: the generated book for the new genesis, the re-pinned rev.
-    execFileSync("python3", ["-I", path.join(here, "sync-addresses.py"), "--book", bookPath, "--genesis", GENESIS,
+    execFileSync("python3", ["-I", path.join(here, "sync-addresses.py"), "--book", bookPath, "--genesis", R1006_GENESIS,
       "--out", appBook], { env: env() });
     fs.writeFileSync(sidecar, fs.readFileSync(realSidecar, "utf8").replace(/^MIN_CHAIN_REV="[0-9a-f]{40}"/m,
       `MIN_CHAIN_REV="${REV}"`));
@@ -301,12 +340,72 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     expect(run(check, [...opts, "--require-active", "alpha-r1005"]).err).toMatch(/required 'alpha-r1005'/);
   });
 
+  it("the embedded book must be the one sync-addresses.py generates from the canonical book the profile pins", () => {
+    expect(run(fill, fillArgs({ genesis: R1006_GENESIS, extra: ["--activate"] })).code).toBe(0);
+    const appDir = path.join(dir, "app");
+    fs.mkdirSync(path.join(appDir, "addresses"), { recursive: true });
+    const appBook = path.join(appDir, "addresses", "40204.json");
+    const sidecar = path.join(dir, "build-sidecar.sh");
+    fs.writeFileSync(sidecar, fs.readFileSync(realSidecar, "utf8").replace(/^MIN_CHAIN_REV="[0-9a-f]{40}"/m,
+      `MIN_CHAIN_REV="${REV}"`));
+    const opts = ["--release", "--profiles", profiles, "--app-book-dir", appDir, "--sidecar", sidecar];
+    const sync = (book) => execFileSync("python3", ["-I", path.join(here, "sync-addresses.py"), "--book", book,
+      "--genesis", R1006_GENESIS, "--out", appBook], { env: env() });
+    sync(bookPath);
+    const ok = run(check, opts);
+    expect(ok.code, ok.err).toBe(0);
+    const good = fs.readFileSync(appBook, "utf8");
+
+    // An edited embedded book (one pin moved) is refused, though its chain id and genesis are right.
+    const edited = JSON.parse(good);
+    edited.addresses.ValidatorRegistry = addr("ee");
+    fs.writeFileSync(appBook, JSON.stringify(edited, null, 2) + "\n");
+    const e1 = run(check, opts);
+    expect(e1.code).toBe(1);
+    expect(e1.err).toMatch(/embedded book .* is not the book scripts\/sync-addresses\.py generates from the canonical book/);
+
+    // A stale embedded book, generated from another canonical book of the same genesis, is refused.
+    const other = writeBook(canonicalBook({ contracts: { ...canonicalBook().contracts, SkillRegistry: addr("19") } }), "other.json");
+    sync(other);
+    const e2 = run(check, opts);
+    expect(e2.code).toBe(1);
+    expect(e2.err).toMatch(/sha256 [0-9a-f]{64} != profile addressBookSha256/);
+
+    // The pinned canonical copy itself edited: its digest no longer matches the profile.
+    sync(bookPath);
+    expect(run(check, opts).code).toBe(0);
+    const canon = fs.readdirSync(path.join(appDir, "addresses")).filter((f) => f !== "40204.json");
+    expect(canon).toEqual(["40204.canonical.json"]);
+    const canonPath = path.join(appDir, "addresses", canon[0]);
+    fs.writeFileSync(canonPath, fs.readFileSync(canonPath, "utf8").replace(addr("03"), addr("ee")));
+    const e3 = run(check, opts);
+    expect(e3.code).toBe(1);
+    expect(e3.err).toMatch(/sha256 [0-9a-f]{64} != profile addressBookSha256/);
+
+    // No canonical copy at all: refused, never skipped.
+    fs.rmSync(canonPath);
+    const e4 = run(check, opts);
+    expect(e4.code).toBe(1);
+    expect(e4.err).toMatch(/canonical book .* cannot be read/);
+  });
+
+  it("a genesis that is not the block 0 the bundled node builds for the profile's genesis profile fails", () => {
+    // RC52: genesisProfile chooses the block 0 the node builds; the profile's genesisHash must be it.
+    expect(run(fill, fillArgs()).code).toBe(0);
+    const bad = run(check, ["--profiles", profiles]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toMatch(new RegExp(`profile r1006: genesisHash ${GENESIS} is not the block 0 the bundled node builds for genesis profile r1006 \\(${R1006_GENESIS}\\)`));
+    expect(run(fill, fillArgs({ genesis: R1006_GENESIS, extra: ["--replace"] })).code).toBe(0);
+    const ok = run(check, ["--profiles", profiles]);
+    expect(ok.code, ok.err).toBe(0);
+  });
+
   it("a stale pending reason next to a set value fails, and so does an unset value with no reason", () => {
     const data = read();
     data.profiles["alpha-r1005"].pending = { genesisHash: "stale" };
     fs.writeFileSync(profiles, JSON.stringify(data, null, 2) + "\n");
     expect(run(check, ["--profiles", profiles]).err).toMatch(/pending has a reason for genesisHash, which is set/);
-    const d2 = JSON.parse(fs.readFileSync(realProfiles, "utf8"));
+    const d2 = prefillProfiles();
     delete d2.profiles.r1006.pending.minChainRev;
     fs.writeFileSync(profiles, JSON.stringify(d2, null, 2) + "\n");
     expect(run(check, ["--profiles", profiles]).err).toMatch(/minChainRev is unset with no reason/);
@@ -317,7 +416,7 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     delete d.profiles.r1006.minChainRev;
     fs.writeFileSync(profiles, JSON.stringify(d, null, 2) + "\n");
     expect(run(check, ["--profiles", profiles]).err).toMatch(/lacks \['minChainRev'\]/);
-    const d2 = JSON.parse(fs.readFileSync(realProfiles, "utf8"));
+    const d2 = prefillProfiles();
     d2.profiles.r1006.genesisHas = null;
     fs.writeFileSync(profiles, JSON.stringify(d2, null, 2) + "\n");
     expect(run(check, ["--profiles", profiles]).err).toMatch(/unknown keys \['genesisHas'\]/);
@@ -353,6 +452,11 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     [{ minChainRev: REV + "\n" }, "minChainRev is not a commit"],
     [{ minChainRev: " " + REV }, "minChainRev is not a commit"],
     [{ minChainRev: "1F".repeat(20) }, "minChainRev is not a commit"],
+    // RC52: a genesis profile the bundled node does not build (or a malformed name) is refused.
+    [{ genesisProfile: "r9999" }, "genesisProfile is not a genesis profile the bundled node builds"],
+    [{ genesisProfile: "" }, "genesisProfile is not a genesis profile the bundled node builds"],
+    [{ genesisProfile: "testnet_beta\n" }, "genesisProfile is not a genesis profile the bundled node builds"],
+    [{ genesisProfile: "Testnet_Beta" }, "genesisProfile is not a genesis profile the bundled node builds"],
   ];
   for (const [patch, why] of malformed) {
     it(`both rules refuse ${JSON.stringify(patch)}`, () => {
