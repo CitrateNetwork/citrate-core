@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
+import { shortNet } from "../shell/netScope";
 import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { activateValidatorLabel } from "../onboarding/activateValidator";
@@ -173,6 +174,11 @@ export function Node({ store, s }: SurfaceProps) {
   // C1-V V2: there is no heartbeat source. The node does not report one to the app and no
   // slashing contract reads one, so the panel shows the unavailable state, never a seeded age.
 
+  // RC52: the genesis-switch notice stays here until the member dismisses it (a toast is easy to
+  // miss). `switched` is the webview's own finding: its saved chain values were another network's.
+  const notice = s.networkNotice;
+  const switched = notice !== null && notice.from !== notice.to;
+
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
       {/* header */}
@@ -209,6 +215,33 @@ export function Node({ store, s }: SurfaceProps) {
           </span>
         </span>
       </div>
+
+      {notice && (
+        <div
+          role="status"
+          data-network-notice="switch"
+          className="surface"
+          style={{ padding: "12px 16px", borderLeft: "3px solid var(--warn)", display: "flex", flexDirection: "column", gap: 6 }}
+        >
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>This app is now on a new network</span>
+          {switched && (
+            <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
+              Values read on the previous network (genesis {shortNet(notice.from)}): the grant, bond, balances, claimable
+              and transaction history, are not shown as current. Each is read again from this network, and shows
+              &quot;not read yet&quot; until then.{" "}
+              {notice.archived
+                ? "The previous network's values are kept on this device (Wallet, Activity, under Previous network)."
+                : "The previous network's values could not be kept on this device (storage unavailable)."}
+            </span>
+          )}
+          {notice.node && <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>{notice.node}</span>}
+          <span>
+            <button className="btn btn-secondary btn-sm" onClick={() => store.dismissNetworkNotice()}>
+              Dismiss
+            </button>
+          </span>
+        </div>
+      )}
 
       {/* SCL-S0.6 — the node start was refused: another process holds the chain database or a
           node port. The message (from node.rs) names the holder (pid, path) and what to do. */}
