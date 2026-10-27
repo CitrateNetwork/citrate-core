@@ -97,6 +97,23 @@ fn a_stale_loose_temp_file_never_lends_its_mode_to_a_staged_secret() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+/// #477: staging a secret keeps its directory owner-only (`0700`), as `fsutil::write_secret_file`
+/// did before pending.json moved to the atomic write.
+#[cfg(unix)]
+#[test]
+fn staging_a_secret_makes_its_directory_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp_dir("private-dir");
+    let dir = d.join("invites");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let staged = stage_secret(&dir.join("pending.json"), b"s").expect("staged");
+    let mode = std::fs::metadata(&dir).expect("dir").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "the directory is owner-only: {mode:o}");
+    let _ = std::fs::remove_file(staged);
+    let _ = std::fs::remove_dir_all(d);
+}
+
 /// The real stage draws a fresh unique name, beside the target, owner-only.
 #[cfg(unix)]
 #[test]
