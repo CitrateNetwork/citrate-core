@@ -64,6 +64,69 @@ fn a_failed_replace_keeps_the_target_and_removes_its_temp() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+/// #477: a file already sitting at a temp name (left by an earlier process that had the same pid,
+/// or planted with a loose mode) is never opened: the stage skips to a free name, so the planted
+/// file's mode can't reach the secret file, and the planted file is left as it was.
+#[cfg(unix)]
+#[test]
+fn a_stale_loose_temp_file_never_lends_its_mode_to_a_staged_secret() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp_dir("stale-loose");
+    let target = d.join("pending.json");
+    let planted: Vec<PathBuf> = (0..3)
+        .map(|k| target.with_file_name(format!("pending.json.tmp-1-{k}")))
+        .collect();
+    for p in &planted {
+        std::fs::write(p, b"loose").expect("plant");
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    }
+    let free = target.with_file_name("pending.json.tmp-1-3");
+    let mut names = planted.clone().into_iter().chain([free.clone()]);
+    let staged =
+        stage_secret_with(b"secret", || names.next().expect("a name")).expect("staged");
+    let mode = std::fs::metadata(&staged).expect("staged").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "the staged secret is owner-only: {mode:o}");
+    assert_eq!(staged, free, "the stage skipped every taken name");
+    for p in &planted {
+        assert_eq!(std::fs::read(p).expect("planted"), b"loose", "{} was opened", p.display());
+    }
+    commit_staged(&staged, &target).expect("committed");
+    let mode = std::fs::metadata(&target).expect("target").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "the secret file is owner-only: {mode:o}");
+    assert_eq!(std::fs::read(&target).expect("target"), b"secret");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// The real stage draws a fresh unique name, beside the target, owner-only.
+#[cfg(unix)]
+#[test]
+fn a_staged_secret_is_beside_the_target_and_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp_dir("staged");
+    let target = d.join("pending.json");
+    let a = stage_secret(&target, b"a").expect("a");
+    let b = stage_secret(&target, b"b").expect("b");
+    assert_ne!(a, b);
+    assert_eq!(a.parent(), target.parent());
+    let mode = std::fs::metadata(&a).expect("a").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "{mode:o}");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// A failed commit (the rename over a non-empty directory) removes the staged file and leaves
+/// the target as it was.
+#[test]
+fn a_failed_commit_removes_the_staged_file_and_keeps_the_target() {
+    let d = tmp_dir("failed-commit");
+    let target = d.join("value.json");
+    std::fs::create_dir_all(target.join("inner")).expect("seed");
+    let staged = stage_secret(&target, b"new").expect("staged");
+    assert!(commit_staged(&staged, &target).is_err());
+    assert!(!staged.exists(), "the staged file is removed");
+    assert!(target.join("inner").is_dir(), "the target is untouched");
+    let _ = std::fs::remove_dir_all(d);
+}
+
 // ---------------------------------------------------------------------------
 // Tripwire: fixed temp-file names in production code.
 // ---------------------------------------------------------------------------

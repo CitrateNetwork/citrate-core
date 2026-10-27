@@ -367,57 +367,19 @@ fn read_pending_at<T>(
 /// `open(2)` call itself.
 fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), String> {
     let staged = stage_pending(path, v)?;
-    commit_pending(&staged, path)
+    crate::atomic_file::commit_staged(&staged, path).map_err(|e| e.to_string())
 }
 
-/// #431 — write the new contents to a 0600 sibling and fsync it; [`commit_pending`] renames it over
-/// `pending.json`. A crash before the rename leaves the previous file whole.
-///
-/// The sibling's name is unique to this write (`pending.json.tmp-<pid>-<n>`, as
-/// `atomic_file::replace` names its temp files, #420/#508), so no two writers ever share one, even
-/// outside [`PENDING_LOCK`] (another process, or a test writing the same path). A failed stage
-/// removes its own file.
+/// #431 — write the new contents to a unique 0600 sibling and fsync it
+/// ([`crate::atomic_file::stage_secret`]); [`write_pending`] then renames it over `pending.json`
+/// and fsyncs the directory ([`crate::atomic_file::commit_staged`]). A crash before the rename
+/// leaves the previous file whole.
 fn stage_pending(
     path: &std::path::Path,
     v: &[PendingInvite],
 ) -> Result<std::path::PathBuf, String> {
-    use std::io::Write;
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let bytes = zeroize::Zeroizing::new(serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?);
-    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let name = path
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let tmp = path.with_file_name(format!("{name}.tmp-{}-{n}", std::process::id()));
-    let staged = (|| {
-        let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
-        f.write_all(&bytes)?;
-        f.sync_all()
-    })();
-    match staged {
-        Ok(()) => Ok(tmp),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e.to_string())
-        }
-    }
-}
-
-/// Rename the staged file over `path` and fsync the directory, so the rename itself is durable.
-/// A failed rename removes the staged file; `path` keeps its previous contents.
-fn commit_pending(staged: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
-    if let Err(e) = std::fs::rename(staged, path) {
-        let _ = std::fs::remove_file(staged);
-        return Err(e.to_string());
-    }
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        std::fs::File::open(dir)
-            .and_then(|d| d.sync_all())
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    crate::atomic_file::stage_secret(path, &bytes).map_err(|e| e.to_string())
 }
 
 /// `group_invite_create` — mint a single-use, group-bound invite + share link. No address resolution.
@@ -868,7 +830,15 @@ pub async fn group_invites(
     app: tauri::AppHandle,
     group: String,
 ) -> Result<Vec<PendingInviteView>, String> {
-    Ok(invite_views_for_group(&load(&app), &group))
+    invite_views_at(&store_path(&app)?, &group)
+}
+
+/// The key-free views of a group's outstanding invites, read from `path`.
+fn invite_views_at(path: &std::path::Path, group: &str) -> Result<Vec<PendingInviteView>, String> {
+    Ok(invite_views_for_group(
+        &view_pending_at(path).unwrap_or_default(),
+        group,
+    ))
 }
 
 /// `group_invite_verify_consume` — check a claim's one-time token against an outstanding invite for
@@ -1619,19 +1589,147 @@ mod tests {
         );
     }
 
-    /// An unreadable `pending.json` is never overwritten by a writer (it holds invite private keys).
+    /// The files beside `path` whose names start with `pending.json.damaged-`, sorted.
+    fn set_aside(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(path.parent().expect("dir"))
+            .expect("read dir")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("pending.json.damaged-"))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// #431: a `pending.json` that can't be parsed (a write cut off before #373's atomic write, or
+    /// a damaged disk) is never overwritten. The first writer moves it aside, owner-only and with
+    /// its bytes untouched (it holds invite private keys), and fails, saying so. The next writer
+    /// starts a new list.
     #[test]
-    fn a_writer_never_overwrites_an_unreadable_pending_file() {
-        let path = scratch("corrupt-write");
-        std::fs::write(&path, b"not json").expect("corrupt");
+    fn a_damaged_pending_file_is_set_aside_and_the_next_write_starts_fresh() {
+        let path = scratch("damaged");
+        let damaged = b"[{\"group\":\"g\",\"tok".to_vec();
+        std::fs::write(&path, &damaged).expect("damaged");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        }
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let r = super::update_pending_at(&path, |v| v.push(minted("g", T, d.clone())));
+        let e = r.expect_err("the write that finds the damage fails closed");
+        assert!(
+            e.contains("set aside"),
+            "the error says the file was set aside: {e}"
+        );
+        assert!(e.contains("nothing was changed"), "{e}");
+        let aside = set_aside(&path);
+        assert_eq!(aside.len(), 1, "one damaged file set aside: {aside:?}");
+        assert_eq!(
+            std::fs::read(&aside[0]).expect("kept"),
+            damaged,
+            "bytes untouched"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&aside[0])
+                .expect("aside")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "the set-aside file is owner-only: {mode:o}"
+            );
+        }
+        assert!(!path.exists(), "pending.json itself is gone, not rewritten");
+        // A restart here (the damage is set aside, nothing new written) reads as no invites.
+        assert_eq!(super::view_pending_at(&path).map(|v| v.len()), Ok(0));
+        // The next write starts a new list and leaves the set-aside file alone.
+        super::update_pending_at(&path, |v| v.push(minted("g", T, d))).expect("fresh list");
+        assert_eq!(tokens(&path), vec![T.to_string()]);
+        assert_eq!(std::fs::read(&aside[0]).expect("still kept"), damaged);
+    }
+
+    /// #431: a file that can't be READ (not a parse failure) is not damage: nothing is moved and
+    /// the writer fails, so a transient I/O error never costs the member their invites.
+    #[test]
+    fn an_unreadable_but_undamaged_store_is_not_set_aside() {
+        let path = scratch("unreadable");
+        std::fs::create_dir_all(&path).expect("a directory where the file should be");
         let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
         let r = super::update_pending_at(&path, |v| v.push(minted("g", T, d)));
-        assert!(r.is_err(), "a writer refuses an unreadable file");
-        assert_eq!(std::fs::read(&path).expect("still there"), b"not json");
-        assert!(super::view_pending_at(&path).is_err());
-        // A missing file is an empty list, not an error.
-        let fresh = scratch("missing");
-        assert_eq!(super::view_pending_at(&fresh).map(|v| v.len()), Ok(0));
+        assert!(r.is_err(), "{r:?}");
+        assert!(path.is_dir(), "left where it was");
+        assert!(set_aside(&path).is_empty());
+    }
+
+    /// #431: two damaged files in a row (even within one millisecond) are both kept; a second
+    /// set-aside never replaces the first.
+    #[test]
+    fn a_second_set_aside_never_replaces_the_first() {
+        let path = scratch("damaged-twice");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        for bytes in [&b"first"[..], &b"second"[..]] {
+            std::fs::write(&path, bytes).expect("damaged");
+            let r = super::update_pending_at(&path, |v| v.push(minted("g", T, d.clone())));
+            assert!(r.is_err());
+        }
+        let kept: Vec<Vec<u8>> = set_aside(&path)
+            .iter()
+            .map(|p| std::fs::read(p).expect("kept"))
+            .collect();
+        assert_eq!(kept.len(), 2, "both kept");
+        assert!(kept.contains(&b"first".to_vec()) && kept.contains(&b"second".to_vec()));
+    }
+
+    /// #431, interleaving: writers racing on a damaged file. Exactly one finds the damage and
+    /// fails; it is set aside once with its bytes intact; every other writer lands in the new list.
+    #[test]
+    fn racing_writers_on_a_damaged_file_set_it_aside_once_and_lose_nothing_new() {
+        let path = scratch("damaged-race");
+        std::fs::write(&path, b"{not json").expect("damaged");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let results: Vec<Result<(), String>> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|i| {
+                    let (path, d) = (path.clone(), d.clone());
+                    s.spawn(move || {
+                        super::update_pending_at(&path, |v| {
+                            v.push(minted("g", &format!("tok-{i}"), d))
+                        })
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().expect("join")).collect()
+        });
+        assert_eq!(
+            results.iter().filter(|r| r.is_err()).count(),
+            1,
+            "{results:?}"
+        );
+        let aside = set_aside(&path);
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read(&aside[0]).expect("kept"), b"{not json");
+        assert_eq!(tokens(&path).len(), 7, "every other write landed");
+    }
+
+    /// #431: the invite list says the store can't be read instead of showing "no invites"
+    /// (unknown is not zero), and a missing store is an empty list.
+    #[test]
+    fn the_invite_list_reports_a_damaged_store_instead_of_no_invites() {
+        let path = scratch("damaged-list");
+        std::fs::write(&path, b"[{\"group\":").expect("damaged");
+        let r = super::invite_views_at(&path, "g");
+        assert!(r.is_err(), "a damaged store is not an empty list: {r:?}");
+        assert!(path.exists(), "a read never moves the file");
+        assert_eq!(
+            super::invite_views_at(&scratch("missing-list"), "g").map(|v| v.len()),
+            Ok(0)
+        );
     }
 
     /// Tripwire: `pending.json` is only read under `PENDING_LOCK` (inside `update_pending_at` and

@@ -38,6 +38,46 @@ pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
+/// Stage `bytes` for an owner-only (`0600`) file: write them to a temp file beside `path` and
+/// fsync it. [`commit_staged`] publishes it. On a failure the temp file is removed.
+pub fn stage_secret(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    stage_secret_with(bytes, || unique_temp_path(path))
+}
+
+/// [`stage_secret`] with the temp names drawn from `next_name`.
+fn stage_secret_with(
+    bytes: &[u8],
+    mut next_name: impl FnMut() -> PathBuf,
+) -> std::io::Result<PathBuf> {
+    let tmp = next_name();
+    let staged = (|| {
+        let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()
+    })();
+    match staged {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Rename a file staged by [`stage_secret`] over `path`, then fsync the directory so the rename
+/// itself is durable. A failed rename removes the staged file; `path` keeps its previous contents.
+pub fn commit_staged(staged: &Path, path: &Path) -> std::io::Result<()> {
+    if let Err(e) = std::fs::rename(staged, path) {
+        let _ = std::fs::remove_file(staged);
+        return Err(e);
+    }
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir).and_then(|d| d.sync_all())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     include!("atomic_file_tests.rs");
