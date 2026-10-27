@@ -16,6 +16,7 @@ import { useRef, useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { makeAddr, short, PERSONAS, fmtSaltFromWei } from "../shell/state";
 import { scanTxUrl, scanAddrUrl } from "../data/links";
+import { shortNet } from "../shell/netScope";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
@@ -103,15 +104,24 @@ export function Wallet({ store, s }: SurfaceProps) {
   const sponsorBarW = (s.sponsorUnits / 5) * 100 + "%";
   const sponsorBarColor = s.sponsorUnits > 1 ? "var(--accent)" : "var(--warn)";
 
-  const saltStr = fmt2(s.liquid);
+  // RC52: after a genesis switch a value waits for its first read on the new chain. Until then it
+  // shows "not read yet", never the previous network's figure or a zero.
+  const NOT_READ = "not read yet on this network";
+  const grantUnread = s.netUnread.includes("grant");
+  const balancesUnread = s.netUnread.includes("balances");
+  const activityUnread = s.netUnread.includes("activity");
+  // The one staked figure (stakeOf, folded as `bondedStake`) comes from the grant read, and is
+  // shown only once that read has returned this session (readStakeSalt).
+  const stakeUnread = grantUnread;
+  const saltStr = balancesUnread ? "—" : fmt2(s.liquid);
   const stakedStr = stakeRead == null ? "—" : fmtI(stakeRead);
   // UI truth contract rules 1 and 2: the number catalog has no wSALT entry and nothing reads a
   // wSALT balance, so the tile shows the unavailable state. Unknown is not zero.
   const wsaltStr = "—";
-  const stakedSub = stakeRead == null ? STAKE_NOT_READ : stakeRead > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
+  const stakedSub = stakeRead == null ? (stakeUnread ? NOT_READ : STAKE_NOT_READ) : stakeRead > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
   // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
   const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
-  const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";
+  const grantStr = grantUnread ? NOT_READ : s.hasGrant ? grantSaltStr + " SALT" : "—";
 
   // core#425 — Receive shows the wallet this app signs with: the device key in the custody vault
   // (custodyAddr), never the identity's wallet_address claim, which until the two are linked is a
@@ -160,6 +170,7 @@ export function Wallet({ store, s }: SurfaceProps) {
       kind: a.kind,
       hash: a.hash,
       hashShort: short(a.hash),
+      url: scanTxUrl(a.hash),
       time: rel(a.ts),
       amount: a.amount,
       txState,
@@ -168,6 +179,20 @@ export function Wallet({ store, s }: SurfaceProps) {
     };
   });
   const txEmpty = activityRows.length === 0;
+  const addrUrl = scanAddrUrl(s.walletAddr);
+  // RC52: the previous networks' history, archived at the switch. Kept and shown as theirs, never
+  // as current, and with no explorer link (this build does not know that network's explorer).
+  const previousNetworks = s.netArchived
+    .map((a) => ({
+      genesis: shortNet(a.genesis),
+      rows: (Array.isArray(a.values.activity) ? (a.values.activity as typeof s.activity) : []).map((r) => ({
+        kind: String(r.kind ?? ""),
+        hashShort: typeof r.hash === "string" ? short(r.hash) : "—",
+        amount: String(r.amount ?? ""),
+        time: typeof r.ts === "number" ? rel(r.ts) : "—",
+      })),
+    }))
+    .filter((p) => p.rows.length > 0);
 
   // Primary is the REAL claim wallet. The extra linked wallet + agent SBT are
   // sim-persona cosmetics only — never shown to a real signed-in user (Rule 1).
@@ -222,7 +247,7 @@ export function Wallet({ store, s }: SurfaceProps) {
                 {saltStr}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                eth_getBalance · latest
+                {balancesUnread ? NOT_READ : "eth_getBalance · latest"}
               </span>
             </div>
             <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
@@ -370,7 +395,9 @@ export function Wallet({ store, s }: SurfaceProps) {
           </div>
           {txEmpty && (
             <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-              {BRIDGE_MODE === "tauri"
+              {activityUnread
+                ? "History not read yet on this network. It is read from this network's explorer, and a previous network's history is never shown as current."
+                : BRIDGE_MODE === "tauri"
                 ? "No transactions yet. This is your real indexed 40204 history from CitrateScan — a fresh wallet shows nothing until it sends or receives (or the indexer is still syncing). Each row links out to CitrateScan."
                 : "No signed actions yet. This is a client-side ledger of your signatures — per-transaction chain detail links out to CitrateScan."}
             </p>
@@ -393,20 +420,47 @@ export function Wallet({ store, s }: SurfaceProps) {
                   </span>
                 )}
               </span>
-              <button
-                className="mono"
-                onClick={() => void store.openExternal(scanTxUrl(tx.hash))}
-                title="Open on CitrateScan"
-                style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0, textAlign: "left" }}
-              >
-                {tx.hashShort} ↗
-              </button>
+              {tx.url ? (
+                <button
+                  className="mono"
+                  onClick={() => void store.openExternal(tx.url as string)}
+                  title="Open on CitrateScan"
+                  style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0, textAlign: "left" }}
+                >
+                  {tx.hashShort} ↗
+                </button>
+              ) : (
+                <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                  {tx.hashShort}
+                </span>
+              )}
               <span className="mono tabular" style={{ fontSize: 12, color: tx.amtColor }}>
                 {tx.amount}
               </span>
               <span className="mono tabular" style={{ fontSize: 11, color: "var(--tx-3)", textAlign: "right" }}>
                 {tx.time}
               </span>
+            </div>
+          ))}
+          {previousNetworks.map((p) => (
+            <div key={p.genesis} data-previous-network={p.genesis} style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--line-strong)" }}>
+              <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0, padding: "10px 16px" }}>
+                Previous network · genesis {p.genesis} · kept on this device, not on the current chain
+              </p>
+              {p.rows.map((r, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr .8fr .8fr", gap: 12, padding: "9px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "center", color: "var(--tx-3)" }}>
+                  <span style={{ fontSize: 12.5 }}>{r.kind}</span>
+                  <span className="mono" style={{ fontSize: 11 }}>
+                    {r.hashShort}
+                  </span>
+                  <span className="mono tabular" style={{ fontSize: 12 }}>
+                    {r.amount}
+                  </span>
+                  <span className="mono tabular" style={{ fontSize: 11, textAlign: "right" }}>
+                    {r.time}
+                  </span>
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -437,7 +491,10 @@ export function Wallet({ store, s }: SurfaceProps) {
               </span>
               <button
                 className="mono"
-                onClick={() => void store.openExternal(scanAddrUrl(s.walletAddr))}
+                onClick={() => {
+                  if (addrUrl) void store.openExternal(addrUrl);
+                }}
+                disabled={addrUrl === null}
                 title="Open your address on CitrateScan"
                 style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0 }}
               >

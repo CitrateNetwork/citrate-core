@@ -82,6 +82,9 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const staked = s.bondedStake;
   // Unknown is not zero (rule 2): null until a stakeOf read returns this session.
   const stakeRead = readStakeSalt(s);
+  // RC52: after a genesis switch the stake waits for its first read on the new chain (the grant
+  // read folds `bondedStake`).
+  const stakeUnread = s.netUnread.includes("grant");
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
   const bondLockedNotStaked = s.hasGrant && !(staked > 0) && s.bondActivated === false;
@@ -121,7 +124,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     {
       label: "Staked",
       value: stakeRead == null ? "—" : stakeRead > 0 ? fmtI(stakeRead) : bondLockedNotStaked ? fmtI(stakeRead) : "—",
-      sub: stakeRead == null ? STAKE_NOT_READ : stakeRead > 0 ? "SALT · stakeOf" : validatorStateText,
+      sub: stakeRead == null ? (stakeUnread ? "not read yet on this network" : STAKE_NOT_READ) : stakeRead > 0 ? "SALT · stakeOf" : validatorStateText,
       color: "var(--tx-1)",
       tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond is not validator stake.",
       vsize: "21px",
