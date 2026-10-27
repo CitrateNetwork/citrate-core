@@ -1484,3 +1484,16 @@ fn a_missing_record_beside_an_unreadable_set_aside_next_to_a_wallet_stays_uncert
     let again = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
     assert_eq!(again.try_record_call(&h(3), A, 2, NonceSource::Fetched, None), Ok(false), "and stays so across a restart");
 }
+
+/// Review of d644c4c (P3): a lost history also makes the sections migrated from a legacy file in
+/// the same open uncertain; the lost record may have held more of r1005's sends than they do.
+#[test]
+fn a_lost_history_makes_a_migrated_legacy_section_uncertain_too() {
+    let t = Tmp::new("lost-with-legacy");
+    std::fs::write(t.0.join(format!("{RECORD_FILE}.unreadable")), b"{not json").expect("aside");
+    std::fs::write(t.legacy(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": false })).expect("json")).expect("legacy");
+    let log = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert!(log.is_uncertain(), "the certain legacy history is not the whole history");
+    assert_eq!(log.try_record_call(&h(2), A, 0, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(3), A, 1, NonceSource::Fetched, None), Ok(false));
+}

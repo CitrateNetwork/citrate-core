@@ -621,8 +621,11 @@ impl SubmittedTxLog {
         // may have submitted txs with an unknown outcome: upgrade-bounded. Those builds sent only
         // to r1005, so r1005's section is bounded as well as the current one (they are the same
         // section on r1005). Only a profile with no wallet yet starts certain.
+        // A missing record beside a set-aside damaged one is a lost history, not an upgrade: it
+        // stays uncertain everywhere, never only bounded.
         let upgraded = matches!(found, Found::Missing)
             && !migrating
+            && !history_lost
             && path
                 .parent()
                 .map(|d| d.join(crate::custody::ENVELOPE_FILE))
