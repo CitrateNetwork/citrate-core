@@ -100,6 +100,8 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+// K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
+mod network_profile;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
 // internal format, and the pinned egress table.
 pub(crate) mod model_provider;
@@ -327,6 +329,11 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
+            // K6 — install the network gate before anything can sign. Every wallet signature is
+            // checked locally against the active network profile (refused when no network is set,
+            // or when it commits to another chain id). Transaction sends additionally check the
+            // RPC's chain id and block-0 hash against the profile before broadcasting.
+            network_profile::install_network_gate();
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
             // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,

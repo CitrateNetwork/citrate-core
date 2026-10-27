@@ -8,7 +8,10 @@ a wrapper script that sets STAND_IN_CFG and execs this file), because cold-sync.
 with a minimal environment and nothing else would reach it.
 
 Config keys: record (path), chainId, genesis, seed, rate (blocks/s), headMax, forkAt, forkSeed,
-missing ([from, to]: no block served in that range), exitAfter (s), noRpc, peers, encMeta.
+missing ([from, to]: no block served in that range), exitAfter (s), exitOffGrid (exit right after
+serving a block whose height is not a multiple of it: the harness reads one only in its final checks),
+exitAfterProbe (after such an off-grid read, exit right after serving the next eth_blockNumber: the
+harness's liveness probe), noRpc, peers, encMeta.
 Block hash at height h > 0: 0x + sha256("<seed>:<h>"); block 0 is `genesis`.
 """
 import hashlib
@@ -53,6 +56,8 @@ if not m:
     sys.exit("stand-in: no [rpc] listen_addr in the config")
 host, port = m.group(1), int(m.group(2))
 start = time.time()
+exit_now = False
+probe_armed = False
 
 
 def head():
@@ -78,10 +83,13 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         method, params = req.get("method"), req.get("params") or []
+        global exit_now, probe_armed
         if method == "eth_chainId":
             result = hex(cfg["chainId"])
         elif method == "eth_blockNumber":
             result = hex(head())
+            if probe_armed:
+                exit_now = True
         elif method == "net_peerCount":
             result = hex(cfg.get("peers", 2))
         elif method == "eth_getBlockByNumber":
@@ -92,6 +100,10 @@ class H(BaseHTTPRequestHandler):
                 result = None
             else:
                 result = {"number": hex(h), "hash": block_hash(h)}
+                if cfg.get("exitOffGrid") and h % cfg["exitOffGrid"] != 0:
+                    exit_now = True
+                if cfg.get("exitAfterProbe") and h % cfg["exitAfterProbe"] != 0:
+                    probe_armed = True
         else:
             result = None
         body = json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": result}).encode()
@@ -108,3 +120,5 @@ while True:
     if cfg.get("exitAfter") is not None and time.time() - start > cfg["exitAfter"]:
         sys.exit(3)
     srv.handle_request()
+    if exit_now:
+        sys.exit(5 if probe_armed else 4)
