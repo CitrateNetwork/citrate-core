@@ -411,6 +411,14 @@ impl UsageLog {
         Ok(())
     }
 
+    /// Mark the log broken from outside (the proxy found its anchor removed): every write is
+    /// refused until the member starts a new log.
+    pub(crate) fn mark_broken(&mut self, reason: &str) {
+        if self.broken.is_none() {
+            self.broken = Some(reason.to_string());
+        }
+    }
+
     pub fn broken_reason(&self) -> Option<&str> {
         self.broken.as_deref()
     }
