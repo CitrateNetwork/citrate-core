@@ -365,10 +365,8 @@ pub fn custom_confirm(
 
 pub fn usage_log_reset(proxy: &ModelProxy) -> Result<UsageSummaryView, String> {
     let now = now_ms();
-    proxy.with_state(|g, log| {
-        log.reset_broken(now).map_err(|e| e.to_string())?;
-        Ok(usage_summary_of(g, log, now))
-    })
+    proxy.reset_usage_log(now).map_err(|e| e.to_string())?;
+    Ok(proxy.with_state(|g, log| usage_summary_of(g, log, now)))
 }
 
 // ---------------------------------------------------------------------------

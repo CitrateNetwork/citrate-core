@@ -718,6 +718,15 @@ pub(crate) fn highest_generation_on_disk(dir: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Replace the guard's seal key with a new random one: every guard file sealed before fails its
+/// seal. Used by a log reset that had to re-create a missing anchor.
+pub(crate) fn rotate_mac_key(keyring: &dyn AiKeyring) -> Result<(), ()> {
+    let k = Zeroizing::new(rand::random::<[u8; 32]>().to_vec());
+    keyring
+        .set(GUARD_MAC_ACCOUNT, &hex::encode(k.as_slice()))
+        .map_err(|_| ())
+}
+
 pub fn guard_path(dir: &Path) -> PathBuf {
     dir.join(GUARD_FILE)
 }

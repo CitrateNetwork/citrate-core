@@ -44,10 +44,11 @@ pub const LOG_MAC_ACCOUNT: &str = "provider-usage-log-mac-v1";
 pub const ANCHOR_ACCOUNT: &str = "provider-anchor-v1";
 const RECORD_VERSION: u32 = 1;
 /// How far the clock may read before the last record before calls are refused (skew allowance).
-/// The outcome a Reset record ends with when the reset had to re-create a missing anchor: the
-/// earlier totals of that day and month are unknown ([`UsageLog::earlier_spend_unknown`]).
-pub const UNANCHORED_RESET: &str = "earlier spend unknown";
 pub const CLOCK_SKEW_MS: u64 = 10 * 60 * 1000;
+/// A Reset record's outcome carries `<this> since <ms>` when the period's earlier spend is unknown:
+/// the reset re-created a missing anchor at `<ms>`, or a later reset in the same month carried that
+/// time forward ([`UsageLog::earlier_spend_unknown`]).
+pub const UNANCHORED_RESET: &str = "earlier spend unknown";
 
 /// One provider's totals as of its latest record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +77,9 @@ pub struct Anchor {
     pub guard_gen: u64,
     #[serde(default)]
     pub totals: BTreeMap<String, AnchorTotals>,
+    /// When a reset last had to re-create this anchor (earlier spend of that period is unknown).
+    #[serde(default)]
+    pub unknown_since: Option<u64>,
 }
 
 /// The anchor, or `None` when the keyring has none (a fresh install, or one removed: a log or
@@ -103,8 +107,16 @@ fn write_anchor(keyring: &dyn AiKeyring, a: &Anchor) -> Result<(), ()> {
     keyring.set(ANCHOR_ACCOUNT, &s).map_err(|_| ())
 }
 
-/// A fresh install's empty anchor, written before any provider key exists.
-pub(crate) fn create_anchor(keyring: &dyn AiKeyring) -> Result<(), ()> {
+/// A fresh install's empty anchor, written before any provider key exists. Refuses when an anchor
+/// already exists, so it can never overwrite one.
+pub(crate) fn fresh_install_anchor(keyring: &dyn AiKeyring) -> Result<(), ()> {
+    match read_anchor_opt(keyring)? {
+        None => create_anchor(keyring),
+        Some(_) => Err(()),
+    }
+}
+
+fn create_anchor(keyring: &dyn AiKeyring) -> Result<(), ()> {
     write_anchor(keyring, &Anchor::default())
 }
 
@@ -401,11 +413,14 @@ impl UsageLog {
                 }
             }
             Kind::Reset => {
-                if r.outcome
+                let marker = format!("{UNANCHORED_RESET} since ");
+                if let Some(since) = r
+                    .outcome
                     .as_deref()
-                    .is_some_and(|o| o.ends_with(UNANCHORED_RESET))
+                    .and_then(|o| o.rsplit_once(marker.as_str()))
+                    .and_then(|(_, ts)| ts.parse::<u64>().ok())
                 {
-                    self.unanchored_reset_ts = Some(r.ts);
+                    self.unanchored_reset_ts = Some(since);
                 }
             }
             Kind::Refused | Kind::KeyTest => {}
@@ -601,12 +616,25 @@ impl UsageLog {
         let unanchored = existing.is_none();
         let mut anchor = existing.unwrap_or_default();
         if unanchored {
-            // The guard's generation went with the anchor: start above every guard file on disk,
-            // so none saved before this reset loads as current (the member's resume saves anew).
+            // The guard's generation went with the anchor. Re-key the guard seal, so no guard file
+            // sealed before this reset loads, wherever it was kept; and start the generation above
+            // every guard file on disk as a second layer. The member's resume seals anew.
+            crate::provider_guard::rotate_mac_key(self.keyring.as_ref())
+                .map_err(|_| LogError::KeyUnavailable)?;
             let dir = self.path.parent().unwrap_or(Path::new("."));
             anchor.guard_gen =
                 crate::provider_guard::highest_generation_on_disk(dir).saturating_add(1);
         }
+        // Earlier spend stays unknown until the month the anchor was lost has passed: a later
+        // reset in the same month carries the time forward.
+        let unknown_since = if unanchored {
+            Some(now_ms)
+        } else {
+            anchor
+                .unknown_since
+                .filter(|t| month_of(*t) == month_of(now_ms))
+        };
+        anchor.unknown_since = unknown_since;
         let carried = std::mem::take(&mut anchor.totals);
         anchor.log_seq = 0;
         anchor.log_head = String::new();
@@ -634,10 +662,9 @@ impl UsageLog {
             tokens_in: None,
             tokens_out: None,
             cost_micros: None,
-            outcome: Some(if unanchored {
-                format!("archived {aside_name}; {UNANCHORED_RESET}")
-            } else {
-                format!("archived {aside_name}")
+            outcome: Some(match unknown_since {
+                Some(since) => format!("archived {aside_name}; {UNANCHORED_RESET} since {since}"),
+                None => format!("archived {aside_name}"),
             }),
         })?;
         // Carry this month's anchored spend into the new chain: today's part at `now`, the rest of

@@ -664,9 +664,7 @@ fn resuming_the_guard_alone_does_not_legitimise_a_cut_short_log() {
         "a guard resume must not make a cut-short log valid; only a log reset may"
     );
     // The log reset is the way back: it archives the file and starts a new chain.
-    rig.proxy
-        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
-        .unwrap();
+    rig.proxy.reset_usage_log(now_ms()).unwrap();
     let _ = crate::providers_ipc::resume(&rig.proxy, "openai");
     rig.reopen();
     assert_eq!(fails_closed(&rig), (false, false));
@@ -706,9 +704,7 @@ fn after_a_log_reset_a_guard_file_saved_before_it_cannot_load() {
     std::fs::write(&guard, &older).unwrap();
     rig.reopen();
     assert_eq!(fails_closed(&rig), (true, true));
-    rig.proxy
-        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
-        .unwrap();
+    rig.proxy.reset_usage_log(now_ms()).unwrap();
     rig.reopen();
     assert!(
         rig.proxy.with_state(|g, _| g.unreadable),
@@ -734,9 +730,7 @@ fn a_log_reset_with_its_anchor_intact_keeps_the_current_guard() {
     std::fs::write(&p, t).unwrap();
     rig.reopen();
     assert!(rig.proxy.with_state(|_, l| l.ready().is_err()));
-    rig.proxy
-        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
-        .unwrap();
+    rig.proxy.reset_usage_log(now_ms()).unwrap();
     rig.reopen();
     assert_eq!(fails_closed(&rig), (false, false));
     assert!(rig.proxy.with_state(|g, _| g.get("xai").halt.is_some()), "the halt is kept");

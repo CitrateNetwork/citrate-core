@@ -127,9 +127,7 @@ fn earlier_spend_is_flagged_unknown_after_an_unanchored_reset_until_the_period_r
         .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
     rig.reopen();
     let at = now_ms();
-    rig.proxy
-        .with_state(|_, l| l.reset_broken(at).map(|_| ()))
-        .unwrap();
+    rig.proxy.reset_usage_log(at).unwrap();
     rig.reopen();
     let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, at + 1));
     for p in &s.providers {
@@ -165,9 +163,7 @@ fn a_reset_with_its_anchor_intact_leaves_earlier_spend_known() {
     std::fs::write(&p, t).unwrap();
     rig.reopen();
     let at = now_ms();
-    rig.proxy
-        .with_state(|_, l| l.reset_broken(at).map(|_| ()))
-        .unwrap();
+    rig.proxy.reset_usage_log(at).unwrap();
     let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, at + 1));
     let o = s.providers.iter().find(|p| p.id == "openai").unwrap();
     assert!(!o.today.earlier_spend_unknown && !o.month.earlier_spend_unknown);
