@@ -168,6 +168,7 @@ export function JoinCard({
   const join = async () => {
     setPhase({ kind: "sending", p });
     try {
+      await bridge.invites.request(link);
       onSent();
     } catch (e) {
       setPhase({ kind: "failed", p, message: message(e) });
@@ -296,7 +297,7 @@ export function HaveAnInvite({ store, s, memberOf = [], onJoined }: { store: Sto
           onClose={() => store.clearInviteLink()}
         />
       ) : (
-        <InvitePasteField onOpen={() => {}} />
+        <InvitePasteField onOpen={(link) => store.openInviteLink(link)} />
       )}
     </div>
   );

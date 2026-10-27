@@ -244,8 +244,9 @@ pub(crate) fn parse_link(link: &str) -> Result<InviteLink, String> {
     let token = param(&params, "t")
         .filter(|t| token_ok(t))
         .ok_or(NOT_A_LINK)?;
-    let key = param(&params, "k").unwrap_or("");
-    let e = param(&params, "e").unwrap_or("0");
+    let (Some(key), Some(e)) = (param(&params, "k"), param(&params, "e")) else {
+        return Err(EARLIER_LINK.to_string());
+    };
     if !key_ok(key) {
         return Err(NOT_A_LINK.to_string());
     }
@@ -517,7 +518,11 @@ fn view_store_at(path: &std::path::Path) -> Result<Store, String> {
     match read_store(path) {
         Ok(Loaded::Current(s)) => Ok(s),
         Ok(Loaded::Missing) => Ok(Store::fresh()),
-        Ok(Loaded::OtherFormat) | Err(_) => Ok(Store::fresh()),
+        Ok(Loaded::OtherFormat) => {
+            set_aside(path, EARLIER_TAG)?;
+            Ok(Store::fresh())
+        }
+        Err(e) => Err(e.message()),
     }
 }
 
@@ -533,8 +538,10 @@ fn update_store_at<T>(
     let mut store = match read_store(path) {
         Ok(Loaded::Current(s)) => s,
         Ok(Loaded::Missing) => Store::fresh(),
-        Ok(Loaded::OtherFormat) => Store::fresh(),
-        Err(ReadError::Damaged) if path.exists() => Store::fresh(),
+        Ok(Loaded::OtherFormat) => {
+            set_aside(path, EARLIER_TAG)?;
+            Store::fresh()
+        }
         Err(ReadError::Damaged) => {
             let aside = set_aside(path, DAMAGED_TAG)?;
             let kept = aside
@@ -719,15 +726,67 @@ fn find<'a>(s: &'a mut Store, group: &str, id: &str) -> Option<&'a mut Invite> {
 /// "not added": after a failed add, `is_member` (the roster) decides; if that can't be read either,
 /// the invite stays held for this requester so Approve can be pressed again.
 pub(crate) fn approve_at(
-    _path: &std::path::Path,
+    path: &std::path::Path,
     group: &str,
-    _id: &str,
+    id: &str,
     address: &str,
-    _now: u64,
+    now: u64,
     add: impl FnOnce(&str, &str) -> Result<(), String>,
-    _is_member: impl FnOnce(&str, &str) -> Result<bool, String>,
+    is_member: impl FnOnce(&str, &str) -> Result<bool, String>,
 ) -> Result<(), String> {
-    add(group, &address.to_ascii_lowercase())
+    let member = address.to_ascii_lowercase();
+    if !address_ok(&member) {
+        return Err("that isn't a member address".to_string());
+    }
+    update_store_at(path, |s| {
+        let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
+        if !inv.approving.is_empty() && inv.approving != member {
+            return Err("This invite was already used to add someone else.".to_string());
+        }
+        if inv.approving.is_empty() && now >= inv.expires_at {
+            return Err(
+                "This invite expired, so this request can't be approved. Send them a new link."
+                    .to_string(),
+            );
+        }
+        if inv.declined.contains(&member) {
+            return Err(
+                "You declined this request. Send them a new link if you change your mind."
+                    .to_string(),
+            );
+        }
+        inv.approving = member.clone();
+        Ok(())
+    })??;
+    let added = match add(group, &member) {
+        Ok(()) => Ok(()),
+        Err(e) => match is_member(group, &member) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err((e, true)),
+            Err(_) => Err((
+                format!("{e}. Couldn't confirm whether they were added; press Approve again."),
+                false,
+            )),
+        },
+    };
+    match added {
+        Ok(()) => update_store_at(path, |s| {
+            s.invites.retain(|i| {
+                !(i.group == group && invite_id(&i.token) == id && i.approving == member)
+            });
+        }),
+        Err((e, not_added)) => {
+            if not_added {
+                // Not added: the invite is open again for this or another request.
+                update_store_at(path, |s| {
+                    if let Some(i) = find(s, group, id).filter(|i| i.approving == member) {
+                        i.approving.clear();
+                    }
+                })?;
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Whether the requester(s) were told (best-effort).
@@ -740,14 +799,33 @@ pub struct Notice {
 /// Decline `address`'s request on invite `id`: it is not shown again and can't be approved. Their
 /// app is told if the relay can be reached (`poll` finds their request, `submit` leaves the answer).
 pub(crate) fn decline_at(
-    _path: &std::path::Path,
-    _group: &str,
-    _id: &str,
-    _address: &str,
-    _poll: impl FnOnce(String) -> Result<Vec<String>, String>,
-    _submit: impl FnMut(String, String) -> Result<(), String>,
+    path: &std::path::Path,
+    group: &str,
+    id: &str,
+    address: &str,
+    poll: impl FnOnce(String) -> Result<Vec<String>, String>,
+    mut submit: impl FnMut(String, String) -> Result<(), String>,
 ) -> Result<Notice, String> {
-    Ok(Notice { notified: false })
+    let member = address.to_ascii_lowercase();
+    let inv = update_store_at(path, |s| {
+        let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
+        if inv.approving == member {
+            return Err("They're being added now, so this request can't be declined.".to_string());
+        }
+        if !inv.declined.contains(&member) {
+            inv.declined.push(member.clone());
+        }
+        Ok(inv.clone())
+    })??;
+    let notified = poll(request_inbox(&inv.token))
+        .ok()
+        .and_then(|cts| {
+            open_requests(&inv, &cts)
+                .into_iter()
+                .find(|r| r.address == member)
+        })
+        .is_some_and(|r| send_reply(&inv, &r, Decision::Declined, &mut submit).is_ok());
+    Ok(Notice { notified })
 }
 
 /// Revoke invite `id`: remove it with its key, so no request under it can be opened or approved.
@@ -757,14 +835,39 @@ pub(crate) fn revoke_at(
     path: &std::path::Path,
     group: &str,
     id: &str,
-    _poll: impl FnOnce(String) -> Result<Vec<String>, String>,
-    _submit: impl FnMut(String, String) -> Result<(), String>,
+    poll: impl FnOnce(String) -> Result<Vec<String>, String>,
+    mut submit: impl FnMut(String, String) -> Result<(), String>,
 ) -> Result<Notice, String> {
+    const IN_USE: &str = "This invite is being used to add someone, so it can't be revoked now.";
+    let inv = {
+        let mut s = view_store_at(path)?;
+        let inv = find(&mut s, group, id).ok_or("no such invite (already revoked or used)")?;
+        if !inv.approving.is_empty() {
+            return Err(IN_USE.to_string());
+        }
+        inv.clone()
+    };
+    // Read the waiting requests while the key still exists (outside the lock: a network call).
+    let waiting = poll(request_inbox(&inv.token)).map(|cts| open_requests(&inv, &cts));
     update_store_at(path, |s| {
+        let i = find(s, group, id).ok_or("no such invite (already revoked or used)")?;
+        if !i.approving.is_empty() {
+            return Err(IN_USE.to_string());
+        }
         s.invites
             .retain(|i| !(i.group == group && invite_id(&i.token) == id));
-    })?;
-    Ok(Notice { notified: false })
+        Ok(())
+    })??;
+    // Tell every waiting requester, even after one send fails.
+    let mut notified = waiting.is_ok();
+    for r in waiting.iter().flatten() {
+        if !inv.declined.contains(&r.address)
+            && send_reply(&inv, r, Decision::Revoked, &mut submit).is_err()
+        {
+            notified = false;
+        }
+    }
+    Ok(Notice { notified })
 }
 
 // ---------------------------------------------------------------------------
@@ -921,18 +1024,47 @@ fn no_welcome_yet(e: &str) -> bool {
 /// unreachable is said in `note`, never read as an answer.
 pub(crate) fn check_requests_at(
     path: &std::path::Path,
-    _now: u64,
+    now: u64,
     mut join: impl FnMut(&str) -> Result<(), String>,
-    _poll: impl FnMut(String) -> Result<Vec<String>, String>,
+    mut poll: impl FnMut(String) -> Result<Vec<String>, String>,
 ) -> Result<Vec<MyRequestView>, String> {
     let requests = view_store_at(path)?.requests;
-    Ok(requests
-        .iter()
-        .map(|r| match join(&r.group) {
-            Ok(()) => my_view(r, RequestState::Joined, String::new()),
-            Err(_) => my_view(r, RequestState::Waiting, String::new()),
-        })
-        .collect())
+    let mut out = Vec::new();
+    let mut joined: Vec<(String, String)> = Vec::new();
+    for r in &requests {
+        let view = match join(&r.group) {
+            Ok(()) => {
+                joined.push((r.group.clone(), r.token.clone()));
+                my_view(r, RequestState::Joined, String::new())
+            }
+            Err(e) if no_welcome_yet(&e) => match poll(reply_inbox(&r.token, &r.reply_pub)) {
+                Ok(cts) => match read_reply(r, &cts) {
+                    Some(Decision::Declined) => my_view(r, RequestState::Declined, String::new()),
+                    Some(Decision::Revoked) => my_view(r, RequestState::Revoked, String::new()),
+                    None if now >= r.expires_at => my_view(r, RequestState::Expired, String::new()),
+                    None => my_view(r, RequestState::Waiting, String::new()),
+                },
+                Err(e) => my_view(
+                    r,
+                    RequestState::Waiting,
+                    format!("Can't reach the relay right now ({e})."),
+                ),
+            },
+            Err(e) => my_view(
+                r,
+                RequestState::Waiting,
+                format!("Can't check right now ({e})."),
+            ),
+        };
+        out.push(view);
+    }
+    if !joined.is_empty() {
+        update_store_at(path, |s| {
+            s.requests
+                .retain(|r| !joined.iter().any(|(g, t)| *g == r.group && *t == r.token));
+        })?;
+    }
+    Ok(out)
 }
 
 /// Forget a request this device sent (the member dismissed it, or cancelled while waiting).

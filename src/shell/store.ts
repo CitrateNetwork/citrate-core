@@ -2455,7 +2455,7 @@ export class Store {
       this.save();
       return;
     }
-    void isInviteLink;
+    if (isInviteLink(url)) this.openInviteLink(url);
   }
 
   /** D-12 — show the "Join <group>?" screen for an invite link (deep link or paste). During setup it

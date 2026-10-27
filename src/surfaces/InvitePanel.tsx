@@ -56,8 +56,7 @@ export function InvitePanel({
       setRequestsError(null);
     } catch (e) {
       // Unknown is not "no requests": say the relay couldn't be asked.
-      void e;
-      setRequests([]);
+      setRequestsError(message(e) || "Couldn't check for requests.");
     }
   };
   const refresh = async () => {
@@ -67,8 +66,8 @@ export function InvitePanel({
       setInvites(open);
       setListError(null);
     } catch (e) {
-      void e;
       setInvites([]);
+      setListError(message(e) || "Couldn't read your invites.");
       return;
     }
     if (open.length) await loadRequests();
@@ -101,7 +100,7 @@ export function InvitePanel({
       const copied = await copy(made.link);
       store.toast(
         (copied ? "Invite link copied. " : "Invite link made; copy it from Pending. ") +
-          "DM it to them. They open it, tap Join, and they're in. No approval needed.",
+          "Send it to the person you're inviting. When they open it, their request shows up here for you to approve.",
       );
       await refresh();
     } catch (e) {
@@ -126,8 +125,8 @@ export function InvitePanel({
     try {
       await bridge.invites.approve(groupId, r.inviteId, r.address);
       store.toast(`Approved. ${who(r.address)} is added; their app finishes joining.`);
-    } catch (e) {
       onAdded?.();
+    } catch (e) {
       store.toast(message(e));
     } finally {
       setBusy(null);
