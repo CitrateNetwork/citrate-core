@@ -6,7 +6,8 @@
 // sidecar so the next conversation has (or no longer has) the tool. The tool itself lives in the
 // sidecar (citrate-agent-runtime agent-sidecar shell_run.rs): offered only to conversations with a
 // shared folder, every command held for the member's HIC decision on an approval card, run inside
-// the OS sandbox (refused when there is none). On by default (owner decision 2026-10-04).
+// the OS sandbox (refused when there is none). Off by default for new installs (owner decision
+// 2026-10-19, superseding 2026-10-04); an install that stored a choice keeps it.
 // =====================================================================
 
 /** The setting's label in Settings. */
@@ -14,7 +15,7 @@ export const TERMINAL_ACCESS_LABEL = "Let Hermes run terminal commands";
 
 /** The plain-words explanation under the switch. No em-dashes (house style). */
 export const TERMINAL_ACCESS_HINT =
-  "On by default. Every command asks you first, and you see the exact command and folder before it runs. " +
+  "Off by default. Every command asks you first, and you see the exact command and folder before it runs. " +
   "Commands run in a sandbox with no network, and only in folders you've shared with Hermes (Folder access, below). " +
   "Turning this off or on restarts Hermes so the change applies to new conversations.";
 

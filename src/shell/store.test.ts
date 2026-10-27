@@ -9,6 +9,11 @@ import type { GrantStatus } from "../bridge/domains";
 import { PERSIST_KEYS, freshState } from "./state";
 import { bridge } from "../bridge";
 import type { CeremonyView, AuthStatus } from "../bridge/types";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+// D-9 (2026-10-26): the keys an older build used for the retired liquid staking pool self-stake.
+const RETIRED_POOL_KEYS: string[] = JSON.parse(readFileSync(join(__dirname, "../../fixtures/retired/liquid-staking-pool.json"), "utf8")).persistedKeys;
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
   it("absent/empty expiry is NOT expired (authority may omit it)", () => {
@@ -224,13 +229,15 @@ describe("ALF-ND — alfMember gating flag clears on sign-out", () => {
 // honest built-in demo agent (Rule 1). The provider key lives in the OS keyring —
 // AppState/PERSIST_KEYS must NOT carry an `aiKeys` map (invariant 2).
 describe("AI1 — provider selection + key-never-in-state", () => {
-  it("pickChatProviderKind picks 'real' only in tauri AND when the default is configured", () => {
+  // K2 (owner decision 2026-10-19): a configured remote route is never used silently; with no
+  // local model running the message is held and the member is asked ("ask"), never "real".
+  it("pickChatProviderKind asks (never a silent 'real') in tauri when the default is configured", () => {
     const configured = [
       { id: "openai", configured: true },
       { id: "gateway", configured: false },
     ];
-    // Tauri + default is configured → real.
-    expect(pickChatProviderKind(configured, "openai", "tauri")).toBe("real");
+    // Tauri + default is configured, no local model → ask first.
+    expect(pickChatProviderKind(configured, "openai", "tauri")).toBe("ask");
     // Tauri + default NOT configured → demo (honest fallback).
     expect(pickChatProviderKind(configured, "gateway", "tauri")).toBe("demo");
     // Web preview (sim) never selects a real provider (no keyring) → demo.
@@ -253,9 +260,9 @@ describe("AI1 — provider selection + key-never-in-state", () => {
     expect(pickChatProviderKind(configured, "gateway", "tauri", "local-stopped")).toBe("ask");
     // The old wire value no longer exists; were it ever seen it must not route to the gateway either.
     expect(pickChatProviderKind(configured, "gateway", "tauri", "local-fallback")).toBe("ask");
-    expect(pickChatProviderKind(configured, "gateway", "tauri", "gateway-only")).toBe("real");
-    // downloading with a gateway key → gateway (not local, not demo).
-    expect(pickChatProviderKind(configured, "gateway", "tauri", "downloading")).toBe("real");
+    // K2: gateway-only and downloading with a gateway key ask first (the silent route is closed).
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "gateway-only")).toBe("ask");
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "downloading")).toBe("ask");
     // "ready" is honored ONLY in tauri — the web preview has no local server.
     expect(pickChatProviderKind(configured, "gateway", "sim", "ready")).toBe("demo");
     // no local, no gateway key, demo inference state → demo.
@@ -394,50 +401,6 @@ describe("store memory daemon (Q-A.4a) — real status read, honest offline", ()
   });
 });
 
-// CORE WP2 — the withdraw store methods. In web-dev (BRIDGE_MODE="sim") they do
-// NOT settle (no key/chain): the write methods take the honest "desktop only"
-// branch (no throw, no fabricated balance change), and refreshPendingWithdrawals
-// folds the sim empty queue. This guards that the wiring exists + is honest.
-describe("store withdraw (WP2) — honest in web-dev sim", () => {
-  it("refreshPendingWithdrawals folds the (empty) sim queue without throwing", async () => {
-    store.setState({ pendingWithdrawals: [{ id: "stale", saltWei: "1", requestBlock: 0, claimableAtBlock: 0, claimable: true }] });
-    await store.refreshPendingWithdrawals();
-    // Sim bridge returns [] (no chain) — the fold replaces the stale list honestly.
-    expect(store.getSnapshot().pendingWithdrawals).toEqual([]);
-  });
-
-  it("walletRequestWithdrawal in web-dev opens a review and fabricates NO settlement", async () => {
-    // Withdrawing is payout-gated on verified KYC (live-checked), so a member who
-    // reaches the review is verified.
-    store.setState({ walletReview: null, s2: "verified" });
-    vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
-    const before = store.getSnapshot().selfStake;
-    await store.walletRequestWithdrawal("1000000000000000000");
-    // Q-E.1 — no balance mutation, no fabricated activity entry: the action STOPS
-    // at the human-in-the-loop review (approving in web-dev is honest "desktop only").
-    expect(store.getSnapshot().selfStake).toBe(before);
-    expect(store.getSnapshot().walletReview).not.toBeNull();
-    // The honest "desktop app" message surfaces on APPROVE (sim broadcast throws).
-    await store.approveWalletReview();
-    expect(store.getSnapshot().selfStake).toBe(before);
-    expect(store.getSnapshot().toast).toContain("desktop app");
-    expect(store.getSnapshot().walletReview).toBeNull();
-  });
-
-  it("walletClaimWithdrawal in web-dev opens a review and fabricates NO settlement", async () => {
-    store.setState({ walletReview: null, s2: "verified" });
-    vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
-    const liquidBefore = store.getSnapshot().liquid;
-    await store.walletClaimWithdrawal("1");
-    expect(store.getSnapshot().liquid).toBe(liquidBefore);
-    expect(store.getSnapshot().walletReview).not.toBeNull();
-    await store.approveWalletReview();
-    expect(store.getSnapshot().liquid).toBe(liquidBefore);
-    expect(store.getSnapshot().toast).toContain("desktop app");
-    expect(store.getSnapshot().walletReview).toBeNull();
-  });
-});
-
 // CORE item 4 — the wallet activity (tx history) fold. mergeActivity dedupes an
 // OPTIMISTIC just-sent row against the REAL indexed list (CitrateScan txlist) so a
 // settled tx renders exactly once; refreshActivity folds the real list into state.
@@ -519,20 +482,23 @@ describe("staked = REAL registry bond, not hasGrant (W1.3 Rule-1 fix)", () => {
   // and the node read as "validating · eligible for proposer election" with 0 bonded.
   // The snapshot's `staked` must now come from the REAL bond (`bondedStake`) only.
   it("hasGrant alone does NOT count as staked", () => {
-    store.setState({ hasGrant: true, bondedStake: 0, selfStake: 0 });
+    store.setState({ hasGrant: true, bondedStake: 0 });
     expect(store.snapshot().staked).toBe(0);
     // …and with no registered stake the node is not active (isActive is never true unread).
     expect(mapNodeState("running", 100, null)).toBe("synced");
   });
   it("a real registry bond counts as staked", () => {
-    store.setState({ hasGrant: true, bondedStake: 32000, selfStake: 0 });
+    store.setState({ hasGrant: true, bondedStake: 32000 });
     expect(store.snapshot().staked).toBe(32000);
   });
-  // C1-V V7: LiquidStakingPool self-stake is not validator stake (UI truth contract §1, §2), so it
-  // no longer adds to "staked". This replaces "bonded stake and self-stake add" (34,500).
-  it("self-stake does not add to staked", () => {
-    store.setState({ hasGrant: false, bondedStake: 32000, selfStake: 2500 });
+  // D-9: the liquid staking pool is retired. A pool self-stake left in state by an older build
+  // never adds to staked, and never lifts a node into the validating set.
+  it("a legacy pool self-stake never adds to staked", () => {
+    store.setState({ hasGrant: false, bondedStake: 32000, [RETIRED_POOL_KEYS[0]]: 2500 } as never);
     expect(store.snapshot().staked).toBe(32000);
+    store.setState({ hasGrant: false, bondedStake: 0, [RETIRED_POOL_KEYS[0]]: 32000 } as never);
+    expect(store.snapshot().staked).toBe(0);
+    expect(mapNodeState("running", 100, store.snapshot().staked)).toBe("synced");
   });
 });
 
@@ -612,20 +578,14 @@ describe("Q-E.1 wallet review gate — money actions never self-broadcast", () =
   let rejectSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    // A member exercising withdrawals is, by the payout gate, KYC-verified — and
-    // the gate re-checks live, so stub /userinfo too.
-    store.setState({ walletReview: null, liquid: 100, selfStake: 100, s2: "verified" });
+    store.setState({ walletReview: null, liquid: 100, s2: "verified" });
     vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
     // Every money action funnels its build call to a view we control.
     vi.spyOn(bridge.wallet, "send").mockResolvedValue(view);
-    vi.spyOn(bridge.wallet, "stake").mockResolvedValue(view);
-    vi.spyOn(bridge.wallet, "requestWithdrawal").mockResolvedValue(view);
-    vi.spyOn(bridge.wallet, "claimWithdrawal").mockResolvedValue(view);
     broadcastSpy = vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xhash", blockNumber: 1 });
     rejectSpy = vi.spyOn(bridge.signing, "reject").mockResolvedValue(undefined);
     vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
     vi.spyOn(store, "refreshActivity").mockResolvedValue(undefined);
-    vi.spyOn(store, "refreshPendingWithdrawals").mockResolvedValue(undefined);
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -637,24 +597,6 @@ describe("Q-E.1 wallet review gate — money actions never self-broadcast", () =
   it("walletSend builds the pending review and does NOT broadcast", async () => {
     await store.walletSend("0x" + "ab".repeat(20), "1000000000000000000");
     expect(store.state.walletReview).not.toBeNull();
-    expect(store.state.walletReview?.view.id).toBe("wcer-1");
-    expect(broadcastSpy).not.toHaveBeenCalled();
-  });
-
-  it("walletStake builds the pending review and does NOT broadcast", async () => {
-    await store.walletStake("1000000000000000000");
-    expect(store.state.walletReview?.view.id).toBe("wcer-1");
-    expect(broadcastSpy).not.toHaveBeenCalled();
-  });
-
-  it("walletRequestWithdrawal builds the pending review and does NOT broadcast", async () => {
-    await store.walletRequestWithdrawal("1000000000000000000");
-    expect(store.state.walletReview?.view.id).toBe("wcer-1");
-    expect(broadcastSpy).not.toHaveBeenCalled();
-  });
-
-  it("walletClaimWithdrawal builds the pending review and does NOT broadcast", async () => {
-    await store.walletClaimWithdrawal("7");
     expect(store.state.walletReview?.view.id).toBe("wcer-1");
     expect(broadcastSpy).not.toHaveBeenCalled();
   });
@@ -671,7 +613,7 @@ describe("Q-E.1 wallet review gate — money actions never self-broadcast", () =
 
   // REJECT → broadcast NOT called; the pending ceremony is released; review cleared.
   it("rejectWalletReview broadcasts nothing, releases the ceremony, clears the review", async () => {
-    await store.walletStake("1000000000000000000");
+    await store.walletSend("0x" + "ab".repeat(20), "1000000000000000000");
     await store.rejectWalletReview();
     expect(broadcastSpy).not.toHaveBeenCalled();
     expect(rejectSpy).toHaveBeenCalledWith("wcer-1");
@@ -940,24 +882,19 @@ describe("describeBond — honest about the lock and the KYC gate", () => {
 // Payout gate — KYC qualifies getting SALT OUT, not taking part.
 //
 // Participation is deliberately un-gated (a paid member runs the node and accrues
-// earnings with no KYC). Verification gates value LEAVING: claiming rewards and
-// withdrawing stake. The check is LIVE — a cached claim must not authorize a payout.
+// earnings with no KYC). Verification gates value LEAVING: claiming rewards. The check is LIVE — a cached claim must not authorize a payout.
 //
 // Honest limit these tests do NOT pretend away: this is app-side. A member with
 // their own key can call the contracts directly. It is a product default, not
 // enforcement; the contract-side gate is a separate deliverable.
 // ---------------------------------------------------------------------------
-describe("payout gate — claiming and withdrawing require verified KYC", () => {
+describe("payout gate — claiming requires verified KYC", () => {
   let claimSpy: ReturnType<typeof vi.spyOn>;
-  let reqSpy: ReturnType<typeof vi.spyOn>;
-  let claimWdSpy: ReturnType<typeof vi.spyOn>;
   let userinfoSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     store.setState({ walletReview: null, s2: "none" });
     claimSpy = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing" } as never);
-    reqSpy = vi.spyOn(bridge.wallet, "requestWithdrawal").mockResolvedValue({} as never);
-    claimWdSpy = vi.spyOn(bridge.wallet, "claimWithdrawal").mockResolvedValue({} as never);
     // authUserinfo succeeds but does not change s2 — the test drives s2 directly.
     userinfoSpy = vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
   });
@@ -970,14 +907,6 @@ describe("payout gate — claiming and withdrawing require verified KYC", () => 
     store.setState({ s2: "none" });
     await store.claimRewards();
     expect(claimSpy).not.toHaveBeenCalled();
-  });
-
-  it("an unverified member cannot withdraw stake, nor collect a matured withdrawal", async () => {
-    store.setState({ s2: "none" });
-    await store.walletRequestWithdrawal("1000000000000000000");
-    await store.walletClaimWithdrawal("1");
-    expect(reqSpy).not.toHaveBeenCalled();
-    expect(claimWdSpy).not.toHaveBeenCalled();
   });
 
   it("pending / review / failed are all refused — only `verified` opens the door", async () => {
@@ -1091,6 +1020,23 @@ describe("store.resumeSession — launch session re-establish", () => {
 
 describe("activateValidator — arms block production before it needs the key", () => {
   afterEach(() => vi.restoreAllMocks());
+  // These pin the arming order. The reconciling read and the full gate every entry runs first
+  // (Join-8, #405) are covered in activateValidatorStep.store.test.ts; here the fresh read is a
+  // ready one with nothing recorded.
+  beforeEach(() => {
+    vi.spyOn(store, "refreshActivation").mockResolvedValue(true);
+    vi.spyOn(store, "walletIsLinked").mockReturnValue(true);
+    store.setState({
+      s7TxHash: null,
+      activation: {
+        bondAddress: "0x" + "22".repeat(20), bondDeployed: true, bondActivated: false, principalWei: (32000n * 10n ** 18n).toString(),
+        unlockBlock: 16_200_000, unlockTimestamp: 1_822_000_000, memberTokenId: "4", membershipActive: true,
+        validatorPubkey: "0x" + "07".repeat(32), pubkeySource: "node", nodeKeyReady: true, nodePubkey: "0x" + "07".repeat(32), bondPubkey: null,
+        registryStatus: 0, activationEpoch: 0, registryActive: false, currentEpoch: 500, epochBlocks: 1000,
+        headBlock: 500_000, blockTimeMs: 2000, localBlock: 499_999, localSyncing: false, tx: null, recordedTx: null,
+      },
+    });
+  });
 
   it("calls armMining BEFORE registerValidator", async () => {
     const order: string[] = [];

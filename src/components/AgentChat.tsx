@@ -209,7 +209,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             )}
             {/* SCL-S7.5a: the local model is not running; ask before this message goes anywhere. */}
             {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
-              <LocalModelAsk phase={s.chatRouteHold.phase} onChoose={(c) => store.answerLocalModelAsk(c)} />
+              <LocalModelAsk phase={s.chatRouteHold.phase} options={s.chatRouteHold.options} onChoose={(c) => store.answerLocalModelAsk(c)} />
             )}
             {/* HUP-S2.9: the files the agent changed in this reply, each with Undo. */}
             {undo.cards

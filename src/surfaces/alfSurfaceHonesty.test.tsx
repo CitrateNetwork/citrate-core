@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ALF } from "./ALF";
 import { Sidebar } from "../shell/Sidebar";
+import { PLACES, visibleTabs } from "../shell/places";
 import { freshState, type AppState } from "../shell/state";
 import type { Store } from "../shell/store";
 
@@ -51,13 +52,17 @@ describe("ALF surface — honest compute seam (Rule 1)", () => {
   });
 });
 
-describe("Sidebar — ALF nav is gated on the alf_member claim", () => {
-  it("shows the ALF entry for an ALF member", () => {
+// Five-place navigation (0.5.2): ALF is a Groups tab for members, no longer a sidebar item.
+describe("ALF is a Groups tab gated on the alf_member claim", () => {
+  const groups = PLACES.find((p) => p.id === "groups");
+  it("shows the ALF tab for an ALF member, and never as a sidebar place", () => {
+    expect(groups && visibleTabs(groups, member().alfMember).map((t) => t.label)).toContain("ALF");
     const html = renderToStaticMarkup(<Sidebar store={sidebarStore} s={member()} />);
-    expect(html).toContain(">ALF<");
+    expect(html).not.toContain(">ALF<");
   });
 
-  it("hides the ALF entry for a non-member", () => {
+  it("hides the ALF tab for a non-member", () => {
+    expect(groups && visibleTabs(groups, freshState("p1").alfMember).map((t) => t.label)).not.toContain("ALF");
     const html = renderToStaticMarkup(<Sidebar store={sidebarStore} s={freshState("p1")} />);
     expect(html).not.toContain(">ALF<");
   });

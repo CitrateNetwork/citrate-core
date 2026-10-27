@@ -79,7 +79,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
   // folded as `bondedStake` from grantStatus. The membership grant sitting in a locked bond is not
-  // staked until the bond is activated, and LiquidStakingPool self-stake is not validator stake.
+  // staked until the bond is activated.
   const staked = s.bondedStake;
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
@@ -133,7 +133,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
       value: staked > 0 ? fmtI(staked) : bondLockedNotStaked ? "0" : "—",
       sub: staked > 0 ? "SALT · stakeOf" : validatorStateText,
       color: "var(--tx-1)",
-      tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond and LiquidStakingPool deposits are not validator stake.",
+      tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond is not validator stake.",
       vsize: "21px",
     },
     // C1-V V8: the "Today" tile is gone. No contract or RPC gives a per-day reward figure

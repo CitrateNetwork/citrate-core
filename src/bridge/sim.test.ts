@@ -10,7 +10,6 @@ function fakeHost(overrides: Partial<AppState> = {}): { host: SimHost; state: Ap
   const state = {
     ...DEFAULT_APP_CONFIG,
     liquid: 12.5,
-    selfStake: 2500,
     hasGrant: true,
     claimable: 9.41,
     walletAddr: "0xabc",
@@ -53,30 +52,23 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect((state as unknown as { autolock: number }).autolock).toBe(15);
   });
 
-  it("wallet.balances reports self-stake only (grant is layered by the store/UI)", async () => {
+  // D-9: the liquid staking pool is retired, so balances carry no self-stake figure.
+  it("wallet.balances reports liquid, claimable and the address, and no stake figure", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);
     const b = await bridge.wallet.balances();
-    // `staked` = the SELF-stake (the chain fact); the vaulted 32k grant is an
-    // entitlement the store adds via hasGrant, not part of this field.
-    expect(b.staked).toBe(2500);
-    expect(b.liquid).toBe(12.5);
-    expect(b.address).toBe("0xabc");
+    expect(b).toEqual({ liquid: 12.5, claimable: 9.41, address: "0xabc" });
   });
 
   // Q-E.1 — the sim money actions now build a DECODED pending ceremony (so the
   // human-in-the-loop review modal renders truthfully in web-dev, mirroring the
   // tauri request→approve split). They sign NOTHING; it is signing.broadcast that
-  // HONESTLY refuses to settle in the web shim (no key, no chain — Rule 1). The
-  // pending queue stays empty (never fabricated rows).
-  it("wallet.send/stake/requestWithdrawal/claimWithdrawal build a decoded review view in sim (no fabricated settle)", async () => {
+  // HONESTLY refuses to settle in the web shim (no key, no chain — Rule 1).
+  it("wallet.send builds a decoded review view in sim (no fabricated settle)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);
     const send = await bridge.wallet.send("0x" + "ab".repeat(20), "1000000000000000000");
-    const stake = await bridge.wallet.stake("2000000000000000000");
-    const wreq = await bridge.wallet.requestWithdrawal("1000000000000000000");
-    const wclaim = await bridge.wallet.claimWithdrawal("1");
-    for (const v of [send, stake, wreq, wclaim]) {
+    for (const v of [send]) {
       expect(v.kind).toBe("transaction");
       expect(v.chainId).toBe(40204);
       // A legible decoded action a human can review — NOT undecodable raw bytes.
@@ -86,13 +78,6 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(send.decoded.action).toContain("Send");
     // Approving in the web shim CANNOT settle — signing.broadcast throws honestly.
     await expect(bridge.signing.broadcast(send.id, false)).rejects.toThrow(/desktop|web shim|no key/i);
-  });
-
-  it("wallet.pendingWithdrawals returns no rows and an unconfirmed read in sim (no chain)", async () => {
-    const { host } = fakeHost();
-    const bridge = createSimBridge(host);
-    // C1-W: nothing was read, so it is not "none".
-    expect(await bridge.wallet.pendingWithdrawals()).toEqual({ withdrawals: [], confirmed: false, complete: true, note: "the web preview reaches no chain" });
   });
 
   // No custody vault/key exists in web-dev, so ensureReady provisions nothing: it
@@ -254,7 +239,7 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
       (e: unknown) => isUnavailable(e),
     );
     await expect(bridge.chat.clearProvider("openai")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
-    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    await expect(bridge.chat.infer("openai", "[]", "{}", "cc_x")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("inferLocal is honestly Unavailable and inferenceState is 'demo' in sim (no llama-server, no local model)", async () => {
@@ -266,6 +251,14 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
     await expect(bridge.chat.inferLocal("[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
     expect(await bridge.chat.inferenceState(true)).toBe("demo");
     expect(await bridge.chat.inferenceState(false)).toBe("demo");
+  });
+
+  it("chat route: the preview reports the default (ask first) and cannot change it", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const { isUnavailable } = await import("./types");
+    expect(await bridge.chat.route()).toEqual({ route: "ask_first", loadError: null });
+    await expect(bridge.chat.setRoute("local_only")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("backend is the honest built-in demo agent (Rule 1 — no gateway label)", async () => {

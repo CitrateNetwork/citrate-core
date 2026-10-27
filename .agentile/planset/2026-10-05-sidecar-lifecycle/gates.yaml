@@ -85,7 +85,7 @@ gates:
         paths:
           - citrate-core src-tauri/formal/SidecarSupervisor.tla
           - citrate-core src-tauri/formal/AppExitCoordinator.tla
-        note: Owner decision (2026-10-05) - includes the S1.7 corrections with X-2 and X-5 restated for Restart and Installer, X-11 QuitAlwaysTerminates and X-12 QuitActuatesHeldScopes (O-18, D-15).
+        note: Owner decision (2026-10-05) - includes the S1.7 corrections with X-2 and X-5 restated for Restart and Installer, X-11 QuitAlwaysTerminates and X-12 QuitActuatesHeldScopes (O-18, D-15). 2026-10-19 - models, configs, mutants and witnesses written (S1.1, S1.2, S1.7; branch beta/k1a-gate0-tla); TLC results and the OwnedContainment decision are in the evidence file. Stays false until that PR is reviewed and merged.
       - id: g0-harness
         desc: Fault-injection harness with owned-process guards and positive controls; SPEC-001 re-grounded on the release branch
         release: v0.5.1  # was blocks_cut: true

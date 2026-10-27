@@ -38,6 +38,7 @@
 //!   claim-derived flags (signedIn / tier / org / role / kycStatus / walletAddr).
 //!   The refresh token is never logged nor placed in any error string (ADV-8/9).
 
+use crate::secret::SecretString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -618,10 +619,10 @@ impl UrlIntoString for url::Url {
 /// struct is confined to the exchange path and never serialized back out.
 #[derive(Deserialize)]
 struct TokenResponse {
-    access_token: String,
+    access_token: SecretString,
     #[serde(default)]
-    refresh_token: Option<String>,
-    id_token: String,
+    refresh_token: Option<SecretString>,
+    id_token: SecretString,
     #[serde(default = "default_expires_in")]
     expires_in: u64,
 }
@@ -860,6 +861,12 @@ pub trait HttpClient: Send + Sync {
     fn delete_json(&self, _url: &str, _bearer: Option<&str>, _body: &str) -> Result<String> {
         Err(AuthError::Network)
     }
+    /// `PUT url` with a JSON body and an optional bearer → body string. Used by the v2 invite-link
+    /// attach (`PUT /api/join/<code>`, [`crate::join`]). Default-implemented as unsupported so
+    /// existing fakes keep compiling and fail LOUDLY rather than silently succeeding.
+    fn put_json(&self, _url: &str, _bearer: Option<&str>, _body: &str) -> Result<String> {
+        Err(AuthError::Network)
+    }
 }
 
 /// Classify a `ureq` failure, PRESERVING what the authority actually said.
@@ -961,6 +968,33 @@ impl HttpClient for UreqClient {
             .read_to_string()
             .map_err(|_| AuthError::Network)
     }
+
+    fn put_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String> {
+        let mut req = ureq::put(url)
+            .config()
+            .timeout_global(Some(OIDC_HTTP_TIMEOUT))
+            .build()
+            .header("Content-Type", "application/json");
+        if let Some(tok) = bearer {
+            req = req.header("Authorization", &format!("Bearer {tok}"));
+        }
+        // Same classification as post_json: a 409 (a different envelope is already attached) must
+        // stay distinguishable from a 404 or an outage.
+        let mut resp = req.send(body).map_err(|e| classify_ureq(&e))?;
+        resp.body_mut()
+            .read_to_string()
+            .map_err(|_| AuthError::Network)
+    }
+}
+
+/// Where an authenticated first-party resource call gets its bearer: the live session's access
+/// token. Implemented by [`AuthManager`]; the v2 invite-link client ([`crate::join`]) takes a
+/// `&dyn BearerSource` so it reuses this session plumbing instead of forking it, and tests can
+/// supply a fixed token. The token is handed only to kit code (never to a caller across `invoke`)
+/// and is `Zeroizing`, so it is wiped when the request is done.
+pub trait BearerSource: Send + Sync {
+    /// The current access token. `NotSignedIn` when there is no session.
+    fn bearer(&self) -> Result<Zeroizing<String>>;
 }
 
 /// A one-time wallet-link challenge from `/identity/:sub/wallets/challenge`.
@@ -1245,14 +1279,18 @@ impl AuthManager {
         let tokens = self.exchange_code(&endpoints, &cb.code, &pkce.verifier, &redirect_uri)?;
 
         // 6. Validate the id_token (nonce/iss/aud/exp/sig — ADV-7).
-        let claims = self.validate_id_token(&endpoints, &tokens.id_token, &nonce)?;
+        let claims = self.validate_id_token(&endpoints, tokens.id_token.expose(), &nonce)?;
 
         // 7. Persist the refresh token in the A2 vault (A3.2); access token in
         //    memory only. The vault must be unlocked — else fail closed.
         if let Some(refresh) = tokens.refresh_token {
             self.store_refresh(vault, refresh)?;
         }
-        self.set_session(&tokens.access_token, tokens.expires_in, claims.clone());
+        self.set_session(
+            tokens.access_token.expose(),
+            tokens.expires_in,
+            claims.clone(),
+        );
 
         Ok(AuthStatus::from_claims(&claims))
     }
@@ -1494,8 +1532,8 @@ impl AuthManager {
     /// Store the rotating refresh token in the A2 vault slot `oidc-refresh`. The
     /// bytes are moved in and zeroized by `custody_put`; they never cross the
     /// invoke boundary and are never logged (ADV-8/9).
-    fn store_refresh(&self, vault: &CustodyVault, refresh: String) -> Result<()> {
-        let mut bytes = refresh.into_bytes();
+    fn store_refresh(&self, vault: &CustodyVault, refresh: SecretString) -> Result<()> {
+        let mut bytes = refresh.expose().as_bytes().to_vec();
         let r = vault.put(REFRESH_SLOT, &mut bytes);
         bytes.zeroize();
         r.map_err(AuthError::from)
@@ -1533,8 +1571,9 @@ impl AuthManager {
             let guard = self.lock();
             guard.as_ref().map(|s| s.claims.sub.clone())
         };
-        if !tokens.id_token.is_empty() {
-            let refreshed = self.validate_id_token_no_nonce(&endpoints, &tokens.id_token)?;
+        if !tokens.id_token.expose().is_empty() {
+            let refreshed =
+                self.validate_id_token_no_nonce(&endpoints, tokens.id_token.expose())?;
             if let Some(prev) = prior_sub.as_deref() {
                 if !prev.is_empty() && !refreshed.sub.is_empty() && refreshed.sub != prev {
                     return Err(AuthError::IdTokenInvalid);
@@ -1548,8 +1587,8 @@ impl AuthManager {
         }
         // A refreshed access token carries fresh claims via /userinfo (federation
         // RP rule); prefer a live /userinfo re-check for entitlement.
-        self.set_session_token(&tokens.access_token, tokens.expires_in);
-        let claims = self.userinfo_inner(&endpoints, &tokens.access_token)?;
+        self.set_session_token(tokens.access_token.expose(), tokens.expires_in);
+        let claims = self.userinfo_inner(&endpoints, tokens.access_token.expose())?;
         // sub continuity also holds against /userinfo.
         if let Some(prev) = prior_sub.as_deref() {
             if !prev.is_empty() && !claims.sub.is_empty() && claims.sub != prev {
@@ -1797,6 +1836,18 @@ impl AuthManager {
             .collect())
     }
 
+    /// The live access token for a first-party resource call ([`BearerSource`]). An empty token
+    /// reads as signed-out. Expiry is NOT pre-judged here (same as the registry calls above): the
+    /// resource answers 401 and the caller refreshes, so a clock skew can't block a valid token.
+    fn session_access_token(&self) -> Result<Zeroizing<String>> {
+        let guard = self.lock();
+        let sess = guard.as_ref().ok_or(AuthError::NotSignedIn)?;
+        if sess.access_token.is_empty() {
+            return Err(AuthError::NotSignedIn);
+        }
+        Ok(Zeroizing::new(sess.access_token.to_string()))
+    }
+
     /// The signed-in sub plus its access token. Both come from the live session;
     /// `NotSignedIn` when there is none.
     fn session_sub_and_token(&self) -> Result<(String, String)> {
@@ -1935,6 +1986,12 @@ impl AuthManager {
         if let Some(sess) = self.lock().as_mut() {
             sess.claims = claims;
         }
+    }
+}
+
+impl BearerSource for AuthManager {
+    fn bearer(&self) -> Result<Zeroizing<String>> {
+        self.session_access_token()
     }
 }
 

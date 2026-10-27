@@ -1033,7 +1033,7 @@ fn captures_child_stdout_and_stderr_into_ring() {
     let crash_file = tmp.path("crashes.jsonl");
     // A child that prints one known line to stdout and one to stderr, then stays
     // alive (so the supervisor observes a clean Running child, not a crash-loop).
-    let script = "echo OUT_HELLO; echo ERR_OOPS 1>&2; sleep 60".to_string();
+    let script = "echo OUT_HELLO; echo ERR_OOPS 1>&2; exec sleep 60".to_string();
     let spec = SidecarSpec::new("printer", sh_bin(), vec!["-c".into(), script]);
     let cfg = SupervisorConfig::new(spec, &crash_file);
     let sup = Supervisor::start(cfg).expect("supervisor starts");
@@ -1093,7 +1093,7 @@ fn ring_is_bounded_and_drops_oldest() {
     let crash_file = tmp.path("crashes.jsonl");
     let over = LOG_RING_CAPACITY + 50;
     // Print `over` numbered lines to stdout, then stay alive.
-    let script = format!("for i in $(seq 1 {over}); do echo LINE_$i; done; sleep 60");
+    let script = format!("for i in $(seq 1 {over}); do echo LINE_$i; done; exec sleep 60");
     let spec = SidecarSpec::new("chatty", sh_bin(), vec!["-c".into(), script]);
     let cfg = SupervisorConfig::new(spec, &crash_file);
     let sup = Supervisor::start(cfg).expect("supervisor starts");
@@ -1133,8 +1133,10 @@ fn ring_survives_restart() {
     let tmp = TmpDir::new("logs-restart");
     let crash_file = tmp.path("crashes.jsonl");
     // Each run prints a UNIQUE marker so we can tell the runs apart. The marker
-    // includes the pid so run-1 and run-2 differ.
-    let script = "echo RUN_MARKER_$$; sleep 60".to_string();
+    // includes the pid so run-1 and run-2 differ. `exec` makes the killed pid the only holder of
+    // the output pipe: a forked `sleep` would outlive the kill holding it, and the supervisor
+    // rightly waits for held readers before every retry (core#397).
+    let script = "echo RUN_MARKER_$$; exec sleep 60".to_string();
     let spec = SidecarSpec::new("restarter", sh_bin(), vec!["-c".into(), script]);
     let mut cfg = SupervisorConfig::new(spec, &crash_file);
     cfg.backoff = BackoffPolicy {
@@ -1267,6 +1269,7 @@ struct WatchLog {
     /// (pid, still our unreaped child at that moment, stop already requested)
     observed: Mutex<Vec<(u32, bool, bool)>>,
     ended: AtomicU64,
+    prepared: AtomicU64,
     stopping: std::sync::atomic::AtomicBool,
 }
 
@@ -1274,6 +1277,7 @@ struct WatchLog {
 fn watch_for(log: &Arc<WatchLog>) -> ChildWatch {
     let o = log.clone();
     let e = log.clone();
+    let p = log.clone();
     ChildWatch {
         interval: Duration::from_millis(50),
         observe: Arc::new(move |pid| {
@@ -1287,6 +1291,9 @@ fn watch_for(log: &Arc<WatchLog>) -> ChildWatch {
         ended: Arc::new(move || {
             e.ended.fetch_add(1, Ordering::SeqCst);
         }),
+        prepare: Some(Arc::new(move || {
+            p.prepared.fetch_add(1, Ordering::SeqCst);
+        })),
     }
 }
 
@@ -1354,4 +1361,75 @@ fn child_watch_ended_runs_after_a_crash() {
     let ended = log.ended.load(Ordering::SeqCst);
     drop(sup);
     assert_eq!(ended, 2, "`ended` ran after each of the two crashes");
+}
+
+/// RC52 P-9a: `prepare` runs right before every spawn attempt (the first and each restart), so a
+/// caller can write what the child reads at start just in time, and `ended` can remove it.
+#[cfg(unix)]
+#[test]
+fn child_watch_prepare_runs_before_every_spawn() {
+    let tmp = TmpDir::new("watch-prepare");
+    let log = Arc::new(WatchLog::default());
+    let mut spec = SidecarSpec::new("watched-prepare", false_bin(), vec![]);
+    spec.child_watch = Some(watch_for(&log));
+    let mut cfg = SupervisorConfig::new(spec, tmp.path("crash.jsonl"));
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 1,
+        max_delay: Duration::from_millis(10),
+        max_retries: 1,
+    };
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let prepared = log.prepared.load(Ordering::SeqCst);
+    let ended = log.ended.load(Ordering::SeqCst);
+    drop(sup);
+    assert_eq!(prepared, 2, "`prepare` ran before each of the two spawns");
+    assert_eq!(ended, 2);
+}
+
+/// RC52 P-9a: a spawn that fails (no such binary) is an end too: `ended` runs after each failed
+/// attempt, so whatever `prepare` wrote for it is removed, including after the supervisor gives up.
+#[cfg(unix)]
+#[test]
+fn child_watch_ended_runs_when_a_spawn_fails() {
+    let tmp = TmpDir::new("watch-spawnfail");
+    let log = Arc::new(WatchLog::default());
+    let mut spec = SidecarSpec::new("watched-spawnfail", tmp.path("no-such-binary"), vec![]);
+    spec.child_watch = Some(watch_for(&log));
+    let mut cfg = SupervisorConfig::new(spec, tmp.path("crash.jsonl"));
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 1,
+        max_delay: Duration::from_millis(10),
+        max_retries: 1,
+    };
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let prepared = log.prepared.load(Ordering::SeqCst);
+    let ended = log.ended.load(Ordering::SeqCst);
+    drop(sup);
+    assert_eq!(prepared, 2, "both attempts were prepared");
+    assert_eq!(ended, 2, "`ended` ran after each failed spawn");
+}
+
+// ---------------------------------------------------------------------------
+// Pid guard: a signal is never sent to pid 0 (the caller's process group) or to a value that
+// does not fit a positive pid_t (a negative pid targets a group, -1 every process).
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn signal_targets_are_positive_pids_only() {
+    assert_eq!(checked_pid(0), None, "0 would signal our own process group");
+    assert_eq!(checked_pid(u32::MAX), None, "would wrap to -1: every process");
+    assert_eq!(checked_pid(i32::MAX as u32 + 1), None, "would wrap negative: a group");
+    assert_eq!(checked_pid(1), Some(1));
+    assert_eq!(checked_pid(i32::MAX as u32), Some(i32::MAX));
+    // Signal 0 only probes, so a broken guard here could not hurt the test runner.
+    assert!(!signal_pid(0, 0), "pid 0 is refused");
+    assert!(!signal_pid(u32::MAX, 0), "a wrapping pid is refused");
+    assert!(!pid_alive(0));
+    assert!(!pid_alive(u32::MAX));
+    assert!(signal_pid(std::process::id(), 0), "a real positive pid is signalled");
 }
