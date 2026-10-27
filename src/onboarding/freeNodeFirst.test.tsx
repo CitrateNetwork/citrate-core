@@ -16,6 +16,13 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+// S0 may show a genesis-checked network name (#349) read through wagmi; a static render has no
+// WagmiProvider, so that one hook reads "no block yet". Everything else in wagmi stays real.
+vi.mock("wagmi", async (orig) => ({
+  ...(await orig<typeof import("wagmi")>()),
+  useBlock: () => ({ data: undefined }),
+}));
+
 import { Onboarding, S3, S4 } from "./Onboarding";
 import { freshState, type AppState } from "../shell/state";
 import { store as realStore, type Store } from "../shell/store";
@@ -108,8 +115,9 @@ describe("S3 — the free node is offered first", () => {
     const member = button(host, /Become a member/);
     expect(member).toBeTruthy();
     await act(async () => member!.click());
-    // The checkout is the only place the price shows.
-    expect(host.textContent ?? "").toMatch(PRICE);
+    // The checkout is the only place the price shows: the price, or (until core-membership's
+    // price is read, #349/#379) the "See membership pricing" link in its place.
+    expect(host.textContent ?? "").toMatch(/\$\s?\d|See membership pricing/);
     expect(button(host, /Link your wallet/)).toBeTruthy();
     expect(st.onS3Pay).not.toHaveBeenCalled();
     const back = button(host, /Back/);

@@ -601,8 +601,9 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
-/** The member checkout: the only onboarding screen that shows the membership price. */
-function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppState; onBack?: () => void }) {
+/** The member checkout: the only onboarding screen that shows the membership price. Exported so
+ *  tests (and #349/#379's money-copy tests) can render the checkout directly. */
+export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppState; onBack?: () => void }) {
   const [entOpen, setEntOpen] = useState(false);
   // #31 (Luke 2026-09-11) — auto-open checkout once the wallet is LINKED, so the member
   // doesn't hunt for a second button. This component mounts only after the member chose
