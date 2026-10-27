@@ -24,12 +24,12 @@
 // not the UI.
 // =====================================================================
 import { useEffect, useState } from "react";
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import { GRANT_DISCLAIMER } from "../data/grantCopy";
 import { PricingLink } from "../components/PricingLink";
-import { citrate } from "../chain";
+import { citrate, readTransport } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import { PersonaPicker } from "../components/PersonaPicker";
@@ -403,7 +403,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
     let live = true;
     setRpcProbe({ phase: "checking", block: null, host: rpcHost });
     const url = s.rpc === "local" ? "http://127.0.0.1:8545" : "https://rpc.citrate.ai";
-    const client = createPublicClient({ chain: citrate, transport: http(url) });
+    // K6 (P3): readTransport refuses without sending while the network profile is not ready.
+    const client = createPublicClient({ chain: citrate, transport: readTransport(url) });
     client
       .getBlockNumber()
       .then((bn) => {

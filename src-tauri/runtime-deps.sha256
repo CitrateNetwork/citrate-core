@@ -23,7 +23,9 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 # rustc 1.96.0, --locked, build root ~/.cache/citrate-components). Not yet uploaded: until the
 # owner uploads exactly these bytes, a release run fails closed at the download. mem-mcp is
 # citrate-memories 5aeda317 (#25: reads the store key from the file citrate-core names), not
-# the 0e9d4882 0.5.1 shipped.
+# the 0e9d4882 0.5.1 shipped. Uploaded 2026-10-27: mem-mcp only (rebuilt from a clean target dir
+# in the same build root, byte-identical to this pin; the downloaded asset matches it). The other
+# five are not uploaded yet.
 91aab7214c187571d4491f97c8b255e516d356e878856a784175de126d5f445e  citrate-aarch64-apple-darwin-c384fc982882
 250180089826a628e1765b0dd99b25ca68c23cd0d4b1872f88e76cd3bb639728  node-agent-aarch64-apple-darwin-1d8cb8e4e24a
 8eb2fe37e16f1157477f1ac2c9a7e22d16b63c8a9041c4b240b24a8fc65b3214  mem-mcp-aarch64-apple-darwin-5aeda3172369

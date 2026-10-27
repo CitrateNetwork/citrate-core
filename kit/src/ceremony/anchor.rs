@@ -482,6 +482,31 @@ impl AnchorCeremony {
         cfg: AnchorTxConfig,
         guards: AnchorGuards<'_>,
     ) -> Result<AnchorReceipt> {
+        self.approve_and_broadcast_gated(
+            keyring,
+            rpc,
+            id,
+            pinned_registry,
+            cfg,
+            guards,
+            crate::rpc::network_gate(),
+        )
+    }
+
+    /// [`Self::approve_and_broadcast`] against an explicit network gate (K6). With `Some`, the
+    /// RPC's chain id and block-0 hash are checked before any nonce read or signature; a refusal
+    /// keeps the card pending, since nothing was signed.
+    #[allow(clippy::too_many_arguments)] // the gate is the one addition to the approve inputs
+    pub fn approve_and_broadcast_gated<T: RpcTransport>(
+        &self,
+        keyring: &dyn Keyring,
+        rpc: &RpcClient<T>,
+        id: &str,
+        pinned_registry: &str,
+        cfg: AnchorTxConfig,
+        guards: AnchorGuards<'_>,
+        gate: Option<&crate::rpc::ExpectedNetwork>,
+    ) -> Result<AnchorReceipt> {
         let key = id
             .parse::<u64>()
             .map_err(|_| AnchorError::UnknownCeremony)?;
@@ -506,6 +531,14 @@ impl AnchorCeremony {
             .ok_or(AnchorError::RegistryMismatch)?;
         if pinned != p.registry {
             return Err(AnchorError::RegistryMismatch);
+        }
+        if let Some(expected) = gate {
+            if let Err(e) = rpc.verify_network(expected) {
+                return Err(keep(
+                    p,
+                    AnchorError::Rpc(format!("{e}; nothing was signed")),
+                ));
+            }
         }
         let signer = load_key(keyring)?.ok_or(AnchorError::NoAnchorKey)?;
         let from = address_of(signer.verifying_key());
@@ -586,7 +619,7 @@ impl AnchorCeremony {
                 ));
             }
         };
-        let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
+        let tx_hash = match rpc.send_raw_transaction_gated(&signed.raw, gate) {
             Ok(h) => h,
             Err(e) => {
                 // Contract v1.1 §1: nothing went out only when this was the first submission of
