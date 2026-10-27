@@ -165,7 +165,7 @@ export function Node({ store, s }: SurfaceProps) {
       ? "Validator rewards are paid to the block producer only."
       : rClaim < 5
         ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - rClaim) + " SALT to go."
-        : "Claimable now is above the 5 SALT dust threshold.";
+        : "Claimable now is at or above the 5 SALT dust threshold.";
   // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL claim path
   // (`store.claimRewards` → `bridge.agent.claim` → the real `claimRewards()`
   // ceremony → B1.4 broadcast in the desktop build; an honest "nothing to claim"
