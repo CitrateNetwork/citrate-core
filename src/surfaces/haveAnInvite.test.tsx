@@ -84,8 +84,10 @@ describe("a deep link and a pasted link open the same Join screen", () => {
     expect(store.state.route).toMatch(/^groups/);
     await mount(<Live />);
     expect(q("invite-join")?.getAttribute("data-phase")).toBe("ready");
-    expect(q("invite-join")?.textContent).toContain("Join Garden club?");
-    expect(q("invite-join")?.textContent).toContain("Larry invited you.");
+    // The group and sender are shown as what the link says, never as checked facts.
+    expect(q("invite-join")?.textContent).toContain("This link invites you to Garden club.");
+    expect(q("invite-join")?.textContent).toContain("The link says it's from Larry.");
+    expect(q("invite-join")?.textContent).not.toContain("Larry invited you");
     expect(bridge.invites.preview).toHaveBeenCalledWith(LINK);
   });
 
@@ -96,7 +98,7 @@ describe("a deep link and a pasted link open the same Join screen", () => {
     await type(q("invite-paste-input") as HTMLInputElement, `  ${LINK}  `);
     await click(q("invite-paste-submit"));
     expect(store.state.inviteLink).toBe(LINK);
-    expect(q("invite-join")?.textContent).toContain("Join Garden club?");
+    expect(q("invite-join")?.textContent).toContain("This link invites you to Garden club.");
   });
 
   it("anything else pasted is refused and opens nothing", async () => {
@@ -128,7 +130,7 @@ describe("Join sends a request, never a join", () => {
     expect(request).toHaveBeenCalledWith(LINK);
     expect(store.state.inviteLink).toBeNull();
     expect(q("invite-request")?.getAttribute("data-state")).toBe("waiting");
-    expect(q("invite-request")?.textContent).toContain("Waiting for Larry to approve your request to join Garden club");
+    expect(q("invite-request")?.textContent).toContain("Waiting for your request to join Garden club to be approved");
     expect(host.textContent).not.toMatch(/you're in/i);
   });
 
@@ -178,8 +180,8 @@ describe("Join sends a request, never a join", () => {
 
 describe("the requests this device sent", () => {
   it.each([
-    ["declined", "Larry declined your request to join Garden club."],
-    ["revoked", "Larry cancelled this invite to Garden club."],
+    ["declined", "Your request to join Garden club was declined."],
+    ["revoked", "This invite to Garden club was cancelled."],
     ["expired", "Your invite to Garden club expired before it was approved."],
   ] as const)("%s reads honestly", async (state, text) => {
     vi.mocked(bridge.invites.myRequests).mockResolvedValue([req(state)]);
@@ -195,10 +197,13 @@ describe("the requests this device sent", () => {
     expect(q("invite-request-note")?.textContent).toContain("Can't reach the relay");
   });
 
-  it("approved: You're in, until dismissed", async () => {
+  it("approved: You're in <the joined group's own name>, until dismissed", async () => {
     vi.mocked(bridge.invites.myRequests).mockResolvedValue([req("joined")]);
+    // The link said "Garden club"; the joined group's own state names it "Rose growers".
+    vi.spyOn(bridge.groups, "list").mockResolvedValue([{ id: preview.group, name: "Rose growers", kind: "channel", owner: "0x1", members: [] } as never]);
     await mount(<Live />);
-    expect(q("invite-request")?.textContent).toContain("You're in Garden club.");
+    expect(q("invite-request")?.textContent).toContain("You're in Rose growers.");
+    expect(q("invite-request")?.textContent).not.toContain("Garden club");
     await click(q("invite-request-dismiss"));
     expect(q("invite-request")).toBeNull();
   });

@@ -6,14 +6,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import type { IncomingRequest, InviteView } from "../bridge/domains";
-import { InvitePanel, declinedToast, revokedToast } from "./InvitePanel";
+import { InvitePanel, checkedToast, declinedToast, revokedToast } from "./InvitePanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const G = "abababababababababababababababab";
 const ANA = "0x00000000000000000000000000000000000000aa";
 const inv: InviteView = { id: "0123456789abcdef", group: G, link: "citrate://invite?g=x&t=y&k=z&e=1", label: "", createdAt: 1, expiresAt: 2_000_000_000, approving: "" };
-const ask: IncomingRequest = { inviteId: inv.id, group: G, address: ANA, approving: false };
+const ask: IncomingRequest = { inviteId: inv.id, group: G, address: ANA, inviteLabel: "", approving: false };
 
 let host: HTMLDivElement;
 let root: Root;
@@ -69,7 +69,10 @@ describe("InvitePanel", () => {
     const approve = vi.spyOn(bridge.invites, "approve").mockResolvedValue();
     const onAdded = vi.fn();
     await mount(onAdded);
-    expect(q("invite-request-in")?.textContent).toContain("0x0000…00aa wants to join");
+    // What the request says, not a verified identity: the owner confirms it's them.
+    expect(q("invite-request-in")?.textContent).toContain("A request to join from 0x0000…00aa");
+    expect(q("invite-request-in")?.textContent).toContain("confirm it's them before approving");
+    expect(q("invite-request-in")?.textContent).not.toContain("wants to join");
     await click(q("invite-approve"));
     expect(approve).toHaveBeenCalledWith(G, inv.id, ANA);
     expect(onAdded).toHaveBeenCalled();
@@ -113,12 +116,44 @@ describe("InvitePanel", () => {
     expect(q("invite-requests-error")?.textContent).toContain("relay unreachable");
   });
 
-  it("a request being added offers Approve again but not Decline, and its link can't be revoked", async () => {
+  it("a held approval is settled from the invite row: Check again and Cancel, even with no request rows", async () => {
+    // The relay restarted: no request rows. The invite row alone offers the way out.
+    vi.mocked(bridge.invites.list).mockResolvedValue([{ ...inv, approving: ANA }]);
+    vi.mocked(bridge.invites.requests).mockResolvedValue([]);
+    const check = vi.spyOn(bridge.invites, "check").mockResolvedValue("released");
+    const revoke = vi.spyOn(bridge.invites, "revoke").mockResolvedValue({ notified: true });
+    await mount();
+    expect(q("invite-open")?.textContent).toContain("not confirmed yet");
+    expect(q("invite-revoke")).toBeNull();
+    await click(q("invite-check"));
+    expect(check).toHaveBeenCalledWith(G, inv.id);
+    expect(toast).toHaveBeenLastCalledWith(checkedToast("released"));
+    await click(q("invite-cancel"));
+    expect(revoke).toHaveBeenCalledWith(G, inv.id);
+  });
+
+  it("a held request row offers neither Approve nor Decline (the invite row settles it)", async () => {
     vi.mocked(bridge.invites.list).mockResolvedValue([{ ...inv, approving: ANA }]);
     vi.mocked(bridge.invites.requests).mockResolvedValue([{ ...ask, approving: true }]);
     await mount();
-    expect(q("invite-approve")).toBeTruthy();
+    expect(q("invite-approve")).toBeNull();
     expect(q("invite-decline")).toBeNull();
-    expect(q("invite-revoke")).toBeNull();
+    expect(q("invite-check")).toBeTruthy();
   });
+
+  it("the owner can label a link, and each request says which link it came in on", async () => {
+    const create = vi.spyOn(bridge.invites, "create").mockResolvedValue({ ...inv, label: "for Ana" });
+    vi.mocked(bridge.invites.list).mockResolvedValue([{ ...inv, label: "for Ana" }]);
+    vi.mocked(bridge.invites.requests).mockResolvedValue([{ ...ask, inviteLabel: "for Ana" }]);
+    await mount();
+    expect(q("invite-request-in")?.textContent).toContain("through “for Ana”");
+    const input = q("invite-label") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "  for Bo ");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(q("invite-someone"));
+    expect(create).toHaveBeenCalledWith(G, "for Bo", "Larry");
+  });
+
 });

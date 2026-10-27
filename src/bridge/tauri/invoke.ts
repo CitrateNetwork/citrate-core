@@ -56,6 +56,7 @@ const LONG: Record<string, number> = {
   group_invite_revoke: 30_000,
   group_invite_decline: 20_000,
   group_invite_approve: 20_000,
+  group_invite_check: 20_000,
   group_invite_request: 20_000,
   group_invite_requests: 45_000,
   group_invite_my_requests: 45_000,

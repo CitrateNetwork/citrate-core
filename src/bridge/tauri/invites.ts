@@ -1,6 +1,6 @@
 // CX bridge impl — group invites (D-12: request and approve), TAURI. Mirrors src-tauri/src/invites.rs.
 import { invoke } from "./invoke";
-import type { IncomingRequest, InviteNotice, InvitePreview, InvitesDomain, InviteView, MyInviteRequest } from "../domains";
+import type { HeldCheck, IncomingRequest, InviteNotice, InvitePreview, InvitesDomain, InviteView, MyInviteRequest } from "../domains";
 
 export const tauriInvites: InvitesDomain = {
   create(group, label, inviter) {
@@ -17,6 +17,9 @@ export const tauriInvites: InvitesDomain = {
   },
   async approve(group, id, address) {
     await invoke("group_invite_approve", { group, id, address });
+  },
+  check(group, id) {
+    return invoke<HeldCheck>("group_invite_check", { group, id });
   },
   decline(group, id, address) {
     return invoke<InviteNotice>("group_invite_decline", { group, id, address });

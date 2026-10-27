@@ -25,6 +25,10 @@ export function revokedToast(notified: boolean): string {
     : "Invite revoked. It can't be used to join any more. Anyone waiting on it couldn't be told right now; their request shows as not approved once the link expires.";
 }
 
+export function checkedToast(_r: string): string {
+  return "";
+}
+
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e ?? "");
 }

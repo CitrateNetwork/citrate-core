@@ -385,6 +385,8 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // D-12: settle invite approvals left held by a crash or a lost answer (roster check).
+            invites::recheck_held_on_start(app.handle().clone());
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -565,6 +567,7 @@ pub fn run() {
             invites::group_invite_revoke,
             invites::group_invite_requests,
             invites::group_invite_approve,
+            invites::group_invite_check,
             invites::group_invite_decline,
             invites::group_invite_preview,
             invites::group_invite_request,

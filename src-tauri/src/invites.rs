@@ -671,8 +671,11 @@ pub(crate) fn invite_views_at(
 pub struct IncomingRequest {
     pub invite_id: String,
     pub group: String,
-    /// Lowercase comms address of the requester.
+    /// Lowercase comms address the request names (what the request says; not checked against
+    /// the requester's relay session).
     pub address: String,
+    /// The label of the link it came in on ("" when the link has none).
+    pub invite_label: String,
     /// It is being approved now.
     pub approving: bool,
 }
@@ -702,6 +705,7 @@ pub(crate) fn requests_at(
             out.push(IncomingRequest {
                 invite_id: invite_id(&inv.token),
                 group: inv.group.clone(),
+                invite_label: String::new(),
                 approving: inv.approving == r.address,
                 address: r.address,
             });
@@ -720,19 +724,100 @@ fn find<'a>(s: &'a mut Store, group: &str, id: &str) -> Option<&'a mut Invite> {
         .find(|i| i.group == group && invite_id(&i.token) == id)
 }
 
+/// The invites an approval is adding someone through right now, in this process (`group/id`).
+/// While one is here nothing else acts on that invite (a second approval, a check, a decline, a
+/// revoke), so AddMember is never sent twice for one invite.
+static IN_FLIGHT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+const IN_FLIGHT_MSG: &str =
+    "This invite is being used to add someone right now. Try again in a moment.";
+
+/// The refusal when an approval's outcome is unknown: the hold stays until a check settles it.
+const UNKNOWN_OUTCOME: &str =
+    "Couldn't confirm whether they were added. Press Check again on the invite, or Cancel it.";
+
+/// Marks one invite as in flight until dropped.
+struct InFlight(String);
+
+impl InFlight {
+    fn take(group: &str, id: &str) -> Result<Self, String> {
+        let key = format!("{group}/{id}");
+        let mut v = IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if v.contains(&key) {
+            return Err(IN_FLIGHT_MSG.to_string());
+        }
+        v.push(key.clone());
+        Ok(InFlight(key))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|k| *k != self.0);
+    }
+}
+
+/// What checking a held invite found.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldCheck {
+    /// Nothing was held (or the invite is gone): nothing to do.
+    NotHeld,
+    /// The requester is on the roster: the invite is used and removed.
+    Added,
+    /// They aren't on the roster: the hold is released and the invite is open again.
+    Released,
+    /// They aren't on the roster and the link has expired: the invite is removed with its key.
+    Expired,
+}
+
+/// Settle a held approval by the roster (`is_member`), whatever happened to the add: a crash
+/// after the hold, a lost answer, a relay that no longer serves the request. Present: the invite
+/// is used. Absent: the hold is released (or, past expiry, the invite is removed with its key). A
+/// roster that can't be read keeps the hold and is an error.
+pub(crate) fn check_held_at(
+    _path: &std::path::Path,
+    _group: &str,
+    _id: &str,
+    _now: u64,
+    _is_member: impl FnOnce(&str, &str) -> Result<bool, String>,
+) -> Result<HeldCheck, String> {
+    Ok(HeldCheck::NotHeld)
+}
+
+/// At start-up: check every held approval against the roster ([`check_held_at`]). One that can't
+/// be settled now stays held, shown with Check again and Cancel.
+pub(crate) fn recheck_held_at(
+    _path: &std::path::Path,
+    _now: u64,
+    _is_member: impl FnMut(&str, &str) -> Result<bool, String>,
+) -> Result<Vec<(String, Result<HeldCheck, String>)>, String> {
+    Ok(Vec::new())
+}
+
 /// Approve `address`'s request on invite `id`: add them (`add`, the AddMember / Welcome path) and
-/// remove the invite (single use). Refused when the invite is gone (revoked or used), expired, the
-/// request was declined, or the invite is being used for someone else. Ambiguity is never taken as
-/// "not added": after a failed add, `is_member` (the roster) decides; if that can't be read either,
-/// the invite stays held for this requester so Approve can be pressed again.
+/// remove the invite (single use). The approval must match a request opened under this invite
+/// (`poll` reads its inbox). Refused when the invite is gone (revoked or used), expired, the
+/// request was declined, the invite is held for someone else, or an approval on it is in flight.
+///
+/// AddMember is sent at most once per hold: Approve again on a held invite asks the roster
+/// (`is_member`) first and adds only if they aren't there. After a failed add the roster decides;
+/// if it can't be read, the hold stays (Check again or Cancel on the invite settle it).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn approve_at(
     path: &std::path::Path,
     group: &str,
     id: &str,
     address: &str,
     now: u64,
+    _poll: impl FnOnce(String) -> Result<Vec<String>, String>,
     add: impl FnOnce(&str, &str) -> Result<(), String>,
-    is_member: impl FnOnce(&str, &str) -> Result<bool, String>,
+    mut is_member: impl FnMut(&str, &str) -> Result<bool, String>,
 ) -> Result<(), String> {
     let member = address.to_ascii_lowercase();
     if !address_ok(&member) {
@@ -740,33 +825,18 @@ pub(crate) fn approve_at(
     }
     update_store_at(path, |s| {
         let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
-        if !inv.approving.is_empty() && inv.approving != member {
-            return Err("This invite was already used to add someone else.".to_string());
-        }
-        if inv.approving.is_empty() && now >= inv.expires_at {
-            return Err(
-                "This invite expired, so this request can't be approved. Send them a new link."
-                    .to_string(),
-            );
-        }
-        if inv.declined.contains(&member) {
-            return Err(
-                "You declined this request. Send them a new link if you change your mind."
-                    .to_string(),
-            );
+        if inv.approving.is_empty() || inv.approving != member {
+            refuse_approval(inv, &member, now)?;
         }
         inv.approving = member.clone();
-        Ok(())
+        Ok::<(), String>(())
     })??;
     let added = match add(group, &member) {
         Ok(()) => Ok(()),
         Err(e) => match is_member(group, &member) {
             Ok(true) => Ok(()),
             Ok(false) => Err((e, true)),
-            Err(_) => Err((
-                format!("{e}. Couldn't confirm whether they were added; press Approve again."),
-                false,
-            )),
+            Err(_) => Err((format!("{e}. {UNKNOWN_OUTCOME}"), false)),
         },
     };
     match added {
@@ -777,7 +847,6 @@ pub(crate) fn approve_at(
         }),
         Err((e, not_added)) => {
             if not_added {
-                // Not added: the invite is open again for this or another request.
                 update_store_at(path, |s| {
                     if let Some(i) = find(s, group, id).filter(|i| i.approving == member) {
                         i.approving.clear();
@@ -787,6 +856,25 @@ pub(crate) fn approve_at(
             Err(e)
         }
     }
+}
+
+/// Why a first approval of `member` on `inv` is refused, if it is.
+fn refuse_approval(inv: &Invite, member: &str, now: u64) -> Result<(), String> {
+    if !inv.approving.is_empty() && inv.approving != member {
+        return Err("This invite was already used to add someone else.".to_string());
+    }
+    if now >= inv.expires_at {
+        return Err(
+            "This invite expired, so this request can't be approved. Send them a new link."
+                .to_string(),
+        );
+    }
+    if inv.declined.iter().any(|d| d == member) {
+        return Err(
+            "You declined this request. Send them a new link if you change your mind.".to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Whether the requester(s) were told (best-effort).
@@ -828,8 +916,8 @@ pub(crate) fn decline_at(
     Ok(Notice { notified })
 }
 
-/// Revoke invite `id`: remove it with its key, so no request under it can be opened or approved.
-/// Refused while it is being used to add someone. Waiting requesters are told if the relay can be
+/// Revoke invite `id` (also Cancel on a held approval): remove it with its key, so no request
+/// under it can be opened or approved. Refused only while an approval on it is in flight. Waiting requesters are told if the relay can be
 /// reached (`notified` is false if any of them couldn't be).
 pub(crate) fn revoke_at(
     path: &std::path::Path,
@@ -838,30 +926,34 @@ pub(crate) fn revoke_at(
     poll: impl FnOnce(String) -> Result<Vec<String>, String>,
     mut submit: impl FnMut(String, String) -> Result<(), String>,
 ) -> Result<Notice, String> {
-    const IN_USE: &str = "This invite is being used to add someone, so it can't be revoked now.";
+    // Refused only while an approval on it is in flight. A held approval whose outcome is unknown
+    // can be revoked: that is Cancel, the way out when the roster can't settle it.
     let inv = {
         let mut s = view_store_at(path)?;
-        let inv = find(&mut s, group, id).ok_or("no such invite (already revoked or used)")?;
-        if !inv.approving.is_empty() {
-            return Err(IN_USE.to_string());
+        let i = find(&mut s, group, id)
+            .ok_or("no such invite (already revoked or used)")?
+            .clone();
+        if !i.approving.is_empty() {
+            return Err(
+                "This invite is being used to add someone, so it can't be revoked now.".into(),
+            );
         }
-        inv.clone()
+        i
     };
     // Read the waiting requests while the key still exists (outside the lock: a network call).
     let waiting = poll(request_inbox(&inv.token)).map(|cts| open_requests(&inv, &cts));
     update_store_at(path, |s| {
-        let i = find(s, group, id).ok_or("no such invite (already revoked or used)")?;
-        if !i.approving.is_empty() {
-            return Err(IN_USE.to_string());
-        }
+        find(s, group, id).ok_or("no such invite (already revoked or used)")?;
         s.invites
             .retain(|i| !(i.group == group && invite_id(&i.token) == id));
-        Ok(())
+        Ok::<(), &str>(())
     })??;
-    // Tell every waiting requester, even after one send fails.
+    // Tell every waiting requester, even after one send fails; not the one a held approval may
+    // already have added.
     let mut notified = waiting.is_ok();
     for r in waiting.iter().flatten() {
         if !inv.declined.contains(&r.address)
+            && r.address != inv.approving
             && send_reply(&inv, r, Decision::Revoked, &mut submit).is_err()
         {
             notified = false;
@@ -1169,11 +1261,41 @@ pub async fn group_invite_approve(
             &id,
             &address,
             now_unix(),
+            |th| crate::comms::poll_claims(&app, th),
             |g, m| crate::comms::add_member(&app, g.to_string(), m.to_string()),
             |g, m| crate::comms::is_member(&app, g, m),
         )
     })
     .await
+}
+
+/// `group_invite_check` — settle a held approval by the roster (Check again on the invite row).
+#[tauri::command]
+pub async fn group_invite_check(
+    app: tauri::AppHandle,
+    group: String,
+    id: String,
+) -> Result<HeldCheck, String> {
+    crate::blocking::off_main(move || {
+        check_held_at(&store_path(&app)?, &group, &id, now_unix(), |g, m| {
+            crate::comms::is_member(&app, g, m)
+        })
+    })
+    .await
+}
+
+/// At app start: settle held approvals by the roster (best-effort; one that can't be settled
+/// stays held and the invite row offers Check again and Cancel). Starts the group daemon only
+/// when there is a held approval.
+pub(crate) fn recheck_held_on_start(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let Ok(path) = store_path(&app) else {
+            return;
+        };
+        let _ = recheck_held_at(&path, now_unix(), |g, m| {
+            crate::comms::is_member(&app, g, m)
+        });
+    });
 }
 
 /// `group_invite_decline` — decline a request.

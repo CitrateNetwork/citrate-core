@@ -451,7 +451,7 @@ export function Groups({ store, s }: SurfaceProps) {
 
         {/* D-12 — the invitee's side (the same component as onboarding): "Have an invite?", the
             "Join <group>?" screen for a link, and the requests this device sent. */}
-        <HaveAnInvite store={store} s={s} memberOf={st.groups.map((g) => g.id)} onJoined={() => void refreshGroups()} />
+        <HaveAnInvite store={store} s={s} memberOf={st.groups.map((g) => g.id)} />
 
         {st.error && (
           <div role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.5 }}>{st.error}</div>
@@ -662,7 +662,7 @@ export function Groups({ store, s }: SurfaceProps) {
 
               {/* D-12 — the inviter's side: Invite someone, and Pending (open links + requests). */}
               {canManage && selected && (
-                <InvitePanel key={selected.id} store={store} groupId={selected.id} inviterName={store.identity().name} faceOf={faceOf} onAdded={() => void selectGroup(selected.id)} />
+                <InvitePanel key={selected.id} store={store} groupId={selected.id} inviterName={store.identity().name} onAdded={() => void selectGroup(selected.id)} />
               )}
             </div>
           )}

@@ -5,7 +5,7 @@ import { bridge } from "../index";
 describe("CX bridge contract — invites", () => {
   it("exposes exactly the request-and-approve methods", () => {
     expect(Object.keys(bridge.invites).sort()).toEqual(
-      ["approve", "create", "decline", "dismiss", "list", "myRequests", "preview", "request", "requests", "revoke"],
+      ["approve", "check", "create", "decline", "dismiss", "list", "myRequests", "preview", "request", "requests", "revoke"],
     );
   });
   it("sim is honest — nothing is made, sent or approved without the desktop app (Rule 1)", async () => {

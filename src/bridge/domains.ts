@@ -1968,11 +1968,16 @@ export interface InviteView {
 export interface IncomingRequest {
   inviteId: string;
   group: string;
-  /** The requester's comms address (lowercase). */
+  /** The comms address the request names (lowercase). What the request says: not checked
+   *  against the requester's relay session, so the inviter confirms it's them before approving. */
   address: string;
+  /** The label of the link it came in on ("" when the link has none). */
+  inviteLabel: string;
   /** It is being approved now. */
   approving: boolean;
 }
+/** What checking a held approval against the roster found. */
+export type HeldCheck = "not_held" | "added" | "released" | "expired";
 /** Whether the requester(s) were told about a decline or revoke (best-effort, through the relay). */
 export interface InviteNotice {
   notified: boolean;
@@ -2009,12 +2014,14 @@ export interface InvitesDomain {
   create(group: string, label: string, inviter: string): Promise<InviteView>;
   /** The group's open invites made on this device. Rejects when the saved invites can't be read. */
   list(group: string): Promise<InviteView[]>;
-  /** Revoke an invite: no request under it can be approved any more. */
+  /** Revoke an invite (also Cancel on a held approval): no request under it can be approved any more. */
   revoke(group: string, id: string): Promise<InviteNotice>;
   /** The requests waiting on the group's invites. Rejects when the relay can't be asked. */
   requests(group: string): Promise<IncomingRequest[]>;
   /** Approve a request: add the requester (Welcome) and use up the invite. */
   approve(group: string, id: string, address: string): Promise<void>;
+  /** Settle a held approval by the roster (Check again on the invite row). */
+  check(group: string, id: string): Promise<HeldCheck>;
   /** Decline a request. */
   decline(group: string, id: string, address: string): Promise<InviteNotice>;
   /** Read a link for the Join screen. Sends nothing. */

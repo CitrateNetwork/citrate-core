@@ -160,7 +160,7 @@ fn request_then_approve_adds_the_requester_and_their_app_finishes_the_join() {
     assert_eq!((req[0].address.as_str(), req[0].invite_id.as_str()), (ANA, v.id.as_str()));
 
     let added = RefCell::new(Vec::new());
-    approve_at(&owner, GROUP, &v.id, ANA, NOW, |g, m| {
+    approve_at(&owner, GROUP, &v.id, ANA, NOW, |k| relay.poll(k), |g, m| {
         added.borrow_mut().push((g.to_string(), m.to_string()));
         Ok(())
     }, |_, _| Ok(false))
@@ -207,30 +207,70 @@ fn never_add(_: &str, _: &str) -> Result<(), String> {
     panic!("add must not be called")
 }
 
+/// A relay holding a request from each of `who` on invite `v` (each from its own device store).
+fn requested(tag: &str, v: &InviteView, who: &[&str]) -> Relay {
+    let relay = Relay::default();
+    for (n, a) in who.iter().enumerate() {
+        ask(&store(&format!("{tag}-asker-{n}")), &v.link, a, &relay);
+    }
+    relay
+}
+
+/// Approve `who` on `v`, with the requests in `relay`.
+fn approve(
+    owner: &Path,
+    v: &InviteView,
+    who: &str,
+    now: u64,
+    relay: &Relay,
+    add: impl FnOnce(&str, &str) -> Result<(), String>,
+    is_member: impl FnMut(&str, &str) -> Result<bool, String>,
+) -> Result<(), String> {
+    approve_at(owner, GROUP, &v.id, who, now, |k| relay.poll(k), add, is_member)
+}
+
+fn held(owner: &Path) -> String {
+    invite_views_at(owner, GROUP, NOW).expect("views")[0].approving.clone()
+}
+
+/// An approval whose add errored and whose roster couldn't be read: held for Ana.
+fn hold_unknown(owner: &Path, v: &InviteView, relay: &Relay) {
+    let e = approve(owner, v, ANA, NOW, relay, |_, _| Err("timed out".into()), |_, _| {
+        Err("relay down".into())
+    })
+    .expect_err("unknown");
+    assert!(e.contains("Check again"), "{e}");
+    assert_eq!(held(owner), ANA);
+}
+
+/// A crash right after the hold was written (before or after AddMember): only the hold is left.
+fn crash_after_hold(owner: &Path, v: &InviteView) {
+    update_store_at(owner, |s| {
+        let i = s.invites.iter_mut().find(|i| invite_id(&i.token) == v.id).expect("invite");
+        i.approving = ANA.to_string();
+    })
+    .expect("hold");
+}
+
 #[test]
 fn approve_is_refused_once_the_invite_was_used() {
-    let (owner, invitee) = (store("used-owner"), store("used-invitee"));
-    let relay = Relay::default();
+    let owner = store("used-owner");
     let v = make(&owner, NOW);
-    ask(&invitee, &v.link, ANA, &relay);
-    ask(&store("used-invitee-2"), &v.link, BO, &relay);
+    let relay = requested("used", &v, &[ANA, BO]);
     assert_eq!(incoming(&owner, &relay).len(), 2);
-    approve_at(&owner, GROUP, &v.id, ANA, NOW, |_, _| Ok(()), |_, _| Ok(false)).expect("ana");
-    let e = approve_at(&owner, GROUP, &v.id, BO, NOW, never_add, |_, _| Ok(false))
-        .expect_err("single use");
+    approve(&owner, &v, ANA, NOW, &relay, |_, _| Ok(()), |_, _| Ok(false)).expect("ana");
+    let e = approve(&owner, &v, BO, NOW, &relay, never_add, |_, _| Ok(false)).expect_err("single use");
     assert_eq!(e, INVITE_GONE);
     assert!(incoming(&owner, &relay).is_empty(), "a used invite takes no more requests");
 }
 
 #[test]
 fn approve_is_refused_after_a_revoke() {
-    let (owner, invitee) = (store("rev-owner"), store("rev-invitee"));
-    let relay = Relay::default();
+    let owner = store("rev-owner");
     let v = make(&owner, NOW);
-    ask(&invitee, &v.link, ANA, &relay);
+    let relay = requested("rev", &v, &[ANA]);
     revoke_at(&owner, GROUP, &v.id, |k| relay.poll(k), |k, c| relay.submit(k, c)).expect("revoke");
-    let e = approve_at(&owner, GROUP, &v.id, ANA, NOW, never_add, |_, _| Ok(false))
-        .expect_err("revoked");
+    let e = approve(&owner, &v, ANA, NOW, &relay, never_add, |_, _| Ok(false)).expect_err("revoked");
     assert_eq!(e, INVITE_GONE);
 }
 
@@ -238,9 +278,9 @@ fn approve_is_refused_after_a_revoke() {
 fn approve_is_refused_after_expiry() {
     let owner = store("expiry-owner");
     let v = make(&owner, NOW);
+    let relay = requested("expiry", &v, &[ANA]);
     let later = NOW + INVITE_TTL_SECS;
-    let e = approve_at(&owner, GROUP, &v.id, ANA, later, never_add, |_, _| Ok(false))
-        .expect_err("expired");
+    let e = approve(&owner, &v, ANA, later, &relay, never_add, |_, _| Ok(false)).expect_err("expired");
     assert!(e.contains("expired"), "{e}");
     assert!(invite_views_at(&owner, GROUP, later).expect("views").is_empty());
     // The next invite drops the expired one, key and all.
@@ -251,30 +291,54 @@ fn approve_is_refused_after_expiry() {
 
 #[test]
 fn approve_is_refused_for_a_declined_request() {
-    let (owner, invitee) = (store("dec-owner"), store("dec-invitee"));
-    let relay = Relay::default();
+    let owner = store("dec-owner");
     let v = make(&owner, NOW);
-    ask(&invitee, &v.link, ANA, &relay);
+    let relay = requested("dec", &v, &[ANA]);
     decline_at(&owner, GROUP, &v.id, ANA, |k| relay.poll(k), |k, c| relay.submit(k, c))
         .expect("decline");
-    let e = approve_at(&owner, GROUP, &v.id, ANA, NOW, never_add, |_, _| Ok(false))
-        .expect_err("declined");
+    let e = approve(&owner, &v, ANA, NOW, &relay, never_add, |_, _| Ok(false)).expect_err("declined");
     assert!(e.contains("declined"), "{e}");
+}
+
+#[test]
+fn approve_needs_a_request_from_that_address_on_that_invite() {
+    let owner = store("noreq-owner");
+    let v = make(&owner, NOW);
+    let other = make(&owner, NOW);
+    // Bo asked on the other link only; Ana asked on this one.
+    let relay = requested("noreq", &v, &[ANA]);
+    ask(&store("noreq-bo"), &other.link, BO, &relay);
+    let e = approve(&owner, &v, BO, NOW, &relay, never_add, |_, _| Ok(false)).expect_err("no request");
+    assert!(e.contains("no request from that address"), "{e}");
+    assert_eq!(held(&owner), "", "nothing held");
+    // The relay can't be asked: refused, nothing held, nothing added.
+    let e = approve_at(&owner, GROUP, &v.id, ANA, NOW, offline, never_add, |_, _| Ok(false))
+        .expect_err("offline");
+    assert!(e.contains("Couldn't check the request"), "{e}");
+    assert_eq!(held(&owner), "");
 }
 
 #[test]
 fn a_second_approval_cannot_race_the_first() {
     let owner = store("race-owner");
     let v = make(&owner, NOW);
-    // While Ana's add is in flight, an approval for Bo and a revoke both arrive.
-    approve_at(&owner, GROUP, &v.id, ANA, NOW, |_, _| {
-        let bo = approve_at(&owner, GROUP, &v.id, BO, NOW, never_add, |_, _| Ok(false));
-        assert!(bo.expect_err("taken").contains("someone else"));
-        let rv = revoke_at(&owner, GROUP, &v.id, offline, |_, _| Ok(()));
-        assert!(rv.expect_err("in use").contains("being used"));
+    let relay = requested("race", &v, &[ANA, BO]);
+    let adds = RefCell::new(0);
+    // While Ana's add is in flight: an approval for Bo, a nested approval for Ana, a check, a
+    // decline and a revoke all arrive. None of them acts; AddMember goes out once.
+    approve(&owner, &v, ANA, NOW, &relay, |_, _| {
+        *adds.borrow_mut() += 1;
+        for who in [BO, ANA] {
+            let e = approve(&owner, &v, who, NOW, &relay, never_add, |_, _| panic!("no roster read"));
+            assert!(e.expect_err("in flight").contains("right now"));
+        }
+        assert!(check_held_at(&owner, GROUP, &v.id, NOW, |_, _| panic!("no check")).is_err());
+        assert!(decline_at(&owner, GROUP, &v.id, BO, offline, |_, _| Ok(())).is_err());
+        assert!(revoke_at(&owner, GROUP, &v.id, offline, |_, _| Ok(())).is_err());
         Ok(())
     }, |_, _| Ok(false))
     .expect("ana");
+    assert_eq!(*adds.borrow(), 1);
     assert!(ids(&owner).is_empty());
 }
 
@@ -282,20 +346,20 @@ fn a_second_approval_cannot_race_the_first() {
 fn an_add_that_failed_reopens_the_invite() {
     let owner = store("failed-add");
     let v = make(&owner, NOW);
-    let e = approve_at(&owner, GROUP, &v.id, ANA, NOW, |_, _| Err("no key package".into()), |_, _| {
-        Ok(false)
-    })
-    .expect_err("not added");
+    let relay = requested("failed-add", &v, &[ANA, BO]);
+    let e = approve(&owner, &v, ANA, NOW, &relay, |_, _| Err("no key package".into()), |_, _| Ok(false))
+        .expect_err("not added");
     assert!(e.contains("no key package"), "{e}");
-    assert_eq!(invite_views_at(&owner, GROUP, NOW).expect("views")[0].approving, "");
-    approve_at(&owner, GROUP, &v.id, BO, NOW, |_, _| Ok(()), |_, _| Ok(false)).expect("bo");
+    assert_eq!(held(&owner), "");
+    approve(&owner, &v, BO, NOW, &relay, |_, _| Ok(()), |_, _| Ok(false)).expect("bo");
 }
 
 #[test]
 fn an_add_whose_answer_was_lost_counts_once_the_roster_has_them() {
     let owner = store("lost-answer");
     let v = make(&owner, NOW);
-    approve_at(&owner, GROUP, &v.id, ANA, NOW, |_, _| Err("timed out".into()), |_, _| Ok(true))
+    let relay = requested("lost-answer", &v, &[ANA]);
+    approve(&owner, &v, ANA, NOW, &relay, |_, _| Err("timed out".into()), |_, _| Ok(true))
         .expect("added after all");
     assert!(ids(&owner).is_empty());
 }
@@ -304,20 +368,143 @@ fn an_add_whose_answer_was_lost_counts_once_the_roster_has_them() {
 fn an_add_with_an_unknown_outcome_holds_the_invite_for_that_requester() {
     let owner = store("unknown-add");
     let v = make(&owner, NOW);
-    let e = approve_at(&owner, GROUP, &v.id, ANA, NOW, |_, _| Err("timed out".into()), |_, _| {
-        Err("relay down".into())
-    })
-    .expect_err("unknown");
-    assert!(e.contains("press Approve again"), "{e}");
-    // A restart here: the hold is in the file.
-    assert_eq!(invite_views_at(&owner, GROUP, NOW).expect("views")[0].approving, ANA);
-    let bo = approve_at(&owner, GROUP, &v.id, BO, NOW, never_add, |_, _| Ok(false));
-    assert!(bo.is_err());
-    assert!(revoke_at(&owner, GROUP, &v.id, offline, |_, _| Ok(())).is_err());
-    // Even past expiry, Ana's approval can finish.
-    approve_at(&owner, GROUP, &v.id, ANA, NOW + INVITE_TTL_SECS, |_, _| Ok(()), |_, _| Ok(false))
-        .expect("retry");
+    let relay = requested("unknown-add", &v, &[ANA, BO]);
+    hold_unknown(&owner, &v, &relay);
+    // A restart here: the hold is in the file, and nobody else can be approved on it.
+    let bo = approve(&owner, &v, BO, NOW, &relay, never_add, |_, _| Ok(false));
+    assert!(bo.expect_err("held").contains("someone else"));
+    assert!(decline_at(&owner, GROUP, &v.id, ANA, offline, |_, _| Ok(())).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// A held approval always has a way out (Check again, Cancel, start-up, expiry).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_retry_asks_the_roster_first_and_never_adds_twice() {
+    let owner = store("retry");
+    let v = make(&owner, NOW);
+    let relay = requested("retry", &v, &[ANA]);
+    hold_unknown(&owner, &v, &relay);
+    // The add had landed: Approve again finds them on the roster and sends nothing.
+    approve(&owner, &v, ANA, NOW, &relay, never_add, |_, _| Ok(true)).expect("done");
     assert!(ids(&owner).is_empty());
+}
+
+#[test]
+fn a_retry_adds_once_when_the_roster_says_they_are_not_in() {
+    let owner = store("retry-add");
+    let v = make(&owner, NOW);
+    let relay = requested("retry-add", &v, &[ANA]);
+    hold_unknown(&owner, &v, &relay);
+    let adds = RefCell::new(0);
+    approve(&owner, &v, ANA, NOW, &relay, |_, _| {
+        *adds.borrow_mut() += 1;
+        Ok(())
+    }, |_, _| Ok(false))
+    .expect("added");
+    assert_eq!(*adds.borrow(), 1);
+    // A retry whose roster can't be read sends nothing and keeps the hold.
+    let v2 = make(&owner, NOW);
+    let relay2 = requested("retry-add-2", &v2, &[ANA]);
+    hold_unknown(&owner, &v2, &relay2);
+    let e = approve(&owner, &v2, ANA, NOW, &relay2, never_add, |_, _| Err("down".into()));
+    assert!(e.expect_err("unknown").contains("Check again"));
+    assert_eq!(
+        invite_views_at(&owner, GROUP, NOW).expect("views")[0].approving,
+        ANA
+    );
+}
+
+#[test]
+fn after_a_relay_restart_the_invite_row_settles_a_held_approval() {
+    for (present, want) in [(true, HeldCheck::Added), (false, HeldCheck::Released)] {
+        let owner = store(&format!("relay-restart-{present}"));
+        let v = make(&owner, NOW);
+        let relay = requested(&format!("relay-restart-{present}"), &v, &[ANA]);
+        hold_unknown(&owner, &v, &relay);
+        // The relay restarted: its inbox is empty, so no request row comes back.
+        let relay = Relay::default();
+        assert!(incoming(&owner, &relay).is_empty());
+        assert_eq!(held(&owner), ANA, "the invite row still shows the hold");
+        let got = check_held_at(&owner, GROUP, &v.id, NOW, |_, _| Ok(present)).expect("check");
+        assert_eq!(got, want);
+        if present {
+            assert!(ids(&owner).is_empty(), "used");
+        } else {
+            assert_eq!(held(&owner), "", "open again");
+        }
+    }
+}
+
+#[test]
+fn a_check_that_cant_read_the_roster_keeps_the_hold_and_cancel_still_works() {
+    let owner = store("cancel");
+    let v = make(&owner, NOW);
+    let relay = requested("cancel", &v, &[ANA]);
+    hold_unknown(&owner, &v, &relay);
+    assert!(check_held_at(&owner, GROUP, &v.id, NOW, |_, _| Err("down".into())).is_err());
+    assert_eq!(held(&owner), ANA);
+    // Cancel: release the hold and revoke the invite, key and all.
+    revoke_at(&owner, GROUP, &v.id, offline, |_, _| Ok(())).expect("cancel");
+    assert!(ids(&owner).is_empty());
+    assert!(!std::fs::read_to_string(&owner).expect("store").contains(&v.link));
+}
+
+#[test]
+fn a_crash_after_the_hold_is_settled_at_start_up() {
+    let owner = store("crash-hold");
+    let v = make(&owner, NOW);
+    crash_after_hold(&owner, &v);
+    // Restart: the add never went out; the roster says they aren't in, so the hold is released.
+    let r = recheck_held_at(&owner, NOW, |_, _| Ok(false)).expect("recheck");
+    assert_eq!(r, vec![(v.id.clone(), Ok(HeldCheck::Released))]);
+    assert_eq!(held(&owner), "");
+}
+
+#[test]
+fn a_crash_after_addmember_before_the_release_is_settled_at_start_up() {
+    let owner = store("crash-added");
+    let v = make(&owner, NOW);
+    crash_after_hold(&owner, &v);
+    // Restart: the add had landed.
+    let r = recheck_held_at(&owner, NOW, |_, _| Ok(true)).expect("recheck");
+    assert_eq!(r, vec![(v.id.clone(), Ok(HeldCheck::Added))]);
+    assert!(ids(&owner).is_empty());
+    // And a start-up whose roster can't be read leaves a hold for Check again / Cancel.
+    let v2 = make(&owner, NOW);
+    crash_after_hold(&owner, &v2);
+    let r = recheck_held_at(&owner, NOW, |_, _| Err("down".into())).expect("recheck");
+    assert!(r[0].1.is_err());
+    assert_eq!(held(&owner), ANA);
+}
+
+#[test]
+fn a_hold_past_expiry_is_settled_by_the_roster_and_never_kept_forever() {
+    let later = NOW + 10 * INVITE_TTL_SECS;
+    let owner = store("expired-hold");
+    let v = make(&owner, NOW);
+    crash_after_hold(&owner, &v);
+    assert_eq!(
+        check_held_at(&owner, GROUP, &v.id, later, |_, _| Ok(false)).expect("check"),
+        HeldCheck::Expired
+    );
+    assert!(!std::fs::read_to_string(&owner).expect("store").contains(&v.link), "key gone");
+    let v2 = make(&owner, NOW);
+    crash_after_hold(&owner, &v2);
+    assert_eq!(
+        check_held_at(&owner, GROUP, &v2.id, later, |_, _| Ok(true)).expect("check"),
+        HeldCheck::Added
+    );
+    assert!(invite_views_at(&owner, GROUP, later).expect("views").is_empty());
+}
+
+#[test]
+fn a_request_says_which_link_it_came_in_on() {
+    let owner = store("label");
+    let v = create_at(&owner, GROUP, "for Ana", "Larry", "Garden club", NOW).expect("create");
+    let relay = requested("label", &v, &[ANA]);
+    assert_eq!(incoming(&owner, &relay)[0].invite_label, "for Ana");
 }
 
 // ---------------------------------------------------------------------------
@@ -654,8 +841,43 @@ fn read_src(rel: &str) -> String {
         .unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
+/// The calls that read the invite store (directly or through a view).
+const STORE_READS: &[&str] = &[
+    "view_store_at(",
+    "invite_views_at(",
+    "open_invites(",
+    "requests_at(",
+    "check_requests_at(",
+    "preview_at(",
+];
+
+/// The invite reads in `src` (production code) that turn a failure into something: a default, an
+/// empty list, `None`, or a skipped branch. One entry per offending call.
+fn lenient_reads(src: &str) -> Vec<String> {
+    const AFTER: &[&str] = &[".unwrap_or_default()", ".ok()"];
+    const BEFORE: &[&str] = &[];
+    let mut out = Vec::new();
+    for call in STORE_READS {
+        for (i, _) in src.match_indices(call) {
+            let head = &src[i.saturating_sub(80)..i];
+            if head.ends_with("fn ") || head.ends_with('_') {
+                continue; // the definition itself, or a longer name ending in this one
+            }
+            // The rest of the statement the call is in.
+            let rest = &src[i..];
+            let end = rest.find(";\n").map_or(rest.len(), |e| e + 1).min(400);
+            let tail = &rest[..end];
+            let line_head = head.rsplit('\n').next().unwrap_or(head);
+            if AFTER.iter().any(|b| tail.contains(b)) || BEFORE.iter().any(|b| line_head.contains(b)) {
+                out.push(format!("{}{}", line_head.trim(), tail.trim()));
+            }
+        }
+    }
+    out
+}
+
 /// The store is read only under the lock, set aside for damage only by the locked writer, and no
-/// reader of it (here, the agent's or the MCP tools') turns a failure into "no invites".
+/// reader of it anywhere in src-tauri/src turns a failure into "no invites".
 #[test]
 fn tripwire_the_store_is_never_read_leniently() {
     let src = read_src("src/invites.rs");
@@ -665,26 +887,44 @@ fn tripwire_the_store_is_never_read_leniently() {
     let upd = &p[p.find("fn update_store_at").expect("update")..];
     let upd = &upd[..upd.find("\n}\n").expect("end")];
     assert!(upd.contains("set_aside(path, DAMAGED_TAG)"), "only the writer sets damage aside");
-    for f in ["src/invites.rs", "src/node_mcp.rs", "src/node_mcp_live.rs", "src/lib.rs"] {
-        let s = read_src(f);
-        let p = prod(&s);
-        for lenient in [
-            "view_store_at(path).unwrap_or",
-            "open_invites(&self.app, group).unwrap_or",
-            "open_invites(app, &group).unwrap_or",
-            "invite_views_at(",
-        ] {
-            if lenient == "invite_views_at(" && f == "src/invites.rs" {
-                continue;
-            }
-            for (i, _) in p.match_indices(lenient) {
-                let tail = &p[i..(i + 200).min(p.len())];
-                assert!(
-                    !tail.contains(".unwrap_or_default()") && !tail.contains(".ok()"),
-                    "{f}: an invite read that turns a failure into nothing: {tail}"
-                );
-            }
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("src") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().expect("name").to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+            continue;
         }
+        let s = std::fs::read_to_string(&path).expect("read");
+        for l in lenient_reads(prod(&s)) {
+            found.push(format!("{name}: {l}"));
+        }
+    }
+    assert!(found.is_empty(), "invite reads that turn a failure into nothing: {found:#?}");
+}
+
+/// The scan catches every lenient shape the review named, and passes the strict ones.
+#[test]
+fn tripwire_the_lenient_read_scan_sees_each_shape() {
+    for bad in [
+        "let v = open_invites(&self.app, group).unwrap_or_default();\n",
+        "let v = open_invites(&self.app, group).unwrap_or_else(|_| Vec::new());\n",
+        "let v = open_invites(&self.app, group).unwrap_or(Vec::new());\n",
+        "let v = invite_views_at(&p, g, now).ok();\n",
+        "let v = match open_invites(&app, g) { Ok(v) => v, Err(_) => vec![] };\n",
+        "let v = match open_invites(&app, g) { Ok(v) => v, Err(e) => vec![] };\n",
+        "if let Ok(v) = open_invites(&app, g) { use_it(v) }\n",
+        "let Ok(s) = view_store_at(path) else { return };\n",
+    ] {
+        assert_eq!(lenient_reads(bad).len(), 1, "{bad}");
+    }
+    for ok in [
+        "let open = crate::invites::open_invites(&self.app, group)?;\n",
+        "fn view_store_at(path: &Path) -> Result<Store, String> {\n",
+        "invite_views_at(&store_path(&app)?, &group, now_unix())\n}\n",
+        "let requests = view_store_at(path)?.requests;\n",
+    ] {
+        assert!(lenient_reads(ok).is_empty(), "{ok}");
     }
 }
 

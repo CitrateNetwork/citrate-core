@@ -58,6 +58,7 @@ describe("one invite flow (D-12)", () => {
     const cmds = Array.from(tauri.matchAll(/invoke(?:<[^>]*>)?\("([a-z_]+)"/g)).map((m) => m[1]).sort();
     expect(cmds).toEqual([
       "group_invite_approve",
+      "group_invite_check",
       "group_invite_create",
       "group_invite_decline",
       "group_invite_dismiss",

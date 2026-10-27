@@ -59,7 +59,7 @@ export function Community({ store }: SurfaceProps) {
           </p>
         </div>
 
-        {/* program + referral */}
+        {/* the 2,000-run program, and where inviting happens */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
             <span className="eyebrow">The 2,000 run</span>

@@ -15,6 +15,7 @@ export function simInvites(_host: SimHost): InvitesDomain {
     revoke: refuse,
     requests: refuse,
     approve: refuse,
+    check: refuse,
     decline: refuse,
     preview: refuse,
     request: refuse,
