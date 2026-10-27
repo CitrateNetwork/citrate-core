@@ -8,6 +8,8 @@ import { AgentIdentityStep } from "./AgentIdentityStep";
 import { ActivationTxPanel } from "./ActivationTxPanel";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import book from "../../src-tauri/addresses/40204.json";
+import { CONSENSUS_LAG_NOTE, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { PendingJoinCard, InvitePasteField } from "../surfaces/PendingJoinCard";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
@@ -868,7 +870,8 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
       <div className="mono" style={dataSrc}>
-        Data sources — MembershipStakeVault.attributedStake 0x0ace…267e · CitrateMemberSBT.balanceOf 0x7be0…a7c4 · /userinfo entitlement
+        {/* C1-V V9: addresses come from the bundled address book (a reroll moves them). */}
+        Data sources — MembershipStakeVault.attributedStake {short(book.addresses.MembershipStakeVault)} · CitrateMemberSBT.balanceOf {short(book.addresses.CitrateMemberSBT)} · /userinfo entitlement
       </div>
     </div>
   );
@@ -897,8 +900,8 @@ function S6({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S6 · Node ignition</div>
       <div style={h1}>Run your node</div>
       <p style={body}>
-        A full node — it validates, executes, and builds blocks. It runs as a supervised process with encryption at rest on by default, and it survives this window
-        closing.
+        A full node follows the chain, checks and executes every block, and serves your reads locally. It produces blocks only once it is an active validator. It
+        runs as a supervised process with encryption at rest on by default, and it survives this window closing.
       </p>
       <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
         {s.node === "off" && (
@@ -972,17 +975,16 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             )}
           </div>
         )}
-        {/* VALIDATING is now gated on the REAL ValidatorRegistry bond (s.bondedStake
-            from pubkeyOfStaker→stakeOf), not on `hasGrant`. A funded-but-unbonded
-            node is `synced`, not `validating` — so this "eligible for proposer" line
-            only shows when the 32k is genuinely bonded (Rule 1). */}
+        {/* C1-V (contract v1.1 §1): `validating` is set only when the key is isActive AND its
+            validatorInfo.actEpoch <= currentEpoch, never from a stake amount, so this card uses the
+            §1 word and the consensus-lag note. */}
         {s.node === "validating" && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", animation: "ccPulse 2.4s var(--ease-standard) infinite", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Validating</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Validator active</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · bonded {fmtI(s.bondedStake)} SALT ≥ minimum · eligible for proposer election
+                synced · activation epoch reached · stake {fmtI(s.bondedStake)} SALT · {CONSENSUS_LAG_NOTE}
               </div>
             </div>
           </div>
@@ -990,11 +992,44 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         {/* SYNCED = the node is caught up. Activating the validator bond is its own step now
             (S7 · Activate validator, Join-8), which explains the transaction and opens the
             Signature Ceremony only on the member's click. */}
-        {s.node === "synced" && (
+        {/* Registered stake that is not active yet (pending activation, exiting, or not read):
+            the bond is already staked, so no "Stake my bond" here. */}
+        {s.node === "synced" && s.bondedStake > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant) ?? "— · registry not read yet"}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                stake {fmtI(s.bondedStake)} SALT in the ValidatorRegistry
+              </div>
+            </div>
+          </div>
+        )}
+        {/* C1-V2: after a full exit (or a slash) the registry stake reads 0, but validatorInfo.status
+            says Exiting / Slashed: show that word, and no "Stake my bond". */}
+        {/* #348/#349 review: an already-activated bond (MemberBond.activated() = true) with no
+            registered stake has exited or been slashed; it can't activate again, so it gets the
+            status card (word or "—"), never "Stake my bond". */}
+        {s.node === "synced" && !(s.bondedStake > 0) && !canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) && (s.hasGrant || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · not a validator yet</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                ValidatorRegistry.validatorInfo status for this node&rsquo;s key; no registered stake
+              </div>
+            </div>
+          </div>
+        )}
+        {/* #348 review: activation is offered only for a bond that reads not activated (activated() =
+            false). Join-8 (#354): activating is its own step (S7 · Activate validator), which explains
+            the transaction and opens the Signature Ceremony only on the member's click, so this card
+            points there and has no button. */}
+        {s.node === "synced" && !(s.bondedStake > 0) && (canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) || (!s.hasGrant && s.validatorActivation?.status !== 2 && s.validatorActivation?.status !== 3)) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 {s.hasGrant ? "next: activate your validator, after the local model below" : "caught up with the network"}
               </div>

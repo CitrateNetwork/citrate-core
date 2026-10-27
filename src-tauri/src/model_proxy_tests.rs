@@ -93,8 +93,13 @@ fn a_call_reaches_the_pinned_host_with_the_key_only_in_its_auth_header() {
         .unwrap();
     assert_eq!(r.content, "hello from the vendor");
     let seen = rig.vendor.seen.lock().unwrap();
-    let chat = seen.iter().find(|s| s.url.ends_with("/chat/completions")).unwrap();
-    assert_eq!(chat.url, "https://api.openai.com/v1/chat/completions");
+    let chat = seen.iter().find(|s| s.method == crate::model_provider::Method::Post);
+    assert_eq!(
+        chat.map(|c| c.url.as_str()),
+        Some("https://api.openai.com/v1/responses"),
+        "OpenAI's native Responses endpoint"
+    );
+    let chat = chat.unwrap();
     assert_eq!(chat.method, crate::model_provider::Method::Post);
     assert!(chat.headers.iter().any(|(k, v)| k == "accept" && v == "application/json"));
     assert_eq!(chat.auth, format!("authorization: Bearer {}", rig.key));
@@ -315,11 +320,13 @@ fn keys_are_one_way_and_a_failing_key_is_never_stored() {
     rig.proxy.remove_key("xai").unwrap();
     assert!(!rig.proxy.key_configured(&ProviderId::Vendor(Vendor::Xai)));
     assert!(rig.proxy.route_for(g.bearer.expose()).is_none());
-    // Not-yet-available vendors say so.
-    assert_eq!(
-        rig.proxy.set_key("anthropic", SecretString::new(fake_key("sk-ant-")), 1).err(),
-        Some(ProxyError::NotAvailable)
-    );
+    // A key in another vendor's format is refused by that vendor's native check, nothing sent.
+    let before = rig.vendor.seen.lock().unwrap().len();
+    assert!(matches!(
+        rig.proxy.set_key("anthropic", SecretString::new(fake_key("xai-")), 1).err(),
+        Some(ProxyError::Provider(ProviderError::KeyFormat(_)))
+    ));
+    assert_eq!(rig.vendor.seen.lock().unwrap().len(), before);
 }
 
 #[test]
@@ -337,6 +344,74 @@ fn routes_bind_one_provider_model_and_session_and_are_not_keys() {
     for v in rig.kr.values() {
         assert!(!v.contains("cmp_"));
     }
+}
+
+#[test]
+fn every_vendor_has_its_native_adapter_with_a_priced_tool_capable_catalog() {
+    for v in Vendor::ALL {
+        let (a, kind) = vendor_adapter(v);
+        assert_eq!(kind, AdapterKind::Native, "{v:?}");
+        assert_eq!(a.id(), ProviderId::Vendor(v), "the registry must never cross vendors");
+        let models = a.models();
+        assert!(!models.is_empty(), "{v:?} lists its models");
+        let probe = req(&models[0].id, false);
+        assert!(a.output_bound(&probe) >= u64::from(probe.max_tokens), "{v:?}");
+        for m in models {
+            assert!(m.supports_tools, "{}", m.id);
+            assert!(
+                m.input_micros_per_mtok.is_some() && m.output_micros_per_mtok.is_some(),
+                "{} is priced (a currency cap refuses unpriced models)",
+                m.id
+            );
+        }
+    }
+    assert_eq!(AdapterKind::Native.as_str(), "native");
+}
+
+/// Tripwire for the off-host class: whatever an adapter builds (key test, plain and streamed
+/// call), every URL it sends is under its own vendor's pinned base, never another vendor's.
+#[test]
+fn every_native_adapter_stays_under_its_own_pinned_base() {
+    use crate::provider_fixtures_tests::{tool_conversation, with_vendor_ctx, Recorded};
+    for v in Vendor::ALL {
+        let (a, _) = vendor_adapter(v);
+        let first = a.models().first().map(|m| m.id.clone());
+        assert!(first.is_some(), "{v:?} lists a model to call");
+        let model = first.unwrap_or_default();
+        let http = Recorded::new(vec![
+            (500, "application/json", "{}".into()),
+            (500, "application/json", "{}".into()),
+            (500, "application/json", "{}".into()),
+        ]);
+        let prefix = match v {
+            Vendor::Anthropic => "sk-ant-api03-",
+            Vendor::Xai => "xai-",
+            Vendor::Meta => "LLM_1_",
+            _ => "sk-",
+        };
+        with_vendor_ctx(v, prefix, &http, |ctx| {
+            assert_eq!(a.test_key(ctx), Err(ProviderError::Status(500)));
+            for stream in [false, true] {
+                let r = a.complete(ctx, &tool_conversation(&model, stream), &mut |_| {});
+                assert_eq!(r, Err(ProviderError::Status(500)), "{v:?}");
+            }
+        });
+        let base = crate::provider_egress::vendor_spec(v).base_url;
+        let seen = http.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "{v:?}");
+        for s in seen.iter() {
+            // (`Recorded` also re-checks the pinned host and port at the transport.)
+            assert!(s.url.starts_with(&format!("{base}/")), "{v:?} sent to {}", s.url);
+        }
+    }
+}
+
+#[test]
+fn a_request_an_adapter_cannot_express_is_a_400_not_a_provider_failure() {
+    let e = ProxyError::Provider(ProviderError::BadRequest("x"));
+    assert_eq!(e.http(), (400, "bad_request"));
+    assert_eq!(e.outcome(), "bad_request");
+    assert_eq!(ProxyError::Provider(ProviderError::Status(500)).http().0, 502);
 }
 
 #[test]
@@ -386,6 +461,93 @@ fn custom_endpoints_with_ip_or_local_hosts_are_refused_at_add() {
 }
 
 #[test]
+fn a_caller_that_goes_away_stops_the_vendor_call_and_is_logged_as_cancelled() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let rig = Rig::new("proxy-cancel");
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut pieces = Vec::new();
+    let r = rig.proxy.call_until(
+        &rig.route("gpt-known"),
+        req("gpt-known", true),
+        None,
+        flag.clone(),
+        &mut |t| {
+            pieces.push(t.to_string());
+            // The caller's connection broke while this piece was being forwarded.
+            flag.store(true, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(r.err(), Some(ProxyError::Cancelled));
+    assert_eq!(pieces, vec!["hello ".to_string()], "no vendor read after the cancel");
+    let log = rig.log_text();
+    assert!(log.contains("\"cancelled\""), "the end record says cancelled: {log}");
+    assert_eq!(ProxyError::Cancelled.outcome(), "cancelled");
+    // A call that is not cancelled is unaffected.
+    let ok = rig.proxy.call_until(
+        &rig.route("gpt-known"),
+        req("gpt-known", true),
+        None,
+        Arc::new(AtomicBool::new(false)),
+        &mut |_| {},
+    );
+    assert_eq!(ok.map(|r| r.content).ok().as_deref(), Some("hello from the vendor"));
+}
+
+fn xai_rig(tag: &str) -> (Rig, ProxyRoute) {
+    let rig = Rig::new(tag);
+    rig.proxy
+        .set_key("xai", SecretString::new(fake_key("xai-")), now_ms())
+        .unwrap();
+    let route = ProxyRoute {
+        provider: ProviderId::Vendor(Vendor::Xai),
+        model: "grok-4.7".into(),
+        session_id: "sess-x".into(),
+    };
+    (rig, route)
+}
+
+#[test]
+fn an_xai_call_whose_reasoning_could_pass_the_cap_is_refused_with_nothing_sent() {
+    let (rig, route) = xai_rig("proxy-xai-bound");
+    // A member cap below one call's worst case ($5/day against ~$6 reserved).
+    rig.proxy.with_state(|g, _| {
+        g.set_caps(
+            "xai",
+            Caps {
+                daily_tokens: Some(1_000_000),
+                monthly_tokens: Some(10_000_000),
+                daily_micros: Some(5_000_000),
+                monthly_micros: Some(50_000_000),
+            },
+        )
+        .unwrap()
+    });
+    let before = rig.vendor.calls();
+    let r = rig.proxy.call(&route, req("grok-4.7", false), None, &mut |_| {});
+    // 500k reserved output tokens at $12/M is $6, over the $5 cap.
+    match r {
+        Err(ProxyError::Refused(Refusal::CapExceeded { call, .. })) => {
+            assert!(call >= 6_000_000, "the reservation covers the whole window: {call}")
+        }
+        other => panic!("expected a cap refusal, got {other:?}"),
+    }
+    assert_eq!(rig.vendor.calls(), before, "nothing reached the vendor");
+}
+
+#[test]
+fn the_xai_default_cap_admits_one_full_window_grok_call() {
+    let (rig, route) = xai_rig("proxy-xai-default");
+    let before = rig.vendor.calls();
+    let r = rig.proxy.call(&route, req("grok-4.7", false), None, &mut |_| {});
+    assert_eq!(
+        r.map(|r| r.content).ok().as_deref(),
+        Some("hello from the vendor"),
+        "the owner's $20/day xAI default fits one ~$6 reservation"
+    );
+    assert_eq!(rig.vendor.calls(), before + 1);
+}
+
+#[test]
 fn a_key_test_keeps_the_date_the_key_was_set() {
     // The rotation reminder reads `key_set_ms`; only setting a key may move it.
     let rig = Rig::new("proxy-kt-date");
@@ -403,5 +565,124 @@ fn a_key_test_keeps_the_date_the_key_was_set() {
     assert_eq!(
         rig.proxy.with_state(|g, _| g.get("openai").key_set_ms),
         Some(set_at + 31 * 86_400_000)
+    );
+}
+
+/// Remove the anchor and every provider file: what "fake a fresh install" would take, short of
+/// also deleting the keys.
+fn wipe_anchor_and_files(rig: &Rig) {
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    for f in [
+        crate::provider_usage_log::log_path(&rig.dir.0),
+        crate::provider_guard::guard_path(&rig.dir.0),
+    ] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+fn fails_closed(rig: &Rig) -> (bool, bool) {
+    rig.proxy
+        .with_state(|g, l| (g.unreadable, l.ready().is_err()))
+}
+
+#[test]
+fn a_missing_anchor_while_keys_remain_is_not_a_fresh_install() {
+    // MAC keys and a vendor key remain: both the guard and the log fail closed.
+    let mut rig = Rig::new("proxy-anchor-keys");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    wipe_anchor_and_files(&rig);
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true), "guard unreadable, log broken");
+    let before = rig.vendor.calls();
+    let r = rig
+        .proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {});
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(rig.vendor.calls(), before, "nothing is sent");
+}
+
+#[test]
+fn a_missing_anchor_with_only_a_vendor_key_left_still_fails_closed() {
+    let mut rig = Rig::new("proxy-anchor-vendor");
+    wipe_anchor_and_files(&rig);
+    {
+        let mut m = rig.kr.map.lock().unwrap();
+        m.remove(crate::provider_usage_log::LOG_MAC_ACCOUNT);
+        m.remove(crate::provider_guard::GUARD_MAC_ACCOUNT);
+    }
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+}
+
+#[test]
+fn a_first_launch_with_no_calls_reopens_cleanly() {
+    // A fresh install opens (creating the MAC keys) and closes with nothing recorded: the next
+    // launch is not mistaken for a wiped anchor.
+    let dir = crate::provider_fixtures_tests::TmpDir::new("proxy-anchor-fresh");
+    let kr = Arc::new(MemKeyring::default());
+    let vendor = ScriptedVendor::new(&["gpt-known"], "x", None);
+    drop(ModelProxy::new(dir.0.clone(), kr.clone(), vendor.clone()));
+    let p = ModelProxy::new(dir.0.clone(), kr.clone(), vendor);
+    assert_eq!(p.with_state(|g, l| (g.unreadable, l.ready().is_err())), (false, false));
+}
+
+#[test]
+fn resuming_the_guard_alone_does_not_legitimise_a_cut_short_log() {
+    // Anchor removed and the log cut short while provider keys remain: halted and broken.
+    let mut rig = Rig::new("proxy-anchor-resume");
+    for _ in 0..3 {
+        rig.proxy
+            .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+            .unwrap();
+    }
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    let p = crate::provider_usage_log::log_path(&rig.dir.0);
+    let kept: Vec<String> = std::fs::read_to_string(&p)
+        .unwrap_or_default()
+        .lines()
+        .take(3)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&p, kept.concat()).unwrap();
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (true, true));
+    // The member resumes the guard only (what the halt message offers), then the app restarts.
+    let _ = crate::providers_ipc::resume(&rig.proxy, "openai");
+    rig.reopen();
+    assert!(
+        rig.proxy.with_state(|_, l| l.ready().is_err()),
+        "a guard resume must not make a cut-short log valid; only a log reset may"
+    );
+    // The log reset is the way back: it archives the file and starts a new chain.
+    rig.proxy
+        .with_state(|_, l| l.reset_broken(now_ms()).map(|_| ()))
+        .unwrap();
+    let _ = crate::providers_ipc::resume(&rig.proxy, "openai");
+    rig.reopen();
+    assert_eq!(fails_closed(&rig), (false, false));
+}
+
+#[test]
+fn a_first_launch_that_cannot_write_its_anchor_fails_closed() {
+    let dir = crate::provider_fixtures_tests::TmpDir::new("proxy-anchor-nowrite");
+    let kr = Arc::new(MemKeyring::default());
+    *kr.fail_set_account.lock().unwrap() =
+        Some(crate::provider_usage_log::ANCHOR_ACCOUNT.to_string());
+    let vendor = ScriptedVendor::new(&["gpt-known"], "x", None);
+    let p = ModelProxy::new(dir.0.clone(), kr.clone(), vendor);
+    assert_eq!(
+        p.with_state(|g, l| (g.unreadable, l.ready().is_err())),
+        (true, true),
+        "without an anchor the first launch must not go on as if it had one"
     );
 }
