@@ -40,6 +40,7 @@
         "grantStatus": {
           "attributedPrincipalWei": "32000000000000000000000",
           "attributedStakeWei": "32000000000000000000000",
+          "bondActivated": true,
           "bondAddress": "bond",
           "bondDeployed": true,
           "bondedStakeWei": "32000000000000000000000",
@@ -108,6 +109,7 @@
           "bondPubkey": "<nodePubkey>",
           "currentEpoch": 1,
           "epochBlocks": 1000,
+          "exitOutcome": null,
           "headBlock": 1002,
           "localBlock": null,
           "localSyncing": null,
@@ -199,6 +201,7 @@
           "bondPubkey": "<nodePubkey>",
           "currentEpoch": 1,
           "epochBlocks": 1000,
+          "exitOutcome": null,
           "headBlock": 1003,
           "localBlock": null,
           "localSyncing": null,
@@ -221,6 +224,7 @@
         "grantStatus": {
           "attributedPrincipalWei": "32000000000000000000000",
           "attributedStakeWei": "32000000000000000000000",
+          "bondActivated": true,
           "bondAddress": "bond",
           "bondDeployed": true,
           "bondedStakeWei": "32000000000000000000000",
@@ -280,6 +284,7 @@
           "bondPubkey": "<nodePubkey>",
           "currentEpoch": 1,
           "epochBlocks": 1000,
+          "exitOutcome": null,
           "headBlock": 1005,
           "localBlock": null,
           "localSyncing": null,
@@ -324,6 +329,7 @@
         "grantStatus": {
           "attributedPrincipalWei": "0",
           "attributedStakeWei": "0",
+          "bondActivated": true,
           "bondAddress": "bond",
           "bondDeployed": true,
           "bondedStakeWei": "0",
@@ -465,6 +471,17 @@
           "bondPubkey": "<nodePubkey>",
           "currentEpoch": 7,
           "epochBlocks": 1000,
+          "exitOutcome": {
+            "escrowedWei": "32000000000000000000000",
+            "exitBlock": 1004,
+            "outcome": "returned",
+            "paidOutBlock": 7001,
+            "paidOutWei": "32000000000000000000000",
+            "reason": null,
+            "scannedFrom": 1000,
+            "scannedTo": 7001,
+            "slashedWei": null
+          },
           "headBlock": 7001,
           "localBlock": null,
           "localSyncing": null,
@@ -497,6 +514,7 @@
         "grantStatus": {
           "attributedPrincipalWei": "0",
           "attributedStakeWei": "0",
+          "bondActivated": true,
           "bondAddress": "bond",
           "bondDeployed": true,
           "bondedStakeWei": "0",

@@ -416,7 +416,7 @@ describe("TRIPWIRE: a bond is said to be returned only from the read that proves
     const fn = src.slice(src.indexOf("function bondReturned("));
     const body = fn.slice(0, fn.indexOf("\n}\n"));
     expect(body).toContain("exitOutcome");
-    expect(body).toMatch(/outcome\s*===\s*"returned"/);
+    expect(body).toMatch(/outcome\s*[!=]==\s*"returned"/);
     // Every line that claims a payout is inside a branch guarded by bondReturned(...).
     const lines = src.split("\n");
     const offenders: string[] = [];

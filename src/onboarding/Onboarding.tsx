@@ -1243,7 +1243,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
   const gate = activationGate(a, linked);
   const phase = activationPhase(a, linked, s.s7TxHash);
   const vs = validatorState(a);
-  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "exited" || phase === "slashed";
+  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "exited" || phase === "exitSettled" || phase === "slashed";
   const mismatch = keyMismatch(a);
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }} data-testid="s7">
@@ -1324,7 +1324,8 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
 
       <div className="mono" style={dataSrc}>
         Data sources — MembershipStakeVault.bondOf · MemberBond.activated / principal / unlockBlock / unlockTimestamp · CitrateMemberSBT.isActive ·
-        ValidatorRegistry.validatorInfo / isActive / currentEpoch / EPOCH · local eth_syncing · block time{" "}
+        ValidatorRegistry.validatorInfo / isActive / currentEpoch / EPOCH · ValidatorRegistry exit logs (UnbondInitiated / Evicted / Slashed /
+        Withdrawn) · local eth_syncing · block time{" "}
         {a?.blockTimeMs != null ? fmtDuration(a.blockTimeMs) : "—"} (measured over the last 100 blocks)
       </div>
     </div>

@@ -29,7 +29,8 @@ struct Chain {
     blocks: RefCell<HashMap<u64, u64>>,
     receipts: RefCell<HashMap<String, JsonValue>>,
     seen: RefCell<Vec<JsonValue>>,
-    /// Logs `eth_getLogs` filters by address, topic0 (one or a list), topic1 and block range.
+    /// Logs `eth_getLogs` filters by address, topic0 (one or a list), topic1 and block range
+    /// (a log marked `_always` ignores the range, like a misbehaving node).
     logs: RefCell<Vec<JsonValue>>,
     /// `eth_getLogs` fails for any range that reaches this block.
     logs_fail_from: RefCell<Option<u64>>,
@@ -93,9 +94,9 @@ impl Chain {
             .borrow()
             .iter()
             .filter(|l| lc(&l["address"]) == lc(&filter["address"]))
-            .filter(|l| hex(&l["blockNumber"]).is_some_and(|b| b >= from && b <= to))
+            .filter(|l| l["_always"] == true || hex(&l["blockNumber"]).is_some_and(|b| b >= from && b <= to))
             .filter(|l| t0.is_empty() || t0.contains(&lc(&l["topics"][0])))
-            .filter(|l| t1.as_ref().map_or(true, |t| lc(&l["topics"][1]) == *t))
+            .filter(|l| t1.as_ref().is_none_or(|t| lc(&l["topics"][1]) == *t))
             .cloned()
             .collect();
         Ok(JsonValue::Array(out))
@@ -565,6 +566,15 @@ fn a_slash_in_the_payout_block_before_the_payout_counts_and_one_after_does_not()
 }
 
 #[test]
+fn a_withdraw_before_the_exit_does_not_end_the_scan_and_is_not_the_payout() {
+    let chain = settled_exit().log(withdrawn(1200, 0, SALT_WEI)).log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI));
+    let o = outcome(&chain);
+    assert_eq!(o.outcome, ExitOutcomeKind::Returned);
+    assert_eq!(o.paid_out_block, Some(7100));
+    assert_eq!(o.paid_out_wei, Some(PRINCIPAL_WEI.to_string()));
+}
+
+#[test]
 fn an_exit_that_escrowed_less_than_the_principal_reads_slashed() {
     // A slash while Active (before this scan's window) shrank the bond before the exit.
     let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI - 1_600 * SALT_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI));
@@ -595,6 +605,12 @@ fn without_proof_either_way_the_outcome_is_not_read() {
         ("a partial unbond is not the exit", settled_exit().log(unbond(1500, SALT_WEI, PRINCIPAL_WEI - SALT_WEI)).log(withdrawn(7100, 0, PRINCIPAL_WEI))),
         ("no payout logged", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0))),
         ("a payout before the exit is not its payout", settled_exit().log(withdrawn(1200, 0, PRINCIPAL_WEI)).log(unbond(1500, PRINCIPAL_WEI, 0))),
+        ("a log outside the asked range", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log({
+            let mut l = withdrawn(7100, 0, PRINCIPAL_WEI);
+            l["blockNumber"] = JsonValue::String("0x1".into()); // block 1, never in an asked range
+            l["_always"] = JsonValue::Bool(true); // a node that ignores the range
+            l
+        })),
         ("paid less than escrowed", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI - 1))),
         ("logs unavailable", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI)).logs_fail_from(5000)),
         ("principal not read", settled_exit().call(BOND, PRINCIPAL, "0x".into()).log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI))),

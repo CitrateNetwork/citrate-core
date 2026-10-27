@@ -94,7 +94,7 @@ Each step records three things:
 | Flow | Steps | Core code driven |
 |---|---|---|
 | `membership-activation` | before-grant (core refuses activation) → grant (treasury) → activate (gas = the node's estimate + `money_gas` margin, recorded as `gasLimit`) → activate-again (core refuses) → epoch-reached | `grant_status::read_grant_status`, `validator_activation::read_activation_status`, `node::bond_activation_intent` (the body of `node_register_validator`) with `validator::sign_registration_from_data_dir`, the SignatureCeremony (`request` + `approve_and_broadcast`, EIP-155 from the vault) |
-| `bond-exit` | kyc-attested → release-inside-lock (reverts) → lock-elapsed → release (registry unbond, vault records it; "Exiting") → withdraw-too-early (reverts) → exit-matured (32,000 SALT back to the member; "Bond returned") | the same reads; the ceremony for the member's sends |
+| `bond-exit` | kyc-attested → release-inside-lock (reverts) → lock-elapsed → release (registry unbond, vault records it; "Exiting") → withdraw-too-early (reverts) → exit-matured (32,000 SALT back to the member; the `Withdrawn` log proves it, so "Bond returned") | the same reads; the ceremony for the member's sends |
 
 Pin bonds are not covered. `IPFSIncentivesV3` is not deployed by #320/#324/#331, and core has no
 pin-bond transaction yet: pins are local only (storage S2.2).
@@ -137,7 +137,16 @@ To change a golden on purpose, run with `--update` and review the diff in the PR
   exit at genesis.
 - **"Exiting" after the exit has paid out (fixed).** `validatorInfo.status` stays Exiting after
   `withdrawToMember` returns the principal. The activation read now carries `validatorInfo`'s bonded
-  stake and escrow, and with both at zero the step says "Bond returned" (phase `exited`).
+  stake and escrow. Both at zero say only that the exit settled: a non-Byzantine slash also keeps the
+  key Exiting while it draws bonded, then escrow, then vested rewards (`ValidatorRegistry._slash`).
+  So for a settled exit the read also scans the registry's logs under the key from the exit epoch
+  (`exitOutcome`: `UnbondInitiated`/`Evicted`, `Slashed`, `Withdrawn`, in the 1,000-block ranges the
+  node serves, at most 32 of them). The step says "Bond returned" (phase `exited`) only when the
+  exit escrowed at least the principal, a `Withdrawn` paid at least that, and no `Slashed` was logged
+  before it. Otherwise it says "Exit settled · slashed" (with the penalties) or "Exit settled ·
+  outcome not read" (with the reason), phase `exitSettled`. The slashed paths are unit-tested
+  (`validator_activation_tests.rs`, `activateValidator.test.ts`); the anvil run has no slasher, so it
+  covers the returned path only.
 - **No pending-withdrawals read for the Track M exit.** With the pool retired (D-9), core has no
   pending-withdrawals read at all, so the member sees the exit only through the bond and registry
   reads above.
