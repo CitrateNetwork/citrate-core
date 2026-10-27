@@ -30,10 +30,13 @@ struct Chain {
     receipts: RefCell<HashMap<String, JsonValue>>,
     seen: RefCell<Vec<JsonValue>>,
     /// Logs `eth_getLogs` filters by address, topic0 (one or a list), topic1 and block range
-    /// (a log marked `_always` ignores the range, like a misbehaving node).
+    /// (a log with `_servedAt: N` is returned for any range that contains block N instead of its
+    /// own block, like a node that answers with the wrong logs).
     logs: RefCell<Vec<JsonValue>>,
     /// `eth_getLogs` fails for any range that reaches this block.
     logs_fail_from: RefCell<Option<u64>>,
+    /// `eth_getLogs` fails for the one range that contains this block (a failed middle chunk).
+    logs_fail_at: RefCell<Option<u64>>,
 }
 impl Chain {
     fn call(self, to: &str, selector: [u8; 4], ret: String) -> Self {
@@ -58,6 +61,10 @@ impl Chain {
         self.logs.borrow_mut().push(l);
         self
     }
+    fn logs_fail_at(self, block: u64) -> Self {
+        *self.logs_fail_at.borrow_mut() = Some(block);
+        self
+    }
     fn logs_fail_from(self, block: u64) -> Self {
         *self.logs_fail_from.borrow_mut() = Some(block);
         self
@@ -77,7 +84,9 @@ impl Chain {
         let (Some(from), Some(to)) = (hex(&filter["fromBlock"]), hex(&filter["toBlock"])) else {
             return Err(RpcError::Transport("bad range".into()));
         };
-        if matches!(*self.logs_fail_from.borrow(), Some(f) if to >= f) {
+        if matches!(*self.logs_fail_from.borrow(), Some(f) if to >= f)
+            || matches!(*self.logs_fail_at.borrow(), Some(f) if from <= f && f <= to)
+        {
             return Err(RpcError::Transport("logs unavailable".into()));
         }
         // The node serves at most 1,001 blocks and silently cuts the rest.
@@ -94,7 +103,10 @@ impl Chain {
             .borrow()
             .iter()
             .filter(|l| lc(&l["address"]) == lc(&filter["address"]))
-            .filter(|l| l["_always"] == true || hex(&l["blockNumber"]).is_some_and(|b| b >= from && b <= to))
+            .filter(|l| {
+                let at = l.get("_servedAt").and_then(JsonValue::as_u64).or_else(|| hex(&l["blockNumber"]));
+                at.is_some_and(|b| b >= from && b <= to)
+            })
             .filter(|l| t0.is_empty() || t0.contains(&lc(&l["topics"][0])))
             .filter(|l| t1.as_ref().is_none_or(|t| lc(&l["topics"][1]) == *t))
             .cloned()
@@ -608,7 +620,7 @@ fn without_proof_either_way_the_outcome_is_not_read() {
         ("a log outside the asked range", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log({
             let mut l = withdrawn(7100, 0, PRINCIPAL_WEI);
             l["blockNumber"] = JsonValue::String("0x1".into()); // block 1, never in an asked range
-            l["_always"] = JsonValue::Bool(true); // a node that ignores the range
+            l["_servedAt"] = JsonValue::from(1000u64); // a node that ignores the range
             l
         })),
         ("paid less than escrowed", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI - 1))),
@@ -674,4 +686,53 @@ fn the_outcome_is_read_only_for_a_settled_exit() {
         assert_eq!(read(&chain, None, Some(NODE_KEY), None).exit_outcome, None);
         assert!(chain.log_ranges().is_empty());
     }
+}
+
+// Review round 3 (#516): each fail-closed guard in the scan has a test that reads "returned" without
+// it. A failed or partial read, or a log the node should not have served, is never "returned".
+
+#[test]
+fn a_failed_middle_chunk_hiding_a_slash_is_not_read_never_returned() {
+    // Range 3000..3999 fails; the Slashed in it is never seen; the full payout at 7100 is.
+    let chain = settled_exit()
+        .log(unbond(1500, PRINCIPAL_WEI, 0))
+        .log(slashed(3000, 0, PRINCIPAL_WEI))
+        .log(withdrawn(7100, 0, PRINCIPAL_WEI))
+        .logs_fail_at(3500);
+    let o = outcome(&chain);
+    assert_eq!(o.outcome, ExitOutcomeKind::NotRead);
+    assert_eq!(chain.log_ranges().last(), Some(&(3000, 3999)), "the scan stops at the failed range");
+}
+
+#[test]
+fn a_payout_served_for_an_earlier_range_than_its_block_is_not_read_never_returned() {
+    // The node returns the real payout (block 7100) for the FIRST range (1000..1999). Trusting it
+    // would end the scan before the Slashed at 3000.
+    let mut early = withdrawn(7100, 0, PRINCIPAL_WEI);
+    early["_servedAt"] = JsonValue::from(1000u64);
+    let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(slashed(3000, 0, PRINCIPAL_WEI)).log(early);
+    assert_eq!(outcome(&chain).outcome, ExitOutcomeKind::NotRead);
+}
+
+#[test]
+fn an_undecodable_slash_log_is_not_read_never_returned() {
+    for data in ["0xzz", "not hex"] {
+        let mut bad = slashed(3000, 0, PRINCIPAL_WEI);
+        bad["data"] = JsonValue::String(data.into());
+        let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(bad).log(withdrawn(7100, 0, PRINCIPAL_WEI));
+        assert_eq!(outcome(&chain).outcome, ExitOutcomeKind::NotRead, "{data}");
+    }
+    // A Slashed whose penalty word is missing is not a slash of 0.
+    let mut short = slashed(3000, 0, PRINCIPAL_WEI);
+    short["data"] = JsonValue::String(format!("0x{}", w(0)));
+    let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(short).log(withdrawn(7100, 0, PRINCIPAL_WEI));
+    assert_eq!(outcome(&chain).outcome, ExitOutcomeKind::NotRead);
+}
+
+#[test]
+fn a_slash_with_no_log_index_in_the_payout_block_counts_before_the_payout() {
+    let mut s = slashed(7100, 0, SALT_WEI);
+    s.as_object_mut().map(|o| o.remove("logIndex"));
+    let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 5, PRINCIPAL_WEI)).log(s);
+    assert_eq!(outcome(&chain).outcome, ExitOutcomeKind::Slashed);
 }

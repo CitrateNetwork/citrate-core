@@ -241,11 +241,6 @@ export interface NodeStatusView {
   miningHold?: string;
 }
 
-/**
- * Join-8 — everything the "Activate validator" onboarding step reads, in one call. Each field
- * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
- * Wei as decimal strings. Mirrors the Rust `validator_activation::ActivationStatus`.
- */
 /** A settled exit's outcome as read from the ValidatorRegistry's logs (wei as decimal strings). */
 export interface ExitOutcomeView {
   /**
@@ -265,6 +260,11 @@ export interface ExitOutcomeView {
   reason: string | null;
 }
 
+/**
+ * Join-8 — everything the "Activate validator" onboarding step reads, in one call. Each field
+ * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
+ * Wei as decimal strings. Mirrors the Rust `validator_activation::ActivationStatus`.
+ */
 export interface ActivationStatusView {
   /** `MembershipStakeVault.bondOf(member)` (CREATE2: present even before the bond exists). */
   bondAddress: string | null;
