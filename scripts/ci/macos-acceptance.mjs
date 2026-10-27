@@ -456,10 +456,15 @@ export function isCitratePath(p, exeNames) {
  *  Citrate's other paths are undocumented (the check fails on them), the rest is unrelated. A
  *  parent directory of a documented location (e.g. Library/Application Support itself) is
  *  unrelated, as it is not Citrate's. */
-export function evaluateLocations(paths, homes, documented, exeNames) {
+export function evaluateLocations(paths, homes, documented, exeNames, roots = homes) {
   const res = { documented: [], undocumented: [], unrelated: [] };
+  // Attribute by the part below the scanned root: the run dir itself is named citrate-macos-acc-*.
+  const below = (p) => {
+    const r = roots.filter((x) => isInside(p, x)).sort((a, b) => b.length - a.length)[0];
+    return r ? p.slice(r.replace(/\/+$/, "").length) : p;
+  };
   for (const p of paths) {
-    if (!isCitratePath(p, exeNames)) { res.unrelated.push(p); continue; }
+    if (!isCitratePath(below(p), exeNames)) { res.unrelated.push(p); continue; }
     const home = homes.find((h) => isInside(p, h));
     const rel = home ? p.slice(home.replace(/\/+$/, "").length + 1) : null;
     const hit = rel !== null && documented.find((d) => rel === d.prefix || rel.startsWith(d.prefix + "/"));
@@ -957,7 +962,7 @@ export function finalScans(ctx, o, exeNames) {
   }
   // A documented location under the real home is allowed too (cfprefsd writes preferences there
   // on the app's behalf); anything else of Citrate's outside the run dir fails.
-  const lo = evaluateLocations(found, [realHome], documented, exeNames);
+  const lo = evaluateLocations(found, [realHome], documented, exeNames, roots.map((r) => r.root));
   checks.push({ id: "uninstall.outside_files", status: lo.ok ? "pass" : "fail",
     detail: lo.ok ? `no undocumented Citrate file outside the run dir (${lo.documented.length} documented, ${lo.unrelated.length} unrelated changes not counted)` : `${lo.undocumented.length} undocumented Citrate files outside the run dir: ${lo.undocumented.slice(0, 10).join(", ")}`,
     evidence: { undocumented: lo.undocumented.slice(0, 200), documented: lo.documented.slice(0, 50), unrelated_sample: lo.unrelated.slice(0, 50), roots: meta } });
@@ -1079,7 +1084,7 @@ mkdir -p "$HOME/Library/Application Support/ai.citrate.core" && : > "$HOME/Libra
 if [ "$MODE" = keychain ]; then /usr/bin/security add-generic-password -s ai.citrate.selftest-undocumented -a selftest -w x; fi
 quit() {
   while read -r p; do
-    if [ "$MODE" = leak ] && [ "$p" = "$IPFS" ]; then continue; fi
+    if [ "$MODE" = leak ] && [ ! -f "$HOME/.selftest-leaked" ] && [ "$p" = "$IPFS" ]; then : > "$HOME/.selftest-leaked"; continue; fi
     kill -TERM "$p" 2>/dev/null
   done < "$PF"
   rm -f "$PF"; exit 0
@@ -1161,7 +1166,9 @@ async function oneRun(base, o, label, spec) {
     if (o.mode === "full") setUpKeychain(ctx);
     res = await runAcceptance(ctx, o);
     if (o.mode === "full" && res.checks.some((c) => c.id === "uninstall.processes")) {
-      res.checks.push(...finalScans(ctx, o, res.exeNames || []));
+      const fin = finalScans(ctx, o, res.exeNames || []);
+      for (const c of fin) log(`${c.status.toUpperCase().padEnd(5)} ${c.id}: ${c.detail}`);
+      res.checks.push(...fin);
       res.overall = computeOverall(res.checks, o);
     }
   } catch (e) {
