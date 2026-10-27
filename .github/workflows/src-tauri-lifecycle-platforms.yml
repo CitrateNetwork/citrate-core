@@ -50,7 +50,7 @@ jobs:
             owned: 8
             comms: 40
             cluster: 21
-            total: 70
+            total: 71
             hermes_self_skips: 1
           - platform: macOS-14
             runner: macos-14
@@ -58,7 +58,7 @@ jobs:
             owned: 13
             comms: 41
             cluster: 21
-            total: 79
+            total: 80
             hermes_self_skips: 2
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
