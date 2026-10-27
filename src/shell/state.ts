@@ -19,6 +19,7 @@ import type { CeremonyView } from "../bridge/types";
 import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
+import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
@@ -397,6 +398,12 @@ export interface AppState {
    */
   height: number;
   peers: number;
+  /**
+   * 0.5.2 RC52 — sync progress and catch-up ETA (syncProgress.ts): this node's height against the
+   * profile RPC's public head, with the measured net catch-up rate. Folded by Store.refreshNode;
+   * null until the first poll. Observed, never persisted (not in PERSIST_KEYS).
+   */
+  syncProgress: SyncProgress | null;
   node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "stalled" | "error";
   /**
    * What the MEMBER wants the node to do, as distinct from what it is doing.
@@ -830,6 +837,7 @@ export function freshState(pid: string): AppState {
     // No reading until the node is polled (contract rule 2): never a seeded height.
     height: 0,
     peers: 0,
+    syncProgress: null,
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
