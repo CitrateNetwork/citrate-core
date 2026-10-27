@@ -16,7 +16,7 @@ use crate::model_proxy::{ModelProxy, ProxyError};
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -444,7 +444,9 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
     // Streamed: refusals are plain error statuses (nothing streamed yet).
     let mut started = false;
     let mut broken = false;
-    let result = proxy.call(&route, chat, conversation, &mut |t| {
+    // Set when the client's socket breaks: the vendor call is then cut off at its next read.
+    let gone = Arc::new(AtomicBool::new(false));
+    let result = proxy.call_until(&route, chat, conversation, gone.clone(), &mut |t| {
         if broken {
             return;
         }
@@ -457,11 +459,13 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             .is_err()
             {
                 broken = true;
+                gone.store(true, Ordering::SeqCst);
                 return;
             }
         }
         if sse(out, &json!({"choices": [{"index": 0, "delta": {"content": t}}]})).is_err() {
             broken = true;
+            gone.store(true, Ordering::SeqCst);
         }
     });
     match result {

@@ -2707,7 +2707,7 @@ export interface ProviderStatus {
   verified: boolean;
   baseUrl: string;
   host: string;
-  /** `openai-compatible` (or `native` once its adapter lands); null = not available in this build. */
+  /** `native` (a governed vendor's own API) or `openai-compatible` (a custom endpoint); null = not available in this build. */
   adapter: string | null;
   keyConfigured: boolean;
   keySetMs: number | null;

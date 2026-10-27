@@ -38,18 +38,20 @@ fn status_is_honest_about_keys_adapters_and_custom_endpoints() {
     let openai = &s[0];
     assert!(openai.key_configured && openai.verified);
     assert_eq!(openai.host, "api.openai.com");
-    assert_eq!(openai.adapter, Some("openai-compatible"));
+    assert_eq!(openai.adapter, Some("native"));
     assert_eq!(openai.listed_models, vec!["gpt-known".to_string()]);
     assert!(openai.key_set_ms.is_some());
     let anthropic = &s[1];
     assert!(!anthropic.key_configured);
-    assert_eq!(anthropic.adapter, None, "no adapter yet is said, not hidden");
+    assert_eq!(anthropic.adapter, Some("native"));
+    assert!(s.iter().all(|v| v.adapter == Some("native")), "every vendor has its native adapter");
     // A custom endpoint is listed, unverified and unconfirmed.
     let c = custom_add(&rig.proxy, "Box", "https://llm.example.org/v1", vec!["m".into()]).unwrap();
     assert!(!c.confirmed && !c.verified);
     let s = status(&rig.proxy);
     let v = s.iter().find(|v| v.id == c.id).unwrap();
     assert_eq!((v.kind, v.verified, v.confirmed), ("custom", false, false));
+    assert_eq!(v.adapter, Some("openai-compatible"));
     let c2 = custom_confirm(&rig.proxy, &c.id, "https://llm.example.org/v1").unwrap();
     assert!(c2.confirmed && !c2.verified);
 }

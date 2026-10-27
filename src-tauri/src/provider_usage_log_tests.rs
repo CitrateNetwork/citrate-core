@@ -38,7 +38,7 @@ fn three_calls(dir: &TmpDir, kr: &Arc<MemKeyring>) -> UsageLog {
 #[test]
 fn the_chain_verifies_across_reopen() {
     let dir = TmpDir::new("log-chain");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     drop(three_calls(&dir, &kr));
     let log = UsageLog::open(&dir.0, kr.clone());
     assert!(log.ready().is_ok(), "{:?}", log.broken_reason());
@@ -69,7 +69,7 @@ fn reopen_after(dir: &TmpDir, kr: &Arc<MemKeyring>, edit: impl Fn(Vec<String>) -
 #[test]
 fn an_edited_record_breaks_the_chain_and_refuses_every_write() {
     let dir = TmpDir::new("log-edit");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     drop(three_calls(&dir, &kr));
     let mut log = reopen_after(&dir, &kr, |mut l| {
         l[1] = l[1].replace("\"tokensIn\":40", "\"tokensIn\":1");
@@ -101,7 +101,7 @@ fn a_deleted_or_reordered_or_cut_line_breaks_the_chain() {
         })),
     ] {
         let dir = TmpDir::new(&format!("log-{tag}"));
-        let kr = Arc::new(MemKeyring::default());
+        let kr = installed_kr();
         drop(three_calls(&dir, &kr));
         let log = reopen_after(&dir, &kr, edit);
         assert!(log.ready().is_err(), "{tag}: the chain must break");
@@ -111,7 +111,7 @@ fn a_deleted_or_reordered_or_cut_line_breaks_the_chain() {
 #[test]
 fn a_different_key_or_no_key_cannot_use_the_log() {
     let dir = TmpDir::new("log-key");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     drop(three_calls(&dir, &kr));
     let other = Arc::new(MemKeyring::default());
     assert!(UsageLog::open(&dir.0, other.clone()).ready().is_err(), "another key must not verify");
@@ -122,7 +122,7 @@ fn a_different_key_or_no_key_cannot_use_the_log() {
 #[test]
 fn end_without_reported_usage_keeps_the_reservation() {
     let dir = TmpDir::new("log-nousage");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut log = UsageLog::open(&dir.0, kr.clone());
     log.append(begin("c1", "xai", T0, 300, 200, Some(9))).unwrap();
     log.append(end("c1", "xai", T0 + 1, None, None)).unwrap();
@@ -137,7 +137,7 @@ fn end_without_reported_usage_keeps_the_reservation() {
 #[test]
 fn totals_follow_utc_day_and_month() {
     let dir = TmpDir::new("log-periods");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut log = UsageLog::open(&dir.0, kr.clone());
     let yesterday = T0 - DAY_MS;
     let last_month = 20_727 * DAY_MS; // 2026-10-01 00:00 UTC is day 20727; a day before is September
@@ -152,7 +152,7 @@ fn totals_follow_utc_day_and_month() {
 #[test]
 fn reset_starts_a_new_chain_only_after_a_break_and_keeps_the_old_file() {
     let dir = TmpDir::new("log-reset");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let mut log = three_calls(&dir, &kr);
     assert!(log.reset_broken(T0).is_err(), "an intact log is never reset");
     let mut log2 = reopen_after(&dir, &kr, |mut l| {
@@ -198,7 +198,7 @@ fn record_fields_are_a_closed_allowlist() {
 fn the_log_file_is_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let dir = TmpDir::new("log-mode");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     drop(three_calls(&dir, &kr));
     let mode = std::fs::metadata(log_path(&dir.0)).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
@@ -209,7 +209,7 @@ fn dropping_the_last_lines_or_the_whole_file_is_detected() {
     // Trailing lines removed while the app is closed.
     for n in [1usize, 2, 3] {
         let dir = TmpDir::new(&format!("log-tail-{n}"));
-        let kr = Arc::new(MemKeyring::default());
+        let kr = installed_kr();
         drop(three_calls(&dir, &kr));
         let log = reopen_after(&dir, &kr, |mut l| {
             l.truncate(l.len() - n);
@@ -222,7 +222,7 @@ fn dropping_the_last_lines_or_the_whole_file_is_detected() {
     }
     // The whole file removed after records were written.
     let dir = TmpDir::new("log-gone");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     drop(three_calls(&dir, &kr));
     std::fs::remove_file(log_path(&dir.0)).unwrap();
     let log = UsageLog::open(&dir.0, kr.clone());
@@ -236,7 +236,7 @@ fn dropping_the_last_lines_or_the_whole_file_is_detected() {
 fn a_crash_between_the_append_and_the_anchor_update_is_not_a_break() {
     // The file may be one record ahead of the anchor (written, then the app stopped).
     let dir = TmpDir::new("log-ahead");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     drop(three_calls(&dir, &kr));
     let anchor = kr.map.lock().unwrap().get(ANCHOR_ACCOUNT).cloned().unwrap_or_default();
     let mut log = UsageLog::open(&dir.0, kr.clone());
@@ -254,7 +254,7 @@ fn a_crash_between_the_append_and_the_anchor_update_is_not_a_break() {
 #[test]
 fn a_reset_carries_the_day_and_month_totals_forward() {
     let dir = TmpDir::new("log-carry");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let log = three_calls(&dir, &kr);
     let (d0, m0) = log.period_use("openai", T0 + 20);
     drop(log);
@@ -274,7 +274,7 @@ fn a_reset_carries_the_day_and_month_totals_forward() {
 #[test]
 fn a_clock_well_behind_the_last_record_is_refused() {
     let dir = TmpDir::new("log-clock");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     let log = three_calls(&dir, &kr);
     assert!(log.check_clock(T0 + 20).is_ok());
     assert!(log.check_clock(T0 - 60_000).is_ok(), "small skew is tolerated");
@@ -286,7 +286,7 @@ fn a_log_with_records_but_no_anchor_fails_closed() {
     // Only the anchor removed, then the log cut short: without this check it would pass as a
     // fresh install with lower totals.
     let dir = TmpDir::new("log-noanchor");
-    let kr = Arc::new(MemKeyring::default());
+    let kr = installed_kr();
     drop(three_calls(&dir, &kr));
     kr.map.lock().unwrap().remove(ANCHOR_ACCOUNT);
     let log = reopen_after(&dir, &kr, |mut l| {
@@ -298,4 +298,11 @@ fn a_log_with_records_but_no_anchor_fails_closed() {
     let fresh = TmpDir::new("log-noanchor-empty");
     std::fs::write(log_path(&fresh.0), "").unwrap();
     assert!(UsageLog::open(&fresh.0, Arc::new(MemKeyring::default())).ready().is_ok());
+}
+
+/// A keychain as a fresh install leaves it: the empty anchor `ModelProxy::new` writes first.
+fn installed_kr() -> Arc<MemKeyring> {
+    let kr = Arc::new(MemKeyring::default());
+    crate::provider_usage_log::create_anchor(kr.as_ref()).unwrap();
+    kr
 }

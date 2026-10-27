@@ -26,9 +26,19 @@ pub struct VendorSpec {
     pub key_page: &'static str,
     /// The vendor page where the member revokes a key.
     pub revoke_page: &'static str,
+    /// The exact endpoint paths (under `base_url`) an adapter may call, with an optional query.
+    /// `{model}` stands for one model id (`[A-Za-z0-9._-]`, 1..=128, not starting with `.`).
+    pub paths: &'static [&'static str],
 }
 
-/// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts.
+/// The endpoints of an OpenAI chat-completions API: xAI, DeepSeek and Meta, and every custom
+/// endpoint.
+pub const CHAT_PATHS: &[&str] = &["/chat/completions", "/models"];
+
+/// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts, checked
+/// against each vendor's own API docs on 2026-10-26 (sources in each adapter's module docs).
+/// Meta: the Meta Model API serving the Muse models is `https://api.meta.ai/v1`
+/// (<https://dev.meta.ai/docs/overview>); the earlier Llama API host is not used.
 pub const VENDORS: &[VendorSpec] = &[
     VendorSpec {
         vendor: Vendor::OpenAi,
@@ -36,6 +46,7 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.openai.com/v1",
         key_page: "https://platform.openai.com/api-keys",
         revoke_page: "https://platform.openai.com/api-keys",
+        paths: &["/responses", "/models"],
     },
     VendorSpec {
         vendor: Vendor::Anthropic,
@@ -43,6 +54,7 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.anthropic.com/v1",
         key_page: "https://console.anthropic.com/settings/keys",
         revoke_page: "https://console.anthropic.com/settings/keys",
+        paths: &["/messages", "/models?limit=1000"],
     },
     VendorSpec {
         vendor: Vendor::Gemini,
@@ -50,6 +62,11 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://generativelanguage.googleapis.com/v1beta",
         key_page: "https://aistudio.google.com/apikey",
         revoke_page: "https://aistudio.google.com/apikey",
+        paths: &[
+            "/models/{model}:generateContent",
+            "/models/{model}:streamGenerateContent?alt=sse",
+            "/models?pageSize=1000",
+        ],
     },
     VendorSpec {
         vendor: Vendor::Xai,
@@ -57,20 +74,24 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.x.ai/v1",
         key_page: "https://console.x.ai",
         revoke_page: "https://console.x.ai",
+        paths: CHAT_PATHS,
     },
     VendorSpec {
         vendor: Vendor::DeepSeek,
         name: "DeepSeek",
-        base_url: "https://api.deepseek.com/v1",
+        // The documented base (<https://api-docs.deepseek.com/>): the bare host.
+        base_url: "https://api.deepseek.com",
         key_page: "https://platform.deepseek.com/api_keys",
         revoke_page: "https://platform.deepseek.com/api_keys",
+        paths: CHAT_PATHS,
     },
     VendorSpec {
         vendor: Vendor::Meta,
         name: "Meta",
-        base_url: "https://api.llama.com/v1",
-        key_page: "https://llama.developer.meta.com",
-        revoke_page: "https://llama.developer.meta.com",
+        base_url: "https://api.meta.ai/v1",
+        key_page: "https://dev.meta.ai/platform",
+        revoke_page: "https://dev.meta.ai/platform",
+        paths: CHAT_PATHS,
     },
 ];
 
@@ -86,11 +107,14 @@ pub struct DelegateSpec {
     pub key_page: &'static str,
 }
 
+/// Cognition: API v3 (`https://api.devin.ai/v3`, `Authorization: Bearer cog_…`, sessions at
+/// `POST /v3/organizations/{org_id}/sessions`); v1/v2 and `apk_` keys are legacy
+/// (<https://docs.devin.ai/api-reference/authentication>).
 #[cfg_attr(not(test), allow(dead_code))]
 pub const DELEGATES: &[DelegateSpec] = &[DelegateSpec {
     id: "cognition",
     name: "Cognition (Devin)",
-    base_url: "https://api.devin.ai/v1",
+    base_url: "https://api.devin.ai/v3",
     key_page: "https://app.devin.ai/settings",
 }];
 
@@ -111,6 +135,8 @@ pub struct ResolvedEndpoint {
     pub host: String,
     pub port: u16,
     pub verified: bool,
+    /// The exact endpoint paths an adapter may call here ([`VendorSpec::paths`]).
+    pub paths: &'static [&'static str],
 }
 
 /// Parse and check a base URL: https, a host, no userinfo, query or fragment.
@@ -146,6 +172,7 @@ fn resolved(
     provider: ProviderId,
     base: url::Url,
     verified: bool,
+    paths: &'static [&'static str],
 ) -> Result<ResolvedEndpoint, ProviderError> {
     let host = base
         .host_str()
@@ -158,19 +185,42 @@ fn resolved(
         host,
         port,
         verified,
+        paths,
     })
 }
 
 /// The pinned endpoint of a governed vendor.
 pub fn resolve_vendor(v: Vendor) -> Result<ResolvedEndpoint, ProviderError> {
     let spec = vendor_spec(v);
-    resolved(ProviderId::Vendor(v), parse_base_url(spec.base_url)?, true)
+    resolved(
+        ProviderId::Vendor(v),
+        parse_base_url(spec.base_url)?,
+        true,
+        spec.paths,
+    )
 }
 
-/// Join an adapter's path to the endpoint and check the result stays on the pinned host and port,
-/// over https, with no userinfo or fragment. The path must start with a single `/` and may carry a
-/// query; it may not climb out of the base path (`..`), and may not hold whitespace, control
-/// characters, a backslash, `@` or `#`.
+/// Whether `path` is one of the endpoint's exact paths (`{model}` matching one model id).
+pub fn path_allowed(paths: &[&str], path: &str) -> bool {
+    paths.iter().any(|p| match p.split_once("{model}") {
+        None => *p == path,
+        Some((pre, post)) => path
+            .strip_prefix(pre)
+            .and_then(|rest| rest.strip_suffix(post))
+            .is_some_and(|m| {
+                !m.is_empty()
+                    && m.len() <= 128
+                    && !m.starts_with('.')
+                    && m.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            }),
+    })
+}
+
+/// Join an adapter's path to the endpoint. The path must be one of the endpoint's exact
+/// endpoint paths ([`VendorSpec::paths`], or [`CHAT_PATHS`] for a custom endpoint), which holds
+/// for a bare-host base as much as for one with a path; the joined URL is then re-checked to be
+/// on the pinned host and port, over https, with no userinfo or fragment.
 pub fn join_checked(ep: &ResolvedEndpoint, path: &str) -> Result<url::Url, ProviderError> {
     let bad = |m| Err(ProviderError::Egress(m));
     if !path.starts_with('/') || path.starts_with("//") {
@@ -183,20 +233,13 @@ pub fn join_checked(ep: &ResolvedEndpoint, path: &str) -> Result<url::Url, Provi
     {
         return bad("an adapter path has characters that are not allowed");
     }
-    let (p, _query) = path.split_once('?').unwrap_or((path, ""));
-    if p.split('/').any(|seg| seg == ".." || seg == ".") {
-        return bad("an adapter path may not climb out of the API base");
+    if !path_allowed(ep.paths, path) {
+        return bad("that is not one of this provider's API endpoints");
     }
     let mut joined = ep.base_url.as_str().trim_end_matches('/').to_string();
     joined.push_str(path);
     let url = url::Url::parse(&joined).map_err(|_| ProviderError::Egress("bad path"))?;
     check_on_endpoint(ep, &url)?;
-    if !url
-        .path()
-        .starts_with(ep.base_url.path().trim_end_matches('/'))
-    {
-        return bad("an adapter path may not climb out of the API base");
-    }
     Ok(url)
 }
 
@@ -320,7 +363,7 @@ pub fn resolve_custom(c: &CustomEndpoint) -> Result<ResolvedEndpoint, ProviderEr
         .filter(ProviderId::is_custom)
         .ok_or(ProviderError::Egress("not a custom endpoint id"))?;
     check_custom_host(&c.base_url)?;
-    resolved(id, parse_base_url(&c.base_url)?, false)
+    resolved(id, parse_base_url(&c.base_url)?, false, CHAT_PATHS)
 }
 
 // ---------------------------------------------------------------------------
