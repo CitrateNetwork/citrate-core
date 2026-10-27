@@ -260,3 +260,57 @@ fn tripwire_the_fixed_settings_writers_stay_fixed() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tripwire (Rule 9, #477): one unique-temp-name writer.
+// ---------------------------------------------------------------------------
+
+/// How many unique temp names (`"<name>.tmp-{pid}-{n}"`) the production part of `src` builds
+/// itself, instead of going through this module.
+fn own_unique_temp_sites(src: &str) -> usize {
+    production_part(src).matches(".tmp-{").count()
+}
+
+/// Files that still build their own unique temp name, with the count and why. A count may go
+/// down (move the writer onto [`replace`] or [`stage_secret`]), never up.
+const KNOWN_OWN_UNIQUE_TEMP_NAMES: &[(&str, usize, &str)] = &[(
+    "storage.rs",
+    1,
+    "pins.json save from #502, written before stage_secret existed; fold into this module in a follow-up",
+)];
+
+#[test]
+fn tripwire_the_scanner_counts_hand_built_unique_temp_names() {
+    assert_eq!(
+        own_unique_temp_sites(r#"let t = p.with_file_name(format!("{name}.tmp-{}-{n}", pid));"#),
+        1
+    );
+    assert_eq!(own_unique_temp_sites("// was: format!(\"{name}.tmp-{}-{n}\")"), 0);
+    assert_eq!(own_unique_temp_sites(r#"stage_secret(&path, &bytes)"#), 0);
+}
+
+#[test]
+fn tripwire_unique_temp_names_are_built_only_here() {
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut over: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&src_dir).expect("src dir") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().expect("name").to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "atomic_file.rs" {
+            continue;
+        }
+        let found = own_unique_temp_sites(&std::fs::read_to_string(&path).expect("read"));
+        let allowed = KNOWN_OWN_UNIQUE_TEMP_NAMES
+            .iter()
+            .find(|(f, _, _)| *f == name)
+            .map_or(0, |(_, n, _)| *n);
+        if found > allowed {
+            over.push(format!("{name}: {found} hand-built temp name(s), {allowed} allowed"));
+        }
+    }
+    assert!(
+        over.is_empty(),
+        "write through atomic_file::replace or atomic_file::stage_secret instead of a second \
+         temp-name scheme: {over:?}"
+    );
+}

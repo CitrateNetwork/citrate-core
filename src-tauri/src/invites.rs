@@ -299,25 +299,88 @@ pub(crate) fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
         .unwrap_or_default()
 }
 
-/// Parse `pending.json`. A missing file is no invites; a file that can't be read or parsed is an
-/// error, never "no invites" (a writer truncates before it writes, and the file holds private keys).
-/// Call it only under [`PENDING_LOCK`].
-fn read_pending(path: &std::path::Path) -> Result<Vec<PendingInvite>, String> {
-    match std::fs::read(path) {
-        // The file holds invite private keys: the read buffer is wiped once parsed.
-        Ok(bytes) => serde_json::from_slice(&zeroize::Zeroizing::new(bytes))
-            .map_err(|e| format!("couldn't read the pending invites: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(format!("couldn't read the pending invites: {e}")),
+/// Why `pending.json` can't be used.
+enum PendingReadError {
+    /// The file was read but doesn't parse: a write cut off before the atomic write (#431), or a
+    /// damaged disk. [`update_pending_at`] sets it aside.
+    Damaged,
+    /// The file couldn't be read at all. Nothing is moved: the error may pass.
+    Io(String),
+}
+
+impl PendingReadError {
+    fn message(&self) -> String {
+        match self {
+            PendingReadError::Damaged => "Your saved invite list is damaged and can't be read. \
+                Creating an invite sets the damaged file aside and starts a new list."
+                .to_string(),
+            PendingReadError::Io(e) => format!("couldn't read the pending invites: {e}"),
+        }
     }
 }
 
-/// Read `pending.json` under [`PENDING_LOCK`], so a read never sees a write in progress.
+/// Parse `pending.json`. A missing file is no invites; a file that can't be read or parsed is an
+/// error, never "no invites" (the file holds private keys). Call it only under [`PENDING_LOCK`].
+fn read_pending(path: &std::path::Path) -> Result<Vec<PendingInvite>, PendingReadError> {
+    match std::fs::read(path) {
+        // The file holds invite private keys: the read buffer is wiped once parsed.
+        Ok(bytes) => serde_json::from_slice(&zeroize::Zeroizing::new(bytes))
+            .map_err(|_| PendingReadError::Damaged),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(PendingReadError::Io(e.to_string())),
+    }
+}
+
+/// Read `pending.json` under [`PENDING_LOCK`], so a read never sees a write in progress. A read
+/// never moves a damaged file; only a writer does ([`update_pending_at`]).
 fn view_pending_at(path: &std::path::Path) -> Result<Vec<PendingInvite>, String> {
     let _guard = PENDING_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    read_pending(path)
+    read_pending(path).map_err(|e| e.message())
+}
+
+/// #431 — move a damaged `pending.json` aside as `pending.json.damaged-<unix ms>` (with a `-<k>`
+/// suffix if that name is taken, so an earlier one is never replaced), owner-only, and fsync the
+/// directory. The bytes are kept as they were: they may still hold invite private keys. Returns
+/// the new name. Call it only under [`PENDING_LOCK`].
+fn set_aside_damaged(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let name = path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let base = format!("{name}.damaged-{}", now_unix_ms());
+    let aside = (0..1000u32)
+        .map(|k| {
+            path.with_file_name(if k == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{k}")
+            })
+        })
+        .find(|p| p.symlink_metadata().is_err())
+        .ok_or_else(|| {
+            "couldn't find a free name to set the damaged invite list aside".to_string()
+        })?;
+    std::fs::rename(path, &aside).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Only a regular file: never follow a link to change the mode of what it points at.
+        if aside
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_file())
+        {
+            std::fs::set_permissions(&aside, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::File::open(dir)
+                .and_then(|d| d.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(aside)
 }
 
 /// Serializes every `pending.json` read-change-write in this process (Tauri commands and the MCP
@@ -334,7 +397,24 @@ fn update_pending_at<T>(
     let _guard = PENDING_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut v = read_pending(path)?;
+    let mut v = match read_pending(path) {
+        Ok(v) => v,
+        // #431: never overwrite a damaged file, and never leave the member stuck behind it. Set it
+        // aside, fail this write saying so, and let the next one start a new list.
+        Err(PendingReadError::Damaged) => {
+            let aside = set_aside_damaged(path)?;
+            let kept = aside
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            return Err(format!(
+                "Your saved invite list was damaged and couldn't be read. It was set aside as \
+                 {kept} (kept, not deleted) and nothing was changed. Try again to start a new \
+                 list. Links made before this can't be revoked from this device."
+            ));
+        }
+        Err(e) => return Err(e.message()),
+    };
     let out = f(&mut v);
     write_pending(path, &v)?;
     Ok(out)
@@ -357,14 +437,12 @@ fn read_pending_at<T>(
     view_pending_at(path).map(|v| f(&v))
 }
 
-/// Serialize the pending invites and write them owner-only (`0600`).
+/// Serialize the pending invites and write them owner-only (`0600`), atomically.
 ///
-/// CORE-B-006: `pending.json` holds the plaintext ECIES PRIVATE keys of every
-/// outstanding invite (`PendingInvite::priv_key`). The old `fs::write` created it
-/// at the process umask (`0644`), so another local user could read those keys and
-/// open the sealed relay claims they protect. Route through the shared
-/// [`citrate_core_kit::fsutil`] writer, which creates the file `0600` in the
-/// `open(2)` call itself.
+/// CORE-B-006: `pending.json` holds the plaintext ECIES PRIVATE keys of every outstanding invite
+/// (`PendingInvite::priv_key`), so it is never readable by another local user. #431: it is staged
+/// in a new owner-only temp file, fsynced, renamed over the old file and the directory fsynced
+/// ([`crate::atomic_file`]), so a crash leaves the old list or the new one, never a cut one.
 fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), String> {
     let staged = stage_pending(path, v)?;
     crate::atomic_file::commit_staged(&staged, path).map_err(|e| e.to_string())
@@ -833,12 +911,10 @@ pub async fn group_invites(
     invite_views_at(&store_path(&app)?, &group)
 }
 
-/// The key-free views of a group's outstanding invites, read from `path`.
+/// The key-free views of a group's outstanding invites, read from `path`. A store that can't be
+/// read is an error, not an empty list (#431: unknown is not zero).
 fn invite_views_at(path: &std::path::Path, group: &str) -> Result<Vec<PendingInviteView>, String> {
-    Ok(invite_views_for_group(
-        &view_pending_at(path).unwrap_or_default(),
-        group,
-    ))
+    view_pending_at(path).map(|v| invite_views_for_group(&v, group))
 }
 
 /// `group_invite_verify_consume` — check a claim's one-time token against an outstanding invite for
@@ -2784,6 +2860,45 @@ mod tests {
     fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
         let at = src.find(sig).unwrap_or_else(|| panic!("{sig} not found"));
         &src[at..at + src[at..].find("\n}\n").expect("end")]
+    }
+
+    /// Tripwire (#431): a damaged `pending.json` is moved only by the locked writer, never by a
+    /// read, and nothing reads it leniently (a parse failure as "no invites") where a writer or
+    /// the invite list could act on it.
+    #[test]
+    fn a_damaged_store_is_set_aside_only_by_the_locked_writer() {
+        let prod = prod_source();
+        let calls: Vec<usize> = prod
+            .match_indices("set_aside_damaged(")
+            .map(|(i, _)| i)
+            .collect();
+        let def = prod.find("fn set_aside_damaged(").expect("defined") + "fn ".len();
+        let upd = fn_body(prod, "fn update_pending_at");
+        let upd_at = prod.find(upd).expect("update_pending_at");
+        assert_eq!(calls.len(), 2, "defined once, called once");
+        for c in calls {
+            assert!(
+                c == def || (c > upd_at && c < upd_at + upd.len()),
+                "pending.json is set aside outside update_pending_at"
+            );
+        }
+        for f in [
+            "fn read_pending(",
+            "fn view_pending_at(",
+            "fn invite_views_at(",
+        ] {
+            let body = fn_body(prod, f);
+            assert!(!body.contains("set_aside_damaged("), "{f} moves files");
+            assert!(
+                !body.contains("unwrap_or_default") && !body.contains("unwrap_or(Vec"),
+                "{f} reads a failure as no invites"
+            );
+        }
+        let list = fn_body(prod, "pub async fn group_invites(");
+        assert!(
+            !list.contains("load(") && list.contains("invite_views_at("),
+            "the invite list reads through invite_views_at, never the lenient load()"
+        );
     }
 
     /// Tripwire (core#355 B-1): every write of `pending.json` is one locked read-modify-write

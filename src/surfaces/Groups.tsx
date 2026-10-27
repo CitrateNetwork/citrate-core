@@ -19,6 +19,7 @@ import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { approvalStep } from "./claimApproval";
+import { readOwnerInvites } from "./ownerInvites";
 import { InviteLinks, YourInviteLinks } from "./InviteLinks";
 import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
 import { reachedStep } from "../privacy/joinFunnel";
@@ -101,6 +102,7 @@ export function Groups({ store, s }: SurfaceProps) {
   const inviteHandleRef = useRef<HTMLInputElement>(null);
   const claimRef = useRef<HTMLInputElement>(null);
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [invitesError, setInvitesError] = useState<string | null>(null);
   const [requests, setRequests] = useState<InviteClaim[]>([]);
   const [redeemOpen, setRedeemOpen] = useState(false);
   const [pickerQ, setPickerQ] = useState(""); // CONNECT-S2 — add-member people-picker search
@@ -301,11 +303,10 @@ export function Groups({ store, s }: SurfaceProps) {
   // D4 claimable invites (owner side)
   const refreshInvites = async () => {
     if (!selected || !canManage) return;
-    try {
-      setPendingInvites(await bridge.invites.list(selected.id));
-    } catch {
-      /* honest: none / relay unavailable */
-    }
+    // #431: a saved invite list that can't be read says so; it is never drawn as "no invites".
+    const read = await readOwnerInvites(() => bridge.invites.list(selected.id));
+    setPendingInvites(read.invites);
+    setInvitesError(read.error);
     // CONNECT-S1 — poll the server-blind claims-inbox for incoming requests (no DM-back). Honest-empty
     // if the relay/daemon can't be reached; never a fabricated request (Rule 1).
     try {
@@ -875,6 +876,11 @@ export function Groups({ store, s }: SurfaceProps) {
                     <input ref={inviteHandleRef} className="input" placeholder="@handle on X, Discord, …" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && void doMintInvite()} />
                     <button className="btn btn-secondary btn-sm" onClick={() => void doMintInvite()}>Create invite</button>
                   </div>
+                  {invitesError && (
+                    <p role="alert" style={{ margin: 0, padding: "8px 16px", borderTop: "1px solid var(--line-1)", fontSize: 12, color: "var(--warn)" }}>
+                      {invitesError}
+                    </p>
+                  )}
                   {pendingInvites.map((pi) => (
                     <div key={pi.token} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", borderTop: "1px solid var(--line-1)" }}>
                       <span style={{ flex: 1, minWidth: 0 }}>

@@ -13,7 +13,8 @@ export interface OwnerInvites {
 export async function readOwnerInvites(list: () => Promise<PendingInvite[]>): Promise<OwnerInvites> {
   try {
     return { invites: await list(), error: null };
-  } catch {
-    return { invites: [], error: null };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+    return { invites: [], error: reason || "Couldn't read your saved invites." };
   }
 }
