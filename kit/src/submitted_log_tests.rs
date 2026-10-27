@@ -1392,3 +1392,80 @@ fn an_unreadable_record_that_can_not_be_set_aside_refuses_every_write() {
     assert!(r.as_ref().is_err_and(|e| e.contains("could not be read")), "no write while the record can't be read: {r:?}");
     assert_eq!(std::fs::read(&record).ok(), Some(b"{\"format\":3}".to_vec()));
 }
+
+// ---- Review of 83b711a (items 5-7) ----
+
+/// Item 5: the bound rule applies whenever a section becomes current, not only when it is created.
+/// A -> B (evicts) -> A: A has no bound, B can't prove its history, so A is bounded again.
+#[test]
+fn a_section_made_current_again_after_another_network_evicted_starts_bounded() {
+    let t = Tmp::new("reverse-switch");
+    let a = SubmittedTxLog::open(t.record(), G);
+    assert_eq!(a.try_record_for(&h(90_001), B, 0), Ok(true));
+    drop(a);
+    let b = SubmittedTxLog::open(t.record(), NEW);
+    evict_a_nonce_0(&b); // B evicts A's h(0) at nonce 0
+    drop(b);
+    let back = SubmittedTxLog::open(t.record(), G);
+    assert!(back.is_uncertain(), "B's evicted sends are valid bytes on A");
+    assert_eq!(back.try_record_call(&h(0), A, 0, NonceSource::Supplied, None), Ok(false), "B's evicted bytes are never a first send on A");
+    assert_eq!(back.try_record_call(&h(90_002), A, 0, NonceSource::Fetched, None), Ok(false), "A's first fetched send sets A's bound");
+    assert_eq!(back.try_record_call(&h(90_003), A, 1, NonceSource::Fetched, None), Ok(true));
+}
+
+/// A switch between networks whose histories are all provable keeps them certain.
+#[test]
+fn a_section_made_current_again_stays_certain_when_every_network_is_provable() {
+    let t = Tmp::new("reverse-switch-clean");
+    drop(SubmittedTxLog::open(t.record(), G));
+    let b = SubmittedTxLog::open(t.record(), NEW);
+    assert_eq!(b.try_record_for(&h(1), A, 0), Ok(true));
+    drop(b);
+    let back = SubmittedTxLog::open(t.record(), G);
+    assert!(!back.is_uncertain());
+    assert_eq!(back.try_record_for(&h(2), A, 0), Ok(true));
+}
+
+/// Item 6: a record that is missing beside a set-aside damaged one (a crash after setting it aside,
+/// before the replacement) lost its history: every network is uncertain.
+#[test]
+fn a_missing_record_beside_an_unreadable_set_aside_is_uncertain() {
+    let t = Tmp::new("missing-beside-unreadable");
+    std::fs::write(t.0.join(format!("{RECORD_FILE}.unreadable")), b"{not json").expect("aside");
+    let log = SubmittedTxLog::open(t.record(), NEW);
+    assert!(log.is_uncertain(), "the set-aside record may have held this network's sends");
+    assert_eq!(log.try_record_call(&h(1), A, 0, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(2), A, 1, NonceSource::Fetched, None), Ok(false), "a lost history is never bounded");
+    drop(log);
+    assert!(SubmittedTxLog::open(t.record(), G).is_uncertain(), "every network: history_lost is kept");
+}
+
+fn crashing_sync(_dir: &std::path::Path) -> std::io::Result<()> {
+    panic!("simulated crash after the set-aside step");
+}
+
+/// Item 6: the damaged record is kept in place until its replacement is written (hard link first),
+/// so a crash between the steps leaves it to be found again, and the restart stays uncertain.
+#[test]
+fn a_crash_between_setting_aside_and_replacing_a_damaged_record_stays_uncertain() {
+    let t = Tmp::new("crash-set-aside");
+    std::fs::write(t.record(), b"{not json").expect("damaged");
+    let crashed = std::panic::catch_unwind(|| SubmittedTxLog::open_with(t.record(), G, crashing_sync));
+    assert!(crashed.is_err(), "the fault hook ran");
+    assert_eq!(std::fs::read(t.record()).ok(), Some(b"{not json".to_vec()), "not removed before its replacement is written");
+    let log = SubmittedTxLog::open(t.record(), G);
+    assert!(log.is_uncertain());
+    assert_eq!(log.try_record(&h(1)), Ok(false));
+}
+
+/// Item 7: an archived section that is only uncertain (no evictions, no bound) bounds a new one.
+#[test]
+fn an_archive_that_is_only_uncertain_bounds_the_new_network() {
+    let t = Tmp::new("archive-only-uncertain");
+    std::fs::write(t.legacy(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": true })).expect("json")).expect("legacy");
+    let log = SubmittedTxLog::open(t.record(), NEW);
+    let r = section_of(&record_json(&t), G).expect("r1005 section");
+    assert_eq!((r["uncertain"].clone(), r.get("upgrade_bound").is_none(), r["evicted"].clone()), (serde_json::json!(true), true, serde_json::json!({})), "only uncertain: {r}");
+    assert!(log.is_uncertain());
+    assert_eq!(log.try_record_call(&h(2), A, 0, NonceSource::Supplied, None), Ok(false));
+}
