@@ -801,8 +801,9 @@ describe("verdict", () => {
     const modes = H.SELF_TEST_MODES;
     expect(modes[0]).toEqual({ mode: "good", run: "full", expectFail: [] });
     for (const m of modes.slice(1)) {
-      expect(m.expectFail, m.mode).toHaveLength(1);
-      expect(H.REQUIRED[m.run], m.mode).toContain(m.expectFail[0]);
+      // one check per mode, except a leaked sidecar that still holds a socket: both quit checks
+      expect(m.expectFail, m.mode).toEqual(m.mode === "leak" ? ["quit.clean", "quit.listeners"] : [expect.any(String)]);
+      for (const c of m.expectFail) expect(H.REQUIRED[m.run], m.mode).toContain(c);
     }
     expect(new Set(modes.map((m) => m.mode)).size).toBe(modes.length);
   });

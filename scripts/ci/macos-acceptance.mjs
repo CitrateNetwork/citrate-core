@@ -1120,7 +1120,8 @@ function restoreKeychain(ctx) {
 // fail the signing checks (negative control).
 export const SELF_TEST_MODES = [
   { mode: "good", run: "full", expectFail: [] },
-  { mode: "leak", run: "full", expectFail: ["quit.clean"] },
+  // the leaked ipfs keeps its UDP socket, so the one leak fails both quit checks
+  { mode: "leak", run: "full", expectFail: ["quit.clean", "quit.listeners"] },
   { mode: "wildcard", run: "full", expectFail: ["launch.listeners_loopback"] },
   { mode: "udp-wrong-sidecar", run: "full", expectFail: ["launch.listeners_loopback"] },
   { mode: "norestart", run: "full", expectFail: ["restart.sidecar"] },
