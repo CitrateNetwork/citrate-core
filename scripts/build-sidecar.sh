@@ -55,11 +55,13 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # ── activation-hardening floor ─────────────────────────────────────────────────
 # The node must carry the activation hardening (citrate-chain f9f6257b, #240; re-pinned to the
 # r1005 reroll G + book, 2979a157; v0.5.1 fork safety, c384fc98: bounded merge-block scoring, epoch
-# producer set, canonical checkpoints, block-timing fix, storage key from a file). A node without it
-# rejects nothing at the activation height and forks from the fleet there. `component-pins.mjs
+# producer set, canonical checkpoints, block-timing fix, storage key from a file; r1006, 9a32147e:
+# the r1006 genesis pin 0xa3651a27 and its activation table, #398). A node without it rejects
+# nothing at the activation height and forks from the fleet there; a node without the r1006 pin
+# does not know the r1006 genesis. `component-pins.mjs
 # check` (CI) fails unless the citrate-node pin, this floor and the app's citrate-chain crates in
 # src-tauri/Cargo.toml are the same rev.
-MIN_CHAIN_REV="c384fc982882f830306142c70dd643b59fcda1f6"
+MIN_CHAIN_REV="9a32147e2aac60d388356ecc67488d717aa84c41"
 
 [ -d "$CHAIN_DIR" ] || die "citrate-chain not found at $CHAIN_DIR (use --chain <path>)"
 REV="$(node "$REPO_ROOT/scripts/component-pins.mjs" field citrate-node source.rev)"

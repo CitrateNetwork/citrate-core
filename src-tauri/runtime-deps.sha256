@@ -24,14 +24,17 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 # owner uploads exactly these bytes, a release run fails closed at the download. mem-mcp is
 # citrate-memories 5aeda317 (#25: reads the store key from the file citrate-core names), not
 # the 0e9d4882 0.5.1 shipped. Uploaded 2026-10-27: mem-mcp only (rebuilt from a clean target dir
-# in the same build root, byte-identical to this pin; the downloaded asset matches it). The other
-# five are not uploaded yet.
-91aab7214c187571d4491f97c8b255e516d356e878856a784175de126d5f445e  citrate-aarch64-apple-darwin-c384fc982882
+# in the same build root, byte-identical to this pin; the downloaded asset matches it).
+# 2026-10-27 (RC52 WP-S1-REPIN): citrate is citrate-chain 9a32147e (r1006, MIN_CHAIN_REV) and hermes is
+# citrate-agent-runtime 05243c72 (#101, #102), built on the release Mac with build-sidecar.sh and
+# build-hermes.sh in new trees of the same build root, uploaded under these new names and verified by
+# download. Not uploaded yet: node-agent, comms-member-daemon, cluster-daemon.
+7b460276935a40d079c65de619136f039081bd4fffcb122c198cad6e9286558b  citrate-aarch64-apple-darwin-9a32147e2aac
 250180089826a628e1765b0dd99b25ca68c23cd0d4b1872f88e76cd3bb639728  node-agent-aarch64-apple-darwin-1d8cb8e4e24a
 8eb2fe37e16f1157477f1ac2c9a7e22d16b63c8a9041c4b240b24a8fc65b3214  mem-mcp-aarch64-apple-darwin-5aeda3172369
 192c959cbed6c238339def65bac3a3d1521bf89ca4f9e66f92afa21e49381349  comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
 9a1353624efda5218d695fb64e3ac21088a74e168605057bac67bccaace942bc  cluster-daemon-aarch64-apple-darwin-755cf2172260
-cc7e9127aa12e37a65d42524844b5ac50fb9a7b31e4a4dfbfd03ab2157d93738  hermes-aarch64-apple-darwin-626486b8a7db
+08c50ba7ec462324d12c46518447f8ba8e76da2f0c567092a30b2437993533a3  hermes-aarch64-apple-darwin-05243c72bd52
 # v0.5.0-rc.4 llama runtime for macOS arm64 (2026-10-11, release Mac): llama.cpp tag b10909 (commit
 # a2878d30df0130dde503a7d9ba30d3d21bd71b9f) built from source with upstream's macos-arm64 release
 # options (GGML_METAL_EMBED_LIBRARY, deployment target 13.3, @loader_path rpath, BoringSSL, RPC,

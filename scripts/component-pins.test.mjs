@@ -96,9 +96,9 @@ describe("component-pins check", () => {
   it("refuses federation drift that is not explained", () => {
     const r = fixture();
     const m = manifest(r);
-    delete comp(m, "hermes-sidecar").federation.note;
+    delete comp(m, "cluster-daemon").federation.note;
     setManifest(r, m);
-    expect(errorsOf(r)).toMatch(/'hermes-sidecar': federation drift needs a note/);
+    expect(errorsOf(r)).toMatch(/'cluster-daemon': federation drift needs a note/);
   });
 
   it("refuses a 'match' that does not match", () => {
@@ -111,8 +111,8 @@ describe("component-pins check", () => {
 
   it("refuses an artifact whose runtime-deps asset has no pin", () => {
     const r = fixture();
-    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-626486b8a7db", "  hermes-aarch64-apple-darwin-renamed");
-    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-626486b8a7db is pinned 0 times/);
+    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-05243c72bd52", "  hermes-aarch64-apple-darwin-renamed");
+    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-05243c72bd52 is pinned 0 times/);
   });
 
   it("refuses an asset pinned twice (ambiguous)", () => {
@@ -159,7 +159,7 @@ describe("component-pins check", () => {
 
   it("refuses release.yml that does not stage a pinned sidecar", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-626486b8a7db\n", "");
+    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-05243c72bd52\n", "");
     expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar'/);
   });
 
@@ -199,8 +199,8 @@ describe("component-pins check", () => {
     comp(m, "citrate-node").source.rev = "f9f6257b2dcde21149fe9c09236231ccfc32da68";
     setManifest(r, m);
     const e = errorsOf(r);
-    expect(e).toMatch(/citrate-node rev f9f6257b\S+ != build-sidecar.sh MIN_CHAIN_REV c384fc98/);
-    expect(e).toMatch(/src-tauri\/Cargo.toml pins citrate-chain c384fc98\S+, the bundled node is f9f6257b/);
+    expect(e).toMatch(/citrate-node rev f9f6257b\S+ != build-sidecar.sh MIN_CHAIN_REV 9a32147e/);
+    expect(e).toMatch(/src-tauri\/Cargo.toml pins citrate-chain 9a32147e\S+, the bundled node is f9f6257b/);
   });
 
   it("refuses a Gemma pin that differs from the app's own model pin", () => {
@@ -423,9 +423,10 @@ describe("pending pins (a target waiting on its builder)", () => {
   it("refuses a target that is both pinned and pending", () => {
     const r = fixture();
     const m = manifest(r);
-    comp(m, "hermes-sidecar").pending = { [LINUX]: REASON };
+    comp(m, "cluster-daemon").pending = { [LINUX]: REASON };
     setManifest(r, m);
-    expect(errorsOf(r)).toMatch(/'hermes-sidecar' x86_64-unknown-linux-gnu: pinned and pending at once/);
+    expect(comp(m, "cluster-daemon").artifacts[LINUX]).toBeDefined();
+    expect(errorsOf(r)).toMatch(/'cluster-daemon' x86_64-unknown-linux-gnu: pinned and pending at once/);
   });
 
   it("refuses a pending target with no reason", () => {
