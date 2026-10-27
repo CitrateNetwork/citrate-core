@@ -2,7 +2,7 @@
 // stake and rewards. Live 40204: ~2 s blocks, 5 active validators with 1 producing,
 // blockSubsidy 10 SALT, minStake 32,000.
 //
-//   V4 "validating" from stake >= 32k (incl. LiquidStakingPool self-stake), "producing again",
+//   V4 "validating" from stake >= 32k (incl. pool self-stake, retired by D-9), "producing again",
 //      "every full node builds blocks"     -> ValidatorRegistry.isActive only
 //   V6 withdrawal time assumes 12 s blocks -> blocks x measured block time
 //   V7 four definitions of "staked", one hard-coding 32,000 -> stakeOf only; minStake is read
@@ -48,7 +48,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   toast: () => {},
@@ -124,7 +123,7 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
     (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActivation: null, ...over });
+    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, validatorActivation: null, ...over });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: "0x" + "11".repeat(32) });
@@ -145,10 +144,11 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
     expect(store.state.node).toBe("validating");
   });
 
-  it("LiquidStakingPool self-stake never makes a validator", async () => {
+  it("no stake figure but the registry makes a validator", async () => {
     // C1-V2: the registry is read for the key whatever the stake (so Exiting/Slashed show after a
-    // full exit); self-stake is still never an input, and status None is not a validator.
-    await poll(0, true, { selfStake: 40_000 });
+    // full exit), and status None is not a validator. (The pool self-stake this once covered is
+    // retired by D-9; a legacy one in state is covered in store.test.ts.)
+    await poll(0, true);
     expect(store.state.node).toBe("synced");
     expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, false)).toBe("Not a validator");
   });
@@ -183,48 +183,17 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
   });
 });
 
-describe("V6 — durations use the measured block time", () => {
-  it("a pending withdrawal 50,400 blocks out reads ~28 h at 2 s blocks, not ~7 days", () => {
-    const s = member({
-      wTab: "staking",
-      blockSecs: 2,
-      pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
-      // #371 (main): the queue renders only once it has been read.
-      pendingWithdrawalsError: null,
-    });
-    const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
-    expect(html).toContain("50,400 blocks (~28 h)");
-    expect(html).not.toContain("7.0d");
-    expect(html).not.toContain("~7 days");
-    expect(html).not.toContain("~7-day");
-  });
-
-  it("without a measured block time it shows blocks only", () => {
-    const s = member({
-      wTab: "staking",
-      blockSecs: null,
-      pendingWithdrawals: [{ id: "1", saltWei: wei(10), requestBlock: 499_058, claimableAtBlock: 499_058 + 50_400, claimable: false }],
-      // #371 (main): the queue renders only once it has been read.
-      pendingWithdrawalsError: null,
-    });
-    const html = renderToStaticMarkup(<Wallet store={stub} s={s} />);
-    expect(html).toContain("50,400 blocks left");
-    expect(html).not.toMatch(/\d+\.\dd\)/);
-  });
-});
-
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
-  it("Wallet: the grant in a locked bond and LSP self-stake are not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, selfStake: 500, bondActivated: false })} />);
-    expect(html).not.toContain("32,500");
+  it("Wallet: the grant in a locked bond is not 'staked'", () => {
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, bondActivated: false })} />);
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
   });
 
   it("Wallet: staked equals the registry stake once activated", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", bondedStake: 32_000, selfStake: 500 })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", bondedStake: 32_000 })} />);
     expect(html).toContain("ValidatorRegistry.stakeOf");
-    expect(html).not.toContain("32,500");
+    expect(html).toContain("32,000 SALT");
   });
 
   it("Wallet: the validator minimum is read from minStake, not hard-coded", () => {
@@ -234,16 +203,14 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
     expect(unread).toContain("— · reading minStake");
   });
 
-  it("Dashboard: Staked is stakeOf, never grant + self-stake, and never 'LiquidStakingPool shares'", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, selfStake: 2_500, bondActivated: false })} />);
-    expect(html).not.toContain("LiquidStakingPool shares");
-    expect(html).not.toContain("34,500");
-    expect(html).not.toContain(">2,500<");
+  it("Dashboard: Staked is stakeOf, never the grant", () => {
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, bondActivated: false })} />);
+    expect(html).not.toContain(">32,000<");
     expect(html).toMatch(/bond locked · not staked/i);
   });
 
   it("the model context's staked is the registry stake only", () => {
-    store.setState({ hasGrant: true, s5StakeWei: wei(32000), bondedStake: 0, selfStake: 2_500 });
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), bondedStake: 0 });
     expect(store.snapshot().staked).toBe(0);
   });
 });
@@ -391,9 +358,44 @@ describe("#348 review — widget unknowns", () => {
 });
 
 describe("#348 review — the activation ceremony states the bond principal, not 32,000", () => {
-  it("labels the review from the grant read", async () => {
+  // Join-8 (#354): the principal is MemberBond.principal() from the activation read (state.activation),
+  // which every activation entry refreshes first.
+  it("labels the review from the bond's principal read", async () => {
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ walletReview: null, s5StakeWei: wei(33_500) });
+    vi.spyOn(store, "refreshActivation").mockImplementation(async () => {
+      // A read that passes #408's full activation gate (contract §1), with a 33,500 principal.
+      store.setState({
+        activation: {
+          bondAddress: "0x2222222222222222222222222222222222222222",
+          bondDeployed: true,
+          bondActivated: false,
+          principalWei: wei(33_500),
+          unlockBlock: 16_200_000,
+          unlockTimestamp: 1_822_000_000,
+          memberTokenId: "4",
+          membershipActive: true,
+          validatorPubkey: "0x" + "07".repeat(32),
+          pubkeySource: "node",
+          nodeKeyReady: true,
+          nodePubkey: "0x" + "07".repeat(32),
+          bondPubkey: null,
+          registryStatus: 0,
+          activationEpoch: 0,
+          registryActive: false,
+          currentEpoch: 500,
+          epochBlocks: 1000,
+          headBlock: 500_000,
+          blockTimeMs: 2000,
+          localBlock: 499_999,
+          localSyncing: false,
+          tx: null,
+        } as never,
+        s7TxHash: null as never,
+      });
+      return true;
+    });
+    vi.spyOn(store, "walletIsLinked").mockReturnValue(true);
+    store.setState({ walletReview: null });
     vi.spyOn(bridge.node, "registerValidator").mockResolvedValue({ id: "c1", decoded: { action: "MemberBond.activate", cost: "0", destination: "0x" } } as never);
     await store.activateValidator();
     const r = store.state.walletReview!;

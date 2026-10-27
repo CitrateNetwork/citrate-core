@@ -5,8 +5,8 @@
 //   6. Staking "rewards accrued" (earnVal+earnPin+earnComp) is sim-seeded with no
 //      real per-source chain read in tauri → show "—", never a fabricated accrued
 //      number.
-//   7. The Staked card hardcoded "32000" on top of real selfStake → render the
-//      REAL attributed stake (s5StakeWei, wei→SALT) instead of the literal 32,000.
+//   7. The Staked card hardcoded "32000" → render the REAL attributed stake
+//      (s5StakeWei, wei→SALT) instead of the literal 32,000.
 //
 // These render Wallet in TAURI mode (mocked) and assert the honest states + the
 // negative controls (a fabricated sponsor bar / accrued number must NOT appear).
@@ -47,7 +47,6 @@ function walletState(tab: string, over: Partial<AppState> = {}): AppState {
   // DELIBERATELY non-32,000 value so a hardcoded 32,000 is detectable).
   s.hasGrant = true;
   s.s5StakeWei = (33500n * 10n ** 18n).toString();
-  s.selfStake = 500;
   // Fabricated sim vitals pre-seeded — must NOT surface in tauri.
   s.sponsorUnits = 4;
   s.earnVal = 96.42;
@@ -75,15 +74,16 @@ describe("Wallet — Q-A.4b tauri display honesty", () => {
 
   it("Staked renders the REAL attributed stake (s5StakeWei), not a hardcoded 32,000", () => {
     const html = renderToStaticMarkup(<Wallet store={stubStore} s={walletState("staking")} />);
-    // C1-V V7: "staked" is ValidatorRegistry.stakeOf only (0 here: the bond is not activated), so
-    // the old grant + self-stake total (34,000) is no longer shown as staked.
+    // C1-V V7: "staked" is ValidatorRegistry.stakeOf only (0 here: the bond is not activated); the
+    // grant is not shown as staked, and there is no self-stake (D-9).
     expect(html).not.toContain("34,000");
+    expect(html).not.toMatch(/Validator stake[^<]*<\/span><span[^>]*>33,500/);
     // POSITIVE — the "Membership grant · vaulted" row renders the REAL attributed
     // stake (33,500), not the hardcoded 32,000 constant.
     expect(html).toContain("33,500 SALT");
     // NEGATIVE CONTROL — with a grant that is NOT 32,000, the old hardcoded
-    // (32,000 + 500 = 32,500) staked total must NOT appear.
-    expect(html).not.toContain("32,500");
+    // 32,000 staked total must NOT appear as the figure.
+    expect(html).not.toMatch(/>32,000</);
   });
 
   // Truth contract rule 2 (unknown is not zero) and rule 1 (every number names its source): the

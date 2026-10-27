@@ -42,8 +42,9 @@ function stubStore(over: Record<string, unknown> = {}): Store {
   return {
     walletIsLinked: () => true,
     refreshEarnings: vi.fn(async () => {}),
+    // #408: Node reads the activation (and any recorded activation tx) on mount.
+    refreshActivation: vi.fn(async () => true),
     refreshWallet: () => {},
-    refreshPendingWithdrawals: () => {},
     refreshActivity: () => {},
     refreshChainParams: () => {},
     refreshProducers: () => {},
@@ -159,14 +160,14 @@ describe("#348 review — S6 never offers 'Stake my bond' for a registered stake
     const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: PENDING })} />);
     expect(html).toContain("Registered · active from epoch 547");
     expect(html).not.toContain("Bond locked · not staked");
-    expect(html).not.toContain("Stake my bond");
+    expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
   });
 
   it("registered stake with the registry unread shows '—' and no 'Stake my bond'", () => {
     const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: null })} />);
     expect(html).toContain("—");
     expect(html).not.toContain("Bond locked · not staked");
-    expect(html).not.toContain("Stake my bond");
+    expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
   });
 
   it("the Node page offers no 'Activate validator' for a registered stake that isn't active yet", () => {
@@ -179,10 +180,11 @@ describe("#348 review — S6 never offers 'Stake my bond' for a registered stake
     expect(html).toContain("Activate validator");
   });
 
-  it("a granted bond with no registered stake still gets 'Stake my bond'", () => {
+  // Join-8 (#354): the activation offer moved to S7; S6 points to it.
+  it("a granted bond with no registered stake is still offered activation (in S7)", () => {
     const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false })} />);
     expect(html).toContain("Bond locked · not staked");
-    expect(html).toContain("Stake my bond");
+    expect(html).toContain("next: activate your validator, after the local model below");
   });
 });
 

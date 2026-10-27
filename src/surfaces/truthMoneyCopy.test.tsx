@@ -27,6 +27,7 @@ import { describeBond, store, type Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
 import { bridge } from "../bridge";
+import RETIRED_POOL from "../../fixtures/retired/liquid-staking-pool.json";
 
 const WEI = 10n ** 18n;
 const wei = (salt: number) => (BigInt(salt) * WEI).toString();
@@ -35,7 +36,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
@@ -59,7 +59,7 @@ const OLD_STORIES = [
   "funds this wallet directly",
   "a staked + time-locked model is in progress",
   "time-locked (about a year), recoverable validator bond",
-  "LiquidStakingPool — your full membership grant",
+  "— your full membership grant, vaulted and attributed to your validator",
   "staked to your validator",
 ];
 
@@ -116,7 +116,7 @@ describe("V5 — one grant-custody explanation everywhere", () => {
     expect(note).toContain(GRANT_DISCLAIMER);
   });
 
-  it("the built-in agent's staking reply uses it, with no LiquidStakingPool or mainnet-release story", async () => {
+  it("the built-in agent's staking reply uses it, with no retired-pool or mainnet-release story", async () => {
     vi.useFakeTimers();
     const ctx: AgentContext = { height: 1, peers: 1, nodeState: "synced", staked: 0, liquid: 0, claimable: null, rewardsTotal: null, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "pilot", grant: { amountSalt: 32_000, unlockBlock: 16_000_000, staked: false } };
     let text = "";
@@ -127,7 +127,8 @@ describe("V5 — one grant-custody explanation everywhere", () => {
     await vi.runAllTimersAsync();
     await done;
     for (const old of OLD_STORIES) expect(text).not.toContain(old);
-    expect(text).not.toContain("LiquidStakingPool");
+    // D-9: none of the retired pool's UI words (one list, fixtures/retired/liquid-staking-pool.json).
+    for (const w of RETIRED_POOL.uiCopy) expect(text).not.toContain(w);
     expect(text).not.toContain("mainnet release");
     expect(text).toContain(GRANT_DISCLAIMER);
   });

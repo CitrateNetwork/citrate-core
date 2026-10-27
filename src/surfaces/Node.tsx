@@ -5,6 +5,7 @@ import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWo
 import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -64,6 +65,12 @@ export function Node({ store, s }: SurfaceProps) {
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
   }, [store, s.nTab, readsRewards]);
+  // #406 — read the activation (and the durable record of a sent one) on mount, so a recorded
+  // activation shows here with its way out (Try again / Forget), as on S7.
+  useEffect(() => {
+    if (TAURI && s.hasGrant) void store.refreshActivation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.hasGrant]);
 
   // ----- header / tabs -----
   const ntabs: [string, string][] = [
@@ -334,8 +341,12 @@ export function Node({ store, s }: SurfaceProps) {
                     isn't active yet (pending, or isActive unread) is already staked: no
                     activation is offered for it (#348 review). */}
                 {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
-                {/* #348 review: activation only for a bond that reads not activated (activated() = false). */}
-                {TAURI && s.node === "synced" && canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) && (
+                {/* #348 review: activation only for a bond that reads not activated (activated() = false).
+                    MemberBond.activated() comes from the grant read or, since #408, from the activation
+                    read (refreshActivation on mount); either read counts, an unread one offers nothing.
+                    #406: a recorded activation tx shows its status panel (Try again / Forget) whatever
+                    the offer gate says, so a sent activation is never hidden. */}
+                {TAURI && s.node === "synced" && (hasActivationTxStatus(store, s) || canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated ?? s.activation?.bondActivated ?? null)) && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
@@ -360,6 +371,8 @@ export function Node({ store, s }: SurfaceProps) {
                           You&rsquo;ll approve a signature that proves you control this wallet. Nothing is spent.
                         </span>
                       </>
+                    ) : hasActivationTxStatus(store, s) ? (
+                      <ActivationTxPanel store={store} s={s} testId="node-activation" />
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>

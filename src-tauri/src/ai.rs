@@ -36,6 +36,8 @@
 // Tauri build (the mock drives CI), so allow dead_code on the seam surface.
 #![allow(dead_code)]
 
+use crate::chat_consent::{ChatConsentState, RemoteSendPermit};
+use crate::secret::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zeroize::Zeroize;
@@ -242,6 +244,15 @@ pub enum InferenceState {
     NoModel,
     /// Nothing configured that can run a real model → the built-in demo agent.
     Demo,
+    /// K2 (ask first): a remote route is configured and no local model is running. NOT a route:
+    /// chat asks the member before each message (`chat_route::select_route`).
+    AskGateway,
+    /// K2 (local only): a local model is set up but its server is not running. The member is
+    /// offered only to start it; the gateway is never offered.
+    LocalOnlyStopped,
+    /// K2 (local only): no local model is running and the gateway is not allowed, so a message is
+    /// not sent (the app says how to start the local model).
+    LocalOnly,
 }
 
 impl InferenceState {
@@ -254,6 +265,9 @@ impl InferenceState {
             InferenceState::GatewayOnly => "gateway-only",
             InferenceState::NoModel => "no-model",
             InferenceState::Demo => "demo",
+            InferenceState::AskGateway => "ask-gateway",
+            InferenceState::LocalOnlyStopped => "local-only-stopped",
+            InferenceState::LocalOnly => "local-only",
         }
     }
 }
@@ -315,6 +329,8 @@ pub enum AiError {
     Provider,
     /// The response JSON did not contain `choices[0].message.content`.
     BadResponse,
+    /// A remote send without a consent for this provider (`chat_consent`).
+    NotConfirmed,
 }
 
 impl std::fmt::Display for AiError {
@@ -328,6 +344,7 @@ impl std::fmt::Display for AiError {
             AiError::Network => "ai: could not reach the provider",
             AiError::Provider => "ai: provider returned an error",
             AiError::BadResponse => "ai: provider response could not be parsed",
+            AiError::NotConfirmed => "ai: this send was not confirmed for that provider",
         };
         f.write_str(s)
     }
@@ -352,8 +369,8 @@ struct ProviderConfig {
     #[serde(rename = "baseURL")]
     base_url: String,
     model: String,
-    #[serde(rename = "apiKey")]
-    api_key: String,
+    #[serde(rename = "apiKey", serialize_with = "crate::secret::serialize_exposed")]
+    api_key: SecretString,
 }
 
 // AI-06: redact the api key from any `{:?}`/dbg!/tracing output — no key ever
@@ -365,12 +382,6 @@ impl std::fmt::Debug for ProviderConfig {
             .field("model", &self.model)
             .field("api_key", &"<redacted>")
             .finish()
-    }
-}
-
-impl Drop for ProviderConfig {
-    fn drop(&mut self) {
-        self.api_key.zeroize();
     }
 }
 
@@ -573,7 +584,7 @@ impl AiManager {
         let cfg = ProviderConfig {
             base_url,
             model: model.to_string(),
-            api_key: api_key.to_string(),
+            api_key: SecretString::new(api_key.to_string()),
         };
         let mut blob = serde_json::to_string(&cfg).map_err(|_| AiError::KeyringUnavailable)?;
         let result = self.keyring.set(&account_for(provider_id), &blob);
@@ -595,6 +606,8 @@ impl AiManager {
             .keyring
             .get(&account_for(provider_id))?
             .ok_or(AiError::NotConfigured)?;
+        // The blob holds the key: parse it from a wiping buffer.
+        let blob = zeroize::Zeroizing::new(blob);
         let cfg: ProviderConfig =
             serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
         Ok(cfg)
@@ -611,16 +624,20 @@ impl AiManager {
     /// chosen by core (`/images/generations`), never a caller-supplied URL.
     pub(crate) fn post_to_provider(
         &self,
+        permit: &RemoteSendPermit,
         provider_id: &str,
         path: &'static str,
         body: &Value,
     ) -> Result<String> {
+        if permit.provider_id() != provider_id {
+            return Err(AiError::NotConfirmed);
+        }
         if !path.starts_with('/') || path.contains("..") || path.contains(['?', '#', '@']) {
             return Err(AiError::BadBaseUrl);
         }
         let cfg = self.read_config(provider_id)?;
         let url = format!("{}{path}", cfg.base_url);
-        self.http.post_json(&url, &cfg.api_key, body)
+        self.http.post_json(&url, cfg.api_key.expose(), body)
     }
 
     /// The current default provider id, if one is set.
@@ -639,7 +656,8 @@ impl AiManager {
             validate_provider_id(id)?;
             match self.keyring.get(&account_for(id))? {
                 Some(blob) => {
-                    // Decode to surface baseURL + model (NOT the key).
+                    // Decode to surface baseURL + model (NOT the key); the blob holds the key.
+                    let blob = zeroize::Zeroizing::new(blob);
                     let cfg: ProviderConfig =
                         serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
                     out.push(ProviderStatus {
@@ -679,12 +697,21 @@ impl AiManager {
     /// STORED `baseURL` (invariant 3 — never a caller-supplied URL) with
     /// `Authorization: Bearer {apiKey}`, and return `choices[0].message.content`.
     /// Non-streaming. Errors are coarse + secret-free (invariant 5).
-    fn chat(&self, provider_id: &str, messages_json: &str, context_json: &str) -> Result<String> {
+    fn chat(
+        &self,
+        permit: &RemoteSendPermit,
+        provider_id: &str,
+        messages_json: &str,
+        context_json: &str,
+    ) -> Result<String> {
+        if permit.provider_id() != provider_id {
+            return Err(AiError::NotConfirmed);
+        }
         let cfg = self.read_config(provider_id)?;
         // INVARIANT 3: the endpoint comes from the STORED config, never the caller.
         let url = format!("{}/chat/completions", cfg.base_url);
         let body = build_chat_body(&cfg.model, messages_json, context_json)?;
-        let resp = self.http.post_json(&url, &cfg.api_key, &body)?;
+        let resp = self.http.post_json(&url, cfg.api_key.expose(), &body)?;
         parse_completion(&resp)
     }
 
@@ -695,15 +722,19 @@ impl AiManager {
     /// holds: the URL is derived from the stored config, never the caller.
     fn chat_tools(
         &self,
+        permit: &RemoteSendPermit,
         provider_id: &str,
         messages_json: &str,
         tools_json: &str,
         context_json: &str,
     ) -> Result<String> {
+        if permit.provider_id() != provider_id {
+            return Err(AiError::NotConfirmed);
+        }
         let cfg = self.read_config(provider_id)?;
         let url = format!("{}/chat/completions", cfg.base_url);
         let body = build_chat_body_with_tools(&cfg.model, messages_json, tools_json, context_json)?;
-        let resp = self.http.post_json(&url, &cfg.api_key, &body)?;
+        let resp = self.http.post_json(&url, cfg.api_key.expose(), &body)?;
         parse_chat_message(&resp)
     }
 
@@ -1026,7 +1057,7 @@ pub async fn ai_set_provider(
     provider_id: String,
     base_url: String,
     model: String,
-    api_key: String,
+    api_key: SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1042,10 +1073,10 @@ pub fn ai_set_provider_sync(
     provider_id: String,
     base_url: String,
     model: String,
-    api_key: String,
+    api_key: SecretString,
     ai: tauri::State<'_, AiState>,
 ) -> std::result::Result<(), String> {
-    ai.0.set_provider(&provider_id, &base_url, &model, &api_key)
+    ai.0.set_provider(&provider_id, &base_url, &model, api_key.expose())
         .map_err(|e| e.to_string())
 }
 
@@ -1107,24 +1138,54 @@ pub async fn ai_chat(
     provider_id: String,
     messages_json: String,
     context_json: String,
+    consent_id: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider:
+    // the permit (`chat_consent::authorize`) checks the route before the consent.
+    let route_dir = crate::chat_route::route_dir(&app_h)?;
     crate::blocking::off_main(move || {
         let st3 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_chat_sync(provider_id, messages_json, context_json, st3)
+        let consents = tauri::Manager::try_state::<ChatConsentState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_sync(
+            &st3.0,
+            &consents,
+            &route_dir,
+            crate::ceremony::system_clock(),
+            &consent_id,
+            &provider_id,
+            &messages_json,
+            &context_json,
+        )
     })
     .await
 }
 
-/// Blocking body of [`ai_chat`]; reached only through [`crate::blocking::off_main`].
-pub fn ai_chat_sync(
-    provider_id: String,
-    messages_json: String,
-    context_json: String,
-    ai: tauri::State<'_, AiState>,
+/// Blocking body of [`ai_chat`]; reached only through [`crate::blocking::off_main`]. K2: the send
+/// goes out only with the member's consent for this message, minted by core (`chat_consent`), and
+/// never under Local model only (`route_dir`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ai_chat_sync(
+    ai: &AiManager,
+    consents: &ChatConsentState,
+    route_dir: &std::path::Path,
+    now: crate::ceremony::ClockReading,
+    consent_id: &str,
+    provider_id: &str,
+    messages_json: &str,
+    context_json: &str,
 ) -> std::result::Result<String, String> {
-    ai.0.chat(&provider_id, &messages_json, &context_json)
+    let permit = crate::chat_consent::authorize(
+        consents,
+        route_dir,
+        consent_id,
+        provider_id,
+        messages_json,
+        now,
+    )?;
+    ai.chat(&permit, provider_id, messages_json, context_json)
         .map_err(|e| e.to_string())
 }
 
@@ -1141,26 +1202,62 @@ pub async fn ai_chat_tools(
     messages_json: String,
     tools_json: String,
     context_json: String,
+    consent_id: String,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider:
+    // the permit (`chat_consent::authorize`) checks the route before the consent.
+    let route_dir = crate::chat_route::route_dir(&app_h)?;
     crate::blocking::off_main(move || {
         let st4 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_chat_tools_sync(provider_id, messages_json, tools_json, context_json, st4)
+        let consents = tauri::Manager::try_state::<ChatConsentState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_tools_sync(
+            &st4.0,
+            &consents,
+            &route_dir,
+            crate::ceremony::system_clock(),
+            &consent_id,
+            &provider_id,
+            &messages_json,
+            &tools_json,
+            &context_json,
+        )
     })
     .await
 }
 
-/// Blocking body of [`ai_chat_tools`]; reached only through [`crate::blocking::off_main`].
-pub fn ai_chat_tools_sync(
-    provider_id: String,
-    messages_json: String,
-    tools_json: String,
-    context_json: String,
-    ai: tauri::State<'_, AiState>,
+/// Blocking body of [`ai_chat_tools`]; reached only through [`crate::blocking::off_main`]. K2: the
+/// send goes out only with the member's consent for this message, minted by core.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ai_chat_tools_sync(
+    ai: &AiManager,
+    consents: &ChatConsentState,
+    route_dir: &std::path::Path,
+    now: crate::ceremony::ClockReading,
+    consent_id: &str,
+    provider_id: &str,
+    messages_json: &str,
+    tools_json: &str,
+    context_json: &str,
 ) -> std::result::Result<String, String> {
-    ai.0.chat_tools(&provider_id, &messages_json, &tools_json, &context_json)
-        .map_err(|e| e.to_string())
+    let permit = crate::chat_consent::authorize(
+        consents,
+        route_dir,
+        consent_id,
+        provider_id,
+        messages_json,
+        now,
+    )?;
+    ai.chat_tools(
+        &permit,
+        provider_id,
+        messages_json,
+        tools_json,
+        context_json,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// **Command — ai_chat_local (BC-3.2, F-1 hardened).** REAL LOCAL inference

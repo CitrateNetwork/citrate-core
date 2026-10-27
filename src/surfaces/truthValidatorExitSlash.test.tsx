@@ -34,7 +34,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
@@ -89,7 +88,7 @@ describe("C1-V2(a) — the word follows validatorInfo.status before any stake ch
     (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     (store as unknown as { validatorPubkey: string | null }).validatorPubkey = null;
-    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActivation: null });
+    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, validatorActivation: null });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 511_000, syncPct: 100, miningArmed: false });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: KEY });

@@ -241,16 +241,97 @@ struct PinIndex {
 }
 
 impl PinIndex {
-    fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+    /// The index on disk: a missing file is empty; a file that can't be read or parsed is an
+    /// error, never an empty index (a writer would save over it).
+    fn read(path: &Path) -> std::result::Result<Self, String> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e.to_string()),
+        }
     }
+
+    /// For display only (`list`): a damaged index shows the daemon's live pins with no metadata.
+    fn load_for_display(path: &Path) -> Self {
+        Self::read(path).unwrap_or_default()
+    }
+
+    /// For a write. Builds before 0.5.2 saved the index with a plain truncating write, so a crash
+    /// could leave a cut file. A damaged index is moved aside to `pins.json.damaged-<secs>` (kept
+    /// byte for byte for recovery) and the write starts from an empty index. If it can't be moved
+    /// aside, the write is refused rather than saved over it.
+    fn load_for_write(path: &Path, now_secs: u64) -> Result<Self> {
+        match Self::read(path) {
+            Ok(idx) => Ok(idx),
+            Err(why) => {
+                let aside = damaged_aside_path(path, now_secs);
+                std::fs::rename(path, &aside).map_err(|e| {
+                    StorageError::Io(format!(
+                        "the pin index is damaged ({why}) and could not be set aside: {e}"
+                    ))
+                })?;
+                Ok(Self::default())
+            }
+        }
+    }
+
+    /// Write through a temp file in the same directory, fsync, then rename, then fsync the
+    /// directory, so a crash or a power loss leaves either the old index or the new one. The temp
+    /// name is unique per write (process id plus a counter), so no two writes share one.
     fn save(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let io = |e: std::io::Error| StorageError::Io(e.to_string());
         let s =
             serde_json::to_string_pretty(self).map_err(|e| StorageError::Parse(e.to_string()))?;
-        std::fs::write(path, s).map_err(|e| StorageError::Io(e.to_string()))
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_file_name(format!("pins.json.tmp-{}-{seq}", std::process::id()));
+        let written = (|| {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(s.as_bytes())?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, path)
+        })();
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(io(e));
+        }
+        sync_parent_dir(path).map_err(io)
+    }
+}
+
+/// fsync the directory holding `path`, so a rename into it survives a power loss. Unix only:
+/// Windows cannot open a directory as a file, and NTFS journals the rename itself.
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// #461: one pin index writer at a time in this process. The storage commands are stateless (a
+/// manager per call, on the blocking pool) and a pin is also reached from the node MCP and a
+/// backup restore, so without this two read-modify-write cycles overlap and one drops the other's
+/// record. Held across load, change and save.
+static PIN_INDEX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `pins.json.damaged-<secs>`, with a counter if that name is taken.
+fn damaged_aside_path(path: &Path, now_secs: u64) -> PathBuf {
+    let mut n = 0u32;
+    loop {
+        let name = if n == 0 {
+            format!("pins.json.damaged-{now_secs}")
+        } else {
+            format!("pins.json.damaged-{now_secs}-{n}")
+        };
+        let p = path.with_file_name(name);
+        if !p.exists() {
+            return p;
+        }
+        n += 1;
     }
 }
 
@@ -366,14 +447,7 @@ impl StorageManager {
     /// [`Self::add_file`].
     pub fn add_bytes(&self, filename: &str, bytes: &[u8]) -> Result<AddOutcome> {
         let out = self.transport.add(filename, bytes)?;
-        std::fs::create_dir_all(&self.dir).map_err(|e| StorageError::Io(e.to_string()))?;
-        let mut idx = PinIndex::load(&self.index_path());
-        let rec = idx.records.entry(out.cid.clone()).or_default();
-        rec.size_bytes = out.size_bytes;
-        if rec.added_at == 0 {
-            rec.added_at = (self.now)();
-        }
-        idx.save(&self.index_path())?;
+        self.update_index(&out.cid, |rec| rec.size_bytes = out.size_bytes)?;
         Ok(out)
     }
 
@@ -382,10 +456,17 @@ impl StorageManager {
     pub fn pin(&self, cid: &str, bond_salt: &str) -> Result<()> {
         check_cid(cid)?;
         self.transport.pin_add(cid)?;
+        self.update_index(cid, |rec| rec.bond_salt = bond_salt.to_string())
+    }
+
+    /// Change one index record (created if absent, `added_at` set on first sight) under
+    /// [`PIN_INDEX_LOCK`], so overlapping writers each see the others' records.
+    fn update_index(&self, cid: &str, change: impl FnOnce(&mut PinRecord)) -> Result<()> {
+        let _one_writer = PIN_INDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::fs::create_dir_all(&self.dir).map_err(|e| StorageError::Io(e.to_string()))?;
-        let mut idx = PinIndex::load(&self.index_path());
+        let mut idx = PinIndex::load_for_write(&self.index_path(), (self.now)())?;
         let rec = idx.records.entry(cid.to_string()).or_default();
-        rec.bond_salt = bond_salt.to_string();
+        change(rec);
         if rec.added_at == 0 {
             rec.added_at = (self.now)();
         }
@@ -437,7 +518,7 @@ impl StorageManager {
     /// is truth-from-the-daemon (`Pinned` iff live), so an index row the daemon no longer holds
     /// honestly reads `Unpinned`; a live pin not in the index is surfaced with empty metadata.
     pub fn list(&self) -> Result<Vec<PinRow>> {
-        let idx = PinIndex::load(&self.index_path());
+        let idx = PinIndex::load_for_display(&self.index_path());
         let live: std::collections::BTreeSet<String> =
             self.transport.pin_ls()?.into_iter().collect();
         let mut rows: Vec<PinRow> = Vec::new();

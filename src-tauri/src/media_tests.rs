@@ -657,3 +657,41 @@ fn live_local_image_generation_into_a_granted_folder() {
         })
     );
 }
+
+/// K2 (2026-10-23): under Local model only a provider route is not available and says why; the
+/// local route is unchanged. With no block, the routes are as they were.
+#[test]
+fn local_model_only_marks_provider_routes_unavailable_with_the_reason() {
+    let s = settings(Some("http://127.0.0.1:7860/v1"), Some("openai"));
+    let rp = remote("openai", "https://api.openai.com/v1");
+    let routes = image_routes(Some("T1"), &s, Some(&rp));
+    assert!(routes.iter().all(|r| r.available), "both available before the block");
+    let blocked = with_remote_blocked(routes.clone(), Some("Local only is on".into()));
+    let local = blocked.iter().find(|r| r.id == "local").unwrap();
+    assert!(local.available && local.reason.is_none(), "local unchanged");
+    let remote_route = blocked.iter().find(|r| r.id != "local").unwrap();
+    assert!(!remote_route.available, "provider route blocked");
+    assert_eq!(remote_route.reason.as_deref(), Some("Local only is on"));
+    assert_eq!(with_remote_blocked(routes.clone(), None), routes);
+}
+
+/// The media commands check the route before anything remote: `media_options` marks provider
+/// routes, and `media_generate_image` posts only through `remote_image_post`, whose permit
+/// (`chat_consent::authorize_once`) checks the route folder it is given before the consent.
+#[test]
+fn media_commands_check_local_model_only_before_anything_remote() {
+    let src = include_str!("media.rs");
+    let body = |sig: &str| {
+        let at = src.find(sig).expect(sig);
+        &src[at..at + src[at..].find("\n}\n").expect("end")]
+    };
+    let opts = body("pub async fn media_options(");
+    assert!(opts.contains("media_remote_allowed(") && opts.contains("with_remote_blocked("));
+    let gen = body("pub async fn media_generate_image(");
+    assert!(gen.contains("chat_route::route_dir(&app)"), "the real route folder");
+    let post = &gen[gen.find("remote_image_post(").expect("remote post")..];
+    assert!(post.contains("&route_dir,"), "the post gets the route folder");
+    let send = body("pub(crate) fn remote_image_post(");
+    let permit = send.find("chat_consent::authorize_once(").expect("permit");
+    assert!(permit < send.find("post_to_provider(").expect("post"), "permit before the post");
+}

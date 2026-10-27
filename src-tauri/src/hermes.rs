@@ -113,6 +113,9 @@ pub enum HermesError {
     /// one of its choices, or an edit dropped a required gate. Carries the sidecar's reason verbatim
     /// so the interview card can show it inline.
     BriefRefused(String),
+    /// K5a: Hermes restarted since a Store daemon's tools were checked; the session was not
+    /// opened (the new sidecar may offer other host tool sets).
+    Restarted,
 }
 
 impl std::fmt::Display for HermesError {
@@ -138,6 +141,10 @@ impl std::fmt::Display for HermesError {
                 "STALE_APPROVAL: the agent's pending action is no longer the one you reviewed (it expired or was replaced), so the agent did not receive this decision"
             ),
             HermesError::BriefRefused(m) => write!(f, "BRIEF_REFUSED: {m}"),
+            HermesError::Restarted => write!(
+                f,
+                "Not started: Hermes restarted after this run's tools were checked; nothing was opened"
+            ),
         }
     }
 }
@@ -306,6 +313,21 @@ pub struct RemoteStatus {
     pub running: bool,
     pub skills: usize,
     pub pending_approvals: usize,
+    /// citrate-agent-runtime#87: what the session API supports. Absent on an older sidecar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<SessionCapabilities>,
+}
+
+/// `GET /status` → `capabilities` (citrate-agent-runtime#87).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCapabilities {
+    /// The host tool-set names a session's `toolSets` allowlist accepts (core's permission names).
+    #[serde(default)]
+    pub session_tool_sets: Vec<String>,
+    /// `promptSnapshot: false` is honoured (the sidecar adds nothing to core's system prompt).
+    #[serde(default)]
+    pub session_prompt_snapshot: bool,
 }
 
 /// One installed skill (a capsule).
@@ -376,9 +398,9 @@ pub struct HermesManager {
     /// HUP-S3.2: the other skill sources for the sidecar's one SKILL.md loader (the member's saved
     /// skills, Citrate's bundled skills, the reviewed third-party skills). `None` = learned only.
     skill_sources: Option<crate::hermes_learn::SkillSources>,
-    /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
-    /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
-    mcp_allowlist: Option<PathBuf>,
+    /// HUP-S4.4 + RC52 P-9a: the member's MCP servers (Settings > MCP servers; env values in the
+    /// keychain). Their allowlist is written for the child only at spawn (see [`Self::build_spec`]).
+    mcp_servers: Option<crate::mcp_servers::McpStore>,
     /// HUP-S7.3/S7.5: the base folder for the sidecar's metering log, decision records and anchor
     /// ledger (see `hermes_chain`). `None` (tests) leaves those env vars unset.
     chain_data_dir: Option<PathBuf>,
@@ -398,6 +420,9 @@ pub struct HermesManager {
     /// The current session bearer (minted on start; wiped on drop). Held for control calls (S6.2+).
     token: Mutex<Option<Zeroizing<String>>>,
     sup: Mutex<Option<Supervisor>>,
+    /// K5a: the environment the running child was started with (paths and flags; never a token,
+    /// which the child reads from a file). The daemon book reads which host tool sets are on.
+    started_env: Mutex<Option<Vec<(String, String)>>>,
     /// The bearer-authed control transport (production ureq; tests inject a mock).
     control: Box<dyn HermesControl>,
     /// S6.3 dedup: a chain effect's content key (hash of to+data) → the ceremony id minted for it.
@@ -415,6 +440,12 @@ pub struct HermesManager {
     /// HUP-S2.1: agent sessions opened with the member's folder-grant document; each change to the
     /// document is sent to every one of them (`POST /sessions/:id/grants`).
     grant_sessions: Mutex<std::collections::BTreeSet<String>>,
+    /// K5a: which sidecar a check was made against. A Store daemon's tool check and its session
+    /// open must be about the same running sidecar (see [`Self::session_open_in`]).
+    generation: std::sync::atomic::AtomicU64,
+    /// Held for writing by [`Self::start`] and [`Self::stop`], for reading by
+    /// [`Self::session_open_in`] across its request: a checked open never straddles a restart.
+    open_gate: std::sync::RwLock<()>,
 }
 
 /// HUP-S2.1: how sending a changed grant document to the open agent sessions went.
@@ -428,6 +459,11 @@ pub struct GrantsPushOutcome {
 }
 
 impl HermesManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over an explicit binary + token file + crash path (default control addr).
     pub fn new(bin: PathBuf, token_path: PathBuf, crash_record_path: PathBuf) -> Self {
         HermesManager {
@@ -440,7 +476,7 @@ impl HermesManager {
             checkpoints_dir: None,
             learn_dirs: None,
             skill_sources: None,
-            mcp_allowlist: None,
+            mcp_servers: None,
             chain_data_dir: None,
             env_source: None,
             embed: None,
@@ -450,10 +486,13 @@ impl HermesManager {
             spawn_args_override: None,
             token: Mutex::new(None),
             sup: Mutex::new(None),
+            started_env: Mutex::new(None),
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
             bridged_by_call: Mutex::new(HashMap::new()),
             grant_sessions: Mutex::new(std::collections::BTreeSet::new()),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            open_gate: std::sync::RwLock::new(()),
         }
     }
 
@@ -513,11 +552,16 @@ impl HermesManager {
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
-    /// HUP-S4.4: the member's MCP allowlist file (joined with the built-in one, see
+    /// HUP-S4.4: the member's MCP servers (joined with the built-in ones at spawn, see
     /// [`crate::hermes_mcp::effective_allowlist`]).
-    pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
-        self.mcp_allowlist = Some(path);
+    pub fn with_mcp_servers(mut self, store: crate::mcp_servers::McpStore) -> Self {
+        self.mcp_servers = Some(store);
         self
+    }
+
+    /// The embedding server this sidecar starts, if it has one (the services registry, K1a-2).
+    pub(crate) fn embed_server(&self) -> Option<&crate::embed_serve::EmbedServer> {
+        self.embed.as_ref()
     }
 
     /// HUP-S1.2 / US-1.4: start this embedding server with the sidecar and pass its URL and key
@@ -603,25 +647,25 @@ impl HermesManager {
             ));
         }
         // HUP-S4.3 + S4.4: hand the child one MCP allowlist (built-in servers and the member's
-        // reviewed servers, joined when both are on), and only when one is written (default: none).
-        if let Some(path) = crate::hermes_mcp::effective_allowlist(
+        // reviewed servers, joined when both are on), and only when there is one (default: none).
+        // RC52 P-9a: with member servers it is a spawn-time file holding their env values from the
+        // keychain; the child watch below removes it once the child has loaded it.
+        let effective = crate::hermes_mcp::effective_allowlist(
             self.mcp_config_path.as_deref(),
-            self.mcp_allowlist.as_deref(),
-        ) {
+            self.mcp_servers.as_ref(),
+        );
+        if let Some(path) = &effective {
             spec.env.push((
                 crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
                 path.to_string_lossy().to_string(),
             ));
         }
-        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
-        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
-        if let Some(allow) = &self.mcp_allowlist {
+        // HUP-S4.4: the probe file, so the sidecar's dry-run probe starts only the entry this app
+        // is checking. It exists only during a check; otherwise the probe refuses.
+        if let Some(store) = &self.mcp_servers {
             spec.env.push((
                 crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
-                allow
-                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
-                    .to_string_lossy()
-                    .to_string(),
+                store.probe_path().to_string_lossy().to_string(),
             ));
         }
         if let Some(dir) = &self.checkpoints_dir {
@@ -668,7 +712,22 @@ impl HermesManager {
         });
         // SCL-S0.3: record the sidecar's managed browsers while it runs, clean them up after it
         // ends (including core's hard kill after the stop grace).
-        spec.child_watch = crate::owned_browser::watch(self.browser_record_path());
+        let browser = crate::owned_browser::watch(self.browser_record_path());
+        // RC52 P-9a: a spawn-time allowlist with member env values lives only until the child has
+        // loaded it, and is written again for a supervisor restart.
+        spec.child_watch = match (effective, &self.mcp_servers) {
+            (Some(path), Some(store)) if crate::hermes_mcp::is_spawn_file(&path, store) => {
+                let health_url = format!("http://{}/health", self.control_addr);
+                Some(crate::hermes_mcp::spawn_file_watch(
+                    browser,
+                    path,
+                    self.mcp_config_path.clone(),
+                    store.clone(),
+                    std::sync::Arc::new(move || http_health_ok(&health_url)),
+                ))
+            }
+            _ => browser,
+        };
         spec
     }
 
@@ -694,10 +753,25 @@ impl HermesManager {
         self.build_spec().env
     }
 
+    /// Test hook: the whole spec (for the child-watch hooks).
+    #[cfg(test)]
+    pub fn spec_for_test(&self) -> SidecarSpec {
+        self.build_spec()
+    }
+
+    /// RC52 P-9a: remove the files that hold member MCP env values only around a spawn or a probe.
+    fn sweep_mcp_runtime_files(&self) {
+        if let Some(store) = &self.mcp_servers {
+            crate::mcp_servers::sweep_runtime_files(store.dir());
+        }
+    }
+
     /// Start the sidecar: mint a fresh session bearer, persist it `0600` (the child adopts it), and
     /// spawn under the supervisor. Fails CLOSED if the token can't be minted or the binary is
     /// missing; idempotent (`AlreadyRunning`).
     pub fn start(&self) -> Result<()> {
+        // A start is a new generation: no checked open is in flight across it.
+        let _gate = self.open_gate.write().unwrap_or_else(|e| e.into_inner());
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(HermesError::AlreadyRunning);
@@ -726,8 +800,15 @@ impl HermesManager {
             }
         }
         let token = mint_bearer();
+        let mut env_used: Option<Vec<(String, String)>> = None;
         let started = persist_bearer(&self.token_path, &token).and_then(|()| {
             let spec = self.build_spec();
+            // What the child actually sees: the app's own environment (inherited by the spawn)
+            // overlaid with core's values, so a CITRATE_HERMES_* flag in the launch environment is
+            // checked too.
+            let inherited = std::env::vars_os()
+                .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+            env_used = Some(effective_child_env(inherited, &spec.env));
             let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
             config.backoff = BackoffPolicy::new();
             config.healthy_after = HERMES_HEALTHY_AFTER;
@@ -736,6 +817,7 @@ impl HermesManager {
         let sup = match started {
             Ok(sup) => sup,
             Err(e) => {
+                self.sweep_mcp_runtime_files();
                 // SCL-S0.5: the embedding server lives and dies with Hermes. A Hermes that did not
                 // start must not leave it running until the app quits.
                 if let Some(embed) = &self.embed {
@@ -745,20 +827,30 @@ impl HermesManager {
             }
         };
         *guard = Some(sup);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
+        *self.started_env.lock().unwrap_or_else(|e| e.into_inner()) = env_used;
         Ok(())
     }
 
     /// Stop the sidecar (SIGTERM → grace → SIGKILL, no orphan) and drop the session bearer. Idempotent.
     pub fn stop(&self) {
+        // Waits for a checked open in flight; any check made before this stop is now stale.
+        let _gate = self.open_gate.write().unwrap_or_else(|e| e.into_inner());
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let sup = {
             let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
         };
+        *self.started_env.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Some(sup) = sup {
             sup.stop();
             drop(sup);
         }
+        // After the stop (its last child-watch call may have rewritten the spawn-time allowlist).
+        self.sweep_mcp_runtime_files();
         if let Some(embed) = &self.embed {
             embed.stop();
         }
@@ -815,6 +907,18 @@ impl HermesManager {
         }
     }
 
+    /// K5a: the environment the running sidecar was started with, or `None` while it is not
+    /// running. Read for which sidecar-hosted tool sets every session is offered.
+    pub fn started_env(&self) -> Option<Vec<(String, String)>> {
+        if !self.is_running() {
+            return None;
+        }
+        self.started_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Whether the sidecar is currently Running (the control-call gate for S6.2+).
     pub fn is_running(&self) -> bool {
         let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
@@ -861,6 +965,17 @@ impl HermesManager {
         let bearer = self.bearer()?;
         self.control
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
+    }
+
+    /// K5a + citrate-agent-runtime#87: the host tool sets this sidecar can scope per session, read
+    /// fresh from `GET /status`. `None` while not running, on any error, for an older sidecar
+    /// without `capabilities`, or when it cannot honour `promptSnapshot: false` (both are needed
+    /// to open a Store daemon's session exactly as core sends it).
+    pub fn session_tool_sets(&self) -> Option<Vec<String>> {
+        if !self.is_running() {
+            return None;
+        }
+        scoping_tool_sets(&self.remote_status().ok()?)
     }
 
     /// `GET /status` — the sidecar's running/skills/pending snapshot.
@@ -912,13 +1027,12 @@ impl HermesManager {
     /// `POST /mcp/probe` — the sidecar's dry-run check of one server entry (the runtime's
     /// `[[servers]]` shape). 422 = the sidecar's field errors; 200 = the probe report (which may
     /// itself say the server could not be reached). Registers nothing.
-    pub fn mcp_probe(&self, entry: &serde_json::Value) -> Result<crate::mcp_servers::ProbeOutcome> {
+    /// `entry` is the entry's JSON with its env values ([`crate::mcp_servers::runtime_entry_json`]).
+    pub fn mcp_probe(&self, entry: &str) -> Result<crate::mcp_servers::ProbeOutcome> {
         let bearer = self.bearer()?;
-        let resp = self.control.post(
-            &format!("{}/mcp/probe", self.control_url()),
-            &bearer,
-            &entry.to_string(),
-        )?;
+        let resp =
+            self.control
+                .post(&format!("{}/mcp/probe", self.control_url()), &bearer, entry)?;
         if resp.status == 422 {
             #[derive(Deserialize)]
             struct Invalid {
@@ -955,6 +1069,33 @@ impl HermesManager {
         Ok(resp)
     }
 
+    /// K5a: the running sidecar's generation. Read it BEFORE the facts a check uses (its
+    /// environment), then open with [`Self::session_open_in`].
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// [`Self::session_open`] into the sidecar generation `generation` was read from.
+    /// Refused (nothing is sent) when Hermes stopped or started since `generation` was read; a
+    /// stop or start waits until this open has returned.
+    pub fn session_open_in(&self, generation: u64, body: &str) -> Result<String> {
+        self.in_generation(generation, |m| m.session_open(body))
+    }
+
+    /// Run `f` (a session open) in sidecar `generation`: refused when Hermes stopped or started
+    /// since it was read, and no stop or start runs until `f` has returned.
+    pub fn in_generation<T>(
+        &self,
+        generation: u64,
+        f: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<T> {
+        let _gate = self.open_gate.read().unwrap_or_else(|e| e.into_inner());
+        if self.generation() != generation {
+            return Err(HermesError::Restarted);
+        }
+        f(self)
+    }
+
     /// `POST /sessions` with a body from [`build_session_body`]; returns the session id.
     pub fn session_open(&self, body: &str) -> Result<String> {
         let bearer = self.bearer()?;
@@ -979,6 +1120,32 @@ impl HermesManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(id.clone());
+        }
+        Ok(id)
+    }
+
+    /// K5a + citrate-agent-runtime#87: open a STORE daemon's session and verify the sidecar applied
+    /// the scoping. The 201 response must echo `toolSets` equal (as a set) to `sent_sets` and
+    /// `promptSnapshot: false`. A sidecar that ignored either (an older one, or a dropped field)
+    /// fails open, so its session is closed and the run refused.
+    pub fn session_open_store(&self, body: &str, sent_sets: &[String]) -> Result<String> {
+        let bearer = self.bearer()?;
+        let resp = Self::check(self.control.post(
+            &format!("{}/sessions", self.control_url()),
+            &bearer,
+            body,
+        )?)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))?;
+        let id = v
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        valid_session_id(&id).map_err(HermesError::Decode)?;
+        if let Err(why) = verify_store_session_echo(&v, sent_sets) {
+            let _ = self.session_close(&id);
+            return Err(HermesError::Decode(why));
         }
         Ok(id)
     }
@@ -1301,7 +1468,7 @@ impl HermesManager {
             }
             map.remove(&key);
         }
-        let view = ceremony.request(hermes_intent(&to, &data, &from, gas));
+        let view = ceremony.request_watched(hermes_intent(&to, &data, &from, gas));
         map.insert(key.clone(), view.id.clone());
         self.bridged_by_call
             .lock()
@@ -1505,6 +1672,11 @@ use std::sync::OnceLock;
 /// binary + the 0600 bearer/crash paths); one instance for the process lifetime.
 static HERMES: OnceLock<HermesManager> = OnceLock::new();
 
+/// The manager if this session built one, without building it (the services registry, K1a-2).
+pub(crate) fn existing_manager() -> Option<&'static HermesManager> {
+    HERMES.get()
+}
+
 /// HUP-S4.3: whether this session's Hermes sidecar is running (false if never started).
 pub fn sidecar_running() -> bool {
     HERMES.get().is_some_and(|m| m.is_running())
@@ -1639,7 +1811,7 @@ pub(crate) fn manager<R: tauri::Runtime>(
         .with_checkpoints_dir(base.join("checkpoints"))
         .with_learn_dirs(base.join("learn"), base.join("skills"))
         .with_skill_sources(skill_sources)
-        .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
+        .with_mcp_servers(crate::mcp_servers::os_store(base.clone()))
         .with_chain_data_dir(base.clone())
         .with_env_source({
             // HUP-S5.2/S5.3 web opt-ins and HUP-S6.3 the toolchain switch, read at each start.
@@ -1736,6 +1908,7 @@ pub fn hermes_status_sync(app: tauri::AppHandle) -> std::result::Result<RemoteSt
             running: false,
             skills: 0,
             pending_approvals: 0,
+            capabilities: None,
         });
     }
     m.remote_status().map_err(|e| e.to_string())
@@ -2168,6 +2341,36 @@ pub fn build_session_body(
     .to_string())
 }
 
+/// K5a: the environment a spawned child sees: `inherited` (the app's own, which the spawn passes
+/// on) overlaid with `set` (core's explicit values, which win). Only `CITRATE_` keys are kept:
+/// those are the ones that turn sidecar features on.
+pub(crate) fn effective_child_env(
+    inherited: impl Iterator<Item = (String, String)>,
+    set: &[(String, String)],
+) -> Vec<(String, String)> {
+    effective_child_env_for(inherited, set, cfg!(windows))
+}
+
+/// [`effective_child_env`] with the platform's env-name rule made explicit (tests drive both).
+pub(crate) fn effective_child_env_for(
+    inherited: impl Iterator<Item = (String, String)>,
+    set: &[(String, String)],
+    case_insensitive: bool,
+) -> Vec<(String, String)> {
+    use crate::daemons::env_name_eq;
+    let citrate = |k: &str| {
+        k.get(..8)
+            .is_some_and(|p| env_name_eq(p, "CITRATE_", case_insensitive))
+    };
+    let mut out: Vec<(String, String)> = inherited
+        .filter(|(k, _)| {
+            citrate(k) && !set.iter().any(|(s, _)| env_name_eq(s, k, case_insensitive))
+        })
+        .collect();
+    out.extend(set.iter().cloned());
+    out
+}
+
 /// HUP-S10.3 — the body for a DAEMON run's session: exactly the chat body plus `unattended: true`,
 /// so the sidecar starts the session in the HIC downgrade (every effectful call needs the member's
 /// explicit decision from the first step). A sidecar that predates the flag ignores it; core marks
@@ -2195,15 +2398,107 @@ pub fn build_daemon_session_body(
     Ok(v.to_string())
 }
 
-/// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
-type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
+/// K5a + citrate-agent-runtime#87: the body for a STORE daemon run's session: the daemon body with
+/// only the core tools the daemon was approved for, `toolSets` naming exactly the host tool sets
+/// its approved permissions cover (empty = none; a sidecar without the field ignores it, which is
+/// why core also gates the start on the sidecar's capability), and `promptSnapshot: false` so the
+/// sidecar adds nothing to the prompt.
+#[allow(clippy::too_many_arguments)]
+pub fn build_store_daemon_session_body(
+    system_prompt: &str,
+    tools_json: &str,
+    base_url: &str,
+    bearer: &str,
+    model: &str,
+    context_tokens: u32,
+    allowed: &[String],
+) -> std::result::Result<String, String> {
+    let body = build_daemon_session_body(
+        system_prompt,
+        tools_json,
+        base_url,
+        bearer,
+        model,
+        context_tokens,
+    )?;
+    let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let o = v
+        .as_object_mut()
+        .ok_or_else(|| "internal: the session body is not an object".to_string())?;
+    if let Some(serde_json::Value::Array(tools)) = o.get_mut("tools") {
+        tools.retain(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| allowed.iter().any(|a| a == n))
+        });
+    }
+    o.insert(
+        "toolSets".into(),
+        serde_json::json!(crate::daemons::store_tool_sets(allowed)),
+    );
+    o.insert("promptSnapshot".into(), serde_json::Value::Bool(false));
+    Ok(v.to_string())
+}
 
-/// Open a session on the local model with the body `build` makes (chat or daemon).
-fn open_local_session(
+/// The host tool sets a sidecar's `GET /status` says a session can be scoped to, or `None` unless
+/// it reports BOTH `sessionToolSets` and `sessionPromptSnapshot: true` (citrate-agent-runtime#87).
+pub(crate) fn scoping_tool_sets(status: &RemoteStatus) -> Option<Vec<String>> {
+    let caps = status.capabilities.as_ref()?;
+    caps.session_prompt_snapshot
+        .then(|| caps.session_tool_sets.clone())
+}
+
+/// The check on a Store daemon's session-create response: `toolSets` echoed as an array with
+/// exactly the sent names (any order), and `promptSnapshot` echoed as `false`.
+pub(crate) fn verify_store_session_echo(
+    resp: &serde_json::Value,
+    sent_sets: &[String],
+) -> std::result::Result<(), String> {
+    let refused = |what: &str| {
+        format!("Not started: Hermes did not confirm {what} for this daemon's session, so it was closed. Hermes may need an update.")
+    };
+    let echoed = resp
+        .get("toolSets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| refused("the toolSets allowlist"))?;
+    let mut got: Vec<&str> = echoed.iter().filter_map(|v| v.as_str()).collect();
+    if got.len() != echoed.len() {
+        return Err(refused("the toolSets allowlist"));
+    }
+    let mut want: Vec<&str> = sent_sets.iter().map(String::as_str).collect();
+    got.sort_unstable();
+    got.dedup();
+    want.sort_unstable();
+    want.dedup();
+    if got != want {
+        return Err(refused("the toolSets allowlist"));
+    }
+    if resp.get("promptSnapshot") != Some(&serde_json::Value::Bool(false)) {
+        return Err(refused("promptSnapshot: false"));
+    }
+    Ok(())
+}
+
+/// Open a daemon session on the local model with the body `build` makes from (system prompt,
+/// tools JSON, base URL, bearer, model, context tokens).
+fn open_local_session_with(
     app: &tauri::AppHandle,
     system_prompt: &str,
     tools_json: &str,
-    build: SessionBodyFn,
+    build: impl FnOnce(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>,
+) -> std::result::Result<String, String> {
+    open_local_session_via(app, system_prompt, tools_json, build, |m, body| {
+        m.session_open(body)
+    })
+}
+
+/// [`open_local_session_with`] with the call that opens the built body.
+fn open_local_session_via(
+    app: &tauri::AppHandle,
+    system_prompt: &str,
+    tools_json: &str,
+    build: impl FnOnce(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>,
+    open: impl FnOnce(&HermesManager, &str) -> Result<String>,
 ) -> std::result::Result<String, String> {
     let serve = tauri::Manager::try_state::<crate::serve::ServeState>(app)
         .ok_or("internal: serve state unavailable")?;
@@ -2221,7 +2516,7 @@ fn open_local_session(
         &serve.0.current_model_file(),
         serve.0.ctx_size(),
     )?;
-    manager(app)?.session_open(&body).map_err(|e| e.to_string())
+    open(manager(app)?, &body).map_err(|e| e.to_string())
 }
 
 /// **hermes_session_open_unattended** — open a sidecar session for a scheduled daemon run, on the
@@ -2231,9 +2526,48 @@ pub async fn hermes_session_open_unattended(
     app: tauri::AppHandle,
     system_prompt: String,
     tools_json: String,
+    // K5a: the daemon this run belongs to. A Store daemon is re-checked against the sidecar's
+    // CURRENT environment right before its session opens (an older runner sends none).
+    daemon_id: Option<String>,
+    // The claimed run this session is for; core checks it is in flight for `daemon_id`.
+    run_id: Option<String>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
-        open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
+        // DGX R3: fail closed. A missing or unknown daemon id, or a run that is not this
+        // daemon's run in flight, is refused inside the check. A Store daemon is opened in the
+        // sidecar generation it was checked against (a restart in between refuses the open).
+        let store_allowed =
+            crate::daemons::check_store_daemon_open(&app, daemon_id.as_deref(), run_id.as_deref())?;
+        match store_allowed {
+            // A Store daemon: only its approved core tools, exactly its approved host tool sets,
+            // and no prompt additions from the sidecar.
+            // On a sidecar that scopes host tool sets, the response must confirm the scoping
+            // (`session_open_store`); otherwise the env-hold fallback already found no uncovered
+            // set on, and the session opens as is.
+            Some(open) => {
+                let allowed = open.allowed;
+                let generation = open.generation;
+                let sets = crate::daemons::store_tool_sets(&allowed);
+                let build = |p: &str, t: &str, u: &str, k: &str, m: &str, c: u32| {
+                    build_store_daemon_session_body(p, t, u, k, m, c, &allowed)
+                };
+                if open.scoped {
+                    open_local_session_via(&app, &system_prompt, &tools_json, build, |m, body| {
+                        m.in_generation(generation, |m| m.session_open_store(body, &sets))
+                    })
+                } else {
+                    open_local_session_via(&app, &system_prompt, &tools_json, build, |m, body| {
+                        m.session_open_in(generation, body)
+                    })
+                }
+            }
+            None => open_local_session_with(
+                &app,
+                &system_prompt,
+                &tools_json,
+                build_daemon_session_body,
+            ),
+        }
     })
     .await
 }

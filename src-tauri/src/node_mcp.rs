@@ -220,9 +220,12 @@ impl NodeMcpState {
     /// allowlist file Hermes was last given) is kept while it is still a live in-memory token;
     /// otherwise every earlier Hermes token is revoked (its sessions and pending requests close)
     /// and a new one is minted. Only its hash is held, in memory.
-    pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> {
+    pub fn hermes_token(
+        &self,
+        current: Option<&str>,
+    ) -> Result<crate::secret::SecretString, String> {
         if let Some(t) = current.filter(|t| self.shared.tokens.is_live_ephemeral(t)) {
-            return Ok(t.to_string());
+            return Ok(crate::secret::SecretString::new(t.to_string()));
         }
         self.revoke_hermes_tokens();
         self.shared
@@ -232,7 +235,7 @@ impl NodeMcpState {
                 !crate::hermes_mcp::HERMES_NODE_WRITE_TOOLS,
                 now_ms(),
             )
-            .map(|t| t.connect_token)
+            .map(|t| crate::secret::SecretString::new(t.connect_token))
     }
 
     /// HUP-S4.1: revoke every in-memory (Hermes) token.

@@ -7,6 +7,9 @@
 //! ```
 //!
 //! Prints JSON on stdout; errors go to stderr with exit code 2.
+// Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
+// `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

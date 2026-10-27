@@ -109,6 +109,18 @@ fn tmp_dir(tag: &str) -> PathBuf {
     p
 }
 
+/// An owner-only (0700) runtime directory for the store key file under `dir`.
+fn key_runtime_dir(dir: &std::path::Path) -> PathBuf {
+    let rt = dir.join("rt");
+    std::fs::create_dir_all(&rt).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&rt, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    rt
+}
+
 /// Compile the dependency-free native test fixture once per unit-test process.
 fn stub_daemon_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
@@ -155,7 +167,7 @@ fn fixture_recall_text() -> String {
 fn fixture_chain_recall_text() -> String {
     "freshness: HEAD 40204catalog0 (1 commits) ingested @ 1720000000000ms\n\
      tenant 'chain-state' — 45 nodes, showing 2:\n\
-    \x20 aabbccddee [ChainContract] contracts.LiquidStakingPool\n\
+    \x20 aabbccddee [ChainContract] contracts.ValidatorRegistry\n\
     \x20 ffee11dd22 [ChainNetwork] chain 40204 params\n"
         .to_string()
 }
@@ -187,7 +199,8 @@ fn stub_manager(tag: &str) -> (MemoryManager, Arc<FakeKeyring>, PathBuf) {
         sock,
         crash,
         transport,
-    );
+    )
+    .with_key_runtime_dir(Some(key_runtime_dir(&dir)));
     (mgr, fake, dir)
 }
 
@@ -245,27 +258,99 @@ fn unreachable_keyring_fails_closed_no_spawn() {
     assert_eq!(mgr.status().state, "stopped");
 }
 
-/// @rule8 tripwire: the store key never appears on the daemon's argv. It is an
-/// env value (via MEM_STORE_KEY_ENV), never a positional (which `ps` would leak).
+/// @rule8 tripwire: the store key never appears on the daemon's argv (which `ps` would leak).
 #[test]
 fn store_key_is_never_on_argv() {
     let (mgr, _fake, _dir) = stub_manager("argv");
+    let spec = mgr.spawn_spec().unwrap();
     let key = mgr.store_key_hex().unwrap();
-    let spec = mgr.build_spec(&key);
     for a in &spec.args {
         assert!(
             !a.contains(&*key as &str),
             "store key must never appear in argv (ps leak): {a}"
         );
     }
-    // It IS present as the env value under the grounded env-var name.
-    let env_val = spec
+}
+
+/// The store key never appears in the daemon's environment: the env carries only the PATH of
+/// an owner-only key file, and that file holds the key.
+#[test]
+fn store_key_never_reaches_the_daemon_env() {
+    let (mgr, _fake, _dir) = stub_manager("env");
+    let spec = mgr.spawn_spec().unwrap();
+    let key = mgr.store_key_hex().unwrap();
+    for (k, v) in &spec.env {
+        assert!(
+            !v.contains(&*key as &str),
+            "store key must not be in the daemon env (found under {k})"
+        );
+    }
+    let path = spec
         .env
         .iter()
-        .find(|(k, _)| k == MEM_STORE_KEY_ENV)
-        .map(|(_, v)| v.clone())
-        .expect("store key passed via env");
-    assert_eq!(env_val, *key, "the key is handed via env, not argv");
+        .find(|(k, _)| k == MEM_STORE_KEY_FILE_ENV)
+        .map(|(_, v)| PathBuf::from(v))
+        .expect("the env names the store key file");
+    assert_eq!(path, mgr.store_key_path());
+    let on_disk = std::fs::read_to_string(&path).expect("the store key file is written");
+    assert_eq!(on_disk, *key, "the key file holds the store key");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "key file must be owner-only (mode {mode:o})");
+    }
+}
+
+/// The key file exists while the daemon runs and is removed at stop.
+#[test]
+fn store_key_file_is_removed_at_stop() {
+    let (mgr, _fake, _dir) = stub_manager("keyfile-stop");
+    mgr.start().expect("stub daemon starts");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(mgr.store_key_path().is_file(), "key file present while running");
+    assert_eq!(mgr.status().state, "running", "the daemon read its key from the file");
+    mgr.stop();
+    assert!(!mgr.store_key_path().exists(), "key file removed at stop");
+}
+
+/// Whatever sits at the key file's path (here a symbolic link to a decoy) is replaced by a new
+/// regular file; the key is never written through a link.
+#[cfg(unix)]
+#[test]
+fn store_key_is_never_written_through_a_link() {
+    let (mgr, _fake, dir) = stub_manager("keyfile-link");
+    let path = mgr.store_key_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let decoy = dir.join("decoy");
+    std::fs::write(&decoy, b"decoy").unwrap();
+    std::os::unix::fs::symlink(&decoy, &path).unwrap();
+    let _spec = mgr.spawn_spec().unwrap();
+    let meta = std::fs::symlink_metadata(&path).expect("key file present");
+    assert!(meta.file_type().is_file(), "the key path is a regular file, not a link");
+    assert_eq!(std::fs::read(&decoy).unwrap(), b"decoy", "the link target is untouched");
+}
+
+/// A dead keyring writes no key file (fail closed before anything reaches the disk).
+#[test]
+fn dead_keyring_writes_no_key_file() {
+    let dir = tmp_dir("deadkeyring-file");
+    let mgr = MemoryManager::new(
+        Box::new(DeadKeyring),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(StubTransport {
+            recall_text: String::new(),
+            search_text: String::new(),
+            neighbors_text: String::new(),
+            error: None,
+        }),
+    )
+    .with_key_runtime_dir(Some(key_runtime_dir(&dir)));
+    assert!(mgr.start().is_err());
+    assert!(!mgr.store_key_path().exists());
 }
 
 /// BGE — when a model dir is set, the daemon spawn carries `CITRATE_BGE_MODEL_DIR`
@@ -276,8 +361,7 @@ fn spawn_carries_bge_env_when_model_dir_is_set() {
     let (mgr, _fake, _dir) = stub_manager("bge-env");
     let model_dir = std::path::PathBuf::from("/opt/citrate/models/bge-base-en-v1.5");
     let mgr = mgr.with_model_dir(Some(model_dir.clone()));
-    let key = mgr.store_key_hex().unwrap();
-    let spec = mgr.build_spec(&key);
+    let spec = mgr.spawn_spec().unwrap();
     let get = |k: &str| spec.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
     assert_eq!(get("CITRATE_BGE_MODEL_DIR"), Some(model_dir.to_string_lossy().as_ref()));
     assert_eq!(get("CITRATE_MEM_EMBED"), Some("bge"), "fresh store bootstraps to BGE");
@@ -289,8 +373,7 @@ fn spawn_carries_bge_env_when_model_dir_is_set() {
 #[test]
 fn spawn_omits_bge_env_and_semantic_is_false_without_a_model() {
     let (mgr, _fake, _dir) = stub_manager("no-bge");
-    let key = mgr.store_key_hex().unwrap();
-    let spec = mgr.build_spec(&key);
+    let spec = mgr.spawn_spec().unwrap();
     assert!(!spec.env.iter().any(|(k, _)| k == "CITRATE_BGE_MODEL_DIR"));
     assert!(!spec.env.iter().any(|(k, _)| k == "CITRATE_MEM_EMBED"));
     assert!(!mgr.status().semantic, "lexical-only is reported honestly");
@@ -439,7 +522,7 @@ fn unix_socket_transport_round_trips_a_real_socket() {
     let r = parse_result("chain-state", &text);
     assert_eq!(r.tenant, "chain-state");
     assert_eq!(r.total_in_tenant, 45, "the real socket carried the chain-state total");
-    assert!(r.hits.iter().any(|h| h.title.contains("LiquidStakingPool")));
+    assert!(r.hits.iter().any(|h| h.title.contains("ValidatorRegistry")));
     handle.join().unwrap();
 }
 
@@ -521,11 +604,11 @@ fn live_real_daemon_recall_and_chain_ingest() {
     //   1. chain_ingest <store> citrate-chain/contracts/addresses/40204.json
     //        → "chain-state ingest ok: chainId 40204 — 59 contracts … 60 nodes"
     //   2. reencrypt <store> <enc>  → "60 nodes sealed across 1 tenants, 59 edges"
-    //   3. grep -ra LiquidStakingPool <enc>  → NOTHING (ciphertext at rest ✔)
+    //   3. grep -ra <a contract name> <enc>  → NOTHING (ciphertext at rest ✔)
     //   4. mcp_serve <enc> <sock>; recall(repo="chain-state", budget=60) over the
     //        REAL Unix socket → "tenant 'chain-state' — 60 nodes" with real
     //        contract nodes + addresses (ModelAccessControl @ 0x8e59…, EntryPoint,
-    //        LiquidStakingPool, …) matching 40204.json.
+    //        …) matching 40204.json.
     // Kept `#[ignore]` because the rocksdb build is heavy for the per-PR CI gate;
     // the transformer/bge semantic path is an S7 model-bundle item. Not fabricated
     // (Rule 1) — this is a captured real run, re-runnable via the proof script.

@@ -48,6 +48,16 @@ const UNBOUNDED = new Set<string>([
 /** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so
  *  the Rust error (with its real cause) always arrives first and the UI never abandons a live turn. */
 const LONG: Record<string, number> = {
+  // GROW-S2 (Join 9): the rendezvous verbs have a 15 s daemon IPC bound (plus a ≤ 3 s connect).
+  // Create: publish (5 s) + open (15 s) + the group-name read (5 s), plus connects. Revoke: close
+  // (15 s) + the legacy revoke (5 s). Cancel / forget answer, then run one tick (15 s).
+  group_invite_create: 40_000,
+  group_invite_revoke: 30_000,
+  // Approving a claim closes the rendezvous and revokes the legacy record first, like revoke.
+  group_invite_verify_consume: 30_000,
+  rendezvous_tick: 20_000,
+  rendezvous_cancel: 40_000,
+  rendezvous_forget: 40_000,
   // One non-streaming model turn: Rust bounds it at AI_REQUEST_TIMEOUT (300 s).
   ai_chat: 330_000,
   ai_chat_tools: 330_000,
@@ -61,9 +71,6 @@ const LONG: Record<string, number> = {
   hermes_pending_approvals: 45_000,
   hermes_bridge_pending: 45_000,
   hermes_resolve: 45_000,
-  // C1-W: the paged withdrawal scan starts no request after SCAN_BUDGET (15 s), so it answers by
-  // 15 s plus one 6 s RPC request (staking.rs the_scan_budget_plus_one_request_fits_the_ipc_deadline).
-  wallet_pending_withdrawals: 30_000,
   hermes_stop: 45_000,
   // The terminal-commands switch restarts a running Hermes: a stop (~10 s grace) plus a start.
   hermes_terminal_set: 60_000,
@@ -92,6 +99,14 @@ const LONG: Record<string, number> = {
   agent_grants_reset: 270_000,
   // HUP-S10.1: one image generation; Rust bounds it at 600 s (local server) / 300 s (provider).
   media_generate_image: 630_000,
+  // GROW-S1 task 10: v2 invite links. Each HTTP call is bounded at 15 s Rust-side; mint is
+  // reserve + attach and resolve is resolve + JWKS (two calls each).
+  join_mint: 35_000,
+  join_attach: 20_000,
+  join_revoke: 20_000,
+  join_list: 20_000,
+  // Task 12: resolve of the waiting invite (resolve + JWKS, 15 s each Rust-side).
+  pending_join_resolve: 35_000,
   // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.
   gsheets_read: 20_000,
   gsheets_append: 20_000,
