@@ -259,6 +259,7 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     // preserved and hardened, not dropped.
     let sources: &[(&str, &str)] = &[
         ("wallet.rs", include_str!("wallet.rs")),
+        ("wallet_key.rs", include_str!("wallet_key.rs")),
         ("custody.rs", include_str!("custody.rs")),
         ("oidc.rs", include_str!("oidc.rs")),
         ("config.rs", include_str!("config.rs")),
@@ -2094,6 +2095,153 @@ fn the_tripwire_scan_covers_the_whole_production_ceremony_module() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// K6 network gate on the signing path.
+// ---------------------------------------------------------------------------
+
+const K6_GENESIS: &str = "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1";
+
+fn k6_gate(genesis: Option<&str>) -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "test-net".into(),
+        chain_id: Some(40204),
+        genesis_hash: genesis.map(str::to_string),
+    }
+}
+
+/// Same chain id, another block 0: nothing is read for the transaction and nothing is signed or
+/// sent. The ceremony is consumed (single use), as with every other refusal after the approve.
+#[test]
+fn k6_gated_approve_signs_nothing_against_another_genesis() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(
+            serde_json::json!({ "hash": "0x2222222222222222222222222222222222222222222222222222222222222222" }),
+        ),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0xhash".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("nothing was signed"), "{m}")
+        }
+        other => panic!("expected a pre-sign refusal, got {other:?}"),
+    }
+    let methods: Vec<String> = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(methods, vec!["eth_chainId", "eth_getBlockByNumber"]);
+}
+
+/// A gate with no genesis set refuses with no RPC call at all.
+#[test]
+fn k6_gated_approve_fails_closed_when_the_network_is_not_set() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let client = RpcClient::with_transport(MockRpc::new(vec![]));
+    let gate = k6_gate(None);
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "{r:?}");
+    assert!(client.transport.requests.borrow().is_empty());
+}
+
+/// The matching network signs and sends as before; the send is checked again (the endpoint can
+/// change between the two, as a DNS switch at genesis would).
+#[test]
+fn k6_gated_approve_signs_and_sends_on_the_matching_network() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0xhashk6".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let result = c
+        .approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate))
+        .expect("matching network");
+    assert_eq!(result.tx_hash, "0xhashk6");
+    assert_eq!(result.block_number, Some(100));
+}
+
+/// The send-time check refuses (the endpoint changed after the pre-sign check): nothing reached
+/// `eth_sendRawTransaction`, so on a first submission this is a definitive "not sent", not an
+/// unknown outcome.
+#[test]
+fn k6_send_time_network_refusal_on_a_first_submission_is_not_sent() {
+    let (v, _p) = vault_with_wallet();
+    // A record that can prove a first submission (`new()` is unpersisted: every send counts as
+    // a re-send there).
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::in_memory());
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(
+            serde_json::json!({ "hash": "0x2222222222222222222222222222222222222222222222222222222222222222" }),
+        ),
+        ok(JsonValue::String("0xhashk6".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("network check refused"), "{m}")
+        }
+        other => panic!("expected a definitive not-sent refusal, got {other:?}"),
+    }
+    let methods: Vec<String> = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+}
+
 // =========================================================================
 // C1-V #347 review (Codex P1): after the node has accepted a transaction, a later failure must
 // report an unknown outcome carrying the tx hash, never a failure that reads as "not sent".
@@ -3338,13 +3486,15 @@ fn fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
 fn durable_send_violations(src: &str) -> Vec<String> {
     let code = strip_test_module(src);
     let mut out = Vec::new();
-    if code.matches("send_raw_transaction(").count() != 1 {
+    // K6 (#363): the send goes through the network-gated form; either spelling counts as a send.
+    let sends = code.matches("send_raw_transaction(").count() + code.matches("send_raw_transaction_gated(").count();
+    if sends != 1 {
         out.push("send_raw_transaction must be called from exactly one place (send_signed)".into());
     }
     match fn_body(&code, "send_signed") {
         Some(body) => {
             let rec = body.find(".try_record_call(");
-            let send = body.find("send_raw_transaction(");
+            let send = body.find("send_raw_transaction(").or_else(|| body.find("send_raw_transaction_gated("));
             if !matches!((rec, send), (Some(r), Some(s)) if r < s) {
                 out.push("send_signed must record durably (try_record_call) before send_raw_transaction".into());
             }
@@ -3357,7 +3507,7 @@ fn durable_send_violations(src: &str) -> Vec<String> {
         }
         None => out.push("fn send_signed not found".into()),
     }
-    for f in ["approve_and_broadcast", "send_prepared", "approve_and_sign"] {
+    for f in ["approve_and_broadcast", "approve_and_broadcast_gated", "send_prepared", "approve_and_sign"] {
         if fn_body(&code, f).is_some_and(|b| b.contains("try_record")) {
             out.push(format!("{f} records on its own; the record belongs to send_signed only"));
         }
@@ -3576,8 +3726,8 @@ fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
 
 /// Rule 3 tripwire: the ONLY path that signs without a per-request approval of a CeremonyId is the
 /// budgeted web sign-in (`request_siwe_budgeted`, ADR-2026-09-30). Every gated-signer call in the
-/// production ceremony code must sit inside `approve`, `approve_and_broadcast` (both consume an
-/// explicit CeremonyId the human approved) or `request_siwe_budgeted`. A new function that reaches
+/// production ceremony code must sit inside `approve`, `approve_and_broadcast_gated` (both consume
+/// an explicit CeremonyId the human approved; `approve_and_broadcast` delegates to the latter) or `request_siwe_budgeted`. A new function that reaches
 /// a signer, for example an "allowlisted intent" fast path, fails here.
 #[test]
 fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
@@ -3587,9 +3737,10 @@ fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
         "sign_".to_string() + "personal(",
     ];
     // Join-8 (#354): the tx signer lives in the PRIVATE `sign_consumed`, shared by
-    // `approve_and_sign` and `approve_and_broadcast`; both consume a CeremonyId the human approved.
-    // It is allowed only while it stays private and is called from exactly those two.
-    let allowed = ["approve", "approve_and_broadcast", "request_siwe_budgeted", "sign_consumed"];
+    // `approve_and_sign` and `approve_and_broadcast_gated` (K6, #363: `approve_and_broadcast`
+    // delegates to it); both consume a CeremonyId the human approved. It is allowed only while it
+    // stays private and is called from exactly those two.
+    let allowed = ["approve", "approve_and_broadcast_gated", "request_siwe_budgeted", "sign_consumed"];
     let src = strip_test_module(include_str!("ceremony.rs"));
     assert!(src.contains("    fn sign_consumed<") && !src.contains("pub fn sign_consumed"), "sign_consumed stays private");
     let mut callers: Vec<String> = Vec::new();
@@ -3631,7 +3782,7 @@ fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
     callers.dedup();
     assert_eq!(
         callers,
-        vec!["approve_and_broadcast".to_string(), "approve_and_sign".to_string()],
+        vec!["approve_and_broadcast_gated".to_string(), "approve_and_sign".to_string()],
         "sign_consumed is reached only from the two approval paths"
     );
 }
@@ -3670,6 +3821,70 @@ fn rule3_tripwire_no_config_can_skip_the_ceremony() {
                 .any(|l| l.contains(n.as_str()) && !l.trim_start().starts_with("//")),
             "config.rs must carry no signature-policy field ({n})"
         );
+    }
+}
+
+/// Violations of "every ceremony entry that signs or sends passes the K6 network gate" in
+/// ceremony.rs's production code (#363 review). The gate is process-wide and never installed in
+/// unit tests, so a `None` in any of these paths would leave every behaviour test green.
+fn network_gate_violations(src: &str) -> Vec<String> {
+    let code = strip_test_module(src);
+    let body = |sig: &str| fn_body(&code, sig).map(|b| b.split_whitespace().collect::<String>());
+    let mut out = Vec::new();
+    // The public entries pass the process gate, never `None`.
+    for (entry, call) in [
+        ("approve_and_sign<", "self.sign_consumed("),
+        ("send_prepared<", "self.send_signed("),
+        ("approve_and_broadcast<", "self.approve_and_broadcast_gated("),
+    ] {
+        match body(entry) {
+            Some(b) => {
+                let Some(at) = b.find(call) else {
+                    out.push(format!("{entry} no longer calls {call}"));
+                    continue;
+                };
+                let args = &b[at..at + b[at..].find(";").unwrap_or(b.len() - at)];
+                if !args.contains("crate::rpc::network_gate()") || args.contains("None") {
+                    out.push(format!("{entry} must pass crate::rpc::network_gate() to {call}: {args}"));
+                }
+            }
+            None => out.push(format!("fn {entry} not found")),
+        }
+    }
+    // The gated helpers use their own gate parameter, never `None`.
+    match body("approve_and_broadcast_gated<") {
+        Some(b) => {
+            if !b.contains(",gate)?;") || !b.contains("self.send_signed(rpc,prepared,cfg,gate)") || b.contains("None") {
+                out.push("approve_and_broadcast_gated must sign and send with its own gate".into());
+            }
+        }
+        None => out.push("fn approve_and_broadcast_gated not found".into()),
+    }
+    match body("sign_consumed<") {
+        Some(b) if b.contains("ifletSome(expected)=gate{rpc.verify_network(expected)") => {}
+        _ => out.push("sign_consumed must check verify_network against its gate before signing".into()),
+    }
+    match body("send_signed<") {
+        Some(b) if b.contains("send_raw_transaction_gated(&prepared.raw,gate)") => {}
+        _ => out.push("send_signed must send with send_raw_transaction_gated(.., gate)".into()),
+    }
+    out
+}
+
+#[test]
+fn k6_tripwire_every_signing_and_sending_entry_passes_the_network_gate() {
+    assert_eq!(network_gate_violations(include_str!("ceremony.rs")), Vec::<String>::new());
+    // Negative controls: each public entry with `None` in place of the process gate.
+    let src = include_str!("ceremony.rs");
+    for (needle, replacement) in [
+        ("            crate::rpc::network_gate(),\n        )?;", "            None,\n        )?;"),
+        ("self.send_signed(rpc, prepared, cfg, crate::rpc::network_gate())", "self.send_signed(rpc, prepared, cfg, None)"),
+        ("self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, crate::rpc::network_gate())", "self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, None)"),
+        ("self.send_signed(rpc, prepared, cfg, gate)", "self.send_signed(rpc, prepared, cfg, None)"),
+    ] {
+        assert_eq!(src.matches(needle).count(), 1, "control needle: {needle}");
+        let mutated = src.replace(needle, replacement);
+        assert!(!network_gate_violations(&mutated).is_empty(), "not caught: {replacement}");
     }
 }
 
