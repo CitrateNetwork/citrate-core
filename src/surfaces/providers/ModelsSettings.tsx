@@ -363,7 +363,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
             return (
               <div key={"reserve-" + m.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <span data-testid={`reserve-note-${m.id}`} style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
-                  Each {m.id} call reserves about {formatMicros(roundCents(r))} against your caps before it is sent. {RESERVE_WHY[p.id] ?? "That is the most the vendor can bill for one call."} The reservation settles to the vendor's real charge when the call returns.
+                  Each {m.id} call reserves about {formatMicros(roundCents(r))} against your caps before it is sent. {RESERVE_WHY[p.id] ?? "It covers the longest reply this model is allowed for the call."} When the call returns, the reservation settles to the cost of the tokens {p.name} reports, at the price shown here.
                 </span>
                 {cap !== null && r > cap && (
                   <span data-testid={`reserve-refused-${m.id}`} style={row}>

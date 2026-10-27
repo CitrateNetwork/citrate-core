@@ -432,7 +432,7 @@ pub fn key_set(proxy: &ModelProxy, id: &str, key: SecretString) -> Result<KeyTes
 }
 
 pub fn key_test(proxy: &ModelProxy, id: &str) -> Result<KeyTestView, String> {
-    match proxy.test_key(id, now_ms()) {
+    match proxy.test_key(id) {
         Ok(t) => Ok(KeyTestView {
             ok: true,
             listed_models: t.models.len(),

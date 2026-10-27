@@ -155,9 +155,17 @@ pub fn render_config(
     (!servers.is_empty()).then(|| json!({ "servers": servers }))
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// The temp file [`write_private`] writes before renaming it over `path`.
+pub(crate) fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension("json.tmp")
+}
+
+/// Write `bytes` to `path` atomically: a `0600` temp file, synced, renamed over it. The temp file
+/// may hold secrets, so it is removed on every error path after it was created (a kill in between
+/// is covered by the sweeps of `mcp_servers::sweep_runtime_files`).
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = temp_path(path);
     let _ = std::fs::remove_file(&tmp);
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -167,66 +175,154 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts.open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
+    let written = f
+        .write_all(bytes)
+        .and_then(|()| f.sync_all())
+        .and_then(|()| {
+            drop(f);
+            std::fs::rename(&tmp, path)
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
-/// HUP-S4.3 + S4.4: the file the child gets when both the built-in servers (this module) and the
-/// member's reviewed servers (`mcp_servers.rs`) are on. It sits next to them in the Hermes dir.
+/// HUP-S4.3 + S4.4: the allowlist the child gets when the member has servers on (joined with the
+/// built-in ones, which come first). RC52 P-9a: it holds those servers' env values, taken from the
+/// keychain, so it exists only around a spawn ([`spawn_file_watch`]).
 pub const EFFECTIVE_FILE: &str = "mcp-effective.json";
 
+/// How often the spawn-time allowlist is checked for removal while the child runs.
+pub const SPAWN_FILE_CHECK: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// HUP-S4.3 + S4.4: the one allowlist the sidecar reads (its MCP host reads exactly one file).
-/// Neither file: `None` (no MCP). One file: that file as is. Both: their `servers` lists joined into
-/// [`EFFECTIVE_FILE`] (0600), built-in servers first; member names never clash with the built-in
-/// ones (they are reserved). If either file cannot be read, nothing is passed (fail closed). A
-/// joined file left from an earlier start is removed whenever it is not needed, since it can hold
-/// the member's server credentials.
-pub fn effective_allowlist(builtin: Option<&Path>, user: Option<&Path>) -> Option<PathBuf> {
+/// No built-in file and no member server on: `None` (no MCP). Built-in servers only: that file as
+/// is. Member servers on: [`EFFECTIVE_FILE`] (0600), written now with the built-in servers and the
+/// members' servers with their env values from the keychain. If anything cannot be read, nothing
+/// is passed (fail closed). A spawn-time file left from an earlier start is removed whenever it is
+/// not needed.
+pub fn effective_allowlist(
+    builtin: Option<&Path>,
+    user: Option<&crate::mcp_servers::McpStore>,
+) -> Option<PathBuf> {
     let dir = builtin
-        .or(user)
         .and_then(Path::parent)
-        .map(Path::to_path_buf);
+        .map(Path::to_path_buf)
+        .or_else(|| user.map(|u| u.dir().to_path_buf()));
     let joined = dir.as_ref().map(|d| d.join(EFFECTIVE_FILE));
     let drop_joined = || {
         if let Some(j) = &joined {
             let _ = std::fs::remove_file(j);
         }
     };
-    let b = builtin.filter(|p| p.is_file());
-    let u = user.filter(|p| p.is_file());
-    let (b, u) = match (b, u) {
-        (None, None) => {
+    let members_on = match user.map(|u| u.load()) {
+        None => false,
+        Some(Ok(reg)) => crate::mcp_servers::enabled_servers(&reg).next().is_some(),
+        Some(Err(e)) => {
+            eprintln!("hermes: {e}; Hermes starts without MCP servers");
             drop_joined();
             return None;
         }
-        (Some(only), None) | (None, Some(only)) => {
-            drop_joined();
-            return Some(only.to_path_buf());
-        }
-        (Some(b), Some(u)) => (b, u),
     };
-    let read = |p: &Path| -> Option<Vec<Value>> {
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
-        v.get("servers")?.as_array().cloned()
-    };
-    let (Some(mut servers), Some(more), Some(path)) = (read(b), read(u), joined.clone()) else {
-        eprintln!("hermes: an MCP allowlist could not be read; Hermes starts without MCP servers");
-        drop_joined();
-        return None;
-    };
-    servers.extend(more);
-    let written = serde_json::to_vec_pretty(&json!({ "servers": servers }))
-        .map_err(std::io::Error::other)
-        .and_then(|text| write_private(&path, &text));
-    match written {
-        Ok(()) => Some(path),
-        Err(e) => {
-            eprintln!("hermes: could not write the joined MCP allowlist ({e}); Hermes starts without MCP servers");
+    let b = builtin.filter(|p| p.is_file());
+    match (b, members_on, user, joined.clone()) {
+        (None, false, _, _) => {
             drop_joined();
             None
         }
+        (Some(only), false, _, _) => {
+            drop_joined();
+            Some(only.to_path_buf())
+        }
+        (b, true, Some(store), Some(path)) => match write_spawn_file(b, store, &path) {
+            Ok(()) => Some(path),
+            Err(e) => {
+                eprintln!("hermes: could not write the MCP allowlist ({e}); Hermes starts without MCP servers");
+                drop_joined();
+                None
+            }
+        },
+        _ => {
+            drop_joined();
+            None
+        }
+    }
+}
+
+/// Whether `path` is the spawn-time allowlist of `store` (the one that holds env values).
+pub fn is_spawn_file(path: &Path, store: &crate::mcp_servers::McpStore) -> bool {
+    path == store.dir().join(EFFECTIVE_FILE)
+}
+
+/// Write [`EFFECTIVE_FILE`] at `dest`: the built-in servers, then the member's enabled, reviewed
+/// servers with their env values from the keychain (an empty list when none is left).
+pub fn write_spawn_file(
+    builtin: Option<&Path>,
+    store: &crate::mcp_servers::McpStore,
+    dest: &Path,
+) -> Result<(), String> {
+    let builtin_servers: Vec<Value> = match builtin.filter(|p| p.is_file()) {
+        None => Vec::new(),
+        Some(p) => std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.get("servers")?.as_array().cloned())
+            .ok_or_else(|| "the built-in MCP allowlist could not be read".to_string())?,
+    };
+    let reg = store.load()?;
+    let text = crate::mcp_servers::runtime_allowlist_json(&reg, store.secrets(), &builtin_servers)?
+        .unwrap_or_else(|| zeroize::Zeroizing::new("{\"servers\":[]}".to_string()));
+    write_private(dest, text.as_bytes()).map_err(|e| e.kind().to_string())
+}
+
+/// RC52 P-9a: the child watch for a spawn-time allowlist at `path`. All three hooks run on the
+/// supervisor's monitor thread, so they never race each other:
+/// - `prepare` (right before every spawn attempt) writes it, so a restart still gets the member's
+///   servers;
+/// - `observe` (while the child runs) removes it once `/health` answers: the sidecar loads its MCP
+///   allowlist before it binds its control port, so by then it has been read;
+/// - `ended` (after every end, including a failed spawn and the last crash before the supervisor
+///   gives up) removes it.
+///
+/// `HermesManager::stop` and the app-start sweep remove it too. `browser` (the managed-browser
+/// watch) keeps its own hooks.
+pub fn spawn_file_watch(
+    browser: Option<crate::supervisor::ChildWatch>,
+    path: PathBuf,
+    builtin: Option<PathBuf>,
+    store: crate::mcp_servers::McpStore,
+    healthy: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+) -> crate::supervisor::ChildWatch {
+    let interval = browser.as_ref().map_or(SPAWN_FILE_CHECK, |b| b.interval);
+    let (b_observe, b_ended) = match &browser {
+        Some(b) => (Some(b.observe.clone()), Some(b.ended.clone())),
+        None => (None, None),
+    };
+    let observe_path = path.clone();
+    let ended_path = path.clone();
+    crate::supervisor::ChildWatch {
+        interval,
+        observe: std::sync::Arc::new(move |pid| {
+            if let Some(o) = &b_observe {
+                o(pid);
+            }
+            if observe_path.exists() && healthy() {
+                let _ = std::fs::remove_file(&observe_path);
+            }
+        }),
+        ended: std::sync::Arc::new(move || {
+            if let Some(e) = &b_ended {
+                e();
+            }
+            let _ = std::fs::remove_file(&ended_path);
+        }),
+        prepare: Some(std::sync::Arc::new(move || {
+            if let Err(e) = write_spawn_file(builtin.as_deref(), &store, &path) {
+                eprintln!("hermes: could not write the MCP allowlist ({e}); Hermes starts without MCP servers");
+                let _ = std::fs::remove_file(&path);
+            }
+        })),
     }
 }
 

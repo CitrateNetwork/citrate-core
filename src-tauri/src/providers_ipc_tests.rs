@@ -257,8 +257,8 @@ fn status_reports_the_least_reservation_per_call_from_the_adapter_bound() {
     let floor = price.cost(0, 500_000);
     let r = grok.min_reserve_micros.expect("a priced model reports its reservation");
     assert!(r >= floor, "reserve {r} below the output-bound cost {floor}");
-    assert!(r > 5_000_000, "a grok-4.7 call reserves more than the $5 default daily cap: {r}");
-    // Every reported reservation equals what the proxy would reserve for an empty prompt.
+    assert!(r > 5_000_000, "a grok-4.7 call reserves more than $5: {r}");
+    // A reservation is reported exactly when the model has a price.
     for v in &s {
         for m in &v.models {
             assert_eq!(m.min_reserve_micros.is_some(), m.price.is_some(), "{}/{}", v.id, m.id);

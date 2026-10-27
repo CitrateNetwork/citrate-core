@@ -386,7 +386,8 @@ describe("Settings › Models: a large reservation per call (xAI)", () => {
     expect(c).toContain('data-testid="reserve-note-grok-4.7"');
     expect(c).toContain("Each grok-4.7 call reserves about $6.00 against your caps before it is sent");
     expect(c).toContain("xAI documents no limit on reasoning output, so core reserves the model&#x27;s full context window");
-    expect(c).toContain("settles to the vendor&#x27;s real charge when the call returns");
+    expect(c).toContain("the reservation settles to the cost of the tokens xAI reports, at the price shown here");
+    expect(c).not.toContain("the most the vendor can bill");
     expect(c).toContain("key-hygiene");
   });
 
