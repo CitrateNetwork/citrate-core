@@ -1269,6 +1269,7 @@ struct WatchLog {
     /// (pid, still our unreaped child at that moment, stop already requested)
     observed: Mutex<Vec<(u32, bool, bool)>>,
     ended: AtomicU64,
+    prepared: AtomicU64,
     stopping: std::sync::atomic::AtomicBool,
 }
 
@@ -1276,6 +1277,7 @@ struct WatchLog {
 fn watch_for(log: &Arc<WatchLog>) -> ChildWatch {
     let o = log.clone();
     let e = log.clone();
+    let p = log.clone();
     ChildWatch {
         interval: Duration::from_millis(50),
         observe: Arc::new(move |pid| {
@@ -1289,6 +1291,9 @@ fn watch_for(log: &Arc<WatchLog>) -> ChildWatch {
         ended: Arc::new(move || {
             e.ended.fetch_add(1, Ordering::SeqCst);
         }),
+        prepare: Some(Arc::new(move || {
+            p.prepared.fetch_add(1, Ordering::SeqCst);
+        })),
     }
 }
 
@@ -1356,6 +1361,56 @@ fn child_watch_ended_runs_after_a_crash() {
     let ended = log.ended.load(Ordering::SeqCst);
     drop(sup);
     assert_eq!(ended, 2, "`ended` ran after each of the two crashes");
+}
+
+/// RC52 P-9a: `prepare` runs right before every spawn attempt (the first and each restart), so a
+/// caller can write what the child reads at start just in time, and `ended` can remove it.
+#[cfg(unix)]
+#[test]
+fn child_watch_prepare_runs_before_every_spawn() {
+    let tmp = TmpDir::new("watch-prepare");
+    let log = Arc::new(WatchLog::default());
+    let mut spec = SidecarSpec::new("watched-prepare", false_bin(), vec![]);
+    spec.child_watch = Some(watch_for(&log));
+    let mut cfg = SupervisorConfig::new(spec, tmp.path("crash.jsonl"));
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 1,
+        max_delay: Duration::from_millis(10),
+        max_retries: 1,
+    };
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let prepared = log.prepared.load(Ordering::SeqCst);
+    let ended = log.ended.load(Ordering::SeqCst);
+    drop(sup);
+    assert_eq!(prepared, 2, "`prepare` ran before each of the two spawns");
+    assert_eq!(ended, 2);
+}
+
+/// RC52 P-9a: a spawn that fails (no such binary) is an end too: `ended` runs after each failed
+/// attempt, so whatever `prepare` wrote for it is removed, including after the supervisor gives up.
+#[cfg(unix)]
+#[test]
+fn child_watch_ended_runs_when_a_spawn_fails() {
+    let tmp = TmpDir::new("watch-spawnfail");
+    let log = Arc::new(WatchLog::default());
+    let mut spec = SidecarSpec::new("watched-spawnfail", tmp.path("no-such-binary"), vec![]);
+    spec.child_watch = Some(watch_for(&log));
+    let mut cfg = SupervisorConfig::new(spec, tmp.path("crash.jsonl"));
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 1,
+        max_delay: Duration::from_millis(10),
+        max_retries: 1,
+    };
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let prepared = log.prepared.load(Ordering::SeqCst);
+    let ended = log.ended.load(Ordering::SeqCst);
+    drop(sup);
+    assert_eq!(prepared, 2, "both attempts were prepared");
+    assert_eq!(ended, 2, "`ended` ran after each failed spawn");
 }
 
 // ---------------------------------------------------------------------------
