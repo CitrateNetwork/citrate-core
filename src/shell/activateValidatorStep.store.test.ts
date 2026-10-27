@@ -25,6 +25,7 @@ function readyStatus(over: Partial<ActivationStatusView> = {}): ActivationStatus
     registryStatus: 0,
     registryBondedWei: null,
     registryEscrowWei: null,
+    exitOutcome: null,
     activationEpoch: 0,
     registryActive: false,
     currentEpoch: 500,

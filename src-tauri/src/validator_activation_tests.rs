@@ -29,6 +29,10 @@ struct Chain {
     blocks: RefCell<HashMap<u64, u64>>,
     receipts: RefCell<HashMap<String, JsonValue>>,
     seen: RefCell<Vec<JsonValue>>,
+    /// Logs `eth_getLogs` filters by address, topic0 (one or a list), topic1 and block range.
+    logs: RefCell<Vec<JsonValue>>,
+    /// `eth_getLogs` fails for any range that reaches this block.
+    logs_fail_from: RefCell<Option<u64>>,
 }
 impl Chain {
     fn call(self, to: &str, selector: [u8; 4], ret: String) -> Self {
@@ -48,6 +52,53 @@ impl Chain {
     fn receipt(self, hash: &str, r: JsonValue) -> Self {
         self.receipts.borrow_mut().insert(hash.to_string(), r);
         self
+    }
+    fn log(self, l: JsonValue) -> Self {
+        self.logs.borrow_mut().push(l);
+        self
+    }
+    fn logs_fail_from(self, block: u64) -> Self {
+        *self.logs_fail_from.borrow_mut() = Some(block);
+        self
+    }
+    /// The `eth_getLogs` requests made, as (fromBlock, toBlock).
+    fn log_ranges(&self) -> Vec<(u64, u64)> {
+        let hex = |v: &JsonValue| u64::from_str_radix(v.as_str().unwrap_or("").trim_start_matches("0x"), 16).unwrap_or(u64::MAX);
+        self.seen
+            .borrow()
+            .iter()
+            .filter(|b| b["method"] == "eth_getLogs")
+            .map(|b| (hex(&b["params"][0]["fromBlock"]), hex(&b["params"][0]["toBlock"])))
+            .collect()
+    }
+    fn get_logs(&self, filter: &JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        let hex = |v: &JsonValue| u64::from_str_radix(v.as_str().unwrap_or("").trim_start_matches("0x"), 16).ok();
+        let (Some(from), Some(to)) = (hex(&filter["fromBlock"]), hex(&filter["toBlock"])) else {
+            return Err(RpcError::Transport("bad range".into()));
+        };
+        if matches!(*self.logs_fail_from.borrow(), Some(f) if to >= f) {
+            return Err(RpcError::Transport("logs unavailable".into()));
+        }
+        // The node serves at most 1,001 blocks and silently cuts the rest.
+        let to = to.min(from + 1000);
+        let lc = |v: &JsonValue| v.as_str().unwrap_or("").to_ascii_lowercase();
+        let t0: Vec<String> = match &filter["topics"][0] {
+            JsonValue::Array(a) => a.iter().map(lc).collect(),
+            JsonValue::String(_) => vec![lc(&filter["topics"][0])],
+            _ => vec![],
+        };
+        let t1 = filter["topics"][1].as_str().map(str::to_ascii_lowercase);
+        let out: Vec<JsonValue> = self
+            .logs
+            .borrow()
+            .iter()
+            .filter(|l| lc(&l["address"]) == lc(&filter["address"]))
+            .filter(|l| hex(&l["blockNumber"]).is_some_and(|b| b >= from && b <= to))
+            .filter(|l| t0.is_empty() || t0.contains(&lc(&l["topics"][0])))
+            .filter(|l| t1.as_ref().map_or(true, |t| lc(&l["topics"][1]) == *t))
+            .cloned()
+            .collect();
+        Ok(JsonValue::Array(out))
     }
 }
 impl RpcTransport for Chain {
@@ -73,6 +124,7 @@ impl RpcTransport for Chain {
                     None => Err(RpcError::Transport("unscripted block".into())),
                 }
             }
+            "eth_getLogs" => self.get_logs(&body["params"][0]).and_then(ok),
             "eth_getTransactionReceipt" => {
                 let h = body["params"][0].as_str().unwrap_or("");
                 ok(self.receipts.borrow().get(h).cloned().unwrap_or(JsonValue::Null))
@@ -393,4 +445,217 @@ fn an_exiting_key_reports_what_the_registry_still_holds_bonded_and_escrow() {
     // Unknown is not zero: no validatorInfo read, nothing reported.
     let st = read(&granted(true, Some(BOND_KEY)), None, Some(NODE_KEY), None);
     assert_eq!((st.registry_bonded_wei, st.registry_escrow_wei), (None, None));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The exit outcome. After a full exit the key stays Exiting for good, and a non-Byzantine slash
+// also leaves it Exiting while it draws the penalty from bonded, then escrow, then vested rewards
+// (ValidatorRegistry._slash). So "bonded 0 and escrow 0" says the exit SETTLED, not that it paid
+// out. "Returned" needs the registry's own logs: the exit escrowed at least the principal, a
+// Withdrawn paid at least that, and no Slashed was logged under the key before the payout.
+// ---------------------------------------------------------------------------------------------
+
+const SALT_WEI: u128 = 1_000_000_000_000_000_000;
+
+fn keccak32_hex(sig: &str) -> String {
+    use sha3::{Digest, Keccak256};
+    format!("0x{}", hex::encode(Keccak256::digest(sig.as_bytes())))
+}
+
+#[test]
+fn pinned_exit_event_topics_are_keccak_of_their_signatures() {
+    assert_eq!(UNBOND_INITIATED_TOPIC, keccak32_hex("UnbondInitiated(bytes32,uint256,uint256,uint64)"));
+    assert_eq!(EVICTED_TOPIC, keccak32_hex("Evicted(bytes32,uint256,bytes32,uint256)"));
+    assert_eq!(WITHDRAWN_TOPIC, keccak32_hex("Withdrawn(bytes32,address,uint256)"));
+    // SlashTier is an enum: uint8 in the ABI signature.
+    assert_eq!(SLASHED_TOPIC, keccak32_hex("Slashed(bytes32,uint8,uint256,address,uint256)"));
+}
+
+fn key_topic() -> String {
+    format!("0x{}", hex::encode(BOND_KEY))
+}
+fn reg_log(block: u64, index: u64, topic0: &str, extra_topics: &[String], data: &[String]) -> JsonValue {
+    let mut topics = vec![JsonValue::String(topic0.to_string()), JsonValue::String(key_topic())];
+    topics.extend(extra_topics.iter().map(|t| JsonValue::String(t.clone())));
+    serde_json::json!({
+        "address": REGISTRY,
+        "topics": topics,
+        "data": format!("0x{}", data.concat()),
+        "blockNumber": format!("0x{block:x}"),
+        "logIndex": format!("0x{index:x}"),
+    })
+}
+fn unbond(block: u64, amount: u128, remaining: u128) -> JsonValue {
+    reg_log(block, 0, UNBOND_INITIATED_TOPIC, &[], &[w(amount), w(remaining), w(7)])
+}
+fn evicted(block: u64, incumbent: u128) -> JsonValue {
+    reg_log(block, 0, EVICTED_TOPIC, &[format!("0x{}", hex::encode([0x0a; 32]))], &[w(incumbent), w(incumbent + 1)])
+}
+fn withdrawn(block: u64, index: u64, amount: u128) -> JsonValue {
+    reg_log(block, index, WITHDRAWN_TOPIC, &[format!("0x{}", addr_word(BOND))], &[w(amount)])
+}
+fn slashed(block: u64, index: u64, penalty: u128) -> JsonValue {
+    // tier Latency (0), no reporter, no bounty.
+    reg_log(block, index, SLASHED_TOPIC, &[format!("0x{}", addr_word("0x0"))], &[w(0), w(penalty), w(0)])
+}
+
+/// A bond whose key exited in epoch 1 and whose registry entry holds nothing any more.
+/// Head 8,000 (epoch 8): the 6-epoch exit lock has passed.
+fn settled_exit() -> Chain {
+    let words = [addr_word(BOND), w(0), w(0), w(0), w(32_000), w(1), w(1), w(7), w(2), w(0)];
+    granted(true, Some(BOND_KEY))
+        .call(REGISTRY, VALIDATOR_INFO, ret(&words))
+        .method("eth_blockNumber", JsonValue::String("0x1f40".into())) // 8,000
+        .block(8000, 30_000)
+        .block(7900, 29_800)
+}
+
+fn outcome(chain: &Chain) -> ExitOutcome {
+    read(chain, None, Some(NODE_KEY), None).exit_outcome.expect("a settled exit reads its outcome")
+}
+
+#[test]
+fn a_clean_exit_paid_out_in_full_reads_returned_with_the_amounts() {
+    let chain = settled_exit()
+        .log(unbond(1500, PRINCIPAL_WEI, 0))
+        .log(withdrawn(7100, 3, PRINCIPAL_WEI + 5 * SALT_WEI)); // escrow + terminal rewards
+    let o = outcome(&chain);
+    assert_eq!(o.outcome, ExitOutcomeKind::Returned);
+    assert_eq!(o.exit_block, Some(1500));
+    assert_eq!(o.escrowed_wei, Some(PRINCIPAL_WEI.to_string()));
+    assert_eq!(o.paid_out_wei, Some((PRINCIPAL_WEI + 5 * SALT_WEI).to_string()));
+    assert_eq!(o.paid_out_block, Some(7100));
+    assert_eq!(o.slashed_wei, None);
+    assert_eq!(o.scanned_from, 1000, "from the start of the exit epoch");
+}
+
+/// The review case: a non-Byzantine slash on an Exiting key drains the escrow to 0 and leaves the
+/// status Exiting; the later terminal withdraw pays only rewards. With large vested rewards the
+/// payout can even exceed the principal. Never "returned".
+#[test]
+fn an_exit_drained_by_a_slash_reads_slashed_even_when_a_later_withdraw_pays_more_than_the_principal() {
+    for paid in [5 * SALT_WEI, PRINCIPAL_WEI + 1, 2 * PRINCIPAL_WEI] {
+        let chain = settled_exit()
+            .log(unbond(1500, PRINCIPAL_WEI, 0))
+            .log(slashed(3000, 0, PRINCIPAL_WEI))
+            .log(withdrawn(7100, 0, paid));
+        let o = outcome(&chain);
+        assert_eq!(o.outcome, ExitOutcomeKind::Slashed, "paid {paid}");
+        assert_eq!(o.slashed_wei, Some(PRINCIPAL_WEI.to_string()));
+        assert_eq!(o.paid_out_wei, Some(paid.to_string()));
+    }
+}
+
+#[test]
+fn a_slash_drained_exit_with_no_withdraw_yet_reads_slashed() {
+    let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(slashed(2500, 0, 30_000 * SALT_WEI)).log(slashed(2600, 1, 2_000 * SALT_WEI));
+    let o = outcome(&chain);
+    assert_eq!(o.outcome, ExitOutcomeKind::Slashed);
+    assert_eq!(o.slashed_wei, Some(PRINCIPAL_WEI.to_string()), "penalties summed");
+    assert_eq!(o.paid_out_wei, None);
+}
+
+#[test]
+fn a_slash_in_the_payout_block_before_the_payout_counts_and_one_after_does_not() {
+    let before = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(slashed(7100, 1, SALT_WEI)).log(withdrawn(7100, 2, PRINCIPAL_WEI));
+    assert_eq!(outcome(&before).outcome, ExitOutcomeKind::Slashed);
+    // After the payout the escrow is gone; a later slash can only reach rewards.
+    let after = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 2, PRINCIPAL_WEI)).log(slashed(7100, 3, SALT_WEI)).log(slashed(7500, 0, SALT_WEI));
+    assert_eq!(outcome(&after).outcome, ExitOutcomeKind::Returned);
+}
+
+#[test]
+fn an_exit_that_escrowed_less_than_the_principal_reads_slashed() {
+    // A slash while Active (before this scan's window) shrank the bond before the exit.
+    let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI - 1_600 * SALT_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI));
+    let o = outcome(&chain);
+    assert_eq!(o.outcome, ExitOutcomeKind::Slashed);
+    assert_eq!(o.escrowed_wei, Some((PRINCIPAL_WEI - 1_600 * SALT_WEI).to_string()));
+}
+
+#[test]
+fn a_demotion_exit_slash_with_no_unbond_reads_slashed() {
+    // _slash -> _beginExit: Demoted + Slashed in the same tx, no UnbondInitiated.
+    let chain = settled_exit().log(slashed(1500, 1, 1_600 * SALT_WEI)).log(withdrawn(7100, 0, 30_400 * SALT_WEI));
+    assert_eq!(outcome(&chain).outcome, ExitOutcomeKind::Slashed);
+}
+
+#[test]
+fn an_eviction_exit_paid_out_in_full_reads_returned() {
+    let chain = settled_exit().log(evicted(1500, PRINCIPAL_WEI)).log(withdrawn(7100, 0, PRINCIPAL_WEI));
+    let o = outcome(&chain);
+    assert_eq!(o.outcome, ExitOutcomeKind::Returned);
+    assert_eq!(o.escrowed_wei, Some(PRINCIPAL_WEI.to_string()));
+}
+
+#[test]
+fn without_proof_either_way_the_outcome_is_not_read() {
+    let cases: Vec<(&str, Chain)> = vec![
+        ("no exit event", settled_exit().log(withdrawn(7100, 0, PRINCIPAL_WEI))),
+        ("a partial unbond is not the exit", settled_exit().log(unbond(1500, SALT_WEI, PRINCIPAL_WEI - SALT_WEI)).log(withdrawn(7100, 0, PRINCIPAL_WEI))),
+        ("no payout logged", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0))),
+        ("a payout before the exit is not its payout", settled_exit().log(withdrawn(1200, 0, PRINCIPAL_WEI)).log(unbond(1500, PRINCIPAL_WEI, 0))),
+        ("paid less than escrowed", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI - 1))),
+        ("logs unavailable", settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI)).logs_fail_from(5000)),
+        ("principal not read", settled_exit().call(BOND, PRINCIPAL, "0x".into()).log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI))),
+        ("head not read", settled_exit().method("eth_blockNumber", JsonValue::String("0x0".into())).log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI))),
+    ];
+    for (why, chain) in cases {
+        let o = outcome(&chain);
+        assert_eq!(o.outcome, ExitOutcomeKind::NotRead, "{why}");
+        assert!(o.reason.as_deref().is_some_and(|r| !r.is_empty()), "{why}: says why");
+    }
+}
+
+#[test]
+fn a_malformed_log_is_not_read_never_guessed() {
+    let mut bad = withdrawn(7100, 0, PRINCIPAL_WEI);
+    bad["data"] = JsonValue::String("0x12".into());
+    let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(bad);
+    assert_eq!(outcome(&chain).outcome, ExitOutcomeKind::NotRead);
+}
+
+#[test]
+fn the_scan_reads_registry_logs_under_the_key_in_ranges_the_node_serves_whole_and_stops_at_the_payout() {
+    let chain = settled_exit().log(unbond(1500, PRINCIPAL_WEI, 0)).log(withdrawn(7100, 0, PRINCIPAL_WEI));
+    let _ = outcome(&chain);
+    let ranges = chain.log_ranges();
+    assert_eq!(ranges.first(), Some(&(1000, 1999)));
+    assert!(ranges.iter().all(|(f, t)| t >= f && t - f < LOG_CHUNK_BLOCKS), "{ranges:?}");
+    assert!(ranges.windows(2).all(|p| p[1].0 == p[0].1 + 1), "contiguous: {ranges:?}");
+    assert_eq!(ranges.last(), Some(&(7000, 7999)), "stops after the chunk with the payout");
+    for body in chain.seen.borrow().iter().filter(|b| b["method"] == "eth_getLogs") {
+        let f = &body["params"][0];
+        assert_eq!(f["address"], REGISTRY);
+        assert_eq!(f["topics"][1].as_str(), Some(key_topic().as_str()));
+    }
+}
+
+#[test]
+fn the_scan_is_capped_and_a_payout_beyond_it_is_not_read() {
+    let far = 1000 + EXIT_SCAN_MAX_CHUNKS * LOG_CHUNK_BLOCKS + 500;
+    let chain = settled_exit()
+        .method("eth_blockNumber", JsonValue::String(format!("0x{:x}", far + 100)))
+        .block(far + 100, 90_000)
+        .block(far, 89_800)
+        .log(unbond(1500, PRINCIPAL_WEI, 0))
+        .log(withdrawn(far, 0, PRINCIPAL_WEI));
+    let o = outcome(&chain);
+    assert_eq!(o.outcome, ExitOutcomeKind::NotRead);
+    assert_eq!(chain.log_ranges().len() as u64, EXIT_SCAN_MAX_CHUNKS);
+}
+
+#[test]
+fn the_outcome_is_read_only_for_a_settled_exit() {
+    // Still in the exit lock (escrow held), or not exiting: no outcome and no log reads.
+    let in_lock = {
+        let words = [addr_word(BOND), w(0), w(0), w(PRINCIPAL_WEI), w(32_000), w(1), w(1), w(7), w(2), w(0)];
+        granted(true, Some(BOND_KEY)).call(REGISTRY, VALIDATOR_INFO, ret(&words))
+    };
+    let active = granted(true, Some(BOND_KEY)).call(REGISTRY, VALIDATOR_INFO, info(1, 1));
+    let unread = granted(true, Some(BOND_KEY));
+    for chain in [in_lock, active, unread] {
+        assert_eq!(read(&chain, None, Some(NODE_KEY), None).exit_outcome, None);
+        assert!(chain.log_ranges().is_empty());
+    }
 }

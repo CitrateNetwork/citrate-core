@@ -18,6 +18,9 @@
 //! | `activationEpoch`         | `ValidatorRegistry.validatorInfo(pubkey).actEpoch`            |
 //! | `registryBondedWei`       | `ValidatorRegistry.validatorInfo(pubkey).bonded`              |
 //! | `registryEscrowWei`       | `ValidatorRegistry.validatorInfo(pubkey).escrow`              |
+//! | `exitOutcome`             | `ValidatorRegistry` logs under the key after its exit (`eth_getLogs`: |
+//! |                           | `UnbondInitiated` / `Evicted`, `Slashed`, `Withdrawn`), read only for |
+//! |                           | an Exiting key with no bonded stake and no escrow left        |
 //! | `registryActive`          | `ValidatorRegistry.isActive(pubkey)`                          |
 //! | `epochBlocks`             | `ValidatorRegistry.EPOCH()`                                   |
 //! | `currentEpoch`            | `ValidatorRegistry.currentEpoch()`                            |
@@ -63,6 +66,65 @@ pub const REGISTRY_IS_ACTIVE: [u8; 4] = [0x5c, 0x36, 0x90, 0x1c];
 pub const EPOCH: [u8; 4] = [0xa0, 0xdc, 0x27, 0x58];
 /// `ValidatorRegistry.currentEpoch()` (chain#319: activation is `actEpoch <= currentEpoch()`).
 pub const CURRENT_EPOCH: [u8; 4] = [0x76, 0x67, 0x18, 0x08];
+
+/// `ValidatorRegistry` event topics (topic0 = keccak256 of the signature), drift-tested in the
+/// tests. Every one of them has the validator key as topic1.
+/// `UnbondInitiated(bytes32 indexed pubkey, uint256 amount, uint256 remaining, uint64 unlockEpoch)`.
+pub const UNBOND_INITIATED_TOPIC: &str =
+    "0x61a86f4e214db2a4a09d1e3c370fbcbc230c09ed03e605870240d70581123a0d";
+/// `Evicted(bytes32 indexed pubkey, uint256 incumbentStake, bytes32 indexed byPubkey, uint256 newcomerStake)`.
+pub const EVICTED_TOPIC: &str =
+    "0x581d34ea5e5b3c162c0537cc0ec93c68f7905cf8e9642584a3927e95b641bca4";
+/// `Withdrawn(bytes32 indexed pubkey, address indexed staker, uint256 amount)`.
+pub const WITHDRAWN_TOPIC: &str =
+    "0x04eda370f8b8612fa7266d7ebbd41af9d694e19793fe9d9ff31b3ddbd99b08e1";
+/// `Slashed(bytes32 indexed pubkey, SlashTier tier, uint256 penalty, address indexed reporter, uint256 bounty)`.
+pub const SLASHED_TOPIC: &str =
+    "0xe7e5a0e7e51cdf3695c3cb141d9a9d28b6247245dd98adee084b9a89afdd0499";
+
+/// The node serves at most 1,001 blocks per `eth_getLogs` and silently cuts a longer range, so
+/// the exit scan asks for exactly this many blocks at a time.
+pub const LOG_CHUNK_BLOCKS: u64 = 1000;
+/// How many chunks the exit scan reads before it gives up and reports the outcome as not read
+/// (32,000 blocks, ~18 h at 2 s; the registry's exit lock is 6 epochs = 6,000 blocks).
+pub const EXIT_SCAN_MAX_CHUNKS: u64 = 32;
+
+/// What became of an exit once the registry holds nothing under the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExitOutcomeKind {
+    /// Proven paid out in full: the exit escrowed at least the bond's principal, a `Withdrawn`
+    /// paid at least that, and no `Slashed` was logged under the key from the exit to the payout.
+    Returned,
+    /// A `Slashed` was logged under the key before the payout (or with none), or the exit
+    /// escrowed less than the bond's principal.
+    Slashed,
+    /// Neither could be shown from the logs read (a failed read, no exit event, or no payout
+    /// within the scan).
+    NotRead,
+}
+
+/// The exit outcome as read from the registry's logs. Wei as decimal strings.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitOutcome {
+    pub outcome: ExitOutcomeKind,
+    /// Block of the full exit (`UnbondInitiated` with `remaining == 0`, or `Evicted`).
+    pub exit_block: Option<u64>,
+    /// What the exit moved into escrow (`UnbondInitiated.amount` / `Evicted.incumbentStake`).
+    pub escrowed_wei: Option<String>,
+    /// The first `Withdrawn.amount` at or after the exit, and its block.
+    pub paid_out_wei: Option<String>,
+    pub paid_out_block: Option<u64>,
+    /// Sum of the `Slashed.penalty` values logged from the exit window up to the payout (or to
+    /// the end of the scan). `None` when none was seen.
+    pub slashed_wei: Option<String>,
+    /// The blocks the scan covered.
+    pub scanned_from: u64,
+    pub scanned_to: Option<u64>,
+    /// Why the outcome is `notRead`.
+    pub reason: Option<String>,
+}
 
 /// A sent activation transaction, as its receipt reports it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -115,8 +177,12 @@ pub struct ActivationStatus {
     /// `validatorInfo(pubkey).bonded`: stake still bonded under the key (wei).
     pub registry_bonded_wei: Option<String>,
     /// `validatorInfo(pubkey).escrow`: unbonded stake the registry still holds until the exit
-    /// lock ends (wei). Bonded and escrow both zero on an Exiting key means the exit paid out.
+    /// lock ends (wei). Bonded and escrow both zero on an Exiting key means the exit SETTLED: paid
+    /// out or slashed away (a non-Byzantine slash keeps the key Exiting), see `exit_outcome`.
     pub registry_escrow_wei: Option<String>,
+    /// Read only when the key is Exiting with bonded and escrow both zero: whether the exit was
+    /// paid out or slashed. `None` otherwise (and the step never says "returned" without it).
+    pub exit_outcome: Option<ExitOutcome>,
     pub activation_epoch: Option<u64>,
     pub registry_active: Option<bool>,
     pub epoch_blocks: Option<u64>,
@@ -292,6 +358,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         (None, None) => (None, None),
     };
     st.pubkey_source = source.map(str::to_string);
+    let mut exit_epoch: Option<u64> = None;
     if let Some(pk) = pubkey {
         st.validator_pubkey = Some(format!("0x{}", hex::encode(pk)));
         if let Some(info) = eth_call(public, targets.registry, &with_word(VALIDATOR_INFO, &pk)) {
@@ -306,6 +373,7 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
                 .and_then(word_u128)
                 .map(|v| v.to_string());
             st.activation_epoch = word(&info, 5).as_ref().and_then(word_u64);
+            exit_epoch = word(&info, 6).as_ref().and_then(word_u64);
             st.registry_status = word(&info, 8)
                 .as_ref()
                 .and_then(word_u64)
@@ -344,6 +412,21 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         };
         if let (Some(t1), Some(t0)) = (ts(head), ts(head - BLOCK_TIME_SAMPLE)) {
             st.block_time_ms = measured_block_time_ms(t0, t1, BLOCK_TIME_SAMPLE);
+        }
+    }
+
+    // An Exiting key with nothing left under it has settled; say how only from the logs.
+    if let Some(pk) = pubkey {
+        if exit_settled(&st) {
+            st.exit_outcome = Some(read_exit_outcome(
+                public,
+                targets.registry,
+                &pk,
+                exit_epoch,
+                st.epoch_blocks,
+                st.head_block,
+                st.principal_wei.as_deref(),
+            ));
         }
     }
 
@@ -388,6 +471,38 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
         st.tx = Some(tx);
     }
     Ok(st)
+}
+
+/// The key is Exiting and the registry holds neither bonded stake nor escrow under it (both
+/// read). The exit has settled, but this alone does not say whether it paid out or was slashed.
+fn exit_settled(st: &ActivationStatus) -> bool {
+    st.registry_status == Some(2)
+        && st.registry_bonded_wei.as_deref() == Some("0")
+        && st.registry_escrow_wei.as_deref() == Some("0")
+}
+
+/// How a settled exit ended, from the registry's own logs under the key.
+fn read_exit_outcome<T: RpcTransport>(
+    _public: &T,
+    _registry: &str,
+    _pubkey: &[u8; 32],
+    exit_epoch: Option<u64>,
+    epoch_blocks: Option<u64>,
+    _head: Option<u64>,
+    _principal_wei: Option<&str>,
+) -> ExitOutcome {
+    // RED STUB: keeps the old behaviour (a settled exit is taken as returned).
+    ExitOutcome {
+        outcome: ExitOutcomeKind::Returned,
+        exit_block: None,
+        escrowed_wei: None,
+        paid_out_wei: None,
+        paid_out_block: None,
+        slashed_wei: None,
+        scanned_from: exit_epoch.unwrap_or(0) * epoch_blocks.unwrap_or(0),
+        scanned_to: None,
+        reason: None,
+    }
 }
 
 /// Milliseconds per block over `blocks` blocks between timestamps `t0` and `t1` (seconds).

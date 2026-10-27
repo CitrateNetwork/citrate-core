@@ -246,6 +246,25 @@ export interface NodeStatusView {
  * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
  * Wei as decimal strings. Mirrors the Rust `validator_activation::ActivationStatus`.
  */
+/** A settled exit's outcome as read from the ValidatorRegistry's logs (wei as decimal strings). */
+export interface ExitOutcomeView {
+  /**
+   * "returned": the exit escrowed at least the principal, a Withdrawn paid at least that, and no
+   * Slashed was logged under the key before it. "slashed": a Slashed was logged before the payout
+   * (or there is none), or the exit escrowed less than the principal. "notRead": neither shown.
+   */
+  outcome: "returned" | "slashed" | "notRead";
+  exitBlock: number | null;
+  escrowedWei: string | null;
+  paidOutWei: string | null;
+  paidOutBlock: number | null;
+  /** Sum of the Slashed penalties logged up to the payout; null when none was seen. */
+  slashedWei: string | null;
+  scannedFrom: number;
+  scannedTo: number | null;
+  reason: string | null;
+}
+
 export interface ActivationStatusView {
   /** `MembershipStakeVault.bondOf(member)` (CREATE2: present even before the bond exists). */
   bondAddress: string | null;
@@ -281,6 +300,13 @@ export interface ActivationStatusView {
    * the exit paid out.
    */
   registryEscrowWei: string | null;
+  /**
+   * How a settled exit ended (Exiting, bonded and escrow both "0"), from the registry's logs under
+   * the key: `UnbondInitiated`/`Evicted` (the exit), `Slashed`, `Withdrawn` (the payout). A
+   * non-Byzantine slash keeps the key Exiting, so bonded and escrow at 0 alone do not say the
+   * bond came back. Null when not a settled exit, or not read.
+   */
+  exitOutcome: ExitOutcomeView | null;
   /** `validatorInfo(pubkey).actEpoch`. */
   activationEpoch: number | null;
   /** `ValidatorRegistry.isActive(pubkey)`. */
