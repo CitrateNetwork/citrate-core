@@ -359,6 +359,21 @@ describe("data locations", () => {
     expect(r.unrelated).toEqual([`${home}/Library/Application Support`, `${home}/Library/Caches/com.apple.WebKit.Networking/x`]);
     expect(H.evaluateLocations([`${home}/Library/Logs/ai.citrate.core/app.log`], [home], doc, []).ok).toBe(true);
   });
+  it("attributes by the part below the scanned root, so a run dir named citrate-* does not make every file Citrate's", () => {
+    const home = "/w/_temp/citrate-macos-acc-1/run.2/home";
+    const r = H.evaluateLocations([
+      `${home}/.selftest-pids`, `${home}/Library`, `${home}/Library/Application Support`,
+      `${home}/Library/Application Support/ai.citrate.core/x`, `${home}/Library/citrate-undocumented/x`,
+    ], [home], doc, ["citrate", "ipfs"], [home]);
+    expect(r.unrelated).toEqual([`${home}/.selftest-pids`, `${home}/Library`, `${home}/Library/Application Support`]);
+    expect(r.documented).toEqual([`${home}/Library/Application Support/ai.citrate.core/x`]);
+    expect(r.undocumented).toEqual([`${home}/Library/citrate-undocumented/x`]);
+    // outside the run dir: relative to the scanned root that holds the path (the longest one)
+    const o = H.evaluateLocations(["/private/tmp/citrate-node.sock", "/private/tmp/other", "/Users/citrate-tester/Library/Caches/x"],
+      ["/Users/citrate-tester"], doc, ["citrate"], ["/private/tmp", "/Users/citrate-tester"]);
+    expect(o.undocumented).toEqual(["/private/tmp/citrate-node.sock"]);
+    expect(o.unrelated).toEqual(["/private/tmp/other", "/Users/citrate-tester/Library/Caches/x"]);
+  });
   it("attributes by name: citrate anywhere, or a sidecar name or .ipfs as a path segment", () => {
     expect(H.isCitratePath("/u/.ipfs/config", [])).toBe(true);
     expect(H.isCitratePath("/tmp/hermes/x", ["hermes"])).toBe(true);
@@ -708,6 +723,8 @@ describe("verdict", () => {
     for (const m of H.SELF_TEST_MODES.filter((x) => x.run === "full" && x.mode !== "good")) {
       expect(H.STAND_IN_APP, m.mode).toMatch(new RegExp(`"\\$MODE" !?= ${m.mode}\\b`));
     }
+    // leak mode leaks on the first quit only, so it breaks quit.clean and not the later reap.quit
+    expect(H.STAND_IN_APP).toMatch(/"\$MODE" = leak \] && \[ ! -f "\$HOME\/\.selftest-leaked" \]/);
     expect(H.STAND_IN_SIDECAR_C).toMatch(/int main\(int argc, char \*\*argv\)/);
     expect(H.STAND_IN_SIDECAR_C).not.toMatch(/system\(|exec[lv]p?\(/);
   });
