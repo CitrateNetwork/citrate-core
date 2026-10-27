@@ -1,37 +1,25 @@
-// CX bridge impl — group invites (INVITE-S2 self-admit + CONNECT-S1 claim-back), SIM. Honest (Rule 1).
-import type { ConsumeOutcome, InviteMinted, InvitesDomain, PendingInvite, ReferralEvent } from "../domains";
+// CX bridge impl — group invites (D-12: request and approve), SIM. The web preview has no relay and
+// no group daemon, so nothing here pretends to make, send or approve an invite (Rule 1).
+import type { InvitesDomain } from "../domains";
 import type { SimHost } from "./index";
 
+const DESKTOP_ONLY = "Invites need the desktop app.";
+
 export function simInvites(_host: SimHost): InvitesDomain {
+  const refuse = async (): Promise<never> => {
+    throw new Error(DESKTOP_ONLY);
+  };
   return {
-    async create(): Promise<InviteMinted> {
-      // No relay in the web preview — minting a self-admit invite needs the desktop daemon.
-      throw new Error("creating a group invite needs the desktop app");
-    },
-    async redeem(): Promise<void> {
-      // No relay/MLS in the web preview — self-admit needs the desktop daemon.
-      throw new Error("joining via an invite needs the desktop app");
-    },
-    async list(): Promise<PendingInvite[]> {
-      return [];
-    },
-    async verifyConsume(): Promise<ConsumeOutcome> {
-      return "invalid";
-    },
-    async revoke(): Promise<void> {
-      /* no-op */
-    },
-    async submitClaim(): Promise<void> {
-      /* sim: no relay claims-inbox — honest no-op (nothing submitted), never a fake "sent" */
-    },
-    async pollClaims() {
-      return []; // sim: no relay — honest-empty, never a fabricated request
-    },
-    async referralLog(): Promise<ReferralEvent[]> {
-      return []; // sim: no local ledger in the web preview — honest-empty
-    },
-    async exportReferralLog(): Promise<string> {
-      return "[]";
-    },
+    create: refuse,
+    list: async () => [],
+    revoke: refuse,
+    requests: refuse,
+    approve: refuse,
+    check: refuse,
+    decline: refuse,
+    preview: refuse,
+    request: refuse,
+    myRequests: async () => [],
+    dismiss: async () => {},
   };
 }
