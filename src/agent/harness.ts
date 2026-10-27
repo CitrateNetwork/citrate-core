@@ -36,8 +36,10 @@ export interface AgentContext {
   nodeState: string;
   staked: number;
   liquid: number;
-  claimable: number;
-  earningsToday: number;
+  /** `ValidatorRegistry.rewardsOf(pubkey).claimableNow` in SALT; null = not a validator / not read. */
+  claimable: number | null;
+  /** `ValidatorRegistry.rewardsOf(pubkey).total` in SALT; null = not a validator / not read. */
+  rewardsTotal: number | null;
   walletAddr: string;
   tier: string;
 }
@@ -204,13 +206,13 @@ export const AGENT_SYSTEM_PROMPT = [
   "Never fabricate numbers, balances, heights, model names, or results — read them through tools. If a tool returns nothing or errors, say so plainly; never invent a value or claim a write landed before it was approved.",
   "",
   "# What you can help with (your capabilities on this node)",
-  "- Node & staking: read the node's sync/validator status, height, peers; the staking position and earnings/claimable; the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
+  "- Node & staking: read the node's sync/validator status, height, peers; the staking position and validator rewards (total and claimable now, from ValidatorRegistry.rewardsOf); the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
   "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-click self-admit link (the invitee joins in a click, no approval needed, even if the owner is offline), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
   "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
   "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one.",
   "- Paraconsensus: belnap_codec encodes inputs for the Belnap aggregation precompile 0x0110 and decodes its output (values plus a Neither / True / Both state per dimension), locally and exactly. Keep a Both visible to the member; never average it away.",
   "- Everyday: read a Google spreadsheet range (gsheets_read) and PROPOSE adding rows (gsheets_append); read Hermes's schedule (schedule_list) and PROPOSE an entry (schedule_add); read the member's Google Calendar (calendar_list). Google tools work only after the member connects Google in Settings > Connections; if they are not connected, say so.",
-  "- Coding in the member's folders: when the member has shared a folder with you (Settings > App > Hermes folder access) and terminal commands are on, the shell_run tool runs one command in that folder (for example npm test, cargo build, make, git status, python script.py). Use it for coding tasks: build, test, lint and inspect the project, then report what the output shows. The member sees and approves every command before it runs; it runs in a sandbox with no network and may write only inside the shared folder. Give argv as separate entries (no shell, so no pipes or globs) and cwd as the absolute folder path. If shell_run is not offered, say the member needs to share a folder and turn on terminal commands in Settings. A declined command did not run: never claim its result.",
+  "- Coding in the member's folders: when the member has shared a folder with you (Hermes > Controls > Details > Terminal & folders) and terminal commands are on, the shell_run tool runs one command in that folder (for example npm test, cargo build, make, git status, python script.py). Use it for coding tasks: build, test, lint and inspect the project, then report what the output shows. The member sees and approves every command before it runs; it runs in a sandbox with no network and may write only inside the shared folder. Give argv as separate entries (no shell, so no pipes or globs) and cwd as the absolute folder path. If shell_run is not offered, say the member needs to share a folder and turn on terminal commands in Hermes > Controls. A declined command did not run: never claim its result.",
   "- Memory: semantically search and recall the member's memory graph and the bundled Citrate documentation (the 'citrate-docs' tenant); propose remembering a fact (a ceremony-gated write).",
   "- Navigation: move the member to the right surface of the app (wallet, node, groups, storage, commissary, settings) when it helps.",
   "",
@@ -433,7 +435,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "node_status",
-      description: "Read the member's node: sync state, block height, peer count, and whether it is validating. Read-only, live from the local node.",
+      description: "Read the member's node: sync state, block height, peer count, and its validator state (ValidatorRegistry isActive, validatorInfo.actEpoch and currentEpoch: Registered · active from epoch N until the epoch is reached). Read-only, live from the local node.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -441,7 +443,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "staking_status",
-      description: "Read the member's real position: staked SALT, liquid balance, claimable rewards, and wallet address. Read-only, from the local node + chain. Never fabricate — call this for any balance/earnings question.",
+      description: "Read the member's real position: staked SALT, liquid balance, claimable rewards, and wallet address. Read-only, from the local node + chain. Never fabricate — call this for any balance or rewards question.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -992,21 +994,26 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("chain_read", { query: "staking.position" })],
       compose: (c) =>
-        `You have **${fmt(c.staked)} SALT** staked in the LiquidStakingPool — your full membership grant, vaulted and attributed to your validator. That meets the 32,000 SALT minimum, so your node ${c.nodeState === "validating" ? "is validating and earning" : "is eligible to validate once running"}. The granted principal stays vaulted until mainnet release; rewards your node earns are yours. Withdrawals of self-added stake carry a 7-day lockup.`,
+        `Your membership grant is **${fmt(c.staked)} SALT**, held in your validator bond. Staking is through that bond: there is no separate stake to add or withdraw. Your node ${c.nodeState === "validating" ? "is validating" : "can validate once the bond is activated and the node is running"}. The granted principal stays locked until the bond unlocks; rewards for blocks your node produces are yours.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {
     return {
-      toolCalls: [tc("chain_read", { query: "earnings.claimable" })],
+      toolCalls: [tc("chain_read", { query: "rewards.claimable" })],
+      // C1-V V8: only the on-chain rewardsOf read, named as rewards for producing blocks. No
+      // per-day figure (no source exists) and no pinning/compute split (no contract exposes one).
       compose: (c) =>
-        `Today your node has earned **${c.earningsToday.toFixed(2)} SALT** — validation makes up most of it, with smaller pinning and compute shares. Your claimable balance is **${c.claimable.toFixed(2)} SALT**; claims batch until they clear the dust threshold, and claiming signs a claimRewards() transaction through the ceremony. Want me to take you to the earnings view?`,
+        c.rewardsTotal == null || c.claimable == null
+          ? "I have no validator rewards reading for you: your node is not a registered validator, or the read failed. Validator rewards are paid only for producing blocks, and come from ValidatorRegistry.rewardsOf."
+          : `Validator rewards (ValidatorRegistry.rewardsOf): **${c.rewardsTotal.toFixed(2)} SALT** in total, **${c.claimable.toFixed(2)} SALT** claimable now, and the rest is maturing. Rewards are paid for producing blocks. Claiming signs a claimRewards() transaction through the ceremony. Want me to take you to Node > Rewards?`,
     };
   }
   if (has("balance", "wallet", "how much salt")) {
     return {
       toolCalls: [tc("chain_read", { query: "wallet.balances" })],
       compose: (c) =>
-        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (earned rewards — the 32,000 grant sits staked, not liquid). Staked: **${fmt(c.staked)} SALT**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from your local node.`,
+        // C1-V V8/V9: the balance is eth_getBalance on the public RPC, not "earned rewards"; staked is stakeOf.
+        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (eth_getBalance, latest). Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from rpc.citrate.ai.`,
     };
   }
   if (has("network", "height", "peers", "block", "finality", "status")) {
@@ -1071,7 +1078,7 @@ function routeIntent(t: string): Plan {
   return {
     toolCalls: [],
     compose: (c) =>
-      `I'm your member agent — grounded in your node, wallet, and memory graph. I can read your staking position, break down earnings, recall or (with your approval) write memory, link docs at your tier, and move you around the app. Your node is ${c.nodeState}${c.height > 0 ? ` at height ${fmt(c.height)}` : ""}. What do you need?`,
+      `I'm your member agent — grounded in your node, wallet, and memory graph. I can read your staking position and validator rewards, recall or (with your approval) write memory, link docs at your tier, and move you around the app. Your node is ${c.nodeState}${c.height > 0 ? ` at height ${fmt(c.height)}` : ""}. What do you need?`,
   };
 }
 

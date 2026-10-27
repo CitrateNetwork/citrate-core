@@ -1,5 +1,5 @@
 // CX bridge impl — group invites (INVITE-S2 self-admit + CONNECT-S1 claim-back), SIM. Honest (Rule 1).
-import type { InviteMinted, InvitesDomain, PendingInvite, ReferralEvent } from "../domains";
+import type { ConsumeOutcome, InviteMinted, InvitesDomain, PendingInvite, ReferralEvent } from "../domains";
 import type { SimHost } from "./index";
 
 export function simInvites(_host: SimHost): InvitesDomain {
@@ -15,8 +15,8 @@ export function simInvites(_host: SimHost): InvitesDomain {
     async list(): Promise<PendingInvite[]> {
       return [];
     },
-    async verifyConsume(): Promise<boolean> {
-      return false;
+    async verifyConsume(): Promise<ConsumeOutcome> {
+      return "invalid";
     },
     async revoke(): Promise<void> {
       /* no-op */

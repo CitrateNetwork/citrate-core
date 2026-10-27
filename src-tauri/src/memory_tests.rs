@@ -167,7 +167,7 @@ fn fixture_recall_text() -> String {
 fn fixture_chain_recall_text() -> String {
     "freshness: HEAD 40204catalog0 (1 commits) ingested @ 1720000000000ms\n\
      tenant 'chain-state' — 45 nodes, showing 2:\n\
-    \x20 aabbccddee [ChainContract] contracts.LiquidStakingPool\n\
+    \x20 aabbccddee [ChainContract] contracts.ValidatorRegistry\n\
     \x20 ffee11dd22 [ChainNetwork] chain 40204 params\n"
         .to_string()
 }
@@ -522,7 +522,7 @@ fn unix_socket_transport_round_trips_a_real_socket() {
     let r = parse_result("chain-state", &text);
     assert_eq!(r.tenant, "chain-state");
     assert_eq!(r.total_in_tenant, 45, "the real socket carried the chain-state total");
-    assert!(r.hits.iter().any(|h| h.title.contains("LiquidStakingPool")));
+    assert!(r.hits.iter().any(|h| h.title.contains("ValidatorRegistry")));
     handle.join().unwrap();
 }
 
@@ -604,11 +604,11 @@ fn live_real_daemon_recall_and_chain_ingest() {
     //   1. chain_ingest <store> citrate-chain/contracts/addresses/40204.json
     //        → "chain-state ingest ok: chainId 40204 — 59 contracts … 60 nodes"
     //   2. reencrypt <store> <enc>  → "60 nodes sealed across 1 tenants, 59 edges"
-    //   3. grep -ra LiquidStakingPool <enc>  → NOTHING (ciphertext at rest ✔)
+    //   3. grep -ra <a contract name> <enc>  → NOTHING (ciphertext at rest ✔)
     //   4. mcp_serve <enc> <sock>; recall(repo="chain-state", budget=60) over the
     //        REAL Unix socket → "tenant 'chain-state' — 60 nodes" with real
     //        contract nodes + addresses (ModelAccessControl @ 0x8e59…, EntryPoint,
-    //        LiquidStakingPool, …) matching 40204.json.
+    //        …) matching 40204.json.
     // Kept `#[ignore]` because the rocksdb build is heavy for the per-PR CI gate;
     // the transformer/bge semantic path is an S7 model-bundle item. Not fabricated
     // (Rule 1) — this is a captured real run, re-runnable via the proof script.

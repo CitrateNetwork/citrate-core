@@ -8,8 +8,8 @@
 use serde::Serialize;
 use sha3::{Digest, Keccak256};
 
+use crate::agent_sbt::decode_u128;
 use crate::rpc::RpcClient;
-use crate::staking::decode_uint256_word;
 
 // Selectors confirmed by the chain team (SETL-S3 reply). Pinned, not recomputed — the exact
 // argument types (e.g. roundMergedHash(bytes32)) are the ledger's, and these are the source of truth.
@@ -184,13 +184,13 @@ pub fn training_reward_sync(
     let mut units_call = SEL_UNITS.to_vec();
     units_call.extend_from_slice(&word);
     let weight = call_word(&rpc, ledger, &units_call)
-        .and_then(|w| decode_uint256_word(&w).ok())
+        .and_then(|w| decode_u128(&w).ok())
         .unwrap_or(0);
 
     let mut pending_call = SEL_PENDING_DIVIDEND_OF.to_vec();
     pending_call.extend_from_slice(&word);
     let pending_wei = call_word(&rpc, ledger, &pending_call)
-        .and_then(|w| decode_uint256_word(&w).ok())
+        .and_then(|w| decode_u128(&w).ok())
         .unwrap_or(0);
     let salt_whole = pending_wei / 1_000_000_000_000_000_000u128; // wei → whole SALT
 
@@ -248,7 +248,7 @@ pub fn training_claim_sync(
     let mut pending_call = SEL_PENDING_DIVIDEND_OF.to_vec();
     pending_call.extend_from_slice(&left_pad_address(&member));
     let pending = call_word(&rpc, ledger, &pending_call)
-        .and_then(|w| decode_uint256_word(&w).ok())
+        .and_then(|w| decode_u128(&w).ok())
         .unwrap_or(0);
     let _ = group;
     if pending == 0 {

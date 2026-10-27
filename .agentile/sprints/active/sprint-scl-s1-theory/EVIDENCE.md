@@ -600,6 +600,9 @@ Rule-2 record for round 5: TLC configs go from 47 to 50. Still no Rust or TypeSc
 
 ## Harness and baseline
 
+Sections for S1.3 (harness), S1.5 (baseline) and the SC1 status. The S1.4 re-grounding is in
+[REGROUND.md](REGROUND.md).
+
 ### S1.5 baseline (Rule 2)
 
 Commit pin: citrate-core `main` at `b521d98`. Host: macOS 15 arm64 (owner Mac, MAC lane),
@@ -655,13 +658,14 @@ What this does not show: the CI job has not run on hosted runners yet at the tim
 ### SC1 (SCL-S2) status and deferrals
 
 Work landed in the stacked PRs #351 (S2.1, S2.2) and #352 (S2.3, S2.4), built on the S1.3
-harness. Counts on this host after the review rounds (#351 at `cca5a85`, #352 at `c39db6b`):
+harness. Counts on this host after the review rounds (#351 at `cca5a85`, #352 at `21ed683`):
 
 | Measure | Value |
 |---|---|
-| `cargo test --workspace --locked` | #351: 2463 passed; #352: 2488 passed; 0 failed, 20 ignored (baseline 2434) |
+| `cargo test --workspace --locked` | #351: 2463 passed; #352 (`21ed683`): 2490 passed; 0 failed, 20 ignored (baseline 2434) |
 | kit `supervisor::tests` | #351: 32 Unix / 11 Windows; #352: 38 / 17 (baseline 24 / 3) |
-| `lifecycle_faults` suite | #351: 21; #352: 40 |
+| `lifecycle_faults` suite | #351: 21; #352: 42 |
+| Concurrency proof (#352 `21ed683`) | 180 of 180 runs green (10 rounds of 18 concurrent suite copies, load average 80 to 140, own target dir) |
 
 **Deferred: using credential-publication tickets in the managers.** Reason: the kit
 provides the ticket (`Supervisor::admit_publication`, `PublicationTicket::commit`,
@@ -704,6 +708,31 @@ The fault suite covers these orderings today (`start_during_held_reader_teardown
 **Also still open:** retries within one Start intent (crash, then backoff, then respawn) do not
 wait for the previous incarnation's readers. That is reader handover, part of the bounded-capture
 work (SC4, SCL-S5).
+
+**Concurrency note.** Counts and stress runs must use a cargo target dir private to the
+worktree. Path crates hash the same in every checkout, so a shared target dir can run another
+checkout's stale test binary. "18 concurrent copies" means 18 started at once, not 6 at a time:
+only the former exposed the shutdown-reader and timing issues fixed in #352 `75272cc` and
+`21ed683`.
+
+### Numbers at merge time (2026-10-25)
+
+The counts above are recorded at the SHAs they name and are kept as recorded. Later heads:
+
+| PR | Now | `lifecycle_faults` | kit `supervisor::tests` (Unix / Windows) |
+|---|---|---|---|
+| #342 (S1.3 harness) | merged as `05462f5` | 11 (recorded above at `4b69bd8`: 10) | unchanged |
+| #351 (SC1 S2.1, S2.2) | merged as `e10e57c` | 23 | 35 / 13 |
+| #412, #414 (core#398, core#397) | merged (`1fc604e`, `b0a056f`) | 28 on `main` | 37 / 15 on `main` |
+| #352 (SC1 S2.3, S2.4) | open, head `d6b6ef2` (main merged in) | 55 | 49 / 27 |
+
+The current numbers for an open PR, with the run that produced them, are in its latest
+`[MAC] Addressed` comment. Workspace totals are not refreshed here: the Rule 2 comparison is
+against the S1.5 baseline table above.
+
+The open item "retries within one Start intent do not wait for the previous incarnation's
+readers" is closed by #414 (core#397): the reader reconcile now runs before every spawn,
+automatic retries included.
 
 ## SCL-S3
 

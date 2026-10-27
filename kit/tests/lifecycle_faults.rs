@@ -811,6 +811,7 @@ fn stop_without_a_monitor_is_observation_unknown() {
             }
         }),
         ended: std::sync::Arc::new(|| {}),
+        prepare: None,
     });
     let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
@@ -891,6 +892,7 @@ fn start_after_the_monitor_ends_is_never_already_satisfied() {
             }
         }),
         ended: std::sync::Arc::new(|| {}),
+        prepare: None,
     });
     let sup = Supervisor::start(SupervisorConfig::new(spec, fx.path("crash.jsonl")))
         .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
@@ -916,6 +918,7 @@ fn start_after_the_monitor_ends_past_an_exited_child_is_never_already_satisfied(
         interval: Duration::from_millis(20),
         observe: std::sync::Arc::new(|_| {}),
         ended: std::sync::Arc::new(|| panic!("deliberate: end the monitor after the child exited")),
+        prepare: None,
     });
     let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
     cfg.backoff = fast_backoff(3);
@@ -2386,6 +2389,7 @@ fn a_deadline_stop_without_a_monitor_holds_no_record() {
             }
         }),
         ended: std::sync::Arc::new(|| {}),
+        prepare: None,
     });
     let mut cfg = SupervisorConfig::new(spec, fx.path("crash.jsonl"));
     cfg.deadlines = Some(publisher.clone());
