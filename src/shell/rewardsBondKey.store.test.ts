@@ -77,6 +77,23 @@ describe("#391 — rewards are accepted only for the member's validator key", ()
     }
   });
 
+  // Review B-1 on #556: contract rule 2, unknown is not zero. BigInt("") is 0n, so before #556 an
+  // empty figure showed as 0 SALT. Every figure that isn't a decimal wei string is unknown.
+  it("a figure that isn't decimal wei is unknown, never 0 SALT, and says why", async () => {
+    for (const bad of ["", 0 as unknown as string, 12 as unknown as string, "0x1a", " 5", "-1", "1e18", null as unknown as string]) {
+      for (const which of ["totalWei", "claimableWei"] as const) {
+        const store = new Store();
+        store.setState({ ...activated(BOND_KEY), bondedStake: 32_000, rewards: { totalWei: "9", claimableWei: "9" }, rewardsError: null });
+        validatorEarnings.mockResolvedValue({ ...FIGURES, [which]: bad, proposerPubkey: BOND_KEY });
+        await store.refreshEarnings();
+        expect(store.state.rewards, `${which}=${JSON.stringify(bad)}`).toBeNull();
+        expect(store.state.rewardsError, `${which}=${JSON.stringify(bad)}`).toContain("isn't a number");
+        const html = renderRewards(store, store.state);
+        expect(html, `${which}=${JSON.stringify(bad)}`).not.toMatch(/>0\.00</);
+      }
+    }
+  });
+
   it("the matching key is accepted, whatever its letter case", async () => {
     const store = await read(activated(BOND_KEY), "0x" + BOND_KEY.slice(2).toUpperCase());
     expect(store.state.rewards).toEqual(FIGURES);

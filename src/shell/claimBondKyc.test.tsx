@@ -5,7 +5,6 @@
 // identity check.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
-import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri" as const, assertSimAllowed: () => {} }));
 vi.mock("wagmi", () => ({
@@ -158,6 +157,71 @@ describe("#362 B-1 — the grant read carries the flag, and the poll re-reads it
     await store.refreshNode();
     expect(gs).toHaveBeenCalledTimes(1);
     expect(store.state.bondKycVerified).toBe(true);
+  });
+});
+
+// Review B-2 on #556: the fold of MemberBond.isKycVerified() must carry FALSE as false. A fold that
+// turned every read into true would put Claim on Node for an unverified bond (the claim itself
+// re-reads, but the surface would be wrong).
+describe("#362 B-1 — a false (or unread) on-chain flag folds as such and blocks Claim on Node", () => {
+  function pollReads() {
+    const reads = {
+      validatorActivation: vi.fn(async () => ({ isActive: true, status: 1, actEpoch: 1, currentEpoch: 2 })),
+      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
+      minStakeWei: async () => 32_000n * WEI,
+      blockSeconds: async () => 2,
+      producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
+    } as unknown as ChainReads;
+    (store as unknown as { chainReads: ChainReads }).chainReads = reads;
+    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false } as never);
+    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+  }
+
+  it("the poll folds isKycVerified() = false as false, and Node shows the reason, not Claim", async () => {
+    pollReads();
+    store.setState({ node: "off", stage: "done", hasGrant: true, bondedStake: 32_000, bondActivated: null, bondPubkey: null, bondUnlocked: null, bondKycVerified: null });
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ isKycVerified: false }));
+    await store.refreshNode();
+    expect(store.state.bondKycVerified).toBe(false);
+    const html = renderRewards(stub, member({ ...store.state, rewards: { totalWei: wei(30), claimableWei: wei(20) } }));
+    expect(html).toContain('data-testid="claim-blocked"');
+    expect(html).toContain("isKycVerified() reads false");
+    expect(html).not.toMatch(claimButton);
+  });
+
+  it("the launch reconcile folds isKycVerified() = false as false", async () => {
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ isKycVerified: false }));
+    store.setState({ hasGrant: true, s3: "settled", s5: "settled", bondedStake: 32_000, bondKycVerified: null });
+    await (store as unknown as { reconcileOnboardingFromChain(): Promise<void> }).reconcileOnboardingFromChain();
+    expect(store.state.bondKycVerified).toBe(false);
+  });
+
+  it("a verified flag later read false is folded back to false (no sticky true)", async () => {
+    pollReads();
+    store.setState({ node: "off", stage: "done", hasGrant: true, bondedStake: 32_000, bondActivated: null, bondPubkey: null, bondUnlocked: null, bondKycVerified: true });
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ isKycVerified: false }));
+    await store.refreshNode();
+    expect(store.state.bondKycVerified).toBe(false);
+  });
+});
+
+// Review D-1 on #556 (dust rule): Claim is offered only at or above 5 SALT claimable now.
+describe("Node › Rewards: the 5 SALT dust rule", () => {
+  const at = (salt: string) =>
+    renderRewards(stub, member({ bondKycVerified: true, rewards: { totalWei: (50n * WEI).toString(), claimableWei: salt } }));
+  it("below 5 SALT the Claim button is disabled", () => {
+    expect(at((49n * WEI) / 10n + "")).toMatch(/<button[^>]*disabled=""[^>]*>\s*Claim/);
+    expect(at("0")).toMatch(/<button[^>]*disabled=""[^>]*>\s*Claim/);
+  });
+  it("at 5 SALT and above it is enabled", () => {
+    for (const v of [5n * WEI, 6n * WEI]) {
+      const html = at(v.toString());
+      expect(html).toMatch(claimButton);
+      expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>\s*Claim/);
+    }
+    // The copy matches the rule: exactly 5 SALT is "at or above", never only "above".
+    expect(at((5n * WEI).toString())).toContain("at or above the 5 SALT dust threshold");
   });
 });
 
