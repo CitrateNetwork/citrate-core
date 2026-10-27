@@ -246,6 +246,28 @@ impl CallAgg {
     }
 }
 
+/// How many recent calls the usage view lists.
+pub const RECENT_MAX: usize = 20;
+
+/// One recent model call, as the usage view shows it: metadata only (the log has no content).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentCall {
+    pub at_ms: u64,
+    pub provider: String,
+    pub model: String,
+    pub verified: bool,
+    /// `ok` or a coarse code; `None` while the call has no end record.
+    pub outcome: Option<String>,
+    /// Refused before anything was sent.
+    pub refused: bool,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub cost_micros: Option<u64>,
+    #[serde(skip)]
+    call: String,
+}
+
 pub struct UsageLog {
     path: PathBuf,
     keyring: Arc<dyn AiKeyring>,
@@ -259,6 +281,8 @@ pub struct UsageLog {
     next_seq: u64,
     calls: BTreeMap<String, CallAgg>,
     records: u64,
+    /// The latest begun or refused calls, oldest first, at most [`RECENT_MAX`].
+    recent: std::collections::VecDeque<RecentCall>,
 }
 
 impl std::fmt::Debug for UsageLog {
@@ -290,6 +314,7 @@ impl UsageLog {
             next_seq: 1,
             calls: BTreeMap::new(),
             records: 0,
+            recent: std::collections::VecDeque::new(),
         };
         let Ok(key) = crate::provider_guard::mac_key(log.keyring.as_ref(), LOG_MAC_ACCOUNT) else {
             return log;
@@ -367,7 +392,50 @@ impl UsageLog {
         }
     }
 
+    fn note_recent(&mut self, r: &Record) {
+        let entry = |refused: bool| RecentCall {
+            at_ms: r.ts,
+            provider: r.provider.clone(),
+            model: r.model.clone(),
+            verified: r.verified,
+            outcome: if refused { r.outcome.clone() } else { None },
+            refused,
+            tokens_in: None,
+            tokens_out: None,
+            cost_micros: None,
+            call: r.call.clone(),
+        };
+        match r.kind {
+            Kind::Begin | Kind::Refused => {
+                self.recent.push_back(entry(r.kind == Kind::Refused));
+                while self.recent.len() > RECENT_MAX {
+                    self.recent.pop_front();
+                }
+            }
+            Kind::End => {
+                if let Some(c) = self
+                    .recent
+                    .iter_mut()
+                    .rev()
+                    .find(|c| !c.refused && c.call == r.call)
+                {
+                    c.outcome = r.outcome.clone();
+                    c.tokens_in = r.tokens_in;
+                    c.tokens_out = r.tokens_out;
+                    c.cost_micros = r.cost_micros;
+                }
+            }
+            Kind::KeyTest | Kind::Reset | Kind::Carry => {}
+        }
+    }
+
+    /// The latest model calls, newest first (metadata only).
+    pub fn recent(&self) -> Vec<RecentCall> {
+        self.recent.iter().rev().cloned().collect()
+    }
+
     fn apply(&mut self, r: &Record) {
+        self.note_recent(r);
         self.last_ts = self.last_ts.max(r.ts);
         match r.kind {
             Kind::Carry => {
@@ -643,6 +711,7 @@ impl UsageLog {
         self.head = GENESIS_PREV.into();
         self.next_seq = 1;
         self.calls.clear();
+        self.recent.clear();
         self.records = 0;
         self.unanchored_reset_ts = None;
         self.append(Record {
