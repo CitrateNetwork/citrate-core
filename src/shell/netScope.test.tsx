@@ -36,10 +36,11 @@ const NEW_GENESIS = (() => {
 })();
 
 /** Every value the 0.5.1 save holds that was read from the r1005 chain. Listed by hand, not taken
- *  from the code under test. */
+ *  from the code under test. (Its earnVal / earnPin / earnComp / earnToday are retired keys, which
+ *  loadState drops on any network: RETIRED_KEYS in state.ts.) */
 const R1005_VALUES = [
   "hasGrant", "hasSbt", "s5", "s5n", "s5StakeWei", "s5BondStatus", "liquid", "claimable", "activity",
-  "earnVal", "earnPin", "earnComp", "earnToday", "sponsorUnits",
+  "sponsorUnits",
 ] as const;
 
 /** This install's own values: they survive any switch (UPGRADE_051_052 §1, §2.4, §2.8). */
@@ -70,7 +71,6 @@ const noGrant: GrantStatus = {
 const stubStore = {
   identity: () => ({ name: "M", initials: "M", email: "—", sub: "—", wallet: MEMBER.walletAddr, tier: "member", role: "member", org: null, real: true }),
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshEarnings: () => {},
   toast: () => {},
@@ -227,7 +227,6 @@ describe("what the member sees after the switch", () => {
     expect(staking).toContain("not read yet");
     // The grant row reads "not read yet" (the page's other 32,000s are the validator minimum).
     expect(staking).toMatch(/Membership grant · vaulted<\/span><span[^>]*>not read yet on this network</);
-    expect(staking).toMatch(/Self-added stake<\/span><span[^>]*>not read yet on this network</);
   });
 
   it("Wallet keeps the r1005 history under a previous-network label, with no explorer link", () => {

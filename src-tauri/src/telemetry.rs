@@ -91,6 +91,45 @@ fn looks_secret(t: &str) -> bool {
         || (t.starts_with("eyJ") && t.len() > 20) // JWT header
 }
 
+/// D-11: the key shapes of every governed model vendor (OpenAI/DeepSeek `sk-`, Anthropic `sk-ant-`,
+/// Gemini `AIza`, xAI `xai-`, Meta `LLM_` (and the retired Llama API's `LLM|`), Cognition `cog_`
+/// (and the legacy `apk_`)), the Citrate gateway (`cgk_`), Stripe, and the model proxy's route
+/// tokens (`cmp_`).
+const KEY_PREFIXES: &[&str] = &[
+    "sk-", "sk_live_", "sk_test_", "cgk_", "xai-", "AIza", "apk_", "cog_", "cmp_", "LLM|", "LLM_",
+];
+
+fn is_key_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '|' | '.')
+}
+
+/// Redact a key-shaped run wherever it sits in a line (`key=…`, `"x-api-key":"…"`, `Bearer …`):
+/// a known prefix at a word boundary followed by at least 12 more key characters.
+fn redact_key_shapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev: Option<char> = None;
+    let mut i = 0;
+    while i < s.len() {
+        let rest = &s[i..];
+        if !prev.is_some_and(is_key_char) {
+            if let Some(p) = KEY_PREFIXES.iter().find(|p| rest.starts_with(**p)) {
+                let run = rest.find(|c: char| !is_key_char(c)).unwrap_or(rest.len());
+                if run >= p.len() + 12 {
+                    out.push_str("<redacted>");
+                    i += run;
+                    prev = Some('>');
+                    continue;
+                }
+            }
+        }
+        let Some(c) = rest.chars().next() else { break };
+        out.push(c);
+        prev = Some(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
 /// Scrub a text field: HOME→`~`, then redact hex blobs (addresses/hashes) and email/secret
 /// tokens. Pure + deterministic (the report id is added by the caller, not here) so it is
 /// unit-tested against fixtures with planted secrets.
@@ -101,6 +140,7 @@ pub fn scrub(text: &str, home: &str) -> String {
         s = s.replace(h, "~");
     }
     s = redact_hex_blobs(&s);
+    s = redact_key_shapes(&s);
     redact_tokens(&s)
 }
 

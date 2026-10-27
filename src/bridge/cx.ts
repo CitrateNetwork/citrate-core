@@ -23,8 +23,11 @@ import { tauriAgentHarness, tauriAgentSkills } from "./tauri/agent";
 import { tauriContracts } from "./tauri/contracts";
 import { tauriSocial } from "./tauri/social";
 import { tauriInvites } from "./tauri/invites";
+import { tauriJoin } from "./tauri/join";
 import { tauriComponents } from "./tauri/components";
 import { tauriStore } from "./tauri/store";
+import { tauriServices } from "./tauri/services";
+import { tauriProviders } from "./tauri/providers";
 
 import { simModelsCatalog } from "./sim/models";
 import { simTier } from "./sim/tier";
@@ -39,8 +42,11 @@ import { simAgentHarness, simAgentSkills } from "./sim/agent";
 import { simContracts } from "./sim/contracts";
 import { simSocial } from "./sim/social";
 import { simInvites } from "./sim/invites";
+import { simJoin } from "./sim/join";
 import { simComponents } from "./sim/components";
 import { simStore } from "./sim/store";
+import { simServices } from "./sim/services";
+import { simProviders } from "./sim/providers";
 
 /** CX domains, tauri (real) side. */
 export function cxTauri(): CxBridge {
@@ -59,8 +65,11 @@ export function cxTauri(): CxBridge {
     contracts: tauriContracts,
     social: tauriSocial,
     invites: tauriInvites,
+    join: tauriJoin,
     components: tauriComponents,
     store: tauriStore,
+    services: tauriServices,
+    providers: tauriProviders,
   };
 }
 
@@ -81,7 +90,10 @@ export function cxSim(host: SimHost): CxBridge {
     contracts: simContracts(host),
     social: simSocial(host),
     invites: simInvites(host),
+    join: simJoin(host),
     components: simComponents(host),
     store: simStore(host),
+    services: simServices(host),
+    providers: simProviders(host),
   };
 }

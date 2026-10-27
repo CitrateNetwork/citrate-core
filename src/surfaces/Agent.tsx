@@ -5,14 +5,17 @@
 // runtimes (Hermes wired via bridge.agentHarness; OpenClaw / Grok as adapters, flagged pending),
 // per-agent start/stop, a skills list with run-behind-approval, a session run-log, and the
 // "Awaiting your review" rail. Every sensitive action an agent proposes STOPS at the Signature
-// Ceremony (store.requestSig) — the agent proposes, you dispose. Nothing here fabricates data
+// Ceremony (store.requestSig) — the agent proposes, you dispose.
+//
+// K2 (0.5.2): this surface is Hermes › Work. The chat is on Hermes › Chat, "What Hermes learned" on
+// Hermes › Learn, and Hermes's MCP switches on Hermes › Controls › Details, so they are not repeated
+// here; the host passes the Daemons card and the run log as `children`. Nothing here fabricates data
 // (Rule 1): skills/approvals come from the harness (honest-empty until it runs), and the Contracts
 // tab never invents a deployed contract — a deploy is handed to the ceremony and the list stays
 // empty until the network confirms.
 // =====================================================================
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SurfaceProps } from "./shared";
-import { AgentChat } from "../components/AgentChat";
 import {
   agentSlice,
   refreshAgent,
@@ -29,12 +32,11 @@ import {
 import type { AgentApproval } from "../bridge/domains";
 import type { DeployGateLookup } from "../agent/deployGate";
 import { DeployGateCard } from "../shell/DeployGateCard";
-import { HermesMcpPanel } from "../components/HermesMcpCard";
 import { PostDeployPanel } from "../shell/PostDeployPanel";
 import { ContractForgePanel } from "../shell/ContractForgePanel";
 import { bridge } from "../bridge";
 import { openContractReader } from "../popout/appHost";
-import { LearnedPanel } from "../shell/LearnedPanel";
+import { openRecords } from "./hermes/ControlsRecords";
 
 type Tab = "overview" | "contracts";
 
@@ -51,7 +53,7 @@ const CONTRACT_KINDS: { id: string; name: string; desc: string }[] = [
   { id: "custom", name: "Custom bytecode", desc: "Bring your own compiled contract. The agent simulates it on a fork; the raw deploy is decoded (or flagged raw) at the ceremony." },
 ];
 
-export function Agent({ store, s }: SurfaceProps) {
+export function Agent({ store, s, children }: SurfaceProps & { /** Hermes › Work: the Daemons card and the run log, in the main column. */ children?: ReactNode }) {
   const st = agentSlice.use();
   const [tab, setTab] = useState<Tab>("overview");
   // rc.5 FIX 5: the chat's "Open toolchain settings" asks for the Contracts tab; consume it once
@@ -247,10 +249,7 @@ export function Agent({ store, s }: SurfaceProps) {
 
           {tab === "overview" && (
             <>
-              {/* #62 — the chat, front and center on the Agent surface (same shared pane as the
-                  Dashboard). Talk to the agent here; skills/approvals/registry sit below. */}
-              {/* rc.5 FIX 4: the pane fits the window itself (was a fixed 460 px box). */}
-              <AgentChat store={store} s={s} />
+              {children}
               {/* status */}
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -314,9 +313,6 @@ export function Agent({ store, s }: SurfaceProps) {
                   })
                 )}
               </div>
-
-              {/* HUP-S4.3 + S4.2 — MCP servers Hermes may use (memory graph, CitrateScan, this node); all off by default. */}
-              <HermesMcpPanel />
 
               {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
                   These are the skills published on-chain (SkillRegistry 0x896cd293…); Hermes ships
@@ -396,12 +392,9 @@ export function Agent({ store, s }: SurfaceProps) {
                 )}
               </div>
 
-              {/* HUP-S3.4 — what Hermes proposes to keep, with the verifier evidence; you decide. */}
-              <LearnedPanel store={store} running={running} />
-
               {/* recent runs */}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Recent runs</div>
+                <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Recent skill runs</div>
                 {st.runs.length === 0 ? (
                   <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
                     Nothing yet. When you run a skill it appears here with its outcome — and a link to the approval if it needed one.
@@ -498,6 +491,18 @@ export function Agent({ store, s }: SurfaceProps) {
                   {st.approvals.length}
                 </span>
               )}
+              {/* K2: what was decided before lives in Hermes › Controls › 3 · Records. */}
+              <button
+                className="btn btn-ghost btn-sm"
+                data-testid="approval-records-link"
+                style={{ marginLeft: "auto" }}
+                onClick={() => {
+                  openRecords("approvals");
+                  store.go("hermes/controls/records");
+                }}
+              >
+                Approval records ›
+              </button>
             </div>
             {st.approvals.length === 0 ? (
               <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>

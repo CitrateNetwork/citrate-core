@@ -3,7 +3,7 @@ created: 2026-10-18T00:00:00Z
 branch: beta/k0-five-place-nav
 author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
 status: active
-wp: 0.5.2 K0
+wp: 0.5.2 K0, K2 (Hermes Work, Learn, Controls depths 2 and 3)
 ---
 
 # Five-place route map
@@ -26,7 +26,7 @@ written out by hand) and
 
 | Place | Tabs (canonical route) |
 |----|----|
-| Hermes | Chat `hermes/chat` · Journal `hermes/journal` · Work `hermes/work` · Learn `hermes/learn` · Controls `hermes/controls` |
+| Hermes | Chat `hermes/chat` · Journal `hermes/journal` · Work `hermes/work` · Learn `hermes/learn` · Controls (sub-tabs 1 · Switches `hermes/controls`, 2 · Details `hermes/controls/details`, 3 · Records `hermes/controls/records`) |
 | Groups | Chat `groups/chat` (sub-tabs Groups `groups/chat`, Alerts `groups/chat/alerts`) · Rounds `groups/rounds` · Members `groups/members` · Cluster `groups/cluster` · ALF `groups/alf` (ALF members only) |
 | Wallet | `wallet` (no tabs) |
 | Node | Status `node/status` · Services `node/services` · Storage (sub-tabs Files `node/storage/files`, Memory `node/storage/memory`, Pins `node/storage/pins`, Backup `node/storage/backup`) · Rewards `node/rewards` · Advanced `node/advanced` |
@@ -74,11 +74,13 @@ to their new home and open on that section.
 | Section | Opens | Place › tab |
 |----|----|----|
 | `settings/hermes` (Hermes controls, the Controls panel) | `hermes/controls`, section `hermes` | Hermes › Controls |
-| `settings/ai` (AI providers) | `hermes/controls`, section `ai` | Hermes › Controls |
-| `settings/escalation` (Escalation and spend) | `hermes/controls`, section `escalation` | Hermes › Controls |
-| `settings/mcp` (MCP servers) | `hermes/controls`, section `mcp` | Hermes › Controls |
-| `settings/web` (Web search and decisions) | `hermes/controls`, section `web` | Hermes › Controls |
-| `settings/budgets` (Budgets) | `hermes/controls`, section `budgets` | Hermes › Controls |
+| `settings/ai` (Providers and keys) | `hermes/controls/details`, section `ai` | Hermes › Controls › Details |
+| `settings/escalation` (Escalation and spend caps) | `hermes/controls/details`, section `escalation` | Hermes › Controls › Details |
+| `settings/mcp` (MCP servers) | `hermes/controls/details`, section `mcp` | Hermes › Controls › Details |
+| `settings/web` (Web search and decisions) | `hermes/controls/details`, section `web` | Hermes › Controls › Details |
+| `settings/terminal` (Terminal and folders, from App) | `hermes/controls/details`, section `terminal` | Hermes › Controls › Details |
+| `settings/budgets` (Budgets) | `hermes/controls/details`, section `budgets` | Hermes › Controls › Details |
+| `settings/personas` (Personas and voice, from App) | `hermes/controls/details`, section `personas` | Hermes › Controls › Details |
 | `settings/node` (Node configuration) | `node/advanced`, section `node` | Node › Advanced |
 | `settings/account` | `settings`, section `account` | Settings |
 | `settings/connections` | `settings/connections` | Settings › Connections |
@@ -87,6 +89,10 @@ to their new home and open on that section.
 | `settings/billing` | `settings`, section `billing` | Settings |
 | `settings/privacy` | `settings`, section `privacy` | Settings |
 | `settings/app` | `settings`, section `app` | Settings |
+
+The design's depth-two ids also work: `hermes/controls/providers`, `/escalation`,
+`/mcp`, `/web`, `/terminal`, `/budgets` and `/personas` open Details on that
+section.
 
 Settings now lists only Account and RBAC, Connections, API endpoints and keys,
 Keys and security, Memberships and billing, Privacy and recovery, and App. If
@@ -99,8 +105,12 @@ surface unchanged:
 
 | Tab | Content |
 |----|----|
-| Hermes › Chat, Journal, Work | Dashboard, Journal, Agent surfaces |
-| Hermes › Controls | The Controls panel (`src/surfaces/hermes/ControlsPanel.tsx`) at the top, then the five moved Settings sections, unchanged, under a "Controls" heading. They write the same config as before. The panel is not repeated in the section list, so `settings/hermes` opens the tab with the panel on top and AI providers below. |
+| Hermes › Chat, Journal | Dashboard, Journal surfaces |
+| Hermes › Work (K2) | `HermesWork`: the Agent surface (roster, skills, Awaiting your review, contracts) with the Daemons card and the daemon run log in its main column. The chat, learning panel and MCP switches moved to Chat, Learn and Controls › Details. The Work tab carries the approvals badge. |
+| Hermes › Learn (K2) | `HermesLearn`: What Hermes learned (with Teach Hermes), knowledge import, training opt-in. |
+| Hermes › Controls › 1 · Switches | The Controls panel (`src/surfaces/hermes/ControlsPanel.tsx`). Each row's Details opens its depth-two section. |
+| Hermes › Controls › 2 · Details | The Settings sections for Hermes, unchanged components, under a "Details" heading: Providers and keys, Escalation and spend caps, MCP servers (Hermes's connected tools plus the member's own servers), Web search and decisions, Terminal and folders, Budgets, Personas and voice. |
+| Hermes › Controls › 3 · Records | `ControlsRecords`: approval records (web sign-in decisions; Hermes approval records have no read command yet), spend ledger (`escalation_budget`), daemon run history (`daemon_runs_between`). |
 | Groups › Chat, Alerts, Rounds, Members, Cluster, ALF | Groups, Comms, Train, People, Cluster, ALF surfaces |
 | Wallet | Wallet surface |
 | Node › Status | Node surface (its Operations, Rewards and Pinning views) |
@@ -113,7 +123,6 @@ Tabs with no content in this build render a "Not available yet" state that
 says what is missing and, where one exists, links to what this build has
 today. They show no data:
 
-- **Hermes › Learn**: points to Hermes › Work, where learned-skill proposals are reviewed today.
 - **Node › Services**: points to Node › Status.
 - **Node › Storage › Pins**: opens the Pinning view on Node › Status.
 - **Node › Rewards**: opens the Rewards view on Node › Status.
@@ -129,13 +138,16 @@ today. They show no data:
   on the new home. Connections › Cloud providers links to `settings/ai`
   (Hermes › Controls, AI providers). No caller links to plain `settings` for
   a moved section.
-- Hermes › Controls shows two views of the saved web settings (the Controls
-  panel's Web search switch and the Web search form). After either saves, it
-  announces what core saved (`src/agent/webSettingsSync.ts`) and the other
-  shows it and re-baselines, so neither shows or diffs against a stale copy.
-  Each view's initial read goes through `readWebSettingsUnlessSuperseded`,
-  which drops an answer that arrives after another view's save. A tripwire
-  test (`src/agent/webSettingsReaders.tripwire.test.ts`) keeps every
-  subscribing view on that path.
+- Hermes › Controls has two writers of the saved web settings (the Web search
+  switch on 1 · Switches and the Web search form on 2 · Details). Each re-reads
+  before it writes and changes only its own fields. After either saves, it
+  announces what core saved (`src/agent/webSettingsSync.ts`); any other view
+  mounted at the same time shows it and re-baselines, so neither shows or
+  diffs against a stale copy. Each view's initial read goes through
+  `readWebSettingsUnlessSuperseded`, which drops an answer that arrives after
+  another view's save. A tripwire test
+  (`src/agent/webSettingsReaders.tripwire.test.ts`) keeps every subscribing
+  view on that path. The MCP switches save the same way (re-read, change the
+  pressed switch, write).
 - The Hermes `app_navigate` tool still takes old route ids. They redirect, so
   it keeps working; a later change can teach it the canonical routes.
