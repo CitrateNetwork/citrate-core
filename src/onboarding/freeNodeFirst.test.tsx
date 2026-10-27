@@ -172,6 +172,56 @@ describe("S4 — the free path skips the grant step and goes to node ignition", 
   });
 });
 
+describe("S4 / spine — a granted member is a member even before checkout state", () => {
+  it("member (grant on chain, checkout state not settled): Continue goes to the grant step S5", async () => {
+    const st = spyStore(true);
+    const { host, root } = await mount(<S4 store={st as unknown as Store} s={at("s4", { s3: "idle", hasGrant: true })} />);
+    const go = button(host, /Continue/);
+    expect(go?.textContent).toMatch(/grant/i);
+    await act(async () => go!.click());
+    expect(st.setState).toHaveBeenCalledWith({ stage: "s5" });
+    root.unmount();
+  });
+
+  /** The spine row (number badge, label, status) for the S5 grant step. */
+  function s5Row(s: AppState): string {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(<Onboarding store={inertStore} s={s} />);
+    const label = Array.from(host.querySelectorAll("span")).find((e) => /^(Grant \+ stake|Membership grant)$/.test(e.textContent ?? ""));
+    expect(label).toBeTruthy();
+    return label!.parentElement!.textContent ?? "";
+  }
+
+  it("free path past S5: the spine marks the grant step skipped, never done", () => {
+    const row = s5Row(at("s6"));
+    expect(row).toContain("skipped");
+    expect(row).not.toContain("done");
+    expect(row).not.toContain("✓");
+  });
+
+  it("member past S5 (settled or granted): the grant step is done", () => {
+    for (const patch of [{ s3: "settled" as const }, { hasGrant: true }]) {
+      const row = s5Row(at("s6", patch));
+      expect(row).toContain("done");
+      expect(row).not.toContain("skipped");
+    }
+  });
+});
+
+describe("TRIPWIRE matcher — what counts as a price figure", () => {
+  it("catches dollar, USD and per-period figures", () => {
+    for (const t of ["$48", "$ 48", "$48.00", "$0", "48 USD", "USD 48", "USD48", "48 / year", "48/year", "48 a year", "48 per year"]) {
+      expect({ t, hit: PRICE.test(t) }).toEqual({ t, hit: true });
+    }
+  });
+
+  it("ignores style and size values that happen to be 48", () => {
+    for (const t of ["width: 48", "height={48}", "maxLength={48}", "48px", "padding: 48", "48 * 3600", "1 to 48 hours"]) {
+      expect({ t, hit: PRICE.test(t) }).toEqual({ t, hit: false });
+    }
+  });
+});
+
 describe("S0 — nothing says paying is required to run a node", () => {
   it("says running a node is free and membership is optional", () => {
     const text = textOf(renderToStaticMarkup(<Onboarding store={inertStore} s={at("s0")} />));

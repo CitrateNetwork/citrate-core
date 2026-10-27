@@ -2243,6 +2243,10 @@ export class Store {
       this.toast("Could not open checkout — " + String((err as Error).message ?? err));
     }
   }
+  /** Settings › Billing "Become a member" for a free user. */
+  async becomeMember(): Promise<void> {
+    await this.renewMembership();
+  }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
