@@ -372,22 +372,45 @@ fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), Stri
 
 /// #431 — write the new contents to a 0600 sibling and fsync it; [`commit_pending`] renames it over
 /// `pending.json`. A crash before the rename leaves the previous file whole.
+///
+/// The sibling's name is unique to this write (`pending.json.tmp-<pid>-<n>`, as
+/// `atomic_file::replace` names its temp files, #420/#508), so no two writers ever share one, even
+/// outside [`PENDING_LOCK`] (another process, or a test writing the same path). A failed stage
+/// removes its own file.
 fn stage_pending(
     path: &std::path::Path,
     v: &[PendingInvite],
 ) -> Result<std::path::PathBuf, String> {
     use std::io::Write;
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let bytes = zeroize::Zeroizing::new(serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?);
-    let tmp = path.with_extension("json.tmp");
-    let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp).map_err(|e| e.to_string())?;
-    f.write_all(&bytes).map_err(|e| e.to_string())?;
-    f.sync_all().map_err(|e| e.to_string())?;
-    Ok(tmp)
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!("{name}.tmp-{}-{n}", std::process::id()));
+    let staged = (|| {
+        let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_all()
+    })();
+    match staged {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Rename the staged file over `path` and fsync the directory, so the rename itself is durable.
+/// A failed rename removes the staged file; `path` keeps its previous contents.
 fn commit_pending(staged: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
-    std::fs::rename(staged, path).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(staged, path) {
+        let _ = std::fs::remove_file(staged);
+        return Err(e.to_string());
+    }
     #[cfg(unix)]
     if let Some(dir) = path.parent() {
         std::fs::File::open(dir)
@@ -2015,6 +2038,48 @@ mod tests {
         let _staged = super::stage_pending(&path, &[minted("g", "v2", d)]).expect("staged");
         // No commit: the process died here.
         assert_eq!(tokens(&path), vec![T.to_string()]);
+    }
+
+    /// #508 + #431: every staged write has its own temp name (never the shared fixed
+    /// `pending.json.tmp`), it is beside the file and owner-only, and a committed write leaves no
+    /// temp file behind.
+    #[test]
+    fn each_staged_write_has_its_own_temp_file_and_a_commit_leaves_none() {
+        let path = scratch("unique-temp");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        let a = super::stage_pending(&path, &[minted("g", T, d.clone())]).expect("a");
+        let b = super::stage_pending(&path, &[minted("g", "v2", d.clone())]).expect("b");
+        assert_ne!(a, b, "two writes share a temp file");
+        assert_ne!(
+            a,
+            path.with_extension("json.tmp"),
+            "the fixed temp name is back"
+        );
+        assert_eq!(a.parent(), path.parent());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&a).expect("staged").permissions().mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "the staged file holds private keys: {mode:o}"
+            );
+        }
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let dir = path.parent().expect("dir");
+        let leftovers: Vec<_> = std::fs::read_dir(dir)
+            .expect("dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 
     // ---- re-review: an approval waits for the relay to confirm the close -------------------------
