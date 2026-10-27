@@ -1286,7 +1286,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
       {phase === "ready" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div>
-            <button className="btn btn-primary btn-lg" onClick={() => void store.onS7Activate()} data-testid="s7-activate">
+            <button className="btn btn-primary btn-lg" onClick={() => void store.requestValidatorActivation()} data-testid="s7-activate">
               Activate validator
             </button>
           </div>
@@ -1314,7 +1314,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
         <div style={{ borderTop: "1px solid var(--line-2)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
           <div>
             <button className="btn btn-ghost btn-lg" onClick={() => store.onS7Skip()} data-testid="s7-skip">
-              Explore free
+              Skip for now
             </button>
           </div>
           <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0 }}>

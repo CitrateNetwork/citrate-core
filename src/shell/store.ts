@@ -28,6 +28,7 @@ import {
   WalletReview,
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
+import { SignedTxExpired } from "../bridge/types";
 import { broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
@@ -59,7 +60,7 @@ import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
-import { activationGate, principalSalt } from "../onboarding/activateValidator";
+import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -1620,7 +1621,7 @@ export class Store {
    * clone; the member then ACTIVATES it via `MemberBond.activate(pubkey, sig)` (from their own
    * EOA, the clone's `onlyMember`), which bonds the clone's principal into the registry. This
    * only ARMS the producer so the node mints its proposer key; the activation itself is the
-   * member's explicit click on S7 (`onS7Activate`), which opens the Signature Ceremony. Guards
+   * member's explicit click (`requestValidatorActivation`, from S7 or Node), which opens the Signature Ceremony. Guards
    * fail closed — a not-ready node / unlinked wallet / not-yet-granted member does not trigger.
    */
   private maybeAutoBond(): void {
@@ -1779,22 +1780,43 @@ export class Store {
    * Signature Ceremony: nothing is approved or broadcast here. On approval the broadcast's tx hash
    * is persisted so the step resumes to "Pending" after a quit.
    */
-  async onS7Activate(): Promise<boolean> {
-    if (this.state.s7TxHash) {
-      // An activation is already sent and not yet observed: never offer a second one.
-      this.toast("Activation already sent — waiting for it to be included.");
+  async requestValidatorActivation(): Promise<boolean> {
+    // Every request reads the chain again: a read cached on S7 or by an earlier click (Node has
+    // no poll) may be stale in either direction. No fresh read, no ceremony. The read is asked
+    // with any recorded activation tx, so it also reconciles that tx (Node has no poll or
+    // Retry/Forget controls, so this is where a recorded tx is resolved there).
+    const fresh = await this.refreshActivation();
+    if (this.state.s7TxHash && !(fresh && (await this.releaseRecordedActivationTx()))) {
+      // An activation is already sent and not yet resolved: never offer a second one.
+      this.toast("Activation already sent — waiting for it to be included. If it stays unseen for 10 minutes, or reverts, you can activate again.");
+      return false;
+    }
+    if (!fresh) {
+      this.toast("Activation not available yet — the chain could not be read just now" + (this.state.activationError ? ` (${this.state.activationError})` : "") + ".");
       return false;
     }
     const gate = activationGate(this.state.activation, this.walletIsLinked());
     if (!gate.ready) {
-      const why = gate.checks.find((c) => c.ok !== true);
+      const blocking = gate.checks.filter((c) => c.ok !== true);
+      // The proposer key is minted by arming the producer, and arming signs nothing. When the key
+      // is the ONLY missing prerequisite, arm now (S7 arms on its own; Node has nothing else that
+      // does) and let the member click again once the key lands.
+      if (blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false && !this.validatorArmed) {
+        if (!(await this.armProducer())) {
+          this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
+        }
+        return false;
+      }
+      const why = blocking[0];
       this.toast("Activation not available yet — " + (why ? why.detail : "the chain has not been read"));
       return false;
     }
     return this.activateValidator({
-      // Persist the signed tx's hash before it is sent (and before any receipt poll).
+      // Show the signed tx as Pending at once; the send records it durably (Rust, fsync'd)
+      // before it reaches the node.
       onSigned: (txHash) => this.recordActivationTx(txHash),
-      // The backend refused the send before submission (e.g. no durable record): nothing was sent.
+      // Nothing was sent (the signed tx expired in the ceremony, or the backend refused the send
+      // before submission, e.g. no durable record): clear the shown tx.
       onNotSent: () => this.clearActivationTx(),
       // The re-read is a separate, later step.
       onResolved: async (approved) => {
@@ -1803,7 +1825,23 @@ export class Store {
     });
   }
 
-  /** S7 — "Explore free": enter the app without activating. Membership and tier are unchanged;
+  /**
+   * On a FRESH read, release a recorded activation tx that may safely be retried: its own receipt
+   * shows it reverted (nothing was staked), or it has gone unseen past the forget window
+   * (`canForgetActivationTx`, the same rule as S7's Forget). A pending tx, a mined successful one,
+   * or a revert reported for another hash keeps the guard. Released means forgotten in the
+   * durable record first (so a relaunch does not bring it back); if that write fails it is kept.
+   * True when released.
+   */
+  private async releaseRecordedActivationTx(): Promise<boolean> {
+    const { s7TxHash, activation } = this.state;
+    const tx = activation?.tx;
+    const reverted = !!s7TxHash && tx?.hash === s7TxHash && tx.included === true && tx.success === false;
+    if (!reverted && !this.canForgetActivationTx(Date.now())) return false;
+    return this.forgetActivationTx();
+  }
+
+  /** S7 — "Skip for now": enter the app without activating. Membership and tier are unchanged;
    *  the bond stays locked, not staked, and can be activated later from Node. */
   onS7Skip(): void {
     this.onEnter();
@@ -4857,36 +4895,34 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
-  async activateValidator(hooks?: {
+  /**
+   * Arm the block producer so the node mints its proposer key (`arm_mining_if_synced`, which
+   * re-checks the network tip and no-ops if the node is not caught up). Signs nothing. True when
+   * armed; a failure is an honest no-op the caller reports.
+   */
+  private async armProducer(): Promise<boolean> {
+    let armed = false;
+    try {
+      armed = await bridge.node.armMining();
+    } catch {
+      armed = false;
+    }
+    if (armed) {
+      this.validatorArmed = true;
+      this.toast("Block production armed — minting your validator key, then activation opens.");
+    }
+    return armed;
+  }
+
+  private async activateValidator(hooks?: {
     onSigned?: WalletReview["onSigned"];
     onNotSent?: WalletReview["onNotSent"];
     onResolved?: WalletReview["onResolved"];
   }): Promise<boolean> {
-    // Every entry (S7 and Node) reconciles with the chain AND the durable record first: after a
-    // restart nothing is in memory, and only this read brings back a recorded send. No fresh read,
-    // no ceremony (a record may exist). While a recorded send is unresolved, never build a second
-    // ceremony for the same bond.
-    if (!(await this.refreshActivation())) {
-      this.toast("Activation not available yet — the chain could not be read just now" + (this.state.activationError ? ` (${this.state.activationError})` : "") + ".");
-      return false;
-    }
+    // Defence in depth: the guarded entry (requestValidatorActivation) reconciles a recorded
+    // activation tx first; this one never builds a second ceremony while one is recorded.
     if (this.state.s7TxHash) {
       this.toast("Activation already sent — waiting for it to be included.");
-      return false;
-    }
-    if (this.state.activation?.bondActivated === true) {
-      this.toast("Your bond is already activated; there is nothing to sign.");
-      return false;
-    }
-    // #405: the FULL gate (contract §1 conditions) on THIS fresh read, never an earlier one: a
-    // membership that lapsed, a node that fell out of sync or out of band, or any field the read
-    // could not get blocks the ceremony. The proposer key is the one exception: arming mints it
-    // and signs nothing, so a node whose ONLY missing check is the key arms below and returns.
-    const gate = activationGate(this.state.activation, this.walletIsLinked());
-    const blocking = gate.checks.filter((c) => c.ok !== true);
-    const keyOnly = blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false;
-    if (blocking.length > 0 && !(keyOnly && !this.validatorArmed)) {
-      this.toast("Activation not available yet — " + blocking[0].detail);
       return false;
     }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
@@ -4900,24 +4936,7 @@ export class Store {
     // the node is not caught up or has no coinbase, so calling it here is safe and
     // idempotent. The key appears a few seconds later on respawn, so we do NOT open
     // a ceremony on this pass — we say what is happening and let the caller retry.
-    if (!this.validatorArmed) {
-      let armed = false;
-      try {
-        armed = await bridge.node.armMining();
-      } catch {
-        /* honest no-op: surfaced by the registerValidator error below */
-      }
-      if (armed) {
-        this.validatorArmed = true;
-        this.toast("Block production armed — minting your validator key, then activation opens.");
-        return false; // retry once the key lands
-      }
-      if (keyOnly) {
-        // No key, and the node did not arm (not caught up, or no coinbase): nothing to sign with.
-        this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
-        return false;
-      }
-    }
+    if (!this.validatorArmed && (await this.armProducer())) return false; // retry once the key lands
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
     try {
       view = await bridge.node.registerValidator();
@@ -4931,7 +4950,7 @@ export class Store {
     // The bond's principal as READ (MemberBond.principal), never a hard-coded 32,000. The tx moves
     // no SALT from the wallet; the bond forwards its own principal, and the wallet pays gas.
     const principal = principalSalt(this.state.activation);
-    const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
+    const label = activateValidatorLabel(this.state.activation);
     this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, hooks?.onResolved);
     if (hooks?.onSigned && this.state.walletReview) {
       this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned, onNotSent: hooks.onNotSent } });
@@ -5434,7 +5453,12 @@ export class Store {
         /* best-effort cleanup */
       }
       this.setState({ walletReview: null });
-      if (failure.kind === "not-sent") {
+      // Branch on the structured error TYPE only: a node error after a real send can quote any text.
+      if (r.onSigned && err instanceof SignedTxExpired) {
+        // The ceremony dropped the signed tx before it was sent: nothing reached the network.
+        r.onNotSent?.();
+        this.toast(r.label + " — the signed transaction expired before it was sent; nothing was sent. You can try again.");
+      } else if (failure.kind === "not-sent") {
         r.onNotSent?.(); // nothing reached the node
         // Contract v1.1 §1: a first-send NonceTooLow means the nonce is already used.
         this.toast(
