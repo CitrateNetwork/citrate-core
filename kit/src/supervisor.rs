@@ -1000,6 +1000,11 @@ pub struct SupervisorConfig {
     /// visible to controls. A fault-injection seam: the lifecycle fixtures hold the monitor
     /// there while a Start races the transition. `None` in production.
     pub failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor inside a Stop's settle window each time it keeps waiting with every
+    /// log reader done and a publication ticket still open. A fault-injection seam: the
+    /// lifecycle fixtures release the ticket there, so they prove the window waits for
+    /// publications and not only for readers. `None` in production.
+    pub settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SupervisorConfig {
@@ -1016,6 +1021,7 @@ impl SupervisorConfig {
             deadlines: None,
             spawn_barrier: None,
             failed_barrier: None,
+            settle_barrier: None,
         }
     }
 }
@@ -1039,6 +1045,8 @@ struct Shared {
     epoch: u64,
     /// See [`SupervisorConfig::failed_barrier`].
     failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// See [`SupervisorConfig::settle_barrier`].
+    settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Shared {
@@ -1203,6 +1211,7 @@ impl Supervisor {
             logs: LogRing::new(),
             epoch,
             failed_barrier: config.failed_barrier.clone(),
+            settle_barrier: config.settle_barrier.clone(),
         });
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
@@ -1912,6 +1921,7 @@ fn append_crash_record(path: &std::path::Path, record: &CrashRecord) {
 /// in the dependency tree (via tauri/tokio), so this adds no new crate. A failure
 /// (e.g. the process already reaped) is ignored — the caller re-checks liveness.
 #[cfg(unix)]
+#[allow(unsafe_code)] // Reviewed (K6): FFI call only, see SAFETY below.
 fn signal_pid(pid: u32, signal: i32) -> bool {
     let Some(target) = checked_pid(pid) else {
         return false;
@@ -1933,6 +1943,7 @@ fn checked_pid(pid: u32) -> Option<libc::pid_t> {
 /// Whether `pid` is still alive on Unix (signal 0 = existence probe, sends no
 /// signal). Used to confirm SIGTERM took effect before the grace timeout.
 #[cfg(unix)]
+#[allow(unsafe_code)] // Reviewed (K6): FFI call only, see SAFETY below.
 fn pid_alive(pid: u32) -> bool {
     // SAFETY: `kill(p, 0)` on a positive pid performs the existence check without delivering a
     // signal.
@@ -2094,6 +2105,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         deadlines: _deadlines,
         spawn_barrier,
         failed_barrier: _failed_barrier,
+        settle_barrier: _settle_barrier,
     } = config;
     // Dropped last: marks the cell if this thread unwinds (core#398).
     let _exit = MonitorExit(shared.clone());
@@ -2477,6 +2489,11 @@ fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornD
             || std::time::Instant::now() >= deadline
         {
             break (remaining, publications);
+        }
+        if remaining.is_empty() {
+            if let Some(barrier) = &shared.settle_barrier {
+                barrier();
+            }
         }
         std::thread::sleep(Duration::from_millis(5));
     };

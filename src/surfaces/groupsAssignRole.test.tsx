@@ -95,7 +95,7 @@ describe("Assign role is not available until role grants are signed (#495)", () 
 
   it("the slice refuses with the reason and never calls the bridge", async () => {
     const send = vi.spyOn(bridge.groups, "assignRole");
-    await assignRole(THEM, "admin");
+    await assignRole(GROUP.id, THEM, "admin");
     expect(send).not.toHaveBeenCalled();
     expect(groupsSlice.get().error).toBe(ROLE_CHANGES_NOT_AVAILABLE);
     expect(groupsSlice.get().busyMember).toBeNull();

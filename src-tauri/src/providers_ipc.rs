@@ -8,14 +8,14 @@
 //! | Command | Source |
 //! |---|---|
 //! | `providers_status` | pinned vendor table (`provider_egress::VENDORS`), keychain presence of `provider-key:<id>`, the sealed guard file (caps, halt, approved/listed models, prices, custom endpoints, key-set time) |
-//! | `providers_usage_summary` | the signed usage log (`providers/usage.jsonl`): calls, tokens and spend per provider for the UTC day and month, unsettled calls, chain status |
+//! | `providers_usage_summary` | the signed usage log (`providers/usage.jsonl`): calls, tokens and spend per provider for the UTC day and month, unsettled calls, the latest calls (metadata only), chain status |
 //! | `providers_caps_set`, `providers_price_set`, `providers_halt`, `providers_resume` | the sealed guard file (written) |
 //! | `providers_key_set`, `providers_key_test` | the vendor's own free endpoint (`GET /models`), live, through the pinned transport; the keychain (written on success only) |
 //! | `providers_key_remove` | the keychain (deleted) |
 //! | `providers_custom_add`, `providers_custom_confirm`, `providers_custom_remove` | the sealed guard file (custom endpoints), the keychain on remove |
 //! | `providers_usage_log_reset` | the usage log (a broken file is archived, a new chain starts) |
 
-use crate::model_provider::{ProviderId, Vendor};
+use crate::model_provider::{ChatMessage, ChatRequest, ModelProvider, ProviderId, Role, Vendor};
 use crate::model_proxy::{now_ms, ModelProxy, ProxyError};
 use crate::provider_egress::{vendor_spec, CustomEndpoint};
 use crate::provider_guard::{Caps, GuardBook, Halt, Price};
@@ -51,6 +51,20 @@ impl From<&Halt> for HaltView {
     }
 }
 
+/// One model core knows for a provider, with its price and where that price came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceView {
+    pub id: String,
+    pub price: Option<Price>,
+    /// `member` (entered in Settings, wins), `published` (the adapter's cited vendor price), or
+    /// `None` (unknown: refused while a spending cap is set).
+    pub source: Option<&'static str>,
+    /// The least core reserves against the caps before one call to this model is sent (an empty
+    /// prompt, the adapter's output bound), in micro-USD. `None` when the model has no price.
+    pub min_reserve_micros: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderView {
@@ -75,6 +89,8 @@ pub struct ProviderView {
     pub approved_models: Vec<String>,
     pub listed_models: Vec<String>,
     pub prices: BTreeMap<String, Price>,
+    /// Every known model (adapter, listed, approved, custom, priced), with its price source.
+    pub models: Vec<ModelPriceView>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -107,6 +123,11 @@ pub struct UsageSummaryView {
     pub records: u64,
     pub as_of_ms: u64,
     pub providers: Vec<ProviderUsageView>,
+    /// The latest calls, newest first: metadata only (no content, no session or call ids).
+    pub recent_calls: Vec<crate::provider_usage_log::RecentCall>,
+    /// Set when this computer's clock reads well before the last record: every call is refused
+    /// until the clock is corrected.
+    pub clock_problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,6 +166,73 @@ impl From<&CustomEndpoint> for CustomEndpointView {
 // Pure builders (tested without Tauri)
 // ---------------------------------------------------------------------------
 
+/// The least the guard reserves for one call to `model`: an empty prompt, no tools, the adapter's
+/// output bound (the same `input_token_bound` + `output_bound` the proxy reserves with).
+fn min_reserve(
+    adapter: Option<&dyn ModelProvider>,
+    model: &str,
+    price: Option<Price>,
+) -> Option<u64> {
+    let price = price?;
+    let probe = ChatRequest {
+        model: model.to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: String::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }],
+        tools: Vec::new(),
+        max_tokens: 1,
+        stream: false,
+    };
+    let out = adapter.map_or(u64::from(probe.max_tokens), |a| a.output_bound(&probe));
+    Some(price.cost(crate::model_proxy::input_token_bound(&probe), out))
+}
+
+/// The models to show for a provider, each with its price and source. The price is the one a
+/// call is charged with: `GuardBook::price_for` over `ModelProxy::adapter_price`, the same pair
+/// `ModelProxy::call` uses, so the view cannot drift from the charge.
+pub fn model_prices(
+    g: &GuardBook,
+    provider: &str,
+    adapter: Option<&dyn ModelProvider>,
+    extra: &[String],
+) -> Vec<ModelPriceView> {
+    let pg = g.get(provider);
+    let published = adapter.map(|a| a.models()).unwrap_or_default();
+    let mut ids: Vec<String> = Vec::new();
+    let names = published
+        .iter()
+        .map(|m| &m.id)
+        .chain(extra)
+        .chain(&pg.listed_models)
+        .chain(&pg.approved_models)
+        .chain(pg.prices.keys());
+    for id in names {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids.into_iter()
+        .map(|id| {
+            let adapter_price = adapter.and_then(|a| ModelProxy::adapter_price(a, &id));
+            let price = g.price_for(provider, &id, adapter_price);
+            let source = match price {
+                None => None,
+                Some(_) if pg.prices.contains_key(&id) => Some("member"),
+                Some(_) => Some("published"),
+            };
+            ModelPriceView {
+                min_reserve_micros: min_reserve(adapter, &id, price),
+                id,
+                price,
+                source,
+            }
+        })
+        .collect()
+}
+
 /// Every provider id the status lists: the six vendors, the Citrate gateway (its key is set in the
 /// chat presets; its calls go through the proxy, so its caps and prices are set here), the
 /// Cognition delegate (its key is connected here too), then the custom endpoints.
@@ -156,15 +244,50 @@ fn all_ids(g: &GuardBook) -> Vec<ProviderId> {
     ids
 }
 
+/// One provider's model list with prices. A custom endpoint is served by the OpenAI-compatible
+/// adapter, whose output bound is the request's own `max_tokens` (the `None` case in
+/// `min_reserve`); its models are the ones the member listed. The gateway and the Cognition
+/// delegate use the adapters their calls go through (the gateway's price is
+/// `model_proxy::GATEWAY_PRICE`; the delegate publishes no token price).
+fn models_for(g: &GuardBook, id: &ProviderId) -> Vec<ModelPriceView> {
+    match id {
+        ProviderId::Vendor(v) => {
+            let a = crate::model_proxy::vendor_adapter(*v).0;
+            model_prices(g, id.as_str(), Some(a.as_ref()), &[])
+        }
+        ProviderId::Gateway => {
+            let a = crate::model_proxy::gateway_adapter();
+            model_prices(g, id.as_str(), Some(a.as_ref()), &[])
+        }
+        ProviderId::Cognition => model_prices(
+            g,
+            id.as_str(),
+            Some(&crate::cognition::CognitionAdapter),
+            &[],
+        ),
+        ProviderId::Custom(cid) => {
+            let extra = g
+                .customs
+                .iter()
+                .find(|c| &c.id == cid)
+                .map(|c| c.models.clone())
+                .unwrap_or_default();
+            model_prices(g, id.as_str(), None, &extra)
+        }
+    }
+}
+
 pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
-    let (ids, customs, guards) = proxy.with_state(|g, _| {
+    let (ids, customs, guards, model_lists) = proxy.with_state(|g, _| {
         let ids = all_ids(g);
         let guards: Vec<_> = ids.iter().map(|id| g.get(id.as_str())).collect();
-        (ids, g.customs.clone(), guards)
+        let model_lists: Vec<_> = ids.iter().map(|id| models_for(g, id)).collect();
+        (ids, g.customs.clone(), guards, model_lists)
     });
     ids.into_iter()
         .zip(guards)
-        .map(|(id, pg)| {
+        .zip(model_lists)
+        .map(|((id, pg), models)| {
             let key_configured = proxy.key_configured(&id);
             let adapter = proxy.kind_for(&id).map(|k| k.as_str());
             let (name, kind, verified, base_url, key_page, revoke_page, confirmed) = match &id {
@@ -236,6 +359,7 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                 approved_models: pg.approved_models.iter().cloned().collect(),
                 listed_models: pg.listed_models.clone(),
                 prices: pg.prices.clone(),
+                models,
             }
         })
         .collect()
@@ -279,6 +403,8 @@ pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummary
         records: log.records(),
         as_of_ms: now,
         providers,
+        recent_calls: log.recent(),
+        clock_problem: log.check_clock(now).err().map(|e| e.to_string()),
     }
 }
 

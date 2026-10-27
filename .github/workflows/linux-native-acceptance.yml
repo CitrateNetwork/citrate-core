@@ -1,0 +1,115 @@
+# created: 2026-10-22 | branch: ci/k1l-linux-native-acceptance | author: Larry Klosowski + Claude Opus 5.5 (DGX lane)
+# status: active (K1-L, SCL-S14.6). Packaged Linux acceptance of Citrate Core: the published
+# .deb and AppImage (pinned in scripts/ci/linux-native-acceptance/pins.txt, sha256-checked) run
+# through launch, sidecar restart, quit, crash + orphan reaping and the 0.4.2 -> current manual
+# update, inside a sealed namespace with a private Xvfb display (scripts/ci/linux-native-acceptance.sh).
+# x86_64 runs on ubuntu-24.04 and aarch64 on ubuntu-24.04-arm. The DGX runs the aarch64 leg
+# natively by hand (docs/LINUX_NATIVE_ACCEPTANCE.md). Not a required check.
+name: linux-native-acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/ci/linux-native-acceptance.sh"
+      - "scripts/ci/linux-native-acceptance/**"
+      - "scripts/ci/lib/**"
+      - ".github/workflows/linux-native-acceptance.yml"
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "scripts/ci/linux-native-acceptance.sh"
+      - "scripts/ci/linux-native-acceptance/**"
+      - "scripts/ci/lib/**"
+      - ".github/workflows/linux-native-acceptance.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-native-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-test:
+    name: harness self-test (stand-in app, five modes)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install harness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus iproute2 python3
+      - name: Allow unprivileged user namespaces
+        shell: bash
+        run: |
+          # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor; lift it only on
+          # this throwaway VM, and only if the probe fails. Never do this on a desktop.
+          if ! unshare --user --map-root-user --pid --fork --mount-proc --net true 2>/dev/null; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --pid --fork --mount-proc --net true
+      - name: Self-test
+        shell: bash
+        run: scripts/ci/linux-native-acceptance.sh --self-test --log-dir "$GITHUB_WORKSPACE/k1l-self-test"
+      - name: Upload self-test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-native-acceptance-self-test
+          path: k1l-self-test
+          if-no-files-found: warn
+          retention-days: 14
+
+  acceptance:
+    name: packaged acceptance (${{ matrix.arch }})
+    needs: self-test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    env:
+      K1L_LAUNCH_TIMEOUT: "240"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install the package's runtime deps and the harness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-0 libgtk-3-0t64 xvfb dbus dbus-x11 \
+            gnome-keyring iproute2 python3
+      - name: Allow unprivileged user namespaces
+        shell: bash
+        run: |
+          if ! unshare --user --map-root-user --pid --fork --mount-proc --net true 2>/dev/null; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --pid --fork --mount-proc --net true
+      - name: Fetch the pinned packages (sha256-checked)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/k1l-cache"
+          scripts/ci/linux-native-acceptance.sh --fetch "${{ matrix.arch }}" --cache "$RUNNER_TEMP/k1l-cache" --fetch-only
+      - name: Run the S14.6 scenarios on the packaged .deb and AppImage
+        shell: bash
+        run: |
+          scripts/ci/linux-native-acceptance.sh --fetch "${{ matrix.arch }}" --cache "$RUNNER_TEMP/k1l-cache" \
+            --work "$RUNNER_TEMP/k1l-work" --log-dir "$GITHUB_WORKSPACE/k1l-logs"
+      - name: Upload acceptance logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-native-acceptance-${{ matrix.arch }}
+          path: k1l-logs
+          if-no-files-found: warn
+          retention-days: 14

@@ -197,6 +197,15 @@ pub fn vendor_adapter(v: Vendor) -> (Arc<dyn ModelProvider>, AdapterKind) {
 /// (ADR-2026-06-03-infer-key-identity).
 struct GatewayAdapter(OpenAiCompatAdapter);
 
+/// The gateway's adapter: the one `resolve` routes calls through and the Settings price view
+/// reads, so the view cannot drift from the charge.
+pub(crate) fn gateway_adapter() -> Arc<dyn ModelProvider> {
+    Arc::new(GatewayAdapter(OpenAiCompatAdapter::new(
+        ProviderId::Gateway,
+        vec![],
+    )))
+}
+
 /// The Citrate gateway's published price for every model it serves: `infer.citrate.ai` runs the
 /// gateway's `local-proxy` mode, where `cgk_` keys are metered by request count and a daily quota
 /// with **no payment** (citrate-inference-gateway `gateway/src/main.rs` module docs: "local-proxy:
@@ -429,14 +438,7 @@ impl ModelProxy {
             ProviderId::Gateway => {
                 let ep = crate::provider_egress::resolve_gateway()
                     .map_err(|e| ProxyError::Egress(e.to_string()))?;
-                Ok((
-                    Arc::new(GatewayAdapter(OpenAiCompatAdapter::new(
-                        ProviderId::Gateway,
-                        vec![],
-                    ))),
-                    AdapterKind::OpenAiCompatible,
-                    ep,
-                ))
+                Ok((gateway_adapter(), AdapterKind::OpenAiCompatible, ep))
             }
             ProviderId::Cognition => {
                 let ep = crate::provider_egress::resolve_delegate()

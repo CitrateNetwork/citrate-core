@@ -2707,6 +2707,16 @@ export interface ProviderPrice {
   inputMicrosPerMtok: number;
   outputMicrosPerMtok: number;
 }
+/** A model core knows for a provider: its price and where the price came from. */
+export interface ProviderModelPrice {
+  id: string;
+  price: ProviderPrice | null;
+  /** `member` (entered in Settings, wins), `published` (the vendor's cited price), or null (unknown). */
+  source: "member" | "published" | null;
+  /** The least core reserves against the caps before one call is sent (empty prompt, the adapter's
+   *  output bound), micro-USD; null when the model has no price. */
+  minReserveMicros: number | null;
+}
 export interface ProviderHalt {
   /** `member`, `burst`, `unknownModel`, `tokenSpike` or `guardUnreadable`. */
   kind: string;
@@ -2734,6 +2744,8 @@ export interface ProviderStatus {
   approvedModels: string[];
   listedModels: string[];
   prices: Record<string, ProviderPrice>;
+  /** Every known model with its price source. Under a spending cap an unpriced model is refused. */
+  models: ProviderModelPrice[];
 }
 export interface ProviderPeriodUsage {
   calls: number;
@@ -2749,6 +2761,22 @@ export interface ProviderUsage {
   unsettledCalls: number;
   caps: ProviderCaps;
 }
+/** One recent cloud call from the signed usage log. Metadata only: the log has no field for content. */
+export interface ProviderRecentCall {
+  atMs: number;
+  provider: string;
+  model: string;
+  /** False for a custom (unverified) endpoint. */
+  verified: boolean;
+  /** `ok`, a coarse failure or refusal code, or null while unsettled (in flight, or cut off by a crash). */
+  outcome: string | null;
+  /** True when the call was refused before anything was sent. */
+  refused: boolean;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  /** null = unknown (no price, or not reported), never zero. */
+  costMicros: number | null;
+}
 export interface ProviderUsageSummary {
   /** The signed usage log verified; when false every cloud call is refused. */
   logIntact: boolean;
@@ -2756,6 +2784,10 @@ export interface ProviderUsageSummary {
   records: number;
   asOfMs: number;
   providers: ProviderUsage[];
+  /** The latest calls, newest first (bounded in core). */
+  recentCalls: ProviderRecentCall[];
+  /** Set when this computer's clock reads well before the last record: every call is refused. */
+  clockProblem: string | null;
 }
 export interface ProviderKeyTest {
   ok: boolean;

@@ -93,7 +93,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   // labelled preview only (never shown to a packaged member).
   const sponsTxt =
     BRIDGE_MODE === "tauri"
-      ? "gas sponsorship — read pending (no paymaster view on 40204 yet)"
+      ? "gas is paid from this wallet"
       : s.sponsorUnits > 0
         ? "gas sponsored — " + s.sponsorUnits + " of 5 daily units left"
         : "you pay gas — daily sponsorship budget exhausted";
@@ -111,7 +111,12 @@ export function Wallet({ store, s }: SurfaceProps) {
   const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
   const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";
 
-  const onCopyAddr = () => store.copy(s.walletAddr, "Address copied");
+  // core#425 — Receive shows the wallet this app signs with: the device key in the custody vault
+  // (custodyAddr), never the identity's wallet_address claim, which until the two are linked is a
+  // different address this key cannot spend from. Unread is "—" (unknown is not an address).
+  const deviceKey = s.custodyAddr || (!s.signedIn ? s.walletAddr : "");
+  const deviceKeyLinked = store.walletIsLinked();
+  const onCopyAddr = () => store.copy(deviceKey, "Address copied");
 
   // Send is a REAL native SALT transfer: build the pending ceremony + broadcast
   // the real 40204 tx (store.walletSend → bridge.wallet.send + signing.broadcast).
@@ -164,7 +169,7 @@ export function Wallet({ store, s }: SurfaceProps) {
 
   // Primary is the REAL claim wallet. The extra linked wallet + agent SBT are
   // sim-persona cosmetics only — never shown to a real signed-in user (Rule 1).
-  const linkedWallets = [{ addr: short(s.walletAddr), label: "smart wallet · primary" }].concat(
+  const linkedWallets = [{ addr: short(s.walletAddr), label: deviceKeyLinked ? "key on this device · primary" : "identity wallet · not this device's key yet" }].concat(
     !s.signedIn && s.persona !== "p1" ? [{ addr: short(makeAddr(P.name + "x")), label: "linked · SIWE proof" }] : [],
   );
   const agents = !s.signedIn && s.persona === "p3" ? [{ name: "research-runner", id: "AgentSBT #221 · parent #4187" }] : [];
@@ -274,17 +279,20 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span style={{ fontSize: 14, fontWeight: 500 }}>Receive</span>
-              <span className="lbl">Your smart wallet · chain 40204</span>
+              <span className="lbl">Wallet key on this device · chain 40204</span>
               <span className="mono" style={{ fontSize: 12.5, wordBreak: "break-all", background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "10px 12px" }}>
-                {s.walletAddr}
+                {deviceKey || "— · device key not read yet"}
               </span>
-              <span style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-ghost btn-sm" onClick={onCopyAddr}>
-                  Copy address
-                </button>
-              </span>
+              {deviceKey && (
+                <span style={{ display: "flex", gap: 8 }}>
+                  <button className="btn btn-ghost btn-sm" onClick={onCopyAddr}>
+                    Copy address
+                  </button>
+                </span>
+              )}
               <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
-                Deploys lazily on first outgoing action. Deposits to this address are safe now.
+                {deviceKey && !deviceKeyLinked ? "Not linked to your identity yet. " : ""}This key is only on this device and has no recovery in this version: if the device or its keychain is
+                lost, the wallet and everything in it is lost with it.
               </p>
             </div>
           </div>
