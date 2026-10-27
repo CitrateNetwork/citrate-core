@@ -79,7 +79,7 @@
         },
         "x86_64-unknown-linux-gnu": {
           "sha256": "a5d125811a2e6bf5bb258d54cfdb02100457d871d35ee76f5efc40f4d2a3dfa4",
-          "evidence": "build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27. Replaces the 0.5.1 pin c92d52eb, which a hand build made (cargo build without -p/--target), not this script"
+          "evidence": "build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27; same bytes from a second clean build. Replaces the 0.5.1 pin c92d52eb, which a hand build made (cargo build without -p/--target), not this script"
         },
         "aarch64-unknown-linux-gnu": {
           "sha256": "d62e5233773d2353f1e80da44d5702381fa2717de1639507f05c0f5faa637161",
