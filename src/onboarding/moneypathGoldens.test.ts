@@ -20,7 +20,7 @@ const read = (name: string) => JSON.parse(readFileSync(DIR + name, "utf8"));
 
 type Expect = { validatorWord: string | null; phase: string };
 const LABELS: Record<string, Record<string, Expect> | string> = read("labels.json");
-const FLOWS = ["membership-activation", "bond-exit", "lsp-withdrawal-c1w"];
+const FLOWS = ["membership-activation", "bond-exit"];
 
 /** The recorded read, with the golden's normalized placeholders read as "not read". */
 function view(recorded: Record<string, unknown>): ActivationStatusView {

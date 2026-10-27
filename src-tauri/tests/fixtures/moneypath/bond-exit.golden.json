@@ -11,11 +11,6 @@
           "releaseRequested": false
         },
         "head": 1001,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
         "registry": {
           "activationEpoch": "1",
           "activeCount": "1",
@@ -52,7 +47,7 @@
           "hasValidator": true,
           "isKycVerified": true,
           "isUnlocked": false,
-          "unlockBlock": 15725328
+          "unlockBlock": 15725327
         }
       },
       "does": "treasury attests KYC on the member's SBT",
@@ -78,11 +73,6 @@
           "releaseRequested": false
         },
         "head": 1002,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
         "registry": {
           "activationEpoch": "1",
           "activeCount": "1",
@@ -131,7 +121,7 @@
           "registryActive": true,
           "registryStatus": 1,
           "tx": null,
-          "unlockBlock": 15725328,
+          "unlockBlock": 15725327,
           "unlockTimestamp": "grantTs+31449600",
           "validatorPubkey": "<nodePubkey>"
         },
@@ -172,11 +162,6 @@
           "releaseRequested": false
         },
         "head": 1003,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
         "registry": {
           "activationEpoch": "1",
           "activeCount": "1",
@@ -225,7 +210,7 @@
           "registryActive": true,
           "registryStatus": 1,
           "tx": null,
-          "unlockBlock": 15725328,
+          "unlockBlock": 15725327,
           "unlockTimestamp": "grantTs+31449600",
           "validatorPubkey": "<nodePubkey>"
         },
@@ -239,7 +224,7 @@
           "hasValidator": true,
           "isKycVerified": true,
           "isUnlocked": true,
-          "unlockBlock": 15725328
+          "unlockBlock": 15725327
         }
       },
       "does": "364 days pass: the bond is unlocked; nothing moves until the member acts",
@@ -256,11 +241,6 @@
           "releaseRequested": true
         },
         "head": 1005,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
         "registry": {
           "activationEpoch": "1",
           "activeCount": "0",
@@ -309,7 +289,7 @@
           "registryActive": false,
           "registryStatus": 2,
           "tx": null,
-          "unlockBlock": 15725328,
+          "unlockBlock": 15725327,
           "unlockTimestamp": "grantTs+31449600",
           "validatorPubkey": "<nodePubkey>"
         },
@@ -345,12 +325,7 @@
           "hasValidator": false,
           "isKycVerified": true,
           "isUnlocked": true,
-          "unlockBlock": 15725328
-        },
-        "pendingWithdrawalsC1W": {
-          "complete": true,
-          "confirmed": false,
-          "withdrawals": []
+          "unlockBlock": 15725327
         }
       },
       "does": "member sends MemberBond.requestRelease (registry full unbond); the vault records the release",
@@ -395,11 +370,6 @@
           "releaseRequested": true
         },
         "head": 1006,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
         "registry": {
           "activationEpoch": "1",
           "activeCount": "0",
@@ -453,11 +423,6 @@
             "releaseRequested": true
           },
           "head": 7001,
-          "pool": {
-            "balanceOfMemberWei": "0",
-            "balanceWei": "0",
-            "sharesOfMember": "0"
-          },
           "registry": {
             "activationEpoch": "1",
             "activeCount": "0",
@@ -507,7 +472,7 @@
           "registryActive": false,
           "registryStatus": 2,
           "tx": null,
-          "unlockBlock": 15725328,
+          "unlockBlock": 15725327,
           "unlockTimestamp": "grantTs+31449600",
           "validatorPubkey": "<nodePubkey>"
         },
@@ -531,7 +496,7 @@
           "hasValidator": false,
           "isKycVerified": true,
           "isUnlocked": true,
-          "unlockBlock": 15725328
+          "unlockBlock": 15725327
         }
       },
       "does": "after 6 epochs the member withdraws: the principal returns to the member",

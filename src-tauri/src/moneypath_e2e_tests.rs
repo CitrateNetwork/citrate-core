@@ -12,10 +12,10 @@
 //! - the activation intent (`node::bond_activation_intent`, the body of `node_register_validator`),
 //!   signed with the proposer key through `validator::sign_registration_from_data_dir`;
 //! - the SignatureCeremony (`request` + `approve_and_broadcast`) signing EIP-155 transactions from
-//!   a vault holding anvil's public test mnemonic;
-//! - the stake / withdrawal intents (`staking::stake_intent`, `request_withdrawal_intent`,
-//!   `claim_withdrawal_intent`) and the C1-W paged withdrawal scan
-//!   (`staking::read_pending_withdrawals_with`, plain `eth_getLogs` windows on anvil).
+//!   a vault holding anvil's public test mnemonic.
+//!
+//! D-9 (#519): the liquid staking pool is retired and not in the genesis set, so there is no pool
+//! flow and no pending-withdrawals read here.
 //!
 //! What only the test does, because core has no code for it: the treasury's side (mint the
 //! membership SBT, place the grant, attest KYC, record the release), mining blocks and moving the
@@ -56,14 +56,9 @@ const TERM_END: u64 = 4_102_444_800;
 const LOCK_SECONDS: u64 = 364 * 24 * 3600;
 const EPOCH_BLOCKS: u64 = 1000;
 const EXIT_LOCK_EPOCHS: u64 = 6;
-const LSP_WITHDRAWAL_DELAY: u64 = crate::staking::WITHDRAWAL_DELAY;
-const STAKE_WEI: u128 = 100 * SALT;
-const WITHDRAW_WEI: u128 = 40 * SALT;
-/// `staking::REQUEST_WITHDRAWAL_GAS`, the fixed limit core sends `requestWithdrawal` with (#501).
-const CORE_REQUEST_WITHDRAWAL_GAS: u64 = 150_000;
 
 /// The flows, in the order the e2e runs them on one chain. One golden file each.
-const FLOWS: [&str; 3] = ["membership-activation", "bond-exit", "lsp-withdrawal-c1w"];
+const FLOWS: [&str; 2] = ["membership-activation", "bond-exit"];
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/moneypath")
@@ -85,9 +80,6 @@ const EVENTS: &[&str] = &[
     "GrantReleased(uint256 indexed grantId,address indexed member)",
     "Withdrawn(bytes32 indexed pubkey,address indexed staker,uint256 amount)",
     "PrincipalWithdrawn(address indexed member,uint256 amount)",
-    "Deposited(address indexed staker,uint256 salt,uint256 shares)",
-    "WithdrawalRequested(uint256 indexed id,address indexed staker,uint256 shares,uint256 salt)",
-    "WithdrawalClaimed(uint256 indexed id,address indexed staker,uint256 salt)",
 ];
 
 // ------------------------------------------------------------------------ small ABI helpers
@@ -247,7 +239,6 @@ struct World {
     sbt: String,
     stake_vault: String,
     registry: String,
-    pool: String,
     bond: String,
     node_pubkey: [u8; 32],
     /// address (lowercase) -> role name, for normalization.
@@ -257,7 +248,6 @@ struct World {
     events: BTreeMap<[u8; 32], EventSpec>,
     /// The grant block's timestamp: unlock timestamps are recorded relative to it.
     grant_ts: Option<u64>,
-    scan: crate::staking::WithdrawalScan,
 }
 
 fn contract(book: &Value, name: &str) -> Result<String, String> {
@@ -306,7 +296,6 @@ impl World {
             "MemberBond",
             "MembershipStakeVault",
             "ValidatorRegistry",
-            "LiquidStakingPool",
         ] {
             roles.insert(contract(book, name)?, name.to_string());
         }
@@ -326,14 +315,12 @@ impl World {
             sbt: contract(book, "CitrateMemberSBT")?,
             stake_vault: contract(book, "MembershipStakeVault")?,
             registry: contract(book, "ValidatorRegistry")?,
-            pool: contract(book, "LiquidStakingPool")?,
             bond: String::new(),
             node_pubkey: crate::validator::proposer_pubkey_from_seed(&PROPOSER_SEED),
             roles,
             txs: BTreeMap::new(),
             events,
             grant_ts: None,
-            scan: crate::staking::WithdrawalScan::default(),
         };
         // The member's bond: CREATE2-deterministic, read from the vault before it exists.
         let ret = w.call(
@@ -360,7 +347,6 @@ impl World {
                 "CitrateMemberSBT": self.sbt,
                 "MembershipStakeVault": self.stake_vault,
                 "ValidatorRegistry": self.registry,
-                "LiquidStakingPool": self.pool,
                 "CitrateWalletFactory": zero,
                 "ContributionAccounting": zero,
                 "IPFSIncentivesV3": zero,
@@ -672,22 +658,6 @@ impl World {
         )
     }
 
-    fn core_pending_withdrawals(&mut self) -> Value {
-        match crate::staking::read_pending_withdrawals_with(
-            &self.chain,
-            &self.member,
-            &mut self.scan,
-            None,
-        ) {
-            Ok(list) => json!({
-                "withdrawals": self.norm_core(&serde_json::to_value(list).unwrap_or(Value::Null)),
-                "confirmed": self.scan.last_read_confirmed,
-                "complete": self.scan.last_read_complete,
-            }),
-            Err(e) => json!({"error": e.to_string()}),
-        }
-    }
-
     // -------------------------------------------------------------------- chain state
 
     fn pubkey_word(&self) -> [u8; 32] {
@@ -749,11 +719,6 @@ impl World {
                 "currentEpoch": self.call_u128(&self.registry, "currentEpoch()", &[])?.to_string(),
                 "activeCount": self.call_u128(&self.registry, "activeCount()", &[])?.to_string(),
                 "balanceWei": self.balance(&self.registry)?.to_string(),
-            },
-            "pool": {
-                "sharesOfMember": self.call_u128(&self.pool, "shares(address)", &[m])?.to_string(),
-                "balanceOfMemberWei": self.call_u128(&self.pool, "balanceOf(address)", &[m])?.to_string(),
-                "balanceWei": self.balance(&self.pool)?.to_string(),
             },
             "head": self.head()?,
         }))
@@ -981,8 +946,7 @@ fn run_bond_exit(w: &mut World) -> Result<Vec<Value>, String> {
         events,
         w.chain_state()?,
         json!({"ceremony": w.norm_core(&view), "broadcast": w.broadcast_json(&result)?,
-               "grantStatus": w.core_grant_status(), "activationStatus": w.core_activation_status(),
-               "pendingWithdrawalsC1W": w.core_pending_withdrawals()}),
+               "grantStatus": w.core_grant_status(), "activationStatus": w.core_activation_status()}),
     ));
 
     // 4. Withdraw before the registry's exit lock: reverts (Locked).
@@ -1018,99 +982,6 @@ fn run_bond_exit(w: &mut World) -> Result<Vec<Value>, String> {
         json!({"state": w.chain_state()?, "memberReceivedWei": received.to_string()}),
         json!({"broadcast": w.broadcast_json(&result)?, "grantStatus": w.core_grant_status(),
                "activationStatus": w.core_activation_status()}),
-    ));
-    Ok(steps)
-}
-
-fn run_lsp_withdrawal(w: &mut World) -> Result<Vec<Value>, String> {
-    let mut steps = Vec::new();
-
-    // 0. Stake through core's deposit() intent.
-    let intent = crate::staking::stake_intent(&w.member, STAKE_WEI);
-    let (view, result, receipt) = w.ceremony_send("deposit", intent)?;
-    steps.push(step(
-        "stake",
-        "core builds deposit() for 100 SALT; the ceremony signs and sends it",
-        w.events_of(&receipt)?,
-        w.chain_state()?,
-        json!({"ceremony": w.norm_core(&view), "broadcast": w.broadcast_json(&result)?,
-               "selfStakeWei": crate::staking::read_self_stake(&w.chain, &w.member).map(|v| v.to_string()).map_err(|e| e.to_string())?,
-               "pendingWithdrawalsC1W": w.core_pending_withdrawals()}),
-    ));
-
-    // 1. Request a withdrawal of 40 SALT (core converts SALT to shares from live reads).
-    let intent =
-        crate::staking::request_withdrawal_intent(&w.chain, &w.member, &WITHDRAW_WEI.to_string())?;
-    let (view, result, receipt) = w.ceremony_send("requestWithdrawal", intent.clone())?;
-    steps.push(step(
-        "request",
-        "core builds requestWithdrawal for 40 SALT with its fixed 150,000 gas: today it reverts out of gas (citrate-core#501), nothing is queued",
-        w.events_of(&receipt)?,
-        w.chain_state()?,
-        json!({"ceremony": w.norm_core(&view), "broadcast": w.broadcast_json(&result)?,
-               "pendingWithdrawalsC1W": w.core_pending_withdrawals()}),
-    ));
-
-    // 1b. The same core-built request with the gas the node estimates, so the C1-W read is
-    //     exercised while #501 is open. Only the gas field of core's intent changes.
-    let mut tx: Value = serde_json::from_str(&intent.raw).map_err(|e| e.to_string())?;
-    let estimate = hex_u64(&w.rpc(
-        "eth_estimateGas",
-        json!([{"from": tx["from"], "to": tx["to"], "data": tx["data"]}]),
-    )?)
-    .ok_or("bad gas estimate")?;
-    tx["gas"] = json!(format!("0x{estimate:x}"));
-    let estimated = SignatureIntent {
-        raw: tx.to_string(),
-        ..intent
-    };
-    let (_, result, receipt) = w.ceremony_send("requestWithdrawal-estimated", estimated)?;
-    steps.push(step(
-        "request-estimated-gas",
-        "the same requestWithdrawal with the estimated gas: queued; the C1-W paged scan lists it, not yet claimable",
-        w.events_of(&receipt)?,
-        w.chain_state()?,
-        json!({"broadcast": w.broadcast_json(&result)?, "gasEstimateAboveCoreLimit": estimate > CORE_REQUEST_WITHDRAWAL_GAS,
-               "pendingWithdrawalsC1W": w.core_pending_withdrawals()}),
-    ));
-    let id = "0";
-
-    // 2. A claim before the delay reverts ("Too early").
-    let intent = crate::staking::claim_withdrawal_intent(&w.member, id)?;
-    let (_, result, receipt) = w.ceremony_send("claimWithdrawal-early", intent)?;
-    steps.push(step(
-        "claim-too-early",
-        "core builds claimWithdrawal before the delay: mined, reverted",
-        w.events_of(&receipt)?,
-        w.chain_state()?,
-        json!({"broadcast": w.broadcast_json(&result)?,
-               "pendingWithdrawalsC1W": w.core_pending_withdrawals()}),
-    ));
-
-    // 3. The withdrawal delay passes.
-    w.mine(LSP_WITHDRAWAL_DELAY)?;
-    steps.push(step(
-        "delay-elapsed",
-        "50,400 blocks pass: the C1-W scan reports the withdrawal claimable",
-        vec![],
-        w.chain_state()?,
-        json!({"pendingWithdrawalsC1W": w.core_pending_withdrawals()}),
-    ));
-
-    // 4. Claim: the 40 SALT comes back and the pending list empties.
-    let before = w.balance(&w.member)?;
-    let intent = crate::staking::claim_withdrawal_intent(&w.member, id)?;
-    let (_, result, receipt) = w.ceremony_send("claimWithdrawal", intent)?;
-    let received = (w.balance(&w.member)? + World::gas_cost(&receipt)?)
-        .checked_sub(before)
-        .ok_or("member balance went down")?;
-    steps.push(step(
-        "claim",
-        "core builds claimWithdrawal after the delay: 40 SALT returns, the pending list is empty",
-        w.events_of(&receipt)?,
-        json!({"state": w.chain_state()?, "memberReceivedWei": received.to_string()}),
-        json!({"broadcast": w.broadcast_json(&result)?,
-               "pendingWithdrawalsC1W": w.core_pending_withdrawals()}),
     ));
     Ok(steps)
 }
@@ -1202,10 +1073,9 @@ fn anvil_moneypath_genesis_set() {
         let mut w = World::new(&env, &dir)?;
         crate::addresses::set_thread_test_book(&w.core_book()?)?;
         let mut failures = Vec::new();
-        let runs: [(&str, FlowRun); 3] = [
+        let runs: [(&str, FlowRun); 2] = [
             (FLOWS[0], run_membership_activation),
             (FLOWS[1], run_bond_exit),
-            (FLOWS[2], run_lsp_withdrawal),
         ];
         for (flow, run) in runs {
             // A flow that cannot finish leaves the chain in a state the later flows were not
@@ -1275,14 +1145,13 @@ fn moneypath_event_table_is_well_formed() {
         assert!(seen.insert(topic), "duplicate topic0 for {sig}");
         assert!(!spec.params.is_empty(), "{sig} has no params");
     }
-    // Pinned against a known topic0: core's own WithdrawalRequested constant.
-    let (topic, _) = parse_event(
-        "WithdrawalRequested(uint256 indexed id,address indexed staker,uint256 shares,uint256 salt)",
-    )
-    .expect("parses");
+    // Pinned against a known topic0: the standard ERC-721 Transfer event the SBT mint emits.
+    let (topic, _) =
+        parse_event("Transfer(address indexed from,address indexed to,uint256 indexed tokenId)")
+            .expect("parses");
     assert_eq!(
         format!("0x{}", hex::encode(topic)),
-        "0xe6d14ce42ad5a4efe0f111f81c1a1123db4ee41f561c3161e0960d54a9221ebe"
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
     );
 }
 

@@ -4,12 +4,7 @@
     {
       "chain": {
         "bond": "not deployed",
-        "head": 526,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
+        "head": 525,
         "registry": {
           "activationEpoch": "0",
           "activeCount": "0",
@@ -40,7 +35,7 @@
           "bondPubkey": null,
           "currentEpoch": 0,
           "epochBlocks": 1000,
-          "headBlock": 526,
+          "headBlock": 525,
           "localBlock": null,
           "localSyncing": null,
           "memberTokenId": null,
@@ -83,12 +78,7 @@
           "isUnlocked": false,
           "releaseRequested": false
         },
-        "head": 528,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
+        "head": 527,
         "registry": {
           "activationEpoch": "0",
           "activeCount": "0",
@@ -124,7 +114,7 @@
           "bondPubkey": null,
           "currentEpoch": 0,
           "epochBlocks": 1000,
-          "headBlock": 528,
+          "headBlock": 527,
           "localBlock": null,
           "localSyncing": null,
           "memberTokenId": "0",
@@ -137,7 +127,7 @@
           "registryActive": false,
           "registryStatus": 0,
           "tx": null,
-          "unlockBlock": 15725328,
+          "unlockBlock": 15725327,
           "unlockTimestamp": "grantTs+31449600",
           "validatorPubkey": "<nodePubkey>"
         },
@@ -151,7 +141,7 @@
           "hasValidator": false,
           "isKycVerified": false,
           "isUnlocked": false,
-          "unlockBlock": 15725328
+          "unlockBlock": 15725327
         }
       },
       "does": "treasury mints the SBT and grants 32,000 SALT into the member's MemberBond (locked 364 days)",
@@ -181,7 +171,7 @@
             "member": "member",
             "memberTokenId": "0",
             "principal": "32000000000000000000000",
-            "unlockBlock": "15725328",
+            "unlockBlock": "15725327",
             "unlockTimestamp": "blockTs+31449600"
           },
           "emitter": "bond",
@@ -200,7 +190,7 @@
             "grantId": "0",
             "member": "member",
             "principal": "32000000000000000000000",
-            "unlockBlock": "15725328",
+            "unlockBlock": "15725327",
             "unlockTimestamp": "blockTs+31449600"
           },
           "emitter": "MembershipStakeVault",
@@ -218,12 +208,7 @@
           "isUnlocked": false,
           "releaseRequested": false
         },
-        "head": 529,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
+        "head": 528,
         "registry": {
           "activationEpoch": "1",
           "activeCount": "1",
@@ -259,7 +244,7 @@
           "bondPubkey": "<nodePubkey>",
           "currentEpoch": 0,
           "epochBlocks": 1000,
-          "headBlock": 529,
+          "headBlock": 528,
           "localBlock": null,
           "localSyncing": null,
           "memberTokenId": "0",
@@ -272,12 +257,12 @@
           "registryActive": true,
           "registryStatus": 1,
           "tx": null,
-          "unlockBlock": 15725328,
+          "unlockBlock": 15725327,
           "unlockTimestamp": "grantTs+31449600",
           "validatorPubkey": "<nodePubkey>"
         },
         "broadcast": {
-          "blockNumber": 529,
+          "blockNumber": 528,
           "effectiveGasPriceWei": "<gas>",
           "gasUsed": "<gas>",
           "origin": "local-user",
@@ -308,7 +293,7 @@
           "hasValidator": true,
           "isKycVerified": false,
           "isUnlocked": false,
-          "unlockBlock": 15725328
+          "unlockBlock": 15725327
         }
       },
       "does": "core builds MemberBond.activate (node key signs the registry digest); the ceremony signs and sends it",
@@ -344,12 +329,7 @@
           "isUnlocked": false,
           "releaseRequested": false
         },
-        "head": 529,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
+        "head": 528,
         "registry": {
           "activationEpoch": "1",
           "activeCount": "1",
@@ -392,11 +372,6 @@
           "releaseRequested": false
         },
         "head": 1000,
-        "pool": {
-          "balanceOfMemberWei": "0",
-          "balanceWei": "0",
-          "sharesOfMember": "0"
-        },
         "registry": {
           "activationEpoch": "1",
           "activeCount": "1",
@@ -445,7 +420,7 @@
           "registryActive": true,
           "registryStatus": 1,
           "tx": null,
-          "unlockBlock": 15725328,
+          "unlockBlock": 15725327,
           "unlockTimestamp": "grantTs+31449600",
           "validatorPubkey": "<nodePubkey>"
         }
