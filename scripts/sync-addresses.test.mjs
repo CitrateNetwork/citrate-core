@@ -199,7 +199,7 @@ describe("fails closed", () => {
     writeBook(book({ ...REQUIRED, ...HUP, InferenceRouter: HUP.InferenceRouter + "\n" }));
     await refused(["--check"], /not an address .*contracts\.InferenceRouter/);
     writeBook(book({ ...REQUIRED, ...HUP, SkillRegistry: REQUIRED.SkillRegistry + "\n" }));
-    await refused([], /SkillRegistry is missing/);
+    await refused([], /not an address .*contracts\.SkillRegistry/);
   });
 
   it("on the wrong chain or genesis", async () => {

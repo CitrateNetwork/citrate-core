@@ -13,7 +13,7 @@ fill <profile> --genesis-hash 0x<64 hex> --address-book <file> --min-chain-rev <
     Every other byte of the file is kept.
 
     Checks first: the profile exists and every other value of it is already set; the genesis
-    hash is 0x + 64 hex and not zero; the chain rev is 40 hex and not zero; the address book is
+    hash is 0x + 64 hex, not zero and not another profile's; the chain rev is 40 hex and not zero; the address book is
     the canonical book (its required keys, every section a map of 0x + 40 hex addresses, its
     chainId equal to the profile's, every pin the app needs present: scripts/sync-addresses.py
     --check); a value already set is replaced only with --replace. After the fill the profile
@@ -66,12 +66,14 @@ KNOWN = set(FIELDS) | {"label", "pending"}
 # What a reroll produces; the only values `fill` writes.
 FILLED = ["genesisHash", "addressBookSha256", "minChainRev"]
 
-HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
-SHA256 = re.compile(r"^[0-9a-f]{64}$")
-REV = re.compile(r"^[0-9a-f]{40}$")
-ADDR = re.compile(r"^0x[0-9a-fA-F]{40}$")
-NETWORK = re.compile(r"^[A-Za-z0-9_-]+$")
-BOOTNODE = re.compile(r"^noise_[0-9a-fA-F]{64}@[A-Za-z0-9.-]+:([0-9]+)$")
+# Always used with .fullmatch: Python's `$` also matches before a final "\n", and .match anchors
+# only the start, so a partial match would let "value\n" through (the Rust and TS rules refuse it).
+HASH = re.compile(r"0x[0-9a-fA-F]{64}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+REV = re.compile(r"[0-9a-f]{40}")
+ADDR = re.compile(r"0x[0-9a-fA-F]{40}")
+NETWORK = re.compile(r"[A-Za-z0-9_-]+")
+BOOTNODE = re.compile(r"noise_[0-9a-fA-F]{64}@[A-Za-z0-9.-]+:([0-9]+)")
 # The canonical book's required keys (citrate-chain contracts/addresses/schema.json).
 BOOK_REQUIRED = ["chainId", "chainName", "deployer", "contracts", "aaStack", "genesis"]
 BOOK_SECTIONS = ["contracts", "aaStack", "genesis", "planned"]
@@ -125,10 +127,10 @@ def problems(p: dict) -> list:
     if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0:
         out.append("chainId is not a chain id")
     g = p["genesisHash"]
-    if not (isinstance(g, str) and HASH.match(g)) or set(g[2:]) == {"0"}:
+    if not (isinstance(g, str) and HASH.fullmatch(g)) or set(g[2:]) == {"0"}:
         out.append("genesisHash is not a block hash")
     n = p["nodeNetwork"]
-    if not (isinstance(n, str) and NETWORK.match(n)):
+    if not (isinstance(n, str) and NETWORK.fullmatch(n)):
         out.append("nodeNetwork is malformed")
     for f in ("rpcUrl", "explorerUrl", "faucetUrl"):
         v = p[f]
@@ -137,15 +139,15 @@ def problems(p: dict) -> list:
     b = p["bootnodes"]
     if not isinstance(b, list) or not b:
         out.append("bootnodes is empty")
-    elif not all(isinstance(x, str) and (m := BOOTNODE.match(x)) and 0 < int(m.group(1)) <= 65535 for x in b):
+    elif not all(isinstance(x, str) and (m := BOOTNODE.fullmatch(x)) and 0 < int(m.group(1)) <= 65535 for x in b):
         out.append("bootnodes has a malformed entry")
     if not (isinstance(p["addressBook"], str) and p["addressBook"]):
         out.append("addressBook is empty")
     d = p["addressBookSha256"]
-    if not (isinstance(d, str) and SHA256.match(d)) or set(d) == {"0"}:
+    if not (isinstance(d, str) and SHA256.fullmatch(d)) or set(d) == {"0"}:
         out.append("addressBookSha256 is not a sha256 digest")
     r = p["minChainRev"]
-    if not (isinstance(r, str) and REV.match(r)) or set(r) == {"0"}:
+    if not (isinstance(r, str) and REV.fullmatch(r)) or set(r) == {"0"}:
         out.append("minChainRev is not a commit")
     return out
 
@@ -202,7 +204,7 @@ def check_book(path: Path, chain_id: int, genesis: str) -> bytes:
         raise Refused(f"address book chainId {bid!r} is not an integer")
     if bid != chain_id:
         raise Refused(f"address book is for chain {bid}, the profile is chain {chain_id}")
-    if not (isinstance(book["deployer"], str) and ADDR.match(book["deployer"])):
+    if not (isinstance(book["deployer"], str) and ADDR.fullmatch(book["deployer"])):
         raise Refused(f"address book deployer {book['deployer']!r} is not an address")
     for s in BOOK_SECTIONS:
         if s not in book:
@@ -210,7 +212,7 @@ def check_book(path: Path, chain_id: int, genesis: str) -> bytes:
         sec = book[s]
         if not isinstance(sec, dict):
             raise Refused(f"address book section {s} is not a map")
-        bad = [f"{s}.{k} = {v!r}" for k, v in sec.items() if not (isinstance(v, str) and ADDR.match(v))]
+        bad = [f"{s}.{k} = {v!r}" for k, v in sec.items() if not (isinstance(v, str) and ADDR.fullmatch(v))]
         if bad:
             raise Refused("not an address in the book: " + ", ".join(bad))
     if not book["contracts"]:
@@ -230,8 +232,11 @@ def check_book(path: Path, chain_id: int, genesis: str) -> bytes:
 
 def write_atomic(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    mode = path.stat().st_mode & 0o777
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".profiles.", suffix=".tmp")
     try:
+        # mkstemp creates 0600; keep the mode of the file being replaced.
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "w") as f:
             f.write(text)
         os.replace(tmp, path)
@@ -249,13 +254,16 @@ def cmd_fill(a) -> None:
         raise Refused(f"no profile {pid!r} in {path} (known: {', '.join(sorted(data['profiles']))})")
     p = data["profiles"][pid]
 
-    if not isinstance(a.genesis_hash, str) or not HASH.match(a.genesis_hash):
+    if not isinstance(a.genesis_hash, str) or not HASH.fullmatch(a.genesis_hash):
         raise Refused(f"--genesis-hash must be 0x + 64 hex, got {a.genesis_hash!r}")
     genesis = a.genesis_hash.lower()
     if set(genesis[2:]) == {"0"}:
         raise Refused("--genesis-hash is zero")
+    for oid, o in data["profiles"].items():
+        if oid != pid and isinstance(o.get("genesisHash"), str) and o["genesisHash"].lower() == genesis:
+            raise Refused(f"--genesis-hash {genesis} is already the genesis of profile {oid}; a reroll has a new one")
     rev = a.min_chain_rev
-    if not isinstance(rev, str) or not REV.match(rev.lower()):
+    if not isinstance(rev, str) or not REV.fullmatch(rev.lower()):
         raise Refused(f"--min-chain-rev must be a full 40-hex commit, got {rev!r}")
     rev = rev.lower()
     if set(rev) == {"0"}:
