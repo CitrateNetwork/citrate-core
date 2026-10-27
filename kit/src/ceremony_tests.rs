@@ -2485,7 +2485,7 @@ fn a_resend_after_a_restart_is_not_a_first_submission() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-restart-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
@@ -2613,7 +2613,7 @@ fn a_resend_after_the_history_was_truncated_is_unknown() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-evict-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
@@ -2634,7 +2634,7 @@ fn a_resend_after_a_corrupt_record_was_rewritten_and_reopened_is_unknown() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-corrupt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     std::fs::write(&file, b"{not json").expect("corrupt");
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
@@ -2651,8 +2651,8 @@ fn nothing_is_broadcast_when_the_submission_cannot_be_recorded_durably() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-nodurable-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
-    std::fs::create_dir(dir.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    std::fs::create_dir(dir.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let from = canonical_addr_lower();
@@ -2968,7 +2968,7 @@ fn join8_a_prepared_send_is_on_disk_before_it_reaches_the_node() {
     // Crash window: the node receives the tx, then the app dies (no receipt). The record must
     // already be durable when the send arrives, and still name the tx after a restart.
     let dir = tmp_dir("ondisk");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
@@ -2994,8 +2994,8 @@ fn join8_a_prepared_send_is_on_disk_before_it_reaches_the_node() {
 #[test]
 fn join8_a_prepared_send_without_a_durable_record_sends_nothing() {
     let dir = tmp_dir("nodurable");
-    let file = dir.join("submitted-tx.json");
-    std::fs::create_dir(dir.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    std::fs::create_dir(dir.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
@@ -3123,7 +3123,7 @@ fn join8_a_definitively_refused_activation_is_not_recovered_but_stays_in_history
     // Codex P2 at f98f8ae: a first-submission refusal ("not sent") must not come back as the
     // member's pending activation from the durable record, yet those bytes stay a re-submission.
     let dir = tmp_dir("refused");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
@@ -3142,7 +3142,7 @@ fn join8_a_definitively_refused_activation_is_not_recovered_but_stays_in_history
 fn join8_an_unknown_outcome_activation_is_still_recovered() {
     // The other side: an error that is NOT a definitive first-send refusal keeps the record.
     let dir = tmp_dir("unknown");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
@@ -3246,7 +3246,7 @@ fn join8_a_prepared_activation_refused_after_another_attempt_recorded_it_is_outc
     // is "outcome unknown" with the hash, never "not sent", and the activation stays recoverable.
     for refusal in ["Failed to submit transaction: Full", "Failed to submit transaction: SenderLimitExceeded"] {
         let dir = tmp_dir("raced");
-        let file = dir.join("submitted-tx.json");
+        let file = dir.join(crate::submitted_log::RECORD_FILE);
         let (v, _p) = vault_with_wallet();
         let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
         let view = c.request(activate_intent());
@@ -3274,7 +3274,7 @@ fn a_resend_after_upgrading_from_a_build_without_the_record_is_outcome_unknown()
     std::fs::create_dir_all(&dir).expect("tmp");
     std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("existing wallet");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(dir.join("submitted-tx.json"), crate::submitted_log::LEGACY_GENESIS));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(dir.join(crate::submitted_log::RECORD_FILE), crate::submitted_log::LEGACY_GENESIS));
     for msg in ["Insufficient funds: account balance 0 < required 21000", "Failed to submit transaction: Full"] {
         let (r, hash) = send_once(&c, &v, node_error(msg));
         assert_eq!(submitted_outcome_unknown(&r), Some(hash), "{msg}: {r:?}");
@@ -3287,7 +3287,7 @@ fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
     // Reviewer CR at d737f33: Forget (or a refusal), then the same bytes re-sent, then a restart.
     // Recovery must find the in-flight send, or Activate is offered a second time.
     let dir = tmp_dir("forget-resend");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     {
         let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
@@ -3321,7 +3321,7 @@ fn after_a_genesis_switch_the_previous_networks_history_does_not_decide_new_send
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
     std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("existing wallet");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     let r1005 = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let (on_r1005, r1005_hash) = send_once(&r1005, &v, node_error("Failed to submit transaction: Full"));
@@ -3518,7 +3518,7 @@ fn an_upgraded_profile_reports_not_sent_again_after_its_first_send() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
     std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault marker");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let refused = || node_error("Insufficient funds: account balance 0");

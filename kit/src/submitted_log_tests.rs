@@ -17,7 +17,7 @@ impl Tmp {
         Tmp(p)
     }
     fn file(&self) -> std::path::PathBuf {
-        self.0.join("submitted-tx.json")
+        self.0.join(RECORD_FILE)
     }
 }
 impl Drop for Tmp {
@@ -90,10 +90,10 @@ fn the_write_is_atomic_and_leaves_no_temp_file() {
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
-    assert_eq!(names, vec!["submitted-tx.json".to_string()]);
+    assert_eq!(names, vec![RECORD_FILE.to_string()]);
     let body: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
-    assert_eq!(body["entries"], serde_json::json!([{ "hash": h(1), "genesis": G }]));
-    assert_eq!(body["uncertain"], false);
+    assert_eq!(body["current"]["entries"], serde_json::json!([{ "hash": h(1) }]));
+    assert_eq!(body["current"]["uncertain"], false);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn a_temp_file_left_by_a_crash_does_not_affect_the_record() {
     log.record(&h(1));
     drop(log);
     // A crash between writing the temp file and the rename leaves the old file intact plus a temp.
-    std::fs::write(t.0.join(".submitted-tx.json.tmp-99999"), b"[\"0xpartial").expect("tmp");
+    std::fs::write(t.0.join(".submitted-tx-networks.json.tmp-99999"), b"[\"0xpartial").expect("tmp");
     let again = SubmittedTxLog::open(t.file(), G);
     assert!(!again.is_uncertain());
     assert!(!again.record(&h(1)));
@@ -177,7 +177,7 @@ fn a_truncated_record_is_degraded_and_never_proves_a_first_send() {
 fn an_oversized_list_on_disk_is_trimmed_and_marked_uncertain() {
     let t = Tmp::new("oversized");
     let list: Vec<String> = (0..400).map(h).collect();
-    std::fs::write(t.file(), serde_json::to_vec(&list).expect("json")).expect("write");
+    std::fs::write(t.legacy(), serde_json::to_vec(&list).expect("json")).expect("write");
     let log = SubmittedTxLog::open(t.file(), G);
     assert_eq!(log.len(), 256);
     assert!(log.is_uncertain());
@@ -190,14 +190,14 @@ fn a_legacy_full_list_is_treated_as_possibly_truncated() {
     // Before the uncertain flag, a list at capacity may already have evicted hashes.
     let t = Tmp::new("legacy-full");
     let list: Vec<String> = (0..256).map(h).collect();
-    std::fs::write(t.file(), serde_json::to_vec(&list).expect("json")).expect("write");
+    std::fs::write(t.legacy(), serde_json::to_vec(&list).expect("json")).expect("write");
     assert!(SubmittedTxLog::open(t.file(), G).is_uncertain());
 }
 
 #[test]
 fn a_legacy_short_list_loads_as_complete_history() {
     let t = Tmp::new("legacy-short");
-    std::fs::write(t.file(), serde_json::to_vec(&vec![h(1)]).expect("json")).expect("write");
+    std::fs::write(t.legacy(), serde_json::to_vec(&vec![h(1)]).expect("json")).expect("write");
     let log = SubmittedTxLog::open(t.file(), G);
     assert!(!log.is_uncertain());
     assert!(!log.record(&h(1)));
@@ -222,7 +222,7 @@ fn a_record_at_an_unreadable_location_fails_closed() {
     let t = Tmp::new("unreadable");
     let blocker = t.0.join("blocker");
     std::fs::write(&blocker, b"x").expect("blocker");
-    let log = SubmittedTxLog::open(blocker.join("submitted-tx.json"), G);
+    let log = SubmittedTxLog::open(blocker.join(RECORD_FILE), G);
     assert!(log.is_uncertain());
     assert!(!log.record(&h(5)));
 }
@@ -234,7 +234,7 @@ fn a_record_that_cannot_be_made_durable_is_refused_and_not_kept() {
     assert_eq!(log.try_record(&h(1)), Ok(true));
     drop(log);
     // The rewrite's temp path is taken by a directory, so the next write fails.
-    let block = t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()));
+    let block = t.0.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()));
     std::fs::create_dir(&block).expect("block tmp");
     let log = SubmittedTxLog::open(t.file(), G);
     assert!(log.try_record(&h(2)).is_err(), "no durable record, so the caller must not send");
@@ -242,7 +242,7 @@ fn a_record_that_cannot_be_made_durable_is_refused_and_not_kept() {
     // Nothing was sent, so the refused hash is not history.
     assert_eq!(log.try_record(&h(2)), Ok(true));
     let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
-    assert_eq!(on_disk["entries"], serde_json::json!([{ "hash": h(1), "genesis": G }, { "hash": h(2), "genesis": G }]));
+    assert_eq!(on_disk["current"]["entries"], serde_json::json!([{ "hash": h(1) }, { "hash": h(2) }]));
 }
 
 // ---- Eviction keeps "not sent" possible: a per-sender nonce high-water mark ----
@@ -307,11 +307,11 @@ fn evicting_an_entry_with_no_sender_or_nonce_leaves_the_whole_history_uncertain(
 #[test]
 fn a_record_in_the_previous_format_loads_and_keeps_its_flag() {
     let t = Tmp::new("v2");
-    std::fs::write(t.file(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": false })).expect("json")).expect("write");
+    std::fs::write(t.legacy(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": false })).expect("json")).expect("write");
     let log = SubmittedTxLog::open(t.file(), G);
     assert!(!log.is_uncertain());
     assert!(!log.record(&h(1)));
-    std::fs::write(t.file(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": true })).expect("json")).expect("write");
+    std::fs::write(t.legacy(), serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": true })).expect("json")).expect("write");
     assert!(SubmittedTxLog::open(t.file(), G).is_uncertain());
 }
 
@@ -327,7 +327,7 @@ thread_local! {
 }
 
 fn spy_sync(dir: &std::path::Path) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(dir.join("submitted-tx.json")).unwrap_or_default();
+    let text = std::fs::read_to_string(dir.join(RECORD_FILE)).unwrap_or_default();
     let temps = std::fs::read_dir(dir)
         .map(|it| {
             it.filter_map(Result::ok)
@@ -500,7 +500,7 @@ fn join8_a_forget_that_cannot_be_written_is_an_error_and_changes_nothing() {
     let t = Tmp::new("forget-fail");
     let log = SubmittedTxLog::open(t.file(), G);
     assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
-    std::fs::create_dir(t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    std::fs::create_dir(t.0.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
     assert!(log.forget(&h(1)).is_err());
     assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)));
 }
@@ -509,7 +509,7 @@ fn join8_a_forget_that_cannot_be_written_is_an_error_and_changes_nothing() {
 fn join8_a_file_from_before_call_metadata_still_loads() {
     let t = Tmp::new("old-format");
     std::fs::write(
-        t.file(),
+        t.legacy(),
         format!(r#"{{"entries":[{{"hash":"{}","sender":"{}","nonce":5}}],"evicted":{{}},"uncertain":false}}"#, h(1), MEMBER),
     )
     .expect("write");
@@ -592,12 +592,12 @@ fn every_entry_is_written_with_the_genesis_it_was_sent_on() {
     log.try_record_for(&h(1), A, 0).expect("record");
     log.record(&h(2));
     let d = disk(&t);
-    assert_eq!(d["genesis"], G);
+    assert_eq!(d["current"]["genesis"], G, "the entries are in the section of their genesis");
     assert_eq!(
-        d["entries"],
+        d["current"]["entries"],
         serde_json::json!([
-            { "hash": h(1), "sender": A, "nonce": 0, "genesis": G },
-            { "hash": h(2), "genesis": G }
+            { "hash": h(1), "sender": A, "nonce": 0 },
+            { "hash": h(2) }
         ])
     );
 }
@@ -614,21 +614,21 @@ fn entries_sent_on_another_genesis_are_archived_when_the_record_opens() {
     assert!(!log.is_uncertain());
     // The archive is on disk at once, in one atomic write, before anything is sent.
     let d = disk(&t);
-    assert_eq!(d["genesis"], NEW);
-    assert_eq!(d["entries"], serde_json::json!([]));
+    assert_eq!(d["current"]["genesis"], NEW);
+    assert_eq!(d["current"]["entries"], serde_json::json!([]));
     assert_eq!(
-        d["sent_on_previous_networks"],
+        d["previous_networks"],
         serde_json::json!([{
             "genesis": G,
             "entries": [
-                { "hash": h(1), "sender": A, "nonce": 0, "genesis": G },
-                { "hash": h(2), "sender": A, "nonce": 1, "genesis": G }
+                { "hash": h(1), "sender": A, "nonce": 0 },
+                { "hash": h(2), "sender": A, "nonce": 1 }
             ],
             "evicted": {},
             "uncertain": false
         }])
     );
-    assert_eq!(dir_names(&t), vec!["submitted-tx.json".to_string()], "no temp file left");
+    assert_eq!(dir_names(&t), vec![RECORD_FILE.to_string()], "no temp file left");
 }
 
 #[test]
@@ -646,7 +646,8 @@ fn an_uncertain_history_on_the_previous_genesis_does_not_make_the_new_one_uncert
     drop(log);
     let again = SubmittedTxLog::open(t.file(), NEW);
     assert!(!again.is_uncertain(), "and stays so across a restart");
-    assert_eq!(disk(&t)["sent_on_previous_networks"][0]["uncertain"], true, "kept with the history");
+    let r1005 = section_of(&disk(&t), G).expect("r1005 section");
+    assert_eq!(r1005["upgrade_bound"], serde_json::json!({}), "kept with the history: {r1005}");
 }
 
 #[test]
@@ -668,7 +669,7 @@ fn nonce_marks_of_the_previous_genesis_do_not_apply_on_the_new_one() {
         );
     }
     // The probe at nonce 9 evicted one more r1005 entry (nonce 10).
-    assert_eq!(disk(&t)["sent_on_previous_networks"][0]["evicted"][A], 10);
+    assert_eq!(section_of(&disk(&t), G).expect("r1005")["evicted"][A], 10);
 }
 
 // The chain id is the same on both networks, so bytes broadcast on r1005 are valid bytes on the new
@@ -694,22 +695,22 @@ fn a_record_written_before_the_genesis_was_kept_belongs_to_r1005() {
     }))
     .expect("json");
     // On r1005 it behaves exactly as before.
-    std::fs::write(t.file(), &legacy).expect("write");
+    std::fs::write(t.legacy(), &legacy).expect("write");
     let same = SubmittedTxLog::open(t.file(), LEGACY_GENESIS);
     assert!(same.is_uncertain());
     assert_eq!(same.len(), 1);
     assert_eq!(same.try_record_for(&h(1), A, 5), Ok(false));
     drop(same);
     // On a new genesis it is r1005 history.
-    std::fs::write(t.file(), &legacy).expect("write");
+    std::fs::write(t.legacy(), &legacy).expect("write");
     let log = SubmittedTxLog::open(t.file(), NEW);
     assert!(!log.is_uncertain());
     assert_eq!(log.len(), 0);
     assert_eq!(log.try_record_for(&h(9), A, 0), Ok(true));
     let d = disk(&t);
-    assert_eq!(d["sent_on_previous_networks"][0]["genesis"], LEGACY_GENESIS);
-    assert_eq!(d["sent_on_previous_networks"][0]["evicted"][A], 300);
-    assert_eq!(d["sent_on_previous_networks"][0]["uncertain"], true);
+    assert_eq!(d["previous_networks"][0]["genesis"], LEGACY_GENESIS);
+    assert_eq!(d["previous_networks"][0]["evicted"][A], 300);
+    assert_eq!(d["previous_networks"][0]["uncertain"], true);
 }
 
 #[test]
@@ -727,8 +728,8 @@ fn returning_to_an_archived_genesis_brings_its_history_back() {
     assert_eq!(back.len(), 1, "only r1005's entries are live on r1005");
     assert_eq!(back.try_record_for(&h(1), A, 0), Ok(false));
     let d = disk(&t);
-    assert_eq!(d["sent_on_previous_networks"][0]["genesis"], NEW);
-    assert_eq!(d["sent_on_previous_networks"][0]["entries"][0]["hash"], h(2));
+    assert_eq!(d["previous_networks"][0]["genesis"], NEW);
+    assert_eq!(d["previous_networks"][0]["entries"][0]["hash"], h(2));
 }
 
 #[test]
@@ -737,16 +738,16 @@ fn an_archive_that_could_not_be_written_at_open_is_written_by_the_next_record() 
     let old = SubmittedTxLog::open(t.file(), G);
     old.try_record_for(&h(1), A, 0).expect("record");
     drop(old);
-    let block = t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()));
+    let block = t.0.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()));
     std::fs::create_dir(&block).expect("block tmp");
     let log = SubmittedTxLog::open(t.file(), NEW);
-    assert!(disk(&t).get("sent_on_previous_networks").is_none(), "the write at open failed");
+    assert_eq!(disk(&t)["current"]["genesis"], G, "the write at open failed");
     std::fs::remove_dir(&block).expect("unblock");
     assert_eq!(log.try_record_for(&h(2), A, 0), Ok(true));
     let d = disk(&t);
-    assert_eq!(d["genesis"], NEW);
-    assert_eq!(d["entries"][0]["hash"], h(2));
-    assert_eq!(d["sent_on_previous_networks"][0]["entries"][0]["hash"], h(1));
+    assert_eq!(d["current"]["genesis"], NEW);
+    assert_eq!(d["current"]["entries"][0]["hash"], h(2));
+    assert_eq!(d["previous_networks"][0]["entries"][0]["hash"], h(1));
 }
 
 #[test]
@@ -764,62 +765,61 @@ fn concurrent_first_sends_after_a_switch_keep_the_archive() {
         .collect();
     assert!(joins.into_iter().all(|j| j.join().expect("thread") == Ok(true)));
     let d = disk(&t);
-    assert_eq!(d["entries"].as_array().map(Vec::len), Some(16));
-    assert_eq!(d["sent_on_previous_networks"][0]["entries"][0]["hash"], h(1));
+    assert_eq!(d["current"]["entries"].as_array().map(Vec::len), Some(16));
+    assert_eq!(d["previous_networks"][0]["entries"][0]["hash"], h(1));
 }
 
-/// Tripwire (#511): every entry the record writes carries the genesis it was sent on, for every
-/// file shape a previous build may have left, on the same genesis and after a switch. Live entries
-/// carry the record's genesis; archived ones the genesis of their section.
+/// Tripwire (#511): every entry the record writes is in a section that names its genesis, for every
+/// file a previous build may have left (each legacy shape, and a record of this format), on the
+/// same genesis and after a switch. The current section is the one opened on; no genesis has two
+/// sections.
 #[test]
 fn every_written_entry_carries_a_genesis() {
-    let shapes: Vec<(&str, Option<Vec<u8>>)> = vec![
-        ("missing", None),
-        ("bare-list", Some(serde_json::to_vec(&vec![h(1), h(2)]).expect("json"))),
-        ("hashes", Some(serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": false })).expect("json"))),
+    let shapes: Vec<(&str, std::path::PathBuf, Option<Vec<u8>>)> = vec![
+        ("missing", LEGACY_FILE.into(), None),
+        ("bare-list", LEGACY_FILE.into(), Some(serde_json::to_vec(&vec![h(1), h(2)]).expect("json"))),
+        ("hashes", LEGACY_FILE.into(), Some(serde_json::to_vec(&serde_json::json!({ "hashes": [h(1)], "uncertain": false })).expect("json"))),
         (
             "no-genesis",
+            LEGACY_FILE.into(),
             Some(serde_json::to_vec(&serde_json::json!({
                 "entries": [{ "hash": h(1), "sender": A, "nonce": 1 }], "evicted": {}, "uncertain": false
             })).expect("json")),
         ),
         (
-            "keyed",
+            "sectioned",
+            RECORD_FILE.into(),
             Some(serde_json::to_vec(&serde_json::json!({
-                "genesis": NEW,
-                "entries": [{ "hash": h(3), "genesis": NEW }],
-                "evicted": {},
-                "uncertain": false,
-                "sent_on_previous_networks": [{
-                    "genesis": G, "entries": [{ "hash": h(1) }], "evicted": {}, "uncertain": false
-                }]
+                "format": 3,
+                "current": { "genesis": NEW, "entries": [{ "hash": h(3) }], "evicted": {}, "uncertain": false },
+                "previous_networks": [{ "genesis": G, "entries": [{ "hash": h(1) }], "evicted": {}, "uncertain": false }]
             })).expect("json")),
         ),
     ];
     let is_genesis = |v: &serde_json::Value| {
         v.as_str().is_some_and(|s| s.len() == 66 && s.starts_with("0x") && s[2..].bytes().all(|b| b.is_ascii_hexdigit()))
     };
-    for (name, bytes) in &shapes {
+    for (name, file, bytes) in &shapes {
         for active in [G, NEW] {
             let t = Tmp::new(&format!("tripwire-{name}"));
             if let Some(b) = bytes {
-                std::fs::write(t.file(), b).expect("write");
+                std::fs::write(t.0.join(file), b).expect("write");
             }
             let log = SubmittedTxLog::open(t.file(), active);
             log.try_record_for(&h(500), B, 1_000).expect("record");
             log.record(&h(501));
             let d = disk(&t);
-            assert_eq!(d["genesis"], active, "{name} on {active}");
-            for e in d["entries"].as_array().expect("entries") {
-                assert_eq!(e["genesis"], active, "{name} on {active}: live entry {e}");
-            }
-            for p in d["sent_on_previous_networks"].as_array().cloned().unwrap_or_default() {
+            assert_eq!(d["current"]["genesis"], active, "{name} on {active}");
+            let mut seen = vec![active.to_string()];
+            for p in d["previous_networks"].as_array().cloned().unwrap_or_default() {
                 assert!(is_genesis(&p["genesis"]), "{name} on {active}: section {p}");
-                assert_ne!(p["genesis"], active, "{name} on {active}: the live genesis is not archived");
-                for e in p["entries"].as_array().expect("entries") {
-                    assert_eq!(e["genesis"], p["genesis"], "{name} on {active}: archived entry {e}");
-                }
+                let g = p["genesis"].as_str().unwrap_or_default().to_string();
+                assert!(!seen.contains(&g), "{name} on {active}: two sections for {g}");
+                seen.push(g);
+                assert!(p["entries"].is_array(), "{name} on {active}: {p}");
             }
+            let live: Vec<&str> = d["current"]["entries"].as_array().expect("entries").iter().filter_map(|e| e["hash"].as_str()).collect();
+            assert!(live.contains(&h(500).as_str()) && live.contains(&h(501).as_str()), "{name} on {active}: {d}");
         }
     }
 }
@@ -860,7 +860,7 @@ fn join8_a_resend_of_forgotten_bytes_that_cannot_be_written_is_refused() {
     let log = SubmittedTxLog::open(t.file(), G);
     assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
     assert_eq!(log.forget(&h(1)), Ok(true));
-    std::fs::create_dir(t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    std::fs::create_dir(t.0.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
     assert!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())).is_err(), "no durable record, so the caller must not send");
     assert_eq!(log.latest_call(MEMBER, &activate_call()), None, "unchanged");
 }
@@ -912,9 +912,12 @@ fn upgrade_bounded_record_reads_uncertain_to_a_build_that_does_not_know_the_boun
     let t = upgraded("upgrade-ondisk");
     let log = SubmittedTxLog::open(t.file(), G);
     assert_eq!(log.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false));
-    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
-    assert_eq!(v["uncertain"], serde_json::json!(true), "{v}");
-    assert_eq!(v["upgrade_bound"][A], serde_json::json!(7), "{v}");
+    // The record is a file such a build neither opens nor parses (design 3), and the bound is
+    // its section's.
+    let bytes = std::fs::read(t.file()).expect("read");
+    assert!(serde_json::from_slice::<OldReader>(&bytes).is_err());
+    let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(v["current"]["upgrade_bound"][A], serde_json::json!(7), "{v}");
 }
 
 #[test]
