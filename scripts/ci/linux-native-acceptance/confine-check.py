@@ -12,17 +12,23 @@ The check reads the inner phase of the script (from the "Inner phase" banner to 
 splits it into simple commands (quote, command-substitution, pipeline, case and heredoc aware).
 A command is a launch when, unconfined, it:
   - runs a program by path or by variable ("$APP_EXE", "$W/x.AppImage", /usr/bin/x), or
-  - runs an interpreter or one of the session programs (python3, bash, sh, env, Xvfb, dbus-*,
-    gnome-keyring-daemon, nsenter, setpriv, setsid, unshare), or dpkg with an install action, or
+  - runs an interpreter, a session program or anything that runs other code (python3, bash, sh,
+    perl, busybox, env, Xvfb, dbus-*, gnome-keyring-daemon, nsenter, setpriv, setsid, unshare,
+    command, builtin, eval, xargs, coproc, source, `.`, trap, time, stdbuf), find -exec, or dpkg
+    with an install action, or
   - passes --appimage-extract, or
-  - is started in the background with `&` (any program, or a subshell).
+  - uses backticks, or
+  - is started in the background with `&` (any program, a subshell or a group).
 Exempt: `seal` and `mount_attr` (they build the seal; CONFINE does not exist yet), and `probe`
 and the `p_*` probes (they check the seal from PID 1's own view, before anything is launched,
-and two negative controls need PID 1's pre-seal handles).
+and two negative controls need PID 1's pre-seal handles). Even there, package code is flagged:
+$APP_EXE, staged packages, the install roots, AppImages, --appimage-extract and dpkg installs.
+Anywhere, any change to CONFINE after its one top-level definition is flagged.
 
 Controls: for every confined launch found, the same file with that one CONFINE prefix removed
-must be flagged at that line; a synthetic unconfined background command must be flagged too. A
-check that cannot see a bypass fails instead of passing.
+must be flagged at that line, and each synthetic snippet in SYNTHETIC must be judged as listed
+(flagged, or for the must-pass ones not flagged). A check that cannot see a bypass fails
+instead of passing.
 
 Usage: confine-check.py [harness.sh]   (default: the linux-native-acceptance.sh next to this dir)
 Exit 0 = every post-seal launch is confined and every control was flagged; 1 otherwise.
@@ -33,15 +39,24 @@ import sys
 
 CONFINE = '"${CONFINE[@]}"'
 BANNER = re.compile(r"^#\s*Inner phase")
-FUNC = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{")
+FUNC = re.compile(r"^\s*(?:function\s+([A-Za-z_][\w-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w-]*)\s*\(\s*\))\s*\{?")
 HEREDOC = re.compile(r"<<-?\s*'?\"?([A-Za-z_][A-Za-z0-9_]*)'?\"?")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
-KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "time", "fi", "done"}
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done"}
 LAUNCHERS = {
     "python", "python3", "bash", "sh", "env", "exec", "Xvfb", "dbus-daemon", "dbus-send",
     "dbus-launch", "gnome-keyring-daemon", "nsenter", "setpriv", "setsid", "unshare", "nohup",
     "xdg-open", "timeout", "nice", "chroot",
+    # Run another command or code given as text: always a launch when unconfined.
+    "command", "builtin", "eval", "xargs", "coproc", "source", ".", "trap", "time", "stdbuf",
+    "perl", "busybox",
 }
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+# Package code: the app, staged packages, the install roots, AppImages and their extractions.
+PACKAGE = re.compile(r"\$\{?APP_EXE\b|\$\{?W\}?/(pkgs|apps|root-deb|ref-)|\.AppImage\b|/usr/bin/citrate-core\b")
+CONFINE_SET = re.compile(r"^CONFINE(\[[^]]*\])?\+?=")
+CONFINE_ARG = re.compile(r"^CONFINE(\b|\[|=|\+=)")
+SETTERS = {"unset", "local", "declare", "typeset", "readonly", "export", "read", "mapfile", "readarray"}
 DPKG_INSTALL = re.compile(r"^(-i|--install|--unpack|--configure|-[a-zA-Z]*i[a-zA-Z]*)$")
 
 
@@ -68,15 +83,23 @@ def logical_lines(text):
                 continue
             m = FUNC.match(line)
             if m:
-                func = m.group(1)
+                func = m.group(1) or m.group(2)
         m = HEREDOC.search(line)
         if m and "<<<" not in line:
             heredoc = m.group(1)
         if line.endswith("\\"):
             buf += line[:-1] + " "
             continue
+        joined = buf + line
+        if "=(" in joined and joined.count("(") > joined.count(")"):  # array assignment goes on
+            buf = joined + " "
+            continue
         out.append((start, func, buf + line))
         buf = ""
+        # A function ends at a `}` in column 0, or on its header line for a one-line body; the
+        # code after it is top level again, not part of the function above.
+        if line.rstrip() == "}" or (FUNC.match(line) and line.rstrip().endswith("}")):
+            func = ""
     if not inner:
         raise SystemExit("confine-check: no 'Inner phase' banner found; refusing to pass")
     return out
@@ -118,6 +141,9 @@ def split_commands(s):
             two = s[i:i + 2]
             if c == "\\":
                 seg.cur += s[i:i + 2]; i += 2; continue
+            if c == "`":  # legacy command substitution: always a launch
+                j = s.find("`", i + 1); j = len(s) if j < 0 else j + 1
+                segs.append((["`…`"], False)); seg.cur += "`…`"; i = j; continue
             if c == "'":
                 j = s.index("'", i + 1) if "'" in s[i + 1:] else len(s) - 1
                 seg.cur += s[i:j + 1]; i = j + 1; continue
@@ -126,6 +152,9 @@ def split_commands(s):
                 while i < len(s) and s[i] != '"':
                     if s[i] == "\\":
                         seg.cur += s[i:i + 2]; i += 2; continue
+                    if s[i] == "`":
+                        j = s.find("`", i + 1); j = len(s) if j < 0 else j + 1
+                        segs.append((["`…`"], False)); seg.cur += "`…`"; i = j; continue
                     if s[i:i + 3] == "$((":
                         j = s.find("))", i); j = len(s) if j < 0 else j + 2
                         seg.cur += s[i:j]; i = j; continue
@@ -239,11 +268,15 @@ def is_launch(prog, args, bg):
     if prog in ("local", "declare", "export", "readonly", "[", "[[", "test", "case", "esac",
                 "for", "in", "return", "exit", "break", "continue", ":"):
         return bg  # builtins launch nothing (a backgrounded one still forks)
+    if prog == "command" and args[:1] in (["-v"], ["-V"]):
+        return False  # a lookup, runs nothing
     if prog == "exec" and (not args or re.match(r"^\{?[A-Za-z0-9_]*\}?[<>]", args[0])):
         return False  # fd redirection only
     if bg:
         return True
-    if prog == "(subshell)":
+    if prog in ("(subshell)", "`…`"):
+        return True
+    if prog == "find" and any(a in FIND_EXEC for a in args):
         return True
     if any(a == "--appimage-extract" for a in args):
         return True
@@ -257,14 +290,43 @@ def is_launch(prog, args, bg):
     return False
 
 
+def is_package_launch(prog, args):
+    """Runs package code: the program is package code, or it extracts or installs a package, or
+    an interpreter or launcher is handed package code."""
+    if PACKAGE.search(prog) or "--appimage-extract" in args:
+        return True
+    if prog == "dpkg" and any(DPKG_INSTALL.match(a) for a in args):
+        return True
+    runs_args = prog in LAUNCHERS or prog.strip('"').startswith(("$", "/", "./", "~"))
+    return runs_args and any(PACKAGE.search(a) for a in args)
+
+
+def changes_confine(words):
+    if any(CONFINE_SET.match(w) for w in words):
+        return True
+    prog, args = (words[0], words[1:]) if words else ("", [])
+    return prog in SETTERS and any(CONFINE_ARG.match(a) for a in args)
+
+
 def scan(text):
     """(launches, bypasses): launches = [(line, func, program)] through CONFINE;
-    bypasses = [(line, func, command)] that start a process without it."""
+    bypasses = [(line, func, command)] that start a process without it, change CONFINE after
+    its definition, or (in an exempt function) start package code."""
     launches, bypasses = [], []
+    defined = False
     for n, func, line in logical_lines(text):
-        if exempt(func):
-            continue
         for words, bg in split_commands(line):
+            if changes_confine(words):
+                # Only its one definition, at top level, is allowed.
+                if defined or func:
+                    bypasses.append((n, func, "changes CONFINE: " + " ".join(words)))
+                defined = True
+                continue
+            if exempt(func):
+                prog, args = program_of(words)
+                if prog is not None and prog != CONFINE and is_package_launch(prog, args):
+                    bypasses.append((n, func, "package code in a probe: " + " ".join(words)))
+                continue
             prog, args = program_of(words)
             if prog is None:
                 if bg:  # a backgrounded `{ ...; }` group
@@ -315,6 +377,7 @@ SYNTHETIC = [
     ("CONFINE unset", _fn("k1l_ctl", "unset CONFINE"), True),
     ("CONFINE shadowed by a local", _fn("k1l_ctl", "local -a CONFINE=()"), True),
     ("CONFINE read into", _fn("k1l_ctl", 'read -ra CONFINE <<<"env"'), True),
+    ("CONFINE reassigned at top level", "CONFINE=(env)", True),
     ("CONFINE reassigned in a probe", _fn("p_k1l_ctl", "CONFINE=(env)"), True),
     # Package code started from a probe (probes are otherwise exempt): each must be flagged.
     ("probe runs $APP_EXE", _fn("p_k1l_ctl", 'env HOME=/x "$APP_EXE"'), True),
@@ -329,6 +392,7 @@ SYNTHETIC = [
     ("launcher words in single quotes", _fn("k1l_ctl", "echo 'time eval command `id` python3 &'"), False),
     ("probe reads package paths", _fn("p_k1l_ctl", 'printf \'%s\\n\' "$W/pkgs" | writable_of',
                                       '[ -e "$W/apps/Citrate-Core.AppImage" ] && sha256sum <"$W/pkgs/to.deb"'), False),
+    ("command -v lookup", _fn("k1l_ctl", "command -v python3 >/dev/null"), False),
     ("probe runs its own helper", _fn("p_k1l_ctl", "python3 -I -c 'pass'"), False),
 ]
 

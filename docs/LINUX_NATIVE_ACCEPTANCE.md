@@ -93,11 +93,15 @@ Before the five modes, the self-test runs a structural check,
 `scripts/ci/linux-native-acceptance/confine-check.py`: every process the harness starts after
 the seal (the app, an AppImage or its extraction, install scripts, the display, bus, keyring,
 the update-e2e feed server, and every X, bus or Python helper) must be started through the
-`CONFINE` prefix. It flags any program run by path or variable, any interpreter or session
-program, `dpkg` with an install action, `--appimage-extract`, and anything started in the
-background with `&`, unless the command starts with `"${CONFINE[@]}"`. The seal itself and the
-isolation probes are exempt (they check the seal from PID 1's view, before anything launches).
-Its controls remove each `CONFINE` prefix in turn and require that copy to be flagged.
+`CONFINE` prefix. It flags any program run by path or variable; any interpreter, session
+program or command that runs other code (`command`, `builtin`, `eval`, `xargs`, `coproc`,
+`source`/`.`, `trap`, `time`, `stdbuf`, `perl`, `busybox`, `find -exec`); backticks; `dpkg` with
+an install action; `--appimage-extract`; and anything started in the background with `&`,
+unless the command starts with `"${CONFINE[@]}"`. The seal itself and the isolation probes are
+exempt (they check the seal from PID 1's view, before anything launches), but package code
+started from a probe is still flagged, and so is any change to `CONFINE` after its definition.
+Its controls remove each `CONFINE` prefix in turn and require that copy to be flagged, and run
+a set of synthetic snippets, each of which must be flagged (or, for a few, must not be).
 
 A run takes about 10 minutes per package kind. `K1L_KEEP=1` keeps the run directory (the app's
 HOME, logs, the installed tree) for inspection; otherwise only `logs/` is kept.
