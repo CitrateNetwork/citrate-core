@@ -1976,7 +1976,6 @@ const K6_DATA_READS: &[(&str, &str, bool)] = &[
         true,
     ),
     ("src-tauri/src/lib.rs", concat!("../../", "kit/src/custody.rs"), false),
-    ("src-tauri/src/staking_tests.rs", concat!("../../", "kit/src/rpc.rs"), false),
 ];
 
 /// Whether every quoted occurrence of `lit` in `src` is the argument of `include_str!(` or
@@ -2238,7 +2237,9 @@ fn k6_data_reads_accept_only_text_reads_of_the_literal() {
     let kit = k6_data_read_entries(ws, true);
     assert!(kit.contains(&"kit/src/../../src-tauri/src/lib.rs".to_string()), "{kit:?}");
     let app = k6_data_read_entries(ws, false);
-    assert!(app.contains(&"src-tauri/src/../../kit/src/rpc.rs".to_string()), "{app:?}");
+    // #519 removed staking_tests.rs, the app's one data read of kit/src/rpc.rs; lib.rs's read of
+    // kit/src/custody.rs is the app-side row that remains.
+    assert!(app.contains(&"src-tauri/src/../../kit/src/custody.rs".to_string()), "{app:?}");
 }
 
 /// The dep-info reader and path check used above, on an in-memory dep-info file.
