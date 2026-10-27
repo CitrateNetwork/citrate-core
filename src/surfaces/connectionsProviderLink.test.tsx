@@ -1,6 +1,6 @@
 // Five-place navigation (0.5.2): AI providers moved from Settings to Hermes › Controls. The
-// "Cloud providers" row on Connections must open that new home on the AI providers section, not
-// plain Settings (which no longer lists AI providers and would land on an unrelated account page).
+// "Cloud providers" row on Connections must open that new home on the Models section (D-11, the
+// governed vendor connections), not plain Settings. Its copy claims no vendor this build cannot use.
 import { afterEach, describe, expect, it } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -32,7 +32,7 @@ async function mount() {
 const providerLink = () => host?.querySelector('[data-testid="cloud-providers-link"]') as HTMLAnchorElement | null;
 
 describe("Connections › Cloud providers link", () => {
-  it("opens Hermes › Controls › Details on the providers section", async () => {
+  it("opens Hermes › Controls › Details on the Models section", async () => {
     store.setState({ route: "settings/connections", sSec: "account" });
     await mount();
     const a = providerLink();
@@ -41,14 +41,23 @@ describe("Connections › Cloud providers link", () => {
       a?.click();
     });
     expect(store.state.route).toBe("hermes/controls/details");
-    expect(store.state.sSec).toBe("ai");
+    expect(store.state.sSec).toBe("models");
   });
 
   it("names the new home and links to it, not to plain Settings", async () => {
     await mount();
     const a = providerLink();
-    expect(a?.getAttribute("href")).toBe("#/settings/ai");
-    expect(a?.textContent).toContain("Hermes › Controls › Details");
+    expect(a?.getAttribute("href")).toBe("#/settings/models");
+    expect(a?.textContent).toContain("Hermes › Controls › Details › Models");
     expect(host?.querySelector('a[href="#/settings"]')).toBeNull();
+  });
+
+  it("the copy claims no particular vendor works and has no em-dash (P-9c)", async () => {
+    await mount();
+    const row = providerLink()?.parentElement?.textContent ?? "";
+    expect(row).toContain("Cloud providers");
+    expect(row).not.toMatch(/Anthropic/);
+    expect(row).not.toContain("—");
+    expect(row).toContain("Models shows which vendors this build can use");
   });
 });
