@@ -69,6 +69,10 @@ export interface ValidatorActivation {
   status: number;
   actEpoch: number;
   currentEpoch: number;
+  /** `validatorInfo(pubkey).staker`, lower-case; absent or null = not read. */
+  staker?: string | null;
+  /** `validatorInfo(pubkey).bonded` in wei (decimal string); absent or null = not read. */
+  bondedWei?: string | null;
 }
 
 /** "Validator active" (§1): isActive AND the activation epoch has been reached. */

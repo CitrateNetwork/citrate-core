@@ -278,6 +278,18 @@ export function bondClaimBlocked(s: Pick<AppState, "bondActivated" | "bondedStak
   return "Claim waits for MemberBond.isKycVerified(), which is not read yet; the bond's claimRewards() requires it.";
 }
 
+type OwnWalletInputs = Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey" | "validatorActivation" | "walletAddr">;
+
+/** fxEARN (red stub): a validator bonded straight from the member's wallet. Not recognised yet. */
+export function ownWalletValidator(_s: OwnWalletInputs): boolean {
+  return false;
+}
+
+/** fxEARN (red stub): why Claim isn't offered for such a key; never blocked yet. */
+export function ownWalletClaimBlocked(_s: OwnWalletInputs): string | null {
+  return null;
+}
+
 export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> {
   if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null, bondKycVerified: null };
   return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null, bondKycVerified: g.isKycVerified === true };

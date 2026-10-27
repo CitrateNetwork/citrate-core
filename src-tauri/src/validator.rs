@@ -559,4 +559,77 @@ mod tests {
         assert_eq!(total, 9_410_000_000_000_000_000u128);
         assert_eq!(claimable, 4_000_000_000_000_000_000u128);
     }
+
+    /// fxEARN — a recorded r1005 answer. `rewardsOf(0x3f67…a6aa)` read with `eth_call` on
+    /// https://rpc.citrate.ai (chain 40204, ValidatorRegistry 0xde4F…3BD9) on 2026-10-27 at head
+    /// ~877,360. The request this read sends must be exactly that call, and the answer must decode
+    /// to the figures the registry holds, to the wei.
+    #[test]
+    fn read_validator_rewards_matches_a_recorded_r1005_answer() {
+        use crate::rpc::{RpcClient, RpcError, RpcTransport};
+        use std::cell::RefCell;
+        const KEY: &str = "3f67bb5943edbacd774658a49a1db5f0ee3fe39d6f76d9f800827cc90769a6aa";
+        const RAW: &str = "0x000000000000000000000000000000000000000000073da59b5d0514461c17fe000000000000000000000000000000000000000000073685fa94dd70197c17fe";
+        struct Recorded(RefCell<Vec<serde_json::Value>>);
+        impl RpcTransport for Recorded {
+            fn call(
+                &self,
+                body: serde_json::Value,
+            ) -> std::result::Result<serde_json::Value, RpcError> {
+                self.0.borrow_mut().push(body);
+                Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": RAW}))
+            }
+        }
+        let rpc = RpcClient::with_transport(Recorded(RefCell::new(Vec::new())));
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&hex::decode(KEY).unwrap());
+        let registry = crate::addresses::validator_registry();
+        let (total, claimable) = read_validator_rewards(&rpc, registry, &key).unwrap();
+        assert_eq!(total, 8_753_600_000_639_448_003_647_486u128);
+        assert_eq!(claimable, 8_719_960_000_639_448_003_647_486u128);
+        let sent = rpc.transport().0.borrow();
+        assert_eq!(sent.len(), 1);
+        let call = &sent[0]["params"][0];
+        assert_eq!(
+            call["to"].as_str().unwrap().to_ascii_lowercase(),
+            "0xde4f679632be7810d915f637cc6a72bf076a3bd9"
+        );
+        assert_eq!(call["data"].as_str().unwrap(), format!("0x187e9c41{KEY}"));
+    }
+
+    /// fxEARN tripwire — the selector is `rewardsOf(bytes32)`, computed, not just pinned: a
+    /// different view (validatorInfo, stakeOf) would decode into a wrong rewards figure.
+    #[test]
+    fn rewards_of_selector_is_keccak_of_the_signature() {
+        use sha3::{Digest, Keccak256};
+        let h = Keccak256::digest(b"rewardsOf(bytes32)");
+        assert_eq!(REWARDS_OF_SELECTOR, [h[0], h[1], h[2], h[3]]);
+    }
+
+    /// fxEARN — a word whose high 16 bytes are set is not a SALT amount: refuse it rather than
+    /// keep the low half and show a different figure (fail closed).
+    #[test]
+    fn read_validator_rewards_refuses_a_word_wider_than_u128() {
+        use crate::rpc::{RpcClient, RpcError, RpcTransport};
+        struct Wide(usize);
+        impl RpcTransport for Wide {
+            fn call(
+                &self,
+                _body: serde_json::Value,
+            ) -> std::result::Result<serde_json::Value, RpcError> {
+                let mut buf = [0u8; 64];
+                buf[31] = 5;
+                buf[63] = 5;
+                buf[self.0] = 1; // a byte in the high half of one word
+                Ok(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(buf))}),
+                )
+            }
+        }
+        for at in [0usize, 15, 32, 47] {
+            let rpc = RpcClient::with_transport(Wide(at));
+            let r = read_validator_rewards(&rpc, REGISTRY, &[0x11u8; 32]);
+            assert!(r.is_err(), "high byte {at} was accepted: {r:?}");
+        }
+    }
 }
