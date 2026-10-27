@@ -101,10 +101,14 @@ describe("tripwire: the member's validator key and the bond lock", () => {
     expect(auto.slice(0, auto.indexOf("armMining()"))).toMatch(/canOfferActivation\([^)]*bondUnlocked\)/);
     const gate = readFileSync(join("src", "onboarding", "activateValidator.ts"), "utf8");
     expect(gate).toMatch(/key: "lock"/);
-    // Every UI file that can start activation also names one of the gates.
+    // Every UI file that can start activation also names one of the gates. K3: the Node page's
+    // activationOffer counts only because it decides with canOfferActivation (checked here).
     for (const { p, s } of SRC) {
       if (!/store\.activateValidator\(/.test(s)) continue;
-      expect(/canOfferActivation\(|activationGate\(|activationPhase\(/.test(s), p).toBe(true);
+      expect(/canOfferActivation\(|activationGate\(|activationPhase\(|activationOffer\(/.test(s), p).toBe(true);
     }
+    const words = readFileSync(join("src", "surfaces", "node", "nodeWords.ts"), "utf8");
+    const offer = words.slice(words.indexOf("export function activationOffer("));
+    expect(offer.slice(0, offer.indexOf("return { offer: true")), "activationOffer").toMatch(/canOfferActivation\(/);
   });
 });

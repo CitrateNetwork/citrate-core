@@ -20,7 +20,7 @@ import { Onboarding, S3, S5 } from "../onboarding/Onboarding";
 import { Community } from "./Community";
 import { MEMBERSHIP_PRICING_URL } from "../data/membership";
 import { Wallet } from "./Wallet";
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { Settings } from "./Settings";
 import { GRANT_DISCLAIMER, BETANET_CARRYOVER, grantExplanation } from "../data/grantCopy";
 import { describeBond, store, type Store } from "../shell/store";
@@ -99,7 +99,7 @@ describe("V5 — one grant-custody explanation everywhere", () => {
   });
 
   it("the Node validator card uses it for a member with a grant", () => {
-    expectOneStory(renderToStaticMarkup(<Node store={stub} s={member({ node: "synced", nTab: "ops" })} />));
+    expectOneStory(renderStatus(stub, member({ node: "synced" })));
   });
 
   it("the Settings grant record carries the disclaimer", () => {

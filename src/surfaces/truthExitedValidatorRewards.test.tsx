@@ -26,7 +26,8 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
+import { NodeRewards } from "./node/NodeRewards";
+import { renderRewards, renderStatus } from "./node/nodePage.fixture";
 import { Wallet } from "./Wallet";
 import { Onboarding } from "../onboarding/Onboarding";
 import { store, type Store } from "../shell/store";
@@ -126,16 +127,14 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
   });
 
   it("Node: rewards not read yet for an activated bond say 'not read yet', not 'Not a validator'", () => {
-    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true, rewards: null })} />);
+    const html = renderRewards(stubStore(), member({ bondedStake: 0, bondActivated: true, rewards: null }));
     expect(html).toContain("not read yet");
     expect(html).not.toContain("Not a validator");
   });
 
   it("Node: an exited validator's claimable rewards show and Claim is enabled", () => {
-    const html = renderToStaticMarkup(
-      // #362 B-1: the bond path's Claim needs MemberBond.isKycVerified() read true.
-      <Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true, bondKycVerified: true, rewards: { totalWei: wei(30), claimableWei: wei(20) } })} />,
-    );
+    // #362 B-1: the bond path's Claim needs MemberBond.isKycVerified() read true.
+    const html = renderRewards(stubStore(), member({ bondedStake: 0, bondActivated: true, bondKycVerified: true, rewards: { totalWei: wei(30), claimableWei: wei(20) } }));
     expect(html).toContain("20.00");
     expect(html).toMatch(/<button[^>]*>\s*Claim/);
     expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>\s*Claim/);
@@ -179,11 +178,11 @@ describe("#348 review — S6 never offers 'Stake my bond' for a registered stake
 
   it("the Node page offers no 'Activate validator' for a registered stake that isn't active yet", () => {
     for (const validatorActivation of [PENDING, null]) {
-      const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 32_000, validatorActivation })} />);
+      const html = renderStatus(stubStore(), member({ node: "synced", bondedStake: 32_000, validatorActivation }));
       expect(html).not.toContain("Activate validator");
     }
     // A bond that reads not activated (MemberBond.activated() = false) is offered activation.
-    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false, bondUnlocked: false })} />);
+    const html = renderStatus(stubStore(), member({ node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false, bondUnlocked: false }));
     expect(html).toContain("Activate validator");
   });
 
@@ -227,11 +226,11 @@ describe("#348 round 2 — MemberBond.activated() loads after a restart, and Rew
     const s0 = stubStore();
     const host = document.createElement("div");
     root = createRoot(host);
-    act(() => root?.render(<Node store={s0} s={member({ nTab: "earn", bondedStake: 0, bondActivated: null })} />));
+    act(() => root?.render(<NodeRewards store={s0} s={member({ bondedStake: 0, bondActivated: null })} mode="tauri" />));
     const calls = s0.refreshEarnings as unknown as ReturnType<typeof vi.fn>;
     const before = calls.mock.calls.length;
     expect(before).toBeGreaterThanOrEqual(1);
-    act(() => root?.render(<Node store={s0} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true })} />));
+    act(() => root?.render(<NodeRewards store={s0} s={member({ bondedStake: 0, bondActivated: true })} mode="tauri" />));
     expect(calls.mock.calls.length).toBeGreaterThan(before);
   });
 

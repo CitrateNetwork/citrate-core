@@ -21,7 +21,7 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { validatorWord, type ChainReads, type ValidatorActivation } from "../shell/chainTruth";
 import { store, type Store } from "../shell/store";
 import { bridge } from "../bridge";
@@ -131,13 +131,13 @@ describe("C1-V5 — the registry key is MemberBond.pubkey() once the bond has ac
   it("a bonded validator that is producing under the bond's key shows 'Producing blocks'", async () => {
     await poll(grant({}));
     expect(store.state.validatorPubkey).toBe(BOND_KEY);
-    const html = renderToStaticMarkup(<Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }} />);
+    const html = renderStatus(stub, { ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null });
     expect(html).toMatch(/>Producing blocks</);
   });
 
   it("a node key that produces does not make the member's bond key 'Producing blocks'", async () => {
     await poll(grant({}));
-    const html = renderToStaticMarkup(<Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [NODE_KEY] }, producersError: null }} />);
+    const html = renderStatus(stub, { ...store.state, producers: { head: 1, window: 100, proposers: [NODE_KEY] }, producersError: null });
     expect(html).not.toMatch(/>Producing blocks</);
     expect(html).toContain("Not seen producing in the last 100 blocks");
   });

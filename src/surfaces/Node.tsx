@@ -533,3 +533,20 @@ export function Node({ store, s }: SurfaceProps) {
     </div>
   );
 }
+
+// ---- K3 red-first stub (replaced by the Node › Status tab in the next commit) ----
+// It keeps the old behaviour: the 0.5.1 Node screen, whatever the page reads say.
+export interface NodeStatusViewProps {
+  store: SurfaceProps["store"];
+  s: SurfaceProps["s"];
+  publicHead: number | null;
+  publicHeadAgeMs: number | null;
+  publicHeadError: boolean;
+  statusAgeMs: number | null;
+  compat: "unknown" | "compatible" | "retired" | "unset";
+  mode: "tauri" | "sim";
+  statusError: string | null;
+}
+export function NodeStatusView({ store, s }: NodeStatusViewProps) {
+  return <Node store={store} s={s} />;
+}
