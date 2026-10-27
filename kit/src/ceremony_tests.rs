@@ -3672,3 +3672,60 @@ fn rule3_tripwire_no_config_can_skip_the_ceremony() {
         );
     }
 }
+
+/// One approval of a 1-wei tx at the node's pending nonce `nonce`, answered with `send`.
+fn send_at_fetched_nonce(c: &SignatureCeremony, v: &CustodyVault, nonce: u64, send: JsonValue) -> Result<BroadcastResult> {
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![ok(JsonValue::String(format!("0x{nonce:x}"))), ok(JsonValue::String("0x1".into())), send]);
+    c.approve_and_broadcast(v, &RpcClient::with_transport(mock), &view.id, false, bcfg(1))
+}
+
+// #443: on a profile upgraded from a build without the submitted-tx record, the first send at an
+// app-read nonce stays "outcome unknown"; a later send at a higher app-read nonce that the node
+// refuses reads "not sent".
+#[test]
+fn an_upgraded_profile_reports_not_sent_again_after_its_first_send() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-upgraded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault marker");
+    let file = dir.join("submitted-tx.json");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let refused = || node_error("Insufficient funds: account balance 0");
+    let first = send_at_fetched_nonce(&c, &v, 5, refused());
+    assert!(submitted_outcome_unknown(&first).is_some(), "the first send after the upgrade: {first:?}");
+    let later = send_at_fetched_nonce(&c, &v, 6, refused());
+    assert!(matches!(later, Err(CeremonyError::Broadcast(_))), "a refusal at a higher app-read nonce is not sent: {later:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #443 tripwire helper: production ceremony code labels a nonce `Fetched` only where it was
+/// read from the node, in the same match arm as the `pending_nonce` call.
+fn fetched_label_only_on_a_node_read(src: &str) -> bool {
+    let n = src.matches("NonceSource::Fetched").count();
+    let Some(at) = src.find("NonceSource::Fetched") else {
+        return false;
+    };
+    let arm_start = src[..at].rfind("=>").unwrap_or(0);
+    n == 1 && src[arm_start..at].contains(".pending_nonce(")
+}
+
+#[test]
+fn tripwire_only_a_node_read_nonce_is_labelled_fetched() {
+    // Labelling a requester's nonce as fetched would end an upgraded profile's uncertainty for
+    // sends an earlier run may have made.
+    assert!(fetched_label_only_on_a_node_read(
+        "(None, Some(f)) => (rpc.pending_nonce(f)?, NonceSource::Fetched),"
+    ));
+    assert!(!fetched_label_only_on_a_node_read(
+        "(Some(n), _) => (*n, NonceSource::Fetched), (None, Some(f)) => (rpc.pending_nonce(f)?, x),"
+    ));
+    let src = strip_test_module(include_str!("ceremony.rs"));
+    assert!(
+        fetched_label_only_on_a_node_read(&src),
+        "ceremony.rs must label exactly one nonce Fetched, in the arm that reads pending_nonce"
+    );
+    assert!(src.contains("prepared.nonce_source,"), "send_signed records the nonce's origin");
+}

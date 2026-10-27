@@ -544,17 +544,11 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
         };
         let transport =
             Box::new(crate::model::UreqModelTransport::new(url).with_hf_token(hf_token));
-        // HUP-S0.3: remember which catalog id owns this `.part` so a restart can resume it.
-        let local_file = local_file_name(&desc.file);
-        write_download_marker(&models_dir, &local_file, &id, desc.size_bytes)?;
-        let mgr = crate::model::ModelManager::from_descriptor(models_dir.clone(), transport, &desc);
         // Stream progress to the UI (a multi-GB GGUF is otherwise a silent minutes-long block that
         // reads as a stuck download). Emit only on a whole-percent change to avoid flooding.
         let emit_id = id.clone();
         let mut last_pct: i64 = -1;
-        // Download and verify as one operation under the file's download lock (shared with the
-        // Store): a different verified model already saved under this name is never replaced.
-        mgr.download_and_verify(crate::model::ExistingFile::ResumeUnverified, |downloaded, total| {
+        download_tracked(&models_dir, &id, &desc, transport, |downloaded, total| {
             let pct = if total > 0 { ((downloaded as u128 * 100) / total as u128) as i64 } else { 0 };
             if pct != last_pct {
                 last_pct = pct;
@@ -563,9 +557,7 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
                     serde_json::json!({ "id": emit_id, "downloaded": downloaded, "total": total, "pct": pct }),
                 );
             }
-        })
-        .map_err(|e| e.to_string())?;
-        clear_download_marker(&models_dir, &local_file);
+        })?;
         let _ = app.emit(
             "model://download-progress",
             serde_json::json!({ "id": id, "pct": 100, "done": true }),
@@ -574,6 +566,36 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
     })
     .await
     .map_err(|e| format!("model download: background task failed: {e}"))?
+}
+
+/// Download + verify the catalog model `desc` (catalog id `id`) into `models_dir` as the Models
+/// screen does. Its resume marker records which catalog id owns the `.part` (so a restart can
+/// resume it): it is written only by the download that holds the file's download lock, and is
+/// forgotten once the model is verified.
+pub(crate) fn download_tracked(
+    models_dir: &std::path::Path,
+    id: &str,
+    desc: &ModelDescriptor,
+    transport: Box<dyn crate::model::ModelTransport>,
+    on_progress: impl FnMut(u64, u64),
+) -> Result<(), String> {
+    let local_file = local_file_name(&desc.file);
+    let mgr =
+        crate::model::ModelManager::from_descriptor(models_dir.to_path_buf(), transport, desc);
+    // Download and verify as one operation under the file's download lock (shared with the
+    // Store): a different verified model already saved under this name is never replaced. The
+    // marker is written once that lock is held, so a request the lock refuses leaves none (#489).
+    mgr.download_and_verify(
+        crate::model::ExistingFile::ResumeUnverified,
+        || {
+            write_download_marker(models_dir, &local_file, id, desc.size_bytes)
+                .map_err(crate::model::ModelError::Io)
+        },
+        on_progress,
+    )
+    .map_err(|e| e.to_string())?;
+    clear_download_marker(models_dir, &local_file);
+    Ok(())
 }
 
 /// Switch the active local model (restart `llama-server -m`). Gates on the TARGET file being

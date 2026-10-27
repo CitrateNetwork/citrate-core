@@ -76,8 +76,8 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   async sessionStop(id) {
     await invoke("hermes_session_stop", { id });
   },
-  sessionOpenUnattended(systemPrompt, toolsJson, daemonId) {
-    return invoke<string>("hermes_session_open_unattended", { systemPrompt, toolsJson, daemonId: daemonId ?? null });
+  sessionOpenUnattended(systemPrompt, toolsJson, daemonId, runId) {
+    return invoke<string>("hermes_session_open_unattended", { systemPrompt, toolsJson, daemonId: daemonId ?? null, runId: runId ?? null });
   },
   async sessionClose(id) {
     await invoke("hermes_session_close", { id });
