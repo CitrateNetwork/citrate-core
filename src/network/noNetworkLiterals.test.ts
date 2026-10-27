@@ -11,16 +11,20 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { ACTIVE_PROFILE } from "./profile";
+import { ACTIVE_PROFILE, rpcHost } from "./profile";
 import { CITRATE_QA_SET } from "../agent/eval";
 
 /**
  * Pinned copies, not derived: each is checked equal to the active profile below, so a profile
- * change fails here. `src/agent/eval.ts` is the answer-quality dataset (the fact the model's
- * answer must contain); it runs under plain Node (scripts/eval-qa.mjs), which cannot import the
- * profile JSON.
+ * change fails here. Both files run under plain Node (scripts/eval-*.mjs), which cannot import the
+ * profile JSON. `src/agent/eval.ts` is the answer-quality dataset (the fact the model's answer must
+ * contain); `src/agent/harness.ts` is the built-in agent, whose balance answer names the RPC it
+ * read from.
  */
-const PINNED: { file: string; finding: string }[] = [{ file: "src/agent/eval.ts", finding: 'chain id string "40204"' }];
+const PINNED: { file: string; finding: string }[] = [
+  { file: "src/agent/eval.ts", finding: 'chain id string "40204"' },
+  { file: "src/agent/harness.ts", finding: 'RPC host ", read from rpc.citrate.ai."' },
+];
 
 type Lexed = { code: string; strings: { at: number; text: string }[] };
 
@@ -220,5 +224,12 @@ describe("no chain id or RPC literal outside the network profile (#493, K6-3)", 
   it("the pinned eval fact is the active profile's chain id", () => {
     const item = CITRATE_QA_SET.find((q) => q.id === "chain-id");
     expect(item?.expectFacts).toEqual([String(ACTIVE_PROFILE?.chainId)]);
+  });
+
+  it("the pinned agent RPC host is the active profile's", () => {
+    const src = readFileSync(join(__dirname, "..", "agent", "harness.ts"), "utf8");
+    const host = rpcHost(ACTIVE_PROFILE);
+    expect(host, "the active profile has an RPC").not.toBeNull();
+    expect(src).toContain(`, read from ${host}.`);
   });
 });

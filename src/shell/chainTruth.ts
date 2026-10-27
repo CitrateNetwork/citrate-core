@@ -17,6 +17,7 @@
 // =====================================================================
 import { createPublicClient, http } from "viem";
 import { citrate } from "../chain";
+import { rpcHost } from "../network/profile";
 import book from "../../src-tauri/addresses/40204.json";
 
 export const VALIDATOR_REGISTRY = book.addresses.ValidatorRegistry as `0x${string}`;
@@ -213,9 +214,9 @@ export function createChainReads(): ChainReads {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(batch),
       });
-      if (!res.ok) throw new Error("rpc.citrate.ai answered " + res.status);
+      if (!res.ok) throw new Error((rpcHost() ?? "the public RPC") + " answered " + res.status);
       const body: unknown = await res.json();
-      if (!Array.isArray(body)) throw new Error("rpc.citrate.ai did not answer the batch");
+      if (!Array.isArray(body)) throw new Error((rpcHost() ?? "the public RPC") + " did not answer the batch");
       const blocks = body.map((r) => (r && typeof r === "object" ? (r as { result?: unknown }).result : null)).filter(Boolean);
       if (blocks.length === 0) throw new Error("no blocks came back");
       return { head: Number(head), window: blocks.length, proposers: distinctProposers(blocks) };
