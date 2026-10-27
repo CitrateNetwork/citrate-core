@@ -439,6 +439,19 @@ export function Groups({ store, s }: SurfaceProps) {
     }
     store.toast("That doesn't look like an invite link or code.");
   };
+  /** The name shown for a group in an approval, so the approval says which group it acts on. */
+  const groupNameFor = (groupId: string): string => {
+    const g = st.groups.find((x) => x.id === groupId);
+    return g ? groupLabel(st, g) : groupId;
+  };
+  /** #389: an approval acts on the group it was proposed for. If the selected group changed while the
+   *  approval was open, refuse and send nothing, so an action is never applied to a group the member
+   *  is no longer looking at. */
+  const stillOnGroup = (groupId: string): boolean => {
+    if (groupsSlice.get().selectedId === groupId) return true;
+    store.toast(`The selected group changed after this was proposed, so nothing was sent to ${groupNameFor(groupId)}. Open that group and try again.`);
+    return false;
+  };
   const doRole = (groupId: string, address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
     void store.requestSig({
@@ -446,6 +459,7 @@ export function Groups({ store, s }: SurfaceProps) {
       requester: "you · group admin",
       title: next === "admin" ? "Make this member an admin" : "Return this admin to member",
       rows: [
+        { k: "Group", v: groupNameFor(groupId) },
         { k: "Member", v: shortAddr(address) },
         { k: "New role", v: next },
         { k: "Effect", v: "the member's role in this group changes" },
@@ -454,7 +468,9 @@ export function Groups({ store, s }: SurfaceProps) {
       sponsor: "you approve · one role change",
       sponsorColor: "var(--ok)",
       chainless: true,
-      apply: () => void assignRole(groupId, address, next),
+      apply: () => {
+        if (stillOnGroup(groupId)) void assignRole(groupId, address, next);
+      },
     });
   };
   const doOffboard = (groupId: string, address: string) => {
@@ -463,6 +479,7 @@ export function Groups({ store, s }: SurfaceProps) {
       requester: "you · group admin",
       title: "Offboard this member",
       rows: [
+        { k: "Group", v: groupNameFor(groupId) },
         { k: "Member", v: shortAddr(address) },
         { k: "Effect", v: "removed from messaging, roster, cluster, and roles" },
       ],
@@ -472,6 +489,7 @@ export function Groups({ store, s }: SurfaceProps) {
       chainless: true,
       warning: "This removes them across all planes in one epoch and rotates the group secret — they lose access everywhere at once. This cannot be undone.",
       apply: () => {
+        if (!stillOnGroup(groupId)) return;
         void offboardMember(groupId, address);
         store.toast("Offboarding — the group secret rotates.");
       },
