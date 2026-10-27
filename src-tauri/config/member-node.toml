@@ -1,4 +1,4 @@
-# citrate-core — member node configuration (chain 40204 testnet-beta)
+# citrate-core — member node configuration (template; network values from the active profile)
 #
 # Written to <app_data_dir>/node/node.toml on first launch by
 # `node::ensure_node_config`, and passed explicitly with `--config` so the node
@@ -14,31 +14,32 @@
 # height 0 with 0 peers indefinitely. It only appeared to work on developer
 # machines because ~/.citrate/node.toml exists there as a chain-dev artefact.
 #
-# Derived from citrate-chain node/config/testnet-beta.toml. Keep the bootnode
-# list in sync with that file — it is the canonical source.
+# The network values are NOT in this file (K6 network switch): the quoted
+# chain id and bootnode placeholders (quoted so the template is still valid
+# TOML) are filled from the active profile in
+# network/profiles.json (`network_profile::render_node_network`), which is
+# derived from citrate-chain node/config/testnet-beta.toml for the alpha
+# network. A build whose profile is not set writes no config and starts no node.
 #
 # `{{DATA_DIR}}` is substituted at write time with the app's node data dir.
 
 [chain]
-chain_id = 40204
+chain_id = "{{CHAIN_ID}}"
 genesis_hash = ""
 block_time = 2
 ghostdag_k = 18
 
 [network]
 listen_addr = "0.0.0.0:30303"
-# Format: "noise_<hex>@<host>:<port>" — trusted form; the node verifies the
-# remote's Noise static key against the declared identity at handshake (WP-H.2).
+# Bootnode format: the Noise static key in hex, then @<host>:<port>. Trusted
+# form; the node verifies the remote's Noise static key against the declared identity at handshake (WP-H.2).
 # Hosts are DNS A-records, so these survive droplet rebuilds.
 bootstrap_nodes = [
-    "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
-    "noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303",
-    "noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303",
-    # LOAD-BEARING: boot{1,2,3} are discovery-only and advertise height 0, so a
-    # fresh node never triggers sync from them alone. The sequencer is the only
-    # peer that follows the real head — without it a member connects to three
-    # peers and still never syncs. Do not "tidy" it out of this list.
-    "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303",
+    # From the active network profile. LOAD-BEARING for the alpha network: boot{1,2,3}
+    # are discovery-only and advertise height 0, so a fresh node never triggers
+    # sync from them alone; the sequencer entry (rpc.citrate.ai) is the only peer
+    # that follows the real head. Do not "tidy" it out of the profile.
+    "{{BOOTSTRAP_NODES}}",
 ]
 max_peers = 50
 allowed_peers = []             # empty = open beta
