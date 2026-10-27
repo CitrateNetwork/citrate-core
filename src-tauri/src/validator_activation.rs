@@ -32,6 +32,35 @@ use serde_json::{json, Value};
 
 use crate::rpc::RpcTransport;
 
+/// Aggregate wall-clock budget for one activation read (~18 sequential RPCs at up to 6 s each).
+/// Reads not started inside it fail as unknown (None), so the gate fails closed. The whole command
+/// is bounded by this plus one RPC timeout; the webview deadline (`invoke.ts`) sits above that.
+pub const READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// An RPC transport that refuses new calls once `deadline` has passed (shared by the public and
+/// local transports of one read).
+pub struct Budgeted<'a, T: RpcTransport> {
+    inner: &'a T,
+    deadline: std::time::Instant,
+}
+
+impl<'a, T: RpcTransport> Budgeted<'a, T> {
+    pub fn new(inner: &'a T, deadline: std::time::Instant) -> Self {
+        Budgeted { inner, deadline }
+    }
+}
+
+impl<T: RpcTransport> RpcTransport for Budgeted<'_, T> {
+    fn call(&self, body: Value) -> Result<Value, crate::rpc::RpcError> {
+        if std::time::Instant::now() >= self.deadline {
+            return Err(crate::rpc::RpcError::Transport(
+                "validator-activation: read budget spent".into(),
+            ));
+        }
+        self.inner.call(body)
+    }
+}
+
 /// Blocks sampled for the measured block time (contract §2: "timestamp delta over the last 100
 /// blocks"). Never the configured 1 s, never an assumed 12 s.
 pub const BLOCK_TIME_SAMPLE: u64 = 100;
@@ -427,6 +456,10 @@ pub fn validator_activation_status_sync(
         .and_then(parse_pubkey);
     let local = crate::rpc::HttpTransport::new(node.0.local_rpc_url());
     let public = crate::rpc::HttpTransport::citrate();
+    // One shared deadline: reads not started inside READ_BUDGET are unknown (fail closed).
+    let deadline = std::time::Instant::now() + READ_BUDGET;
+    let local_budgeted = Budgeted::new(&local, deadline);
+    let public_budgeted = Budgeted::new(&public, deadline);
     // The ceremony's durable submitted-tx record (#347): the activation send is written there,
     // fsync'd, before it is sent.
     let log = ceremony.0.submitted_log();
@@ -440,8 +473,8 @@ pub fn validator_activation_status_sync(
         registry: crate::addresses::validator_registry(),
     };
     read_activation_status(
-        &public,
-        Some(&local),
+        &public_budgeted,
+        Some(&local_budgeted),
         &targets,
         member_address,
         node_pubkey,

@@ -248,6 +248,12 @@ export function principalSalt(st: ActivationStatusView | null): string {
   return fmtSaltWei(st?.principalWei ?? null);
 }
 
+/** The Activate button and review title: the principal as read, no amount before it is read. */
+export function activateValidatorLabel(st: ActivationStatusView | null): string {
+  const principal = principalSalt(st);
+  return principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
+}
+
 /** Contract §5.4 + §5.6 + §5.7: the one grant explanation, from the bond's own reads. */
 export function activationGrantCopy(st: ActivationStatusView | null): string {
   const amount = fmtSaltWei(st?.principalWei ?? null);
