@@ -16,7 +16,7 @@
 // =====================================================================
 import { useEffect, type ReactNode } from "react";
 import { BRIDGE_MODE } from "../../bridge/mode";
-import { bondClaimBlocked, type Store } from "../../shell/store";
+import { bondClaimBlocked, ownWalletClaimBlocked, type Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
 import { readsValidatorRewards, validatorDash, validatorWord } from "../../shell/chainTruth";
 import { bondFlags } from "./nodeWords";
@@ -124,8 +124,9 @@ export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s:
     const maturing = total > claimable ? total - claimable : 0n;
     const dust = claimable < CLAIM_DUST_WEI;
     // Contract v1.2 §1: on the bond path claimRewards() requires MemberBond.isKycVerified() on chain;
-    // the identity provider's kyc_status claim is never this gate.
-    const kycBlock = bondClaimBlocked(s);
+    // the identity provider's kyc_status claim is never this gate. fxEARN: a key staked from the
+    // member's own wallet has no claim this app builds (the store refuses it), so no button either.
+    const kycBlock = bondClaimBlocked(s) ?? ownWalletClaimBlocked(s);
     rows = (
       <>
         <Row k="Validator rewards" v={<span data-reward="total">{saltFromWei2(data.totalWei) ?? "—"}</span>} src="ValidatorRegistry.rewardsOf(pubkey).total" />
@@ -142,7 +143,7 @@ export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s:
                 Claim
               </button>
               <span style={{ fontSize: 12, color: "var(--tx-2)" }}>
-                {dust ? "Claims batch until ≥ 5 SALT to avoid dust gas: " + (saltFromWei2((CLAIM_DUST_WEI - claimable).toString()) ?? "—") + " to go." : "Claimable now is above the 5 SALT dust threshold."}
+                {dust ? "Claims batch until ≥ 5 SALT to avoid dust gas: " + (saltFromWei2((CLAIM_DUST_WEI - claimable).toString()) ?? "—") + " to go." : "Claimable now is at or above the 5 SALT dust threshold."}
               </span>
             </>
           )}
