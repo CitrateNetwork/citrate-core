@@ -16,7 +16,9 @@ function syncedState(principalWei: string | null): AppState {
   const s = freshState("p1");
   s.node = "synced";
   s.hasGrant = true;
-  s.activation = principalWei == null ? null : ({ principalWei } as unknown as ActivationStatusView);
+  // #348's offer gate: activation is offered only for a bond that reads not activated.
+  s.bondActivated = false;
+  s.activation = principalWei == null ? null : ({ principalWei, bondActivated: false } as unknown as ActivationStatusView);
   return s;
 }
 
