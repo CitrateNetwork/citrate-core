@@ -60,6 +60,16 @@ async function mount(persona, opts = {}) {
 const lastHermes = (c) => [...c.state.chatMsgs].reverse().find((x) => x.who === "Hermes");
 const userTurns = (msgs, text) => msgs.filter((x) => x.role === "user" && x.content === text).length;
 const settle = () => vi.runAllTimersAsync();
+/** Applies `re` → `by` until the text stops changing, so removing one match can't leave a new one behind. */
+const replaceToFixpoint = (text, re, by) => {
+  let prev;
+  let out = text;
+  do {
+    prev = out;
+    out = out.replace(re, by);
+  } while (out !== prev);
+  return out;
+};
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -464,6 +474,538 @@ describe("slice 2: onboarding Verify step follows the real gate (Join 3 copy rev
   });
 });
 
+// ===================== slice 3: Wallet, Groups, Settings =====================
+
+describe("slice 3: deep links reach the Groups tabs (K0 places.ts) and the Wallet tabs", () => {
+  const cases = [
+    ["#/groups", { route: "groups", gTab: "chat" }],
+    ["#/groups/chat", { route: "groups", gTab: "chat" }],
+    ["#/groups/chat/alerts", { route: "groups", gTab: "alerts" }],
+    ["#/groups/rounds", { route: "groups", gTab: "rounds" }],
+    ["#/groups/members", { route: "groups", gTab: "members" }],
+    ["#/groups/cluster", { route: "groups", gTab: "cluster" }],
+    ["#/groups/alf", { route: "groups", gTab: "alf" }],
+    ["#/comms", { route: "groups", gTab: "alerts" }],
+    ["#/people", { route: "groups", gTab: "members" }],
+    ["#/cluster", { route: "groups", gTab: "cluster" }],
+    ["#/train", { route: "groups", gTab: "rounds" }],
+    ["#/alf", { route: "groups", gTab: "alf" }],
+    ["#/community", { route: "groups", gTab: "community" }],
+    ["#/wallet", { route: "wallet", wTab: "overview" }],
+    ["#/wallet/staking", { route: "wallet", wTab: "staking" }],
+    ["#/wallet/activity", { route: "wallet", wTab: "activity" }],
+    ["#/settings/connections", { route: "settings", sSec: "connections" }],
+  ];
+  it.each(cases)("%s", async (hash, want) => {
+    const c = await mount("p2");
+    expect(c.resolveHash(hash)).toMatchObject(want);
+  });
+});
+
+describe("slice 3: the validator word (contract §1, core chainTruth.ts)", () => {
+  const W = (rec, epoch = 510) => Component.validatorWord(rec, epoch);
+
+  it("Validator active needs isActive and actEpoch ≤ currentEpoch", () => {
+    expect(W({ status: 1, isActive: true, actEpoch: 509 })).toBe("Validator active");
+    expect(W({ status: 1, isActive: true, actEpoch: 510 })).toBe("Validator active");
+  });
+
+  it("isActive alone is not active: a future actEpoch reads Registered · active from epoch N", () => {
+    expect(W({ status: 1, isActive: true, actEpoch: 512 })).toBe("Registered · active from epoch 512");
+    expect(W({ status: 1, isActive: false, actEpoch: 1200 })).toBe("Registered · active from epoch 1,200");
+  });
+
+  it("an unread actEpoch or currentEpoch never reads as active", () => {
+    expect(W({ status: 1, isActive: true, actEpoch: null })).toBe("Registered · active from epoch —");
+    expect(W({ status: 1, isActive: true, actEpoch: 500 }, null)).not.toBe("Validator active");
+  });
+
+  it("reads that disagree say nothing rather than guess", () => {
+    expect(W({ status: 1, isActive: false, actEpoch: 500 })).toBeNull();
+  });
+
+  it("Exiting and Slashed come from the registry status, before isActive", () => {
+    expect(W({ status: 2, isActive: true, actEpoch: 1 })).toBe("Exiting");
+    expect(W({ status: 3, isActive: true, actEpoch: 1 })).toBe("Slashed");
+  });
+
+  it("a granted member whose bond isn't activated is Bond locked · not staked; an unread bond is unknown", () => {
+    expect(W({ status: 0, hasGrant: true, bondActivated: false })).toBe("Bond locked · not staked");
+    expect(W({ status: 0, hasGrant: true, bondActivated: null })).toBeNull();
+    expect(W({ status: 0, hasGrant: false })).toBe("Not a validator");
+  });
+
+  it("tripwire: Wallet shows exactly the derived word for every validator state, and Validator active only for the active record", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "wallet", wTab: "overview" });
+    for (const v of ["none", "locked", "staked", "active", "exiting", "slashed"]) {
+      c.setState({ valWord: v });
+      const want = Component.validatorWord(Component.valRecord(v, 510), 510);
+      const V = c.renderVals();
+      expect(V.wlValWord, v).toBe(want);
+      if (v !== "active") expect(V.wlValWord, v).not.toBe("Validator active");
+    }
+  });
+});
+
+describe("slice 3: Wallet shows unknown, never zero", () => {
+  const wallet = async (persona, tab = "overview", extra = {}) => {
+    const c = await mount(persona);
+    c.setState({ route: "wallet", wTab: tab, ...extra });
+    return c;
+  };
+
+  it("an unread balance is —, not 0", async () => {
+    const c = await wallet("p2");
+    const t = c.renderVals().wlTiles.find((x) => x.k === "SALT · liquid");
+    expect(t?.v).toBe("—");
+    expect(t?.src).toMatch(/unknown, not 0/);
+  });
+
+  it("the grant in a locked bond is not staked: the Staked tile says so and shows no amount", async () => {
+    const c = await wallet("p3"); // P3: Bond locked · not staked
+    const t = c.renderVals().wlTiles.find((x) => x.k === "Staked");
+    expect(t?.v).toBe("Bond locked · not staked");
+    expect(t?.v).not.toMatch(/\d/);
+  });
+
+  it("Send waits while the balance is unread: nothing reaches the ceremony", async () => {
+    const c = await wallet("p2");
+    const ok = c.walletSend("0x" + "ab".repeat(20), "1.5");
+    expect(ok).toBe(false);
+    expect(c.state.queue).toHaveLength(0);
+    expect(c.state.toast ?? "").toMatch(/balance/i);
+  });
+
+  it.each([["0x123", "1"], ["0x" + "ab".repeat(20), "1e3"], ["0x" + "ab".repeat(20), "1,000"], ["0x" + "ab".repeat(20), "0"], ["0x" + "ab".repeat(20), ""], ["ab".repeat(21), "1"]])(
+    "Send refuses a malformed address or amount (%s, %s)",
+    async (to, amt) => {
+      const c = await wallet("p2", "overview", { wlBal: "read" });
+      expect(c.walletSend(to, amt)).toBe(false);
+      expect(c.state.queue).toHaveLength(0);
+    },
+  );
+
+  it("with the balance read, Send opens one ceremony; approving shows Pending, then Included in block —", async () => {
+    const c = await wallet("p2", "overview", { wlBal: "read" });
+    expect(c.walletSend("0x" + "ab".repeat(20), "1.5")).toBe(true);
+    expect(c.state.queue).toHaveLength(1);
+    c.approveCer();
+    await vi.advanceTimersByTimeAsync(3400);
+    c.setState({ wTab: "activity" });
+    expect(c.renderVals().wlTxRows[0]).toMatchObject({ kind: "Send", amount: "−1.5 SALT", word: "Pending" });
+    await vi.advanceTimersByTimeAsync(3000);
+    const row = c.renderVals().wlTxRows[0];
+    expect(row?.word).toBe("Included in block —");
+    expect(row?.word).not.toMatch(/final|settled/i);
+  });
+
+  it("declining the ceremony records nothing", async () => {
+    const c = await wallet("p2", "overview", { wlBal: "read" });
+    c.walletSend("0x" + "ab".repeat(20), "2");
+    c.finishCer("declined");
+    await settle();
+    expect(c.state.wlTx).toHaveLength(0);
+  });
+
+  it("the error and unavailable states replace the screen with a card that names the call", async () => {
+    const c = await wallet("p2");
+    for (const v of ["error", "unavailable", "empty"]) {
+      c.setVariant("wl-overview", v);
+      const V = c.renderVals();
+      expect(V.wlCard, v).toBe(true);
+      expect(V.wlOverview, v).toBe(false);
+      expect(V.wlCardWhy, v).toBeTruthy();
+    }
+  });
+
+  it("activation from Wallet › Staking is refused until the node is Synced", async () => {
+    const c = await wallet("p3", "staking"); // P3: node off, bond locked
+    expect(c.activateFromWallet()).toBe(false);
+    expect(c.state.queue).toHaveLength(0);
+    expect(c.state.toast ?? "").toMatch(/Synced/);
+  });
+
+  it("activation goes through the ceremony and lands on Registered, never straight to Validator active", async () => {
+    const c = await wallet("p4", "staking"); // P4: node synced, bond locked
+    expect(c.activateFromWallet()).toBe(true);
+    expect(c.state.valWord).toBe("locked");
+    c.approveCer();
+    await vi.advanceTimersByTimeAsync(3400);
+    expect(c.state.valWord).toBe("staked");
+    expect(c.renderVals().wlValWord).toBe("Registered · active from epoch —");
+  });
+
+  it("the grant explanation is core's grantCopy, with the disclaimer and the betanet line", async () => {
+    const c = await wallet("p3", "staking");
+    const g = c.renderVals().wlCards.find((x) => x.label === "Wallet grant");
+    expect(g?.lead).toBe(Component.grantCustody({ amountSalt: null, unlockBlock: null, staked: false, granted: true }));
+    expect(g?.lead).toMatch(/until block — \(not read yet\)/);
+    expect(g?.note).toContain("The grant is not purchased, and it is not an investment.");
+    expect(g?.note).toContain("Betanet. What carries over to mainnet is set in the genesis spec.");
+  });
+
+  it("durations in blocks show the measured time, never 12 s blocks", async () => {
+    const c = await wallet("p2", "staking");
+    const rows = c.renderVals().wlCards.flatMap((x) => x.rows);
+    expect(rows.find((r) => r.k === "Withdrawal delay")?.v).toBe("50,400 blocks (~28 h)");
+  });
+
+  it("tripwire: this session's transactions and join phases are never saved", async () => {
+    const c = await mount("p2");
+    c.setState({ wlTx: [{ id: "t", kind: "Send", amount: "−1 SALT", hash: "0x1", state: "pending" }], gxJoin: { code: "X", phase: "joining" } });
+    c.save();
+    await vi.advanceTimersByTimeAsync(500);
+    const saved = JSON.parse(localStorage.getItem(SAVE_KEY));
+    expect(saved).not.toHaveProperty("wlTx");
+    expect(saved).not.toHaveProperty("gxJoin");
+  });
+});
+
+describe("slice 3: membership price (C1-P #379) and money copy", () => {
+  it("priceLabel mirrors core's membershipPriceLabel: a price only when it was read, whole and per a known interval", () => {
+    const P = (o) => Component.priceLabel(o);
+    expect(P({ currency: "usd", unitAmount: 4800, interval: "year", displayAmount: "D" })).toBe("D a year");
+    expect(P({ currency: "usd", unitAmount: 400, interval: "month", displayAmount: "D" })).toBe("D a month");
+    expect(P(null)).toBeNull();
+    expect(P({ currency: "usd", unitAmount: 0, interval: "year", displayAmount: "D" })).toBeNull();
+    expect(P({ currency: "usd", unitAmount: 4800, interval: "year", displayAmount: "" })).toBeNull();
+    expect(P({ currency: "usd", unitAmount: 4800, interval: "week", displayAmount: "D" })).toBeNull();
+  });
+
+  it("Settings › Billing shows the pricing link, not a number, when the price wasn't read", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "settings", sSec: "billing", priceRead: false });
+    const V = c.renderVals();
+    expect(V.stgPriceText).toBe("See membership pricing");
+    expect(V.stgPriceUrl).toBe("https://citrate.ai/membership");
+    expect(V.stgPriceIsLink).toBe(true);
+  });
+
+  it("a read price is drawn as the served slot, never as an amount the prototype made up", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "settings", sSec: "billing", priceRead: true });
+    const V = c.renderVals();
+    expect(V.stgPriceText).toBe(Component.priceLabel(Component.PRICE_SHAPE));
+    expect(V.stgPriceText).not.toMatch(/\d/);
+    expect(V.stgPriceIsLink).toBe(false);
+  });
+
+  it("tripwire: no pricing link points at membership.citrate.ai, and no membership amount is hard-coded", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    expect(html).not.toMatch(/href="https:\/\/membership\.citrate\.ai"/);
+    expect(html).not.toMatch(/\$48/);
+  });
+});
+
+describe("slice 3: Groups", () => {
+  const groups = async (persona, tab = "chat") => {
+    const c = await mount(persona);
+    c.setState({ route: "groups", gTab: tab });
+    return c;
+  };
+  const J = () => Component.JOIN();
+
+  it("click path 1: the onboarding join lists the group in Groups › Chat and opens it", async () => {
+    const c = await mount("p1");
+    c.setState({ stage: "j", jStage: "join", jSub: "idle", web: null, invite: { code: J().code, cluster: J().cluster, goal: J().goal, inviter: J().inviter, verified: true } });
+    c.renderVals().onOb2Primary();
+    await vi.advanceTimersByTimeAsync(1700);
+    expect(c.state.groups.map((g) => g.name)).toContain(J().cluster);
+    c.setState({ stage: "done", route: "groups", gTab: "chat" });
+    const V = c.renderVals();
+    expect(V.gxList.map((g) => g.name)).toContain(J().cluster);
+    expect(V.gxSelName).toBe(J().cluster);
+  });
+
+  it("a pasted invite is only reviewed; nothing joins until the explicit Join click", async () => {
+    const c = await groups("p3");
+    expect(c.gxPaste("https://citrate.ai/join/" + J().code + "#" + J().key)).toBe(true);
+    expect(c.renderVals().gxJoinWord).toBe("Ready to join " + J().cluster);
+    await settle();
+    expect(c.state.groups.some((g) => g.name === J().cluster)).toBe(false);
+    c.gxJoinNow();
+    expect(c.renderVals().gxJoinWord).toBe("Joining " + J().cluster + "…");
+    expect(c.state.groups.some((g) => g.name === J().cluster)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(c.renderVals().gxJoinWord).toBe("Joined " + J().cluster);
+    expect(c.state.groups.some((g) => g.name === J().cluster)).toBe(true);
+  });
+
+  it("Join twice redeems once", async () => {
+    const c = await groups("p3");
+    c.gxPaste(J().code + "#" + J().key);
+    c.gxJoinNow();
+    expect(c.gxJoinNow()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(c.state.groups.filter((g) => g.name === J().cluster)).toHaveLength(1);
+  });
+
+  it("an unknown code reads We couldn't find that invite, never expired; a link without its key asks for the full link", async () => {
+    const c = await groups("p3");
+    c.gxPaste("ZZZZ2222#" + J().key);
+    expect(c.renderVals().gxJoinWord).toBe("We couldn’t find that invite");
+    expect(c.renderVals().gxJoinWord).not.toMatch(/expired/i);
+    c.gxPaste(J().code);
+    expect(c.renderVals().gxJoinWord).toBe("This link is missing its key");
+  });
+
+  it.each(["", "hello", "https://evil.example/join/" + "7KQ2M9XD", "7KQ2M9X", "7kq2m9xd#" + "a".repeat(22), "7KQ2M9XD#short"])("junk is refused and nothing is kept (%s)", async (text) => {
+    const c = await groups("p3");
+    expect(c.gxPaste(text)).toBe(false);
+    expect(c.state.gxJoin).toBeNull();
+  });
+
+  it("pasting an invite to a group you're in says Already a member", async () => {
+    const c = await groups("p2"); // P2 is in Orchard Lab
+    c.gxPaste(J().code + "#" + J().key);
+    expect(c.renderVals().gxJoinWord).toBe("Already a member");
+    expect(c.gxJoinNow()).toBe(false);
+  });
+
+  it("a message goes to the selected group; an empty one is refused", async () => {
+    const c = await groups("p2");
+    const before = c.state.groups.find((g) => g.id === c.state.gSel).msgs.length;
+    expect(c.gxSend("   ")).toBe(false);
+    expect(c.gxSend("See you at the sync")).toBe(true);
+    const g = c.state.groups.find((x) => x.id === c.state.gSel);
+    expect(g.msgs).toHaveLength(before + 1);
+    expect(g.msgs.at(-1)).toMatchObject({ who: "You", text: "See you at the sync" });
+  });
+
+  it("with the relay unreachable, nothing is sent and the relay chip says so", async () => {
+    const c = await groups("p2");
+    c.setVariant("gx-chat", "error");
+    expect(c.gxSend("hello")).toBe(false);
+    expect(c.renderVals().gxRelay ?? "").toMatch(/unreachable/i);
+  });
+
+  it("an invite link starts Not used yet and Revoke makes it Withdrawn", async () => {
+    const c = await groups("p2", "members");
+    c.setState({ gSel: "g-night" }); // P2 owns Night shift ops
+    expect(c.gxInvite()).toBe(true);
+    let row = c.renderVals().gxInvites[0];
+    expect(row?.word).toMatch(/^Not used yet · expires \d{4}-\d{2}-\d{2}$/);
+    expect(row?.code ?? "").not.toContain(J().key);
+    row?.revoke?.();
+    row = c.renderVals().gxInvites[0];
+    expect(row?.word).toBe("Withdrawn");
+    expect(row?.canRevoke).toBe(false);
+  });
+
+  it("a member who isn't owner or admin can't invite or change roles", async () => {
+    const c = await groups("p2", "members");
+    c.setState({ gSel: "g-orchard" }); // P2 is a member here
+    expect(c.gxInvite()).toBe(false);
+    const r = c.state.groups.find((g) => g.id === "g-orchard").roster[2];
+    expect(c.gxRoster(r.addr, "admin")).toBe(false);
+    expect(c.state.queue).toHaveLength(0);
+  });
+
+  it("role changes stop at the signature ceremony: the roster changes only after approval", async () => {
+    const c = await groups("p2", "members");
+    c.setState({ gSel: "g-night" });
+    const target = c.state.groups.find((g) => g.id === "g-night").roster.find((r) => r.role === "admin");
+    expect(c.gxRoster(target.addr, "remove")).toBe(true);
+    expect(c.state.queue).toHaveLength(1);
+    expect(c.state.groups.find((g) => g.id === "g-night").roster.some((r) => r.addr === target.addr)).toBe(true);
+    c.approveCer();
+    await vi.advanceTimersByTimeAsync(2400);
+    expect(c.state.groups.find((g) => g.id === "g-night").roster.some((r) => r.addr === target.addr)).toBe(false);
+  });
+
+  it("Rounds says Group rounds not live yet, with the flag off or on, until the ledgers are deployed", async () => {
+    const c = await groups("p2", "rounds");
+    for (const flag of [false, true]) {
+      c.setState({ roundsFlag: flag, roundsLedger: "none" });
+      const lead = c.renderVals().gxCards[0]?.lead;
+      expect(lead ?? "", String(flag)).toMatch(/^Group rounds not live yet\./);
+    }
+  });
+
+  it("fixture round states appear only with the round-card flag on, and carry the fixture tag", async () => {
+    const c = await groups("p2", "rounds");
+    c.setState({ roundsFlag: false });
+    expect(c.renderVals().gxCards.some((x) => x.label === "Groups round states")).toBe(false);
+    c.setState({ roundsFlag: true });
+    const st = c.renderVals().gxCards.find((x) => x.label === "Groups round states");
+    expect(st?.fx).toBe(true);
+    expect(st?.rows?.every((r) => r.fx)).toBe(true);
+  });
+
+  it("the ALF tab is listed only with the ALF claim, and its route says members only without it", async () => {
+    const c = await groups("p2");
+    expect(c.renderVals().gxTabs.map((t) => t.label)).not.toContain("ALF");
+    c.setState({ gTab: "alf" });
+    const V = c.renderVals();
+    expect(V.gxCard).toBe(true);
+    expect(V.gxCardTitle).toBe("ALF members only");
+    c.setState({ alfClaim: true });
+    expect(c.renderVals().gxTabs.map((t) => t.label)).toContain("ALF");
+    expect(c.renderVals().gxCard).toBe(false);
+  });
+
+  it("the tab strip follows K0: Chat, Rounds, Members, Cluster (+ ALF), with Groups and Alerts under Chat", async () => {
+    const c = await groups("p4"); // P4 carries the ALF claim
+    const V = c.renderVals();
+    expect(V.gxTabs.map((t) => t.label)).toEqual(["Chat", "Rounds", "Members", "Cluster", "ALF"]);
+    expect(V.gxSubTabs.map((t) => t.label)).toEqual(["Groups", "Alerts"]);
+  });
+
+  it("sharing to a cluster needs the cluster joined, and shares each file once", async () => {
+    const c = await groups("p2", "cluster");
+    c.setState({ gSel: "g-night" }); // not in that cluster
+    expect(c.gxShare()).toBe(false);
+    c.gxCluster(true);
+    const n = c.state.files.length;
+    for (let i = 0; i < n + 1; i++) c.gxShare();
+    const files = c.state.groups.find((g) => g.id === "g-night").cluster.files.map((f) => f.name);
+    expect(new Set(files).size).toBe(files.length);
+    expect(files).toHaveLength(n);
+  });
+});
+
+describe("slice 3: every screen of the five places and Settings is annotated (board: prototype v1)", () => {
+  const screens = [
+    ...["chat", "journal", "work", "learn"].map((t) => ["hermes " + t, { route: "hermes", hTab: t }]),
+    ...[1, 2, 3].map((d) => ["hermes controls " + d, { route: "hermes", hTab: "controls", cDepth: d }]),
+    ...["chat", "alerts", "rounds", "members", "cluster"].map((t) => ["groups " + t, { route: "groups", gTab: t }]),
+    ["groups alf", { route: "groups", gTab: "alf", alfClaim: true }],
+    ...["overview", "staking", "activity", "identity"].map((t) => ["wallet " + t, { route: "wallet", wTab: t }]),
+    ...["status", "services", "rewards", "advanced"].map((p) => ["node " + p, { route: "node", nPage: p }]),
+    ...["files", "memory", "pins"].map((x) => ["node storage " + x, { route: "node", nPage: "storage", nStore: x }]),
+    ...["catalog", "installed"].map((p) => ["store " + p, { route: "store", stPage: p }]),
+    ...["account", "connections", "api", "keys", "billing", "privacy", "app"].map((x) => ["settings " + x, { route: "settings", sSec: x }]),
+  ];
+  it.each(screens)("%s names its screen, route, bridge call and genesis flag, with the four variants", async (_, st) => {
+    const c = await mount("p2");
+    c.setState(st);
+    const V = c.renderVals();
+    expect(V.annShow).toBe(true);
+    for (const k of ["annScreen", "annRoute", "annBridge", "annFlag"]) {
+      expect(typeof V[k], k).toBe("string");
+      expect(V[k].length, k).toBeGreaterThan(2);
+      expect(V[k], k).not.toMatch(/stub/i);
+    }
+    expect(V.annHasVariants).toBe(true);
+    expect(V.annVariants.map((x) => x.label)).toEqual(["data", "empty", "error", "unavailable"]);
+  });
+
+  it("no place is a stub any more", async () => {
+    const c = await mount("p2");
+    for (const route of ["hermes", "groups", "wallet", "node", "store", "settings"]) {
+      c.setState({ route });
+      const V = c.renderVals();
+      expect(V.rStub, route).toBeFalsy();
+      expect(V.annScreen, route).not.toMatch(/stub/i);
+    }
+  });
+});
+
+describe("slice 3: copy follows the UI truth contract on every Wallet, Groups and Settings state", () => {
+  // Strings the slice-3 screens bind (wl*, gx*, stg*, plus setNav), collected recursively.
+  const strings = (V) => {
+    const out = [];
+    const walk = (v) => {
+      if (typeof v === "string") out.push(v);
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === "object") Object.values(v).forEach(walk);
+    };
+    for (const [k, v] of Object.entries(V)) if (/^(wl|gx|stg)[A-Z]/.test(k) || k === "setNav") walk(v);
+    return out;
+  };
+  const DISCLAIMER = "The grant is not purchased, and it is not an investment.";
+  const BANNED = /\b(final|finali[sz]ed|finality is running|settled|irreversible|earn(?:s|ed|ing|ings)?|income|projected|projection|estimate[sd]?|apy|apr|yield|invest(?:ed|ing|ment|ments)?|profit|passive|appreciation|validating|producing again|nothing moved|no fee|dormant)\b/i;
+
+  it("tripwire: the slice-3 template text has no banned word or price number either", () => {
+    const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
+    const a = html.indexOf("<!-- slice3:start -->");
+    const b = html.indexOf("<!-- slice3:end -->");
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    const noComments = replaceToFixpoint(html.slice(a, b), /<!--[\s\S]*?-->/g, " ");
+    const text = replaceToFixpoint(replaceToFixpoint(noComments, /\{\{[^}]*\}\}/g, " "), /<[^>]+>/g, " ");
+    expect(text).not.toMatch(BANNED);
+    expect(text).not.toMatch(/\$\s?\d/);
+  });
+
+  it.each(["p1", "p2", "p3", "p4"])("%s: no banned word, no price number, no SALT price in any state", async (persona) => {
+    const c = await mount(persona);
+    c.setState({ stage: "done", web: null });
+    const states = [
+      ...["overview", "staking", "activity", "identity"].map((t) => [{ route: "wallet", wTab: t }, "wl-" + t]),
+      ...["chat", "alerts", "rounds", "members", "cluster", "alf", "community"].map((t) => [{ route: "groups", gTab: t }, "gx-" + t]),
+      ...["account", "connections", "api", "keys", "billing", "privacy", "app"].map((x) => [{ route: "settings", sSec: x }, "stg-" + x]),
+    ];
+    for (const [st, key] of states) {
+      for (const variant of ["data", "empty", "error", "unavailable"]) {
+        for (const extra of [{}, { roundsFlag: true, alfClaim: true, priceRead: true, wlBal: "read", wlRows: "drawn" }]) {
+          c.setState({ ...st, ...extra, variants: { [key]: variant } });
+          for (const text of strings(c.renderVals())) {
+            const t = text.split(DISCLAIMER).join("");
+            expect(t, key + " " + variant).not.toMatch(BANNED);
+            expect(t, key + " " + variant).not.toMatch(/\$\s?\d/);
+            expect(t, key + " " + variant).not.toMatch(/SALT price|price of SALT|USD/);
+          }
+        }
+      }
+    }
+  }, 60000);
+});
+
+describe("slice 3 review (#387 Codex round 2)", () => {
+  it("with the join service unavailable, Copy link copies the app-only link it shows, not a citrate.ai link", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "members", gSel: "g-night", gxSvc: "down" });
+    const copied = [];
+    c.copy = (text) => copied.push(text);
+    expect(c.gxInvite()).toBe(true);
+    const row = c.renderVals().gxInvites[0];
+    expect(row.code).toMatch(/^citrate:\/\/invite\?/);
+    row.copy();
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toMatch(/^citrate:\/\/invite\?/);
+    expect(copied[0]).not.toMatch(/citrate\.ai\/join/);
+  });
+
+  it("with the join service live, Copy link copies that invite's own citrate.ai link with its key", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "members", gSel: "g-night", gxSvc: "live" });
+    const copied = [];
+    c.copy = (text) => copied.push(text);
+    c.gxInvite();
+    const inv = c.state.groups.find((g) => g.id === "g-night").invites[0];
+    c.renderVals().gxInvites[0].copy();
+    expect(copied[0]).toMatch(new RegExp("^https://citrate\\.ai/join/" + inv.code + "#[A-Za-z0-9_-]{22}$"));
+  });
+
+  it("tripwire: an invite's key and link are never saved", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "members", gSel: "g-night" });
+    for (const svc of ["live", "down"]) {
+      c.setState({ gxSvc: svc });
+      c.gxInvite();
+    }
+    c.save();
+    await vi.advanceTimersByTimeAsync(500);
+    const saved = localStorage.getItem(SAVE_KEY);
+    for (const link of Object.values(c.inviteLinks)) {
+      const key = /[#&]k?=?([A-Za-z0-9_-]{22})$/.exec(link)[1];
+      expect(saved).not.toContain(key);
+    }
+  });
+
+  it.each(["data", "empty", "error", "unavailable"])("without the ALF claim, the %s variant never shows ALF content", async (variant) => {
+    const c = await mount("p2"); // P2 has no ALF claim
+    c.setState({ route: "groups", gTab: "alf", alfClaim: false, variants: { "gx-alf": variant } });
+    const V = c.renderVals();
+    expect(V.gxCards).toHaveLength(0);
+    expect(JSON.stringify(V.gxCards)).not.toMatch(/present/);
+    expect(V.gxCard).toBe(true);
+    if (variant !== "error") expect(V.gxCardTitle).toBe("ALF members only");
+  });
+});
+
 describe("slice 2 follow-ups (core #393): web join page actions", () => {
   const joinPage = async (os, extra = {}) => {
     const c = await mount("p1");
@@ -528,5 +1070,81 @@ describe("slice 2 review (core #417): withdraw wording needs an activated bond",
     const html = readFileSync(DESIGN + "CitrateCore.dc.html", "utf8");
     expect(html).not.toMatch(/withdrawing an unlocked bond/);
     for (const m of html.matchAll(/[^.'"]*withdraw(?:ing)? your bond[^.'"]*/gi)) expect(m[0]).toMatch(/activated/);
+  });
+});
+
+describe("slice 3 review (DGX, UI truth contract v1.2)", () => {
+  const wallet = async (persona, tab, extra = {}) => {
+    const c = await mount(persona);
+    c.setState({ route: "wallet", wTab: tab, ...extra });
+    return c;
+  };
+  const rows = (V) => (V.wlCards || []).flatMap((x) => x.rows);
+
+  it.each(["none", "locked"])("a bond that isn't activated (%s) is never shown as withdrawable", async (valWord) => {
+    const c = await wallet("p3", "staking", { valWord, hasGrant: true });
+    const w = rows(c.renderVals()).find((r) => r.k === "Withdraw");
+    expect(w?.v).toBe("only an activated bond can be withdrawn");
+    expect(w?.src ?? "").not.toMatch(/verify identity to withdraw/);
+  });
+
+  it.each(["staked", "active"])("an activated bond (%s) withdraws after the lock, gated on the bond's own identity check", async (valWord) => {
+    const c = await wallet("p2", "staking", { valWord });
+    const w = rows(c.renderVals()).find((r) => r.k === "Withdraw");
+    expect(w?.v).toBe("not before the lock end");
+    expect(w?.src ?? "").toMatch(/MemberBond\.isKycVerified/);
+  });
+
+  it("Identity names the bond's on-chain identity gate, not the userinfo claim, and says withdraw only for an activated bond", async () => {
+    for (const valWord of ["locked", "active"]) {
+      const c = await wallet("p2", "identity", { valWord });
+      const r = rows(c.renderVals()).find((x) => x.k === "Identity verification");
+      expect(r.src, valWord).not.toMatch(/Needed to withdraw/);
+      if (valWord === "locked") expect(r.src).not.toMatch(/withdraw/i);
+    }
+  });
+
+  it("tripwire: with an unactivated bond, no Wallet or Settings text implies the principal can be withdrawn", async () => {
+    const c = await mount("p3");
+    c.setState({ valWord: "locked", hasGrant: true, stage: "done", web: null });
+    const all = [];
+    for (const st of [{ route: "wallet", wTab: "staking" }, { route: "wallet", wTab: "identity" }, { route: "settings", sSec: "billing" }]) {
+      c.setState(st);
+      const V = c.renderVals();
+      const walk = (v) => (typeof v === "string" ? all.push(v) : Array.isArray(v) ? v.forEach(walk) : v && typeof v === "object" ? Object.values(v).forEach(walk) : 0);
+      for (const [k, v] of Object.entries(V)) if (/^(wl|stg)[A-Z]/.test(k)) walk(v);
+    }
+    for (const t of all.filter((x) => /withdraw/i.test(x) && /\bbond\b|\block\b|identity|principal|grant/i.test(x) && !/LiquidStakingPool/.test(x))) expect(t).toMatch(/only an activated bond can be withdrawn|activated/);
+  });
+
+  it("rounds read Group rounds not live yet in both ledger states, with deployed, no rounds as the row value", async () => {
+    const c = await mount("p2");
+    c.setState({ route: "groups", gTab: "rounds", roundsFlag: true, roundsLedger: "dormant", gTab2: null });
+    const V = c.renderVals();
+    expect(V.gxCards[0].lead).toMatch(/^Group rounds not live yet\./);
+    expect(V.gxCards[0].rows.find((r) => r.k === "FederatedRoundLedger").v).toBe("deployed, no rounds (code at the pinned address)");
+    c.setState({ gTab: "chat" });
+    expect(c.renderVals().gxRoundWord).toBe("Group rounds not live yet");
+  });
+
+  it("tripwire: “Deployed · dormant” and “dormant” never appear on screen", () => {
+    const html = replaceToFixpoint(readFileSync(DESIGN + "CitrateCore.dc.html", "utf8"), /<!--[\s\S]*?-->/g, "");
+    const code = html.replace(/\/\/[^\n]*/g, "");
+    expect(code).not.toMatch(/Deployed · dormant/i);
+    for (const m of code.matchAll(/'[^'\n]*dormant[^'\n]*'/gi)) expect(m[0], m[0]).toMatch(/^'dormant'$/);
+  });
+
+  it("a reverted transaction reads Included in block N · reverted, with the fee charged, never nothing moved", async () => {
+    const c = await wallet("p2", "activity", { wlRows: "drawn" });
+    const r = c.renderVals().wlTxRows;
+    const rev = r.find((x) => /reverted/.test(x.word));
+    expect(rev?.word).toBe("Included in block — · reverted");
+    expect(rev?.sub ?? "").toMatch(/^receipt status 0: the transfer didn't happen; the fee was charged/);
+    expect(rev?.sub ?? "").toMatch(/gasUsed × effectiveGasPrice/);
+    for (const x of r) {
+      expect(x.word).not.toMatch(/^Failed|nothing moved|no fee/i);
+      expect(x.sub).not.toMatch(/nothing moved|no fee/i);
+    }
+    expect(r.map((x) => x.word)).toContain("Sent, outcome unknown — check tx ⟨hash⟩");
   });
 });

@@ -9,6 +9,7 @@ import { PlaceView } from "./PlaceView";
 import { Sidebar } from "./Sidebar";
 import { store } from "./store";
 import { freshState, type AppState } from "./state";
+import { locate } from "./places";
 
 function at(route: string, patch: Partial<AppState> = {}): AppState {
   const s = freshState("p1");
@@ -57,26 +58,80 @@ describe("Hermes", () => {
     expect(html("journal")).toContain('data-surface="hermes/journal"');
   });
 
-  it("Learn is an honest not-available-yet state", () => {
-    const h = html("hermes/learn");
-    expect(h).toContain('data-not-available="hermes/learn"');
-    expect(h).toContain("Not available yet");
+  it("Work composes the Agent surface with daemons and the daemon run log, without the chat or the learning panel", () => {
+    const h = html("hermes/work");
+    expect(h).toContain('data-surface="hermes/work"');
+    expect(h).toContain("Awaiting your review");
+    expect(h).toContain('data-testid="daemons-panel"');
+    expect(h).toContain('data-testid="daemon-run-log"');
+    expect(h).toContain('data-testid="approval-records-link"');
+    // Chat lives on Hermes › Chat, learning on Hermes › Learn, MCP servers on Controls › Details.
+    expect(h).not.toContain('data-testid="agent-chat"');
+    expect(h).not.toContain('data-testid="learned-panel"');
+    expect(h).not.toContain('data-testid="hermes-mcp-card"');
+    // Ruling 5: daemons never show "0 SALT" (the desktop wording is covered in panels.test.tsx).
+    expect(h).not.toMatch(/\d\s*SALT/);
   });
 
-  it("Controls mounts the Controls panel once, above the moved sections, including from settings/hermes", () => {
-    for (const sSec of ["hermes", "ai"]) {
-      const h = html("hermes/controls", { sSec });
-      expect(h.match(/data-testid="hermes-controls"/g)?.length, sSec).toBe(1);
-      expect(h.indexOf('data-testid="hermes-controls"')).toBeLessThan(h.indexOf("AI providers"));
-      expect(h).not.toContain(">Hermes controls<");
+  it("Work carries the approvals badge in the tab strip when approvals wait", async () => {
+    const { agentSlice } = await import("./slices/agent");
+    const before = agentSlice.get().approvals;
+    agentSlice.set({ approvals: [{ id: "a1", kind: "code", summary: "Write a file" }] });
+    try {
+      const h = html("hermes/chat");
+      expect(h).toMatch(/data-testid="place-tabs"[\s\S]*?Work[\s\S]*?aria-label="1 awaiting your review"/);
+    } finally {
+      agentSlice.set({ approvals: before });
     }
   });
 
-  it("Controls hosts the five moved Settings sections and nothing account-level", () => {
-    const h = html("hermes/controls", { sSec: "escalation" });
-    expect(h).toContain('data-surface="hermes/controls"');
-    for (const label of ["AI providers", "Escalation &amp; spend", "MCP servers", "Web search &amp; decisions", "Budgets"]) expect(h).toContain(label);
-    for (const label of ["Account &amp; RBAC", "Memberships &amp; billing", "Node configuration"]) expect(h).not.toContain(label);
+  it("Learn holds learned skills and Teach Hermes, knowledge import and the training opt-in", () => {
+    const h = html("hermes/learn");
+    expect(h).toContain('data-surface="hermes/learn"');
+    expect(h).not.toContain('data-not-available="hermes/learn"');
+    expect(h).toContain('data-testid="learned-panel"');
+    expect(h).toContain('data-testid="learn-knowledge-import"');
+    expect(h).toContain('data-testid="fl-trajectories"');
+    expect(h).toContain("Group rounds not live yet");
+  });
+
+  it("Controls has three depths as sub-tabs, Switches selected on hermes/controls", () => {
+    const h = html("hermes/controls");
+    expect(tabs(h, "place-subtabs")).toEqual(["1 · Switches", "2 · Details", "3 · Records"]);
+    expect(selected(h)).toEqual(["Controls", "1 · Switches"]);
+    expect(h.match(/data-testid="hermes-controls"/g)?.length).toBe(1);
+    // Depth one is only the switches: no Settings section is mounted under it.
+    expect(h).not.toContain("Provider keys");
+  });
+
+  it("settings/hermes still opens the switches", () => {
+    const h = html("settings/hermes", { sSec: "hermes" });
+    expect(selected(h)).toEqual(["Controls", "1 · Switches"]);
+    expect(h).toContain('data-testid="hermes-controls"');
+  });
+
+  it("Details hosts the Settings sections for Hermes, and nothing account-level", () => {
+    const h = html("hermes/controls/details", { sSec: "escalation" });
+    expect(selected(h)).toEqual(["Controls", "2 · Details"]);
+    expect(h).not.toContain('data-testid="hermes-controls"');
+    for (const label of ["Providers &amp; keys", "Escalation &amp; spend caps", "MCP servers", "Web search &amp; decisions", "Terminal &amp; folders", "Budgets", "Personas &amp; voice"]) expect(h).toContain(label);
+    for (const label of ["Account &amp; RBAC", "Memberships &amp; billing", "Node configuration", "Hermes controls"]) expect(h).not.toContain(label);
+  });
+
+  it("Details › MCP servers shows Hermes's connected tools and the member's own servers", () => {
+    const h = html("hermes/controls/details", { sSec: "mcp" });
+    expect(h).toContain('data-testid="hermes-mcp-card"');
+  });
+
+  it("Details opens on its first section when the stored one is not a Details section", () => {
+    const h = html("hermes/controls/details", { sSec: "account" });
+    expect(h).toContain("Provider keys");
+  });
+
+  it("Records hosts the third depth", () => {
+    const h = html("hermes/controls/records");
+    expect(selected(h)).toEqual(["Controls", "3 · Records"]);
+    expect(h).toContain('data-testid="controls-records"');
   });
 });
 
@@ -118,8 +173,10 @@ describe("Node", () => {
     expect(h).toContain('data-surface="node/status"');
   });
 
-  it("Services and Rewards are honest not-available-yet states", () => {
-    expect(html("node/services")).toContain('data-not-available="node/services"');
+  it("Services renders the services registry snapshot (K1a-2); Rewards is an honest not-available-yet state", () => {
+    const services = html("node/services");
+    expect(services).not.toContain("data-not-available");
+    expect(services).toContain('data-testid="node-services"');
     expect(html("node/rewards")).toContain('data-not-available="node/rewards"');
   });
 
@@ -162,7 +219,7 @@ describe("Settings", () => {
   it("keeps only the account-level sections, even if a moved section was last open", () => {
     const h = html("settings", { sSec: "ai" });
     for (const label of ["Account &amp; RBAC", "Connections", "API endpoints &amp; keys", "Keys &amp; security", "Memberships &amp; billing", "Privacy &amp; recovery", "App"]) expect(h).toContain(label);
-    for (const label of ["Hermes controls", "AI providers", "Escalation &amp; spend", "MCP servers", "Web search &amp; decisions", "Node configuration"]) expect(h).not.toContain(">" + label + "<");
+    for (const label of ["Hermes controls", "Providers &amp; keys", "Escalation &amp; spend caps", "MCP servers", "Web search &amp; decisions", "Terminal &amp; folders", "Personas &amp; voice", "Node configuration"]) expect(h).not.toContain(">" + label + "<");
   });
 });
 
@@ -189,5 +246,27 @@ describe("Sidebar", () => {
     const h = side("files");
     expect(h).toMatch(/<a[^>]*href="#\/node\/status"[^>]*aria-current="page"/);
     expect(side("settings/ai")).toMatch(/<a[^>]*href="#\/hermes\/chat"[^>]*aria-current="page"/);
+  });
+});
+
+describe("Groups › Chat holds the invite banners (#355 on five-place routes)", () => {
+  // handleDeepLink's go("groups") lands on the canonical leaf; both invite banners must render there.
+  const leaf = locate("groups").route;
+
+  it("the groups route resolves to the Groups › Chat leaf", () => {
+    expect(leaf).toBe("groups/chat");
+    expect(html(leaf)).toContain('data-surface="groups/chat"');
+  });
+
+  it("a v2 invite held in Rust shows the waiting-invite card", () => {
+    const h = html(leaf, { pendingJoin: { phase: "waiting", hasKey: true, persisted: true } });
+    expect(h).toContain('data-testid="pending-join-cancel"');
+    expect(html(leaf)).not.toContain('data-testid="pending-join-cancel"');
+  });
+
+  it("a legacy citrate://invite link shows the Join banner", () => {
+    const h = html(leaf, { pendingInvite: { url: "citrate://invite?g=grp_1&t=tok123&k=02ab" } });
+    expect(h).toContain("invited you to");
+    expect(html(leaf)).not.toContain("invited you to");
   });
 });

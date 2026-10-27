@@ -13,15 +13,26 @@
 //!    tool with its annotations (read-only / destructive / idempotent / open-world), each marked
 //!    untrusted.
 //! 3. **Enable**: allowed only with the review token of a successful probe of the entry exactly as
-//!    it stands now. Core then writes the allowlist file the sidecar reads
-//!    (`CITRATE_HERMES_MCP`). It takes effect the next time Hermes starts.
+//!    it stands now. It takes effect the next time Hermes starts.
 //!
-//! Storage: `<app local data>/hermes/mcp-servers.json` (every entry, including disabled ones) and
-//! `<app local data>/hermes/mcp-allowlist.json` (only enabled, reviewed entries, in the runtime's
-//! shape). Both are written `0600`. Env values (often API tokens) live only in these files and in
-//! the sidecar's child process; they never cross back into the webview, which sees masks.
-//! With no enabled server the allowlist file does not exist and Hermes runs no MCP at all, so a
-//! member who never opens this screen sees no change.
+//! Storage (RC52 P-9a, D-11): `<app local data>/hermes/mcp-servers.json` (`0600`, written
+//! atomically) holds every entry with no env values: each env name maps to a reference, and the
+//! value lives in the OS keychain (service [`KEYRING_SERVICE`], account [`env_account`]). A
+//! reference never changes what it resolves to: a new value gets a new keychain item, so a review
+//! (which covers the references) can never be carried over to a value nobody checked.
+//! Values leave the keychain only when a server is about to run:
+//! - **Hermes start**: core writes the one allowlist the sidecar loads (`hermes_mcp::EFFECTIVE_FILE`,
+//!   `0600`) right before the spawn and removes it as soon as the sidecar answers `/health` (it
+//!   loads the allowlist before it serves), when Hermes stops, and at app start.
+//! - **Review**: the probe request carries the entry, and [`PROBE_FILE`] (the sidecar checks the
+//!   request against it) holds exactly that entry for the length of the probe.
+//!
+//! They never cross back into the webview, which sees masks. Older versions kept values in plain
+//! text in the registry and in `mcp-allowlist.json`; [`McpStore::load`] moves them to the keychain
+//! (keychain first, then an atomic rewrite of the file, so a crash or failure at any point leaves
+//! either the old file or the new one, and a rerun finishes the job) and removes the old allowlist.
+//! With no enabled server Hermes runs no member MCP server at all, so a member who never opens
+//! this screen sees no change.
 //!
 //! Every MCP tool is untrusted: its output taints the session (enforced in the runtime), and write
 //! tools are not offered unless the member turns them on for that server. Keyless (Rule 3): nothing
@@ -29,20 +40,163 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
-/// The registry file (every entry), under `<app local data>/hermes/`.
+/// The registry file (every entry, no env values), under `<app local data>/hermes/`.
 pub const REGISTRY_FILE: &str = "mcp-servers.json";
-/// The env var naming [`REGISTRY_FILE`] to the Hermes sidecar: its dry-run probe
-/// (`POST /mcp/probe`) starts only an entry saved there exactly as sent.
+/// The env var naming [`PROBE_FILE`] to the Hermes sidecar: its dry-run probe (`POST /mcp/probe`)
+/// starts only an entry saved there exactly as sent.
 pub const MCP_REGISTRY_ENV: &str = "CITRATE_HERMES_MCP_REGISTRY";
-/// The allowlist file the sidecar reads (enabled, reviewed entries only).
-pub const ALLOWLIST_FILE: &str = "mcp-allowlist.json";
+/// The entry being checked, with its env values: written `0600` right before `POST /mcp/probe`
+/// and removed when the probe returns ([`McpStore::with_probe_file`]).
+pub const PROBE_FILE: &str = "mcp-probe.json";
+/// The allowlist older versions kept, with env values in plain text. Nothing reads it now;
+/// [`McpStore::load`] and [`McpStore::save`] remove it.
+pub const LEGACY_ALLOWLIST_FILE: &str = "mcp-allowlist.json";
+/// The OS keychain service the env values live under (the app's keyring namespace).
+pub const KEYRING_SERVICE: &str = "ai.citrate.core";
+/// Keychain account prefix for env values; see [`env_account`].
+pub const ENV_ACCOUNT_PREFIX: &str = "mcp-server-env:";
+/// What the webview sees in place of an env value.
+pub const MASK: &str = "•••••••• (in the system keychain)";
 /// The runtime's limit on configured servers (`agent-mcp-host::config::MAX_SERVERS`).
 pub const MAX_SERVERS: usize = 16;
+
+const KEYCHAIN_UNAVAILABLE: &str = "the system keychain is not available";
+const KEYCHAIN_SAVE_FAILED: &str =
+    "the system keychain could not save an env value, so nothing was saved; try again";
+
+// ---------------------------------------------------------------------------
+// Env values in the OS keychain
+// ---------------------------------------------------------------------------
+
+/// The keychain account of one env value: `mcp-server-env:<server>:<ENV_NAME>:<reference>`.
+/// Server names (`[a-z0-9_-]`) and env names (`[A-Za-z0-9_]`) cannot contain `:`, so the parts
+/// never run together. The reference is random and fixed for the item's life.
+pub fn env_account(server: &str, key: &str, reference: &str) -> String {
+    format!("{ENV_ACCOUNT_PREFIX}{server}:{key}:{reference}")
+}
+
+fn new_reference() -> String {
+    use rand::RngCore;
+    let mut b = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    hex::encode(b)
+}
+
+/// Where env values are kept (the OS keychain in production; an in-memory double in tests).
+pub trait SecretStore: Send + Sync {
+    /// The value for `account`, or `None` if there is none. `Err` = the store cannot be asked.
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String>;
+    /// Store `value` for `account`.
+    fn set(&self, account: &str, value: &str) -> Result<(), String>;
+    /// Delete `account` (absent is fine).
+    fn delete(&self, account: &str) -> Result<(), String>;
+}
+
+/// The OS keychain (`keyring` v3, as `ai.rs`).
+pub struct OsSecretStore;
+
+impl SecretStore for OsSecretStore {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|_| KEYCHAIN_UNAVAILABLE.to_string())?;
+        match entry.get_password() {
+            Ok(v) => Ok(Some(Zeroizing::new(v))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err(KEYCHAIN_UNAVAILABLE.to_string()),
+        }
+    }
+
+    fn set(&self, account: &str, value: &str) -> Result<(), String> {
+        keyring::Entry::new(KEYRING_SERVICE, account)
+            .and_then(|e| e.set_password(value))
+            .map_err(|_| KEYCHAIN_UNAVAILABLE.to_string())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|_| KEYCHAIN_UNAVAILABLE.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(KEYCHAIN_UNAVAILABLE.to_string()),
+        }
+    }
+}
+
+/// Best effort: remove items a failed change wrote (an item left behind is unreferenced, so it is
+/// never read).
+fn remove_items(secrets: &dyn SecretStore, accounts: &[String]) {
+    for a in accounts {
+        let _ = secrets.delete(a);
+    }
+}
+
+/// Test double: an in-memory keychain that can be told to fail.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MemSecrets {
+    items: Mutex<BTreeMap<String, String>>,
+    /// Fail every `set` after this many have succeeded.
+    pub fail_set_after: Mutex<Option<usize>>,
+    sets: std::sync::atomic::AtomicUsize,
+    /// Fail every call (the keychain cannot be asked).
+    pub unavailable: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl MemSecrets {
+    pub fn items(&self) -> BTreeMap<String, String> {
+        self.items.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+    pub fn set_count(&self) -> usize {
+        self.sets.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn down(&self) -> bool {
+        self.unavailable.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+impl SecretStore for MemSecrets {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        if self.down() {
+            return Err(KEYCHAIN_UNAVAILABLE.into());
+        }
+        Ok(self
+            .items
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(account)
+            .map(|v| Zeroizing::new(v.clone())))
+    }
+    fn set(&self, account: &str, value: &str) -> Result<(), String> {
+        let limit = *self.fail_set_after.lock().map_err(|e| e.to_string())?;
+        if self.down() || limit.is_some_and(|n| self.set_count() >= n) {
+            return Err(KEYCHAIN_UNAVAILABLE.into());
+        }
+        self.sets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.items
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(account.to_string(), value.to_string());
+        Ok(())
+    }
+    fn delete(&self, account: &str) -> Result<(), String> {
+        if self.down() {
+            return Err(KEYCHAIN_UNAVAILABLE.into());
+        }
+        self.items
+            .lock()
+            .map_err(|e| e.to_string())?
+            .remove(account);
+        Ok(())
+    }
+}
 
 // Mirrors `agent-mcp-host::user` (the source of truth; the sidecar re-validates every probe with these
 // rules, and the allowlist on load with the base rules, failing closed).
@@ -110,12 +264,30 @@ fn ferr(field: impl Into<String>, message: impl Into<String>) -> FieldError {
 
 /// One env entry from the form. `value: None` keeps the value already stored under this key (the
 /// webview never sees stored values, so an edit that does not retype a value sends `None`).
-#[derive(Debug, Clone, Deserialize)]
+/// Redacted in `Debug` and wiped on drop.
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvInput {
     pub key: String,
     #[serde(default)]
     pub value: Option<String>,
+}
+
+impl std::fmt::Debug for EnvInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvInput")
+            .field("key", &self.key)
+            .field("value", &self.value.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl Drop for EnvInput {
+    fn drop(&mut self) {
+        if let Some(v) = self.value.as_mut() {
+            v.zeroize();
+        }
+    }
 }
 
 /// The add/edit form.
@@ -141,7 +313,35 @@ pub struct ServerInput {
     pub previous_name: Option<String>,
 }
 
-/// One stored entry. Holds env VALUES: never returned across `invoke` (see [`ServerView`]).
+/// Env values as versions before RC52 stored them: in plain text in the registry file. Read only
+/// so [`McpStore::load`] can move them to the keychain; never written back. Redacted in `Debug`
+/// and wiped on drop.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct LegacyEnv(BTreeMap<String, String>);
+
+impl LegacyEnv {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for LegacyEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LegacyEnv({} values, redacted)", self.0.len())
+    }
+}
+
+impl Drop for LegacyEnv {
+    fn drop(&mut self) {
+        for v in self.0.values_mut() {
+            v.zeroize();
+        }
+    }
+}
+
+/// One stored entry. Holds no env value: each env name maps to the reference of the keychain item
+/// that holds its value ([`env_account`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredServer {
     pub name: String,
@@ -154,8 +354,12 @@ pub struct StoredServer {
     pub cwd: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// Env name → keychain reference.
     #[serde(default)]
-    pub env: BTreeMap<String, String>,
+    pub env_refs: BTreeMap<String, String>,
+    /// Plain-text values from an older version (migration input only; never serialized).
+    #[serde(default, rename = "env", skip_serializing)]
+    pub legacy_env: LegacyEnv,
     #[serde(default)]
     pub allow_write_tools: bool,
     #[serde(default)]
@@ -525,7 +729,8 @@ pub fn validate_input(i: &ServerInput) -> Result<(), Vec<FieldError>> {
 // ---------------------------------------------------------------------------
 
 /// SHA-256 over everything that decides what runs: name, transport, command, args, cwd, URL, env
-/// (keys and values), and the write-tools switch. Stored on disk only.
+/// (names and keychain references), and the write-tools switch. A reference names one immutable
+/// keychain item, so a new value is a new fingerprint. Stored on disk only.
 pub fn fingerprint(s: &StoredServer) -> String {
     let material = serde_json::json!({
         "name": s.name,
@@ -534,24 +739,38 @@ pub fn fingerprint(s: &StoredServer) -> String {
         "args": s.args,
         "cwd": s.cwd,
         "url": s.url,
-        "env": s.env,
+        "env_refs": s.env_refs,
         "allow_write_tools": s.allow_write_tools,
     });
     hex::encode(Sha256::digest(material.to_string().as_bytes()))
 }
 
-fn review_matches(s: &StoredServer) -> bool {
-    s.reviewed.as_deref() == Some(fingerprint(s).as_str())
+/// The fingerprint an older version stored, over the plain-text values (migration only: a server
+/// reviewed then stays reviewed once its values are in the keychain).
+fn legacy_fingerprint(s: &StoredServer) -> String {
+    let mut material = serde_json::json!({
+        "name": s.name,
+        "transport": s.transport,
+        "command": s.command,
+        "args": s.args,
+        "cwd": s.cwd,
+        "url": s.url,
+        "env": s.legacy_env.0,
+        "allow_write_tools": s.allow_write_tools,
+    });
+    let text = Zeroizing::new(material.to_string());
+    if let Some(env) = material.get_mut("env").and_then(|e| e.as_object_mut()) {
+        for v in env.values_mut() {
+            if let serde_json::Value::String(v) = v {
+                v.zeroize();
+            }
+        }
+    }
+    hex::encode(Sha256::digest(text.as_bytes()))
 }
 
-/// Mask an env value: its length only, never any of its characters.
-pub fn mask(v: &str) -> String {
-    let n = v.chars().count();
-    if n == 0 {
-        "(empty)".to_string()
-    } else {
-        format!("•••••••• ({n} characters)")
-    }
+fn review_matches(s: &StoredServer) -> bool {
+    s.reviewed.as_deref() == Some(fingerprint(s).as_str())
 }
 
 fn view(s: &StoredServer) -> ServerView {
@@ -563,11 +782,11 @@ fn view(s: &StoredServer) -> ServerView {
         cwd: s.cwd.clone(),
         url: s.url.clone(),
         env: s
-            .env
-            .iter()
-            .map(|(k, v)| EnvView {
+            .env_refs
+            .keys()
+            .map(|k| EnvView {
                 key: k.clone(),
-                masked: mask(v),
+                masked: MASK.to_string(),
             })
             .collect(),
         allow_write_tools: s.allow_write_tools,
@@ -581,9 +800,24 @@ pub fn views(reg: &Registry) -> Vec<ServerView> {
     reg.servers.iter().map(view).collect()
 }
 
+/// The keychain items a registry change wrote and the ones it no longer references. Account names
+/// only. [`McpStore::commit`] removes `written` if the file cannot be saved, and `obsolete` once
+/// it is.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SaveEffects {
+    pub written: Vec<String>,
+    pub obsolete: Vec<String>,
+}
+
 /// Add or edit an entry. A new or changed entry is stored disabled; an edit that changes nothing
-/// that runs keeps its review.
-pub fn apply_save(reg: &mut Registry, input: ServerInput) -> Result<(), Vec<FieldError>> {
+/// that runs keeps its review. New env values are written to the keychain here, before the caller
+/// saves the file (an item the file never references is never read). A value retyped unchanged
+/// keeps its item; a renamed server's values are copied to items under the new name.
+pub fn apply_save(
+    reg: &mut Registry,
+    input: ServerInput,
+    secrets: &dyn SecretStore,
+) -> Result<SaveEffects, Vec<FieldError>> {
     validate_input(&input)?;
     let prev_idx = match &input.previous_name {
         Some(p) => Some(
@@ -609,27 +843,80 @@ pub fn apply_save(reg: &mut Registry, input: ServerInput) -> Result<(), Vec<Fiel
         )]);
     }
     let prev = prev_idx.and_then(|i| reg.servers.get(i)).cloned();
-    let mut env = BTreeMap::new();
-    let mut errs = Vec::new();
-    if input.transport == "stdio" {
+    let stdio = input.transport == "stdio";
+    let prev_ref = |key: &str| prev.as_ref().and_then(|p| p.env_refs.get(key));
+    if stdio {
+        let errs: Vec<FieldError> = input
+            .env
+            .iter()
+            .filter(|e| e.value.is_none() && prev_ref(&e.key).is_none())
+            .map(|e| ferr(format!("env.{}", e.key), "enter a value"))
+            .collect();
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+    }
+    let mut effects = SaveEffects::default();
+    let mut env_refs = BTreeMap::new();
+    if stdio {
         for e in &input.env {
-            match &e.value {
-                Some(v) => {
-                    env.insert(e.key.clone(), v.clone());
-                }
-                None => match prev.as_ref().and_then(|p| p.env.get(&e.key)) {
-                    Some(v) => {
-                        env.insert(e.key.clone(), v.clone());
-                    }
-                    None => errs.push(ferr(format!("env.{}", e.key), "enter a value")),
+            let prev_item = prev
+                .as_ref()
+                .zip(prev_ref(&e.key))
+                .map(|(p, r)| (env_account(&p.name, &e.key, r), r.clone()));
+            let same_name = prev.as_ref().is_some_and(|p| p.name == input.name);
+            // Keep the existing item when the server keeps its name and the value is omitted or
+            // retyped unchanged.
+            let keep = match (&e.value, &prev_item) {
+                (None, Some((_, r))) if same_name => Some(r.clone()),
+                (Some(v), Some((account, r))) if same_name => match secrets.get(account) {
+                    Ok(Some(old)) if subtle_eq(old.as_bytes(), v.as_bytes()) => Some(r.clone()),
+                    _ => None,
                 },
+                _ => None,
+            };
+            if let Some(r) = keep {
+                env_refs.insert(e.key.clone(), r);
+                continue;
+            }
+            let value: Zeroizing<String> = match (&e.value, &prev_item) {
+                (Some(v), _) => Zeroizing::new(v.clone()),
+                (None, Some((account, _))) => match secrets.get(account) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        remove_items(secrets, &effects.written);
+                        return Err(vec![ferr(
+                            format!("env.{}", e.key),
+                            "the saved value is missing from the system keychain; enter it again",
+                        )]);
+                    }
+                    Err(_) => {
+                        remove_items(secrets, &effects.written);
+                        return Err(vec![ferr("entry", KEYCHAIN_SAVE_FAILED)]);
+                    }
+                },
+                (None, None) => {
+                    remove_items(secrets, &effects.written);
+                    return Err(vec![ferr(format!("env.{}", e.key), "enter a value")]);
+                }
+            };
+            let r = new_reference();
+            let account = env_account(&input.name, &e.key, &r);
+            if secrets.set(&account, &value).is_err() {
+                remove_items(secrets, &effects.written);
+                return Err(vec![ferr("entry", KEYCHAIN_SAVE_FAILED)]);
+            }
+            effects.written.push(account);
+            env_refs.insert(e.key.clone(), r);
+        }
+    }
+    if let Some(p) = &prev {
+        for (k, r) in &p.env_refs {
+            if !(p.name == input.name && env_refs.get(k) == Some(r)) {
+                effects.obsolete.push(env_account(&p.name, k, r));
             }
         }
     }
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-    let stdio = input.transport == "stdio";
     let mut next = StoredServer {
         name: input.name,
         transport: input.transport,
@@ -641,7 +928,8 @@ pub fn apply_save(reg: &mut Registry, input: ServerInput) -> Result<(), Vec<Fiel
             None
         },
         url: if stdio { None } else { input.url },
-        env,
+        env_refs,
+        legacy_env: LegacyEnv::default(),
         allow_write_tools: input.allow_write_tools,
         enabled: false,
         reviewed: None,
@@ -657,14 +945,22 @@ pub fn apply_save(reg: &mut Registry, input: ServerInput) -> Result<(), Vec<Fiel
         Some(i) => reg.servers[i] = next,
         None => reg.servers.push(next),
     }
-    Ok(())
+    Ok(effects)
 }
 
-/// Remove an entry. Returns whether it existed.
-pub fn apply_remove(reg: &mut Registry, name: &str) -> bool {
-    let before = reg.servers.len();
-    reg.servers.retain(|s| s.name != name);
-    reg.servers.len() != before
+/// Remove an entry. Returns the keychain items it referenced (to remove once the file is saved),
+/// or `None` when there was no such entry.
+pub fn apply_remove(reg: &mut Registry, name: &str) -> Option<SaveEffects> {
+    let idx = reg.servers.iter().position(|s| s.name == name)?;
+    let s = reg.servers.remove(idx);
+    Some(SaveEffects {
+        written: Vec::new(),
+        obsolete: s
+            .env_refs
+            .iter()
+            .map(|(k, r)| env_account(&s.name, k, r))
+            .collect(),
+    })
 }
 
 /// Disable an entry (keeps it; a later enable needs a fresh review, so this session's check of
@@ -762,40 +1058,155 @@ fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// The runtime's `[[servers]]` entry for `s` (snake_case; only the keys the runtime accepts).
-pub fn entry_json(s: &StoredServer) -> serde_json::Value {
-    let mut m = serde_json::Map::new();
-    m.insert("name".into(), s.name.clone().into());
-    m.insert("transport".into(), s.transport.clone().into());
-    if s.transport == "stdio" {
-        if let Some(c) = &s.command {
-            m.insert("command".into(), c.clone().into());
-        }
-        m.insert("args".into(), serde_json::json!(s.args));
-        m.insert("env".into(), serde_json::json!(s.env));
-        if let Some(c) = &s.cwd {
-            m.insert("cwd".into(), c.clone().into());
-        }
-    } else if let Some(u) = &s.url {
-        m.insert("url".into(), u.clone().into());
+/// The env values of `s` from the keychain, for a spawn or a probe only. Fails closed when an item
+/// is missing or the keychain cannot be asked.
+fn resolve_env(
+    s: &StoredServer,
+    secrets: &dyn SecretStore,
+) -> Result<BTreeMap<String, Zeroizing<String>>, String> {
+    let mut out = BTreeMap::new();
+    if s.transport != "stdio" {
+        return Ok(out);
     }
-    m.insert("allow_write_tools".into(), s.allow_write_tools.into());
-    serde_json::Value::Object(m)
+    for (k, r) in &s.env_refs {
+        match secrets.get(&env_account(&s.name, k, r))? {
+            Some(v) => {
+                out.insert(k.clone(), v);
+            }
+            None => {
+                return Err(format!(
+                    "the value of {k} for MCP server '{}' is missing from the system keychain; edit the server and enter it again",
+                    s.name
+                ))
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// The allowlist file's text: enabled entries whose review still matches. `None` = no file.
-pub fn allowlist_json(reg: &Registry) -> Option<String> {
-    let servers: Vec<serde_json::Value> = reg
-        .servers
+/// The runtime's `[[servers]]` entry (snake_case; only the keys the runtime accepts), borrowing
+/// the env values so the only serialized copy is the wiped buffer [`to_secret_json`] writes.
+#[derive(Serialize)]
+struct RuntimeEntry<'a> {
+    name: &'a str,
+    transport: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env: Option<BTreeMap<&'a str, &'a str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'a str>,
+    allow_write_tools: bool,
+}
+
+fn runtime_entry<'a>(
+    s: &'a StoredServer,
+    env: &'a BTreeMap<String, Zeroizing<String>>,
+) -> RuntimeEntry<'a> {
+    let stdio = s.transport == "stdio";
+    RuntimeEntry {
+        name: &s.name,
+        transport: &s.transport,
+        command: s.command.as_deref().filter(|_| stdio),
+        args: stdio.then_some(s.args.as_slice()),
+        env: stdio.then(|| env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()),
+        cwd: s.cwd.as_deref().filter(|_| stdio),
+        url: s.url.as_deref().filter(|_| !stdio),
+        allow_write_tools: s.allow_write_tools,
+    }
+}
+
+/// Counts the bytes serialization would write, storing none.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0 += b.len();
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Serialize into a buffer that is wiped on drop. The exact size is counted first (escapes
+/// included: a control character becomes six bytes), so the buffer is allocated once and never
+/// reallocated, which would leave an unwiped copy behind.
+fn to_secret_json<T: Serialize>(v: &T) -> Result<Zeroizing<String>, String> {
+    let mut count = ByteCount(0);
+    serde_json::to_writer(&mut count, v)
+        .map_err(|_| "the MCP entry could not be encoded".to_string())?;
+    let mut buf = Zeroizing::new(Vec::with_capacity(count.0));
+    serde_json::to_writer(&mut *buf, v)
+        .map_err(|_| "the MCP entry could not be encoded".to_string())?;
+    match String::from_utf8(std::mem::take(&mut *buf)) {
+        Ok(text) => Ok(Zeroizing::new(text)),
+        Err(e) => {
+            e.into_bytes().zeroize();
+            Err("the MCP entry could not be encoded".to_string())
+        }
+    }
+}
+
+/// `s` in the runtime shape with its env values from the keychain: the probe request body and the
+/// content of [`PROBE_FILE`].
+pub fn runtime_entry_json(
+    s: &StoredServer,
+    secrets: &dyn SecretStore,
+) -> Result<Zeroizing<String>, String> {
+    let env = resolve_env(s, secrets)?;
+    to_secret_json(&runtime_entry(s, &env))
+}
+
+/// The members' entries the sidecar may start: enabled, with a review that still matches.
+pub fn enabled_servers(reg: &Registry) -> impl Iterator<Item = &StoredServer> {
+    reg.servers
         .iter()
         .filter(|s| s.enabled && review_matches(s))
-        .map(entry_json)
-        .collect();
-    if servers.is_empty() {
-        None
-    } else {
-        Some(serde_json::json!({ "servers": servers }).to_string())
+}
+
+/// The allowlist the sidecar loads when it starts: `builtin` servers first, then every enabled
+/// entry whose review still matches, with env values from the keychain. `None` = no server at all.
+pub fn runtime_allowlist_json(
+    reg: &Registry,
+    secrets: &dyn SecretStore,
+    builtin: &[serde_json::Value],
+) -> Result<Option<Zeroizing<String>>, String> {
+    let enabled: Vec<&StoredServer> = enabled_servers(reg).collect();
+    if builtin.is_empty() && enabled.is_empty() {
+        return Ok(None);
     }
+    let envs = enabled
+        .iter()
+        .map(|s| resolve_env(s, secrets))
+        .collect::<Result<Vec<_>, _>>()?;
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    enum Item<'a> {
+        Builtin(&'a serde_json::Value),
+        Member(RuntimeEntry<'a>),
+    }
+    #[derive(Serialize)]
+    struct File<'a> {
+        servers: Vec<Item<'a>>,
+    }
+    let file = File {
+        servers: builtin
+            .iter()
+            .map(Item::Builtin)
+            .chain(
+                enabled
+                    .iter()
+                    .zip(envs.iter())
+                    .map(|(s, env)| Item::Member(runtime_entry(s, env))),
+            )
+            .collect(),
+    };
+    to_secret_json(&file).map(Some)
 }
 
 fn quote_arg(a: &str) -> String {
@@ -838,30 +1249,81 @@ pub fn review_view(gate: &ReviewGate, s: &StoredServer, probe: ProbeReport) -> R
 // Storage
 // ---------------------------------------------------------------------------
 
-/// The two files under `<app local data>/hermes/`.
+const MIGRATE_FAILED: &str = "the MCP server env values could not be moved to the system keychain; nothing was changed and the move is tried again next time";
+
+/// Serialises every read and write of the registry file (the commands, the Hermes start and the
+/// migration at app start).
+static FILE_LOCK: Mutex<()> = Mutex::new(());
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Remove the files that hold env values only while a server is about to run (the spawn-time
+/// allowlist and the probe file). Called when Hermes stops and at app start, so a crash never
+/// leaves them behind for long.
+pub fn sweep_runtime_files(dir: &Path) {
+    for f in [crate::hermes_mcp::EFFECTIVE_FILE, PROBE_FILE] {
+        let path = dir.join(f);
+        // The temp file of an atomic write a kill interrupted holds the same values.
+        for p in [crate::hermes_mcp::temp_path(&path), path] {
+            if let Err(e) = remove_if_present(&p) {
+                eprintln!(
+                    "mcp servers: could not remove {}: {}",
+                    p.display(),
+                    e.kind()
+                );
+            }
+        }
+    }
+}
+
+/// The registry file and the keychain items it references, under `<app local data>/hermes/`.
+#[derive(Clone)]
 pub struct McpStore {
     dir: PathBuf,
+    secrets: Arc<dyn SecretStore>,
 }
 
 impl McpStore {
-    pub fn new(dir: PathBuf) -> Self {
-        McpStore { dir }
+    pub fn new(dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
+        McpStore { dir, secrets }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn secrets(&self) -> &dyn SecretStore {
+        &*self.secrets
     }
 
     pub fn registry_path(&self) -> PathBuf {
         self.dir.join(REGISTRY_FILE)
     }
 
-    pub fn allowlist_path(&self) -> PathBuf {
-        self.dir.join(ALLOWLIST_FILE)
+    pub fn probe_path(&self) -> PathBuf {
+        self.dir.join(PROBE_FILE)
     }
 
-    /// Read the registry. Missing = empty; unreadable or corrupt = an error (never silently empty,
+    pub fn legacy_allowlist_path(&self) -> PathBuf {
+        self.dir.join(LEGACY_ALLOWLIST_FILE)
+    }
+
+    /// Read the file. Missing = empty; unreadable or corrupt = an error (never silently empty,
     /// which would let the next save drop every entry).
-    pub fn load(&self) -> Result<Registry, String> {
+    fn read(&self) -> Result<Registry, String> {
         match std::fs::read_to_string(self.registry_path()) {
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|_| "the MCP server list could not be read (file is damaged)".to_string()),
+            Ok(text) => {
+                let text = Zeroizing::new(text);
+                serde_json::from_str(&text).map_err(|_| {
+                    "the MCP server list could not be read (file is damaged)".to_string()
+                })
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Registry::default()),
             Err(e) => Err(format!(
                 "the MCP server list could not be read: {}",
@@ -870,25 +1332,122 @@ impl McpStore {
         }
     }
 
-    /// Write the registry and the allowlist (both `0600`), or remove the allowlist when nothing is
-    /// enabled.
-    pub fn save(&self, reg: &Registry) -> Result<(), String> {
+    /// Write the file atomically (a temp file `0600`, synced, renamed over it).
+    fn write(&self, reg: &Registry) -> Result<(), String> {
         let text = serde_json::to_string_pretty(reg).map_err(|e| e.to_string())?;
-        citrate_core_kit::fsutil::write_secret_file(&self.registry_path(), text.as_bytes())
-            .map_err(|e| format!("saving the MCP server list: {}", e.kind()))?;
-        match allowlist_json(reg) {
-            Some(allow) => citrate_core_kit::fsutil::write_secret_file(
-                &self.allowlist_path(),
-                allow.as_bytes(),
-            )
-            .map_err(|e| format!("writing the MCP allowlist: {}", e.kind())),
-            None => match std::fs::remove_file(self.allowlist_path()) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(format!("removing the MCP allowlist: {}", e.kind())),
-            },
-        }
+        citrate_core_kit::fsutil::ensure_private_dir(&self.dir)
+            .and_then(|()| crate::hermes_mcp::write_private(&self.registry_path(), text.as_bytes()))
+            .map_err(|e| format!("saving the MCP server list: {}", e.kind()))
     }
+
+    fn remove_legacy_allowlist(&self) -> Result<(), String> {
+        remove_if_present(&self.legacy_allowlist_path())
+            .map_err(|e| format!("removing the old MCP allowlist: {}", e.kind()))
+    }
+
+    /// Read the registry, first moving env values an older version stored in plain text into the
+    /// keychain, and removing the old allowlist file (which held them too).
+    ///
+    /// The move writes every keychain item first and then rewrites the file atomically. If an item
+    /// cannot be written, the items this attempt wrote are removed and the file is left as it was;
+    /// if the file cannot be rewritten, the same. So the file is always either the old one (and the
+    /// next load tries again) or the new one (and the next load has nothing to move).
+    pub fn load(&self) -> Result<Registry, String> {
+        let _f = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut reg = self.read()?;
+        if reg.servers.iter().any(|s| !s.legacy_env.is_empty()) {
+            self.migrate(&mut reg)?;
+        }
+        self.remove_legacy_allowlist()?;
+        Ok(reg)
+    }
+
+    fn migrate(&self, reg: &mut Registry) -> Result<(), String> {
+        let mut written = Vec::new();
+        for s in reg.servers.iter_mut().filter(|s| !s.legacy_env.is_empty()) {
+            let was_reviewed =
+                s.enabled && s.reviewed.as_deref() == Some(legacy_fingerprint(s).as_str());
+            let legacy = std::mem::take(&mut s.legacy_env);
+            for (k, v) in &legacy.0 {
+                let r = new_reference();
+                let account = env_account(&s.name, k, &r);
+                if self.secrets.set(&account, v).is_err() {
+                    remove_items(&*self.secrets, &written);
+                    return Err(MIGRATE_FAILED.to_string());
+                }
+                written.push(account);
+                s.env_refs.insert(k.clone(), r);
+            }
+            s.reviewed = was_reviewed.then(|| fingerprint(s));
+        }
+        if let Err(e) = self.write(reg) {
+            remove_items(&*self.secrets, &written);
+            eprintln!("mcp servers: {e}");
+            return Err(MIGRATE_FAILED.to_string());
+        }
+        Ok(())
+    }
+
+    /// Write the registry (no env values) and remove the old allowlist file.
+    pub fn save(&self, reg: &Registry) -> Result<(), String> {
+        let _f = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.write(reg)?;
+        self.remove_legacy_allowlist()
+    }
+
+    /// Save after [`apply_save`] or [`apply_remove`]: if the file cannot be written, the keychain
+    /// items the change wrote are removed (the old file still references the old ones); once it is
+    /// written, the items it no longer references are removed.
+    pub fn commit(&self, reg: &Registry, effects: &SaveEffects) -> Result<(), String> {
+        if let Err(e) = self.save(reg) {
+            remove_items(&*self.secrets, &effects.written);
+            return Err(e);
+        }
+        remove_items(&*self.secrets, &effects.obsolete);
+        Ok(())
+    }
+
+    /// Run `f` while [`PROBE_FILE`] holds exactly `entry_json` (`0600`), then remove the file. One
+    /// probe at a time, so a second check never replaces the entry the first is being checked
+    /// against.
+    pub fn with_probe_file<T>(&self, entry_json: &str, f: impl FnOnce() -> T) -> Result<T, String> {
+        static PROBE_LOCK: Mutex<()> = Mutex::new(());
+        let _p = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        struct RemoveOnDrop(PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = remove_if_present(&self.0);
+            }
+        }
+        let path = self.probe_path();
+        let guard = RemoveOnDrop(path.clone());
+        let text = Zeroizing::new(format!("{{\"servers\":[{entry_json}]}}"));
+        citrate_core_kit::fsutil::ensure_private_dir(&self.dir)
+            .and_then(|()| crate::hermes_mcp::write_private(&path, text.as_bytes()))
+            .map_err(|e| format!("preparing the server check: {}", e.kind()))?;
+        let out = f();
+        drop(guard);
+        Ok(out)
+    }
+}
+
+/// The keychain items a registry file references, with a label, for "delete my local data".
+/// A file that cannot be parsed lists nothing.
+pub fn keychain_accounts(registry_text: &str) -> Vec<(String, String)> {
+    let Ok(reg) = serde_json::from_str::<Registry>(registry_text) else {
+        return Vec::new();
+    };
+    reg.servers
+        .iter()
+        .flat_map(|s| {
+            s.env_refs.iter().map(|(k, r)| {
+                (
+                    env_account(&s.name, k, r),
+                    format!("MCP server {}: {k}", s.name),
+                )
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -912,8 +1471,29 @@ pub fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBu
         .join("hermes"))
 }
 
+/// The member's MCP servers in this app's Hermes dir, with values in the OS keychain.
+pub fn os_store(dir: PathBuf) -> McpStore {
+    McpStore::new(dir, Arc::new(OsSecretStore))
+}
+
 fn store(app: &tauri::AppHandle) -> Result<McpStore, String> {
-    Ok(McpStore::new(hermes_dir(app)?))
+    Ok(os_store(hermes_dir(app)?))
+}
+
+/// At app start: remove spawn-time files an earlier run left (they hold env values), then, off the
+/// main thread, move any plain-text values an older version stored into the keychain. Without a
+/// registry file this touches nothing (no keychain access).
+pub fn startup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Ok(dir) = hermes_dir(app) else {
+        return;
+    };
+    sweep_runtime_files(&dir);
+    std::thread::spawn(move || {
+        let _g = gate().lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = os_store(dir).load() {
+            eprintln!("mcp servers: {e}");
+        }
+    });
 }
 
 const NOT_RUNNING: &str =
@@ -944,9 +1524,9 @@ fn mcp_server_save_sync(app: &tauri::AppHandle, input: ServerInput) -> Result<Sa
     let st = store(app)?;
     let mut reg = st.load()?;
     let renamed_from = input.previous_name.clone().filter(|p| p != &input.name);
-    match apply_save(&mut reg, input) {
-        Ok(()) => {
-            st.save(&reg)?;
+    match apply_save(&mut reg, input, st.secrets()) {
+        Ok(effects) => {
+            st.commit(&reg, &effects)?;
             if let Some(old) = renamed_from {
                 g.forget(&old);
             }
@@ -974,8 +1554,8 @@ pub async fn mcp_server_remove(
         let mut g = gate().lock().unwrap_or_else(|e| e.into_inner());
         let st = store(&app)?;
         let mut reg = st.load()?;
-        if apply_remove(&mut reg, &name) {
-            st.save(&reg)?;
+        if let Some(effects) = apply_remove(&mut reg, &name) {
+            st.commit(&reg, &effects)?;
         }
         g.forget(&name);
         Ok(views(&reg))
@@ -1011,9 +1591,10 @@ pub async fn mcp_server_review(
 }
 
 fn mcp_server_review_sync(app: &tauri::AppHandle, name: &str) -> Result<ReviewResult, String> {
+    let st = store(app)?;
     let entry = {
         let _g = gate().lock().unwrap_or_else(|e| e.into_inner());
-        let reg = store(app)?.load()?;
+        let reg = st.load()?;
         reg.servers
             .into_iter()
             .find(|s| s.name == name)
@@ -1023,18 +1604,16 @@ fn mcp_server_review_sync(app: &tauri::AppHandle, name: &str) -> Result<ReviewRe
     if !mgr.is_running() {
         return Err(NOT_RUNNING.into());
     }
-    // The probe can take up to 20 s; the registry lock is not held meanwhile.
-    let outcome = mgr
-        .mcp_probe(&entry_json(&entry))
+    // The probe can take up to 20 s; the registry lock is not held meanwhile. The entry's values
+    // leave the keychain only for the request and the probe file, both gone when it returns.
+    let body = runtime_entry_json(&entry, st.secrets())?;
+    let outcome = st
+        .with_probe_file(&body, || mgr.mcp_probe(&body))?
         .map_err(|e| e.to_string())?;
     let mut g = gate().lock().unwrap_or_else(|e| e.into_inner());
     // The entry may have been edited while the probe ran: record against what was probed, and
     // build the review only if it is still the same.
-    let current = store(app)?
-        .load()?
-        .servers
-        .into_iter()
-        .find(|s| s.name == name);
+    let current = st.load()?.servers.into_iter().find(|s| s.name == name);
     match outcome {
         ProbeOutcome::Invalid(errors) => {
             g.forget(name);
@@ -1056,7 +1635,7 @@ fn mcp_server_review_sync(app: &tauri::AppHandle, name: &str) -> Result<ReviewRe
     }
 }
 
-/// Enable a reviewed server and rewrite the allowlist. Applies the next time Hermes starts.
+/// Enable a reviewed server. Applies the next time Hermes starts.
 #[tauri::command]
 pub async fn mcp_server_enable(
     app: tauri::AppHandle,

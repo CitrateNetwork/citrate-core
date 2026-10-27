@@ -26,7 +26,8 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    abi_book, ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
+    abi_book, ceremony, config, custody, oidc, rpc, secret, supervisor, txdecode, wallet,
+    wallet_link,
 };
 
 mod activity;
@@ -37,6 +38,7 @@ mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
+mod atomic_file;
 mod benchmark_share;
 mod blocking;
 mod capsule_pins;
@@ -45,6 +47,8 @@ mod components;
 mod connections;
 mod contract_deploy;
 mod daemons;
+// Join-13: deep links delivered to the running app on Linux/Windows; URL fragments never logged.
+mod deep_link_delivery;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
@@ -98,10 +102,28 @@ mod model_register;
 mod model_registry;
 // K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
 mod network_profile;
+// D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
+// internal format, and the pinned egress table.
+pub(crate) mod model_provider;
+pub(crate) mod model_proxy;
+pub(crate) mod model_proxy_http;
 mod node;
 mod node_genesis;
 mod node_holder;
 mod node_withdrawn;
+pub(crate) mod provider_anthropic;
+pub(crate) mod provider_chat_vendors;
+pub(crate) mod provider_egress;
+#[cfg(test)]
+mod provider_fixtures_tests;
+pub(crate) mod provider_gemini;
+pub(crate) mod provider_guard;
+pub(crate) mod provider_openai;
+pub(crate) mod provider_openai_compat;
+#[cfg(test)]
+mod provider_tripwire_tests;
+pub(crate) mod provider_usage_log;
+mod providers_ipc;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
@@ -128,16 +150,17 @@ mod sbt_art;
 mod seam;
 mod serve;
 mod serve_plan;
+mod services;
 mod shell;
 mod skill_registry;
 mod skills_local;
-mod staking;
 mod telemetry;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
+mod validator_activation;
 mod verified_source;
 mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
@@ -155,13 +178,17 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
-// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
 // GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
 mod join;
 mod model_catalog;
+// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod model_delete;
+// GROW-S2 (Join 9): relay rendezvous join, app side (IPC views, tick, join://state).
+mod rendezvous;
+// GROW-S1 task 12: the pending v2 invite, held in the keyring until the member acts on it.
+mod pending_join;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
@@ -183,6 +210,9 @@ mod privacy_contract_tests;
 // HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
 #[cfg(test)]
 mod hello_mint_e2e_tests;
+// G7: core's money paths on citrate-chain's genesis contract set (scripts/e2e/moneypath-anvil.sh).
+#[cfg(test)]
+mod moneypath_e2e_tests;
 // SCL-S0.5: shutdown coverage (embedding server stops with Hermes; workers exit on stdin close).
 #[cfg(test)]
 mod shutdown_coverage_tests;
@@ -197,6 +227,9 @@ mod upgrade_v051_tests;
 // RC52 G2: a 0.5.1 install on r1005 started by this build on a new genesis (K6).
 #[cfg(test)]
 mod upgrade_xgenesis_tests;
+// D-9: the liquid staking pool is retired; no pool reference in the crate, its book or the kit.
+#[cfg(test)]
+mod lsp_retired_tests;
 
 use tauri::Manager;
 
@@ -267,8 +300,11 @@ pub fn run() {
     tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
         // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // Join-13: on Linux/Windows a clicked `citrate://` link arrives as that second launch's
+        // argv; its accepted links go to the deep-link plugin's own path (see deep_link_delivery).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::Manager;
+            deep_link_delivery::deliver_second_instance_argv(app, &argv);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
@@ -280,6 +316,7 @@ pub fn run() {
         // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
         // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).
         // The frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → parseJoinLink → Groups.
+        // Links clicked while the app runs on Linux/Windows reach it via single-instance above.
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         // W2.1 — in-app auto-updates (signed GitHub Releases feed; pubkey pinned in
@@ -311,10 +348,16 @@ pub fn run() {
             // (NodeManager::start waits on it) until the cleanup has returned; a panicking
             // cleanup leaves it closed. The barrier does not depend on what the cleanup does.
             let handle = app.handle();
+            // Join-13: an AppImage has no .desktop install to register `citrate://`; do it here.
+            #[cfg(target_os = "linux")]
+            deep_link_delivery::register_appimage_schemes(handle);
             startup_barrier::StartupBarrier::global().run_cleanup(|| sweep_orphan_sidecars(handle));
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
             hermes::clean_leftover_browser(handle);
+            // RC52 P-9a: spawn-time MCP files an earlier run left are removed, and member MCP env
+            // values an older version kept in plain text move to the keychain (in the background).
+            mcp_servers::startup(handle);
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());
@@ -358,8 +401,13 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // GROW-S2 (Join 9, M4): tick the relay rendezvous at app start and every 30 s while open
+            // (starts the comms daemon only when this device minted invites or has a join in flight).
+            rendezvous::spawn_ticker(app.handle().clone());
             // v2 invite links: the join client (pending attaches + opened invites, memory only).
             app.manage(join::build_join_state());
+            // The pending invite (code + link key) waiting for the member's Join: keyring only.
+            app.manage(pending_join::build_pending_join_state(app.handle().clone()));
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -394,6 +442,9 @@ pub fn run() {
             app.manage(fl_rounds::build_state(app.handle()));
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
             app.manage(escalation::EscalationState::default());
+            // D-11 — the core model proxy for cloud providers (opened, and its loopback endpoint
+            // started, on first use off the main thread).
+            app.manage(providers_ipc::ModelProxyState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             app.manage(faucet::build_faucet_state(app.handle()));
@@ -553,13 +604,21 @@ pub fn run() {
             invites::group_invite_revoke,
             invites::group_referral_log,
             invites::group_referral_export,
+            // GROW-S2 (Join 9): relay rendezvous views (no secrets cross invoke).
+            rendezvous::rendezvous_tick,
+            rendezvous::rendezvous_cancel,
+            rendezvous::rendezvous_forget,
             // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
             join::join_mint,
             join::join_attach,
-            join::join_resolve,
             join::join_redeem,
             join::join_revoke,
             join::join_list,
+            join::join_share_qr,
+            pending_join::pending_join_set,
+            pending_join::pending_join_get,
+            pending_join::pending_join_clear,
+            pending_join::pending_join_resolve,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
@@ -590,6 +649,9 @@ pub fn run() {
             ceremony::sign_request,
             ceremony::sign_approve,
             ceremony::sign_and_broadcast,
+            // Join-8 — sign without sending (returns the tx hash), then send.
+            ceremony::sign_prepare,
+            ceremony::sign_send_prepared,
             ceremony::sign_reject,
             wallet_link::wallet_link_request,
             wallet_link::wallet_link_approve,
@@ -656,6 +718,21 @@ pub fn run() {
             contract_reader::contract_write_propose,
             // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
             // spend budget, quote-then-run, and the registry route's (disabled) status.
+            // D-11 — cloud providers: status, usage (signed log), caps, halt/resume, one-way keys,
+            // gated custom endpoints. No command returns a key.
+            providers_ipc::providers_status,
+            providers_ipc::providers_usage_summary,
+            providers_ipc::providers_caps_set,
+            providers_ipc::providers_price_set,
+            providers_ipc::providers_halt,
+            providers_ipc::providers_resume,
+            providers_ipc::providers_key_set,
+            providers_ipc::providers_key_test,
+            providers_ipc::providers_key_remove,
+            providers_ipc::providers_custom_add,
+            providers_ipc::providers_custom_confirm,
+            providers_ipc::providers_custom_remove,
+            providers_ipc::providers_usage_log_reset,
             escalation::escalation_endpoints,
             escalation::escalation_endpoint_add,
             escalation::escalation_endpoint_remove,
@@ -787,6 +864,7 @@ pub fn run() {
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
             chat_consent::chat_consent_prepare,
+            chat_consent::chat_consent_drop,
             chat_consent::media_consent_prepare,
             chat_route::chat_route_get,
             chat_route::chat_route_set,
@@ -812,6 +890,10 @@ pub fn run() {
             // ceremony sends MemberBond.activate to the funded clone; the clone (=
             // staker) forwards its principal to registerValidator.
             node::node_register_validator,
+            // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
+            validator_activation::validator_activation_status,
+            // Join-8 — Forget an unseen activation send in the durable submitted-tx record.
+            validator_activation::validator_activation_forget,
             // W1.x — arm the producer once synced (consensus-gated); the respawn
             // mints proposer.key, the validator identity the bond activation needs.
             node::node_arm_mining,
@@ -889,20 +971,6 @@ pub fn run() {
             // wallet send — a native SALT transfer bridged into a PENDING ceremony
             // (@rule8; signs nothing — the human approves via sign_and_broadcast).
             transfer::wallet_send,
-            // wallet stake — a LiquidStakingPool deposit() bridged into a PENDING
-            // ceremony (@rule8; signs nothing — approved via sign_and_broadcast).
-            // The self-stake balance is read within wallet_balances (balanceOf).
-            staking::wallet_stake,
-            // wallet withdraw (WP2, @rule8) — the two-step, ~7-day-queued withdraw
-            // of self-added stake. request_withdrawal burns stSALT shares (the
-            // SALT→shares conversion is done from LIVE shares()+balanceOf() reads,
-            // never fabricated); claim_withdrawal pays out a matured request. Both
-            // sign NOTHING — the human approves via sign_and_broadcast (B1.4).
-            // pending_withdrawals enumerates the wallet's real on-chain queue
-            // (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-            staking::wallet_request_withdrawal,
-            staking::wallet_claim_withdrawal,
-            staking::wallet_pending_withdrawals,
             // ai — real OpenAI-compatible inference (AI1, @rule8). The provider key
             // is sealed in the OS keyring, BOUND to its https baseURL at set-time;
             // ai_provider_status returns only {id,baseURL,model,configured} (never
@@ -974,6 +1042,8 @@ pub fn run() {
             components::components_status,
             components::components_update,
             components::components_rollback,
+            // K1a-2 — the services registry snapshot Node › Services reads (read-only).
+            services::services_snapshot,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
@@ -1215,7 +1285,6 @@ mod tests {
             ("grant_status.rs", include_str!("grant_status.rs")),
             ("node.rs", include_str!("node.rs")),
             ("sbt_art.rs", include_str!("sbt_art.rs")),
-            ("staking.rs", include_str!("staking.rs")),
             ("transfer.rs", include_str!("transfer.rs")),
             ("validator.rs", include_str!("validator.rs")),
         ];
@@ -1262,7 +1331,6 @@ mod tests {
                     || code.contains("remote_network_tip(")
                     || code.contains("arm_mining_if_synced(")
                     || code.contains("recheck_mining(")
-                    || code.contains("read_self_stake(")
                     || code.contains("read_claimable(");
                 if touches_network {
                     let fn_name = sig
@@ -1344,6 +1412,8 @@ mod tests {
             "sign_request",
             "sign_approve",
             "sign_and_broadcast",
+            "sign_prepare",
+            "sign_send_prepared",
             "sign_reject",
         ] {
             assert!(
