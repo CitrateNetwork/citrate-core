@@ -305,6 +305,55 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     expect(run(check, [...opts, "--require-active", "alpha-r1005"]).err).toMatch(/required 'alpha-r1005'/);
   });
 
+  it("the embedded book must be the one sync-addresses.py generates from the canonical book the profile pins", () => {
+    expect(run(fill, fillArgs({ genesis: R1006_GENESIS, extra: ["--activate"] })).code).toBe(0);
+    const appDir = path.join(dir, "app");
+    fs.mkdirSync(path.join(appDir, "addresses"), { recursive: true });
+    const appBook = path.join(appDir, "addresses", "40204.json");
+    const sidecar = path.join(dir, "build-sidecar.sh");
+    fs.writeFileSync(sidecar, fs.readFileSync(realSidecar, "utf8").replace(/^MIN_CHAIN_REV="[0-9a-f]{40}"/m,
+      `MIN_CHAIN_REV="${REV}"`));
+    const opts = ["--release", "--profiles", profiles, "--app-book-dir", appDir, "--sidecar", sidecar];
+    const sync = (book) => execFileSync("python3", ["-I", path.join(here, "sync-addresses.py"), "--book", book,
+      "--genesis", R1006_GENESIS, "--out", appBook], { env: env() });
+    sync(bookPath);
+    const ok = run(check, opts);
+    expect(ok.code, ok.err).toBe(0);
+    const good = fs.readFileSync(appBook, "utf8");
+
+    // An edited embedded book (one pin moved) is refused, though its chain id and genesis are right.
+    const edited = JSON.parse(good);
+    edited.addresses.ValidatorRegistry = addr("ee");
+    fs.writeFileSync(appBook, JSON.stringify(edited, null, 2) + "\n");
+    const e1 = run(check, opts);
+    expect(e1.code).toBe(1);
+    expect(e1.err).toMatch(/embedded book .* is not the book scripts\/sync-addresses\.py generates from the canonical book/);
+
+    // A stale embedded book, generated from another canonical book of the same genesis, is refused.
+    const other = writeBook(canonicalBook({ contracts: { ...canonicalBook().contracts, SkillRegistry: addr("19") } }), "other.json");
+    sync(other);
+    const e2 = run(check, opts);
+    expect(e2.code).toBe(1);
+    expect(e2.err).toMatch(/sha256 [0-9a-f]{64} != profile addressBookSha256/);
+
+    // The pinned canonical copy itself edited: its digest no longer matches the profile.
+    sync(bookPath);
+    expect(run(check, opts).code).toBe(0);
+    const canon = fs.readdirSync(path.join(appDir, "addresses")).filter((f) => f !== "40204.json");
+    expect(canon).toEqual(["40204.canonical.json"]);
+    const canonPath = path.join(appDir, "addresses", canon[0]);
+    fs.writeFileSync(canonPath, fs.readFileSync(canonPath, "utf8").replace(addr("03"), addr("ee")));
+    const e3 = run(check, opts);
+    expect(e3.code).toBe(1);
+    expect(e3.err).toMatch(/sha256 [0-9a-f]{64} != profile addressBookSha256/);
+
+    // No canonical copy at all: refused, never skipped.
+    fs.rmSync(canonPath);
+    const e4 = run(check, opts);
+    expect(e4.code).toBe(1);
+    expect(e4.err).toMatch(/canonical book .* cannot be read/);
+  });
+
   it("a genesis that is not the block 0 the bundled node builds for the profile's genesis profile fails", () => {
     // RC52: genesisProfile chooses the block 0 the node builds; the profile's genesisHash must be it.
     expect(run(fill, fillArgs()).code).toBe(0);
