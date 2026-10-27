@@ -30,8 +30,12 @@ import { bridge } from "../bridge";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/** A price figure: "$48", "$ 48", "$0", "$48.00", or the bare 48 of "48 / year". */
-const PRICE = /\$\s?\d|\b48\b/;
+/**
+ * A price figure: "$48", "$ 48", "$0", "$48.00"; "48 USD", "USD 48"; or a bare number with a
+ * billing period ("48 / year", "48 a year", "48 per year"). A bare 48 alone (a style or size
+ * value) is not a price.
+ */
+const PRICE = /\$\s?\d|\bUSD\s?\d|\d\s?USD\b|\b\d[\d.,]*\s*(?:\/\s*|a |per )(?:year|yr|month|mo)\b/i;
 
 function textOf(html: string): string {
   return html.replace(/<[^>]*>/g, " ");
@@ -250,7 +254,7 @@ describe("TRIPWIRE — the price shows only on the member checkout", () => {
     const next = rest.search(/\n(export )?function /);
     const end = next === -1 ? src.length : start + 1 + next;
     const outside: string[] = [];
-    const re = /\$\s?\d[\d.,]*|\b48\b/g;
+    const re = new RegExp(PRICE.source, "gi");
     for (let m = re.exec(src); m; m = re.exec(src)) {
       if (m.index < start || m.index >= end) outside.push(src.slice(Math.max(0, m.index - 40), m.index + 10).replace(/\s+/g, " "));
     }
@@ -268,7 +272,7 @@ describe("TRIPWIRE — the price shows only on the member checkout", () => {
           readFileSync(p, "utf8")
             .split("\n")
             .forEach((line, i) => {
-              if (/\$\s?\d/.test(line)) hits.push(`${p.split("/src/")[1]}:${i + 1}`);
+              if (PRICE.test(line)) hits.push(`${p.split("/src/")[1]}:${i + 1}`);
             });
         }
       }

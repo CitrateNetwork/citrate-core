@@ -482,6 +482,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
           ? "expires " + memExpiry
           : "expiry not set";
   const memBadge = s.entitlement === "active" ? "active" : s.entitlement;
+  // A free user (no membership, not lapsed, no grant) is offered membership, not renewal; the
+  // price is shown only on the checkout itself.
+  const freeUser = s.entitlement !== "lapsed" && effTier === "free" && !s.hasGrant;
   const mb =
     s.entitlement === "active"
       ? ["var(--ok-bg)", "var(--ok)", "var(--ok)"]
@@ -1084,17 +1087,28 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 </span>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
-                  Renew ↗
-                </button>
+                {freeUser ? (
+                  // The guarded checkout (link first, never for an account already granted), as in onboarding S3.
+                  <button className="btn btn-secondary btn-sm" onClick={() => void store.becomeMember()}>
+                    Become a member ↗
+                  </button>
+                ) : (
+                  <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
+                    Renew ↗
+                  </button>
+                )}
                 {/* Q-A.1 (Rule 1) — the Stripe customer-portal link has no backend
                     in this build; honest DISABLED state, not a toast excuse. Renew
-                    (left) is the REAL wired checkout path. */}
-                <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />
+                    (left) is the REAL wired checkout path. A free user has nothing to cancel. */}
+                {!freeUser && <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />}
               </div>
-              <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-                On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. Stake attribution ends until renewal; vaulted principal stays vaulted.
-              </p>
+              {!freeUser && (
+                <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
+                  On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours.
+                  {/* The grant sentence only for someone who holds a grant. */}
+                  {s.hasGrant && " Stake attribution ends until renewal; vaulted principal stays vaulted."}
+                </p>
+              )}
             </div>
             {s.hasSbt && (
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>

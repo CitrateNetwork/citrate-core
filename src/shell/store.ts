@@ -2234,6 +2234,11 @@ export class Store {
       this.toast("Renewal opens the checkout in the desktop app.");
       return;
     }
+    await this.openMembershipCheckout();
+  }
+
+  /** Open the core-membership checkout in the browser and watch for the new entitlement. */
+  private async openMembershipCheckout(): Promise<void> {
     try {
       // Pass the signed-in email as login_hint so the browser checkout targets THIS account.
       await bridge.membership.checkout(this.state.authEmail ?? undefined);
@@ -2243,9 +2248,29 @@ export class Store {
       this.toast("Could not open checkout — " + String((err as Error).message ?? err));
     }
   }
-  /** Settings › Billing "Become a member" for a free user. */
+  /**
+   * Settings › Billing "Become a member ↗" for a free user: the same guards as onboarding S3
+   * (onS3Pay) before any money moves. (1) Link first: the grant goes to the identity's wallet
+   * claim, which this device can spend from only once linked. (2) Never open checkout for an
+   * account that already holds the grant on chain (one per sub; a second order can never be
+   * granted). An unreadable chain is not evidence of a grant, as in S3. Renewal for a lapsed
+   * member stays on renewMembership: a lapsed member holds the grant and still renews.
+   */
   async becomeMember(): Promise<void> {
-    await this.renewMembership();
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Membership checkout opens in the desktop app.");
+      return;
+    }
+    if (this.linkBeforeCheckout("Link your wallet first — approve the link, then choose Become a member again.")) return;
+    const held = await this.readHeldGrant();
+    if (held) {
+      this.setState({ hasGrant: true, hasSbt: held.hasSbt });
+      this.save();
+      this.toast("This account already holds the membership grant, so there is nothing to check out. Your membership shows here once your identity claim refreshes.");
+      this.startEntitlementPoll();
+      return;
+    }
+    await this.openMembershipCheckout();
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
@@ -5572,11 +5597,7 @@ export class Store {
       // check out. The link ceremony re-reads the claim on approval
       // (authUserinfo/refreshWallet), so walletIsLinked() flips true and the next
       // Pay proceeds. This mirrors how activation is gated on the link.
-      if (!this.walletIsLinked()) {
-        this.toast("Link your wallet first — approve the link, then tap Pay again.");
-        void this.linkWallet();
-        return;
-      }
+      if (this.linkBeforeCheckout("Link your wallet first — approve the link, then tap Pay again.")) return;
       // ★ MONEY GUARD ★ — never open checkout for a member who ALREADY holds the
       // grant. Settlement is chain truth, and the client had no way to observe an
       // existing grant: `settled` was reachable ONLY through `pollMembership`, which
@@ -5711,22 +5732,38 @@ export class Store {
   async settleS3IfAlreadyGranted(): Promise<boolean> {
     if (BRIDGE_MODE !== "tauri") return false;
     if (this.state.s3 === "settled") return true;
+    const grant = await this.readHeldGrant();
+    if (!grant) return false;
+    this.setState({
+      s3: "settled",
+      s3PollExhausted: false,
+      hasGrant: true,
+      hasSbt: grant.hasSbt,
+    });
+    this.save();
+    return true;
+  }
+
+  /**
+   * The membership grant this account already holds on chain (`isGrantOnChain && hasSbt`, read
+   * permissionlessly from 40204), or null. Null on any read failure: an unreadable chain is not
+   * evidence of a grant (Rule 1). Shared by every checkout's money guard.
+   */
+  private async readHeldGrant(): Promise<GrantStatus | null> {
     try {
       const grant = await bridge.membership.grantStatus(this.identity().wallet);
-      if (isGrantOnChain(grant) && grant.hasSbt) {
-        this.setState({
-          s3: "settled",
-          s3PollExhausted: false,
-          hasGrant: true,
-          hasSbt: grant.hasSbt,
-        });
-        this.save();
-        return true;
-      }
+      return isGrantOnChain(grant) && grant.hasSbt ? grant : null;
     } catch {
-      // Honest no-op: an unreadable chain is not evidence of a grant.
+      return null;
     }
-    return false;
+  }
+
+  /** Checkout ordering guard: true (and the link ceremony opened) when the wallet is not linked yet. */
+  private linkBeforeCheckout(message: string): boolean {
+    if (this.walletIsLinked()) return false;
+    this.toast(message);
+    void this.linkWallet();
+    return true;
   }
   onS5Begin(): void {
     this.setState({ s5: "verifying", s5c: 0 });
