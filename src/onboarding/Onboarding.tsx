@@ -10,7 +10,7 @@ import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
 import { CONSENSUS_LAG_NOTE, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
-import { PendingJoinCard, InvitePasteField } from "../surfaces/PendingJoinCard";
+import { HaveAnInvite } from "../surfaces/HaveAnInvite";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -93,9 +93,9 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
-          {s.pendingJoin && (
+          {s.inviteLink && (
             <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
-              <PendingJoinCard store={store} s={s} />
+              <HaveAnInvite store={store} s={s} />
             </div>
           )}
           <div style={eyebrow}>Chain 40204 · testnet-beta</div>
@@ -298,28 +298,14 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
  * one-tap switch. It is DISPLAY ONLY — it grants nothing; the authority sign-in and the
  * server-side sub↔order reconciler are the sole gates (A8/A2).
  */
-// GROW-S1 task 12 — an invite that arrived (deep link) or was pasted waits here through setup. Before
-// sign-in + wallet the card says the join comes after setup; from the wallet step on it offers
-// Review, then one explicit "Join <cluster>". Never a silent join.
+// D-12 — an invite link that arrived (deep link) or was pasted waits here through setup, on the same
+// component as Groups. Before the wallet step the Join button says the request goes once setup gets
+// there; from then on Join sends the request. Never a silent join: the inviter approves it.
 function OnboardingInvite({ store, s }: { store: Store; s: AppState }) {
-  if (s.pendingJoin) return <PendingJoinCard store={store} s={s} />;
   return (
-    <details className="surface" style={{ padding: "10px 14px" }} data-testid="onboarding-invite-paste">
-      <summary style={{ fontSize: 12.5, color: "var(--tx-2)", cursor: "pointer" }}>Have an invite?</summary>
-      <div style={{ paddingTop: 10 }}>
-        <InvitePasteField
-          onSubmit={async (text) => {
-            if (await store.acceptInviteInput(text)) return;
-            if (/^citrate:\/\/invite\?/i.test(text)) {
-              store.setState({ pendingInvite: { url: text } });
-              store.toast("Got it. You can join that group from Groups once setup finishes.");
-              return;
-            }
-            store.toast("That doesn't look like an invite link or code.");
-          }}
-        />
-      </div>
-    </details>
+    <div className="surface" style={{ padding: "10px 14px" }} data-testid="onboarding-invite">
+      <HaveAnInvite store={store} s={s} />
+    </div>
   );
 }
 
