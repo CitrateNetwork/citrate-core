@@ -226,6 +226,9 @@ mod windows_installer_hook_tests;
 // 0.5.1 -> 0.5.2: the app data a 0.5.1 install holds, and the updater feed it trusts.
 #[cfg(test)]
 mod upgrade_updater_feed_tests;
+// RC52 G8: the K1-L update-e2e driver (feature `updater-e2e`, test builds only; guard tests always).
+#[cfg(any(test, feature = "updater-e2e"))]
+mod updater_e2e;
 #[cfg(test)]
 mod upgrade_v051_tests;
 // RC52 G2: a 0.5.1 install on r1005 started by this build on a new genesis (K6).
@@ -365,6 +368,9 @@ pub fn run() {
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());
+            // RC52 G8: a K1-L update-e2e test build checks, installs and restarts by itself.
+            #[cfg(feature = "updater-e2e")]
+            updater_e2e::start(app.handle());
             // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
             // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
             chain_agent::start_nightly_if_ready(app.handle().clone());
