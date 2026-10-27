@@ -12,6 +12,7 @@ export { Models } from "./Models";
 export { StorageFiles } from "./StorageFiles";
 // K4 — storage components (Files, Memory = Storage, Pins, Backup) for Node › Storage.
 export { StoragePins, PinBondParams } from "./StoragePins";
+export { NodeServices } from "./NodeServices";
 export { StorageBackup } from "./StorageBackup";
 export { Groups } from "./Groups";
 export { Cluster } from "./Cluster";

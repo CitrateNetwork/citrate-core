@@ -1,0 +1,77 @@
+{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 512,
+  "system": "You are Hermes. Be brief.",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What is the weather in Boston and Paris?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Checking both."
+        },
+        {
+          "type": "tool_use",
+          "id": "call_1",
+          "name": "get_weather",
+          "input": {
+            "location": "Boston, MA"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "call_2",
+          "name": "get_weather",
+          "input": {
+            "location": "Paris"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_1",
+          "content": "{\"temp_c\":12}"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_2",
+          "content": "sunny"
+        },
+        {
+          "type": "text",
+          "text": "Thanks. Which is warmer?"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather for a location",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ]
+      }
+    }
+  ]
+}

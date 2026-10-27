@@ -34,4 +34,31 @@ crash_retry_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | core#
 health_retry_with_a_held_reader_waits_for_cleanup | regression | SCL-S2.2 | core#397: the same after a health-check failure with budget left
 stop_during_a_held_retry_spawns_nothing | regression | SCL-S2.2 | core#397: a Stop during a held retry wins; Incomplete, then Stopped with one incarnation once the reader ends
 start_after_shutdown_is_rejected_closing | regression | SCL-S2.2 | a Start after shutdown begins is RejectedClosing and spawns nothing
+late_spawn_after_stop_goes_straight_to_teardown | regression | SCL-S2.3 | a spawn admitted before Stop is torn down unpublished; the Stop stays Pending until the ticket resolves (INV-12)
+a_start_racing_the_failed_transition_is_a_fresh_intent | regression | SCL-S2.3 | a Start landing during the Failed transition is a fresh intent, never a join of the failing one
+a_start_overtaken_during_its_spawn_reads_superseded | regression | SCL-S2.3 | a Start overtaken by Stop during its spawn reads Superseded, never Started
+late_spawn_after_shutdown_is_torn_down | regression | SCL-S2.3 | a spawn admitted before shutdown is torn down; no Start after Closing
+publication_ticket_released_before_stop_settles_is_in_the_complete_scope | regression | SCL-S2.3 | a publication admitted before Stop cannot become active after it; its cleanup is in the Complete scope
+held_publication_ticket_makes_stop_incomplete_until_released | regression | SCL-S2.3 | a held publication ticket makes Stop Incomplete and Quarantined until released
+a_dropped_stale_ticket_keeps_the_stop_open | regression | SCL-S2.3 | a stale ticket dropped without cleaned() keeps its publication owned: the Stop is Incomplete naming it and the service stays Quarantined
+a_ticket_dropped_by_an_unwinding_caller_keeps_the_stop_open | regression | SCL-S2.3 | an uncommitted ticket dropped by an unwinding caller stays owned: the Stop is Incomplete naming it and the service stays Quarantined
+a_withdrawn_ticket_lets_the_stop_complete | positive-control | SCL-S2.3 | a ticket withdrawn before the Stop is resolved and the Stop settles Complete
+a_ticket_from_a_replaced_intent_never_becomes_active | regression | SCL-S2.3 | a ticket whose intent a Stop and then a Start replaced is refused as stale, though the service is meant to run again
+start_during_teardown_waits_for_an_old_publication_ticket | regression | SCL-S2.3 | a Start superseding a Stop spawns nothing while an old-intent publication ticket is held
+shutdown_with_an_open_publication_ticket_is_incomplete | regression | SCL-S2.3 | Stop plus immediate shutdown with an open ticket is Incomplete and stays Quarantined; a late release reconciles
+after_shutdown_quarantine_clears_once_readers_and_tickets_are_done | regression | SCL-S2.3 | after shutdown, releasing the last ticket re-checks the readers and reconciles to Stopped
+after_shutdown_a_late_reader_end_clears_quarantine | regression | SCL-S2.3 | after shutdown, a late reader end is observed by a snapshot read
+shutdown_keeps_a_held_ticket_quarantine | regression | SCL-S2.3 | shutdown does not flip a service Quarantined on a held ticket to Stopped
+a_deadline_stop_joining_a_plain_stop_applies_the_tighter_deadline | regression | SCL-S2.4 | a deadline Stop joining a pending Stop arms or tightens its deadline
+a_deadline_stop_without_a_monitor_holds_no_record | regression | SCL-S2.4 | with the monitor gone, a deadline Stop leaves no overlay record behind
+dropping_a_supervisor_frees_its_deadline_records | regression | SCL-S2.4 | dropping a supervisor frees its deadline records
+stop_deadline_expires_while_teardown_is_held | regression | SCL-S2.4 | the publisher marks expiry; late completion never turns DeadlineExpired into Complete
+receipt_reports_expiry_even_if_the_publisher_never_ran | regression | SCL-S2.4 | a receipt read after the deadline reports expiry without the publisher (RT-16)
+stop_settled_before_its_deadline_is_complete | positive-control | SCL-S2.4 | a Stop inside its deadline is Complete and frees its record
+an_expired_stop_superseded_before_it_settles_stays_deadline_expired | regression | SCL-S2.4 | a Start that supersedes a Stop already past its deadline leaves that Stop DeadlineExpired
+concurrent_deadline_stops_arm_one_record | regression | SCL-S2.4 | concurrent deadline Stops arm one record; a joining call does not restart the deadline
+deadline_overlay_is_fixed_and_full_admission_commits_nothing | regression | SCL-S2.4 | the overlay holds DEADLINE_RECORDS records; arming beyond is Busy and commits nothing
+expired_stop_followed_by_later_controls_never_reads_complete | regression | SCL-S2.4 | an expired Stop followed by later controls never reads Complete
+publisher_creation_failure_leaves_deadline_admission_unavailable | regression | SCL-S2.4 | creation failure: Unavailable, nothing committed, no replacement (RT-16)
+publisher_exit_leaves_admission_unavailable_without_replacement | regression | SCL-S2.4 | a publisher that ends leaves admission Unavailable, no replacement (RT-16)
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures

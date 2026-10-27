@@ -177,8 +177,8 @@ pub(crate) const ENVELOPE_FILE: &str = "custody.enc";
 ///   fund-relevant. B1.1 mirrors the `oidc-` reservation here (B1.1-ADV-R).
 /// - `connection-` — the OAuth connection records (`connection-<service>`), written only by
 ///   the backend's token exchange in `connections.rs`.
-/// - `social.` — the sealed social-link tokens (`social.<network>`), written only by the
-///   backend's link flow in `social.rs`.
+/// - `social.` — social-link tokens (`social.<network>`) sealed by earlier builds; nothing
+///   writes them now and disconnect clears them, but the namespace stays reserved.
 ///
 /// Every in-process vault write must target one of these namespaces; src-tauri's
 /// `vault_slot_reservation_tests` holds the allowlist of write sites and fails on a new one.
@@ -1752,7 +1752,7 @@ pub fn custody_status_sync(
 #[tauri::command]
 pub async fn custody_init(
     app_h: tauri::AppHandle,
-    passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1766,10 +1766,11 @@ pub async fn custody_init(
 /// Blocking body of [`custody_init`]; reached only through [`crate::blocking::off_main`].
 pub fn custody_init_sync(
     state: State<'_, CustodyState>,
-    mut passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
-    // Operate on the owned String's bytes so we can zeroize the inbound copy.
-    let mut bytes = std::mem::take(&mut passphrase).into_bytes();
+    // The passphrase arrives in a wiping buffer; the byte copy the vault consumes is wiped too.
+    let mut bytes = passphrase.expose().as_bytes().to_vec();
+    drop(passphrase);
     let r = state.0.init(&mut bytes).map_err(err_str);
     bytes.zeroize();
     r
@@ -1778,7 +1779,7 @@ pub fn custody_init_sync(
 #[tauri::command]
 pub async fn custody_unlock(
     app_h: tauri::AppHandle,
-    passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1792,9 +1793,10 @@ pub async fn custody_unlock(
 /// Blocking body of [`custody_unlock`]; reached only through [`crate::blocking::off_main`].
 pub fn custody_unlock_sync(
     state: State<'_, CustodyState>,
-    mut passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
-    let mut bytes = std::mem::take(&mut passphrase).into_bytes();
+    let mut bytes = passphrase.expose().as_bytes().to_vec();
+    drop(passphrase);
     let r = state.0.unlock(&mut bytes).map_err(err_str);
     bytes.zeroize();
     r

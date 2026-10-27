@@ -450,3 +450,32 @@ fn the_kept_wallet_vault_says_it_also_holds_sign_in_and_connection_tokens() {
     assert!(reason.contains("connected"), "{reason}");
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// RC52 P-9a: the member's MCP server env values are keychain items named by the server list in the
+/// Hermes folder, so "delete my local data" lists and deletes them too.
+#[test]
+fn mcp_server_env_items_are_listed_and_deleted_with_local_data() {
+    let base = tmp_root("mcp-items");
+    let roots = layout(&base);
+    let hermes = roots.data_dir.join("hermes");
+    std::fs::create_dir_all(&hermes).unwrap();
+    let r = "ab".repeat(16);
+    std::fs::write(
+        hermes.join(crate::mcp_servers::REGISTRY_FILE),
+        serde_json::json!({"servers": [{"name": "notes", "transport": "stdio",
+            "command": "/bin/x", "env_refs": {"NOTES_TOKEN": r}}]})
+        .to_string(),
+    )
+    .unwrap();
+    let account = crate::mcp_servers::env_account("notes", "NOTES_TOKEN", &r);
+    let kc = FakeKeychain::with(&[(LEGACY_SERVICE, account.as_str())]);
+    let plan = build_plan(&roots, &kc, DeleteOptions::default());
+    let item = plan.keychain.iter().find(|k| k.account == account);
+    assert!(item.is_some(), "the MCP env item is listed");
+    let item = item.unwrap();
+    assert_eq!(item.service, crate::mcp_servers::KEYRING_SERVICE);
+    assert_eq!(item.action, Action::Delete);
+    assert_eq!(item.present, Some(true));
+    execute_plan(&plan, &kc);
+    assert!(!kc.has(LEGACY_SERVICE, &account));
+}

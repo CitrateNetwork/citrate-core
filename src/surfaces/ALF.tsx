@@ -58,7 +58,7 @@ export function ALF({ s }: SurfaceProps) {
       </h1>
       <p style={{ fontSize: 15, lineHeight: 1.6, color: "var(--tx-2)", margin: "0 0 28px", maxWidth: 620 }}>
         This is where you contribute compute to the cooperative from your node. Signing stays here,
-        behind a confirmation you approve by hand; your earnings and votes live in the web portal.
+        behind a confirmation you approve by hand; your rewards and votes live in the web portal.
       </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
