@@ -7,7 +7,7 @@
 // them into those words, so every surface uses the same definition:
 //
 //   - validator state: from ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch and
-//     currentEpoch() (contract v1.1 §1), never stake >= 32k and never LiquidStakingPool self-stake;
+//     currentEpoch() (contract v1.1 §1), never a stake amount such as stake >= 32k;
 //   - minimum stake: ValidatorRegistry.minStake(), read, never a hard-coded 32,000 (§2);
 //   - durations in blocks: blocks x the block time measured over the last 100 blocks, never an
 //     assumed 12 s (§2 "Durations given in blocks").
@@ -245,7 +245,7 @@ export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | `R
  * the stake reads 0. "Registered · active from epoch N" shows the real N (never a promised epoch); "Validator active"
  * needs isActive AND actEpoch <= currentEpoch. Returns null when the stake is registered but the
  * activation has not been read, or the registry reads are inconsistent: the caller shows "—".
- * LiquidStakingPool self-stake is not an input: it never makes a validator.
+ * No other stake figure is an input: only the registry makes a validator.
  */
 export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null): ValidatorWord | null {
   // C1-V2: the registry status comes first. A full exit moves the bonded stake to escrow, so

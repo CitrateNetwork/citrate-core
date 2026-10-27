@@ -25,7 +25,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},

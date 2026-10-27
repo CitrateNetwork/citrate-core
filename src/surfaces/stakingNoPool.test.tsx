@@ -77,7 +77,11 @@ describe("D-9: the Wallet has no pool self-stake", () => {
 
   it("the Overview staked tile counts the grant only, with no self-stake", () => {
     const html = renderToStaticMarkup(<Wallet store={stub} s={member("overview")} />);
-    expect(html).toContain("33,500");
+    // #348 (C1-V V7): "staked" is ValidatorRegistry.stakeOf (none here: the bond is not activated),
+    // so the tile shows the validator state, never the grant and never grant + pool shares.
+    const tile = /<span class="eyebrow">Staked<\/span>(.*?)<\/div>/s.exec(html)?.[1] ?? "";
+    expect(tile).not.toBe("");
+    expect(tile).not.toContain("33,500");
     expect(html).not.toContain("36,000");
     expect(html).not.toContain("2,500");
     expect(html).not.toMatch(/\+ [\d,]+ self/);
@@ -86,8 +90,11 @@ describe("D-9: the Wallet has no pool self-stake", () => {
   it("the Dashboard staked tile counts no pool shares and does not name the pool", () => {
     const html = renderToStaticMarkup(<Dashboard store={stub} s={{ ...member("overview"), node: "synced", peers: 3, syncPct: 100, height: 499_058 }} />);
     for (const t of RETIRED.uiCopy) expect(html).not.toContain(t);
-    expect(html).toContain("33,500");
+    // #348 (C1-V V7): the Dashboard's Staked is ValidatorRegistry.stakeOf (none here), never the
+    // grant and never grant + pool shares.
+    expect(html).not.toContain("33,500");
     expect(html).not.toContain("36,000");
+    expect(html).not.toContain(">2,500<");
   });
 
   it("a balances reply that still carries a pool figure never reaches app state", async () => {

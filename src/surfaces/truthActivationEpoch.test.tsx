@@ -38,7 +38,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
@@ -109,7 +108,7 @@ describe("#348 — §1 activation epoch", () => {
     (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     (store as unknown as { validatorPubkey: string | null }).validatorPubkey = null;
-    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActivation: null });
+    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, validatorActivation: null });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: KEY });

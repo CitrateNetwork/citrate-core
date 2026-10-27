@@ -397,7 +397,7 @@ export function foldNodeLogs(lines: { ts: number; stream: "out" | "err"; line: s
  * enum. A `running` node is `syncing` until fully synced, then `validating` ONLY
  * when the key is "Validator active" (contract v1.1 §1: isActive AND validatorInfo.actEpoch <=
  * currentEpoch), else `synced`. A registration still pending activation is not active, a stake
- * amount (bond or LiquidStakingPool self-stake) never makes a validator, and an unread or failed
+ * amount never makes a validator, and an unread or failed
  * read (null) is not active.
  * This is the seam that replaces the sim `tick()` node state in a Tauri build.
  */

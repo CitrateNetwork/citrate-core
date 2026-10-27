@@ -447,7 +447,7 @@ export interface AppState {
   /**
    * C1-V (contract v1.1 §1) — this node's key in the registry: `isActive(pubkey)`,
    * `validatorInfo(pubkey)` status + actEpoch, and `currentEpoch()`. The ONLY input to the
-   * validator words; stake amounts and LiquidStakingPool self-stake never are. null = not read
+   * validator words; stake amounts never are. null = not read
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;

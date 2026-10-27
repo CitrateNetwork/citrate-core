@@ -48,8 +48,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   // with no folded read contributes 0 rather than a fabricated 32,000 (Rule 1).
   const grantSaltStr = s.hasGrant ? fmtSaltFromWei(s.s5StakeWei) : "—";
   // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
-  // folded as `bondedStake`. The grant in a locked bond is not staked until the bond is activated,
-  // and a LiquidStakingPool deposit (`selfStake`) is not validator stake.
+  // folded as `bondedStake`. The grant in a locked bond is not staked until the bond is activated.
   const staked = s.bondedStake;
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
