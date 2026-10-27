@@ -1251,6 +1251,7 @@ fn sidecar_candidates_try_exe_suffix_first_on_windows() {
 /// Whether `pid` is still this process's unreaped child (running or exited). `waitid` with
 /// `WNOWAIT` looks without reaping and fails with `ECHILD` once the child was reaped.
 #[cfg(unix)]
+#[allow(unsafe_code)] // Reviewed (K6): FFI call only, see SAFETY below.
 fn unreaped_child(pid: u32) -> bool {
     // SAFETY: zeroed is a valid siginfo_t; waitid writes into it and reaps nothing (WNOWAIT).
     unsafe {

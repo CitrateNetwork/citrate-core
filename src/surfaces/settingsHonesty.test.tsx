@@ -33,6 +33,7 @@ const SECTIONS: AppState["sSec"][] = [
   "account",
   "connections",
   "hermes",
+  "models",
   "ai",
   "mcp",
   "node",

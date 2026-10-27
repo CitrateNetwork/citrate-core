@@ -874,3 +874,46 @@ fn only_a_node_error_proves_a_send_was_refused() {
     assert!(!send_refused(&RpcError::BadResponse("html".into())));
     assert!(!send_refused(&RpcError::MissingField("hash".into())));
 }
+
+/// K6: an anchor against a same-chain-id network with another genesis signs and sends nothing,
+/// and the card stays pending.
+#[test]
+fn k6_gated_anchor_against_another_genesis_signs_nothing_and_keeps_the_card() {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c
+        .request(good_request(20_000, root(0x61)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x9d0c")),
+        ok(json!({ "hash": "0x2222222222222222222222222222222222222222222222222222222222222222" })),
+    ]));
+    let vault = unlocked_vault();
+    let rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+    let gate = crate::rpc::ExpectedNetwork {
+        name: "test-net".into(),
+        chain_id: Some(40204),
+        genesis_hash: Some(
+            "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1".into(),
+        ),
+    };
+    let r = c.approve_and_broadcast_gated(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        guarded(&vault, &rec),
+        Some(&gate),
+    );
+    assert!(
+        matches!(r, Err(AnchorError::Rpc(ref m)) if m.contains("nothing was signed")),
+        "{r:?}"
+    );
+    assert_eq!(
+        rpc.transport().methods(),
+        vec!["eth_chainId", "eth_getBlockByNumber"]
+    );
+    assert_eq!(c.pending().len(), 1, "the card stays for another try");
+}
