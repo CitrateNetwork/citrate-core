@@ -13,15 +13,13 @@ import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import { Markdown } from "../components/Markdown";
-import type { DirectorySearchHit, Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
+import type { DirectorySearchHit, Group, GroupRole, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
-import { approvalStep } from "./claimApproval";
-import { InviteLinks, YourInviteLinks } from "./InviteLinks";
-import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
-import { reachedStep } from "../privacy/joinFunnel";
+import { HaveAnInvite } from "./HaveAnInvite";
+import { InvitePanel } from "./InvitePanel";
 import { RelayStatusChip } from "./RelayStatusChip";
 import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
 import { GroupRoundsCard } from "../fl/GroupRoundsCard";
@@ -86,8 +84,6 @@ export function Groups({ store, s }: SurfaceProps) {
   const st = groupsSlice.use();
   const cl = clusterSlice.use();
   const [tab, setTab] = useState<Tab>("chat");
-  // Bumped when the inviter panel makes or revokes a link, so "Your invite links" reloads.
-  const [linksVersion, setLinksVersion] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [kind, setKind] = useState<Group["kind"]>("channel");
   const nameRef = useRef<HTMLInputElement>(null);
@@ -97,12 +93,6 @@ export function Groups({ store, s }: SurfaceProps) {
   const cidRef = useRef<HTMLInputElement>(null);
   const [cidAdvanced, setCidAdvanced] = useState(false);
   const [dropOver, setDropOver] = useState(false);
-  // D4 claimable invites
-  const inviteHandleRef = useRef<HTMLInputElement>(null);
-  const claimRef = useRef<HTMLInputElement>(null);
-  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
-  const [requests, setRequests] = useState<InviteClaim[]>([]);
-  const [redeemOpen, setRedeemOpen] = useState(false);
   const [pickerQ, setPickerQ] = useState(""); // CONNECT-S2 — add-member people-picker search
   // #61 find-via-X — search the opt-in directory for someone by their social handle.
   const [dirPlatform, setDirPlatform] = useState<"x" | "discord">("x");
@@ -275,7 +265,7 @@ export function Groups({ store, s }: SurfaceProps) {
     const v = addrRef.current?.value.trim() ?? "";
     if (!v) return;
     if (v.startsWith("@")) {
-      store.toast("To invite by @handle, use “Invite by @handle” below — Citrate never looks up an address from a handle.");
+      store.toast("To invite someone by their @handle, press Invite someone below and send them the link. Citrate never looks up an address from a handle.");
       return;
     }
     if (addrRef.current) addrRef.current.value = "";
@@ -298,138 +288,11 @@ export function Groups({ store, s }: SurfaceProps) {
     }
   };
 
-  // D4 claimable invites (owner side)
-  const refreshInvites = async () => {
-    if (!selected || !canManage) return;
-    try {
-      setPendingInvites(await bridge.invites.list(selected.id));
-    } catch {
-      /* honest: none / relay unavailable */
-    }
-    // CONNECT-S1 — poll the server-blind claims-inbox for incoming requests (no DM-back). Honest-empty
-    // if the relay/daemon can't be reached; never a fabricated request (Rule 1).
-    try {
-      setRequests(await bridge.invites.pollClaims(selected.id));
-    } catch {
-      setRequests([]);
-    }
-  };
-  // CONNECT-S1 — approve an incoming request: consume the one-time token, then add via the normal path.
-  const approveRequest = async (req: { group: string; token: string; address: string }) => {
-    if (!selected) return;
-    try {
-      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, req.token, req.address));
-      if (step.add) void addMemberToGroup(req.address);
-      store.toast(step.toast);
-      await refreshInvites();
-    } catch (e) {
-      store.toast(e instanceof Error ? e.message : String(e));
-    }
-  };
+  // CONNECT-S2 — keep the add-member picker's people fresh while the People tab is open.
   useEffect(() => {
-    if (tab === "roster" && selected && canManage) {
-      void refreshInvites();
-      void store.refreshPeople(); // CONNECT-S2 — keep the add-member picker's people fresh
-    } else setPendingInvites([]);
+    if (tab === "roster" && selected && canManage) void store.refreshPeople();
   }, [tab, selected?.id, canManage]);
 
-  const doMintInvite = async () => {
-    if (!selected) return;
-    const h = (inviteHandleRef.current?.value.trim() ?? "").replace(/^@/, "");
-    if (!h) {
-      store.toast("Enter the @handle you're inviting.");
-      return;
-    }
-    try {
-      const { link } = await bridge.invites.create(selected.id, h);
-      if (inviteHandleRef.current) inviteHandleRef.current.value = "";
-      try {
-        await navigator.clipboard?.writeText(link);
-      } catch {
-        /* clipboard may be unavailable */
-      }
-      store.toast(`Invite for @${h} copied — DM it to them on the platform. They open it, tap Join, and they're in. No approval needed.`);
-      await refreshInvites();
-    } catch (e) {
-      store.toast(e instanceof Error ? e.message : String(e));
-    }
-  };
-  const doAddFromClaim = async () => {
-    const raw = claimRef.current?.value.trim() ?? "";
-    if (!raw || !selected) return;
-    let claim: { group?: string; token?: string; address?: string };
-    try {
-      claim = JSON.parse(raw);
-    } catch {
-      store.toast("That claim isn't valid — paste the whole claim they sent back.");
-      return;
-    }
-    if (claim.group !== selected.id || !claim.token || !claim.address) {
-      store.toast("That claim is for a different group or is incomplete.");
-      return;
-    }
-    try {
-      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, claim.token, claim.address));
-      if (step.add) void addMemberToGroup(claim.address);
-      store.toast(step.toast);
-      if (claimRef.current) claimRef.current.value = "";
-      await refreshInvites();
-    } catch (e) {
-      store.toast(e instanceof Error ? e.message : String(e));
-    }
-  };
-  // Invitee side: turn an invite link into membership. INVITE-S2 — SELF-ADMIT: open the link, click
-  // Join, and you're in, in one click (external commit; no owner approval, even if the owner is
-  // offline). If self-admit fails (an older invite, or the invite wasn't published), fall back to the
-  // CONNECT-S1 claim-back path (seal a request to the owner) so older links still work.
-  const doRedeemLink = async (link: string) => {
-    if (!link) return;
-    const g = /[?&]g=([^&]*)/.exec(link)?.[1];
-    const t = /[?&]t=([^&]*)/.exec(link)?.[1];
-    const k = /[?&]k=([^&]*)/.exec(link)?.[1];
-    if (!g || !t) {
-      store.toast("That doesn't look like an invite link.");
-      return;
-    }
-    reachedStep("arrive"); // 0.5.2 Join funnel: an invite arrived by paste (step id only)
-    // Primary: one-click self-admit.
-    try {
-      await bridge.invites.redeem(link);
-      reachedStep("join_group");
-      setRedeemOpen(false);
-      await refreshGroups();
-      store.toast("You're in — welcome to the group.");
-      return;
-    } catch (e) {
-      // Self-admit didn't take (spent/expired/revoked, or an older unpublished invite). If the link
-      // carries a claims key, fall back to the claim-back request rather than dead-ending.
-      if (!k) {
-        store.toast("Couldn't join with that invite — " + (e instanceof Error ? e.message : String(e)));
-        return;
-      }
-    }
-    // Fallback (older link with a claims key): seal + submit a request to the owner.
-    try {
-      await bridge.invites.submitClaim(link);
-      setRedeemOpen(false);
-      store.toast("Request sent — the person who invited you will see it and approve you.");
-    } catch (e) {
-      store.toast("Couldn't join or request — " + (e instanceof Error ? e.message : String(e)));
-    }
-  };
-  // GROW-S1 task 12 — the paste field: a v2 link or code goes to Rust (held, then reviewed, since
-  // pasting is the member acting); an app-only `citrate://invite` link keeps the redeem path above.
-  const doPasteInvite = async (text: string) => {
-    if (await store.acceptInviteInput(text)) {
-      setRedeemOpen(false);
-      return;
-    }
-    if (/^citrate:\/\/invite\?/i.test(text.trim())) {
-      await doRedeemLink(text.trim());
-      return;
-    }
-    store.toast("That doesn't look like an invite link or code.");
-  };
   const doRole = (address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
     void store.requestSig({
@@ -504,72 +367,6 @@ export function Groups({ store, s }: SurfaceProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100%", boxSizing: "border-box" }}>
-      {/* GROW-S1 task 12 — a v2 invite waiting for the member (held in Rust): Review, then Join. */}
-      {s.pendingJoin && (
-        <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--line-1)" }}>
-          <PendingJoinCard store={store} s={s} />
-        </div>
-      )}
-      {/* An app-only `citrate://invite?…` link (one-click Join) or a legacy display link (context only)
-          that the OS handed the app. */}
-      {s.pendingInvite && (() => {
-        const pi = s.pendingInvite;
-        // INVITE-S2 — a token (`t=`) is all a one-click self-admit needs; a `k=` claims key only
-        // matters for the older claim-back fallback. A tokenless (public referral) link shows context only.
-        const hasToken = /[?&]t=/.test(pi.url);
-        const hasClaimsKey = /[?&]k=/.test(pi.url);
-        return (
-          <div style={{ gridColumn: "1 / -1", background: "var(--accent-wash)", borderBottom: "1px solid var(--accent)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 13.5 }}>
-              {pi.inviterHandle ? <strong>@{pi.inviterHandle}</strong> : "Someone"} invited you to <strong>{pi.clusterName || (hasToken ? "a group" : pi.clusterId) || "a cluster"}</strong>
-              {pi.goal ? <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", marginLeft: 8 }}>· {pi.goal}</span> : null}
-              {/* #57 — a tokenless (public referral) link only shows context; it can't request access on
-                  its own. Say so honestly instead of dead-ending at Dismiss (Rule 1). */}
-              {!hasToken && (
-                <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 4, lineHeight: 1.5 }}>
-                  This link just shows who invited you — ask {pi.inviterHandle ? `@${pi.inviterHandle}` : "them"} to send you a direct invite link so you can join in one click.
-                </span>
-              )}
-            </span>
-            <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-              {hasToken && (
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={async () => {
-                    // INVITE-S2 — one-click self-admit. Falls back to a claim-back request only for an
-                    // older link (with a `k=` key) whose self-admit didn't take.
-                    try {
-                      await bridge.invites.redeem(pi.url);
-                      reachedStep("join_group");
-                      await refreshGroups();
-                      store.toast("You're in — welcome to the group.");
-                      store.clearPendingInvite();
-                      return;
-                    } catch (e) {
-                      if (!hasClaimsKey) {
-                        store.toast("Couldn't join with that invite — " + (e instanceof Error ? e.message : String(e)));
-                        store.clearPendingInvite();
-                        return;
-                      }
-                    }
-                    try {
-                      await bridge.invites.submitClaim(pi.url);
-                      store.toast("Request sent — the person who invited you will approve you.");
-                    } catch (e) {
-                      store.toast("Couldn't join or request — " + (e instanceof Error ? e.message : String(e)));
-                    } finally {
-                      store.clearPendingInvite();
-                    }
-                  }}
-                >
-                  Join
-                </button>
-              )}
-              <button className="btn btn-ghost btn-sm" onClick={() => store.clearPendingInvite()} style={{ color: "var(--tx-3)" }}>Dismiss</button>
-            </span>
-          </div>
-        );
-      })()}
       {/* ---------- top bar: group switcher (#59 — replaces the old 248px left rail so the
            surface is one pane, not a sidebar next to a sidebar) ---------- */}
       <div style={{ borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", padding: "12px 20px", display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}>
@@ -597,7 +394,6 @@ export function Groups({ store, s }: SurfaceProps) {
             </div>
           )}
           <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexShrink: 0 }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setRedeemOpen((v) => !v)}>{redeemOpen ? "Close" : "Have an invite?"}</button>
             <button className="btn btn-secondary btn-sm" onClick={() => setCreateOpen((v) => !v)}>{createOpen ? "Close" : "New group"}</button>
           </span>
         </div>
@@ -624,7 +420,9 @@ export function Groups({ store, s }: SurfaceProps) {
             <button className="btn btn-primary btn-sm" onClick={doCreate} disabled={st.creating} style={{ flexShrink: 0 }}>{st.creating ? "Creating…" : "Create"}</button>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 6, flex: "1 1 200px", minWidth: 180, borderLeft: "1px solid var(--line-1)", paddingLeft: 10 }}>
               <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
-                <span className="lbl">Or join by id</span>
+                {/* Not an invite: a member someone added by address (Add people / Add by address)
+                    joins that group here from its Welcome (groups_join). */}
+                <span className="lbl">Added by address? Join by group id</span>
                 <input ref={joinRef} className="input" placeholder="grp_…" onKeyDown={(e) => e.key === "Enter" && doJoin()} />
               </label>
               <button className="btn btn-secondary btn-sm" onClick={doJoin} style={{ flexShrink: 0 }}>Join</button>
@@ -632,14 +430,9 @@ export function Groups({ store, s }: SurfaceProps) {
           </div>
         )}
 
-        {/* GROW-S1 task 12 — paste an invite: a citrate.ai/join link or code, or an app-only
-            citrate://invite link. */}
-        {redeemOpen && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 12, background: "#fff" }}>
-            <InvitePasteField onSubmit={doPasteInvite} />
-            <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)", lineHeight: 1.5 }}>you'll see who it's from and which group before anything joins</span>
-          </div>
-        )}
+        {/* D-12 — the invitee's side (the same component as onboarding): "Have an invite?", the
+            "Join <group>?" screen for a link, and the requests this device sent. */}
+        <HaveAnInvite store={store} s={s} memberOf={st.groups.map((g) => g.id)} onJoined={() => void refreshGroups()} />
 
         {st.error && (
           <div role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.5 }}>{st.error}</div>
@@ -749,26 +542,10 @@ export function Groups({ store, s }: SurfaceProps) {
                       </div>
                     )}
                     <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
-                    <span style={{ fontSize: 12, color: "var(--tx-2)" }}>Someone new? Create a one-time invite link under <strong>Grow this cluster</strong> below.</span>
+                    <span style={{ fontSize: 12, color: "var(--tx-2)" }}>Someone new? Use <strong>Invite someone</strong> below.</span>
                   </div>
                 );
               })()}
-              {/* GROW-S1 task 11 — "Grow this cluster": a one-time direct invite (short link + QR) and a
-                  public link, both made in Rust. No link carries the group id or a wallet address. */}
-              {selected && (
-                <div className="surface" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "14px 16px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 13.5, fontWeight: 500 }}>Grow this cluster</span>
-                    <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>invite people</span>
-                  </div>
-                  <p style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 }}>
-                    Send someone a one-time invite link: they open it, install Citrate if they need to, and join in one click. This is how you build your cluster to work on the network together: storage, training, inference, or shipping Dapps.
-                  </p>
-                  <InviteLinks key={selected.id} store={store} groupId={selected.id} groupName={groupLabel(st, selected)} onChanged={() => { setLinksVersion((n) => n + 1); if (canManage) void refreshInvites(); }} />
-                  <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
-                  <YourInviteLinks store={store} version={linksVersion} />
-                </div>
-              )}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>Who's here</span>
@@ -864,83 +641,9 @@ export function Groups({ store, s }: SurfaceProps) {
                 )}
               </div>
 
-              {/* D4 — claimable invite by @handle (owner/admin) */}
-              {canManage && (
-                <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                  <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                    <span style={{ fontSize: 13.5, fontWeight: 500 }}>Invite by @handle</span>
-                    <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>no address lookup</span>
-                  </div>
-                  <div style={{ display: "flex", gap: 10, padding: "12px 16px", alignItems: "center" }}>
-                    <input ref={inviteHandleRef} className="input" placeholder="@handle on X, Discord, …" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && void doMintInvite()} />
-                    <button className="btn btn-secondary btn-sm" onClick={() => void doMintInvite()}>Create invite</button>
-                  </div>
-                  {pendingInvites.map((pi) => (
-                    <div key={pi.token} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", borderTop: "1px solid var(--line-1)" }}>
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{pi.forHandle}</span>
-                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>invite pending · self-admit · one use</span>
-                      </span>
-                      <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(pi.link || `citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them. They tap Join and they're in."); }}>Copy link</button>
-                      <button className="btn btn-ghost btn-sm" style={{ color: "var(--tx-3)" }} onClick={() => void bridge.invites.revoke(pi.group, pi.token).then(refreshInvites)}>Revoke</button>
-                    </div>
-                  ))}
-                  {/* CONNECT-S1 — incoming requests (server-blind inbox): approve in one click, no paste. */}
-                  {requests.length > 0 && (
-                    <div style={{ borderTop: "1px solid var(--line-1)" }}>
-                      <div style={{ padding: "10px 16px 4px", fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--accent-text)" }}>
-                        Requests · {requests.length}
-                      </div>
-                      {requests.map((req) => {
-                        const face = faceOf(req.address);
-                        return (
-                          <div key={req.token + req.address} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px" }}>
-                            <span style={{ width: 28, height: 28, borderRadius: 999, background: "var(--srf-1)", border: "1px solid var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 600, color: "var(--tx-2)", flexShrink: 0 }}>{initialsOf(face ? face.handle : req.address)}</span>
-                            <span style={{ flex: 1, minWidth: 0 }}>
-                              <span style={{ fontSize: 12.5, fontWeight: 500 }}>{face ? `@${face.handle}` : shortAddr(req.address)}</span>
-                              <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>wants to join · {shortAddr(req.address)}</span>
-                            </span>
-                            <button className="btn btn-primary btn-sm" onClick={() => void approveRequest(req)}>Approve</button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {/* Fallback for older invite links (no sealed key): the manual claim paste. */}
-                  <details style={{ borderTop: "1px solid var(--line-1)" }}>
-                    <summary className="mono" style={{ fontSize: 10, color: "var(--tx-3)", padding: "10px 16px", cursor: "pointer" }}>Older invite? Paste a claim manually</summary>
-                    <div style={{ display: "flex", gap: 10, padding: "0 16px 12px", alignItems: "center" }}>
-                      <input ref={claimRef} className="input mono" placeholder="Paste the claim they DM'd back" style={{ flex: 1 }} />
-                      <button className="btn btn-secondary btn-sm" onClick={() => void doAddFromClaim()}>Accept claim</button>
-                    </div>
-                  </details>
-                  <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "0 16px 12px", lineHeight: 1.6 }}>
-                    Citrate never resolves a handle to an address. You DM the one-time invite link; when they open it they self-admit in one click — no approval, and you can be offline. Their joining is their consent. (Older links still send a request here to approve.)
-                  </p>
-                  {/* #73 — the member's own audit copy of invites minted / groups joined via invite. The
-                      relay keeps the authoritative referral tally for airdrop scoring; this is exportable. */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderTop: "1px solid var(--line-1)" }}>
-                    <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", flex: 1, lineHeight: 1.5 }}>
-                      Your invite activity is logged locally as your audit copy.
-                    </span>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={async () => {
-                        try {
-                          const json = await bridge.invites.exportReferralLog();
-                          const n = (JSON.parse(json) as unknown[]).length;
-                          if (n === 0) { store.toast("No invite activity yet."); return; }
-                          await navigator.clipboard?.writeText(json);
-                          store.toast(`Invite activity copied — ${n} event${n === 1 ? "" : "s"} (your audit copy).`);
-                        } catch (e) {
-                          store.toast("Couldn't export invite activity — " + (e instanceof Error ? e.message : String(e)));
-                        }
-                      }}
-                    >
-                      Export invite activity
-                    </button>
-                  </div>
-                </div>
+              {/* D-12 — the inviter's side: Invite someone, and Pending (open links + requests). */}
+              {canManage && selected && (
+                <InvitePanel key={selected.id} store={store} groupId={selected.id} inviterName={store.identity().name} faceOf={faceOf} onAdded={() => void selectGroup(selected.id)} />
               )}
             </div>
           )}

@@ -64,8 +64,9 @@ import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAcce
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
-import { classifyInviteInput, joinErrorMessage, joinErrorRetryable, parseClaimLink } from "../surfaces/referral";
-import { groupsSlice, refreshGroups } from "./slices/groups";
+import { parseClaimLink } from "../onboarding/claimLink";
+import { isInviteLink } from "../surfaces/inviteLink";
+import { groupsSlice } from "./slices/groups";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
@@ -621,19 +622,6 @@ export function tickPatch(
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
-  /** GROW-S1 task 12 — the resolved code awaiting the member's Join. Kept off AppState (and so off
-   *  every snapshot and save); the link key never reaches the webview at all. */
-  private pendingJoinCode: string | null = null;
-  /** Bumped whenever the waiting invite is replaced or cancelled. A Review, Join or start-up check
-   *  that started on an older value is about an invite that is no longer waiting, so its answer is
-   *  dropped (Rust applies the same rule to the hold itself). */
-  private pendingJoinGen = 0;
-  /** Bumped on every Cancel. A hold (pending_join_set) that was in flight when the member cancelled
-   *  doesn't bring the card back. */
-  private pendingJoinCancels = 0;
-  /** pending_join_set and pending_join_clear run one at a time, in the order they were asked for, so
-   *  Rust never sees a Cancel overtake the store it cancels, or two stores race. */
-  private pendingJoinOps: Promise<unknown> = Promise.resolve();
   private snap: AppState;
   private cid = 0;
   private mid = 0;
@@ -2423,10 +2411,9 @@ export class Store {
   }
 
   /**
-   * GROW-S1 — handle a link handed to the app by the OS. A v2 invite (`citrate://join/<code>#K` or
-   * `https://citrate.ai/join/<code>#K`) goes to Rust to hold until the member acts (task 12); an
-   * app-only `citrate://invite?…` link and a legacy display link land on the Groups banner. A
-   * malformed URL is ignored (no crash, no fabricated invite — Rule 1).
+   * Handle a link handed to the app by the OS: a fleet pairing link, a claim link, or an invite link
+   * (`citrate://invite?…`, D-12), which opens the "Join <group>?" screen. A malformed URL is ignored
+   * (no crash, no fabricated invite — Rule 1). Nothing is sent until the member presses Join.
    */
   handleDeepLink(url: string): void {
     if (!url) return;
@@ -2468,72 +2455,20 @@ export class Store {
       this.save();
       return;
     }
-    const kind = classifyInviteInput(url);
-    // GROW-S1 task 12 — a v2 link (`citrate://join/<code>#K` / `https://citrate.ai/join/<code>#K`): hand
-    // it to Rust to hold and drop it here. Nothing is resolved until the member acts. During first-run
-    // setup it waits on the onboarding card; once set up it waits on the Groups banner.
-    if (kind.kind === "v2") {
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
-      void this.holdInvite(url).then((ok) => {
-        if (ok && this.state.stage === "done") this.go("groups");
-      });
-      return;
-    }
-    // The app-only relay invite (`citrate://invite?g=&t=`) keeps its one-click Join on Groups.
-    if (kind.kind === "relay") {
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
-      this.setState({ pendingInvite: { url } });
-      this.go("groups");
-      return;
-    }
-    // A legacy display link already posted somewhere: context only (it can't join on its own).
-    if (kind.kind === "legacy-referral") {
-      const parts = kind.parts;
-      if (!parts.clusterId && !parts.inviterHandle) return;
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link's contents
-      this.setState({
-        pendingInvite: { url, clusterId: parts.clusterId, clusterName: parts.clusterName, inviterHandle: parts.inviterHandle, goal: parts.goal },
-      });
-      this.go("groups");
-    }
+    void isInviteLink;
   }
 
-  /** Run a pending-invite set/clear after the ones already asked for. */
-  private pendingJoinSerial<T>(f: () => Promise<T>): Promise<T> {
-    const run = this.pendingJoinOps.then(f, f);
-    this.pendingJoinOps = run.catch(() => undefined);
-    return run;
+  /** D-12 — show the "Join <group>?" screen for an invite link (deep link or paste). During setup it
+   *  waits on the onboarding screen; once set up, on Groups. Only the step id goes to the join funnel. */
+  openInviteLink(link: string): void {
+    reachedStep("arrive");
+    this.setState({ inviteLink: link.trim() });
+    if (this.state.stage === "done") this.go("groups");
   }
 
-  /** Hand a v2 invite link to Rust (pending_join_set) and record only its status. */
-  private async holdInvite(link: string): Promise<boolean> {
-    const cancels = this.pendingJoinCancels;
-    try {
-      const v = await this.pendingJoinSerial(() => bridge.join.pendingSet(link));
-      // Cancelled while it was being stored: the queued clear wipes it in Rust; don't show it.
-      if (cancels !== this.pendingJoinCancels) return false;
-      this.pendingJoinGen++;
-      this.pendingJoinCode = null;
-      this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
-      return true;
-    } catch (e) {
-      const m = e instanceof Error ? e.message : String(e);
-      this.toast(/desktop app/.test(m) ? "Invite links need the desktop app." : "That invite link isn't complete. Ask for the full link, or paste the code.");
-      return false;
-    }
-  }
-
-  /** On start-up: pick up an invite Rust is still holding (status only; not resolved). */
-  async refreshPendingJoin(): Promise<void> {
-    const gen = this.pendingJoinGen;
-    try {
-      const v = await bridge.join.pendingGet();
-      if (gen !== this.pendingJoinGen) return;
-      if (v && !this.state.pendingJoin) this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
-      if (!v && this.state.pendingJoin?.phase === "waiting") this.setState({ pendingJoin: null });
-    } catch {
-      /* no join client (web preview / older build): nothing waiting */
-    }
+  /** Close the "Join <group>?" screen (joined, cancelled or dismissed). */
+  clearInviteLink(): void {
+    this.setState({ inviteLink: null });
   }
 
   /** Whether setup has reached the point where a Join can run (signed in, wallet ready): the wallet
@@ -2545,97 +2480,9 @@ export class Store {
     return this.state.signedIn && ["s4", "s5", "s6", "s7"].includes(st);
   }
 
-  /** The paste field (onboarding + Groups): the member typed or pasted an invite. A v2 link is held in
-   *  Rust and, if setup allows a Join, reviewed right away (pasting is the member acting). Returns false
-   *  when the text isn't a v2 invite, so the caller can try its own (legacy) path. */
-  async acceptInviteInput(raw: string): Promise<boolean> {
-    if (classifyInviteInput(raw).kind !== "v2") return false;
-    const ok = await this.holdInvite(raw.trim());
-    if (ok && this.canJoinNow()) await this.reviewPendingJoin();
-    return ok;
-  }
-
-  /** The member's Review: resolve + verify the waiting invite in Rust (counts against its resolve limit,
-   *  so it runs only on this click). */
-  async reviewPendingJoin(): Promise<void> {
-    const pj = this.state.pendingJoin;
-    if (!pj || pj.phase === "resolving" || pj.phase === "joining") return;
-    const gen = this.pendingJoinGen;
-    this.setState({ pendingJoin: { ...pj, phase: "resolving", error: undefined, retryable: undefined } });
-    try {
-      const r = await bridge.join.pendingResolve();
-      if (gen !== this.pendingJoinGen) return;
-      this.pendingJoinCode = r.actionable ? r.code : null;
-      this.setState({
-        pendingJoin: {
-          ...pj,
-          phase: "ready",
-          error: undefined,
-          retryable: undefined,
-          resolved: {
-            kind: r.kind,
-            clusterName: r.clusterName,
-            goal: r.goal,
-            inviter: r.inviter,
-            inviterVerified: r.inviterVerified,
-            exp: r.exp,
-            actionable: r.actionable,
-            keyMissing: r.keyMissing,
-          },
-        },
-      });
-    } catch (e) {
-      if (gen !== this.pendingJoinGen) return;
-      this.pendingJoinCode = null;
-      this.setState({ pendingJoin: { ...pj, phase: "error", error: joinErrorMessage(e), retryable: joinErrorRetryable(e) || undefined } });
-    }
-  }
-
-  /** The member's explicit "Join <cluster>": redeem the reviewed direct invite. Rust wipes the waiting
-   *  invite on success. Never called without that click. */
-  async redeemPendingJoin(): Promise<void> {
-    const pj = this.state.pendingJoin;
-    const code = this.pendingJoinCode;
-    if (!pj || pj.phase !== "ready" || !pj.resolved?.actionable || !code) return;
-    const gen = this.pendingJoinGen;
-    this.setState({ pendingJoin: { ...pj, phase: "joining" } });
-    try {
-      await bridge.join.redeem(code);
-      if (gen === this.pendingJoinGen) {
-        this.pendingJoinCode = null;
-        this.setState({ pendingJoin: null });
-      }
-      void refreshGroups().catch(() => {});
-      this.toast(`You're in. Welcome to ${pj.resolved.clusterName || "the group"}.`);
-    } catch (e) {
-      if (gen !== this.pendingJoinGen) return;
-      // Rust keeps the opened invite after a failed redeem (until it expires), so Join can be retried.
-      this.setState({ pendingJoin: { ...pj, phase: "ready", error: `Couldn't join yet (${joinErrorMessage(e).replace(/\.$/, "")}). You can try again.` } });
-    }
-  }
-
-  /** Cancel / dismiss: wipe the waiting invite in Rust. */
-  async cancelPendingJoin(): Promise<void> {
-    this.pendingJoinGen++;
-    this.pendingJoinCancels++;
-    this.pendingJoinCode = null;
-    this.setState({ pendingJoin: null });
-    try {
-      await this.pendingJoinSerial(() => bridge.join.pendingClear());
-    } catch {
-      // Rust has dropped it for this session, but the device keychain couldn't delete its copy.
-      this.toast("Cancelled, but this device's keychain couldn't be reached, so the invite may come back after a restart. Cancel it again if it does.");
-    }
-  }
-
   /** HUP-S8.2 — clear the pending pairing link once the fleet wizard has taken it. */
   clearPendingPairLink(): void {
     this.setState({ pendingPairLink: null });
-  }
-
-  /** Clear the pending deep-link invite once Groups has consumed it. */
-  clearPendingInvite(): void {
-    this.setState({ pendingInvite: null });
   }
 
   /** Clear the pending claim hint once onboarding has surfaced it (or on sign-out). */
@@ -3817,36 +3664,36 @@ export class Store {
         }
       }
     } else if (call.name === "group_invite") {
-      // PBA-L7b-002: an invite link is a one-click, no-approval ADMISSION bearer. The member
-      // approves minting it, and the link goes to the member (clipboard) — never back into the
-      // model context, where an injected instruction could exfiltrate it.
+      // D-12: the same invite the member makes in Groups. Whoever opens the link only ASKS to join;
+      // the member approves or declines each request. The member approves making it, and the link
+      // goes to the member (clipboard), never back into the model context.
       const group = args.group || "";
-      const forHandle = args.forHandle || "shared link";
+      const forHandle = args.forHandle || "";
       const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool group_invite",
-        title: "Mint a one-click invite link",
+        title: "Make an invite link",
         chainless: true,
         rows: [
           { k: "Group", v: group || "(none given)" },
-          { k: "For", v: forHandle },
-          { k: "Effect", v: "whoever opens the link joins the group in one click, with no further approval (14 days)" },
+          { k: "For", v: forHandle || "anyone you send it to" },
+          { k: "Effect", v: "whoever opens the link asks to join; you approve or decline them in Groups (link works 14 days)" },
         ],
         cost: "none — no chain transaction",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      }, fieldsCard("group_invite", ann, { group: group || "(none given)", for: forHandle }, "mint a one-click invite link to group " + (group || "(none given)")));
+      }, fieldsCard("group_invite", ann, { group: group || "(none given)", for: forHandle || "(none)" }, "make an invite link to group " + (group || "(none given)")));
       status = r;
       if (r !== "approved") {
-        result = "the member declined minting an invite link; no link exists.";
+        result = "the member declined making an invite link; no link exists.";
       } else {
         try {
-          const { link } = await bridge.invites.create(group, forHandle);
-          this.copy(link, "Invite link copied — share it with " + forHandle);
+          const made = await bridge.invites.create(group, forHandle, this.identity().name);
+          this.copy(made.link, "Invite link copied. When they open it, approve their request in Groups.");
           result =
-            "Minted a one-click invite link for the group and copied it to the member's clipboard. The link is deliberately NOT shown to you; tell the member it is on their clipboard.";
+            "Made an invite link for the group and copied it to the member's clipboard. The link is deliberately NOT shown to you; tell the member it is on their clipboard, and that whoever opens it asks to join and appears in Groups for them to approve.";
         } catch (e) {
-          result = "couldn't mint an invite: " + (e instanceof Error ? e.message : String(e));
+          result = "couldn't make an invite: " + (e instanceof Error ? e.message : String(e));
         }
       }
     } else if (call.name === "directory_find") {

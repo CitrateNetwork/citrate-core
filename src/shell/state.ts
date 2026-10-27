@@ -258,29 +258,6 @@ export interface WalletReview {
   deployGate?: DeployGateRecord;
 }
 
-/** GROW-S1 task 12 — the waiting v2 invite as the UI sees it. Never the code or the key. */
-export interface PendingJoinUi {
-  phase: "waiting" | "resolving" | "ready" | "joining" | "error";
-  hasKey: boolean;
-  /** false = held in Rust memory only (keyring unreachable), so it won't survive a restart. */
-  persisted: boolean;
-  /** On a failed Review: the failure is temporary and Rust still holds the invite, so Review can run again. */
-  retryable?: boolean;
-  /** Signed display data, after the member's Review. */
-  resolved?: {
-    kind: "direct" | "referral";
-    clusterName: string | null;
-    goal: string | null;
-    inviter: string | null;
-    inviterVerified: boolean;
-    exp: string;
-    actionable: boolean;
-    keyMissing: boolean;
-  };
-  /** Member-facing error text (phase "error"). */
-  error?: string;
-}
-
 export interface AppState {
   persona: string;
   tier: string;
@@ -669,29 +646,17 @@ export interface AppState {
    */
   myGroups: GroupRoleRow[];
   /**
-   * GROW-S1 — an app-only `citrate://invite?…` link (Groups offers its one-click Join) or a legacy
-   * display link (context only), handed to the app by the OS. Transient, not persisted. v2 links
-   * never land here: they are held in Rust (`pendingJoin`).
-   */
-  /**
    * HUP-S8.2 — a `citrate://pair?…` fleet pairing link opened from a QR code or another app
    * (transient, not persisted). The Cluster surface's wizard fills it in; nothing pairs until the
    * member presses "Pair". Null when none is pending.
    */
   pendingPairLink: string | null;
-  pendingInvite: {
-    url: string;
-    clusterId?: string;
-    clusterName?: string;
-    inviterHandle?: string;
-    goal?: string;
-  } | null;
   /**
-   * GROW-S1 task 12 — a v2 invite (`citrate.ai/join/<code>#K`) waiting for the member to act. The
-   * link itself (code + one-time key) is held ONLY in Rust (keyring); this is just its status, plus
-   * the signed display data once the member chose Review. Transient, NOT persisted.
+   * D-12 — an invite link (`citrate://invite?…`) the OS handed the app or the member pasted, waiting
+   * on the "Join <group>?" screen (Groups and onboarding). Nothing is sent until the member presses
+   * Join. Transient, not persisted.
    */
-  pendingJoin: PendingJoinUi | null;
+  inviteLink: string | null;
   /**
    * PHONEPAY-S4 — a pending `citrate://claim` onboarding link (transient, NOT persisted).
    * Set from the emailed claim link; carries only untrusted DISPLAY HINTS (the email the
@@ -942,8 +907,7 @@ export function freshState(pid: string): AppState {
     people: [],
     peopleState: "loading",
     myGroups: [],
-    pendingInvite: null,
-    pendingJoin: null,
+    inviteLink: null,
     pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",
