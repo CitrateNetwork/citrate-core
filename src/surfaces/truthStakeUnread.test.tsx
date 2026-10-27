@@ -177,6 +177,16 @@ describe("the stake is read with the node stopped, and at launch", () => {
     expect(store.state.bondedStake).toBe(0);
   });
 
+  it("a malformed stake in the read is not a reading", async () => {
+    vi.spyOn(store, "identity").mockReturnValue({ wallet: "0x" + "1".repeat(40) } as never);
+    for (const bondedStakeWei of ["", "0x10", "-1", "1e21"]) {
+      vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue({ ...grant(0), bondedStakeWei });
+      store.setState({ hasGrant: true, s3: "settled", s5: "settled", bondedStake: 7, bondedStakeRead: false });
+      await (store as unknown as { reconcileOnboardingFromChain(): Promise<void> }).reconcileOnboardingFromChain();
+      expect(store.state.bondedStakeRead, bondedStakeWei).toBe(false);
+    }
+  });
+
   it("a failed poll read keeps the stake unread, never a fabricated 0", async () => {
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
     store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 32000, bondedStakeRead: false, bondActivated: false });

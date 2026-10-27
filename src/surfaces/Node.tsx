@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readStakeSalt, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 
@@ -125,6 +125,8 @@ export function Node({ store, s }: SurfaceProps) {
   // on the window). Not seen → "Not seen producing in the last 100 blocks", never "not producing".
   // No sample → "—" plus the reason. There is still no per-proposer COUNT, so none is shown.
   const isRegisteredValidator = s.bondedStake > 0;
+  // The stake figure itself only once stakeOf has read this session (unknown is not zero).
+  const stakeRead = readStakeSalt(s);
   // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
   // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
   const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated);
@@ -394,7 +396,7 @@ export function Node({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Your stake</span>
                   <span className="mono tabular" style={{ fontSize: 12 }} title="ValidatorRegistry.stakeOf(pubkey)">
-                    {isRegisteredValidator ? `${fmtI(s.bondedStake)} SALT` : "—"}
+                    {stakeRead != null && stakeRead > 0 ? `${fmtI(stakeRead)} SALT` : stakeRead == null ? "— · not read yet" : "—"}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>

@@ -34,7 +34,8 @@ export interface AgentContext {
   height: number;
   peers: number;
   nodeState: string;
-  staked: number;
+  /** `ValidatorRegistry.stakeOf` in SALT; null until it has been read this session (rule 2). */
+  staked: number | null;
   liquid: number;
   /** `ValidatorRegistry.rewardsOf(pubkey).claimableNow` in SALT; null = not a validator / not read. */
   claimable: number | null;
@@ -994,7 +995,7 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("chain_read", { query: "staking.position" })],
       compose: (c) =>
-        `Your membership grant is **${fmt(c.staked)} SALT**, held in your validator bond. Staking is through that bond: there is no separate stake to add or withdraw. Your node ${c.nodeState === "validating" ? "is validating" : "can validate once the bond is activated and the node is running"}. The granted principal stays locked until the bond unlocks; rewards for blocks your node produces are yours.`,
+        `Your membership grant is **${fmtStake(c.staked)}**, held in your validator bond. Staking is through that bond: there is no separate stake to add or withdraw. Your node ${c.nodeState === "validating" ? "is validating" : "can validate once the bond is activated and the node is running"}. The granted principal stays locked until the bond unlocks; rewards for blocks your node produces are yours.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {
@@ -1013,7 +1014,7 @@ function routeIntent(t: string): Plan {
       toolCalls: [tc("chain_read", { query: "wallet.balances" })],
       compose: (c) =>
         // C1-V V8/V9: the balance is eth_getBalance on the public RPC, not "earned rewards"; staked is stakeOf.
-        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (eth_getBalance, latest). Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from rpc.citrate.ai.`,
+        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (eth_getBalance, latest). Staked in the ValidatorRegistry: **${fmtStake(c.staked)}**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from rpc.citrate.ai.`,
     };
   }
   if (has("network", "height", "peers", "block", "finality", "status")) {
@@ -1090,6 +1091,10 @@ function tokenize(text: string): string[] {
 }
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-US");
+}
+/** A stake in SALT, or "— (not read yet)" when it has not been read (unknown is not zero). */
+function fmtStake(n: number | null): string {
+  return n == null ? "— (not read yet)" : `${fmt(n)} SALT`;
 }
 function wait(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

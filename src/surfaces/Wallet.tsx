@@ -19,7 +19,7 @@ import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
-import { readsValidatorRewards, saltFromWei, validatorDash } from "../shell/chainTruth";
+import { readStakeSalt, readsValidatorRewards, saltFromWei, STAKE_NOT_READ, validatorDash } from "../shell/chainTruth";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -49,6 +49,8 @@ export function Wallet({ store, s }: SurfaceProps) {
   const grantSaltStr = s.hasGrant ? fmtSaltFromWei(s.s5StakeWei) : "—";
   // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
   // folded as `bondedStake`. The grant in a locked bond is not staked until the bond is activated.
+  // Unknown is not zero (rule 2): null until a stakeOf read returns this session.
+  const stakeRead = readStakeSalt(s);
   const staked = s.bondedStake;
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
@@ -102,11 +104,11 @@ export function Wallet({ store, s }: SurfaceProps) {
   const sponsorBarColor = s.sponsorUnits > 1 ? "var(--accent)" : "var(--warn)";
 
   const saltStr = fmt2(s.liquid);
-  const stakedStr = staked > 0 ? fmtI(staked) : "0";
+  const stakedStr = stakeRead == null ? "—" : fmtI(stakeRead);
   // UI truth contract rules 1 and 2: the number catalog has no wSALT entry and nothing reads a
   // wSALT balance, so the tile shows the unavailable state. Unknown is not zero.
   const wsaltStr = "—";
-  const stakedSub = staked > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
+  const stakedSub = stakeRead == null ? STAKE_NOT_READ : stakeRead > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
   // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
   const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
   const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";

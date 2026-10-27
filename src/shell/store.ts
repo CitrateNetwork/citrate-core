@@ -58,7 +58,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
@@ -258,6 +258,12 @@ export function describeBond(g: {
  * Returning `null` (rather than an empty patch) keeps "no grant" a distinct,
  * non-mutating outcome — a member mid-flow is never nudged forward (Rule 1).
  */
+/** `grantStatus.bondedStakeWei` (stakeOf, wei) as SALT; null when it is not a decimal wei string. */
+export function saltFromStakeWei(wei: string | null | undefined): number | null {
+  if (typeof wei !== "string" || !/^\d+$/.test(wei)) return null;
+  return Number(BigInt(wei)) / 1e18;
+}
+
 export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
   if (!isGrantOnChain(g) || !g.hasSbt) return null;
   return {
@@ -570,6 +576,7 @@ export function tickPatch(
         // isActive in refreshNode. Self-stake never counts (C1-V V4).
         const simBond = s.hasGrant ? 32000 : 0;
         u.bondedStake = simBond;
+        u.bondedStakeRead = true;
         u.node = simBond > 0 ? "validating" : "synced";
         if (s.stage === "s6") u.s6ready = true;
       }
@@ -1377,6 +1384,10 @@ export class Store {
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
     this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    // The same read carries ValidatorRegistry.stakeOf for the bond's key: fold it, so the staked
+    // figure is a reading from launch, even with the node stopped (unknown is not zero).
+    const stakeSalt = saltFromStakeWei(grant.bondedStakeWei);
+    if (stakeSalt != null) this.setState({ bondedStake: stakeSalt, bondedStakeRead: true });
     // Onboarding-step reconcile: only needed while the flow is not already settled.
     if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
     const patch = reconciledGrantPatch(grant);
@@ -1492,17 +1503,26 @@ export class Store {
       // pre-activation), so the 32k attributed stake never surfaced until a relaunch.
       let grantPatch: Partial<AppState> | null = null;
       let bondActivated = this.state.bondActivated;
+      let stakeRead = this.state.bondedStakeRead;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
       // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
       // own read (whatever the node is doing) until it lands.
       const needActivation = this.state.hasGrant && bondActivated === null;
-      if ((needBond || needGrant || needActivation) && dueForBondRead) {
+      // Unknown is not zero: the staked figure shows "—" until stakeOf has read this session, so an
+      // unread stake gets its own read whatever the node is doing (it is a public-RPC read).
+      const needStake = !stakeRead;
+      if ((needBond || needGrant || needActivation || needStake) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
-          bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
+          // A malformed stake is not a reading: it stays unread, never a fabricated 0.
+          const salt = saltFromStakeWei(g.bondedStakeWei);
+          if (salt != null) {
+            bonded = salt;
+            stakeRead = true;
+          }
           // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
           bondActivated = g.bondActivated ?? null;
           // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
@@ -1544,6 +1564,7 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
+        bondedStakeRead: stakeRead,
         bondActivated,
         validatorActivation,
       };
@@ -2305,7 +2326,7 @@ export class Store {
       nodeState: nodeLabelLocal(s.node),
       // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf (UI truth contract §2). The
       // locked grant is reported separately under `membership`; self-stake is not validator stake.
-      staked: s.bondedStake,
+      staked: readStakeSalt(s),
       liquid: s.liquid,
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,

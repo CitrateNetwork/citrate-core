@@ -29,7 +29,7 @@ export function isWidgetQuery(v: unknown): v is WidgetQuery {
 
 /** The app state the catalog reads (store + slices in the app; plain functions in tests). */
 export interface WidgetSources {
-  context(): { height: number; peers: number; nodeState: string; staked: number; liquid: number; claimable: number | null };
+  context(): { height: number; peers: number; nodeState: string; staked: number | null; liquid: number; claimable: number | null };
   model(): { label: string; id: string | null };
   daemons(): { allPaused: boolean; total: number; running: number; paused: number; budgetUsedUp: number };
 }

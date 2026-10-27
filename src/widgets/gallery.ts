@@ -55,7 +55,7 @@ export const WIDGET_TEMPLATES: readonly WidgetTemplate[] = [
     queries: ["wallet.summary"],
     html: poller(
       "wallet.summary",
-      twoLines(`Number(d.liquidSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " SALT"`, `"staked " + Number(d.stakedSalt).toLocaleString() + " · claimable " + (d.claimableSalt == null ? "—" : Number(d.claimableSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }))`),
+      twoLines(`Number(d.liquidSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " SALT"`, `"staked " + (d.stakedSalt == null ? "—" : Number(d.stakedSalt).toLocaleString()) + " · claimable " + (d.claimableSalt == null ? "—" : Number(d.claimableSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }))`),
       30,
     ),
   },
