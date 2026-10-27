@@ -296,7 +296,7 @@ impl ModelProxy {
             Ok(None) if Self::keychain_has_provider_keys(keyring.as_ref()) => true,
             // A fresh install: anchor first, then the MAC keys (created by the opens below). If the
             // anchor cannot be written, this launch fails closed instead of going on without one.
-            Ok(None) => crate::provider_usage_log::create_anchor(keyring.as_ref()).is_err(),
+            Ok(None) => crate::provider_usage_log::fresh_install_anchor(keyring.as_ref()).is_err(),
             _ => false,
         };
         let mut guard = crate::provider_guard::load(&dir, keyring.clone(), now);
@@ -945,6 +945,26 @@ impl ModelProxy {
         let mut inner = self.inner();
         let Inner { guard, log } = &mut *inner;
         f(guard, log)
+    }
+
+    /// The member starts a new usage log (only when the current one is broken). Returns the name
+    /// the broken file was archived under.
+    pub fn reset_usage_log(&self, now: u64) -> Result<String, ProxyError> {
+        let mut inner = self.inner();
+        let unanchored = matches!(
+            crate::provider_usage_log::read_anchor_opt(self.keyring.as_ref()),
+            Ok(None)
+        );
+        let archived = inner
+            .log
+            .reset_broken(now)
+            .map_err(ProxyError::LogUnavailable)?;
+        if unanchored {
+            // The reset re-keyed the guard seal: reload, so the guard in memory is the one on disk
+            // under the new key (unreadable until the member resumes and it is sealed anew).
+            inner.guard = crate::provider_guard::load(&self.dir, self.keyring.clone(), now);
+        }
+        Ok(archived)
     }
 
     pub(crate) fn save_guard(&self, g: &mut GuardBook) -> Result<(), String> {
