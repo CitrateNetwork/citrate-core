@@ -140,7 +140,9 @@ export interface SigningDomain {
 }
 
 export interface WalletDomain {
-  balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
+  /** Native liquid SALT (eth_getBalance) and claimable (ContributionAccounting). No self-stake:
+   * staking is through the validator bond (D-9 retired the liquid staking pool). */
+  balances(): Promise<{ liquid: number; claimable: number; address: string }>;
   /** Q-E.2 (C-5) — the indexed tx history. `status` (1 ok / 0 reverted / null
    * pending) + `direction` are passed through from the indexer so a failed tx can
    * be marked (they used to be stripped, making a revert look like a success). */
@@ -150,28 +152,6 @@ export interface WalletDomain {
    * `signing.broadcast(view.id)` (B1.4 → a real 40204 tx). `amountWei` is a
    * decimal wei string. Mirrors `agent.claim` for the claimRewards() path. */
   send(to: string, amountWei: string): Promise<CeremonyView>;
-  /** CORE (@rule8) — submit a LiquidStakingPool `deposit()` stake as a PENDING
-   * ceremony and return the decoded view. Signs NOTHING; the human approves via
-   * `signing.broadcast(view.id)` (B1.4 → a real 40204 deposit tx). `amountWei` is
-   * a decimal wei string. Mirrors `send` for the transfer path. */
-  stake(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `requestWithdrawal(shares)`
-   * as a PENDING ceremony (burns stSALT shares into the ~7-day queue). The
-   * SALT→shares conversion is done in Rust from LIVE reads (shares()+balanceOf()),
-   * so `amountWei` is the SALT the user wants to withdraw. Signs NOTHING; approved
-   * via `signing.broadcast`. Mirrors `stake`. */
-  requestWithdrawal(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `claimWithdrawal(id)` for a
-   * matured request as a PENDING ceremony. The ~7-day (50,400-block) delay is
-   * enforced on-chain; a too-early claim reverts. Signs NOTHING; approved via
-   * `signing.broadcast`. `id` is the decimal request id from `pendingWithdrawals`. */
-  claimWithdrawal(id: string): Promise<CeremonyView>;
-  /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
-   * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
-   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
-   * missing and an empty list is not "none". */
-  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -218,35 +198,6 @@ export interface WalletDomain {
   linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean; canonical: boolean }>;
   /** Decline a pending link: release the ceremony + drop the one-time nonce. */
   linkReject(id: string): Promise<void>;
-}
-
-/** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
- * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
- * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
-/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
- * `complete` = it reached the end of what the node serves and read every withdrawal;
- * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
-export interface PendingWithdrawalsRead {
-  withdrawals: PendingWithdrawal[];
-  confirmed: boolean;
-  complete: boolean;
-  note: string | null;
-}
-
-/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
- * when the Wallet reads again; `message` is display only and is never matched. */
-export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
-export interface PendingWithdrawalsError {
-  kind: PendingReadErrorKind;
-  message: string;
-}
-
-export interface PendingWithdrawal {
-  id: string;
-  saltWei: string;
-  requestBlock: number;
-  claimableAtBlock: number;
-  claimable: boolean;
 }
 
 /**
@@ -645,6 +596,13 @@ export interface ChatDomain {
    */
   consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
   /**
+   * K2 — the question for a held message closed without "Send this message to the gateway this
+   * time" (cancelled, stopped, or the local model answers instead). Core drops the consent it
+   * minted for it (`chat_consent_drop`), so it cannot be used later. An id that is no longer open
+   * is not an error. The sim impl has nothing to drop.
+   */
+  consentDrop(consentId: string): Promise<void>;
+  /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
    * the frontend runs the tool loop. Rust reads the STORED baseURL + sealed key
@@ -718,7 +676,7 @@ export interface GrantStatus {
   attributedStakeWei: string;
   /**
    * `MembershipStakeVault.attributedPrincipal(member)`. M-2 replaced
-   * `attributedShares` (an stSALT share count) with raw bonded principal —
+   * `attributedShares` (a pool share count) with raw bonded principal —
    * there are no shares under bonding.
    */
   attributedPrincipalWei: string;
@@ -1113,7 +1071,8 @@ export interface GroupsDomain {
    */
   addMember(groupId: string, address: string): Promise<void>;
   roster(groupId: string): Promise<GroupMember[]>;
-  /** Grant/change a role — a signed RoleAssertion enforced at the relay. */
+  /** Change a member's role. Not available yet (#495): the daemon needs a signed role grant and
+   *  nothing signs one, so this rejects with the not-available reason. */
   assignRole(groupId: string, address: string, role: GroupRole): Promise<void>;
   /** Atomic offboard — drops all four planes in one epoch (ADR-001). */
   offboard(groupId: string, address: string): Promise<void>;
@@ -1605,8 +1564,9 @@ export interface AgentHarnessDomain {
   sessionStop(id: string): Promise<void>;
   /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
    *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
-  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first. */
-  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string): Promise<string>;
+  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first;
+   *  `runId` is the claimed run, which core checks is in flight for that daemon. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string, runId?: string): Promise<string>;
   /** HUP-S10.3 — close a session (a finished daemon run). */
   sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
@@ -2679,6 +2639,135 @@ export interface StoreDomain {
   remove(listingId: string): Promise<StoreOutcome<string>>;
 }
 
+// ---- services: the K1a-2 registry snapshot (Rust `services.rs`, `services_snapshot`) ----
+// Each row is read from that service's kit supervisor (SPEC-001 lifecycle cell). `observation`
+// says whether a supervisor was read at all; `phase` and everything after it are null unless it
+// was. Readiness is its own axis (SC2): Alive never implies Ready.
+export type ServiceId = "node" | "nodeAgent" | "memory" | "llamaChat" | "llamaEmbed" | "ipfs" | "hermes" | "comms" | "cluster";
+export type ServicePhase = "stopped" | "starting" | "alive" | "backoff" | "failed" | "stopping" | "quarantined";
+export type ServiceReadiness = "notAssessed" | "awaiting" | "ready" | "stale" | "unavailable";
+export interface ServiceEntry {
+  id: ServiceId;
+  label: string;
+  owner: string;
+  prerequisites: string[];
+  probe: string;
+  readySignal: string;
+  logBudgetLines: number;
+  logsCommand: string | null;
+  controls: boolean;
+  observation: "observed" | "notSupervised" | "busy";
+  phase: ServicePhase | null;
+  readiness: ServiceReadiness | null;
+  lastTransition: { from: ServicePhase | null; to: ServicePhase; atUnixMs: number } | null;
+  restarts: number | null;
+  lastCrash: { atUnixMs: number; exit: string; restartAttempt: number } | null;
+  quarantine: string | null;
+}
+export interface ServicesSnapshot {
+  takenAtUnixMs: number;
+  services: ServiceEntry[];
+}
+export interface ServicesDomain {
+  snapshot(): Promise<ServicesSnapshot>;
+}
+
+// ---- D-11 (RC52) — cloud model providers (ADR-2026-10-26). Mirrors Rust `providers_ipc.rs`. ----
+// Keys go in one way (`setKey`) and never come back. Amounts are integer micro-USD; token counts are
+// the vendor's own. Unknown is `null`, never zero.
+
+export type ProviderKind = "vendor" | "custom";
+export interface ProviderCaps {
+  dailyTokens: number | null;
+  monthlyTokens: number | null;
+  dailyMicros: number | null;
+  monthlyMicros: number | null;
+}
+export interface ProviderPrice {
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+}
+export interface ProviderHalt {
+  /** `member`, `burst`, `unknownModel`, `tokenSpike` or `guardUnreadable`. */
+  kind: string;
+  message: string;
+  atMs: number;
+}
+export interface ProviderStatus {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  /** A governed vendor on its pinned host. Always false for a custom endpoint. */
+  verified: boolean;
+  baseUrl: string;
+  host: string;
+  /** `openai-compatible` (or `native` once its adapter lands); null = not available in this build. */
+  adapter: string | null;
+  keyConfigured: boolean;
+  keySetMs: number | null;
+  keyPage: string | null;
+  revokePage: string | null;
+  /** Custom endpoints: whether the member confirmed this exact URL (calls are refused until then). */
+  confirmed: boolean;
+  halt: ProviderHalt | null;
+  caps: ProviderCaps;
+  approvedModels: string[];
+  listedModels: string[];
+  prices: Record<string, ProviderPrice>;
+}
+export interface ProviderPeriodUsage {
+  calls: number;
+  tokens: number;
+  /** Only priced calls; `unpricedCalls` counts the rest (their spend is unknown, not zero). */
+  spendMicros: number;
+  unpricedCalls: number;
+}
+export interface ProviderUsage {
+  id: string;
+  today: ProviderPeriodUsage;
+  month: ProviderPeriodUsage;
+  unsettledCalls: number;
+  caps: ProviderCaps;
+}
+export interface ProviderUsageSummary {
+  /** The signed usage log verified; when false every cloud call is refused. */
+  logIntact: boolean;
+  logProblem: string | null;
+  records: number;
+  asOfMs: number;
+  providers: ProviderUsage[];
+}
+export interface ProviderKeyTest {
+  ok: boolean;
+  listedModels: number;
+}
+export interface ProviderCustomEndpoint {
+  id: string;
+  label: string;
+  baseUrl: string;
+  models: string[];
+  confirmed: boolean;
+  verified: false;
+}
+export interface ProvidersDomain {
+  status(): Promise<ProviderStatus[]>;
+  usageSummary(): Promise<ProviderUsageSummary>;
+  setCaps(providerId: string, caps: ProviderCaps): Promise<ProviderStatus>;
+  setPrice(providerId: string, model: string, price: ProviderPrice | null): Promise<ProviderStatus>;
+  halt(providerId: string): Promise<ProviderStatus>;
+  resume(providerId: string): Promise<ProviderStatus>;
+  /** One way: format-checked and tested live with the vendor before it is stored; never returned. */
+  setKey(providerId: string, apiKey: string): Promise<ProviderKeyTest>;
+  testKey(providerId: string): Promise<ProviderKeyTest>;
+  removeKey(providerId: string): Promise<void>;
+  addCustom(label: string, baseUrl: string, models: string[]): Promise<ProviderCustomEndpoint>;
+  /** The member confirms by echoing the exact URL. */
+  confirmCustom(id: string, baseUrl: string): Promise<ProviderCustomEndpoint>;
+  removeCustom(id: string): Promise<void>;
+  /** Only a broken log is reset (archived aside, a new chain started). */
+  resetUsageLog(): Promise<ProviderUsageSummary>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2698,4 +2787,6 @@ export interface CxBridge {
   join: JoinDomain;
   components: ComponentsDomain;
   store: StoreDomain;
+  services: ServicesDomain;
+  providers: ProvidersDomain;
 }

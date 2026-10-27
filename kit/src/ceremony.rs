@@ -522,23 +522,52 @@ struct Pending {
     created: ClockReading,
 }
 
-/// How many expired ids are remembered (oldest forgotten first). Only used to tell "expired"
-/// from "unknown" in a late approval's error.
+/// How many expired ids are remembered (oldest forgotten first). Used to tell "expired" from
+/// "unknown" in a late approval's error. Watched ids are not counted (see [`WATCHED_IDS_KEPT`]).
 const EXPIRED_IDS_KEPT: usize = 4096;
+
+/// How many watched ids ([`SignatureCeremony::request_watched`]) are kept (oldest forgotten
+/// first). A watched id that expired reads as expired however many ordinary ids expire after
+/// it, until this many newer ids are watched. The Hermes bridge, the one watcher, has at most one
+/// request open at a time, so its current one is always the newest.
+const WATCHED_IDS_KEPT: usize = 64;
 
 /// The pending requests, plus the ids that expired unapproved.
 #[derive(Default)]
 struct Book {
     pending: BTreeMap<u64, Pending>,
+    /// Ordinary ids that expired unapproved (bounded by [`EXPIRED_IDS_KEPT`]).
     expired: BTreeSet<u64>,
+    /// Ids whose caller must later tell "expired" from "decided" (bounded by
+    /// [`WATCHED_IDS_KEPT`]).
+    watched: BTreeSet<u64>,
+    /// Watched ids that expired unapproved (a subset of `watched`).
+    expired_watched: BTreeSet<u64>,
 }
 
 impl Book {
     fn remember_expired(&mut self, key: u64) {
+        if self.watched.contains(&key) {
+            self.expired_watched.insert(key);
+            return;
+        }
         self.expired.insert(key);
         while self.expired.len() > EXPIRED_IDS_KEPT {
             self.expired.pop_first();
         }
+    }
+
+    fn watch(&mut self, key: u64) {
+        self.watched.insert(key);
+        while self.watched.len() > WATCHED_IDS_KEPT {
+            if let Some(old) = self.watched.pop_first() {
+                self.expired_watched.remove(&old);
+            }
+        }
+    }
+
+    fn is_expired(&self, key: u64) -> bool {
+        self.expired.contains(&key) || self.expired_watched.contains(&key)
     }
 }
 
@@ -548,6 +577,8 @@ struct Prepared {
     /// The signer's address (lower-case hex) and the tx nonce, for the submitted-tx record.
     sender: String,
     nonce: u64,
+    /// Whether the app read `nonce` from the node for this send or the requester supplied it.
+    nonce_source: crate::submitted_log::NonceSource,
     /// What the tx calls (`to` + selector) when it has calldata, so its record can be found
     /// again (Join-8: the Activate step after a restart).
     call: Option<crate::submitted_log::CallMeta>,
@@ -620,7 +651,7 @@ impl SignatureCeremony {
         let Some(key) = Self::parse_id(id) else {
             return false;
         };
-        self.live().expired.contains(&key)
+        self.live().is_expired(key)
     }
 
     /// How many requests this ceremony has opened.
@@ -661,7 +692,7 @@ impl SignatureCeremony {
     /// consumed one [`CeremonyError::UnknownCeremony`].
     fn take_live(&self, key: u64) -> Result<Pending> {
         let mut book = self.live();
-        if book.expired.contains(&key) {
+        if book.is_expired(key) {
             return Err(CeremonyError::Expired);
         }
         book.pending
@@ -768,6 +799,11 @@ impl SignatureCeremony {
     /// touches no key material. The returned `id` is what a human must later
     /// approve/reject *explicitly* — there is no "approve latest" (B1.2-ADV-6).
     pub fn request(&self, intent: SignatureIntent) -> CeremonyView {
+        self.open(intent, false)
+    }
+
+    /// Open a pending request; `watched` marks its id for [`request_watched`](Self::request_watched).
+    fn open(&self, intent: SignatureIntent, watched: bool) -> CeremonyView {
         let decoded = self.decode_with_book(&intent);
         let requires_raw_ack = decoded.action == UNRECOGNIZED_ACTION;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -780,7 +816,11 @@ impl SignatureCeremony {
             decoded: decoded.clone(),
             requires_raw_ack,
         };
-        self.live().pending.insert(
+        let mut book = self.live();
+        if watched {
+            book.watch(id);
+        }
+        book.pending.insert(
             id,
             Pending {
                 intent,
@@ -790,6 +830,14 @@ impl SignatureCeremony {
             },
         );
         view
+    }
+
+    /// Like [`request`](Self::request), for a caller that must later tell "expired" from
+    /// "decided" for this id with [`is_expired`](Self::is_expired).
+    /// The id stays answerable as expired after any number of ordinary expiries (bounded by
+    /// [`WATCHED_IDS_KEPT`] newer watched ids).
+    pub fn request_watched(&self, intent: SignatureIntent) -> CeremonyView {
+        self.open(intent, true)
     }
 
     /// Re-inspect a pending ceremony without consuming it (for the approval UI to
@@ -993,11 +1041,13 @@ impl SignatureCeremony {
         // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
         // `from` the dApp names sources the pending nonce; absent a `from` we
         // cannot fetch a nonce, so the dApp must have supplied one.
-        let fetched_nonce = match (&parsed.nonce, &parsed.from) {
-            (Some(n), _) => *n,
-            (None, Some(from)) => rpc
-                .pending_nonce(from)
-                .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+        let (fetched_nonce, nonce_source) = match (&parsed.nonce, &parsed.from) {
+            (Some(n), _) => (*n, crate::submitted_log::NonceSource::Supplied),
+            (None, Some(from)) => (
+                rpc.pending_nonce(from)
+                    .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+                crate::submitted_log::NonceSource::Fetched,
+            ),
             (None, None) => return Err(CeremonyError::UndecodableTransaction),
         };
         let fetched_gas_price = match &parsed.gas_price {
@@ -1025,6 +1075,7 @@ impl SignatureCeremony {
                 raw: signed.raw,
                 sender,
                 nonce: fields.nonce,
+                nonce_source,
                 call: match (parsed.to, parsed.data.get(..4)) {
                     (Some(to), Some(sel)) => Some(crate::submitted_log::CallMeta {
                         to: format!("0x{}", hex::encode(to)),
@@ -1085,6 +1136,7 @@ impl SignatureCeremony {
                 &local_hash,
                 &prepared.sender,
                 prepared.nonce,
+                prepared.nonce_source,
                 prepared.call.as_ref(),
             )
             .map_err(|e| {
