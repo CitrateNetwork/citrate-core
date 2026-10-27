@@ -19,9 +19,10 @@
 //! network. Everything in this module's docs below (entries, nonce marks, uncertainty, the upgrade
 //! bound) is per section. When the network changes, the whole section moves to the archive
 //! together, in one atomic write at open; opening on an archived genesis again makes its section
-//! current again, as it was. A section created for a network the record has none for starts
-//! upgrade-bounded (below) when any other section can't prove its history (uncertain, bounded, or
-//! with evicted entries): bytes sent there are valid here, and those can't be matched by hash.
+//! current again, as it was. A section that becomes current (created, or current again after a
+//! switch) and has no bound yet starts upgrade-bounded (below) when any other section can't prove
+//! its history (uncertain, bounded, or with evicted entries): bytes sent there are valid here, and
+//! those can't be matched by hash.
 //!
 //! Every decision about the current network (first-ness, [`SubmittedTxLog::latest_call`],
 //! [`SubmittedTxLog::forget`], [`SubmittedTxLog::is_uncertain`], [`SubmittedTxLog::len`]) reads
@@ -73,8 +74,10 @@
 //! merged into r1005's section. Only after that merge is durable is the legacy file set aside
 //! (renamed with a `.migrated` suffix, never deleted). A legacy file found again later (an older
 //! build ran in between) is merged again; the merge is idempotent. A record in a format this build
-//! can't parse is set aside the same way (`.unreadable`) before it is replaced, and so is one that
-//! can't be read at all; if that one can't be set aside either, every write is refused.
+//! can't parse or read is kept as `.unreadable` (a hard link made durable before the record is
+//! replaced, so a crash in between leaves it in place); if it can't be kept, every write is
+//! refused. A missing record beside a `.unreadable` one lost its history: every network is
+//! uncertain.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
@@ -466,23 +469,55 @@ fn read_record(path: &Path) -> Found {
     Found::Record(Box::new(inner))
 }
 
-/// Rename `path` to a free `<name>.<tag>[-N]` next to it, then sync the directory. Never deletes.
-fn set_aside(path: &Path, tag: &str, sync_dir: SyncDir) -> std::io::Result<PathBuf> {
+/// A free `<name>.<tag>[-N]` next to `path`.
+fn free_aside_name(path: &Path, tag: &str) -> std::io::Result<PathBuf> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let free = (1..=1000u32)
+    (1..=1000u32)
         .map(|n| match n {
             1 => dir.join(format!("{name}.{tag}")),
             _ => dir.join(format!("{name}.{tag}-{n}")),
         })
         .find(|p| !p.exists())
-        .ok_or_else(|| std::io::Error::other("no free name to set the file aside"))?;
+        .ok_or_else(|| std::io::Error::other("no free name to set the file aside"))
+}
+
+/// Rename `path` to a free `<name>.<tag>[-N]` next to it, then sync the directory. Never deletes.
+fn set_aside(path: &Path, tag: &str, sync_dir: SyncDir) -> std::io::Result<PathBuf> {
+    let free = free_aside_name(path, tag)?;
     std::fs::rename(path, &free)?;
-    sync_dir(dir)?;
+    sync_dir(path.parent().unwrap_or_else(|| Path::new(".")))?;
     Ok(free)
+}
+
+/// Give `path` a second, durable name `<name>.<tag>[-N]` (a hard link, or a synced copy where links
+/// aren't possible) and leave it in place, so it can be replaced afterwards with no window in which
+/// neither name exists.
+fn keep_aside(path: &Path, tag: &str, sync_dir: SyncDir) -> std::io::Result<PathBuf> {
+    let free = free_aside_name(path, tag)?;
+    if std::fs::hard_link(path, &free).is_err() {
+        std::fs::copy(path, &free)?;
+        std::fs::File::open(&free)?.sync_all()?;
+    }
+    sync_dir(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    Ok(free)
+}
+
+/// Whether a damaged record was set aside next to `path` (`<name>.unreadable[-N]`).
+fn has_unreadable_sibling(path: &Path) -> bool {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+        return false;
+    };
+    let prefix = format!("{name}.unreadable");
+    path.parent()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .is_some_and(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        })
 }
 
 /// Makes a rename inside `dir` durable (see [`sync_dir`]). A parameter so tests can observe the
@@ -551,7 +586,10 @@ impl SubmittedTxLog {
                 s.insert(inner.genesis.clone(), inner.current.clone());
                 (s, inner.history_lost, Some(inner.genesis.clone()))
             }
-            Found::Missing => (BTreeMap::new(), false, None),
+            // A missing record beside a damaged one that was set aside (a crash after the set
+            // aside, before the replacement was written, or a record removed by hand) lost its
+            // history: every network is uncertain.
+            Found::Missing => (BTreeMap::new(), has_unreadable_sibling(&path), None),
             Found::Unparsable | Found::Unreadable => (BTreeMap::new(), true, None),
         };
         // A legacy file next to the record holds r1005's sends from a build before this record.
@@ -572,8 +610,8 @@ impl SubmittedTxLog {
                 .absorb(l);
         }
         // A damaged record may have held more of every network's history than survives here.
-        let damaged = matches!(found, Found::Unparsable | Found::Unreadable);
-        if damaged {
+        let damaged = matches!(found, Found::Unparsable | Found::Unreadable) || history_lost;
+        if damaged && !matches!(found, Found::Record(_)) {
             for s in sections.values_mut() {
                 s.uncertain = true;
             }
@@ -599,36 +637,40 @@ impl SubmittedTxLog {
             );
         }
         // A network this record holds no section for starts empty: certain, unless the record
-        // was damaged once (`history_lost`), or it starts upgrade-bounded (#443): when the profile
-        // was just upgraded, or when any other network's section can't prove its own history
-        // (uncertain, bounded, or with evicted entries). The same chain id makes bytes sent there
-        // valid here, and an evicted or unknown send can't be matched by hash, so this network's
-        // sends are unknown up to each sender's first fetched-nonce send. Decided once, here, when
-        // the section is created; no decision reads the other sections.
+        // was damaged once (`history_lost`), or the profile was just upgraded (#443 bound).
+        let made_current = opened_on.as_deref() != Some(genesis.as_str());
+        let mut current = sections.remove(&genesis).unwrap_or_else(|| Section {
+            uncertain: history_lost,
+            upgrade: upgraded.then(BTreeMap::new),
+            ..Section::default()
+        });
+        // Whenever a section becomes current (created, or current again after a switch), it starts
+        // upgrade-bounded (#443) if it has no bound yet and any other network's section can't
+        // prove its own history (uncertain, bounded, or with evicted entries). The same chain id
+        // makes bytes sent there valid here, and an evicted or unknown send can't be matched by
+        // hash, so this network's sends are unknown up to each sender's first fetched-nonce send.
+        // Decided once, here; no decision reads the other sections.
         let other_unsure = sections
             .values()
             .any(|s| s.uncertain || s.upgrade.is_some() || !s.evicted.is_empty());
-        let current = sections.remove(&genesis).unwrap_or_else(|| Section {
-            uncertain: history_lost,
-            upgrade: (upgraded || other_unsure).then(BTreeMap::new),
-            ..Section::default()
-        });
-        // A record this build can't parse or read is kept, never overwritten: set aside first. If
-        // an unreadable one can't be set aside either, nothing may write over it: every write is
-        // refused until it can be read (the caller sends nothing).
+        if made_current && other_unsure && !current.uncertain && current.upgrade.is_none() {
+            current.upgrade = Some(BTreeMap::new());
+        }
+        // A record this build can't parse or read is kept, never overwritten: a second name for
+        // it is made durable first, and only then is it replaced, so a crash in between leaves it
+        // where it was. If it can't be kept, nothing may write over it: every write is refused
+        // (the caller sends nothing).
         let mut blocked = None;
         if matches!(found, Found::Unparsable | Found::Unreadable) {
-            if let Err(e) = set_aside(&path, "unreadable", sync_dir) {
+            if let Err(e) = keep_aside(&path, "unreadable", sync_dir) {
                 eprintln!(
-                    "[submitted-tx] could not set aside the unreadable {}: {e}",
+                    "[submitted-tx] could not keep the unreadable {}: {e}",
                     path.display()
                 );
-                if matches!(found, Found::Unreadable) {
-                    blocked = Some(format!(
-                        "{} could not be read or set aside, so it is not overwritten",
-                        path.display()
-                    ));
-                }
+                blocked = Some(format!(
+                    "{} could not be read or set aside, so it is not overwritten",
+                    path.display()
+                ));
             }
         }
         let switched = opened_on.is_some_and(|g| g != genesis);
