@@ -393,6 +393,6 @@ fn default_currency_caps_are_per_vendor_with_xai_overridden() {
 /// A keychain as a fresh install leaves it: the empty anchor `ModelProxy::new` writes first.
 fn installed_kr() -> Arc<MemKeyring> {
     let kr = Arc::new(MemKeyring::default());
-    crate::provider_usage_log::create_anchor(kr.as_ref()).unwrap();
+    crate::provider_usage_log::fresh_install_anchor(kr.as_ref()).unwrap();
     kr
 }

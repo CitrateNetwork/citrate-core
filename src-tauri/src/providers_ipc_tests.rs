@@ -116,3 +116,100 @@ fn usage_summary_comes_from_the_signed_log() {
     // The log is intact, so it is not reset.
     assert!(usage_log_reset(&rig.proxy).is_err());
 }
+
+#[test]
+fn earlier_spend_is_flagged_unknown_after_an_unanchored_reset_until_the_period_rolls() {
+    let mut rig = Rig::new("ipc-earlier-unknown");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    // A normal summary: nothing unknown.
+    let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, now_ms()));
+    let o = s.providers.iter().find(|p| p.id == "openai").unwrap();
+    assert!(!o.today.earlier_spend_unknown && !o.month.earlier_spend_unknown);
+    // Anchor removed, then the member resets the log: earlier spend is unknown for every provider.
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    rig.reopen();
+    let at = now_ms();
+    rig.proxy.reset_usage_log(at).unwrap();
+    rig.reopen();
+    let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, at + 1));
+    for p in &s.providers {
+        assert!(p.today.earlier_spend_unknown, "{}: today", p.id);
+        assert!(p.month.earlier_spend_unknown, "{}: month", p.id);
+    }
+    let json = serde_json::to_string(&s).unwrap();
+    assert!(json.contains("\"earlierSpendUnknown\":true"), "wire name");
+    // The next UTC day clears the day flag; the next month clears both.
+    let next_day = (at / 86_400_000 + 1) * 86_400_000 + 1;
+    let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, next_day));
+    let same_month =
+        crate::provider_guard::month_of(next_day) == crate::provider_guard::month_of(at);
+    let o = s.providers.iter().find(|p| p.id == "openai").unwrap();
+    assert!(!o.today.earlier_spend_unknown);
+    assert_eq!(o.month.earlier_spend_unknown, same_month);
+    let next_month = at + 32 * 86_400_000;
+    let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, next_month));
+    let o = s.providers.iter().find(|p| p.id == "openai").unwrap();
+    assert!(!o.today.earlier_spend_unknown && !o.month.earlier_spend_unknown);
+}
+
+#[test]
+fn a_reset_with_its_anchor_intact_leaves_earlier_spend_known() {
+    let mut rig = Rig::new("ipc-earlier-known");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    let p = crate::provider_usage_log::log_path(&rig.dir.0);
+    let t = std::fs::read_to_string(&p)
+        .unwrap_or_default()
+        .replace("\"tokensIn\":12", "\"tokensIn\":1");
+    std::fs::write(&p, t).unwrap();
+    rig.reopen();
+    let at = now_ms();
+    rig.proxy.reset_usage_log(at).unwrap();
+    let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, at + 1));
+    let o = s.providers.iter().find(|p| p.id == "openai").unwrap();
+    assert!(!o.today.earlier_spend_unknown && !o.month.earlier_spend_unknown);
+    assert!(o.today.tokens >= 17, "the anchored totals were carried");
+}
+
+#[test]
+fn a_later_normal_reset_in_the_same_period_keeps_earlier_spend_unknown() {
+    let mut rig = Rig::new("ipc-earlier-carried");
+    rig.proxy
+        .call(&rig.route("gpt-known"), req("gpt-known", false), None, &mut |_| {})
+        .unwrap();
+    rig.kr
+        .map
+        .lock()
+        .unwrap()
+        .remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    rig.reopen();
+    let at = now_ms();
+    rig.proxy.reset_usage_log(at).unwrap();
+    crate::providers_ipc::resume(&rig.proxy, "openai").unwrap();
+    // The log breaks again (a stray line) and the member resets it normally, same period.
+    let p = crate::provider_usage_log::log_path(&rig.dir.0);
+    let mut t = std::fs::read_to_string(&p).unwrap_or_default();
+    t.push_str("not a record\n");
+    std::fs::write(&p, t).unwrap();
+    rig.reopen();
+    assert!(rig.proxy.with_state(|_, l| l.ready().is_err()));
+    rig.proxy.reset_usage_log(at + 2).unwrap();
+    rig.reopen();
+    let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, at + 3));
+    let o = s.providers.iter().find(|p| p.id == "openai").unwrap();
+    assert!(
+        o.today.earlier_spend_unknown && o.month.earlier_spend_unknown,
+        "only the period rollover clears it"
+    );
+    let next_month = at + 32 * 86_400_000;
+    let s = rig.proxy.with_state(|g, l| usage_summary_of(g, l, next_month));
+    let o = s.providers.iter().find(|p| p.id == "openai").unwrap();
+    assert!(!o.today.earlier_spend_unknown && !o.month.earlier_spend_unknown);
+}
