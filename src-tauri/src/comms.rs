@@ -1363,10 +1363,9 @@ pub(crate) fn revoke_invite<R: tauri::Runtime>(
 
 /// The daemon request for [`revoke_invite`].
 fn revoke_request(token_hash: String, report_used: bool) -> Request {
-    let _ = report_used;
     Request::RevokeInvite {
         token_hash,
-        report_used: false,
+        report_used,
     }
 }
 

@@ -896,7 +896,7 @@ pub async fn group_invite_verify_consume(
                 .map(|v| v.state)
         },
         |lookup| crate::comms::rendezvous_close(&app, lookup),
-        |token_hash| crate::comms::revoke_invite(&app, token_hash, false),
+        |token_hash| crate::comms::revoke_invite(&app, token_hash, true),
     )
 }
 
@@ -954,8 +954,17 @@ pub(crate) fn consume_at(
     {
         return Err(ALREADY_USED_REFUSAL.to_string());
     }
-    if !revoke_and_remove_at(path, group, token, Some(member), close, legacy)? {
-        return Ok(ConsumeOutcome::Invalid);
+    // The legacy record was already redeemed (by another holder of the link, through the older
+    // self-admit path): the invite is used, so this claim can't be approved.
+    let used = std::cell::Cell::new(false);
+    let legacy = |token_hash: String| {
+        legacy(token_hash).inspect_err(|e| used.set(e.contains(INVITE_ALREADY_USED)))
+    };
+    match revoke_and_remove_at(path, group, token, Some(member), close, legacy) {
+        Ok(true) => {}
+        Ok(false) => return Ok(ConsumeOutcome::Invalid),
+        Err(_) if used.get() => return Err(ALREADY_USED_REFUSAL.to_string()),
+        Err(e) => return Err(e),
     }
     // With a rendezvous, the close is only persisted at the daemon: a request already at the relay
     // could still be admitted until the relay confirms. The claimant is added by the tick once it
