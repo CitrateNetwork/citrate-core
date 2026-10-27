@@ -104,6 +104,12 @@ export function pinnedDigest(manifest, pins, id, target) {
   throw new Error(`'${id}' ${target}: artifact has neither sha256 nor runtime_deps_asset`);
 }
 
+/** Targets whose pin waits on another builder: [{ id, target, reason }]. */
+export function pendingPins(manifest) {
+  void manifest;
+  return [];
+}
+
 // ---------------------------------------------------------------------------------------------
 // requires: what the app depends on in a component's source
 // ---------------------------------------------------------------------------------------------
