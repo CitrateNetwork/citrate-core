@@ -19,7 +19,9 @@
 //! network. Everything in this module's docs below (entries, nonce marks, uncertainty, the upgrade
 //! bound) is per section. When the network changes, the whole section moves to the archive
 //! together, in one atomic write at open; opening on an archived genesis again makes its section
-//! current again, as it was.
+//! current again, as it was. A section created for a network the record has none for starts
+//! upgrade-bounded (below) when any other section can't prove its history (uncertain, bounded, or
+//! with evicted entries): bytes sent there are valid here, and those can't be matched by hash.
 //!
 //! Every decision about the current network (first-ness, [`SubmittedTxLog::latest_call`],
 //! [`SubmittedTxLog::forget`], [`SubmittedTxLog::is_uncertain`], [`SubmittedTxLog::len`]) reads
@@ -71,7 +73,8 @@
 //! merged into r1005's section. Only after that merge is durable is the legacy file set aside
 //! (renamed with a `.migrated` suffix, never deleted). A legacy file found again later (an older
 //! build ran in between) is merged again; the merge is idempotent. A record in a format this build
-//! can't read is set aside the same way (`.unreadable`) before it is replaced.
+//! can't parse is set aside the same way (`.unreadable`) before it is replaced, and so is one that
+//! can't be read at all; if that one can't be set aside either, every write is refused.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
@@ -496,6 +499,8 @@ pub struct SubmittedTxLog {
     /// How many attempts in this process recorded each hash (#347 Codex P1). Not persisted: it
     /// tells an attempt whether another one may have sent the same bytes while it was sending.
     attempts: Mutex<BTreeMap<String, u32>>,
+    /// Why no write may happen: the record on disk could not be read or set aside.
+    blocked: Option<String>,
 }
 
 impl SubmittedTxLog {
@@ -510,6 +515,7 @@ impl SubmittedTxLog {
             inner: Mutex::new(Inner::new(Section::default())),
             sync_dir,
             attempts: Default::default(),
+            blocked: None,
         }
     }
 
@@ -523,6 +529,7 @@ impl SubmittedTxLog {
             inner: Mutex::new(Inner::new(Section::damaged())),
             sync_dir,
             attempts: Default::default(),
+            blocked: None,
         }
     }
 
@@ -592,18 +599,37 @@ impl SubmittedTxLog {
             );
         }
         // A network this record holds no section for starts empty: certain, unless the record
-        // was damaged once (`history_lost`) or the profile was just upgraded.
+        // was damaged once (`history_lost`), or it starts upgrade-bounded (#443): when the profile
+        // was just upgraded, or when any other network's section can't prove its own history
+        // (uncertain, bounded, or with evicted entries). The same chain id makes bytes sent there
+        // valid here, and an evicted or unknown send can't be matched by hash, so this network's
+        // sends are unknown up to each sender's first fetched-nonce send. Decided once, here, when
+        // the section is created; no decision reads the other sections.
+        let other_unsure = sections
+            .values()
+            .any(|s| s.uncertain || s.upgrade.is_some() || !s.evicted.is_empty());
         let current = sections.remove(&genesis).unwrap_or_else(|| Section {
             uncertain: history_lost,
-            upgrade: upgraded.then(BTreeMap::new),
+            upgrade: (upgraded || other_unsure).then(BTreeMap::new),
             ..Section::default()
         });
-        // A record this build can't parse is kept, never overwritten: set aside first.
-        if matches!(found, Found::Unparsable) && set_aside(&path, "unreadable", sync_dir).is_err() {
-            eprintln!(
-                "[submitted-tx] could not set aside the unreadable {}",
-                path.display()
-            );
+        // A record this build can't parse or read is kept, never overwritten: set aside first. If
+        // an unreadable one can't be set aside either, nothing may write over it: every write is
+        // refused until it can be read (the caller sends nothing).
+        let mut blocked = None;
+        if matches!(found, Found::Unparsable | Found::Unreadable) {
+            if let Err(e) = set_aside(&path, "unreadable", sync_dir) {
+                eprintln!(
+                    "[submitted-tx] could not set aside the unreadable {}: {e}",
+                    path.display()
+                );
+                if matches!(found, Found::Unreadable) {
+                    blocked = Some(format!(
+                        "{} could not be read or set aside, so it is not overwritten",
+                        path.display()
+                    ));
+                }
+            }
         }
         let switched = opened_on.is_some_and(|g| g != genesis);
         let mut inner = Inner {
@@ -612,10 +638,8 @@ impl SubmittedTxLog {
             previous: sections,
             history_lost,
         };
-        // An unreadable record (an I/O error, not bad bytes) is not written over at open; the next
-        // record write replaces it, carrying `history_lost`.
-        let write = matches!(found, Found::Missing | Found::Unparsable) || migrating || switched;
-        if write {
+        let write = !matches!(found, Found::Record(_)) || migrating || switched;
+        if write && blocked.is_none() {
             match write_atomic(&path, &inner.to_disk(), sync_dir) {
                 Ok(()) => {
                     // The legacy entries are durable in the record now: only then set it aside.
@@ -644,6 +668,7 @@ impl SubmittedTxLog {
             inner: Mutex::new(inner),
             sync_dir,
             attempts: Default::default(),
+            blocked,
         }
     }
 
@@ -732,6 +757,9 @@ impl SubmittedTxLog {
 
     /// Write `next` durably (no-op without a path). The caller swaps it in only on success.
     fn persist(&self, next: &Inner) -> Result<(), String> {
+        if let Some(why) = &self.blocked {
+            return Err(why.clone());
+        }
         if let Some(path) = &self.path {
             write_atomic(path, &next.to_disk(), self.sync_dir)
                 .map_err(|e| format!("could not write {}: {e}", path.display()))?;

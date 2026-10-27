@@ -3311,8 +3311,8 @@ fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
 }
 
 // #511: a send history kept on r1005 does not decide the outcome of sends on a new genesis. The
-// install's r1005 record is uncertain (a 0.5.1 wallet with no record); after the switch a
-// definitive refusal of new bytes on the new chain is "not sent", while a re-send of the exact bytes
+// install's r1005 record is uncertain (a 0.5.1 wallet with no record); after the switch the new
+// chain is upgrade-bounded, and above the bound a definitive refusal of new bytes is "not sent", while a re-send of the exact bytes
 // broadcast on r1005 (same chain id) is still "submitted, outcome unknown".
 #[test]
 fn after_a_genesis_switch_the_previous_networks_history_does_not_decide_new_sends() {
@@ -3328,7 +3328,11 @@ fn after_a_genesis_switch_the_previous_networks_history_does_not_decide_new_send
     assert_eq!(submitted_outcome_unknown(&on_r1005), Some(r1005_hash.clone()), "r1005's history is uncertain");
     drop(r1005);
     let switched = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, NEW));
-    let (fresh, fresh_hash) = send_at(&switched, &v, "0x1", node_error("Failed to submit transaction: Full"));
+    // r1005's history is unknown, so the new chain starts upgrade-bounded: the first fetched-nonce
+    // send is unknown, and a later one above it is decided by the new chain's history alone.
+    let (bounded, bounded_hash) = send_at(&switched, &v, "0x1", node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&bounded), Some(bounded_hash), "the bound send");
+    let (fresh, fresh_hash) = send_at(&switched, &v, "0x2", node_error("Failed to submit transaction: Full"));
     assert_ne!(fresh_hash, r1005_hash);
     assert!(matches!(fresh, Err(CeremonyError::Broadcast(_))), "new bytes refused on the new chain were not sent: {fresh:?}");
     let (same, same_hash) = send_once(&switched, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));

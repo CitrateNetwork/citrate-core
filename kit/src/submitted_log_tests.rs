@@ -632,7 +632,7 @@ fn entries_sent_on_another_genesis_are_archived_when_the_record_opens() {
 }
 
 #[test]
-fn an_uncertain_history_on_the_previous_genesis_does_not_make_the_new_one_uncertain() {
+fn an_uncertain_history_on_the_previous_genesis_bounds_the_new_one() {
     // A 0.5.2 build on r1005 opened next to a 0.5.1 wallet (no record): uncertain on r1005.
     let t = Tmp::new("switch-uncertain");
     std::fs::write(t.0.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault");
@@ -641,17 +641,22 @@ fn an_uncertain_history_on_the_previous_genesis_does_not_make_the_new_one_uncert
     old.try_record_for(&h(3), A, 0).expect("record");
     drop(old);
     let log = SubmittedTxLog::open(t.file(), NEW);
-    assert!(!log.is_uncertain(), "the r1005 history's uncertainty is not the new network's");
-    assert_eq!(log.try_record_for(&h(4), A, 0), Ok(true), "a new-chain send can be proved first");
+    // r1005's unknown sends are valid bytes here: the new network starts upgrade-bounded (#443),
+    // not fully uncertain, and its bound is its own.
+    assert!(log.is_uncertain(), "r1005's unknown history bounds the new network");
+    assert_eq!(log.try_record_for(&h(4), A, 0), Ok(false), "a supplied nonce is never bounded");
+    assert_eq!(log.try_record_call(&h(5), A, 0, NonceSource::Fetched, None), Ok(false), "the first fetched send sets the bound");
+    assert_eq!(log.try_record_call(&h(6), A, 1, NonceSource::Fetched, None), Ok(true), "above it, a new-chain send is proved first");
     drop(log);
     let again = SubmittedTxLog::open(t.file(), NEW);
-    assert!(!again.is_uncertain(), "and stays so across a restart");
+    assert_eq!(again.try_record_call(&h(7), A, 2, NonceSource::Fetched, None), Ok(true), "and stays so across a restart");
+    assert_eq!(section_of(&disk(&t), NEW).expect("new section")["upgrade_bound"][A], 0);
     let r1005 = section_of(&disk(&t), G).expect("r1005 section");
     assert_eq!(r1005["upgrade_bound"], serde_json::json!({}), "kept with the history: {r1005}");
 }
 
 #[test]
-fn nonce_marks_of_the_previous_genesis_do_not_apply_on_the_new_one() {
+fn nonce_marks_of_the_previous_genesis_bound_the_new_one_until_its_first_fetched_send() {
     let t = Tmp::new("switch-nonce");
     let old = SubmittedTxLog::open(t.file(), G);
     // CAPACITY + 10 sends from A evict A's nonces 0..=9 on r1005.
@@ -661,14 +666,17 @@ fn nonce_marks_of_the_previous_genesis_do_not_apply_on_the_new_one() {
     assert_eq!(old.try_record_for(&h(90_000), A, 9), Ok(false), "on r1005 nonce 9 is unknown");
     drop(old);
     let log = SubmittedTxLog::open(t.file(), NEW);
-    for n in 0..10u32 {
+    // r1005's evicted sends can't be matched by hash here: the new network starts bounded, and A's
+    // first fetched-nonce send (at 0) sets A's bound. r1005's marks (up to 9) are not the bound.
+    assert_eq!(log.try_record_call(&h(91_000), A, 0, NonceSource::Fetched, None), Ok(false));
+    for n in 1..10u32 {
         assert_eq!(
-            log.try_record_for(&h(91_000 + n), A, u64::from(n)),
+            log.try_record_call(&h(91_000 + n), A, u64::from(n), NonceSource::Fetched, None),
             Ok(true),
-            "new-chain nonce {n} is not bounded by r1005's evicted nonces"
+            "new-chain nonce {n} is above A's own bound, not r1005's evicted nonces"
         );
     }
-    // The probe at nonce 9 evicted one more r1005 entry (nonce 10).
+    // The probe at nonce 9 evicted one more r1005 entry (nonce 10); the archive is unchanged since.
     assert_eq!(section_of(&disk(&t), G).expect("r1005")["evicted"][A], 10);
 }
 
@@ -704,9 +712,10 @@ fn a_record_written_before_the_genesis_was_kept_belongs_to_r1005() {
     // On a new genesis it is r1005 history.
     std::fs::write(t.legacy(), &legacy).expect("write");
     let log = SubmittedTxLog::open(t.file(), NEW);
-    assert!(!log.is_uncertain());
+    assert!(log.is_uncertain(), "r1005's uncertain history bounds the new network");
     assert_eq!(log.len(), 0);
-    assert_eq!(log.try_record_for(&h(9), A, 0), Ok(true));
+    assert_eq!(log.try_record_call(&h(9), A, 0, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(10), A, 1, NonceSource::Fetched, None), Ok(true), "r1005's mark at 300 is not the bound");
     let d = disk(&t);
     assert_eq!(d["previous_networks"][0]["genesis"], LEGACY_GENESIS);
     assert_eq!(d["previous_networks"][0]["evicted"][A], 300);
@@ -721,7 +730,7 @@ fn returning_to_an_archived_genesis_brings_its_history_back() {
     old.try_record_for(&h(1), A, 0).expect("record");
     drop(old);
     let new = SubmittedTxLog::open(t.file(), NEW);
-    assert_eq!(new.try_record_for(&h(2), A, 0), Ok(true));
+    assert_eq!(new.try_record_for(&h(2), A, 0), Ok(false), "bounded: r1005's history is unknown");
     drop(new);
     let back = SubmittedTxLog::open(t.file(), G);
     assert!(back.is_uncertain(), "r1005's uncertainty is r1005's again");
@@ -992,8 +1001,10 @@ fn d1_the_upgrade_bound_belongs_to_its_network_and_is_archived_with_it() {
     assert_eq!(r1005.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false), "r1005: the first send after the upgrade is unknown");
     drop(r1005);
     let new = SubmittedTxLog::open(t.record(), NEW);
-    assert!(!new.is_uncertain(), "r1005's bound is not the new network's");
-    assert_eq!(new.try_record_call(&h(2), A, 0, NonceSource::Fetched, None), Ok(true), "new-network nonce 0 is not under r1005's bound 7");
+    // r1005 is bounded, so the new network starts bounded too, with a bound of its own.
+    assert!(new.is_uncertain(), "r1005's unknown history bounds the new network");
+    assert_eq!(new.try_record_call(&h(2), A, 0, NonceSource::Fetched, None), Ok(false), "A's first send here sets the new network's bound (0)");
+    assert_eq!(new.try_record_call(&h(5), A, 1, NonceSource::Fetched, None), Ok(true), "new-network nonce 1 is not under r1005's bound 7");
     drop(new);
     let archived = section_of(&record_json(&t), G).expect("r1005's section is archived");
     assert_eq!(archived["upgrade_bound"][A], 7, "the bound moved to the archive with its section: {archived}");
@@ -1063,7 +1074,10 @@ fn d2_an_archived_section_never_changes_a_current_network_answer() {
         }
         r1005.try_record(&h(9)).expect("record");
     }
-    let without = Tmp::new("d2-without-archive");
+    // The comparison starts from the same current section: both new networks start
+    // upgrade-bounded (decided once when the section is created). `without` has only the empty
+    // r1005 section that a 0.5.1 upgrade leaves.
+    let without = upgraded("d2-without-archive");
     let a = SubmittedTxLog::open(with.record(), NEW);
     let b = SubmittedTxLog::open(without.record(), NEW);
     assert_eq!(a.is_uncertain(), b.is_uncertain());
@@ -1075,6 +1089,8 @@ fn d2_an_archived_section_never_changes_a_current_network_answer() {
         (A, 3, NonceSource::Supplied),
         (MEMBER, 5, NonceSource::Fetched),
         (B, 0, NonceSource::Fetched),
+        (A, 1, NonceSource::Fetched),
+        (MEMBER, 6, NonceSource::Fetched),
     ]
     .into_iter()
     .enumerate()
@@ -1092,7 +1108,7 @@ fn d3_a_legacy_record_is_migrated_into_r1005_and_set_aside() {
     std::fs::write(t.legacy(), legacy_body()).expect("legacy");
     let new = SubmittedTxLog::open(t.record(), NEW);
     assert_eq!(new.len(), 0);
-    assert!(!new.is_uncertain(), "r1005's history is not the new network's");
+    assert!(new.is_uncertain(), "r1005's bounded history bounds the new network");
     drop(new);
     assert!(!t.legacy().exists(), "the legacy file is not read again as the record");
     let aside = t.0.join(format!("{LEGACY_FILE}.migrated"));
@@ -1238,21 +1254,35 @@ fn d4_within_a_section_the_bound_keeps_507s_semantics_after_migration_and_a_swit
 
 /// Tripwire (design 2): outside tests, the archive (`Inner::previous`) is touched only to load,
 /// write and migrate the record and by `sent_on_a_previous_network`, which may only take
-/// first-ness away (`&& !...`). A new read of an archived section in a decision path fails here.
+/// first-ness away (`&& !...`). Any use of the `previous` field name (`.previous`, a destructuring
+/// `previous: x` or `previous,`) elsewhere fails here, so a new read of an archived section in a
+/// decision path does.
 #[test]
 fn tripwire_no_decision_path_reads_an_archived_section() {
     let src = include_str!("submitted_log.rs");
     let prod = &src[..src.find("#[cfg(test)]\nmod tests").expect("tests module")];
-    let allowed = ["new", "sent_on_a_previous_network", "to_disk", "read_record", "open_with"];
+    let allowed = ["Inner", "new", "sent_on_a_previous_network", "to_disk", "read_record", "open_with"];
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let mut offenders = Vec::new();
-    for (at, _) in prod.match_indices(".previous") {
-        let before = &prod[..at];
-        let name = before
-            .rfind("fn ")
-            .map(|f| before[f + 3..].split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or(""))
-            .unwrap_or("");
-        if !allowed.contains(&name) {
-            offenders.push(format!("fn {name} reads the archive"));
+    let mut item = String::new();
+    for line in prod.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let t = code.trim_start();
+        let t = t.strip_prefix("pub ").unwrap_or(t);
+        for kw in ["fn ", "struct ", "enum ", "impl "] {
+            if let Some(rest) = t.strip_prefix(kw) {
+                item = rest.split(|c: char| !is_word(c)).next().unwrap_or("").to_string();
+            }
+        }
+        for (at, _) in code.match_indices("previous") {
+            let before = code[..at].chars().next_back();
+            let after = code[at + "previous".len()..].chars().next();
+            if before.is_some_and(is_word) || after.is_some_and(is_word) {
+                continue; // part of another name (previous_networks, sent_on_a_previous_network)
+            }
+            if !allowed.contains(&item.as_str()) {
+                offenders.push(format!("{item}: {}", line.trim()));
+            }
         }
     }
     let calls: Vec<_> = prod.match_indices("sent_on_a_previous_network(").map(|(i, _)| i).collect();

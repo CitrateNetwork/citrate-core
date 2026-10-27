@@ -553,7 +553,7 @@ fn write_r1005_send_record(app: &Path) -> (String, Vec<String>) {
 }
 
 #[test]
-fn an_r1005_send_record_is_archived_by_the_switch_and_the_new_chain_starts_certain() {
+fn an_r1005_send_record_is_archived_by_the_switch_and_the_new_chain_starts_bounded() {
     let root = scratch("sendrec");
     let app = install_v051_on_r1005(&root);
     let (wallet, r1005_hashes) = write_r1005_send_record(&app);
@@ -566,14 +566,21 @@ fn an_r1005_send_record_is_archived_by_the_switch_and_the_new_chain_starts_certa
         app.join(citrate_core_kit::submitted_log::RECORD_FILE),
         NEW_GENESIS,
     );
+    // r1005's record is uncertain, so the new chain starts upgrade-bounded (#443): the wallet's
+    // first fetched-nonce send there is unknown, and a later one above it is a first send. The
+    // bound is the new chain's own: r1005's nonces (0..=2) don't set it.
     assert!(
-        !log.is_uncertain(),
-        "r1005's sends must not leave the new chain's sends as outcome unknown"
+        log.is_uncertain(),
+        "r1005's unknown sends bound the new chain"
     );
     assert_eq!(log.len(), 0, "no r1005 entry is looked up on the new chain");
-    // The wallet's nonce 0 on the new chain is not bounded by its r1005 sends.
+    use citrate_core_kit::submitted_log::NonceSource::Fetched;
     assert_eq!(
-        log.try_record_for(&format!("0x{:064x}", 100), &wallet, 0),
+        log.try_record_call(&format!("0x{:064x}", 100), &wallet, 0, Fetched, None),
+        Ok(false)
+    );
+    assert_eq!(
+        log.try_record_call(&format!("0x{:064x}", 101), &wallet, 1, Fetched, None),
         Ok(true)
     );
     // The r1005 sends are kept as r1005's archived section, and the legacy file is set aside.
