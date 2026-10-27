@@ -75,12 +75,6 @@ pub struct Anchor {
     pub totals: BTreeMap<String, AnchorTotals>,
 }
 
-/// Read the anchor. Absent = a fresh install (all zero). `Err` = the keyring is unreadable or the
-/// value is not an anchor.
-pub fn read_anchor(keyring: &dyn AiKeyring) -> Result<Anchor, ()> {
-    read_anchor_opt(keyring).map(Option::unwrap_or_default)
-}
-
 /// The anchor, or `None` when the keyring has none (a fresh install, or one removed: a log or
 /// guard file that exists without it fails closed).
 pub fn read_anchor_opt(keyring: &dyn AiKeyring) -> Result<Option<Anchor>, ()> {
@@ -91,12 +85,24 @@ pub fn read_anchor_opt(keyring: &dyn AiKeyring) -> Result<Option<Anchor>, ()> {
     }
 }
 
-/// Read-modify-write the anchor. Callers hold the proxy's state lock, so writers do not race.
+/// Read-modify-write an **existing** anchor. Callers hold the proxy's state lock, so writers do
+/// not race. A missing anchor is an error: only a fresh install ([`create_anchor`]) and a log reset
+/// ([`UsageLog::reset_broken`], the member's acknowledgement) may create one, so no other save can
+/// quietly re-legitimise a log whose anchor was removed.
 pub fn update_anchor(keyring: &dyn AiKeyring, f: impl FnOnce(&mut Anchor)) -> Result<(), ()> {
-    let mut a = read_anchor(keyring)?;
+    let mut a = read_anchor_opt(keyring)?.ok_or(())?;
     f(&mut a);
-    let s = serde_json::to_string(&a).map_err(|_| ())?;
+    write_anchor(keyring, &a)
+}
+
+fn write_anchor(keyring: &dyn AiKeyring, a: &Anchor) -> Result<(), ()> {
+    let s = serde_json::to_string(a).map_err(|_| ())?;
     keyring.set(ANCHOR_ACCOUNT, &s).map_err(|_| ())
+}
+
+/// A fresh install's empty anchor, written before any provider key exists.
+pub(crate) fn create_anchor(keyring: &dyn AiKeyring) -> Result<(), ()> {
+    write_anchor(keyring, &Anchor::default())
 }
 
 fn month_code(ms: u64) -> i64 {
@@ -479,6 +485,14 @@ impl UsageLog {
         Ok(())
     }
 
+    /// Mark the log broken from outside (the proxy found its anchor removed): every write is
+    /// refused until the member starts a new log.
+    pub(crate) fn mark_broken(&mut self, reason: &str) {
+        if self.broken.is_none() {
+            self.broken = Some(reason.to_string());
+        }
+    }
+
     pub fn broken_reason(&self) -> Option<&str> {
         self.broken.as_deref()
     }
@@ -622,14 +636,14 @@ impl UsageLog {
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
-        let carried = read_anchor(self.keyring.as_ref())
+        // The reset is the one path besides a fresh install that may (re)create the anchor.
+        let mut anchor = read_anchor_opt(self.keyring.as_ref())
             .map_err(|_| LogError::KeyUnavailable)?
-            .totals;
-        update_anchor(self.keyring.as_ref(), |a| {
-            a.log_seq = 0;
-            a.log_head = String::new();
-        })
-        .map_err(|_| LogError::KeyUnavailable)?;
+            .unwrap_or_default();
+        let carried = std::mem::take(&mut anchor.totals);
+        anchor.log_seq = 0;
+        anchor.log_head = String::new();
+        write_anchor(self.keyring.as_ref(), &anchor).map_err(|_| LogError::KeyUnavailable)?;
         self.broken = None;
         self.head = GENESIS_PREV.into();
         self.next_seq = 1;
