@@ -132,13 +132,14 @@ describe("C1-V5 — the registry key is MemberBond.pubkey() once the bond has ac
     await poll(grant({}));
     expect(store.state.validatorPubkey).toBe(BOND_KEY);
     const html = renderToStaticMarkup(<Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }} />);
-    expect(html).toContain("Producing blocks");
+    expect(html).toMatch(/>Producing blocks</);
   });
 
   it("a node key that produces does not make the member's bond key 'Producing blocks'", async () => {
     await poll(grant({}));
     const html = renderToStaticMarkup(<Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [NODE_KEY] }, producersError: null }} />);
-    expect(html).not.toContain("Producing blocks");
+    expect(html).not.toMatch(/>Producing blocks</);
+    expect(html).toContain("Not seen producing in the last 100 blocks");
   });
 
   it("a failed MemberBond.pubkey() read is retried on the next due poll, node stopped or not", async () => {
@@ -146,6 +147,7 @@ describe("C1-V5 — the registry key is MemberBond.pubkey() once the bond has ac
     expect(r.validatorActivation).not.toHaveBeenCalled();
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false } as never);
     const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({}));
+    gs.mockClear();
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
     await store.refreshNode();
     expect(gs).toHaveBeenCalledTimes(1);

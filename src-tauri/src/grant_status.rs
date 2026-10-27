@@ -453,7 +453,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
     let bond_deployed = unlock_ret.len() >= 32;
 
-    let (unlock_block, is_unlocked, is_kyc_verified) = if bond_deployed {
+    let (unlock_block, bond_unlocked, is_kyc_verified) = if bond_deployed {
         let unlock = decode_u128(&unlock_ret).map_err(GrantStatusError::Decode)?;
         let unlocked_ret = rpc
             .eth_call(bond_nullary_call(&bond_address, is_unlocked_selector()))
@@ -463,12 +463,15 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
             .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
         (
             Some(unlock as u64),
-            decode_u128(&unlocked_ret).map(|v| v == 1).unwrap_or(false),
+            // Carried as read: an undecodable value is None (unread), never "locked" (chain#331).
+            decode_u128(&unlocked_ret).ok().map(|v| v == 1),
             decode_u128(&kyc_ret).map(|v| v == 1).unwrap_or(false),
         )
     } else {
-        (None, false, false)
+        (None, None, false)
     };
+    // The legacy flag (describeBond, withdrawal eligibility) keeps its fail-closed "locked" reading.
+    let is_unlocked = bond_unlocked.unwrap_or(false);
 
     // ValidatorRegistry: the STAKER's pubkey binding, then its bonded principal.
     //
@@ -501,15 +504,24 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         (false, 0)
     };
 
-    // `MemberBond.activated()`, read last and on its own: a failed read is None (unread), never
-    // false, and the reads above still stand. It stays true after an exit, unlike pubkeyOfStaker.
-    let bond_activated = if bond_deployed {
-        rpc.eth_call(bond_nullary_call(&bond_address, activated_selector()))
+    // `MemberBond.activated()` and (C1-V5) `MemberBond.pubkey()`, read last and independently: a
+    // failed read is None (unread), never false or a zero key, and the reads above still stand.
+    // Both outlive an exit, unlike pubkeyOfStaker.
+    let (bond_activated, bond_pubkey) = if bond_deployed {
+        let activated = rpc
+            .eth_call(bond_nullary_call(&bond_address, activated_selector()))
             .ok()
             .and_then(|r| decode_u128(&r).ok())
-            .map(|v| v == 1)
+            .map(|v| v == 1);
+        let pubkey = rpc
+            .eth_call(bond_nullary_call(&bond_address, bond_pubkey_selector()))
+            .ok()
+            .and_then(|r| decode_word32(&r))
+            .filter(|w| w.iter().any(|b| *b != 0))
+            .map(|w| format!("0x{}", hex::encode(w)));
+        (activated, pubkey)
     } else {
-        None
+        (None, None)
     };
 
     Ok(GrantStatus {
@@ -524,9 +536,8 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         is_unlocked,
         is_kyc_verified,
         bond_activated,
-        // Red stub: not read yet.
-        bond_pubkey: None,
-        bond_unlocked: None,
+        bond_pubkey,
+        bond_unlocked,
     })
 }
 
@@ -537,8 +548,9 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
 /// custody EOA. A malformed address fails closed before any node call.
 /// ASYNC + `spawn_blocking` — this MUST NOT run on the main thread.
 ///
-/// `read_grant_status` makes NINE sequential blocking `eth_call`s to the public
-/// 40204 RPC (stake, principal, SBT, bond, unlock, unlocked, KYC, pubkey, bonded).
+/// `read_grant_status` makes up to ELEVEN sequential blocking `eth_call`s to the public
+/// 40204 RPC (stake, principal, SBT, bond, unlock, unlocked, KYC, pubkeyOfStaker, bonded,
+/// MemberBond.activated, MemberBond.pubkey).
 /// At the measured ~240 ms per round trip that is ~2.4 s of work — and `refreshNode`
 /// polls it every 2 s while the member is not yet bonded, i.e. throughout onboarding.
 ///

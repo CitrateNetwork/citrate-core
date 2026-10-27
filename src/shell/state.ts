@@ -488,7 +488,11 @@ export interface AppState {
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
   minStakeWei: string | null;
-  /** C1-V — this node's validator key (`proposer.key`), once read. Observed, never persisted. */
+  /**
+   * C1-V — the member's validator key, the one the registry reads and the producer check use (C1-V5):
+   * `MemberBond.pubkey()` once the bond has activated, else this node's `proposer.key`. Observed,
+   * never persisted.
+   */
   validatorPubkey: string | null;
   /** C1-V — distinct proposer keys sampled over the last 100 blocks (chainTruth); null = not sampled. */
   producers: { head: number; window: number; proposers: string[] } | null;

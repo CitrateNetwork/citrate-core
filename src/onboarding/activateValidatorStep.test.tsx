@@ -17,6 +17,7 @@ function st(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
     principalWei: WEI_32K,
     unlockBlock: 16_200_000,
     unlockTimestamp: 1_822_000_000,
+    bondUnlocked: false, // still locked: activation is offered only inside the lock (chain#331)
     memberTokenId: "4",
     membershipActive: true,
     validatorPubkey: "0x" + "07".repeat(32),

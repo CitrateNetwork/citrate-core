@@ -227,6 +227,16 @@ export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean 
  * withdrawable while KYC is outstanding — the chain enforces both gates, and the UI
  * must not imply otherwise.
  */
+/**
+ * The bond reads the app keeps from a grant read (observed, never persisted): `MemberBond.activated()`,
+ * `pubkey()` (C1-V5) and `isUnlocked()` as read (chain#331). No bond, or a field an older backend
+ * does not send, is null (unread).
+ */
+export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked"> {
+  if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null };
+  return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null };
+}
+
 export function describeBond(g: {
   bondDeployed: boolean;
   unlockBlock: number | null;
@@ -1394,7 +1404,7 @@ export class Store {
     // #348 review: the bond's activated flag is observed, never persisted. Fold it from this
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
-    this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    this.setState(bondReadsFromGrant(grant));
     // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
     // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
     // that is on chain; otherwise the last value stands.
@@ -1408,29 +1418,49 @@ export class Store {
   }
 
   /**
-   * C1-V (contract v1.1 §1) — this node's key in the registry: isActive, validatorInfo (status,
-   * actEpoch) and currentEpoch, the only source of the validator words. Read for this node's key
-   * whether or not it has registered stake (C1-V2). Re-read at most every 60 s; between reads the last reading stands. A failed
+   * C1-V (contract v1.1 §1) — the member's validator key in the registry: isActive, validatorInfo
+   * (status, actEpoch) and currentEpoch, the only source of the validator words. The key is
+   * `memberValidatorKey()` (C1-V5), read whether or not it has registered stake (C1-V2). Re-read at most every 60 s; between reads the last reading stands. A failed
    * read is null (unknown), which is never shown as active.
    */
   private async readValidatorActivation(nodeRunning: boolean): Promise<ValidatorActivation | null> {
-    // C1-V2: read whenever this node's key is known, whatever the registry stake. A full exit sets
+    // C1-V2: read whenever the member's key is known, whatever the registry stake. A full exit sets
     // `stakeOf` to 0 while `validatorInfo.status` is Exiting (2) or Slashed (3), so gating the read
     // on stake > 0 would make those words unreachable. A key the registry never saw reads status 0.
     const ACTIVE_READ_MS = 60_000;
     if (!nodeRunning || Date.now() - this.lastActiveReadAt < ACTIVE_READ_MS) return this.state.validatorActivation;
     this.lastActiveReadAt = Date.now();
     try {
-      if (!this.validatorPubkey) {
-        const v = await bridge.node.validatorEarnings();
-        if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
-        this.validatorPubkey = v.proposerPubkey as `0x${string}`;
-        this.setState({ validatorPubkey: this.validatorPubkey.toLowerCase() });
+      const key = await this.memberValidatorKey();
+      if (!key) {
+        // No member key yet: nothing is checked for producing under a stale key either.
+        if (this.state.validatorPubkey !== null) this.setState({ validatorPubkey: null });
+        return null;
       }
-      return await this.chainReads.validatorActivation(this.validatorPubkey);
+      // #366 F1: the chosen key is also the key the producer sample is checked against.
+      if (this.state.validatorPubkey !== key) this.setState({ validatorPubkey: key });
+      return await this.chainReads.validatorActivation(key as `0x${string}`);
     } catch {
       return null;
     }
+  }
+
+  /**
+   * C1-V5 — the member's validator key, the same rule as the S7 read (#354, validator_activation.rs):
+   * `MemberBond.pubkey()` once the bond has activated (it survives an exit, unlike pubkeyOfStaker),
+   * else this node's proposer key. An activated bond whose key did not read, or a grant whose bond
+   * state is unread, has NO key yet: never the node's, which may be another key. null = no key.
+   */
+  private async memberValidatorKey(): Promise<string | null> {
+    const s = this.state;
+    if (s.bondPubkey && /^0x[0-9a-fA-F]{64}$/.test(s.bondPubkey)) return s.bondPubkey.toLowerCase();
+    if (s.bondActivated === true || (s.hasGrant && s.bondActivated === null)) return null;
+    if (!this.validatorPubkey) {
+      const v = await bridge.node.validatorEarnings();
+      if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
+      this.validatorPubkey = v.proposerPubkey as `0x${string}`;
+    }
+    return this.validatorPubkey.toLowerCase();
   }
 
   /**
@@ -1520,19 +1550,25 @@ export class Store {
       // pre-activation), so the 32k attributed stake never surfaced until a relaunch.
       let grantPatch: Partial<AppState> | null = null;
       let bondActivated = this.state.bondActivated;
+      let bondReads: Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked"> | null = null;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
       // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
       // own read (whatever the node is doing) until it lands.
-      const needActivation = this.state.hasGrant && bondActivated === null;
+      // C1-V5: an activated bond whose MemberBond.pubkey() did not read is unread too (its registry
+      // reads wait for the key), and chain#331: so is an un-activated bond's lock, which gates the
+      // activation offer. Both are retried on the next due poll until they land.
+      const needActivation =
+        this.state.hasGrant && (bondActivated === null || (bondActivated === true && this.state.bondPubkey === null) || (bondActivated === false && this.state.bondUnlocked === null));
       if ((needBond || needGrant || needActivation) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
           bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
           // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
-          bondActivated = g.bondActivated ?? null;
+          bondReads = bondReadsFromGrant(g);
+          bondActivated = bondReads.bondActivated;
           // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
           // block), DISTINCT from the validator bond above — so a granted-but-not-yet-activated member
           // sees their locked 32k, not "0 staked". Null when the grant isn't genuinely on chain (Rule 1).
@@ -1543,6 +1579,8 @@ export class Store {
       }
       // C1-V (contract v1.1 §1) — the validator words come ONLY from the registry: isActive,
       // validatorInfo (status, actEpoch) and currentEpoch, read at most every ACTIVE_READ_MS.
+      // The key the registry is read for depends on the bond reads just folded (C1-V5).
+      if (bondReads) this.setState(bondReads);
       const validatorActivation = await this.readValidatorActivation(st.state === "running");
       void this.refreshProducers();
       // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
@@ -1572,7 +1610,7 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
-        bondActivated,
+        ...(bondReads ?? { bondActivated }),
         validatorActivation,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
@@ -1662,7 +1700,7 @@ export class Store {
     // #348/#349 review: a bond that already activated (then exited or was slashed) never re-opens
     // activation, and neither does an Exiting / Slashed key.
     // #348 review: only a bond that reads not activated (activated() = false); unread never opens it.
-    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated)) return;
+    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated, s.bondUnlocked)) return;
 
     // ARM the producer so the node mints `proposer.key` (the validator identity activation
     // needs). The node runs as a plain follower and NEVER mints the key on its own; arming
@@ -3795,7 +3833,7 @@ export class Store {
         const a = this.state.validatorActivation;
         result = JSON.stringify({
           ...(await bridge.node.status()),
-          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated),
+          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated, this.state.bondUnlocked),
           validatorActivation: a,
         });
       } catch (e) {

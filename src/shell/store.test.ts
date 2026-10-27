@@ -1030,7 +1030,7 @@ describe("activateValidator — arms block production before it needs the key", 
       s7TxHash: null,
       activation: {
         bondAddress: "0x" + "22".repeat(20), bondDeployed: true, bondActivated: false, principalWei: (32000n * 10n ** 18n).toString(),
-        unlockBlock: 16_200_000, unlockTimestamp: 1_822_000_000, memberTokenId: "4", membershipActive: true,
+        unlockBlock: 16_200_000, unlockTimestamp: 1_822_000_000, bondUnlocked: false, memberTokenId: "4", membershipActive: true,
         validatorPubkey: "0x" + "07".repeat(32), pubkeySource: "node", nodeKeyReady: true, nodePubkey: "0x" + "07".repeat(32), bondPubkey: null,
         registryStatus: 0, activationEpoch: 0, registryActive: false, currentEpoch: 500, epochBlocks: 1000,
         headBlock: 500_000, blockTimeMs: 2000, localBlock: 499_999, localSyncing: false, tx: null, recordedTx: null,

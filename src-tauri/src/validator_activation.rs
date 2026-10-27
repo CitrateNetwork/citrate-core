@@ -11,6 +11,7 @@
 //! | `bondActivated`           | `MemberBond.activated()`                                      |
 //! | `principalWei`            | `MemberBond.principal()`                                      |
 //! | `unlockBlock/Timestamp`   | `MemberBond.unlockBlock()` / `unlockTimestamp()`              |
+//! | `bondUnlocked`            | `MemberBond.isUnlocked()` (activation only inside the lock)   |
 //! | `memberTokenId`           | `MemberBond.memberTokenId()`                                  |
 //! | `membershipActive`        | `CitrateMemberSBT.isActive(memberTokenId)`                    |
 //! | `validatorPubkey`         | `MemberBond.pubkey()` once activated, else this node's key    |
@@ -266,6 +267,8 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
                     .map(|v| v.to_string());
                 st.unlock_block = read(UNLOCK_BLOCK).as_ref().and_then(word_u64);
                 st.unlock_timestamp = read(UNLOCK_TIMESTAMP).as_ref().and_then(word_u64);
+                // chain#331: activate() reverts once isUnlocked(); a non-bool answer is unread.
+                st.bond_unlocked = read(IS_UNLOCKED).as_ref().and_then(word_bool);
                 let token = read(MEMBER_TOKEN_ID);
                 st.member_token_id = token.as_ref().and_then(word_u128).map(|v| v.to_string());
                 if let Some(token) = token {

@@ -12,6 +12,7 @@
 // disclaimer and betanet lines, and should fold into grantCopy.ts once that lands.
 // =====================================================================
 import type { ActivationStatusView } from "../bridge/domains";
+import { UNACTIVATED_WITHDRAW_NOTE } from "../shell/chainTruth";
 
 /** Contract §1 "Synced": local `eth_blockNumber` within this many blocks of the public head. */
 export const SYNC_MARGIN_BLOCKS = 5;
@@ -132,6 +133,24 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
           : "— not read yet (MembershipStakeVault.bondOf)",
   });
 
+  // Owner decision 2026-10-19 / chain#331: activation only inside the bond lock (activate() reverts
+  // once MemberBond.isUnlocked() is true). An unread lock is unknown, never "locked". An activated
+  // bond is never offered activation, so it has no lock check.
+  if (st?.bondActivated !== true) {
+    const u = st && st.bondDeployed === true ? st.bondUnlocked : null;
+    checks.push({
+      key: "lock",
+      label: "Bond lock",
+      ok: u === false ? true : u === true ? false : null,
+      detail:
+        u === false
+          ? "Locked (MemberBond.isUnlocked() = false)."
+          : u === true
+            ? `Unlocked · not activated. ${UNACTIVATED_WITHDRAW_NOTE}`
+            : "— not read yet (MemberBond.isUnlocked)",
+    });
+  }
+
   const synced = isNetworkSynced(st);
   const gap = st ? syncGap(st) : null;
   checks.push({
@@ -197,6 +216,9 @@ export function validatorState(st: ActivationStatusView | null): { word: Validat
   if (st.bondDeployed === false) return { word: "Not a validator", detail: "No stake in the registry for this membership." };
   if (st.bondActivated == null) return unknown;
   if (st.bondActivated === false) {
+    // Contract v1.2 §1: the bond word follows the lock as read; unread is "—".
+    if (st.bondUnlocked === true) return { word: "Unlocked · not activated", detail: UNACTIVATED_WITHDRAW_NOTE };
+    if (st.bondUnlocked !== false) return { word: null, detail: "— not read yet (MemberBond.isUnlocked)" };
     return { word: "Bond locked · not staked", detail: "Your grant sits in your bond, not in the ValidatorRegistry (MemberBond.activated = false)." };
   }
   if (st.registryStatus !== 1 || st.activationEpoch == null || st.currentEpoch == null) return unknown;

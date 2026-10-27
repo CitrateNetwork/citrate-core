@@ -19,7 +19,7 @@ function synced(tx: ActivationStatusView["tx"], hash: string | null): AppState {
   s.hasGrant = true;
   s.s7TxHash = hash;
   s.s7TxAt = Date.now() - 11 * 60_000;
-  s.activation = { bondActivated: false, bondDeployed: true, membershipActive: true, tx, recordedTx: null } as unknown as ActivationStatusView;
+  s.activation = { bondActivated: false, bondUnlocked: false, bondDeployed: true, membershipActive: true, tx, recordedTx: null } as unknown as ActivationStatusView;
   return s;
 }
 

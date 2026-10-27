@@ -310,17 +310,28 @@ export function readsValidatorRewards(bondedStake: number, bondActivated: boolea
 export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Unlocked · not activated" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
 
 /**
- * The validator state word, from the registry only (contract v1.1 §1 Validators).
+ * Contract v1.2 §1 "Unlocked · not activated": the required detail. requestRelease() and
+ * withdrawToMember() revert NotActivated for a bond that was never activated. Nothing more is said
+ * about an unactivated grant (no "activation window" copy).
+ */
+export const UNACTIVATED_WITHDRAW_NOTE = "Only an activated bond can be withdrawn.";
+
+/**
+ * The validator state word, from the registry and the bond only (contract v1.1/v1.2 §1 Validators).
  *  - `stakeSalt`: `ValidatorRegistry.stakeOf(pubkey)` for the member's key, in SALT (0 = none).
  *  - `activation`: isActive / validatorInfo / currentEpoch for the key, null when not read.
  *  - `hasGrant`: the membership grant is on chain (its bond exists), for the bond-locked word.
+ *  - `bondActivated`: `MemberBond.activated()`; `bondUnlocked`: `MemberBond.isUnlocked()`, both
+ *    as read (null / absent = not read).
  * "Exiting" / "Slashed" follow `validatorInfo.status` (2 / 3) before any stake check: after a full exit
- * the stake reads 0. "Registered · active from epoch N" shows the real N (never a promised epoch); "Validator active"
- * needs isActive AND actEpoch <= currentEpoch. Returns null when the stake is registered but the
- * activation has not been read, or the registry reads are inconsistent: the caller shows "—".
+ * the stake reads 0. A never-activated bond is "Bond locked · not staked" only while the lock reads
+ * as running (isUnlocked() = false) and "Unlocked · not activated" once it reads open; an unread lock
+ * is "—" (chain#331, owner decision 2026-10-19). "Registered · active from epoch N" shows the real N
+ * (never a promised epoch); "Validator active" needs isActive AND actEpoch <= currentEpoch. Returns
+ * null when the state can't be stated: the caller shows `validatorDash`.
  * No other stake figure is an input: only the registry makes a validator.
  */
-export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, _bondUnlocked?: boolean | null): ValidatorWord | null {
+export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, bondUnlocked?: boolean | null): ValidatorWord | null {
   // C1-V2: the registry status comes first. A full exit moves the bonded stake to escrow, so
   // `stakeOf` reads 0 while the status is Exiting (or Slashed); a stake check first would hide it.
   if (activation?.status === 2) return "Exiting";
@@ -328,24 +339,33 @@ export function validatorWord(stakeSalt: number, activation: ValidatorActivation
   // #348/#349 review: an activated bond with no registered stake (and no Exiting / Slashed status
   // read) has left the registry; it is not "Bond locked", and its state can't be stated: "—".
   if (!(stakeSalt > 0) && bondActivated === true) return null;
-  // #348 review (contract v1.1 §1, rule 2): "Bond locked · not staked" needs activated() = false; an
-  // unread flag with a grant is "—" (bond state not read yet), the same gate as #366's validatorState.
-  if (!(stakeSalt > 0)) return bondActivated === false ? "Bond locked · not staked" : hasGrant ? null : "Not a validator";
+  // #348 review (contract v1.1 §1, rule 2): the bond words need activated() = false; an unread flag
+  // with a grant is "—" (bond state not read yet). Contract v1.2: which bond word follows the lock.
+  if (!(stakeSalt > 0)) {
+    if (bondActivated === false) return bondUnlocked === false ? "Bond locked · not staked" : bondUnlocked === true ? "Unlocked · not activated" : null;
+    return hasGrant ? null : "Not a validator";
+  }
   if (!activation) return null;
   if (activation.actEpoch > activation.currentEpoch) return `Registered · active from epoch ${activation.actEpoch}`;
   return isValidatorActive(activation) ? "Validator active" : null;
 }
 
 /** The validator word, or "— · <reason>" when it can't be stated (#348 review). */
-export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, _bondUnlocked?: boolean | null): string {
-  const w = validatorWord(stakeSalt, activation, hasGrant, bondActivated);
+export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, bondUnlocked?: boolean | null): string {
+  const w = validatorWord(stakeSalt, activation, hasGrant, bondActivated, bondUnlocked);
   if (w) return w;
   if (!(stakeSalt > 0) && hasGrant && bondActivated == null) return "— · bond state not read yet";
+  if (!(stakeSalt > 0) && bondActivated === false) return "— · bond lock not read yet";
   if (!(stakeSalt > 0) && bondActivated === true && activation) return "— · registry state inconsistent";
   return "— · registry not read yet";
 }
 
-/** Stake / activate is offered only for a bond that reads not activated, with no registered stake. */
-export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, bondActivated?: boolean | null, _bondUnlocked?: boolean | null): boolean {
-  return !(stakeSalt > 0) && bondActivated === false && activation?.status !== 2 && activation?.status !== 3;
+/**
+ * Stake / activate is offered only for a bond that reads not activated, with no registered stake,
+ * and whose lock reads as still running (isUnlocked() = false): owner decision 2026-10-19,
+ * activation only inside the lock (chain#331: activate() reverts once unlocked). An unread lock
+ * offers nothing. Exactly when the word is "Bond locked · not staked".
+ */
+export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, bondActivated?: boolean | null, bondUnlocked?: boolean | null): boolean {
+  return validatorWord(stakeSalt, activation, false, bondActivated, bondUnlocked) === "Bond locked · not staked";
 }
