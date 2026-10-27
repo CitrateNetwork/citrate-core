@@ -43,6 +43,7 @@ fn the_next_genesis_profile_is_explicitly_not_set() {
     for field in [
         "chainId",
         "genesisHash",
+        "genesisProfile",
         "nodeNetwork",
         "rpcUrl",
         "explorerUrl",
@@ -66,7 +67,7 @@ fn the_next_genesis_profile_is_explicitly_not_set() {
     match p.ready() {
         Err(ProfileError::NotSet { profile, missing }) => {
             assert_eq!(profile, NEXT);
-            assert_eq!(missing.len(), 10);
+            assert_eq!(missing.len(), 11);
         }
         other => panic!("a not-set profile must not be ready: {other:?}"),
     }
@@ -170,6 +171,22 @@ fn ready_refuses_values_that_only_look_set() {
             "minChainRev",
             Box::new(|p| p.min_chain_rev = Some("g".repeat(40))),
         ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some("r9999".into())),
+        ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some(String::new())),
+        ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some("R1006".into())),
+        ),
+        (
+            "genesisProfile",
+            Box::new(|p| p.genesis_profile = Some("r1006\"\nx = 1".into())),
+        ),
     ];
     for (field, mutate) in cases {
         let mut p = base.clone();
@@ -220,6 +237,10 @@ fn not_set_error_names_the_missing_values() {
 fn the_template_has_no_network_values_of_its_own() {
     let t = include_str!("../config/member-node.toml");
     assert!(t.contains(CHAIN_ID_PLACEHOLDER), "chain id placeholder");
+    assert!(
+        t.contains(&format!("genesis_profile = \"{GENESIS_PROFILE_PLACEHOLDER}\"")),
+        "genesis profile placeholder"
+    );
     assert!(
         t.contains(BOOTNODES_PLACEHOLDER),
         "bootnode placeholder line"
@@ -611,4 +632,55 @@ fn a_genesis_profile_the_bundled_node_does_not_build_is_refused() {
         matches!(&known, Ok(r) if r.genesis_hash == R1006_GENESIS),
         "r1006 naming the r1006 genesis profile is ready: {known:?}"
     );
+}
+
+/// Tripwire (RC52): every shipped profile whose genesis is set names the genesis profile that
+/// builds exactly that block 0, so the node can never be told to build another network's genesis
+/// (alpha-r1005 → testnet_beta 0x1dcfc490…, r1006 → r1006 0xa3651a27… once filled).
+#[test]
+fn every_shipped_genesis_is_the_block_0_its_genesis_profile_builds() {
+    let table = node_genesis_profiles().expect("nodeGenesisProfiles parses");
+    assert!(!table.is_empty());
+    for g in table {
+        assert!(is_genesis_profile_name(&g.name), "{g:?}");
+    }
+    let mut checked = 0;
+    for p in profiles().unwrap() {
+        let (Some(gh), Some(gp)) = (&p.genesis_hash, &p.genesis_profile) else {
+            continue;
+        };
+        let g = node_genesis(gp)
+            .unwrap_or_else(|| panic!("profile {}: genesis profile {gp:?} is not in the table", p.id));
+        assert_eq!(
+            gh.to_ascii_lowercase(),
+            g.genesis_hash,
+            "profile {}: its genesis is not the block 0 genesis profile {gp} builds",
+            p.id
+        );
+        checked += 1;
+    }
+    assert!(checked >= 1, "the active profile at least");
+    let built = node_genesis("r1006").expect("the bundled node builds r1006");
+    assert_eq!(built.genesis_hash, R1006_GENESIS);
+    assert!(built.compiled_activations && !built.node_default);
+    assert_eq!(r1006().genesis_profile.as_deref(), Some("r1006"));
+}
+
+/// The node genesis table is checked when it is read: a bad name or hash is a build defect.
+#[test]
+fn a_malformed_node_genesis_table_is_refused() {
+    for (what, edit) in [
+        ("a name the TOML string cannot carry as is", r#"{"r1006\"x": {"genesisHash": "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4", "nodeDefault": false, "compiledActivations": true}}"#),
+        ("a hash that is not a block hash", r#"{"r1006": {"genesisHash": "0x1234", "nodeDefault": false, "compiledActivations": true}}"#),
+        ("an unknown key", r#"{"r1006": {"genesisHash": "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4", "nodeDefault": false, "compiledActivations": true, "x": 1}}"#),
+    ] {
+        let json = profiles_json_with(|v| {
+            v["nodeGenesisProfiles"] = serde_json::from_str(edit).expect("edit is JSON");
+        });
+        assert!(
+            matches!(parse_node_genesis(&json), Err(ProfileError::Malformed(_))),
+            "{what}"
+        );
+    }
+    assert!(parse_node_genesis(PROFILES_JSON).is_ok());
 }

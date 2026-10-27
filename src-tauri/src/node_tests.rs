@@ -1889,3 +1889,96 @@ fn an_existing_r1005_node_config_without_a_genesis_profile_still_starts() {
     mgr.start().expect("an r1005 config with no genesis_profile still starts");
     mgr.stop();
 }
+
+/// Tripwire (RC52): for EVERY genesis profile the bundled node builds with compiled activations,
+/// the spawn carries no validator override (the node refuses one that differs from the compiled
+/// table); for every other one the fleet values are still passed. A genesis added to
+/// `nodeGenesisProfiles` is covered without a new test.
+#[test]
+fn no_validator_override_is_passed_on_any_genesis_with_compiled_activations() {
+    let table = crate::network_profile::node_genesis_profiles().expect("table");
+    assert!(table.iter().any(|g| g.compiled_activations), "r1006 at least");
+    for g in table {
+        let (mgr, _fake, _data) = stub_manager(&format!("override-{}", g.name));
+        let mut net = r1006_network();
+        net.node_genesis = g.clone();
+        let spec = mgr.with_network(Ok(net)).build_spec();
+        let has = |k: &str| spec.env.iter().any(|(n, _)| n == k);
+        for k in [NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV, NODE_VALIDATOR_REGISTRY_ENV] {
+            assert_eq!(
+                has(k),
+                !g.compiled_activations,
+                "genesis profile {}: {k} must be passed only without compiled activations",
+                g.name
+            );
+        }
+        assert!(has(NODE_BLOCK_V2_ENV), "{}", g.name);
+    }
+}
+
+/// Tripwire (RC52): the validator overrides are set in one place, `node_consensus_env`, which
+/// gates them on the genesis. A second place that pushes them (the bug class: an override passed
+/// whatever the genesis compiles) fails here.
+#[test]
+fn the_validator_overrides_are_set_only_in_node_consensus_env() {
+    let src = include_str!("node.rs");
+    let body_start = src
+        .find("fn node_consensus_env(")
+        .expect("node_consensus_env exists");
+    let body_end = body_start
+        + src[body_start..]
+            .find("\n}\n")
+            .expect("node_consensus_env ends");
+    let body = &src[body_start..body_end];
+    assert!(body.contains("compiled_activations"), "the overrides are gated on the genesis");
+    for name in [
+        "NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV",
+        "NODE_VALIDATOR_REGISTRY_ENV",
+        "NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE",
+    ] {
+        let uses: Vec<usize> = src
+            .match_indices(&format!("{name}."))
+            .map(|(i, _)| i)
+            .chain(src.match_indices(&format!("{name},")).map(|(i, _)| i))
+            .chain(src.match_indices(&format!("{name})")).map(|(i, _)| i))
+            .collect();
+        assert!(!uses.is_empty(), "{name} is used");
+        for i in uses {
+            assert!(
+                (body_start..body_end).contains(&i),
+                "{name} is used outside node_consensus_env at byte {i}"
+            );
+        }
+    }
+    // Negative control: a copy of node.rs with an ungated push elsewhere is caught.
+    let planted = format!(
+        "{src}\nfn elsewhere() {{ let _ = (NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.to_string(), 1); }}\n"
+    );
+    let outside = planted
+        .match_indices("NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.")
+        .any(|(i, _)| !(body_start..body_end).contains(&i));
+    assert!(outside, "the scan sees a use outside the function");
+}
+
+/// RC52: the error a mismatched node.toml gives names both genesis profiles and what to do, and
+/// a node.toml that is not TOML is refused too (never read as "no genesis_profile").
+#[test]
+fn the_node_config_genesis_check_is_honest_and_fails_closed() {
+    let r1006 = r1006_network();
+    let ok = "[chain]\nchain_id = 40204\ngenesis_profile = \"r1006\"\n";
+    assert_eq!(check_node_config_genesis(ok, &r1006), Ok(()));
+    let other = "[chain]\ngenesis_profile = \"testnet_beta\"\n";
+    let e = check_node_config_genesis(other, &r1006).unwrap_err();
+    assert!(e.contains("\"testnet_beta\"") && e.contains("\"r1006\"") && e.contains("move node.toml aside"), "{e}");
+    assert!(e.contains(R1006_GENESIS_HASH), "{e}");
+    let wrong_type = "[chain]\ngenesis_profile = 1006\n";
+    assert!(check_node_config_genesis(wrong_type, &r1006).is_err());
+    assert!(check_node_config_genesis("[chain\n", &r1006).is_err());
+    assert!(check_node_config_genesis("[chain]\n", &r1006).is_err(), "absent on r1006");
+    let alpha = crate::network_profile::profile("alpha-r1005")
+        .unwrap()
+        .ready()
+        .unwrap();
+    assert_eq!(check_node_config_genesis("[chain]\n", &alpha), Ok(()), "absent on r1005");
+    assert!(check_node_config_genesis("[chain]\ngenesis_profile = \"r1006\"\n", &alpha).is_err());
+}

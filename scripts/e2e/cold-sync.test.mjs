@@ -413,7 +413,7 @@ describe("every height is covered by the selected-parent walk (review round 1, i
     });
   }
 
-  it("compares every K-th height up to the last safe height, and that height itself", async () => {
+  it("covers every height up to the last safe height (the anchor), listing every K-th and the anchor", async () => {
     const r = await run({ blocks: "1000", every: "100" });
     expect(r.code).toBe(0);
     const safe = Math.min(r.v.sync.final_head, r.v.sync.remote_head) - r.v.sync.lag;
@@ -421,7 +421,10 @@ describe("every height is covered by the selected-parent walk (review round 1, i
     for (let h = 0; h <= safe; h += 100) want.push(h);
     if (want[want.length - 1] !== safe) want.push(safe);
     expect(r.v.sync.checked_heights).toEqual(want);
-    expect(r.v.sync.missing).toEqual([]);
+    // Every height 0..anchor is covered: both walks met at the anchor and the node's reached block 0.
+    expect(r.v.sync.anchor.height).toBe(safe);
+    expect(r.v.sync.walk).toMatchObject({ reaches_genesis: true, error: null });
+    expect(r.v.sync.walk.local_blocks).toBeGreaterThanOrEqual(safe);
   });
 });
 
