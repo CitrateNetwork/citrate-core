@@ -1760,9 +1760,9 @@ fn publication_released_after_the_readers_end_is_in_the_complete_scope() {
         Receipt::Pending,
         "the Stop waits at the gate"
     );
-    let stale = match ticket.commit() {
-        Err(stale) => stale,
-        Ok(()) => panic!("a ticket admitted before Stop must not become active after it"),
+    let stale = match ticket.commit(activate_nothing) {
+        Err(CommitRefused::Stale(stale)) => stale,
+        other => panic!("a ticket admitted before Stop must not become active after it: {other:?}"),
     };
     stale.cleaned();
     gate.release();
