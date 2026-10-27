@@ -696,6 +696,28 @@ pub(crate) fn mac_key(keyring: &dyn AiKeyring, account: &str) -> Result<Zeroizin
     }
 }
 
+/// The highest generation of any guard file in `dir`: the live `guard.json` and the copies kept
+/// aside as `guard.unreadable-*.json`. Read without checking the seal (a higher number only makes
+/// more files fail to load, never fewer). Used when a log reset has to re-create a missing anchor,
+/// so that no guard file saved before the reset can load as current.
+pub(crate) fn highest_generation_on_disk(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n == GUARD_FILE || (n.starts_with("guard.unreadable-") && n.ends_with(".json"))
+        })
+        .filter_map(|e| std::fs::read(e.path()).ok())
+        .filter_map(|b| serde_json::from_slice::<Sealed>(&b).ok())
+        .filter_map(|s| serde_json::from_str::<GuardFile>(&s.body).ok())
+        .map(|f| f.generation)
+        .max()
+        .unwrap_or(0)
+}
+
 pub fn guard_path(dir: &Path) -> PathBuf {
     dir.join(GUARD_FILE)
 }
