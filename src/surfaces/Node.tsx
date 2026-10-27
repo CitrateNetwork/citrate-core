@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
+import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 
@@ -50,14 +51,18 @@ const nodeColors: Record<string, string> = {
  * contract §1, §4) instead of drawing bonds, projections or challenge tallies.
  */
 export function Node({ store, s }: SurfaceProps) {
-  // CORE-C2 — when the Earning tab is open, pull the REAL claimable from
-  // ContributionAccounting.claimable(vaultAddress) via eth_call (Rule 11). The
-  // decomposition (Validation/Pinning/Compute) has NO on-chain source and is
-  // labeled as an off-chain estimate below (Rule 1 / I-3).
+  // When the Earning tab is open, read the validator rewards from
+  // ValidatorRegistry.rewardsOf(pubkey) (C1-V V8; UI truth contract §2).
+  // The producer sample (cached 5 min in the store) behind the "Producing" row.
+  useEffect(() => {
+    void store.refreshProducers();
+  }, [store]);
+  // Read again when the reward eligibility changes while the tab is open (the stake or the bond's
+  // activated flag reconciles after mount; #348 review).
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.nTab]);
+  }, [store, s.nTab, readsRewards]);
   // #406 — read the activation (and the durable record of a sent one) on mount, so a recorded
   // activation shows here with its way out (Try again / Forget), as on S7.
   useEffect(() => {
@@ -65,12 +70,10 @@ export function Node({ store, s }: SurfaceProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.hasGrant]);
 
-  const staked = s.hasGrant ? 32000 : 0;
-
   // ----- header / tabs -----
   const ntabs: [string, string][] = [
     ["ops", "Operations"],
-    ["earn", "Earning"],
+    ["earn", "Rewards"],
     ["pin", "Pinning"],
   ];
   const nodeStateColor = nodeColors[s.node];
@@ -117,35 +120,45 @@ export function Node({ store, s }: SurfaceProps) {
   // SALT was told they were not a validator (observed 2026-08-06, right after a
   // successful MemberBond.activate).
   //
-  // BLOCKS PROPOSED still has NO source — no RPC exposes a per-proposer count — so
-  // a registered validator honestly reads "—" rather than a fabricated tally. What
-  // changes is that we no longer DENY the registration we can actually see.
-  const isRegisteredValidator = s.bondedStake >= 32000;
-  const blocksProposedStr = TAURI
-    ? isRegisteredValidator
-      ? "—"
-      : "not a registered validator"
-    : s.node === "off"
-      ? "—"
-      : fmtI(s.blocksProposed);
-  const electionStr =
-    !TAURI && s.node === "validating" && staked >= 32000 ? ((staked / 8200000) * 100).toFixed(2) + "% stake share / round" : "—";
+  // PRODUCING (C1-V review): "Producing blocks" only when this node's proposer key is among the
+  // distinct proposerPubkeys sampled over the last 100 blocks (contract §1, §2; chain-team ruling
+  // on the window). Not seen → "Not seen producing in the last 100 blocks", never "not producing".
+  // No sample → "—" plus the reason. There is still no per-proposer COUNT, so none is shown.
+  const isRegisteredValidator = s.bondedStake > 0;
+  // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
+  // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated);
+  const pWord = producingWord(s.producers, s.validatorPubkey);
+  const producingStr = !isRegisteredValidator
+    ? "— · not a registered validator"
+    : pWord
+      ? pWord
+      : s.producers && producerShortfall(s.producers)
+        ? "— · producer sample incomplete: " + producerShortfall(s.producers)
+        : s.producersError
+        ? "— · producer sample unavailable: " + s.producersError
+        : !s.validatorPubkey
+          ? "— · validator key not read yet"
+          : "— · not sampled yet";
   const restartsStr = String(s.crashes.length);
 
   // ----- earning -----
-  const earnValStr = fmt2(s.earnVal);
-  const earnPinStr = fmt2(s.earnPin);
-  const earnCompStr = fmt2(s.earnComp);
-  const claimStr = fmt2(s.claimable);
-  const claimSourceStr =
-    s.earnSource === "chain"
-      ? "from ContributionAccounting.claimable() · eth_call 40204"
-      : "prototype value — pending on-chain read";
-  const claimDisabled = s.claimable < 5;
+  // C1-V V8: the three figures are ValidatorRegistry.rewardsOf(pubkey) and nothing else (UI truth
+  // contract §1 Rewards): total, claimableNow, and maturing = total − claimableNow. No per-source
+  // split and no estimates. Not a validator, or not read → "—" with the reason.
+  const rTotal = s.rewards ? saltFromWei(s.rewards.totalWei) : null;
+  const rClaim = s.rewards ? saltFromWei(s.rewards.claimableWei) : null;
+  const rMaturing = rTotal != null && rClaim != null ? Math.max(0, rTotal - rClaim) : null;
+  // An activated bond is read whatever its stake: after a full exit it can still claim (#348 review).
+  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? "not read yet" : "Not a validator";
+  const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
+  const claimDisabled = rClaim == null || rClaim < 5;
   const claimNote =
-    s.claimable < 5
-      ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - s.claimable) + " SALT to go."
-      : "Claimable is above the 5 SALT dust threshold.";
+    rClaim == null
+      ? "Validator rewards are paid to the block producer only."
+      : rClaim < 5
+        ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - rClaim) + " SALT to go."
+        : "Claimable now is above the 5 SALT dust threshold.";
   // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL claim path
   // (`store.claimRewards` → `bridge.agent.claim` → the real `claimRewards()`
   // ceremony → B1.4 broadcast in the desktop build; an honest "nothing to claim"
@@ -316,8 +329,16 @@ export function Node({ store, s }: SurfaceProps) {
                 {/* W1.3 — once the node is synced (proposer.key minted), the member
                     can bond the 32k and become a block producer. staker = the EOA;
                     the tx is approved through the ceremony. Shown only in the
-                    packaged app when synced-but-not-yet-validating. */}
-                {TAURI && s.node === "synced" && (
+                    packaged app when synced-but-not-yet-validating. A registered stake that
+                    isn't active yet (pending, or isActive unread) is already staked: no
+                    activation is offered for it (#348 review). */}
+                {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
+                {/* #348 review: activation only for a bond that reads not activated (activated() = false).
+                    MemberBond.activated() comes from the grant read or, since #408, from the activation
+                    read (refreshActivation on mount); either read counts, an unread one offers nothing.
+                    #406: a recorded activation tx shows its status panel (Try again / Forget) whatever
+                    the offer gate says, so a sent activation is never hidden. */}
+                {TAURI && s.node === "synced" && (hasActivationTxStatus(store, s) || canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated ?? s.activation?.bondActivated ?? null)) && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
@@ -347,33 +368,41 @@ export function Node({ store, s }: SurfaceProps) {
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
-                          Your node is synced and this wallet is linked to your identity. Activate it as a validator to
-                          bond your 32,000 SALT and start producing blocks + earning.
+                          Your node is synced and this wallet is linked to your identity. Activating stakes your membership
+                          bond in the ValidatorRegistry; the registry sets the epoch your validator becomes active, shown here once registered.
                         </p>
                         <button
                           className="btn btn-primary btn-sm"
                           style={{ alignSelf: "flex-start" }}
                           onClick={() => void store.activateValidator()}
                         >
-                          Activate validator · bond 32,000 SALT
+                          Activate validator · stake your bond
                         </button>
                       </>
                     )}
                   </>
                 )}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Registered</span>
-                  <span className="mono tabular" style={{ fontSize: 12, color: isRegisteredValidator ? "var(--ok)" : "var(--tx-3)" }}>
-                    {isRegisteredValidator ? `yes · ${fmtI(s.bondedStake)} SALT bonded` : "no"}
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Status</span>
+                  <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch, currentEpoch() and stakeOf(pubkey)">
+                    {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}
+                    {vWord === "Validator active" && (
+                      <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
+                    )}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Blocks proposed</span>
-                  <span className="mono tabular" style={{ fontSize: 12 }}>{blocksProposedStr}</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Your stake</span>
+                  <span className="mono tabular" style={{ fontSize: 12 }} title="ValidatorRegistry.stakeOf(pubkey)">
+                    {isRegisteredValidator ? `${fmtI(s.bondedStake)} SALT` : "—"}
+                  </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Election odds</span>
-                  <span className="mono tabular" style={{ fontSize: 12 }}>{electionStr}</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Producing</span>
+                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title={"distinct proposerPubkey in the " + (s.producers ? s.producers.window + " blocks sampled" : "sampled blocks") + " · rpc.citrate.ai"}>
+                    {producingStr}
+                    {pWord && s.producers && <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{producerWindowLabel(s.producers)}</span>}
+                  </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Supervised restarts</span>
@@ -427,33 +456,30 @@ export function Node({ store, s }: SurfaceProps) {
       {/* ===================== EARNING ===================== */}
       {s.nTab === "earn" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
-              <span className="eyebrow">Validation</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnValStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
-            </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
-              <span className="eyebrow">Pinning</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnPinStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
-            </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
-              <span className="eyebrow">Compute</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnCompStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
-            </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, borderColor: "var(--accent)" }}>
-              <span className="eyebrow" style={{ color: "var(--accent-text)" }}>Claimable</span>
-              <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26, color: "var(--accent-text)" }}>{claimStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: s.earnSource === "chain" ? "var(--ok)" : "var(--tx-3)" }}>{claimSourceStr}</span>
-              <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
-                Claim
-              </button>
-            </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+            {(
+              [
+                ["Validator rewards", rTotal],
+                ["Claimable now", rClaim],
+                ["Maturing", rMaturing],
+              ] as [string, number | null][]
+            ).map(([label, v]) => (
+              <div key={label} className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, borderColor: label === "Claimable now" ? "var(--accent)" : undefined }}>
+                <span className="eyebrow" style={label === "Claimable now" ? { color: "var(--accent-text)" } : undefined}>{label}</span>
+                <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26, color: label === "Claimable now" && v != null ? "var(--accent-text)" : undefined }}>
+                  {v == null ? "—" : fmt2(v)}
+                </span>
+                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>{v == null ? rewardsReason : "SALT · " + rewardsSrc}</span>
+                {label === "Claimable now" && (
+                  <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
+                    Claim
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
           <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0 }}>
-            {claimNote} The single Claimable figure is the on-chain ContributionAccounting.claimable(address) balance; the per-source split above is an off-chain estimate the contract does not expose. Claiming signs the unsigned claimRewards() request through the ceremony.
+            {claimNote} All three figures are read from {rewardsSrc}: rewards for producing blocks, paid to the producer. Maturing rewards stay slashable for 4 epochs before they become claimable. Claiming signs the unsigned claimRewards() request through the ceremony.
           </p>
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>

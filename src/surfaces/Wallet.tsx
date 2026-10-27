@@ -19,6 +19,7 @@ import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
+import { readsValidatorRewards, saltFromWei, validatorDash } from "../shell/chainTruth";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -46,16 +47,17 @@ export function Wallet({ store, s }: SurfaceProps) {
   // numeric grant (for the staked total) parses the same wei; a granted member
   // with no folded read contributes 0 rather than a fabricated 32,000 (Rule 1).
   const grantSaltStr = s.hasGrant ? fmtSaltFromWei(s.s5StakeWei) : "—";
-  const grantSaltNum = (() => {
-    if (!s.hasGrant || !s.s5StakeWei) return 0;
-    try {
-      return Number(BigInt(s.s5StakeWei) / 10n ** 18n);
-    } catch {
-      return 0;
-    }
-  })();
-  const staked = grantSaltNum;
-  const src = s.node === "off" ? "rpc.citrate.ai" : "local node";
+  // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
+  // folded as `bondedStake`. The grant in a locked bond is not staked until the bond is activated.
+  const staked = s.bondedStake;
+  // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
+  // validator state gives the word or "— · <reason>".
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
+  // C1-V V9: every Wallet read (balance, validator stake and rewards) goes to the public RPC
+  // through the Rust RpcClient, whether or not the local node runs.
+  const src = "rpc.citrate.ai";
+  const minStake = saltFromWei(s.minStakeWei);
+  const rewardsTotal = s.rewards ? saltFromWei(s.rewards.totalWei) : null;
   // BC-5.3 — which SBT-art source is rendered, for an honest caption. The
   // OnChainSbtEmblem reports "onchain" when the authoritative tokenURI art loaded,
   // else "local" (the deterministic offline preview). Starts null (still resolving).
@@ -66,11 +68,19 @@ export function Wallet({ store, s }: SurfaceProps) {
   // build these read live 40204; in web-dev the sim adapter echoes state.
   useEffect(() => {
     void store.refreshWallet();
+    // C1-V V6/V7: the measured block time (for durations) and ValidatorRegistry.minStake.
+    void store.refreshChainParams();
     // Item 4 — the REAL indexed 40204 tx history (CitrateScan txlist). In a Tauri
     // build this replaces the sim seed with the member's real history; in web-dev
     // the sim adapter echoes state.activity (unchanged).
     void store.refreshActivity();
   }, [store]);
+  // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
+  // once the node poll has reconciled the stake / bond after mount.
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  useEffect(() => {
+    void store.refreshEarnings();
+  }, [store, readsRewards]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);
@@ -92,17 +102,13 @@ export function Wallet({ store, s }: SurfaceProps) {
   const sponsorBarColor = s.sponsorUnits > 1 ? "var(--accent)" : "var(--warn)";
 
   const saltStr = fmt2(s.liquid);
-  const stakedStr = staked ? fmtI(staked) : "0";
+  const stakedStr = staked > 0 ? fmtI(staked) : "0";
   // UI truth contract rules 1 and 2: the number catalog has no wSALT entry and nothing reads a
   // wSALT balance, so the tile shows the unavailable state. Unknown is not zero.
   const wsaltStr = "—";
-  const stakedSub = s.hasGrant ? grantSaltStr + " grant vaulted" : "no grant — join to stake";
-  // Q-A.4b item 6 — the per-source "rewards accrued" (earnVal+earnPin+earnComp) is
-  // SIM-seeded with NO real per-source chain read. In the packaged build there is
-  // no grounded accrued figure, so show "—" rather than a fabricated number (the
-  // single REAL claimable figure lives on the Node Earning tab). The web-dev sim
-  // keeps the labelled prototype estimate.
-  const rewardsStr = BRIDGE_MODE === "tauri" ? "—" : fmt2(s.earnVal + s.earnPin + s.earnComp);
+  const stakedSub = staked > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
+  // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
+  const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
   const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";
 
   const onCopyAddr = () => store.copy(s.walletAddr, "Address copied");
@@ -209,7 +215,7 @@ export function Wallet({ store, s }: SurfaceProps) {
                 {saltStr}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                earned rewards — spendable
+                eth_getBalance · latest
               </span>
             </div>
             <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
@@ -297,7 +303,7 @@ export function Wallet({ store, s }: SurfaceProps) {
                 SALT staked
               </span>
               <span className="mono tabular" style={{ marginLeft: "auto", fontSize: 12, color: "var(--tx-2)" }}>
-                rewards accrued · {rewardsStr} SALT
+                validator rewards · {rewardsStr}{rewardsTotal == null ? "" : " SALT"}
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
@@ -308,9 +314,15 @@ export function Wallet({ store, s }: SurfaceProps) {
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Validator minimum</span>
+                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Validator stake · ValidatorRegistry.stakeOf</span>
                 <span className="mono tabular" style={{ fontSize: 13 }}>
-                  32,000 SALT
+                  {staked > 0 ? fmtI(staked) + " SALT" : validatorStateText}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Validator minimum</span>
+                <span className="mono tabular" style={{ fontSize: 13 }} title="ValidatorRegistry.minStake()">
+                  {minStake == null ? "— · reading minStake" : fmtI(minStake) + " SALT"}
                 </span>
               </div>
             </div>
