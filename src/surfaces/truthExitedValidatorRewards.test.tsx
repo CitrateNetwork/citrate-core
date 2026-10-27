@@ -81,15 +81,16 @@ const exitedGrant: GrantStatus = {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  store.setState({ bondedStake: 0, bondActivated: null, rewards: null });
+  store.setState({ bondedStake: 0, bondActivated: null, bondPubkey: null, rewards: null, rewardsError: null });
 });
 
 describe("#348 review — an exited validator's rewards are read, shown and claimed through the bond", () => {
   it("refreshEarnings reads rewardsOf for an activated bond whose registry stake is 0", async () => {
-    store.setState({ bondedStake: 0, bondActivated: true, rewards: null });
+    // #391: the read is for the bond's own validator key (MemberBond.pubkey()), and shown only for it.
+    store.setState({ bondedStake: 0, bondActivated: true, bondPubkey: "0x" + "22".repeat(32), rewards: null });
     const read = vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: wei(30), claimableWei: wei(20), proposerPubkey: "0x" + "22".repeat(32) });
     await store.refreshEarnings();
-    expect(read).toHaveBeenCalled();
+    expect(read).toHaveBeenCalledWith("0x" + "22".repeat(32));
     expect(store.state.rewards).toEqual({ totalWei: wei(30), claimableWei: wei(20) });
   });
 
@@ -144,7 +145,8 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);
     const claim = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing", claimableWei: "0" });
     await store.claimRewards();
-    expect(claim).toHaveBeenCalledWith({ validator: true });
+    // #394: the pre-check reads rewardsOf for the bond's own key, the key MemberBond claims for.
+    expect(claim).toHaveBeenCalledWith({ validator: true, pubkey: exitedGrant.bondPubkey });
   });
 
   it("claimRewards keeps the non-validator path for a bond that was never activated, or an unread flag", async () => {

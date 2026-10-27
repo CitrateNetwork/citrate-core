@@ -62,8 +62,11 @@ describe("tripwire: the member's validator key and the bond lock", () => {
     // The node's proposer key is consulted only inside memberValidatorKey, after the bond's key.
     const key = store.slice(store.indexOf("private async memberValidatorKey("));
     const keyBody = key.slice(0, key.indexOf("\n  }\n"));
-    expect(keyBody.indexOf("s.bondPubkey")).toBeGreaterThan(-1);
-    expect(keyBody.indexOf("s.bondPubkey")).toBeLessThan(keyBody.indexOf("validatorEarnings()"));
+    expect(keyBody.indexOf("memberKeyRule(this.state)")).toBeGreaterThan(-1);
+    expect(keyBody.indexOf("memberKeyRule(this.state)")).toBeLessThan(keyBody.indexOf("validatorEarnings()"));
+    // The rule itself puts MemberBond.pubkey() first.
+    const rule = store.slice(store.indexOf("export function memberKeyRule("));
+    expect(rule.slice(0, rule.indexOf("\n}\n")).indexOf("s.bondPubkey")).toBeGreaterThan(-1);
     expect(body).not.toContain("validatorEarnings()");
   });
 

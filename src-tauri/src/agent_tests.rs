@@ -1298,7 +1298,6 @@ mod user_claim_bond_key {
     const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
     const BOND: &str = "0x00000000000000000000000000000000000000bb";
     const BOND_KEY: &str = "0x5555555555555555555555555555555555555555555555555555555555555555";
-    const NODE_KEY: &str = "0x0000000000000000000000000000000000000000000000000000000000000001";
 
     /// rewardsOf(key) → claimableNow = (first key byte) SALT: 0x55 for the bond key, 0 for the node key.
     struct Registry;
@@ -1333,7 +1332,7 @@ mod user_claim_bond_key {
     }
 
     fn claim(g: std::result::Result<GrantStatus, String>) -> std::result::Result<Option<(String, u128)>, String> {
-        validator_claim(&RpcClient::with_transport(Registry), REGISTRY, g, || Ok(NODE_KEY.to_string()))
+        validator_claim(&RpcClient::with_transport(Registry), REGISTRY, g)
     }
 
     #[test]

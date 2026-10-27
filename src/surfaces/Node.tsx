@@ -152,7 +152,8 @@ export function Node({ store, s }: SurfaceProps) {
   const rClaim = s.rewards ? saltFromWei(s.rewards.claimableWei) : null;
   const rMaturing = rTotal != null && rClaim != null ? Math.max(0, rTotal - rClaim) : null;
   // An activated bond is read whatever its stake: after a full exit it can still claim (#348 review).
-  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? "not read yet" : "Not a validator";
+  // #391: a read that failed or wasn't for the member's validator key says why (s.rewardsError).
+  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? (s.rewardsError ?? "not read yet") : "Not a validator";
   const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
   const claimDisabled = rClaim == null || rClaim < 5;
   const claimNote =

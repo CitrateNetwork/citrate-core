@@ -610,8 +610,16 @@ fn user_claim_routes_through_claims_through_bond() {
         .nth(1)
         .and_then(|rest| rest.split("\n}\n").next())
         .unwrap_or_default();
-    assert!(body.contains("claims_through_bond"), "user_claim must route with claims_through_bond");
+    // #416: the routing lives in validator_claim, which user_claim calls.
+    assert!(body.contains("validator_claim("), "user_claim must route through validator_claim");
+    let helper = src
+        .split("pub(crate) fn validator_claim<")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .unwrap_or_default();
+    assert!(helper.contains("claims_through_bond"), "validator_claim must route with claims_through_bond");
     assert!(!body.contains("g.bond_deployed && g.has_validator"));
+    assert!(!helper.contains("g.bond_deployed && g.has_validator"));
 }
 
 // C1-V5 (UI truth contract v1.1 §1): the validator key is `MemberBond.pubkey()` where the bond

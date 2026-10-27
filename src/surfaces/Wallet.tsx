@@ -109,7 +109,8 @@ export function Wallet({ store, s }: SurfaceProps) {
   const wsaltStr = "—";
   const stakedSub = staked > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
   // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
-  const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
+  // #391: unknown rewards say why (not the member's validator key, or the read failed).
+  const rewardsStr = rewardsTotal == null ? (s.rewardsError ? "— · " + s.rewardsError : "—") : fmt2(rewardsTotal);
   const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";
 
   const onCopyAddr = () => store.copy(s.walletAddr, "Address copied");
