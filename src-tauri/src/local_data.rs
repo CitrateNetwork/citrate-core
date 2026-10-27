@@ -343,6 +343,25 @@ pub(crate) fn build_plan(
             legacy.push((account, format!("AI provider key ({id})")));
         }
     }
+    // RC52 P-9a: the member's MCP server env values, one keychain item each, named by the server
+    // list in the Hermes folder (read here, before that folder is deleted).
+    let data_roots = std::iter::once(&roots.data_dir).chain(
+        roots
+            .others
+            .iter()
+            .filter(|(_, k)| *k == RootKind::Data)
+            .map(|(p, _)| p),
+    );
+    for root in data_roots.filter(|r| is_owned_root(r)) {
+        let list = root.join("hermes").join(crate::mcp_servers::REGISTRY_FILE);
+        if let Ok(text) = std::fs::read_to_string(&list) {
+            for (account, label) in crate::mcp_servers::keychain_accounts(&text) {
+                if !legacy.iter().any(|(a, _)| *a == account) {
+                    legacy.push((account, label));
+                }
+            }
+        }
+    }
     for (account, label) in legacy {
         keychain_entries.push(KeychainEntry {
             present: keychain.present(LEGACY_SERVICE, &account),
