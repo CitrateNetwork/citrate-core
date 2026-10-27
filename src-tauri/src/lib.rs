@@ -825,6 +825,7 @@ pub fn run() {
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes::hermes_resolve_outcome_unknown,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,

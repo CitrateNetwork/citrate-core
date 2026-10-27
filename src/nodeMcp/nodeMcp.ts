@@ -123,8 +123,8 @@ export function stateLabel(r: NodeMcpRequest): string {
       return r.reason ? `rejected (${r.reason})` : "rejected";
     case "failed":
       return r.error ? `failed: ${r.error}` : "failed";
-    case "outcome_unknown": // red stub
-      return "failed";
+    case "outcome_unknown":
+      return r.tx_hash ? `submitted, outcome unknown (tx ${r.tx_hash}): check it before retrying` : "submitted, outcome unknown: check recent transactions before retrying";
     case "expired":
       return "expired before a decision";
   }

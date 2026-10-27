@@ -28,7 +28,7 @@ import {
   WalletReview,
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
-import { broadcastFailure } from "./broadcastOutcome";
+import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
@@ -662,6 +662,8 @@ export class Store {
   private lastActiveReadAt = 0;
   /** C1-V V4 — this node's validator key (`proposer.key`), cached once read. */
   private validatorPubkey: `0x${string}` | null = null;
+  /** C1-V3 — agent payments submitted with an unknown outcome this session: effect key → tx hash. */
+  private unknownAgentPayments = new Map<string, string | null>();
   /** C1-V — when the producer set was last sampled (refreshed at most every 5 minutes). */
   private lastProducersAt = 0;
   /** C1-V — the catalogued public-RPC reads (UI truth contract §2). Replaced in tests. */
@@ -5162,9 +5164,9 @@ export class Store {
     view: CeremonyView,
     spendSummary?: string,
     onResolved?: WalletReview["onResolved"],
-    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord },
+    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord; warning?: string },
   ): void {
-    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.warning ? { warning: extra.warning } : {}), ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
   }
 
   /**
@@ -5200,6 +5202,26 @@ export class Store {
       }
       onDone?.();
     };
+    // C1-V3: the member approved and the payment was submitted, but its outcome is unknown. Release
+    // the sidecar call as submitted with the tx hash (never through reject, which the agent reads as
+    // "rejected"), and remember it so an identical proposal names this tx. Nothing retries it.
+    const settleUnknown = async (key: string | null, txHash: string | null) => {
+      if (key !== null) this.unknownAgentPayments.set(key, txHash);
+      try {
+        await bridge.agentHarness.resolveOutcomeUnknown(ap.id, txHash);
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err);
+        if (msg.startsWith("STALE_APPROVAL")) {
+          this.toast(
+            "Your transaction was submitted, outcome unknown" +
+              (txHash ? " (tx " + txHash + ")" : "") +
+              ", but the agent had already stopped waiting for it and was not told. Check it on the block explorer before approving a retry.",
+          );
+        }
+        /* otherwise best-effort: the sidecar head unblocks on its own timeout if this fails */
+      }
+      onDone?.();
+    };
     if (ap.kind === "chain") {
       let view: CeremonyView | null = null;
       try {
@@ -5216,7 +5238,24 @@ export class Store {
       }
       if (view) {
         // approved === true here means the ceremony signed AND broadcast the transaction.
-        this.openWalletReview("agent", ap.summary, view, undefined, (approved) => settle(approved, approved));
+        // C1-V3: an identical payment whose earlier submission has an unknown outcome is named on
+        // the new review, so the member checks that tx before approving this one.
+        const key = agentEffectKey(ap.to, ap.data);
+        const prior = key !== null && this.unknownAgentPayments.has(key) ? (this.unknownAgentPayments.get(key) ?? null) : undefined;
+        const warning =
+          prior === undefined
+            ? undefined
+            : "an identical payment was submitted earlier, outcome unknown" +
+              (prior ? " (tx " + prior + ")" : "") +
+              ": check it on the block explorer before approving this one";
+        this.openWalletReview(
+          "agent",
+          ap.summary,
+          view,
+          undefined,
+          (approved, _txHash, outcome) => (outcome?.kind === "outcome-unknown" ? settleUnknown(key, outcome.txHash) : settle(approved, approved)),
+          { warning },
+        );
         return;
       }
       // No bridged view (head wasn't a chain effect) — fall through to the confirm gate.
@@ -5485,8 +5524,10 @@ export class Store {
             ").",
         );
       }
-      // Not confirmed → the sidecar effect does not proceed.
-      await r.onResolved?.(false);
+      // Not confirmed → the sidecar effect does not proceed. C1-V3: an unknown outcome says so, so
+      // an agent's payment is reported as submitted with an unknown outcome, never as rejected.
+      if (failure.kind === "not-sent") await r.onResolved?.(false);
+      else await r.onResolved?.(false, undefined, { kind: "outcome-unknown", txHash: failure.txHash, reason: failure.reason });
       return;
     }
     this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);

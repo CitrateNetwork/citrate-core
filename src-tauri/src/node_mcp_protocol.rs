@@ -1227,7 +1227,8 @@ fn iso(ms: u64) -> String {
 }
 
 /// One approval request as an MCP task (SEP-2663 `DetailedTask`). The member's decision maps to:
-/// pending/running -> `working`; approved -> `completed` with the tool result; failed, rejected or
+/// pending/running -> `working`; approved -> `completed` with the tool result; submitted with an
+/// unknown outcome -> `completed` with a non-error result that says so (C1-V3); failed, rejected or
 /// expired -> `completed` with an `isError` tool result (these are tool-level outcomes, not
 /// JSON-RPC errors); withdrawn by the client -> `cancelled`.
 pub fn task_view(r: &McpRequest) -> Value {
@@ -1256,13 +1257,21 @@ pub fn task_view(r: &McpRequest) -> Value {
                 with_complete(tool_err(&format!("It failed after approval: {error}"))),
             )),
         ),
-        // Red stub: shown like a failure until C1-V3 lands.
-        RequestState::OutcomeUnknown { message, .. } => (
+        // C1-V3: submitted with an unknown outcome. Not an error result: a client must check the
+        // transaction before retrying, never treat it as safe to resend.
+        RequestState::OutcomeUnknown { tx_hash, message } => (
             "completed",
-            "Approved by the member, but it failed.".to_string(),
+            message.clone(),
             Some((
                 "result",
-                with_complete(tool_err(&format!("It failed after approval: {message}"))),
+                with_complete(json!({
+                    "content": [{"type": "text", "text": message}],
+                    "structuredContent": {
+                        "outcome": "submitted_outcome_unknown",
+                        "txHash": tx_hash,
+                    },
+                    "isError": false,
+                })),
             )),
         ),
         RequestState::Rejected { reason } if reason == CANCELLED_BY_CLIENT => {

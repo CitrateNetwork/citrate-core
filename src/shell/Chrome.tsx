@@ -225,6 +225,18 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
             </div>
           </div>
 
+          {/* #366 F2: a caution the member must read before approving (e.g. an earlier identical
+              payment with an unknown outcome), and the plain-language spend line. */}
+          {r.warning && (
+            <div role="alert" style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-1)", padding: "10px 14px" }}>
+              <span style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--warn)", wordBreak: "break-word" }}>{r.warning}</span>
+            </div>
+          )}
+          {r.spendSummary && (
+            <div className="mono" style={{ fontSize: 12, color: "var(--tx-2)" }}>
+              {r.spendSummary}
+            </div>
+          )}
           {r.hic && <HicBanner hic={r.hic} />}
           {/* HUP-S2.4: the chain card's rows ARE the decoded view shown below; only its summary line is added here. */}
           {r.card && <ApprovalCardView card={r.card} showRows={false} />}
