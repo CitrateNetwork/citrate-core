@@ -27,6 +27,8 @@ export const SYNCED_WITHIN_BLOCKS = 5;
 export const HEAD_FRESH_MS = 60_000;
 /** How often the store reads the public head while the node runs (one eth_blockNumber). */
 export const HEAD_READ_MS = 5_000;
+/** A head read still unanswered after this is a failed read (unknown), and a new read may start. */
+export const HEAD_READ_TIMEOUT_MS = 20_000;
 /** A local height older than this is stale (the poll ticks every 2 s). */
 export const LOCAL_FRESH_MS = 15_000;
 /** The sliding window the catch-up rate is measured over. */
@@ -190,6 +192,9 @@ export function syncLine(p: SyncProgress | null): string {
 export class SyncTracker {
   private series: SyncSeries = emptySeries();
   private lastHeadReadAt = Number.NEGATIVE_INFINITY;
+
+  // RED STUB (#566 review P2): the clock is accepted and not used yet.
+  constructor(_clock?: () => number) {}
 
   fold(local: number | null, readHead: () => Promise<number | null>, now: number = Date.now()): SyncProgress {
     if (local == null) {
