@@ -224,6 +224,9 @@ mod windows_installer_hook_tests;
 mod upgrade_updater_feed_tests;
 #[cfg(test)]
 mod upgrade_v051_tests;
+// RC52 G2: a 0.5.1 install on r1005 started by this build on a new genesis (K6).
+#[cfg(test)]
+mod upgrade_xgenesis_tests;
 // D-9: the liquid staking pool is retired; no pool reference in the crate, its book or the kit.
 #[cfg(test)]
 mod lsp_retired_tests;
