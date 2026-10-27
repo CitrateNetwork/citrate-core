@@ -56,6 +56,7 @@ import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { setTelemetryConsent } from "../privacy/joinFunnel";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
 import { ControlsPanel } from "./hermes/ControlsPanel";
+import { ModelsSettings } from "./providers/ModelsSettings";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -158,6 +159,7 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["hermes", "Hermes controls"],
+  ["models", "Models"],
   ["ai", "Providers & keys"],
   ["escalation", "Escalation & spend caps"],
   ["mcp", "MCP servers"],
@@ -659,6 +661,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
           </div>
         )}
 
+        {/* ---------- Models (D-11): governed vendor connections, caps, halts and usage ---------- */}
+        {s.sSec === "models" && <ModelsSettings onOpen={(url) => void store.openExternal(url)} />}
+
         {/* ---------- AI providers (CORE-AI1, @rule8) ---------- */}
         {s.sSec === "ai" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -671,6 +676,13 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 </>
               )}
             </div>
+            <span data-testid="legacy-providers-note" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)" }}>
+              Keys added here are used by chat directly. They are separate from the vendor connections in{" "}
+              <button className="btn btn-ghost btn-sm" onClick={() => setSec("models")}>
+                Models
+              </button>{" "}
+              and are not counted against the caps in Models or recorded in its usage log.
+            </span>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Default model route</span>
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

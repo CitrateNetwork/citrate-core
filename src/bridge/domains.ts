@@ -1946,167 +1946,92 @@ export interface SocialDomain {
  * signature/DTO here requires a serialized spine-PR (01_SCOPE §5.2). Every entry is
  * additive — no existing interface above this block is modified.
  */
-// ── Group claimable invites (ADR-2026-08-30 D4). Invite by @handle without a directory: the owner
-// mints a claimable invite + shares its link over the platform DM; the invitee volunteers their
-// address in a claim (consent); the owner verifies the one-time token and adds them the normal way.
-// Citrate never resolves a handle to an address.
-/** The result of approving a claim (`group_invite_verify_consume`). */
-export type ConsumeOutcome = "approved" | "pending" | "invalid";
-export interface PendingInvite {
+// ── Group invites (D-12): one flow, request and approve. The inviter makes a one-time link; whoever
+// opens it asks to join; the inviter approves (they are added) or declines. Nothing joins from the
+// link alone. Mirrors src-tauri/src/invites.rs. No private key ever crosses `invoke`.
+/** An invite this device made. */
+export interface InviteView {
+  /** Public id (a hash prefix of the token). */
+  id: string;
   group: string;
-  token: string;
-  forHandle: string;
-  createdAt: number;
-  /** CONNECT-S1 — the full share link (with the sealed-invite key); "" for pre-S1 invites. */
-  link?: string;
-}
-export interface InviteMinted {
-  token: string;
-  /** citrate://invite?g=<group>&t=<token> — the owner DMs this to the @handle on the platform. */
+  /** The link to share: citrate://invite?… */
   link: string;
+  /** Who it's for, a label only ("" when none). */
+  label: string;
+  /** Unix seconds. */
+  createdAt: number;
+  expiresAt: number;
+  /** The requester being added now ("" when none). */
+  approving: string;
 }
-/** #73 — one entry in the device-local referral audit ledger. Mirrors the Rust `ReferralEvent`.
- *  The member's own copy of "invites I minted / groups I joined via one"; the relay's referral tally
- *  is authoritative for airdrop scoring. `tokenHash` (BLAKE3(token) hex) ties a row to that record. */
-export interface ReferralEvent {
-  /** `inviter` (I minted an invite) | `joiner` (I self-admitted via one). */
-  role: string;
-  /** `invited` | `joined` | `revoked`. */
-  event: string;
+/** A request waiting for the inviter. */
+export interface IncomingRequest {
+  inviteId: string;
+  group: string;
+  /** The comms address the request names (lowercase). What the request says: not checked
+   *  against the requester's relay session, so the inviter confirms it's them before approving. */
+  address: string;
+  /** The label of the link it came in on ("" when the link has none). */
+  inviteLabel: string;
+  /** It is being approved now. */
+  approving: boolean;
+}
+/** What checking a held approval against the roster found. */
+export type HeldCheck = "not_held" | "added" | "released" | "expired";
+/** Whether the requester(s) were told about a decline or revoke (best-effort, through the relay). */
+export interface InviteNotice {
+  notified: boolean;
+}
+/** What the "Join <group>?" screen shows for a link. Nothing is sent to read it. */
+export interface InvitePreview {
+  group: string;
+  /** From the link, display only ("" when none). */
+  groupName: string;
+  /** From the link, display only ("" when none). */
+  inviter: string;
+  expiresAt: number;
+  expired: boolean;
+  /** This device already asked to join with this link. */
+  requested: boolean;
+}
+export type InviteRequestState = "waiting" | "joined" | "declined" | "revoked" | "expired";
+/** A request this device sent. */
+export interface MyInviteRequest {
+  id: string;
   group: string;
   groupName: string;
-  tokenHash: string;
-  /** The handle the invite was labelled for (inviter rows only). */
-  forHandle: string;
-  /** Unix seconds. */
-  ts: number;
+  inviter: string;
+  requestedAt: number;
+  expiresAt: number;
+  state: InviteRequestState;
+  /** Why the state couldn't be checked just now ("" when it was). */
+  note: string;
 }
 
 export interface InvitesDomain {
-  /** Mint a single-use, group-bound invite (labelled for a handle) + share link. No address
-   *  resolution. INVITE-S2: publishes BLAKE3(token) + expiry to the relay so the invitee can
-   *  self-admit; fails closed if the relay is unreachable. */
-  create(group: string, forHandle: string): Promise<InviteMinted>;
-  /** INVITE-S2 — INVITEE: SELF-ADMIT into the group from an invite link, in one click. Joins by MLS
-   *  external commit with no owner action (even if the owner is offline). Honest error on a spent/
-   *  expired/revoked token or an unreachable relay. */
-  redeem(link: string): Promise<void>;
-  /** The owner's outstanding invites for a group. */
-  list(group: string): Promise<PendingInvite[]>;
-  /** Verify + CONSUME a claim's one-time token against an outstanding invite (claim-back path).
-   *  "approved": the caller adds `address` now. "pending": the invite's relay rendezvous isn't
-   *  confirmed closed yet, so the app adds `address` itself once it is. "invalid": no outstanding
-   *  invite for that token. */
-  verifyConsume(group: string, token: string, address: string): Promise<ConsumeOutcome>;
-  /** Drop an outstanding invite — also revokes it on the relay so a leaked link can no longer redeem. */
-  revoke(group: string, token: string): Promise<void>;
-  /** CONNECT-S1 — INVITEE: seal + submit a claim for an invite link to the relay's server-blind
-   *  inbox (the claim-back fallback). The owner then sees it via `pollClaims`. */
-  submitClaim(link: string): Promise<void>;
-  /** CONNECT-S1 — OWNER: poll + open the sealed claims for a group's outstanding invites. */
-  pollClaims(group: string): Promise<InviteClaim[]>;
-  /** #73 — the device-local referral audit ledger (newest last). The member's own copy. */
-  referralLog(): Promise<ReferralEvent[]>;
-  /** #73 — the referral ledger as pretty JSON, for the member to save as their audit copy. */
-  exportReferralLog(): Promise<string>;
-}
-
-/** A volunteered claim recovered from the server-blind inbox (owner-side). */
-export interface InviteClaim {
-  group: string;
-  token: string;
-  address: string;
-}
-
-// ── v2 invite links (GROW-S1 task 10): a short code at citrate.ai plus a sealed envelope that only
-// the share link opens. Mirrors the Rust `citrate_core_kit::join` views. The webview never sees the
-// link key, the envelope, the relay token or the session bearer: the only value carrying the key is
-// `JoinMinted.shareUrl` (`https://citrate.ai/join/<code>#<key>`), meant to be copied and shared.
-// Registered on CxBridge as `join` (tasks 11/12). The pending invite an invitee has not acted on yet
-// is held only in Rust (keyring), and its view carries neither the code nor the key.
-export type JoinKind = "direct" | "referral";
-export type JoinGoal = "storage" | "training" | "inference" | "dapps" | "general";
-export interface JoinMintRequest {
-  kind: JoinKind;
-  /** Inviter-approved display name (the service filters reserved names: HTTP 422). */
-  clusterName: string;
-  goal: JoinGoal;
-  ttlSeconds?: number;
-  maxResolves?: number;
-}
-export interface JoinMinted {
-  code: string;
-  kind: JoinKind;
-  /** `valid` once usable; `pending` = reserved but the envelope isn't attached (retry `attach`). */
-  status: "valid" | "pending";
-  /** ISO expiry. */
-  exp: string;
-  /** The link to share. Present only when `status === "valid"`. */
-  shareUrl: string | null;
-  /** Why a direct code is still pending. */
-  attachError: string | null;
-}
-export interface JoinResolved {
-  code: string;
-  kind: JoinKind;
-  clusterName: string | null;
-  goal: string | null;
-  inviter: string | null;
-  inviterVerified: boolean;
-  exp: string;
-  /** A direct invite that opened and is held (in Rust) for `redeem`. */
-  actionable: boolean;
-  /** A direct invite whose link arrived without its key. */
-  keyMissing: boolean;
-}
-export interface JoinCodeEntry {
-  code: string;
-  kind: JoinKind;
-  status: "pending" | "valid" | "expired" | "revoked" | "exhausted";
-  exp: string;
-  resolveCount: number;
-}
-/** What `join.revoke` closed. `relayInviteClosed`: the relay invite sealed inside a direct code
- *  this device minted was closed at the relay; false when there is no such record (a public link,
- *  or a code minted elsewhere). */
-export interface JoinRevoked {
-  relayInviteClosed: boolean;
-}
-export interface JoinDomain {
-  /** Mint a code. `direct` seals `inviteLink` (from `invites.create`) and returns the share URL. */
-  mint(request: JoinMintRequest, inviteLink?: string): Promise<JoinMinted>;
-  /** Retry attaching a pending direct code's envelope (idempotent). */
-  attach(code: string): Promise<JoinMinted>;
-  /** The member's explicit Join for a resolved, actionable direct invite. On failure the invite
-   *  stays held (until it expires), so calling it again retries. */
-  redeem(code: string): Promise<void>;
-  /** Revoke one of the member's codes. */
-  revoke(code: string): Promise<JoinRevoked>;
-  /** The member's codes, newest first. */
-  list(): Promise<JoinCodeEntry[]>;
-  /** Task 12: hand an arrived/pasted invite link to Rust to hold (keyring). Not resolved. */
-  pendingSet(link: string): Promise<PendingJoinView>;
-  /** Whether an invite is waiting (no code, no key). */
-  pendingGet(): Promise<PendingJoinView | null>;
-  /** Wipe the waiting invite (cancel). */
-  pendingClear(): Promise<void>;
-  /** The member chose to look at it: resolve + verify the waiting invite in Rust. */
-  pendingResolve(): Promise<JoinResolved>;
-  /** QR modules for a share link (rendered as SVG by the webview). */
-  shareQr(link: string): Promise<JoinQr>;
-}
-/** The waiting invite as the webview sees it (mirrors Rust `PendingJoinView`). */
-export interface PendingJoinView {
-  hasKey: boolean;
-  storedAt: number;
-  expiresAt: number;
-  /** false = the keyring was unreachable; held in memory only until the app quits. */
-  persisted: boolean;
-}
-/** A QR code as rows of '1' (dark) / '0' (light) modules, without the quiet zone. */
-export interface JoinQr {
-  size: number;
-  rows: string[];
+  /** Make a one-time invite link for a group (owner or admin). `label` says who it's for (may be
+   *  ""); `inviter` names the inviter on the invitee's screen (may be ""). */
+  create(group: string, label: string, inviter: string): Promise<InviteView>;
+  /** The group's open invites made on this device. Rejects when the saved invites can't be read. */
+  list(group: string): Promise<InviteView[]>;
+  /** Revoke an invite (also Cancel on a held approval): no request under it can be approved any more. */
+  revoke(group: string, id: string): Promise<InviteNotice>;
+  /** The requests waiting on the group's invites. Rejects when the relay can't be asked. */
+  requests(group: string): Promise<IncomingRequest[]>;
+  /** Approve a request: add the requester (Welcome) and use up the invite. */
+  approve(group: string, id: string, address: string): Promise<void>;
+  /** Settle a held approval by the roster (Check again on the invite row). */
+  check(group: string, id: string): Promise<HeldCheck>;
+  /** Decline a request. */
+  decline(group: string, id: string, address: string): Promise<InviteNotice>;
+  /** Read a link for the Join screen. Sends nothing. */
+  preview(link: string): Promise<InvitePreview>;
+  /** Ask to join with a link (the invitee's Join). */
+  request(link: string): Promise<MyInviteRequest>;
+  /** Where this device's requests stand; a request that was approved finishes its join here. */
+  myRequests(): Promise<MyInviteRequest[]>;
+  /** Forget a request this device sent. */
+  dismiss(id: string): Promise<void>;
 }
 
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
@@ -2697,6 +2622,16 @@ export interface ProviderPrice {
   inputMicrosPerMtok: number;
   outputMicrosPerMtok: number;
 }
+/** A model core knows for a provider: its price and where the price came from. */
+export interface ProviderModelPrice {
+  id: string;
+  price: ProviderPrice | null;
+  /** `member` (entered in Settings, wins), `published` (the vendor's cited price), or null (unknown). */
+  source: "member" | "published" | null;
+  /** The least core reserves against the caps before one call is sent (empty prompt, the adapter's
+   *  output bound), micro-USD; null when the model has no price. */
+  minReserveMicros: number | null;
+}
 export interface ProviderHalt {
   /** `member`, `burst`, `unknownModel`, `tokenSpike` or `guardUnreadable`. */
   kind: string;
@@ -2724,6 +2659,8 @@ export interface ProviderStatus {
   approvedModels: string[];
   listedModels: string[];
   prices: Record<string, ProviderPrice>;
+  /** Every known model with its price source. Under a spending cap an unpriced model is refused. */
+  models: ProviderModelPrice[];
 }
 export interface ProviderPeriodUsage {
   calls: number;
@@ -2739,6 +2676,22 @@ export interface ProviderUsage {
   unsettledCalls: number;
   caps: ProviderCaps;
 }
+/** One recent cloud call from the signed usage log. Metadata only: the log has no field for content. */
+export interface ProviderRecentCall {
+  atMs: number;
+  provider: string;
+  model: string;
+  /** False for a custom (unverified) endpoint. */
+  verified: boolean;
+  /** `ok`, a coarse failure or refusal code, or null while unsettled (in flight, or cut off by a crash). */
+  outcome: string | null;
+  /** True when the call was refused before anything was sent. */
+  refused: boolean;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  /** null = unknown (no price, or not reported), never zero. */
+  costMicros: number | null;
+}
 export interface ProviderUsageSummary {
   /** The signed usage log verified; when false every cloud call is refused. */
   logIntact: boolean;
@@ -2746,6 +2699,10 @@ export interface ProviderUsageSummary {
   records: number;
   asOfMs: number;
   providers: ProviderUsage[];
+  /** The latest calls, newest first (bounded in core). */
+  recentCalls: ProviderRecentCall[];
+  /** Set when this computer's clock reads well before the last record: every call is refused. */
+  clockProblem: string | null;
 }
 export interface ProviderKeyTest {
   ok: boolean;
@@ -2793,8 +2750,6 @@ export interface CxBridge {
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
-  /** GROW-S1 v2 invite links (short code + sealed envelope), all through Rust. */
-  join: JoinDomain;
   components: ComponentsDomain;
   store: StoreDomain;
   services: ServicesDomain;
