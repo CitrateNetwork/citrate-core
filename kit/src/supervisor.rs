@@ -1291,8 +1291,9 @@ impl Supervisor {
     /// Admit a credential publication (for example a generation's bearer or seed file) under the
     /// current intent (SCL-S2.3). Admission is refused unless the service is meant to be running
     /// and not shutting down or quarantined. Write the file only after admission, then
-    /// [`PublicationTicket::commit`] it: only a ticket whose intent is still current may become
-    /// the active reference. A Stop settles only after every admitted ticket is resolved, or
+    /// [`PublicationTicket::commit`] it with the step that makes it active: the supervisor runs
+    /// that step only while the ticket's intent is still current, under the same lock as the
+    /// check. A Stop settles only after every admitted ticket is resolved, or
     /// names it as remaining.
     pub fn admit_publication(
         &self,
@@ -1618,12 +1619,27 @@ impl std::fmt::Debug for PublicationTicket {
 }
 
 impl PublicationTicket {
-    /// Make the published file the active reference, if the ticket's intent is still current.
-    /// Otherwise the ticket stays open as a [`StaleTicket`]: remove what it wrote, then call
-    /// [`StaleTicket::cleaned`]. Dropping the `StaleTicket` instead keeps the publication open.
-    pub fn commit(self) -> std::result::Result<(), StaleTicket> {
-        // The currency check and the release are one critical section, so a Stop committed in
-        // between can never list this publication as resolved while it becomes active.
+    /// Make the published file the active reference by running `activate` (for example the
+    /// rename that puts the file in place), if the ticket's intent is still current.
+    ///
+    /// The currency check, `activate` and the release are one critical section: no Stop or Start
+    /// can commit between the check and the file becoming active, and a Stop can never list this
+    /// publication as resolved before `activate` has finished. `activate` must therefore be a
+    /// short local step that does not call back into the supervisor (controls made from inside it
+    /// are refused as busy).
+    ///
+    /// * Intent superseded: `activate` does not run and the ticket stays open as
+    ///   [`CommitRefused::Stale`].
+    /// * `activate` fails: the ticket stays open as [`CommitRefused::Failed`] with the error.
+    /// * `activate` unwinds: the ticket is dropped unresolved, so the Stop stays open.
+    ///
+    /// In both refusals, remove what the ticket wrote, then call [`StaleTicket::cleaned`].
+    /// Dropping the [`StaleTicket`] instead keeps the publication open.
+    pub fn commit<T, E>(
+        self,
+        activate: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, CommitRefused<E>> {
+        // Old behaviour: check and release, then leave activation to after the lock.
         let current = {
             let mut c = self.shared.lock();
             let current =
@@ -1633,16 +1649,16 @@ impl PublicationTicket {
             }
             current
         };
-        if current {
-            self.shared.notify();
-            Ok(())
-        } else {
-            Err(StaleTicket {
-                shared: self.shared,
-                id: self.id,
-                name: self.name,
-            })
+        if !current {
+            return Err(CommitRefused::Stale(self.into_stale()));
         }
+        self.shared.notify();
+        let shared = self.shared.clone();
+        let (id, name) = (self.id, self.name.clone());
+        activate().map_err(|error| CommitRefused::Failed {
+            ticket: StaleTicket { shared, id, name },
+            error,
+        })
     }
 
     /// Nothing the ticket wrote remains (nothing was written, or the caller removed it): release
@@ -1650,11 +1666,44 @@ impl PublicationTicket {
     pub fn withdraw(self) {
         release_publication(&self.shared, self.id);
     }
+
+    fn into_stale(self) -> StaleTicket {
+        StaleTicket {
+            shared: self.shared,
+            id: self.id,
+            name: self.name,
+        }
+    }
 }
 
-/// A publication whose intent was superseded before it committed. It still holds the service's
-/// Stop open until the caller has removed what it wrote and said so with [`StaleTicket::cleaned`].
-/// Dropping it without that (an ignored error, or an unwind) releases nothing: the file may
+/// Why [`PublicationTicket::commit`] did not make the file the active reference. Either way the
+/// ticket is still open: remove what it wrote, then call [`StaleTicket::cleaned`].
+#[must_use = "remove what the ticket wrote, then call cleaned(); dropping it keeps the Stop open"]
+#[derive(Debug)]
+pub enum CommitRefused<E> {
+    /// The ticket's intent was superseded; the activation step did not run.
+    Stale(StaleTicket),
+    /// The activation step ran and failed; nothing became active.
+    Failed {
+        /// The still-open publication.
+        ticket: StaleTicket,
+        /// The activation step's error.
+        error: E,
+    },
+}
+
+impl<E> CommitRefused<E> {
+    /// The still-open publication, whichever way the commit was refused.
+    pub fn into_ticket(self) -> StaleTicket {
+        match self {
+            CommitRefused::Stale(ticket) | CommitRefused::Failed { ticket, .. } => ticket,
+        }
+    }
+}
+
+/// A publication that did not commit (its intent was superseded, or its activation step failed).
+/// It still holds the service's Stop open until the caller has removed what it wrote and said so
+/// with [`StaleTicket::cleaned`]. Dropping it without that (an ignored error, or an unwind) releases nothing: the file may
 /// still be on disk, so the Stop stays `Incomplete` naming the publication and the service stays
 /// Quarantined.
 #[must_use = "remove what the ticket wrote, then call cleaned(); dropping it keeps the Stop open"]

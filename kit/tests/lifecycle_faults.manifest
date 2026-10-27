@@ -45,6 +45,10 @@ a_ticket_dropped_by_an_unwinding_caller_keeps_the_stop_open | regression | SCL-S
 a_withdrawn_ticket_lets_the_stop_complete | positive-control | SCL-S2.3 | a ticket withdrawn before the Stop is resolved and the Stop settles Complete
 a_ticket_from_a_replaced_intent_never_becomes_active | regression | SCL-S2.3 | a ticket whose intent a Stop and then a Start replaced is refused as stale, though the service is meant to run again
 start_during_teardown_waits_for_an_old_publication_ticket | regression | SCL-S2.3 | a Start superseding a Stop spawns nothing while an old-intent publication ticket is held
+no_stop_commits_while_a_publication_activates | regression | SCL-S2.3 | the step that makes a publication active runs under the lifecycle lock: no Stop commits while it runs
+a_failed_activation_keeps_the_ticket_open_until_cleaned | regression | SCL-S2.3 | a failed activation step returns the open ticket; the Stop is Incomplete naming it until cleaned()
+an_activation_that_unwinds_keeps_the_publication_owned | regression | SCL-S2.3 | an activation step that unwinds leaves the publication owned: the Stop is Incomplete naming it
+a_stale_ticket_never_runs_its_activation_step | positive-control | SCL-S2.3 | a ticket whose intent a Stop replaced is refused as stale without running its activation step
 shutdown_with_an_open_publication_ticket_is_incomplete | regression | SCL-S2.3 | Stop plus immediate shutdown with an open ticket is Incomplete and stays Quarantined; a late release reconciles
 after_shutdown_quarantine_clears_once_readers_and_tickets_are_done | regression | SCL-S2.3 | after shutdown, releasing the last ticket re-checks the readers and reconciles to Stopped
 after_shutdown_a_late_reader_end_clears_quarantine | regression | SCL-S2.3 | after shutdown, a late reader end is observed by a snapshot read
