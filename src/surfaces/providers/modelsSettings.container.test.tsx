@@ -87,6 +87,7 @@ describe("Settings › Models container", () => {
     });
     expect(host.textContent).toContain("The key was not stored: the vendor rejected the key");
     expect((q<HTMLInputElement>('input[aria-label="OpenAI API key"]') as HTMLInputElement).value).toBe("");
+    expect(host.innerHTML).not.toContain("test-key-not-real");
   });
 
   it("a failed test is shown on the card", async () => {
@@ -252,5 +253,6 @@ describe("Settings › Models container", () => {
     expect(host.textContent).not.toContain("The key was not stored");
     expect(host.textContent).toContain("No answer from core yet, so whether the key was stored is unknown");
     expect(providers.status.mock.calls.length).toBeGreaterThan(reads);
+    expect(host.innerHTML).not.toContain("test-key-not-real");
   });
 });

@@ -69,6 +69,16 @@ describe("Settings › Models: the vendor cards", () => {
     expect(card(html, "cognition")).not.toMatch(/<input/);
   });
 
+  it("only the vendors core reports get a card: OpenAI alone gives the OpenAI card and the static Cognition card, nothing else", () => {
+    const ids = (html: string) => [...html.matchAll(/data-testid="provider-card-([a-z0-9-]+)"/g)].map((m) => m[1]);
+    expect(ids(render({ statuses: [vendor()] }))).toEqual(["openai", "cognition"]);
+    // A vendor that is not the first of the usual six still renders alone.
+    const xaiOnly = [vendor({ id: "xai", name: "xAI", host: "api.x.ai" })];
+    expect(ids(render({ statuses: xaiOnly, usage: summary({ providers: [usage({ id: "xai" })] }) }))).toEqual(["xai", "cognition"]);
+    // Core reporting no vendor at all gives no vendor card.
+    expect(ids(render({ statuses: [] })).filter((id) => id !== "cognition")).toEqual([]);
+  });
+
   it("a vendor with no adapter in this build says so and offers no key box", () => {
     const html = render({ statuses: SIX });
     const a = card(html, "anthropic");
