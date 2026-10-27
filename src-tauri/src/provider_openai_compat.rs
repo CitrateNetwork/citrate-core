@@ -1,15 +1,15 @@
 //! D-11 (RC52) — the OpenAI-compatible adapter: the first [`ModelProvider`] implementation.
 //!
 //! Speaks `POST {base}/chat/completions` (streamed with `stream_options.include_usage`) and
-//! `GET {base}/models` for the key test. It serves a member-confirmed custom endpoint, and the
-//! vendors whose public API is OpenAI-compatible at their pinned base until their native adapter
-//! (WP-S1-PROV-ADAPT) replaces it. The key travels only as `Authorization: Bearer`, attached by
-//! core ([`ProviderCtx::send`]).
+//! `GET {base}/models` for the key test. It serves a member-confirmed custom endpoint; its wire
+//! helpers are shared with the native chat-completions vendors
+//! ([`crate::provider_chat_vendors`]). The key travels only as `Authorization: Bearer`, attached
+//! by core ([`ProviderCtx::send`]).
 
 use crate::model_provider::{
-    read_sse, status_error, AuthPlacement, ChatRequest, ChatResponse, FinishReason, KeyCharset,
-    KeyFormat, KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx,
-    ProviderError, ProviderId, Role, ToolCall, Usage,
+    read_sse, status_error, AuthPlacement, ChatRequest, ChatResponse, FinishReason, KeyFormat,
+    KeyTest, Method, ModelInfo, ModelProvider, OutboundRequest, ProviderCtx, ProviderError,
+    ProviderId, Role, ToolCall, Usage,
 };
 use serde_json::{json, Value};
 
@@ -19,22 +19,14 @@ pub const MAX_MODEL_ID_LEN: usize = 200;
 
 pub struct OpenAiCompatAdapter {
     id: ProviderId,
-    /// Accepted key prefixes (`sk-` for OpenAI/DeepSeek, `xai-` for xAI); empty = any.
-    key_prefixes: &'static [&'static str],
     models: Vec<ModelInfo>,
 }
 
 impl OpenAiCompatAdapter {
-    pub fn new(
-        id: ProviderId,
-        key_prefixes: &'static [&'static str],
-        models: Vec<ModelInfo>,
-    ) -> Self {
-        OpenAiCompatAdapter {
-            id,
-            key_prefixes,
-            models,
-        }
+    /// A custom endpoint's adapter: any key shape the basic check accepts (the endpoint is the
+    /// member's own; it has no known key format).
+    pub fn new(id: ProviderId, models: Vec<ModelInfo>) -> Self {
+        OpenAiCompatAdapter { id, models }
     }
 }
 
@@ -121,8 +113,17 @@ fn arguments_text(v: Option<&Value>) -> String {
     }
 }
 
+/// How a vendor's usage object becomes [`Usage`] (vendors differ on whether reasoning tokens are
+/// inside `completion_tokens`).
+pub type UsageFn = fn(&Value) -> Option<Usage>;
+
 /// Parse a non-streamed chat-completions answer.
 pub fn parse_response(v: &Value) -> Result<ChatResponse, ProviderError> {
+    parse_response_with(v, usage_from)
+}
+
+/// [`parse_response`] with the vendor's own usage reading.
+pub fn parse_response_with(v: &Value, usage: UsageFn) -> Result<ChatResponse, ProviderError> {
     let choice = v
         .get("choices")
         .and_then(Value::as_array)
@@ -169,7 +170,7 @@ pub fn parse_response(v: &Value) -> Result<ChatResponse, ProviderError> {
     Ok(ChatResponse {
         content,
         tool_calls,
-        usage: usage_from(v),
+        usage: usage(v),
         finish: finish_from(choice.get("finish_reason").and_then(Value::as_str)),
     })
 }
@@ -185,6 +186,16 @@ struct Partial {
 pub fn read_stream(
     body: impl std::io::Read,
     on_text: &mut dyn FnMut(&str),
+) -> Result<ChatResponse, ProviderError> {
+    read_stream_with(body, on_text, usage_from)
+}
+
+/// [`read_stream`] with the vendor's own usage reading. The last usage object seen wins (some
+/// vendors send a running total on every chunk, others one on the final chunk).
+pub fn read_stream_with(
+    body: impl std::io::Read,
+    on_text: &mut dyn FnMut(&str),
+    usage_of: UsageFn,
 ) -> Result<ChatResponse, ProviderError> {
     let mut content = String::new();
     let mut calls: Vec<Partial> = Vec::new();
@@ -203,7 +214,7 @@ pub fn read_stream(
                 "the provider reported an error mid-answer",
             ));
         }
-        if let Some(u) = usage_from(&v) {
+        if let Some(u) = usage_of(&v) {
             usage = Some(u);
         }
         let Some(choice) = v
@@ -314,12 +325,14 @@ impl ModelProvider for OpenAiCompatAdapter {
         self.models.clone()
     }
 
+    /// A custom endpoint's own semantics are unknown; `max_tokens` is what it is asked to keep
+    /// to (the endpoint is shown as unverified everywhere).
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        u64::from(req.max_tokens)
+    }
+
     fn key_format(&self) -> KeyFormat {
-        KeyFormat {
-            prefixes: self.key_prefixes,
-            charset: KeyCharset::Printable,
-            ..KeyFormat::ANY
-        }
+        KeyFormat::ANY
     }
 
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {

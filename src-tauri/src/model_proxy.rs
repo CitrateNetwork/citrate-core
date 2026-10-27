@@ -74,6 +74,8 @@ pub enum ProxyError {
     NotConfigured,
     /// No adapter for this provider in this build.
     NotAvailable,
+    /// The caller went away mid-call; the vendor call was stopped.
+    Cancelled,
     /// Egress refused (unknown or unconfirmed endpoint, off-host URL).
     Egress(String),
     /// The spend guard refused (cap, halt, unpriced model under a currency cap).
@@ -97,6 +99,9 @@ impl std::fmt::Display for ProxyError {
             ProxyError::NotAvailable => {
                 f.write_str("this provider is not available in this version yet")
             }
+            ProxyError::Cancelled => {
+                f.write_str("the caller went away; the vendor call was stopped")
+            }
             ProxyError::Egress(m) => write!(f, "blocked: {m}"),
             ProxyError::Refused(r) => write!(f, "refused: {r}"),
             ProxyError::LogUnavailable(e) => write!(f, "refused: {e}; nothing was sent"),
@@ -112,8 +117,10 @@ impl ProxyError {
         match self {
             ProxyError::Unauthorized => (401, "unauthorized"),
             ProxyError::BadRequest(_) => (400, "bad_request"),
+            ProxyError::Provider(ProviderError::BadRequest(_)) => (400, "bad_request"),
             ProxyError::NotConfigured => (409, "not_configured"),
             ProxyError::NotAvailable => (501, "not_available"),
+            ProxyError::Cancelled => (499, "cancelled"),
             ProxyError::Egress(_) => (403, "egress_refused"),
             ProxyError::Refused(Refusal::Halted(_)) => (423, "provider_halted"),
             ProxyError::Refused(_) => (429, "cap_exceeded"),
@@ -127,9 +134,12 @@ impl ProxyError {
     pub fn outcome(&self) -> &'static str {
         match self {
             ProxyError::Unauthorized => "unauthorized",
-            ProxyError::BadRequest(_) => "bad_request",
+            ProxyError::BadRequest(_) | ProxyError::Provider(ProviderError::BadRequest(_)) => {
+                "bad_request"
+            }
             ProxyError::NotConfigured => "not_configured",
             ProxyError::NotAvailable => "not_available",
+            ProxyError::Cancelled => "cancelled",
             ProxyError::Egress(_) => "egress_refused",
             ProxyError::Refused(Refusal::Halted(_)) => "halted",
             ProxyError::Refused(Refusal::PriceUnknown) => "price_unknown",
@@ -152,38 +162,33 @@ impl ProxyError {
 /// How a provider is served in this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterKind {
+    /// The vendor's own API through its native adapter (WP-S1-PROV-ADAPT).
+    Native,
+    /// A member-confirmed custom endpoint, spoken to as OpenAI chat-completions.
     OpenAiCompatible,
 }
 
 impl AdapterKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            AdapterKind::Native => "native",
             AdapterKind::OpenAiCompatible => "openai-compatible",
         }
     }
 }
 
-/// The adapter registry. Vendors whose public API is OpenAI-compatible at their pinned base are
-/// served by [`OpenAiCompatAdapter`] until their native adapter lands (WP-S1-PROV-ADAPT replaces
-/// these entries); Anthropic, Gemini and Meta have no adapter yet and report "not available".
-pub fn vendor_adapter(v: Vendor) -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
-    let compat =
-        |prefixes: &'static [&'static str]| -> Option<(Arc<dyn ModelProvider>, AdapterKind)> {
-            Some((
-                Arc::new(OpenAiCompatAdapter::new(
-                    ProviderId::Vendor(v),
-                    prefixes,
-                    vec![],
-                )),
-                AdapterKind::OpenAiCompatible,
-            ))
-        };
-    match v {
-        Vendor::OpenAi => compat(&["sk-"]),
-        Vendor::Xai => compat(&["xai-"]),
-        Vendor::DeepSeek => compat(&["sk-"]),
-        Vendor::Anthropic | Vendor::Gemini | Vendor::Meta => None,
-    }
+/// The adapter registry: every governed vendor has its native adapter.
+pub fn vendor_adapter(v: Vendor) -> (Arc<dyn ModelProvider>, AdapterKind) {
+    use crate::provider_chat_vendors::ChatVendorAdapter;
+    let a: Arc<dyn ModelProvider> = match v {
+        Vendor::OpenAi => Arc::new(crate::provider_openai::OpenAiAdapter),
+        Vendor::Anthropic => Arc::new(crate::provider_anthropic::AnthropicAdapter),
+        Vendor::Gemini => Arc::new(crate::provider_gemini::GeminiAdapter),
+        Vendor::Xai => Arc::new(ChatVendorAdapter::xai()),
+        Vendor::DeepSeek => Arc::new(ChatVendorAdapter::deepseek()),
+        Vendor::Meta => Arc::new(ChatVendorAdapter::meta()),
+    };
+    (a, AdapterKind::Native)
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +349,7 @@ impl ModelProxy {
     ) -> Result<(Arc<dyn ModelProvider>, AdapterKind, ResolvedEndpoint), ProxyError> {
         match id {
             ProviderId::Vendor(v) => {
-                let (a, k) = vendor_adapter(*v).ok_or(ProxyError::NotAvailable)?;
+                let (a, k) = vendor_adapter(*v);
                 // A registry slip must never send one vendor's key through another's adapter.
                 if a.id() != *id {
                     return Err(ProxyError::NotAvailable);
@@ -383,7 +388,7 @@ impl ModelProxy {
                     })
                     .collect();
                 Ok((
-                    Arc::new(OpenAiCompatAdapter::new(id.clone(), &[], models)),
+                    Arc::new(OpenAiCompatAdapter::new(id.clone(), models)),
                     AdapterKind::OpenAiCompatible,
                     ep,
                 ))
@@ -424,7 +429,21 @@ impl ModelProxy {
         on_text: &mut dyn FnMut(&str),
     ) -> Result<ChatResponse, ProxyError> {
         let (prepared, req) = self.prepare(route, req, conversation)?;
-        self.execute(prepared, &req, on_text)
+        self.execute(prepared, &req, None, on_text)
+    }
+
+    /// [`Self::call`] that stops when `cancel` is set (the caller went away): the vendor call is
+    /// cut off at its next read and the end record says `cancelled`.
+    pub fn call_until(
+        &self,
+        route: &ProxyRoute,
+        req: ChatRequest,
+        conversation: Option<String>,
+        cancel: crate::model_provider::CancelFlag,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ChatResponse, ProxyError> {
+        let (prepared, req) = self.prepare(route, req, conversation)?;
+        self.execute(prepared, &req, Some(cancel), on_text)
     }
 
     /// Steps 1-5: everything that can refuse before anything is sent. The loopback endpoint calls
@@ -466,7 +485,8 @@ impl ModelProxy {
                 provider: provider.clone(),
                 model: req.model.clone(),
                 reserve_in: input_token_bound(&req),
-                reserve_out: u64::from(req.max_tokens),
+                // The adapter's true bound: reasoning a vendor does not cap is included.
+                reserve_out: adapter.output_bound(&req),
                 price: guard.price_for(
                     &provider,
                     &req.model,
@@ -527,13 +547,23 @@ impl ModelProxy {
         &self,
         p: Prepared,
         req: &ChatRequest,
+        cancel: Option<crate::model_provider::CancelFlag>,
         on_text: &mut dyn FnMut(&str),
     ) -> Result<ChatResponse, ProxyError> {
         let result = {
-            let ctx = ProviderCtx::new(&p.endpoint, &p.key, self.http.as_ref());
-            p.adapter
-                .complete(&ctx, req, on_text)
-                .map_err(ProxyError::Provider)
+            let mut ctx = ProviderCtx::new(&p.endpoint, &p.key, self.http.as_ref());
+            if let Some(c) = &cancel {
+                ctx = ctx.with_cancel(c.clone());
+            }
+            let gone = || {
+                cancel
+                    .as_ref()
+                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+            };
+            match p.adapter.complete(&ctx, req, on_text) {
+                Err(_) if gone() => Err(ProxyError::Cancelled),
+                r => r.map_err(ProxyError::Provider),
+            }
         };
         drop(p.key);
         self.finish(
@@ -937,7 +967,7 @@ impl ModelProxy {
 
     pub(crate) fn kind_for(&self, id: &ProviderId) -> Option<AdapterKind> {
         match id {
-            ProviderId::Vendor(v) => vendor_adapter(*v).map(|(_, k)| k),
+            ProviderId::Vendor(v) => Some(vendor_adapter(*v).1),
             ProviderId::Custom(_) => Some(AdapterKind::OpenAiCompatible),
         }
     }

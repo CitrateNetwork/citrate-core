@@ -220,3 +220,34 @@ fn a_request_past_its_whole_deadline_is_refused() {
 fn read_soon(stream: &mut dyn Read) -> Result<HttpReq, (u16, &'static str)> {
     read_request_until(stream, std::time::Instant::now() + std::time::Duration::from_secs(5))
 }
+
+/// A client socket that hangs up once the first piece of text reached it.
+struct HangsUp {
+    got: Vec<u8>,
+}
+
+impl Write for HangsUp {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if String::from_utf8_lossy(&self.got).contains("hello ") {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.got.extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_client_that_disconnects_mid_stream_cancels_the_vendor_call() {
+    let rig = Rig::new("http-hangup");
+    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let mut out = HangsUp { got: Vec::new() };
+    serve_one(&rig.proxy, &post(g.bearer.expose(), chat_body("gpt-known", true), &[]), 1, &mut out);
+    let got = String::from_utf8_lossy(&out.got).to_string();
+    assert!(got.contains("hello ") && !got.contains("[DONE]"), "{got}");
+    let log = std::fs::read_to_string(log_path(&rig.dir.0)).unwrap_or_default();
+    let last = log.lines().last().unwrap_or_default();
+    assert!(last.contains("\"cancelled\""), "the vendor call was stopped: {last}");
+}
