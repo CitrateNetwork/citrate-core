@@ -28,7 +28,9 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 # 2026-10-27 (RC52 WP-S1-REPIN): citrate is citrate-chain 9a32147e (r1006, MIN_CHAIN_REV) and hermes is
 # citrate-agent-runtime 05243c72 (#101, #102), built on the release Mac with build-sidecar.sh and
 # build-hermes.sh in new trees of the same build root, uploaded under these new names and verified by
-# download. Not uploaded yet: node-agent, comms-member-daemon, cluster-daemon.
+# download. hermes reproduces from a clean target dir; the node does not (a second clean build gave
+# ea53cdc9..., different inlining), so its pin is the uploaded first build: stage that asset.
+# Not uploaded yet: node-agent, comms-member-daemon, cluster-daemon.
 7b460276935a40d079c65de619136f039081bd4fffcb122c198cad6e9286558b  citrate-aarch64-apple-darwin-9a32147e2aac
 250180089826a628e1765b0dd99b25ca68c23cd0d4b1872f88e76cd3bb639728  node-agent-aarch64-apple-darwin-1d8cb8e4e24a
 8eb2fe37e16f1157477f1ac2c9a7e22d16b63c8a9041c4b240b24a8fc65b3214  mem-mcp-aarch64-apple-darwin-5aeda3172369

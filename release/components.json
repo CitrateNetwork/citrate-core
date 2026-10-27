@@ -38,7 +38,7 @@
       "artifacts": {
         "aarch64-apple-darwin": {
           "runtime_deps_asset": "citrate-aarch64-apple-darwin-9a32147e2aac",
-          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin"
+          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin. NOT reproducible from a clean target dir: a second clean build in the same tree gave ea53cdc9... (55,407,984 bytes; different inlining in __text, strings identical). With the first build's target dir kept, build-sidecar.sh relinks the node and installs these exact bytes. Stage the uploaded asset, as release.yml does."
         }
       },
       "pending": {
@@ -225,7 +225,7 @@
       "artifacts": {
         "aarch64-apple-darwin": {
           "runtime_deps_asset": "hermes-aarch64-apple-darwin-05243c72bd52",
-          "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin"
+          "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte-for-byte from a clean target dir in the same build root; uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin"
         }
       },
       "pending": {
