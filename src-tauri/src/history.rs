@@ -1031,13 +1031,50 @@ impl HistoryStore {
 
     /// Start a conversation. Returns its id (`cv-<32 hex>`).
     pub fn create(&self, c: NewConversation<'_>, now_ms: u64) -> Result<String> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        let title = clean_title(c.title)?;
+        check_label("a provider", c.provider)?;
+        check_label("a model", c.model)?;
+        let _g = self.guard()?;
+        let mut l = self.load()?;
+        let kek = self.kek_for_write(&mut l)?;
+        let id = format!("cv-{}", random_hex(16));
+        let dek = random_key();
+        l.cat.conversations.insert(
+            id.clone(),
+            CatEntry {
+                dek: hex::encode(dek.as_ref()),
+                title,
+                source: c.source,
+                provider: c.provider.to_string(),
+                model: c.model.to_string(),
+                created_ms: now_ms,
+                updated_ms: now_ms,
+                records: 0,
+                log_bytes: 0,
+                artifacts: 0,
+                tainted: false,
+            },
+        );
+        self.commit(&kek, &mut l.cat)?;
+        Ok(id)
     }
 
     /// Append a turn, tool call, tool result or taint notice. Route and artifact records are
     /// refused here: only [`Self::set_route`] and [`Self::put_artifact`] write them.
     pub fn append(&self, id: &str, record: Record, now_ms: u64) -> Result<u64> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        if matches!(record, Record::Route { .. } | Record::Artifact { .. }) {
+            return Err(invalid(
+                "route and artifact records are written by their own operations",
+            ));
+        }
+        check_record(&record)?;
+        let _g = self.guard()?;
+        let mut l = self.load()?;
+        let kek = self.kek_for_write(&mut l)?;
+        let seq = self.append_frame(&mut l.cat, id, record, now_ms)?;
+        self.commit(&kek, &mut l.cat)?;
+        Ok(seq)
     }
 
     /// Write one frame to the log of `id` and update its catalog entry (not committed here).
@@ -1111,33 +1148,117 @@ impl HistoryStore {
     /// Store an artifact (content-addressed blob, sealed under the conversation's key) and append
     /// its reference record.
     pub fn put_artifact(&self, id: &str, a: NewArtifact<'_>, now_ms: u64) -> Result<ArtifactRef> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        check_label("an artifact name", a.name)?;
+        check_label("a MIME type", a.mime)?;
+        if a.bytes.len() > MAX_ARTIFACT_BYTES {
+            return Err(invalid(format!(
+                "an artifact is larger than {MAX_ARTIFACT_BYTES} bytes"
+            )));
+        }
+        let _g = self.guard()?;
+        let mut l = self.load()?;
+        let kek = self.kek_for_write(&mut l)?;
+        let dek = {
+            let e = l.cat.conversations.get(id).ok_or(HistoryError::NotFound)?;
+            parse_key(&e.dek).ok_or(HistoryError::Unreadable("a conversation key is malformed"))?
+        };
+        let addr = blob_addr(&dek, a.bytes);
+        let bdir = self.blob_dir(id);
+        let bpath = bdir.join(&addr);
+        if !bpath.is_file() {
+            citrate_core_kit::fsutil::ensure_private_dir(&bdir).map_err(io)?;
+            let mut bytes = BLOB_MAGIC.to_vec();
+            bytes.extend_from_slice(&seal(&dek, &blob_aad(id, &addr), a.bytes)?);
+            crate::atomic_file::replace_private(&bpath, &bytes).map_err(io)?;
+        }
+        let r = ArtifactRef {
+            id: format!("ar-{}", random_hex(8)),
+            sha256: hex::encode(Sha256::digest(a.bytes)),
+            size: a.bytes.len() as u64,
+        };
+        let record = Record::Artifact {
+            id: r.id.clone(),
+            name: a.name.to_string(),
+            mime: a.mime.to_string(),
+            size: r.size,
+            sha256: r.sha256.clone(),
+            blob: addr,
+            origin: a.origin,
+        };
+        check_record(&record)?;
+        self.append_frame(&mut l.cat, id, record, now_ms)?;
+        self.commit(&kek, &mut l.cat)?;
+        Ok(r)
     }
 
     /// Set the conversation's provider and model (a member or core action, never recorded content)
     /// and record the change.
     pub fn set_route(&self, id: &str, provider: &str, model: &str, now_ms: u64) -> Result<()> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        let record = Record::Route {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        check_record(&record)?;
+        let _g = self.guard()?;
+        let mut l = self.load()?;
+        let kek = self.kek_for_write(&mut l)?;
+        self.append_frame(&mut l.cat, id, record, now_ms)?;
+        if let Some(e) = l.cat.conversations.get_mut(id) {
+            e.provider = provider.to_string();
+            e.model = model.to_string();
+        }
+        self.commit(&kek, &mut l.cat)
     }
 
     pub fn rename(&self, id: &str, title: &str) -> Result<()> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        let title = clean_title(title)?;
+        let _g = self.guard()?;
+        let mut l = self.load()?;
+        let kek = self.kek_for_write(&mut l)?;
+        l.cat
+            .conversations
+            .get_mut(id)
+            .ok_or(HistoryError::NotFound)?
+            .title = title;
+        self.commit(&kek, &mut l.cat)
     }
 
     // -- reads ---------------------------------------------------------------------------------
 
     pub fn status(&self) -> Result<Status> {
-        Ok(Status { conversations: 0, retention_days: None, key_generation: 0 })
+        let _g = self.guard()?;
+        let l = self.load()?;
+        Ok(Status {
+            conversations: l.cat.conversations.len(),
+            retention_days: l.cat.retention_days,
+            key_generation: l.kek.as_ref().map(|k| k.gen).unwrap_or(0),
+        })
     }
 
     /// Every conversation, most recently updated first.
     pub fn list(&self) -> Result<Vec<Summary>> {
-        Ok(Vec::new())
+        let _g = self.guard()?;
+        let l = self.load()?;
+        let mut v: Vec<Summary> = l
+            .cat
+            .conversations
+            .iter()
+            .map(|(id, e)| summary_of(id, e))
+            .collect();
+        v.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms).then(a.id.cmp(&b.id)));
+        Ok(v)
     }
 
     /// One conversation's summary (catalog only; its log is not read).
     pub fn summary(&self, id: &str) -> Result<Summary> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        let _g = self.guard()?;
+        let l = self.load()?;
+        let e = l.cat.conversations.get(id).ok_or(HistoryError::NotFound)?;
+        Ok(summary_of(id, e))
     }
 
     fn entries_of(&self, id: &str, e: &CatEntry) -> Result<Vec<Entry>> {
@@ -1198,12 +1319,30 @@ impl HistoryStore {
     }
 
     pub fn read(&self, id: &str) -> Result<Conversation> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        let _g = self.guard()?;
+        let l = self.load()?;
+        let e = l.cat.conversations.get(id).ok_or(HistoryError::NotFound)?;
+        let entries = self.entries_of(id, e)?;
+        Ok(Conversation {
+            summary: summary_of(id, e),
+            entries,
+        })
     }
 
     /// An artifact's metadata record and its bytes, checked against the recorded SHA-256.
     pub fn read_artifact(&self, id: &str, artifact_id: &str) -> Result<(Entry, Vec<u8>)> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        let _g = self.guard()?;
+        let l = self.load()?;
+        let e = l.cat.conversations.get(id).ok_or(HistoryError::NotFound)?;
+        let entry = self
+            .entries_of(id, e)?
+            .into_iter()
+            .find(|en| matches!(&en.record, Record::Artifact { id: a, .. } if a == artifact_id))
+            .ok_or(HistoryError::NotFound)?;
+        let bytes = self.blob_bytes(id, e, &entry.record)?;
+        Ok((entry, bytes))
     }
 
     fn blob_bytes(&self, id: &str, e: &CatEntry, r: &Record) -> Result<Vec<u8>> {
@@ -1242,7 +1381,49 @@ impl HistoryStore {
     /// Case-insensitive search over titles and record text, newest conversations first. Decrypts in
     /// memory; nothing is indexed on disk.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>> {
-        Ok(Vec::new())
+        let q = query.trim().to_lowercase();
+        if q.chars().count() < 2 || q.chars().count() > MAX_LABEL_CHARS {
+            return Err(invalid(format!(
+                "a search needs 2 to {MAX_LABEL_CHARS} characters"
+            )));
+        }
+        let limit = limit.clamp(1, MAX_SEARCH_HITS);
+        let _g = self.guard()?;
+        let l = self.load()?;
+        let mut convs: Vec<(&String, &CatEntry)> = l.cat.conversations.iter().collect();
+        convs.sort_by(|a, b| b.1.updated_ms.cmp(&a.1.updated_ms).then(a.0.cmp(b.0)));
+        let mut hits = Vec::new();
+        for (id, e) in convs {
+            if let Some(snippet) = snippet_for(&e.title, &q) {
+                hits.push(Hit {
+                    conversation: id.clone(),
+                    title: e.title.clone(),
+                    seq: None,
+                    kind: "title",
+                    snippet,
+                    untrusted: false,
+                });
+                if hits.len() >= limit {
+                    return Ok(hits);
+                }
+            }
+            for en in self.entries_of(id, e)? {
+                if let Some(snippet) = en.record.texts().iter().find_map(|t| snippet_for(t, &q)) {
+                    hits.push(Hit {
+                        conversation: id.clone(),
+                        title: e.title.clone(),
+                        seq: Some(en.seq),
+                        kind: en.record.kind(),
+                        snippet,
+                        untrusted: en.untrusted,
+                    });
+                    if hits.len() >= limit {
+                        return Ok(hits);
+                    }
+                }
+            }
+        }
+        Ok(hits)
     }
 
     // -- delete, retention, rotation -----------------------------------------------------------
@@ -1251,7 +1432,8 @@ impl HistoryStore {
     /// catalog is resealed under a new KEK (the old one is erased from the keyring), and its files
     /// are removed.
     pub fn delete(&self, id: &str) -> Result<()> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        check_id(id)?;
+        self.delete_many(&[id.to_string()]).map(|_| ())
     }
 
     fn delete_many(&self, ids: &[String]) -> Result<Vec<String>> {
@@ -1286,25 +1468,100 @@ impl HistoryStore {
     /// Set how long conversations are kept after their last activity. `None` keeps them until the
     /// member deletes them.
     pub fn set_retention(&self, days: Option<u32>) -> Result<()> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        if let Some(d) = days {
+            if d == 0 || d > MAX_RETENTION_DAYS {
+                return Err(invalid(format!(
+                    "retention must be 1 to {MAX_RETENTION_DAYS} days, or keep until deleted"
+                )));
+            }
+        }
+        let _g = self.guard()?;
+        let mut l = self.load()?;
+        let kek = self.kek_for_write(&mut l)?;
+        l.cat.retention_days = days;
+        self.commit(&kek, &mut l.cat)
     }
 
     /// Delete every conversation whose last activity is older than the retention setting. Returns
     /// the deleted ids (empty when nothing is due or retention is off).
     pub fn enforce_retention(&self, now_ms: u64) -> Result<Vec<String>> {
-        Ok(Vec::new())
+        let due: Vec<String> = {
+            let _g = self.guard()?;
+            let l = self.load()?;
+            let Some(days) = l.cat.retention_days else {
+                return Ok(Vec::new());
+            };
+            let cutoff = now_ms.saturating_sub(u64::from(days) * DAY_MS);
+            l.cat
+                .conversations
+                .iter()
+                .filter(|(_, e)| e.updated_ms < cutoff)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        if due.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.delete_many(&due)
     }
 
     /// Reseal the catalog under a new KEK on the member's request. Returns the new generation.
     pub fn rotate_key(&self) -> Result<u64> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        let _g = self.guard()?;
+        let mut l = self.load()?;
+        let kek = self.kek_for_write(&mut l)?;
+        Ok(self.rotate(&kek, &mut l.cat)?.gen)
     }
 
     // -- export --------------------------------------------------------------------------------
 
     /// A readable copy of one conversation (Markdown and JSON). Untrusted content is labelled.
     pub fn export(&self, id: &str) -> Result<Export> {
-        Err(HistoryError::Invalid("conversation history is not built yet".into()))
+        use base64::Engine as _;
+        let conv = self.read(id)?;
+        let mut artifacts = Vec::new();
+        {
+            let _g = self.guard()?;
+            let l = self.load()?;
+            let e = l.cat.conversations.get(id).ok_or(HistoryError::NotFound)?;
+            for en in &conv.entries {
+                if let Record::Artifact {
+                    id: aid,
+                    name,
+                    mime,
+                    size,
+                    sha256,
+                    origin,
+                    ..
+                } = &en.record
+                {
+                    let bytes = self.blob_bytes(id, e, &en.record)?;
+                    artifacts.push(serde_json::json!({
+                        "id": aid,
+                        "name": name,
+                        "mime": mime,
+                        "size": size,
+                        "sha256": sha256,
+                        "origin": origin,
+                        "untrusted": origin.untrusted(),
+                        "base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    }));
+                }
+            }
+        }
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "format": "citrate-conversation-export",
+            "version": 1,
+            "conversation": conv.summary,
+            "entries": conv.entries,
+            "artifacts": artifacts,
+        }))
+        .map_err(|_| invalid("encode export"))?;
+        Ok(Export {
+            stem: format!("citrate-conversation-{}", &id[3..15]),
+            markdown: markdown_of(&conv),
+            json,
+        })
     }
 }
 
