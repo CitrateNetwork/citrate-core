@@ -686,6 +686,28 @@ describe("tauri adapter — agent domain is wired to the real node-agent (C1.2)"
     earningsMock.claimableWei = "9410000000000000000";
   });
 
+  // #391/#394: the rewards read and the claim pre-check name the validator key to read
+  // (MemberBond.pubkey() for a deployed bond); with no key the node's own proposer key is read.
+  it("validatorEarnings(key) asks node_validator_earnings for that key; no key, none is sent", async () => {
+    const K = "0x" + "33".repeat(32);
+    invokeMock.mockClear();
+    const bridge = createTauriBridge();
+    await bridge.node.validatorEarnings(K);
+    expect(invokeMock).toHaveBeenCalledWith("node_validator_earnings", { pubkey: K });
+    invokeMock.mockClear();
+    await bridge.node.validatorEarnings();
+    expect(invokeMock).toHaveBeenCalledWith("node_validator_earnings", undefined);
+  });
+
+  it("a validator's claim pre-check reads rewardsOf for the bond's key", async () => {
+    const K = "0x" + "44".repeat(32);
+    validatorRewardsMock.claimableWei = "5000000000000000000";
+    invokeMock.mockClear();
+    const bridge = createTauriBridge();
+    await bridge.agent.claim({ validator: true, pubkey: K });
+    expect(invokeMock).toHaveBeenCalledWith("node_validator_earnings", { pubkey: K });
+  });
+
   it("a validator with nothing claimable now gets an honest 'nothing'", async () => {
     validatorRewardsMock.claimableWei = "0";
     invokeMock.mockClear();

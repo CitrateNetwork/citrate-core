@@ -228,6 +228,13 @@ export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean 
  * must not imply otherwise.
  */
 /**
+ * #391 (red stub) — whether a node_validator_earnings read belongs to the member's validator key.
+ */
+export function earningsKeyCheck(_expected: string | undefined, _proposerPubkey: unknown): string | null {
+  return null;
+}
+
+/**
  * The bond reads the app keeps from a grant read (observed, never persisted): `MemberBond.activated()`,
  * `pubkey()` (C1-V5) and `isUnlocked()` as read (chain#331). No bond, or a field an older backend
  * does not send, is null (unread).

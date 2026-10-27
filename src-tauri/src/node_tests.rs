@@ -1420,3 +1420,88 @@ fn start_writes_the_key_into_the_runtime_dir_and_stop_removes_it() {
     mgr.stop();
     assert!(!path.exists(), "key file removed at stop");
 }
+
+// ---------------------------------------------------------------------------------------------
+// #391 / #394 — node_validator_earnings reads ValidatorRegistry.rewardsOf(bytes32) for the key the
+// app asks for (MemberBond.pubkey() for a deployed bond), and the node's own proposer key only
+// when no key is given. The mock registry answers each key with its own figures.
+mod validator_earnings_key {
+    use super::super::validator_earnings_for;
+    use crate::rpc::{RpcClient, RpcError, RpcTransport};
+
+    const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
+    const K: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const NODE: &str = "0x2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// rewardsOf(key) → (total, claimable) = (key byte × 10 SALT, key byte × 1 SALT); records calldata.
+    struct Registry(std::cell::RefCell<Vec<String>>);
+    impl RpcTransport for Registry {
+        fn call(&self, body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+            let data = body["params"][0]["data"].as_str().unwrap_or_default().to_string();
+            self.0.borrow_mut().push(data.clone());
+            let key_byte = u8::from_str_radix(data.get(10..12).unwrap_or("00"), 16).unwrap_or(0) as u128;
+            let mut buf = [0u8; 64];
+            buf[16..32].copy_from_slice(&(key_byte * 10 * 10u128.pow(18)).to_be_bytes());
+            buf[48..64].copy_from_slice(&(key_byte * 10u128.pow(18)).to_be_bytes());
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(buf))}))
+        }
+    }
+    fn registry() -> RpcClient<Registry> {
+        RpcClient::with_transport(Registry(std::cell::RefCell::new(Vec::new())))
+    }
+
+    #[test]
+    fn the_read_for_key_k_returns_ks_figures() -> std::result::Result<(), String> {
+        let rpc = registry();
+        let e = validator_earnings_for(&rpc, REGISTRY, Some(K), || Ok(NODE.to_string()))?;
+        assert_eq!(e.total_wei, (0x11u128 * 10 * 10u128.pow(18)).to_string());
+        assert_eq!(e.claimable_wei, (0x11u128 * 10u128.pow(18)).to_string());
+        assert_eq!(e.proposer_pubkey, K, "the response names the key it read");
+        Ok(())
+    }
+
+    #[test]
+    fn the_call_is_rewards_of_with_the_requested_key() -> std::result::Result<(), String> {
+        let rpc = registry();
+        validator_earnings_for(&rpc, REGISTRY, Some(K), || Err("node key must not be needed".into()))?;
+        let calls = rpc.transport().0.borrow().clone();
+        assert_eq!(calls, vec![format!("0x187e9c41{}", &K[2..])]);
+        Ok(())
+    }
+
+    #[test]
+    fn no_key_reads_the_nodes_own_proposer_key() -> std::result::Result<(), String> {
+        let rpc = registry();
+        let e = validator_earnings_for(&rpc, REGISTRY, None, || Ok(NODE.to_string()))?;
+        assert_eq!(e.proposer_pubkey, NODE);
+        assert_eq!(e.claimable_wei, (0x22u128 * 10u128.pow(18)).to_string());
+        Ok(())
+    }
+
+    #[test]
+    fn a_requested_key_is_normalised_and_echoed_lowercase() -> std::result::Result<(), String> {
+        let rpc = registry();
+        let upper = format!("0x{}", "AB".repeat(32));
+        let e = validator_earnings_for(&rpc, REGISTRY, Some(&upper), || Ok(NODE.to_string()))?;
+        assert_eq!(e.proposer_pubkey, format!("0x{}", "ab".repeat(32)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_requested_key_is_refused_without_a_read() {
+        for bad in ["", "0x", "11", "0x11", "0xzz11111111111111111111111111111111111111111111111111111111111111", &format!("0x{}", "11".repeat(48)), &format!("0x{}", "11".repeat(31))] {
+            let rpc = registry();
+            let out = validator_earnings_for(&rpc, REGISTRY, Some(bad), || Ok(NODE.to_string()));
+            assert!(out.is_err(), "{bad:?} must be refused");
+            assert!(rpc.transport().0.borrow().is_empty(), "{bad:?}: no eth_call for a refused key");
+        }
+    }
+
+    #[test]
+    fn a_requested_key_never_falls_back_to_the_node_key() {
+        let rpc = registry();
+        let out = validator_earnings_for(&rpc, REGISTRY, Some("0xnope"), || Ok(NODE.to_string()));
+        assert!(out.is_err());
+        assert!(rpc.transport().0.borrow().iter().all(|d| !d.contains(&NODE[2..])));
+    }
+}

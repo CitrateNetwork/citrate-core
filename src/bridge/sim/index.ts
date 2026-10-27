@@ -407,7 +407,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       // W1.3 — no real node/proposer key in the web preview → honest Unavailable
       // (never a fabricated registration ceremony).
-      async validatorEarnings(): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }> {
+      async validatorEarnings(_pubkey?: string): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }> {
         // No node, no proposer key, no chain — honestly unavailable (Rule 1).
         throw new Unavailable("node", "validatorEarnings");
       },
