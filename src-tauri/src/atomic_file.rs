@@ -38,6 +38,35 @@ pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
+/// [`replace`] for owner-only data: the temp file is created `0600` by its own `open(2)` (never
+/// readable by another user, even for a moment), and the directory is fsynced after the rename so
+/// the new name survives a power loss.
+pub fn replace_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = unique_temp_path(path);
+    let written = (|| {
+        let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        sync_parent(path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// fsync the directory holding `path` (unix), so a rename into it is durable.
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     include!("atomic_file_tests.rs");

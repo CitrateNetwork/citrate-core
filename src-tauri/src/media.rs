@@ -785,7 +785,7 @@ fn gallery(app: &tauri::AppHandle) -> Result<GalleryStore, String> {
     ))
 }
 
-fn grant_state(app: &tauri::AppHandle) -> Result<GrantState, String> {
+pub(crate) fn grant_state(app: &tauri::AppHandle) -> Result<GrantState, String> {
     match crate::agent_grants::GrantStore::for_app(app)?.load() {
         crate::agent_grants::Loaded::Ok(s) => Ok(s),
         crate::agent_grants::Loaded::Corrupted(_) => Err(

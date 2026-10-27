@@ -1139,6 +1139,9 @@ pub async fn ai_chat(
     messages_json: String,
     context_json: String,
     consent_id: String,
+    // AMC-H1: the history conversation this exchange belongs to (`history_start_chat`). Recorded
+    // only while history is on; absent (every 0.5.2 caller), nothing is recorded.
+    conversation_id: Option<String>,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     // K2: under Local model only (or an unreadable setting) nothing goes to a remote provider:
@@ -1149,7 +1152,7 @@ pub async fn ai_chat(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let consents = tauri::Manager::try_state::<ChatConsentState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_chat_sync(
+        let reply = ai_chat_sync(
             &st3.0,
             &consents,
             &route_dir,
@@ -1158,7 +1161,15 @@ pub async fn ai_chat(
             &provider_id,
             &messages_json,
             &context_json,
-        )
+        )?;
+        crate::history_recorder::on_chat_reply(
+            &app_h,
+            conversation_id.as_deref(),
+            &provider_id,
+            &messages_json,
+            &reply,
+        );
+        Ok(reply)
     })
     .await
 }
@@ -1273,6 +1284,8 @@ pub async fn ai_chat_local(
     app_h: tauri::AppHandle,
     messages_json: String,
     context_json: String,
+    // AMC-H1: see `ai_chat`. Absent, nothing is recorded.
+    conversation_id: Option<String>,
 ) -> std::result::Result<String, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1280,7 +1293,16 @@ pub async fn ai_chat_local(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let st3 = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_chat_local_sync(messages_json, context_json, st2, st3)
+        let messages = messages_json.clone();
+        let reply = ai_chat_local_sync(messages_json, context_json, st2, st3)?;
+        crate::history_recorder::on_chat_reply(
+            &app_h,
+            conversation_id.as_deref(),
+            crate::history_recorder::LOCAL_PROVIDER,
+            &messages,
+            &reply,
+        );
+        Ok(reply)
     })
     .await
 }
