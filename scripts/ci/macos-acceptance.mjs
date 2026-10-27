@@ -159,8 +159,7 @@ export function parseLsof(text) {
 
 /** Did lsof answer? Exit 1 only means one of the selections (-iTCP, -iUDP) matched nothing. */
 export function lsofAnswered(r) {
-  // RED STUB
-  return r.code === 0 || (r.code === 1 && !r.stdout.trim());
+  return r.code === 0 || r.code === 1;
 }
 
 /** Split "host:port" ("[::1]:8545", "*:30303", "127.0.0.1:5001") into {host, port}. */
