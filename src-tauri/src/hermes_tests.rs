@@ -265,7 +265,8 @@ fn remote_status_parses_and_presents_the_bearer() {
         RemoteStatus {
             running: true,
             skills: 2,
-            pending_approvals: 1
+            pending_approvals: 1,
+            capabilities: None,
         }
     );
 }
@@ -590,6 +591,52 @@ fn an_expired_bridged_ceremony_is_bridged_again_as_a_fresh_request() {
 }
 
 #[test]
+fn an_expired_bridged_ceremony_is_bridged_again_after_many_other_expiries() {
+    // #457: other requests expiring in the same process (more than the ceremony keeps for
+    // ordinary ids) must not make an expired bridged request read as "decided" (no card, never
+    // re-bridged).
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    let mgr = control_manager(chain_effect_mock());
+    let wall = Arc::new(AtomicU64::new(1_790_000_000_000));
+    let base = std::time::Instant::now();
+    let w2 = Arc::clone(&wall);
+    let ceremony = SignatureCeremony::with_clock(
+        crate::ceremony::PENDING_TTL,
+        Box::new(move || {
+            let ms = w2.load(Ordering::SeqCst);
+            crate::ceremony::ClockReading {
+                mono: base + std::time::Duration::from_millis(ms - 1_790_000_000_000),
+                wall_ms: ms,
+            }
+        }),
+    );
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        rpc_ok(serde_json::json!("0x8000")),
+        rpc_ok(serde_json::json!("0x8000")),
+    ]));
+    let c1 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .unwrap();
+    wall.fetch_add(crate::ceremony::PENDING_TTL_MS, Ordering::SeqCst);
+    assert!(ceremony.status(&c1.id).is_none(), "the first request expired");
+    // A busy process: 4097 other requests (another origin) open and expire.
+    for i in 0..4097 {
+        ceremony.request(hermes_intent("0x0000000000000000000000000000000000000001", &format!("0x{i:08x}"), "0x00", None));
+    }
+    wall.fetch_add(crate::ceremony::PENDING_TTL_MS, Ordering::SeqCst);
+    assert_eq!(ceremony.opened(), 4098);
+    let c2 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .expect("the expired bridged request is replaced by a fresh one, not read as decided");
+    assert_ne!(c2.id, c1.id);
+    assert!(ceremony.status(&c2.id).is_some());
+}
+
+#[test]
 fn bridge_pending_skips_a_non_chain_effect() {
     // An approval with no to/data (a code/shell effect) has no chain signature to bridge.
     let mut mock = MockControl::new();
@@ -839,6 +886,29 @@ fn hermes_control_calls_are_bounded() {
     assert!(HERMES_CONTROL_TIMEOUT <= Duration::from_secs(60));
 }
 
+/// A member store (keychain double) with one enabled, reviewed stdio server named `notes`.
+fn member_store_with_notes(dir: &std::path::Path) -> crate::mcp_servers::McpStore {
+    use crate::mcp_servers as m;
+    let store = m::McpStore::new(dir.to_path_buf(), std::sync::Arc::new(m::MemSecrets::default()));
+    let mut reg = m::Registry::default();
+    let input: m::ServerInput = serde_json::from_value(serde_json::json!({
+        "name": "notes", "transport": "stdio", "command": "/usr/bin/true",
+        "env": [{"key": "NOTES_TOKEN", "value": "tok-notes"}]
+    }))
+    .unwrap();
+    let fx = m::apply_save(&mut reg, input, store.secrets()).unwrap();
+    let mut gate = m::ReviewGate::default();
+    let probe: m::ProbeReport = serde_json::from_value(serde_json::json!({
+        "name": "notes", "transport": "stdio", "ok": true, "tools": []
+    }))
+    .unwrap();
+    gate.record(&reg.servers[0], &probe);
+    let token = m::review_token(&gate, &reg.servers[0]);
+    m::apply_enable(&mut reg, &gate, "notes", &token).unwrap();
+    store.commit(&reg, &fx).unwrap();
+    store
+}
+
 #[test]
 fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
     // HUP-S4.3 + S4.4 integration: the sidecar reads exactly one CITRATE_HERMES_MCP file, so when
@@ -848,12 +918,11 @@ fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
     let hermes = dir.join("hermes");
     std::fs::create_dir_all(&hermes).unwrap();
     let builtin = hermes.join("mcp.json");
-    let user = hermes.join(crate::mcp_servers::ALLOWLIST_FILE);
     std::fs::write(&builtin, br#"{"servers":[{"name":"scan","transport":"http","url":"https://explorer.citrate.ai/api/mcp","allow_write_tools":false}]}"#).unwrap();
-    std::fs::write(&user, br#"{"servers":[{"name":"notes","transport":"stdio","command":"/usr/bin/true","args":[],"env":{},"allow_write_tools":false}]}"#).unwrap();
+    let store = member_store_with_notes(&hermes);
     let mgr = mgr
         .with_mcp_config_path(builtin.clone())
-        .with_mcp_allowlist(user.clone());
+        .with_mcp_servers(store.clone());
     let env = mgr.spec_env_for_test();
     let mcp: Vec<&String> = env
         .iter()
@@ -874,14 +943,19 @@ fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
         .filter_map(|s| s["name"].as_str())
         .collect();
     assert_eq!(names, ["scan", "notes"]);
+    // The member's value comes from the keychain at spawn.
+    assert_eq!(v["servers"][1]["env"]["NOTES_TOKEN"], "tok-notes");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(mcp[0]).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
-    // Only one side on: its own file is used as is.
-    std::fs::remove_file(&user).unwrap();
+    // Only the built-in side on: its own file is used as is, and the spawn-time file is gone.
+    let mut reg = store.load().unwrap();
+    let mut gate = crate::mcp_servers::ReviewGate::default();
+    crate::mcp_servers::apply_disable(&mut reg, &mut gate, "notes");
+    store.save(&reg).unwrap();
     let env = mgr.spec_env_for_test();
     let mcp: Vec<&String> = env
         .iter()
@@ -889,6 +963,7 @@ fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
         .map(|(_, v)| v)
         .collect();
     assert_eq!(mcp, [&builtin.to_string_lossy().to_string()]);
+    assert!(!hermes.join(crate::hermes_mcp::EFFECTIVE_FILE).exists());
 }
 
 #[test]
@@ -912,26 +987,68 @@ fn mcp_env_is_set_only_while_the_allowlist_file_exists() {
 }
 
 #[test]
-fn the_child_is_told_where_the_saved_mcp_server_list_is() {
-    // HUP-S4.4: the sidecar's dry-run probe starts only an entry core has saved, so it needs the
-    // saved list (mcp-servers.json, next to the allowlist). Without the member-servers feature
-    // wired, nothing is passed.
+fn the_child_is_told_where_the_entry_being_checked_is() {
+    // HUP-S4.4: the sidecar's dry-run probe starts only an entry core has saved for the check.
+    // RC52 P-9a: that is the probe file (written only during a check, with the entry's values),
+    // not the server list (which holds no values). Without the member-servers feature wired,
+    // nothing is passed.
     let (mgr, dir) = stub_manager("mcpreg");
     let env: std::collections::BTreeMap<String, String> =
         mgr.spec_env_for_test().into_iter().collect();
     assert!(!env.contains_key(crate::mcp_servers::MCP_REGISTRY_ENV));
 
     let hermes = dir.join("hermes");
-    let mgr = mgr.with_mcp_allowlist(hermes.join(crate::mcp_servers::ALLOWLIST_FILE));
+    let mgr = mgr.with_mcp_servers(crate::mcp_servers::McpStore::new(
+        hermes.clone(),
+        std::sync::Arc::new(crate::mcp_servers::MemSecrets::default()),
+    ));
     let env: std::collections::BTreeMap<String, String> =
         mgr.spec_env_for_test().into_iter().collect();
     assert_eq!(
         env.get(crate::mcp_servers::MCP_REGISTRY_ENV).map(String::as_str),
         Some(
             hermes
-                .join(crate::mcp_servers::REGISTRY_FILE)
+                .join(crate::mcp_servers::PROBE_FILE)
                 .to_string_lossy()
                 .as_ref()
         )
     );
+}
+
+/// #457 tripwire helper: a source that asks the ceremony whether a request expired (to tell
+/// "expired" from "decided") must open its requests with `request_watched`, which keeps that
+/// answer however many other requests expire.
+fn expiry_reader_without_watch(src: &str) -> bool {
+    src.contains("ceremony.is_expired(")
+        && (!src.contains("ceremony.request_watched(") || src.contains("ceremony.request("))
+}
+
+#[test]
+fn tripwire_every_ceremony_expiry_reader_opens_watched_requests() {
+    // Negative controls: the scan flags a reader that opens ordinary requests.
+    assert!(expiry_reader_without_watch(
+        "let v = ceremony.request(i); if ceremony.is_expired(&v.id) {}"
+    ));
+    assert!(!expiry_reader_without_watch(
+        "let v = ceremony.request_watched(i); if ceremony.is_expired(&v.id) {}"
+    ));
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut readers = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("src dir") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).expect("read source");
+        let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+        if prod.contains("ceremony.is_expired(") {
+            readers.push(name.clone());
+        }
+        assert!(
+            !expiry_reader_without_watch(prod),
+            "{name} reads ceremony.is_expired but opens requests that are not watched"
+        );
+    }
+    assert_eq!(readers, ["hermes.rs"], "the set of expiry readers changed");
 }

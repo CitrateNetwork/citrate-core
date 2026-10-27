@@ -5,8 +5,12 @@ import { TierPanel } from "./TierPanel";
 import { PersonaPicker } from "../components/PersonaPicker";
 import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
+import { ActivationTxPanel } from "./ActivationTxPanel";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
+import book from "../../src-tauri/addresses/40204.json";
+import { CONSENSUS_LAG_NOTE, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { PendingJoinCard, InvitePasteField } from "../surfaces/PendingJoinCard";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -87,6 +91,11 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
+          {s.pendingJoin && (
+            <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
+              <PendingJoinCard store={store} s={s} />
+            </div>
+          )}
           <div style={eyebrow}>Chain 40204 · testnet-beta</div>
         </div>
       </div>
@@ -143,6 +152,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
         <div style={{ minHeight: 0, overflow: "auto", display: "flex", justifyContent: "center", padding: "56px 32px" }}>
           <div style={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", gap: 22 }}>
             <ClaimBanner store={store} s={s} />
+            <OnboardingInvite store={store} s={s} />
             {s.stage === "s1" && <S1 store={store} s={s} />}
             {s.stage === "s2" && <S2 store={store} s={s} />}
             {s.stage === "s3" && <S3 store={store} s={s} />}
@@ -283,6 +293,31 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
  * one-tap switch. It is DISPLAY ONLY — it grants nothing; the authority sign-in and the
  * server-side sub↔order reconciler are the sole gates (A8/A2).
  */
+// GROW-S1 task 12 — an invite that arrived (deep link) or was pasted waits here through setup. Before
+// sign-in + wallet the card says the join comes after setup; from the wallet step on it offers
+// Review, then one explicit "Join <cluster>". Never a silent join.
+function OnboardingInvite({ store, s }: { store: Store; s: AppState }) {
+  if (s.pendingJoin) return <PendingJoinCard store={store} s={s} />;
+  return (
+    <details className="surface" style={{ padding: "10px 14px" }} data-testid="onboarding-invite-paste">
+      <summary style={{ fontSize: 12.5, color: "var(--tx-2)", cursor: "pointer" }}>Have an invite?</summary>
+      <div style={{ paddingTop: 10 }}>
+        <InvitePasteField
+          onSubmit={async (text) => {
+            if (await store.acceptInviteInput(text)) return;
+            if (/^citrate:\/\/invite\?/i.test(text)) {
+              store.setState({ pendingInvite: { url: text } });
+              store.toast("Got it. You can join that group from Groups once setup finishes.");
+              return;
+            }
+            store.toast("That doesn't look like an invite link or code.");
+          }}
+        />
+      </div>
+    </details>
+  );
+}
+
 function ClaimBanner({ store, s }: { store: Store; s: AppState }) {
   const claim = s.pendingClaim;
   if (!claim?.email) return null;
@@ -798,7 +833,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
           <div className="tabular" style={{ fontFamily: "var(--font-display)", fontWeight: 380, fontSize: 72, lineHeight: 1, letterSpacing: "-0.022em", color: "var(--tx-1)" }}>
             {fmtI(s.s5n)}
           </div>
-          <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → LiquidStakingPool</div>
+          <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → MemberBond</div>
           <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
             treasury UserOp · gas sponsored · first-op category
           </div>
@@ -825,7 +860,6 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
             </div>
             <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
               Principal locked for the membership term and until mainnet release policy unlocks vaulted grants. Validator rewards from your node's work accrue to you.
-              Self-added stake carries a 7-day withdrawal lockup.
             </p>
           </div>
           <div>
@@ -836,7 +870,8 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
       <div className="mono" style={dataSrc}>
-        Data sources — MembershipStakeVault.attributedStake 0x0ace…267e · CitrateMemberSBT.balanceOf 0x7be0…a7c4 · /userinfo entitlement
+        {/* C1-V V9: addresses come from the bundled address book (a reroll moves them). */}
+        Data sources — MembershipStakeVault.attributedStake {short(book.addresses.MembershipStakeVault)} · CitrateMemberSBT.balanceOf {short(book.addresses.CitrateMemberSBT)} · /userinfo entitlement
       </div>
     </div>
   );
@@ -865,8 +900,8 @@ function S6({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S6 · Node ignition</div>
       <div style={h1}>Run your node</div>
       <p style={body}>
-        A full node — it validates, executes, and builds blocks. It runs as a supervised process with encryption at rest on by default, and it survives this window
-        closing.
+        A full node follows the chain, checks and executes every block, and serves your reads locally. It produces blocks only once it is an active validator. It
+        runs as a supervised process with encryption at rest on by default, and it survives this window closing.
       </p>
       <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
         {s.node === "off" && (
@@ -940,17 +975,16 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             )}
           </div>
         )}
-        {/* VALIDATING is now gated on the REAL ValidatorRegistry bond (s.bondedStake
-            from pubkeyOfStaker→stakeOf), not on `hasGrant`. A funded-but-unbonded
-            node is `synced`, not `validating` — so this "eligible for proposer" line
-            only shows when the 32k is genuinely bonded (Rule 1). */}
+        {/* C1-V (contract v1.1 §1): `validating` is set only when the key is isActive AND its
+            validatorInfo.actEpoch <= currentEpoch, never from a stake amount, so this card uses the
+            §1 word and the consensus-lag note. */}
         {s.node === "validating" && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", animation: "ccPulse 2.4s var(--ease-standard) infinite", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Validating</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Validator active</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · bonded {fmtI(s.bondedStake)} SALT ≥ minimum · eligible for proposer election
+                synced · activation epoch reached · stake {fmtI(s.bondedStake)} SALT · {CONSENSUS_LAG_NOTE}
               </div>
             </div>
           </div>
@@ -958,11 +992,44 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         {/* SYNCED = the node is caught up. Activating the validator bond is its own step now
             (S7 · Activate validator, Join-8), which explains the transaction and opens the
             Signature Ceremony only on the member's click. */}
-        {s.node === "synced" && (
+        {/* Registered stake that is not active yet (pending activation, exiting, or not read):
+            the bond is already staked, so no "Stake my bond" here. */}
+        {s.node === "synced" && s.bondedStake > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant) ?? "— · registry not read yet"}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                stake {fmtI(s.bondedStake)} SALT in the ValidatorRegistry
+              </div>
+            </div>
+          </div>
+        )}
+        {/* C1-V2: after a full exit (or a slash) the registry stake reads 0, but validatorInfo.status
+            says Exiting / Slashed: show that word, and no "Stake my bond". */}
+        {/* #348/#349 review: an already-activated bond (MemberBond.activated() = true) with no
+            registered stake has exited or been slashed; it can't activate again, so it gets the
+            status card (word or "—"), never "Stake my bond". */}
+        {s.node === "synced" && !(s.bondedStake > 0) && !canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) && (s.hasGrant || s.validatorActivation?.status === 2 || s.validatorActivation?.status === 3) && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · not a validator yet</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                ValidatorRegistry.validatorInfo status for this node&rsquo;s key; no registered stake
+              </div>
+            </div>
+          </div>
+        )}
+        {/* #348 review: activation is offered only for a bond that reads not activated (activated() =
+            false). Join-8 (#354): activating is its own step (S7 · Activate validator), which explains
+            the transaction and opens the Signature Ceremony only on the member's click, so this card
+            points there and has no button. */}
+        {s.node === "synced" && !(s.bondedStake > 0) && (canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated) || (!s.hasGrant && s.validatorActivation?.status !== 2 && s.validatorActivation?.status !== 3)) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                 {s.hasGrant ? "next: activate your validator, after the local model below" : "caught up with the network"}
               </div>
@@ -1175,7 +1242,6 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
   const linked = store.walletIsLinked();
   const gate = activationGate(a, linked);
   const phase = activationPhase(a, linked, s.s7TxHash);
-  const pendingTx = a?.tx && (!s.s7TxHash || a.tx.hash === s.s7TxHash) ? a.tx : null;
   const vs = validatorState(a);
   const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "slashed";
   const mismatch = keyMismatch(a);
@@ -1229,49 +1295,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
 
-      {phase === "pending" && (s.s7TxHash || pendingTx) && (
-        <div className="surface" style={{ display: "flex", alignItems: "center", gap: 16, padding: "18px 20px" }} data-testid="s7-pending">
-          <div style={{ width: 40, height: 40, flexShrink: 0 }}>
-            <LoaderMark size={40} />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <div style={{ fontSize: 14, fontWeight: 500 }}>Pending</div>
-            <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              {pendingTx?.included === true && pendingTx.blockNumber != null
-                ? `Included in block ${fmtI(pendingTx.blockNumber)} · waiting for the bond to read activated`
-                : `tx ${short(pendingTx?.hash ?? s.s7TxHash ?? "")} · not in a block yet`}
-            </div>
-            {store.canForgetActivationTx(Date.now()) && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => void store.onS7ForgetTx()} data-testid="s7-forget">
-                  Forget this transaction
-                </button>
-                <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
-                  It is not seen on the network yet after 10 minutes; it may still be included. If it was sent, a second activation reverts and costs only gas.
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {phase === "failed" && a?.tx && (
-        <div style={{ border: "1px solid var(--danger)", background: "var(--danger-bg)", borderRadius: "var(--r-2)", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }} data-testid="s7-failed">
-          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--danger)" }}>Activation transaction reverted</div>
-          <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
-            tx {short(a.tx.hash)} was included in block {a.tx.blockNumber != null ? fmtI(a.tx.blockNumber) : "—"} and reverted. The bond is unchanged
-            (still locked, not staked). Check the conditions above, then try again.
-          </p>
-          <div>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => void store.onS7RetryAfterRevert()}
-            >
-              Try again
-            </button>
-          </div>
-        </div>
-      )}
+      <ActivationTxPanel store={store} s={s} testId="s7" />
 
       {s.activationError && (
         <p className="mono" style={{ fontSize: 11, color: "var(--warn, var(--tx-3))", margin: 0 }} data-testid="s7-read-error">

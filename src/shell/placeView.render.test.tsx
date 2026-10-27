@@ -9,6 +9,7 @@ import { PlaceView } from "./PlaceView";
 import { Sidebar } from "./Sidebar";
 import { store } from "./store";
 import { freshState, type AppState } from "./state";
+import { locate } from "./places";
 
 function at(route: string, patch: Partial<AppState> = {}): AppState {
   const s = freshState("p1");
@@ -172,8 +173,10 @@ describe("Node", () => {
     expect(h).toContain('data-surface="node/status"');
   });
 
-  it("Services and Rewards are honest not-available-yet states", () => {
-    expect(html("node/services")).toContain('data-not-available="node/services"');
+  it("Services renders the services registry snapshot (K1a-2); Rewards is an honest not-available-yet state", () => {
+    const services = html("node/services");
+    expect(services).not.toContain("data-not-available");
+    expect(services).toContain('data-testid="node-services"');
     expect(html("node/rewards")).toContain('data-not-available="node/rewards"');
   });
 
@@ -243,5 +246,27 @@ describe("Sidebar", () => {
     const h = side("files");
     expect(h).toMatch(/<a[^>]*href="#\/node\/status"[^>]*aria-current="page"/);
     expect(side("settings/ai")).toMatch(/<a[^>]*href="#\/hermes\/chat"[^>]*aria-current="page"/);
+  });
+});
+
+describe("Groups › Chat holds the invite banners (#355 on five-place routes)", () => {
+  // handleDeepLink's go("groups") lands on the canonical leaf; both invite banners must render there.
+  const leaf = locate("groups").route;
+
+  it("the groups route resolves to the Groups › Chat leaf", () => {
+    expect(leaf).toBe("groups/chat");
+    expect(html(leaf)).toContain('data-surface="groups/chat"');
+  });
+
+  it("a v2 invite held in Rust shows the waiting-invite card", () => {
+    const h = html(leaf, { pendingJoin: { phase: "waiting", hasKey: true, persisted: true } });
+    expect(h).toContain('data-testid="pending-join-cancel"');
+    expect(html(leaf)).not.toContain('data-testid="pending-join-cancel"');
+  });
+
+  it("a legacy citrate://invite link shows the Join banner", () => {
+    const h = html(leaf, { pendingInvite: { url: "citrate://invite?g=grp_1&t=tok123&k=02ab" } });
+    expect(h).toContain("invited you to");
+    expect(html(leaf)).not.toContain("invited you to");
   });
 });

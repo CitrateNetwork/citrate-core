@@ -460,9 +460,9 @@ fn join8_the_latest_recorded_call_survives_a_restart() {
     let t = Tmp::new("latest-call");
     {
         let log = SubmittedTxLog::open(t.file());
-        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
-        assert_eq!(log.try_record_call(&h(2), MEMBER, 6, None), Ok(true)); // another tx
-        assert_eq!(log.try_record_call(&h(3), MEMBER, 7, Some(&activate_call())), Ok(true));
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
+        assert_eq!(log.try_record_call(&h(2), MEMBER, 6, NonceSource::Fetched, None), Ok(true)); // another tx
+        assert_eq!(log.try_record_call(&h(3), MEMBER, 7, NonceSource::Fetched, Some(&activate_call())), Ok(true));
     }
     let log = SubmittedTxLog::open(t.file());
     let found = log.latest_call(MEMBER, &activate_call()).expect("found after a restart");
@@ -480,14 +480,14 @@ fn join8_forget_is_durable_and_never_makes_a_hash_first_again() {
     let t = Tmp::new("forget");
     {
         let log = SubmittedTxLog::open(t.file());
-        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
         assert_eq!(log.forget(&h(1)), Ok(true));
         assert_eq!(log.latest_call(MEMBER, &activate_call()), None);
     }
     let log = SubmittedTxLog::open(t.file());
     assert_eq!(log.latest_call(MEMBER, &activate_call()), None, "forgotten across a restart");
     // The same signed bytes (a re-sign at the same nonce) are still a re-submission.
-    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(false));
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(false));
     assert_eq!(log.forget(&h(42)), Ok(false), "an unknown hash is not forgotten");
 }
 
@@ -495,7 +495,7 @@ fn join8_forget_is_durable_and_never_makes_a_hash_first_again() {
 fn join8_a_forget_that_cannot_be_written_is_an_error_and_changes_nothing() {
     let t = Tmp::new("forget-fail");
     let log = SubmittedTxLog::open(t.file());
-    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
     std::fs::create_dir(t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
     assert!(log.forget(&h(1)).is_err());
     assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)));
@@ -565,11 +565,11 @@ fn join8_a_resend_of_forgotten_bytes_is_found_again_after_a_restart() {
     let t = Tmp::new("resend-forgotten");
     {
         let log = SubmittedTxLog::open(t.file());
-        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
         assert_eq!(log.forget(&h(1)), Ok(true));
         assert_eq!(log.latest_call(MEMBER, &activate_call()), None);
         // The member re-signs at the same nonce (same bytes) and sends again.
-        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(false), "still not a first submission");
+        assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(false), "still not a first submission");
         assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)), "recovered in this run");
     }
     let log = SubmittedTxLog::open(t.file());
@@ -580,11 +580,11 @@ fn join8_a_resend_of_forgotten_bytes_is_found_again_after_a_restart() {
 fn join8_a_resend_of_forgotten_bytes_is_the_latest_call_even_after_a_newer_forgotten_one() {
     let t = Tmp::new("resend-order");
     let log = SubmittedTxLog::open(t.file());
-    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
     assert_eq!(log.forget(&h(1)), Ok(true));
-    assert_eq!(log.try_record_call(&h(2), MEMBER, 6, Some(&activate_call())), Ok(true));
+    assert_eq!(log.try_record_call(&h(2), MEMBER, 6, NonceSource::Fetched, Some(&activate_call())), Ok(true));
     assert_eq!(log.forget(&h(2)), Ok(true));
-    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(false));
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(false));
     assert_eq!(log.latest_call(MEMBER, &activate_call()).map(|c| c.hash), Some(h(1)));
 }
 
@@ -592,9 +592,73 @@ fn join8_a_resend_of_forgotten_bytes_is_the_latest_call_even_after_a_newer_forgo
 fn join8_a_resend_of_forgotten_bytes_that_cannot_be_written_is_refused() {
     let t = Tmp::new("resend-fail");
     let log = SubmittedTxLog::open(t.file());
-    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())), Ok(true));
+    assert_eq!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())), Ok(true));
     assert_eq!(log.forget(&h(1)), Ok(true));
     std::fs::create_dir(t.0.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
-    assert!(log.try_record_call(&h(1), MEMBER, 5, Some(&activate_call())).is_err(), "no durable record, so the caller must not send");
+    assert!(log.try_record_call(&h(1), MEMBER, 5, NonceSource::Fetched, Some(&activate_call())).is_err(), "no durable record, so the caller must not send");
     assert_eq!(log.latest_call(MEMBER, &activate_call()), None, "unchanged");
+}
+
+// #443: an upgraded profile (a wallet, no record) is uncertain only up to each sender's first
+// post-upgrade send at a nonce the app read from the node. A later app-nonce send signs fresh
+// bytes no earlier run can have sent, so its refusal is definitive again.
+fn upgraded(tag: &str) -> Tmp {
+    let t = Tmp::new(tag);
+    std::fs::write(t.0.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault");
+    t
+}
+
+#[test]
+fn upgrade_a_fetched_nonce_send_above_the_first_post_upgrade_send_is_a_first_send() {
+    let t = upgraded("upgrade-bound");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false), "the first send after the upgrade stays unknown");
+    assert_eq!(log.try_record_call(&h(2), A, 7, NonceSource::Fetched, None), Ok(false), "so does any send at or below that nonce");
+    assert_eq!(log.try_record_call(&h(3), A, 8, NonceSource::Fetched, None), Ok(true), "a higher fetched nonce is a first send");
+    drop(log);
+    let again = SubmittedTxLog::open(t.file());
+    assert_eq!(again.try_record_call(&h(4), A, 9, NonceSource::Fetched, None), Ok(true), "the bound survives a restart");
+    assert_eq!(again.try_record_call(&h(5), A, 6, NonceSource::Fetched, None), Ok(false), "below the bound stays unknown");
+}
+
+#[test]
+fn upgrade_a_supplied_nonce_stays_unknown() {
+    let t = upgraded("upgrade-supplied");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(2), A, 50, NonceSource::Supplied, None), Ok(false), "a requester's nonce is never bounded");
+    assert_eq!(log.try_record_for(&h(3), A, 51), Ok(false), "nor is a nonce of unknown origin");
+    assert_eq!(log.try_record_call(&h(4), A, 8, NonceSource::Fetched, None), Ok(true));
+}
+
+#[test]
+fn upgrade_the_bound_is_per_sender() {
+    let t = upgraded("upgrade-per-sender");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(2), B, 9, NonceSource::Fetched, None), Ok(false), "B's first send after the upgrade is unknown");
+    assert_eq!(log.try_record_call(&h(3), B, 10, NonceSource::Fetched, None), Ok(true));
+}
+
+#[test]
+fn upgrade_bounded_record_reads_uncertain_to_a_build_that_does_not_know_the_bound() {
+    // A build without the bound reads only `uncertain`: it must stay fail closed.
+    let t = upgraded("upgrade-ondisk");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false));
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(t.file()).expect("read")).expect("json");
+    assert_eq!(v["uncertain"], serde_json::json!(true), "{v}");
+    assert_eq!(v["upgrade_bound"][A], serde_json::json!(7), "{v}");
+}
+
+#[test]
+fn upgrade_a_corrupt_record_is_never_bounded() {
+    let t = upgraded("upgrade-corrupt");
+    std::fs::write(t.file(), b"{not json").expect("corrupt");
+    let log = SubmittedTxLog::open(t.file());
+    assert_eq!(log.try_record_call(&h(1), A, 7, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(2), A, 8, NonceSource::Fetched, None), Ok(false), "a damaged history stays unknown for good");
+    drop(log);
+    let again = SubmittedTxLog::open(t.file());
+    assert_eq!(again.try_record_call(&h(3), A, 9, NonceSource::Fetched, None), Ok(false));
 }

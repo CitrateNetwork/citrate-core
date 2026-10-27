@@ -1,0 +1,124 @@
+{
+  "verdict": "FAIL",
+  "reasons": [
+    "duration: ran 0.08 h, need >= 24 h",
+    "head_advances: no full 10 min window observed"
+  ],
+  "rules": [
+    {
+      "rule": "samples",
+      "status": "ok",
+      "detail": "11 samples"
+    },
+    {
+      "rule": "duration",
+      "status": "FAIL",
+      "detail": "ran 0.08 h, need >= 24 h"
+    },
+    {
+      "rule": "sampling_gaps",
+      "status": "ok",
+      "detail": "longest gap between samples 0.5 min, limit 5 min"
+    },
+    {
+      "rule": "chain_identity",
+      "status": "ok",
+      "detail": "chain 40204, genesis 0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1"
+    },
+    {
+      "rule": "rpc_reachable",
+      "status": "ok",
+      "detail": "longest unreachable streak 0 (limit 2)"
+    },
+    {
+      "rule": "rpcs_agree",
+      "status": "ok",
+      "detail": "largest head spread 0 blocks"
+    },
+    {
+      "rule": "no_fork",
+      "status": "ok",
+      "detail": "11 fork checks agreed"
+    },
+    {
+      "rule": "head_advances",
+      "status": "FAIL",
+      "detail": "no full 10 min window observed"
+    },
+    {
+      "rule": "finality",
+      "status": "ok",
+      "detail": "finality not active on this chain (finalized height 0 or not exposed); mode auto"
+    },
+    {
+      "rule": "peers",
+      "status": "ok",
+      "detail": "peers >= 3"
+    },
+    {
+      "rule": "app_alive",
+      "status": "skip",
+      "detail": "no --pid: chain-only run"
+    },
+    {
+      "rule": "rss_growth",
+      "status": "skip",
+      "detail": "no --pid: chain-only run"
+    },
+    {
+      "rule": "fd_growth",
+      "status": "skip",
+      "detail": "no --pid: chain-only run"
+    },
+    {
+      "rule": "sidecar_restarts",
+      "status": "skip",
+      "detail": "no --pid: chain-only run"
+    }
+  ],
+  "run": {
+    "samples": 11,
+    "first_t": 1793030190.275,
+    "last_t": 1793030490.279,
+    "span_hours": 0.083,
+    "expected": {
+      "chain_id": 40204,
+      "genesis_hash": "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1"
+    },
+    "rpcs": [
+      "rpc.citrate.ai"
+    ],
+    "app_monitored": false,
+    "host": {
+      "os": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "criteria": {
+    "run": {
+      "min_duration_hours": 24,
+      "max_sample_gap_minutes": 5
+    },
+    "chain": {
+      "max_consecutive_unreachable": 2,
+      "max_head_spread": 120,
+      "head_window_minutes": 10,
+      "min_blocks_per_window": 100,
+      "min_peers": 3,
+      "max_peers_below_minutes": 10
+    },
+    "finality": {
+      "mode": "auto",
+      "max_stall_minutes": 10
+    },
+    "app": {
+      "warmup_minutes": 60,
+      "min_post_warmup_minutes": 60,
+      "max_rss_growth_pct_per_hour": 1.0,
+      "max_fd_growth_pct_per_hour": 2.0,
+      "max_unexplained_restarts": 0
+    }
+  },
+  "tool": "citrate-core soak-monitor",
+  "interrupted": false
+}
