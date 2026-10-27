@@ -78,10 +78,16 @@ pub struct Anchor {
 /// Read the anchor. Absent = a fresh install (all zero). `Err` = the keyring is unreadable or the
 /// value is not an anchor.
 pub fn read_anchor(keyring: &dyn AiKeyring) -> Result<Anchor, ()> {
+    read_anchor_opt(keyring).map(Option::unwrap_or_default)
+}
+
+/// The anchor, or `None` when the keyring has none (a fresh install, or one removed: a log or
+/// guard file that exists without it fails closed).
+pub fn read_anchor_opt(keyring: &dyn AiKeyring) -> Result<Option<Anchor>, ()> {
     match keyring.get(ANCHOR_ACCOUNT) {
         Err(_) => Err(()),
-        Ok(None) => Ok(Anchor::default()),
-        Ok(Some(s)) => serde_json::from_str(&s).map_err(|_| ()),
+        Ok(None) => Ok(None),
+        Ok(Some(s)) => serde_json::from_str(&s).map(Some).map_err(|_| ()),
     }
 }
 
@@ -263,11 +269,16 @@ impl UsageLog {
         let Ok(key) = crate::provider_guard::mac_key(log.keyring.as_ref(), LOG_MAC_ACCOUNT) else {
             return log;
         };
-        let Ok(anchor) = read_anchor(log.keyring.as_ref()) else {
+        let Ok(anchor) = read_anchor_opt(log.keyring.as_ref()) else {
             return log;
         };
         log.key = Some(key);
-        log.replay(&anchor);
+        let has_records = std::fs::metadata(&log.path).is_ok_and(|m| m.len() > 0);
+        if anchor.is_none() && has_records {
+            log.broken = Some("the usage log anchor is missing".into());
+            return log;
+        }
+        log.replay(&anchor.unwrap_or_default());
         log
     }
 

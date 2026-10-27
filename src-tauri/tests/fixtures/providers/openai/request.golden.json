@@ -60,5 +60,6 @@
       },
       "strict": false
     }
-  ]
+  ],
+  "service_tier": "default"
 }

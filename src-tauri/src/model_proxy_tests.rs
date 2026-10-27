@@ -463,6 +463,8 @@ fn every_vendor_has_its_native_adapter_with_a_priced_tool_capable_catalog() {
         assert_eq!(a.id(), ProviderId::Vendor(v), "the registry must never cross vendors");
         let models = a.models();
         assert!(!models.is_empty(), "{v:?} lists its models");
+        let probe = req(&models[0].id, false);
+        assert!(a.output_bound(&probe) >= u64::from(probe.max_tokens), "{v:?}");
         for m in models {
             assert!(m.supports_tools, "{}", m.id);
             assert!(
@@ -548,14 +550,14 @@ fn key_tests_respect_a_halt_and_count_toward_the_burst() {
     let rig = Rig::new("proxy-kt-halt");
     rig.proxy.with_state(|g, _| g.member_halt("openai", now_ms()));
     let before = rig.vendor.seen.lock().unwrap().len();
-    let r = rig.proxy.test_key("openai", now_ms());
+    let r = rig.proxy.test_key("openai");
     assert!(matches!(r, Err(ProxyError::Refused(Refusal::Halted(_)))), "{r:?}");
     assert_eq!(rig.vendor.seen.lock().unwrap().len(), before, "nothing sent while halted");
     rig.proxy.with_state(|g, _| g.member_resume("openai").unwrap());
     for _ in 0..crate::provider_guard::BURST_MAX_CALLS {
-        let _ = rig.proxy.test_key("openai", now_ms());
+        let _ = rig.proxy.test_key("openai");
     }
-    let r = rig.proxy.test_key("openai", now_ms());
+    let r = rig.proxy.test_key("openai");
     assert!(matches!(r, Err(ProxyError::Refused(Refusal::Halted(_)))), "{r:?}");
 }
 
@@ -617,4 +619,79 @@ fn revoking_a_route_cuts_off_its_call_in_flight() {
     assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
     assert!(r.is_err(), "a revoked session's streamed call is cut off: {r:?}");
     assert!(rig.proxy.route_for(g.bearer.expose()).is_none());
+}
+
+fn xai_rig(tag: &str) -> (Rig, ProxyRoute) {
+    let rig = Rig::new(tag);
+    rig.proxy
+        .set_key("xai", SecretString::new(fake_key("xai-")), now_ms())
+        .unwrap();
+    let route = ProxyRoute {
+        provider: ProviderId::Vendor(Vendor::Xai),
+        model: "grok-4.7".into(),
+        session_id: "sess-x".into(),
+    };
+    (rig, route)
+}
+
+#[test]
+fn an_xai_call_whose_reasoning_could_pass_the_cap_is_refused_with_nothing_sent() {
+    let (rig, route) = xai_rig("proxy-xai-bound");
+    // A member cap below one call's worst case ($5/day against ~$6 reserved).
+    rig.proxy.with_state(|g, _| {
+        g.set_caps(
+            "xai",
+            Caps {
+                daily_tokens: Some(1_000_000),
+                monthly_tokens: Some(10_000_000),
+                daily_micros: Some(5_000_000),
+                monthly_micros: Some(50_000_000),
+            },
+        )
+        .unwrap()
+    });
+    let before = rig.vendor.calls();
+    let r = rig.proxy.call(&route, req("grok-4.7", false), None, &mut |_| {});
+    // 500k reserved output tokens at $12/M is $6, over the $5 cap.
+    match r {
+        Err(ProxyError::Refused(Refusal::CapExceeded { call, .. })) => {
+            assert!(call >= 6_000_000, "the reservation covers the whole window: {call}")
+        }
+        other => panic!("expected a cap refusal, got {other:?}"),
+    }
+    assert_eq!(rig.vendor.calls(), before, "nothing reached the vendor");
+}
+
+#[test]
+fn the_xai_default_cap_admits_one_full_window_grok_call() {
+    let (rig, route) = xai_rig("proxy-xai-default");
+    let before = rig.vendor.calls();
+    let r = rig.proxy.call(&route, req("grok-4.7", false), None, &mut |_| {});
+    assert_eq!(
+        r.map(|r| r.content).ok().as_deref(),
+        Some("hello from the vendor"),
+        "the owner's $20/day xAI default fits one ~$6 reservation"
+    );
+    assert_eq!(rig.vendor.calls(), before + 1);
+}
+
+#[test]
+fn a_key_test_keeps_the_date_the_key_was_set() {
+    // The rotation reminder reads `key_set_ms`; only setting a key may move it.
+    let rig = Rig::new("proxy-kt-date");
+    let set_at = rig.proxy.with_state(|g, _| g.get("openai").key_set_ms).unwrap();
+    rig.proxy.test_key("openai").unwrap();
+    assert_eq!(
+        rig.proxy.with_state(|g, _| g.get("openai").key_set_ms),
+        Some(set_at),
+        "a key test must not reset the key's date"
+    );
+    // A real key set does.
+    rig.proxy
+        .set_key("openai", SecretString::new(fake_key("sk-")), set_at + 31 * 86_400_000)
+        .unwrap();
+    assert_eq!(
+        rig.proxy.with_state(|g, _| g.get("openai").key_set_ms),
+        Some(set_at + 31 * 86_400_000)
+    );
 }

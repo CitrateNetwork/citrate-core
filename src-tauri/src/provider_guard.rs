@@ -33,6 +33,10 @@ pub const DEFAULT_DAILY_TOKENS: u64 = 1_000_000;
 pub const DEFAULT_MONTHLY_TOKENS: u64 = 10_000_000;
 pub const DEFAULT_DAILY_MICROS: u64 = 5_000_000;
 pub const DEFAULT_MONTHLY_MICROS: u64 = 50_000_000;
+/// Per-vendor overrides of the default currency caps: `(provider id, daily, monthly)` micro-USD.
+/// Owner decision amending P-7a: xAI reserves its full context window (about $6 per call), so its
+/// day is $20; its month stays $50. Token caps are the same for every provider.
+pub const DEFAULT_CURRENCY_CAPS: &[(&str, u64, u64)] = &[("xai", 20_000_000, 50_000_000)];
 /// The highest cap a member can set.
 pub const MAX_TOKEN_CAP: u64 = 10_000_000_000;
 pub const MAX_MICROS_CAP: u64 = 10_000_000_000; // 10,000 USD
@@ -81,6 +85,22 @@ impl Default for Caps {
 }
 
 impl Caps {
+    /// The out-of-the-box caps for `provider`.
+    pub fn default_for(provider: &str) -> Caps {
+        let base = Caps::default();
+        match DEFAULT_CURRENCY_CAPS
+            .iter()
+            .find(|(p, _, _)| *p == provider)
+        {
+            Some(&(_, daily, monthly)) => Caps {
+                daily_micros: Some(daily),
+                monthly_micros: Some(monthly),
+                ..base
+            },
+            None => base,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for t in [self.daily_tokens, self.monthly_tokens]
             .into_iter()
@@ -210,6 +230,16 @@ pub struct ProviderGuard {
     pub recent_calls: VecDeque<u64>,
 }
 
+impl ProviderGuard {
+    /// A provider seen for the first time: its vendor's default caps.
+    pub fn new_for(provider: &str) -> ProviderGuard {
+        ProviderGuard {
+            caps: Caps::default_for(provider),
+            ..ProviderGuard::default()
+        }
+    }
+}
+
 /// What the log already holds for a period.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PeriodUse {
@@ -331,7 +361,11 @@ pub struct GuardBook {
 
 impl GuardBook {
     pub fn get(&self, provider: &str) -> ProviderGuard {
-        let mut g = self.providers.get(provider).cloned().unwrap_or_default();
+        let mut g = self
+            .providers
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| ProviderGuard::new_for(provider));
         if self.unreadable && g.halt.is_none() {
             g.halt = Some(Halt {
                 reason: HaltReason::GuardUnreadable,
@@ -342,7 +376,9 @@ impl GuardBook {
     }
 
     fn entry(&mut self, provider: &str) -> &mut ProviderGuard {
-        self.providers.entry(provider.to_string()).or_default()
+        self.providers
+            .entry(provider.to_string())
+            .or_insert_with(|| ProviderGuard::new_for(provider))
     }
 
     fn halt(&mut self, provider: &str, reason: HaltReason, now_ms: u64) -> Halt {
@@ -642,6 +678,12 @@ impl GuardBook {
         e.key_set_ms = Some(now_ms);
     }
 
+    /// The stored key passed a live test: refresh the listed models. The date the key was set is
+    /// kept (it drives the rotation reminder).
+    pub fn key_tested(&mut self, provider: &str, listed: Vec<String>) {
+        self.entry(provider).listed_models = listed;
+    }
+
     /// The key was removed.
     pub fn key_removed(&mut self, provider: &str) {
         let e = self.entry(provider);
@@ -702,26 +744,6 @@ pub(crate) fn mac_key(keyring: &dyn AiKeyring, account: &str) -> Result<Zeroizin
     }
 }
 
-/// Owner-only (0600 from creation), written to a temporary file and renamed into place.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    let tmp = path.with_extension("tmp");
-    if let Some(dir) = path.parent() {
-        citrate_core_kit::fsutil::ensure_private_dir(dir).map_err(|e| e.kind().to_string())?;
-    }
-    let res = (|| -> std::io::Result<()> {
-        let _ = std::fs::remove_file(&tmp);
-        let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    if res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    res.map_err(|e| e.kind().to_string())
-}
-
 pub fn guard_path(dir: &Path) -> PathBuf {
     dir.join(GUARD_FILE)
 }
@@ -744,11 +766,23 @@ pub fn load(dir: &Path, keyring: std::sync::Arc<dyn AiKeyring>, now_ms: u64) -> 
     };
     let (Ok(key), Ok(anchor)) = (
         mac_key(keyring.as_ref(), GUARD_MAC_ACCOUNT),
-        crate::provider_usage_log::read_anchor(keyring.as_ref()),
+        crate::provider_usage_log::read_anchor_opt(keyring.as_ref()),
     ) else {
         return failed(None, keyring, 0);
     };
     let path = guard_path(dir);
+    // A saved guard file always has an anchor next to it; one without it is not trusted.
+    let Some(anchor) = anchor else {
+        return if path.exists() {
+            failed(Some(key), keyring, 0)
+        } else {
+            GuardBook {
+                mac_key: Some(key),
+                keyring: Some(keyring),
+                ..GuardBook::default()
+            }
+        };
+    };
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && anchor.guard_gen == 0 => {
@@ -816,7 +850,9 @@ pub fn save(dir: &Path, g: &mut GuardBook) -> Result<(), String> {
         mac: hex::encode(mac),
     })
     .map_err(|_| "encode guard".to_string())?;
-    write_atomic(&guard_path(dir), &sealed)?;
+    // The directory is owner-only; the file is replaced through a temp name unique to this write.
+    citrate_core_kit::fsutil::ensure_private_dir(dir).map_err(|e| e.kind().to_string())?;
+    crate::atomic_file::replace(&guard_path(dir), &sealed).map_err(|e| e.kind().to_string())?;
     g.generation = generation;
     crate::provider_usage_log::update_anchor(keyring.as_ref(), |a| a.guard_gen = generation)
         .map_err(|_| "the spend settings anchor could not be written".to_string())

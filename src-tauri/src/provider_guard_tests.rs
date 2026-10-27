@@ -346,3 +346,46 @@ fn a_crash_between_the_guard_write_and_the_anchor_update_is_not_a_rollback() {
     assert!(!g2.unreadable);
     assert!(g2.get("openai").halt.is_some());
 }
+
+#[test]
+fn a_guard_file_with_no_anchor_fails_closed() {
+    let dir = TmpDir::new("guard-noanchor");
+    let kr = Arc::new(MemKeyring::default());
+    let mut g = load(&dir.0, kr.clone(), T0);
+    g.member_halt("openai", T0);
+    save(&dir.0, &mut g).unwrap();
+    kr.map.lock().unwrap().remove(crate::provider_usage_log::ANCHOR_ACCOUNT);
+    assert!(load(&dir.0, kr.clone(), T0).unreadable, "a saved guard file needs its anchor");
+}
+
+#[test]
+fn default_currency_caps_are_per_vendor_with_xai_overridden() {
+    // Owner decision amending P-7a: xAI $20/day and $50/month; every other provider $5 / $50;
+    // token caps 1M / 10M for all.
+    let xai = Caps::default_for("xai");
+    assert_eq!(xai.daily_micros, Some(20_000_000));
+    assert_eq!(xai.monthly_micros, Some(50_000_000));
+    assert_eq!((xai.daily_tokens, xai.monthly_tokens), (Some(1_000_000), Some(10_000_000)));
+    for p in ["openai", "anthropic", "gemini", "deepseek", "meta", "custom-box"] {
+        assert_eq!(Caps::default_for(p), Caps::default(), "{p}");
+    }
+    assert_eq!(Caps::default().daily_micros, Some(5_000_000));
+    assert!(xai.validate().is_ok());
+    // A provider never configured gets its own default, in the guard and in what it reports.
+    let mut g = GuardBook::default();
+    assert_eq!(g.get("xai").caps, xai);
+    assert_eq!(g.get("openai").caps, Caps::default());
+    // $6 call (an xAI full-context reservation) fits xAI's $20 day, not the generic $5.
+    let mut p = plan("gpt-known", 1, 1);
+    p.provider = "xai".into();
+    p.price = Some(Price { input_micros_per_mtok: 3_000_000_000_000, output_micros_per_mtok: 3_000_000_000_000 });
+    assert_eq!(p.reserve_micros(), Some(6_000_000));
+    assert!(g.admit(&p, &known(), used(0, 0), used(0, 0), T0).is_ok());
+    p.provider = "openai".into();
+    let r = g.admit(&p, &known(), used(0, 0), used(0, 0), T0);
+    assert!(matches!(r, Err(Refusal::CapExceeded { which: "daily spend", .. })), "{r:?}");
+    // And the member's own caps still win once set.
+    g.member_halt("xai", T0);
+    g.member_resume("xai").unwrap();
+    assert_eq!(g.get("xai").caps, xai, "an entry created by a halt keeps the vendor default");
+}

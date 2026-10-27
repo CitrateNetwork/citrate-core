@@ -102,6 +102,11 @@ impl ModelProvider for CognitionAdapter {
         COGNITION_KEY_FORMAT
     }
 
+    /// Never a chat call (`complete` refuses), so nothing is reserved.
+    fn output_bound(&self, _req: &ChatRequest) -> u64 {
+        0
+    }
+
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {
         let v = get_json(ctx, "/self")?;
         org_id_from_self(&v)?;

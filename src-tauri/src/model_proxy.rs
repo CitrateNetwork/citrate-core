@@ -215,6 +215,9 @@ impl ModelProvider for GatewayAdapter {
     fn key_format(&self) -> crate::model_provider::KeyFormat {
         GATEWAY_KEY_FORMAT
     }
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        self.0.output_bound(req)
+    }
     fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {
         self.0.test_key(ctx)
     }
@@ -608,7 +611,8 @@ impl ModelProxy {
                 provider: provider.clone(),
                 model: req.model.clone(),
                 reserve_in: input_token_bound(&req),
-                reserve_out: u64::from(req.max_tokens),
+                // The adapter's true bound: reasoning a vendor does not cap is included.
+                reserve_out: adapter.output_bound(&req),
                 price: guard.price_for(
                     &provider,
                     &req.model,
@@ -1070,13 +1074,13 @@ impl ModelProxy {
     }
 
     /// Test the stored key live.
-    pub fn test_key(&self, id: &str, now: u64) -> Result<KeyTest, ProxyError> {
+    pub fn test_key(&self, id: &str) -> Result<KeyTest, ProxyError> {
         let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
         let (adapter, _, ep) = self.resolve(&pid)?;
         let key = self.read_key(&pid, &ep)?;
         let t = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key, true)?;
         let mut inner = self.inner();
-        inner.guard.key_set(pid.as_str(), t.models.clone(), now);
+        inner.guard.key_tested(pid.as_str(), t.models.clone());
         let _ = crate::provider_guard::save(&self.dir, &mut inner.guard);
         Ok(t)
     }

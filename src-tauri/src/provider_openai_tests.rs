@@ -144,3 +144,23 @@ fn a_tool_result_without_its_call_id_is_refused() {
     req.messages[4].tool_call_id = Some(String::new());
     assert!(matches!(to_wire(&req), Err(ProviderError::BadRequest(_))));
 }
+
+#[test]
+fn a_reply_served_outside_the_standard_tier_is_refused_not_billed_at_the_catalog_price() {
+    let want = Err(ProviderError::BadResponse(
+        "the provider served the call outside the standard tier",
+    ));
+    let http = Recorded::one(200, JSON, &fixture("openai/response-fast-tier.json"));
+    let (r, _) = call(&http, &tool_conversation("gpt-6-astra", false));
+    assert_eq!(r, want, "non-streamed");
+    assert_eq!(http.sent().body.map(|b| b["service_tier"].clone()), Some(json!("default")));
+    let http = Recorded::one(200, SSE, &fixture("openai/stream-fast-tier.sse"));
+    let (r, _) = call(&http, &tool_conversation("gpt-6-astra", true));
+    assert_eq!(r, want, "streamed");
+    // The standard tier, named or not reported, is accepted.
+    let mut v = fixture_json("openai/response-function-call.json");
+    v["service_tier"] = json!("default");
+    let http = Recorded::one(200, JSON, &v.to_string());
+    let (r, _) = call(&http, &tool_conversation("gpt-6-astra", false));
+    expect_ok(r, "standard tier");
+}

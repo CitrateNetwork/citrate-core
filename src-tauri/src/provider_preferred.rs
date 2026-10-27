@@ -120,7 +120,8 @@ pub fn set(
             .map_err(|e| e.to_string())?;
     }
     let bytes = serde_json::to_vec(&choice).map_err(|e| e.to_string())?;
-    crate::provider_guard::write_atomic(&path(dir), &bytes)?;
+    citrate_core_kit::fsutil::ensure_private_dir(dir).map_err(|e| e.kind().to_string())?;
+    crate::atomic_file::replace(&path(dir), &bytes).map_err(|e| e.kind().to_string())?;
     Ok(load(dir))
 }
 

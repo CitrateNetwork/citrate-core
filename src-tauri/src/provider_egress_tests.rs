@@ -25,6 +25,11 @@ fn every_vendor_has_exactly_one_pinned_spec() {
     );
     assert_eq!(resolve_vendor(Vendor::Xai).unwrap().host, "api.x.ai");
     assert_eq!(resolve_vendor(Vendor::DeepSeek).unwrap().host, "api.deepseek.com");
+    assert_eq!(
+        resolve_vendor(Vendor::DeepSeek).unwrap().base_url.as_str(),
+        "https://api.deepseek.com/",
+        "the bare documented host"
+    );
     assert_eq!(resolve_vendor(Vendor::Meta).unwrap().host, "api.meta.ai");
     assert_eq!(resolve_vendor(Vendor::Meta).unwrap().base_url.path(), "/v1");
     for d in DELEGATES {
@@ -57,8 +62,8 @@ fn ep(v: Vendor) -> ResolvedEndpoint {
 fn an_adapter_path_can_never_leave_the_pinned_host() {
     let e = ep(Vendor::OpenAi);
     assert_eq!(
-        join_checked(&e, "/chat/completions").unwrap().as_str(),
-        "https://api.openai.com/v1/chat/completions"
+        join_checked(&e, "/responses").unwrap().as_str(),
+        "https://api.openai.com/v1/responses"
     );
     let g = ep(Vendor::Gemini);
     assert_eq!(
@@ -143,6 +148,10 @@ fn a_custom_endpoint_resolves_unverified_and_on_its_own_host_only() {
     assert!(!e.verified);
     assert_eq!((e.host.as_str(), e.port), ("llm.example.org", 8443));
     assert!(join_checked(&e, "/chat/completions").is_ok());
+    assert!(join_checked(&e, "/models").is_ok());
+    for bad in ["/responses", "/messages", "/files", "/chat/completions/x"] {
+        assert!(join_checked(&e, bad).is_err(), "a custom endpoint refuses {bad}");
+    }
     let mut bad = c.clone();
     bad.id = "openai".into();
     assert!(resolve_custom(&bad).is_err(), "a custom record cannot claim a vendor id");
@@ -169,14 +178,51 @@ fn custom_endpoints_refuse_ip_literals_local_names_and_trailing_dots() {
     assert!(check_custom_host("https://llm.example.org/v1").is_ok());
 }
 
+/// Tripwire: every vendor answers exactly its documented endpoint paths and nothing else, so
+/// the check holds for a bare-host base (DeepSeek) as much as for one with a path.
 #[test]
-fn every_vendor_base_has_a_path_to_stay_under() {
-    for v in Vendor::ALL {
-        let e = ep(v);
-        assert!(
-            e.base_url.path().trim_end_matches('/').len() > 1,
-            "{v:?}: the base needs a path so an adapter cannot leave it"
+fn every_vendor_answers_only_its_exact_endpoint_paths() {
+    let all: Vec<&str> = VENDORS.iter().flat_map(|s| s.paths.iter().copied()).collect();
+    for spec in VENDORS {
+        let e = ep(spec.vendor);
+        assert!(!spec.paths.is_empty(), "{:?}", spec.vendor);
+        for p in spec.paths {
+            let concrete = p.replace("{model}", "m-1.5_x");
+            let url = join_checked(&e, &concrete);
+            assert!(url.is_ok(), "{:?} {concrete}", spec.vendor);
+            let url = url.map(|u| u.to_string()).unwrap_or_default();
+            assert_eq!(
+                url,
+                format!("{}{concrete}", spec.base_url.trim_end_matches('/')),
+                "{:?}",
+                spec.vendor
+            );
+        }
+        let mut bad: Vec<String> = [
+            "/", "/files", "/v1/files", "/v1/chat/completions", "/batches", "/models/m",
+            "/models/../files", "/chat/completions/x", "/models?key=x", "/responses/r1",
+            "/messages?beta=1", "/models/a/b:generateContent", "/models/.x:generateContent",
+            "/models/m:generateContent?key=1", "/models/m:streamGenerateContent",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // Another vendor's endpoints are not this vendor's.
+        bad.extend(
+            all.iter()
+                .filter(|p| !spec.paths.contains(p))
+                .map(|p| p.replace("{model}", "m")),
         );
-        assert!(join_checked(&e, "/../x").is_err());
+        for b in bad {
+            if spec.paths.iter().any(|p| p.replace("{model}", "m") == b) {
+                continue;
+            }
+            assert!(join_checked(&e, &b).is_err(), "{:?} must refuse {b}", spec.vendor);
+        }
     }
+    let ds = ep(Vendor::DeepSeek);
+    assert_eq!(
+        join_checked(&ds, "/chat/completions").map(|u| u.to_string()),
+        Ok("https://api.deepseek.com/chat/completions".to_string())
+    );
 }

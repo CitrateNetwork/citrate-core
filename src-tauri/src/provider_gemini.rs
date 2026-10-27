@@ -226,7 +226,8 @@ fn finish_from(reason: &str, has_calls: bool) -> FinishReason {
     match reason {
         "STOP" if has_calls => FinishReason::ToolCalls,
         "STOP" => FinishReason::Stop,
-        "MAX_TOKENS" => FinishReason::Length,
+        // CONTINUATION: the per-request token limit was reached (a continuationToken follows).
+        "MAX_TOKENS" | "CONTINUATION" => FinishReason::Length,
         "SAFETY"
         | "RECITATION"
         | "BLOCKLIST"
@@ -454,6 +455,12 @@ impl ModelProvider for GeminiAdapter {
 
     /// Gemini documents no key prefix, and its newer authorization keys have their own format,
     /// so only the shape is checked; the live key test decides.
+    /// `maxOutputTokens` bounds the candidate including its thinking tokens (output is billed
+    /// "including thinking tokens", <https://ai.google.dev/gemini-api/docs/pricing>).
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        u64::from(req.max_tokens)
+    }
+
     fn key_format(&self) -> KeyFormat {
         KeyFormat::ANY
     }
