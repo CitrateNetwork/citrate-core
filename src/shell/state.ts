@@ -249,7 +249,8 @@ export interface WalletReview {
    * the tx reaches the node; with no durable record nothing is sent.
    */
   onSigned?: (txHash: string) => void;
-  /** Join-8 — with `onSigned`: the backend refused the send before submission; nothing was sent. */
+  /** Join-8 — with `onSigned`: nothing was sent (the signed tx expired in the ceremony, or the
+   *  backend refused the send before submission, e.g. no durable record). */
   onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
