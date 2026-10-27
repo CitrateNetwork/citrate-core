@@ -576,8 +576,13 @@ enum Request {
         expires_at: u64,
     },
     /// INVITE-S2 — owner revokes a published invite by its token hash (`BLAKE3(token)` hex).
+    /// `report_used`: ask for "invite already used" instead of OK when the invite was already
+    /// redeemed. Sent only when set, so the request is unchanged for every other revoke; a daemon
+    /// or relay that predates it ignores it and answers OK as before.
     RevokeInvite {
         token_hash: String,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        report_used: bool,
     },
     /// INVITE-S2 — invitee SELF-ADMITS by external commit using the RAW invite `token` (hex).
     /// `name` is the local display name to record the joined group under. No owner action needed;
@@ -1345,12 +1350,24 @@ pub(crate) fn publish_invite<R: tauri::Runtime>(
     )?)
 }
 
-/// INVITE-S2 — OWNER: revoke a published invite by its token hash (`BLAKE3(token)` hex). `pub(crate)`.
+/// INVITE-S2 — OWNER: revoke a published invite by its token hash (`BLAKE3(token)` hex). With
+/// `report_used`, an invite that was already redeemed answers an error containing
+/// [`crate::invites::INVITE_ALREADY_USED`] instead of OK (claim approval needs to know). `pub(crate)`.
 pub(crate) fn revoke_invite<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     token_hash: String,
+    report_used: bool,
 ) -> std::result::Result<(), String> {
-    parse_ok(route(app, Request::RevokeInvite { token_hash })?)
+    parse_ok(route(app, revoke_request(token_hash, report_used))?)
+}
+
+/// The daemon request for [`revoke_invite`].
+fn revoke_request(token_hash: String, report_used: bool) -> Request {
+    let _ = report_used;
+    Request::RevokeInvite {
+        token_hash,
+        report_used: false,
+    }
 }
 
 /// INVITE-S2 — INVITEE: self-admit into `group` with the invite token in its daemon wire form

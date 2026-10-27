@@ -821,7 +821,10 @@ fn rendezvous_verbs_get_the_longer_ipc_deadline() {
         assert_eq!(ipc_timeout_for(&req), RENDEZVOUS_IPC_TIMEOUT, "{req:?}");
     }
     assert_eq!(ipc_timeout_for(&Request::ListGroups), COMMS_IPC_TIMEOUT);
-    assert_eq!(ipc_timeout_for(&Request::RevokeInvite { token_hash: g }), COMMS_IPC_TIMEOUT);
+    assert_eq!(
+        ipc_timeout_for(&Request::RevokeInvite { token_hash: g, report_used: false }),
+        COMMS_IPC_TIMEOUT
+    );
 }
 
 // #495 — the pinned comms-member-daemon's `assignRole` requires `{group, assertion: RoleAssertion}`
@@ -871,4 +874,16 @@ fn groups_assign_role_never_sends_the_daemon_a_request() {
         !request_enum.contains("AssignRole"),
         "the daemon refuses an assignRole without a signed assertion; no such request may exist"
     );
+}
+
+// A claim approval asks the relay whether the invite was already redeemed; every other revoke sends
+// the request exactly as before (no field), so older daemons see no change.
+#[test]
+fn a_revoke_request_carries_report_used_only_when_asked() {
+    let asked = serde_json::to_value(revoke_request("ab".into(), true)).expect("serialize");
+    assert_eq!(asked["op"], "revokeInvite");
+    assert_eq!(asked["token_hash"], "ab");
+    assert_eq!(asked["report_used"], serde_json::Value::Bool(true));
+    let plain = serde_json::to_value(revoke_request("ab".into(), false)).expect("serialize");
+    assert_eq!(plain, serde_json::json!({"op": "revokeInvite", "token_hash": "ab"}));
 }

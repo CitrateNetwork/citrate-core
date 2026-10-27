@@ -896,9 +896,17 @@ pub async fn group_invite_verify_consume(
                 .map(|v| v.state)
         },
         |lookup| crate::comms::rendezvous_close(&app, lookup),
-        |token_hash| crate::comms::revoke_invite(&app, token_hash),
+        |token_hash| crate::comms::revoke_invite(&app, token_hash, false),
     )
 }
+
+/// The relay's answer (passed through by the comms daemon) when a revoke that asked about it names
+/// an invite that was already redeemed. Mirrors `comms_wire::frames::INVITE_ALREADY_USED`.
+pub(crate) const INVITE_ALREADY_USED: &str = "invite already used";
+
+/// Why a claim on an invite someone else already used can't be approved.
+const ALREADY_USED_REFUSAL: &str =
+    "This invite was already used through its link, so this request can't be approved.";
 
 /// What approving a claim did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -913,7 +921,9 @@ pub enum ConsumeOutcome {
 }
 
 /// The consume itself, over the `pending.json` at `path`, the daemon's last view of the invite
-/// (`view_of(lookup)`) and the two relay calls (as [`revoke_at`]).
+/// (`view_of(lookup)`) and the two relay calls (as [`revoke_at`]). `legacy` asks the relay to
+/// report an invite that was already redeemed ([`INVITE_ALREADY_USED`]); that answer refuses the
+/// approval and keeps the record as it is.
 pub(crate) fn consume_at(
     path: &std::path::Path,
     group: &str,
@@ -942,11 +952,7 @@ pub(crate) fn consume_at(
             Some(InviteState::Adding | InviteState::Added | InviteState::PickedUp)
         )
     {
-        return Err(
-            "This invite was already used through its link, so this request can't be \
-             approved."
-                .to_string(),
-        );
+        return Err(ALREADY_USED_REFUSAL.to_string());
     }
     if !revoke_and_remove_at(path, group, token, Some(member), close, legacy)? {
         return Ok(ConsumeOutcome::Invalid);
@@ -1023,7 +1029,7 @@ pub async fn group_invite_revoke(
         &group,
         &token,
         |lookup| crate::comms::rendezvous_close(&app, lookup),
-        |token_hash| crate::comms::revoke_invite(&app, token_hash),
+        |token_hash| crate::comms::revoke_invite(&app, token_hash, false),
     )
 }
 
@@ -2152,6 +2158,101 @@ mod tests {
         let after = super::view_pending_at(&path).expect("reads");
         assert_eq!(after[0].approved_member, "0xclaimant");
         assert!(after[0].revoking && after[0].consumed);
+    }
+
+    /// The relay's answer when the legacy record was already redeemed, as the daemon passes it on.
+    fn already_used() -> Result<(), String> {
+        Err(format!(
+            "relay: server error: {}",
+            super::INVITE_ALREADY_USED
+        ))
+    }
+
+    /// An invite without a rendezvous whose legacy record another holder of the link already
+    /// redeemed: the approval is refused and the record is left as it is.
+    #[test]
+    fn an_approval_on_an_already_redeemed_legacy_invite_is_refused() {
+        let path = scratch("approve-legacy-used");
+        let d = super::decide_mint(Ok(()), Err(RvError::DaemonUnsupported), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            "0xc",
+            |_| None,
+            |_| Ok(()),
+            |_| already_used(),
+        );
+        assert_eq!(r, Err(super::ALREADY_USED_REFUSAL.to_string()));
+        assert_eq!(tokens(&path), vec![T.to_string()], "the record is kept");
+        let after = super::view_pending_at(&path).expect("reads");
+        assert!(after[0].approved_member.is_empty() && !after[0].consumed);
+    }
+
+    /// The same with a rendezvous: the legacy answer alone refuses it, and nothing is queued for
+    /// the tick to add.
+    #[test]
+    fn an_approval_on_an_already_redeemed_invite_with_a_rendezvous_is_refused() {
+        let path = scratch("approve-rv-used");
+        let d = super::decide_mint(Ok(()), opened(LOOKUP), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            "0xc",
+            |_| Some(crate::rendezvous::InviteState::Open),
+            |_| Ok(()),
+            |_| already_used(),
+        );
+        assert_eq!(r, Err(super::ALREADY_USED_REFUSAL.to_string()));
+        let after = super::view_pending_at(&path).expect("reads");
+        assert_eq!(after.len(), 1);
+        assert!(after[0].approved_member.is_empty(), "no claimant is queued");
+        assert!(!after[0].revoking);
+    }
+
+    /// Any other legacy failure still reads as a retryable revoke failure, not as "used".
+    #[test]
+    fn an_approval_whose_legacy_revoke_fails_otherwise_is_retryable() {
+        let path = scratch("approve-legacy-err");
+        let d = super::decide_mint(Ok(()), Err(RvError::DaemonUnsupported), LOOKUP).expect("link");
+        super::write_pending(&path, &[minted("g", T, d)]).expect("write");
+        let r = super::consume_at(
+            &path,
+            "g",
+            T,
+            "0xc",
+            |_| None,
+            |_| Ok(()),
+            |_| Err("relay: timed out".to_string()),
+        );
+        let msg = r.expect_err("refused");
+        assert!(msg.starts_with("couldn't revoke the invite"), "{msg}");
+        assert_eq!(tokens(&path), vec![T.to_string()]);
+    }
+
+    /// Tripwire: only claim approval asks the relay to report a used invite; the owner's revoke
+    /// and the join-code revoke keep the original request (and its OK).
+    #[test]
+    fn only_claim_approval_asks_whether_the_invite_was_used() {
+        let prod = prod_source();
+        let consume = fn_body(prod, "pub async fn group_invite_verify_consume");
+        assert!(
+            consume.contains("comms::revoke_invite(&app, token_hash, true)"),
+            "claim approval must ask the relay to report an already-redeemed invite"
+        );
+        let revoke = fn_body(prod, "pub async fn group_invite_revoke");
+        assert!(revoke.contains("comms::revoke_invite(&app, token_hash, false)"));
+        let join = include_str!("join.rs");
+        assert!(join.contains("comms::revoke_invite(&app, hash, false)"));
+        assert_eq!(
+            prod.matches("comms::revoke_invite(").count()
+                + join.matches("comms::revoke_invite(").count(),
+            3,
+            "a new revoke caller must decide whether it needs the used answer"
+        );
     }
 
     /// An invite without a rendezvous has nothing to wait for: approved now.

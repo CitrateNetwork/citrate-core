@@ -137,7 +137,7 @@ pub async fn join_revoke(app: tauri::AppHandle, code: String) -> Result<JoinRevo
             &app,
             &code,
             |lookup| crate::comms::rendezvous_close(&app, lookup),
-            |hash| crate::comms::revoke_invite(&app, hash),
+            |hash| crate::comms::revoke_invite(&app, hash, false),
         )?;
         with_states(&app, |join, auth| join.revoke(&auth.0, &code))?;
         crate::invites::update_pending(&app, |v| crate::invites::forget_join_code(v, &code))?;
