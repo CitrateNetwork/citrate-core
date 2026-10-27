@@ -899,9 +899,9 @@ fn every_sidecar_tool_set_blocks_a_store_daemon_not_approved_for_it() {
         let value = if set.on_value.is_empty() { "/app/data/hermes/x" } else { set.on_value };
         let on = env(&[(set.env_key, value)]);
         assert!(host_block_reason(&[], &on).is_some(), "{} blocks a no-permission daemon", set.id);
-        // The permission that covers it lets it through.
+        // The permission that covers it lets it through, unless no permission may grant it.
         let covered = tools_for_permissions(&[set.permission.to_string()]);
-        assert!(host_block_reason(&covered, &on).is_none(), "{} is covered by {}", set.id, set.permission);
+        assert_eq!(host_block_reason(&covered, &on).is_none(), set.grantable, "{} and {}", set.id, set.permission);
     }
     // Nothing on: nothing blocks.
     assert!(host_block_reason(&[], &[]).is_none());
@@ -965,17 +965,17 @@ fn opening_a_store_daemon_session_rechecks_the_current_environment() {
     let search_on = env(&[("CITRATE_HERMES_SEARCH", "1")]);
     let claimed_off = enabled_host_set_ids(&off);
     // Same (all off) at claim and at open: opens.
-    assert!(store_open_check(&none, Some(&claimed_off), Some(&off)).is_ok());
+    assert!(store_open_check(&none, Some(&claimed_off), Some(&off), None).is_ok());
     // Hermes is restarting at open: refused.
-    assert!(store_open_check(&none, Some(&claimed_off), None).is_err());
+    assert!(store_open_check(&none, Some(&claimed_off), None, None).is_err());
     // Web search was turned on between the claim and the open: refused.
-    let err = store_open_check(&none, Some(&claimed_off), Some(&search_on)).unwrap_err();
+    let err = store_open_check(&none, Some(&claimed_off), Some(&search_on), None).unwrap_err();
     assert!(err.contains("changed") || err.contains("Web search"), "{err}");
     // Covered by the approved permission but still a change since the claim: refused.
     let covered = tools_for_permissions(&["web_search".to_string()]);
-    assert!(store_open_check(&covered, Some(&claimed_off), Some(&search_on)).is_err());
+    assert!(store_open_check(&covered, Some(&claimed_off), Some(&search_on), None).is_err());
     // Claimed with no record of the sets (an older book): refused.
-    assert!(store_open_check(&none, None, Some(&off)).is_err());
+    assert!(store_open_check(&none, None, Some(&off), None).is_err());
 }
 
 #[test]
@@ -1067,6 +1067,70 @@ fn removing_a_pending_model_record_also_removes_its_unverified_file() {
     assert!(read_store_file(&fx.root).expect("state").installs.is_empty());
 }
 
+// ---- a sidecar that scopes host tool sets per session (citrate-agent-runtime#87) -------------
+
+fn all_sets() -> Vec<String> {
+    // What a #87 sidecar reports in `capabilities.sessionToolSets` (core's permission names).
+    ["web_search", "web_browse", "mcp", "toolchain", "skills_read", "learn_propose", "capsules_run", "files", "shell_run"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn bare_store_daemon(tag: &str) -> (Fx, String) {
+    let fx = Fx::new(tag);
+    let listing = listing_json("bare", "daemon", "public", DAEMON_URL, &daemon_template(), BUDGET)
+        .replace(r#""permissions":[{"id":"local_model","reason":"Runs on your local model."},{"id":"files_read","reason":"Reads the folders you granted."}]"#, r#""permissions":[]"#);
+    fx.fx_publish(&catalog_json(1, &[listing]));
+    fx.fx_view(0);
+    let st = fx.fx_stage("bare", 0).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 0).expect("install").target;
+    (fx, id)
+}
+
+#[test]
+fn an_older_sidecar_without_session_tool_sets_keeps_the_refusal() {
+    use crate::daemons::SidecarFacts;
+    let (fx, id) = bare_store_daemon("oldsidecar");
+    let on = env(&[("CITRATE_HERMES_SEARCH", "1")]);
+    let old = SidecarFacts { env: &on, session_tool_sets: None };
+    assert!(crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_with(&id, NOW_MS, Some(&old))).is_err());
+    // A sidecar that scopes only some sets is treated as an older one.
+    let partial: Vec<String> = all_sets().into_iter().filter(|s| s != "capsules_run").collect();
+    let some = SidecarFacts { env: &on, session_tool_sets: Some(&partial) };
+    assert!(crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_with(&id, NOW_MS, Some(&some))).is_err());
+    assert!(fx.fx_daemon_book().daemons[0].paused);
+}
+
+#[test]
+fn a_new_sidecar_lets_a_no_permission_store_daemon_start_with_sets_on() {
+    use crate::daemons::SidecarFacts;
+    let (fx, id) = bare_store_daemon("newsidecar");
+    let on = env(&[("CITRATE_HERMES_SEARCH", "1"), ("CITRATE_HERMES_CAPSULES", "/x"), ("CITRATE_HERMES_SKILLS", "/y")]);
+    let sets = all_sets();
+    let new = SidecarFacts { env: &on, session_tool_sets: Some(&sets) };
+    crate::daemons::with_book_file(&fx.daemons, true, |b| b.resume_with(&id, NOW_MS, Some(&new))).expect("starts");
+    let at = NOW_MS + 18 * 3_600_000;
+    let claims = crate::daemons::with_book_file(&fx.daemons, true, |b| b.claim_due_facts(at, 0, Some(&new))).expect("claim");
+    assert_eq!(claims.len(), 1);
+    // Its session asks for no host tool sets at all.
+    let allowed = claims[0].allowed_tools.clone().expect("a Store daemon");
+    assert_eq!(crate::daemons::store_tool_sets(&allowed), Vec::<String>::new());
+    // And its session opens on that sidecar right after the claim, sets on and all.
+    let claimed = crate::daemons::with_book_file(&fx.daemons, false, |b| Ok(b.claimed_host_sets(&id))).expect("read");
+    assert!(crate::daemons::store_open_check(&allowed, claimed.as_deref(), Some(&on), Some(&sets)).is_ok());
+    // The same open on an older sidecar is refused.
+    assert!(crate::daemons::store_open_check(&allowed, claimed.as_deref(), Some(&on), None).is_err());
+}
+
+#[test]
+fn a_web_search_only_daemon_asks_for_exactly_web_search() {
+    let allowed = tools_for_permissions(&["web_search".to_string(), "local_model".to_string()]);
+    assert_eq!(crate::daemons::store_tool_sets(&allowed), vec!["web_search".to_string()]);
+    let several = tools_for_permissions(&["capsules_run".to_string(), "web_search".to_string(), "memory_read".to_string()]);
+    assert_eq!(crate::daemons::store_tool_sets(&several), vec!["web_search".to_string(), "capsules_run".to_string()]);
+}
+
 // ---- wiring --------------------------------------------------------------------------------
 
 #[test]
@@ -1087,6 +1151,138 @@ fn the_catalog_urls_are_https_and_apart_from_the_component_feed() {
     assert!(STORE_CATALOG_SIG_URL.starts_with(STORE_CATALOG_URL));
     assert_ne!(STORE_CATALOG_URL, crate::components::COMPONENT_MANIFEST_URL);
     assert!(!STORE_CATALOG_URL.contains("/updater/"));
+}
+
+// ---- DGX R1/R2/R3/R5 on #356 (fixed on #376) -----------------------------------------------
+
+#[test]
+fn r1_file_tools_turned_on_by_the_launch_environment_block_a_store_daemon() {
+    use crate::daemons::host_block_reason;
+    // CITRATE_HERMES_FILES=1 plus a grants file offers the fs_* tools to sessions without a
+    // grant document; core never sets it, but the launch environment can.
+    let on = env(&[("CITRATE_HERMES_FILES", "1")]);
+    assert!(host_block_reason(&[], &on).is_some(), "the file tools block");
+    // No permission covers them: approving "files" grants nothing and is never sent.
+    let allowed = tools_for_permissions(&["files".to_string(), "shell_run".to_string()]);
+    assert!(allowed.iter().all(|t| !t.starts_with("host:")), "{allowed:?}");
+    assert!(host_block_reason(&allowed, &on).is_some());
+    let forced = vec!["host:files".to_string(), "host:shell_run".to_string()];
+    assert!(crate::daemons::store_tool_sets(&forced).is_empty(), "never in toolSets");
+}
+
+#[test]
+fn tripwire_every_runtime_host_set_has_an_env_hold_row() {
+    use crate::daemons::{GRANT_DOC_ONLY_SETS, HOST_TOOL_SETS, RUNTIME_HOST_SET_NAMES};
+    for name in RUNTIME_HOST_SET_NAMES {
+        let row = HOST_TOOL_SETS.iter().any(|s| s.permission == *name);
+        let by_construction = GRANT_DOC_ONLY_SETS.contains(name);
+        assert!(row || by_construction, "{name}: add an env-hold row to HOST_TOOL_SETS (or list it in GRANT_DOC_ONLY_SETS with the reason)");
+        assert!(!(row && by_construction), "{name}: listed twice");
+    }
+    // And no row names a set the runtime does not know.
+    for set in HOST_TOOL_SETS {
+        assert!(RUNTIME_HOST_SET_NAMES.contains(&set.permission), "{}", set.id);
+    }
+}
+
+#[test]
+fn r2_env_names_match_case_insensitively_where_the_platform_does() {
+    use crate::daemons::enabled_host_sets_for;
+    let lower = env(&[("citrate_hermes_search", "1")]);
+    assert!(!enabled_host_sets_for(&lower, true).is_empty(), "Windows: a lower-case name still turns search on");
+    assert!(enabled_host_sets_for(&lower, false).is_empty(), "Unix: names are case-sensitive");
+    // The effective child environment follows the same rule.
+    let kept = crate::hermes::effective_child_env_for(env(&[("Citrate_Hermes_Search", "1")]).into_iter(), &[], true);
+    assert!(kept.iter().any(|(k, _)| k.eq_ignore_ascii_case("CITRATE_HERMES_SEARCH")), "{kept:?}");
+    // Core's own value overrides an inherited one that differs only in case.
+    let over = crate::hermes::effective_child_env_for(
+        env(&[("citrate_hermes_search", "1")]).into_iter(),
+        &env(&[("CITRATE_HERMES_SEARCH", "0")]),
+        true,
+    );
+    assert!(enabled_host_sets_for(&over, true).is_empty(), "{over:?}");
+}
+
+#[test]
+fn tripwire_no_case_sensitive_env_name_comparison_in_the_host_set_check() {
+    let daemons = include_str!("daemons.rs");
+    let hermes = include_str!("hermes.rs");
+    assert!(!daemons.contains("k == set.env_key"), "compare env names with env_name_eq");
+    assert!(!hermes.contains("k.starts_with(\"CITRATE_\")"), "compare env names with env_name_eq");
+}
+
+#[test]
+fn r3_a_missing_or_unknown_daemon_id_is_refused_at_open() {
+    use crate::daemons::open_target;
+    let fx = Fx::standard("opentarget");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let store_id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        let mine = b.save(
+            crate::daemons::DaemonInput { id: None, name: "Mine".into(), prompt: "Do it.".into(), schedule: "0 8 * * *".into(), budget: None },
+            NOW_MS,
+            0,
+        )?;
+        assert!(open_target(b, None, None).is_err(), "no daemon id: refused");
+        assert!(open_target(b, Some("d00000000000000ff"), None).is_err(), "unknown id: refused");
+        // Bound to a run in flight (below); without one, both are refused.
+        assert!(open_target(b, Some(&mine.id), None).is_err());
+        assert!(open_target(b, Some(&store_id), None).is_err());
+        Ok(())
+    })
+    .expect("book");
+}
+
+#[test]
+fn r5_a_not_started_outcome_is_recorded_as_not_started() {
+    let o: Result<crate::daemons::RunOutcome, _> = serde_json::from_str("\"not_started\"");
+    let o = o.expect("the runner can report not_started");
+    let fx = Fx::standard("notstarted");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    let at = NOW_MS + 18 * 3_600_000;
+    let run = crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(&id, false, NOW_MS)?;
+        Ok(b.claim_due_with(at, 0, Some(&[]))?.remove(0).run_id)
+    })
+    .expect("claimed");
+    crate::daemons::with_book_file(&fx.daemons, true, |b| b.finish_run(&id, &run, 0, o, "Not started: Hermes restarted", at + 1)).expect("finish");
+    assert_eq!(fx.fx_daemon_book().daemons[0].last_outcome.as_deref(), Some("not_started"));
+}
+
+#[test]
+fn a_sidecar_must_scope_every_runtime_set_including_the_grant_document_ones() {
+    use crate::daemons::sidecar_scopes_host_sets;
+    let all = all_sets();
+    assert!(sidecar_scopes_host_sets(Some(&all)));
+    for missing in ["shell_run", "files", "web_search"] {
+        let less: Vec<String> = all.iter().filter(|s| *s != missing).cloned().collect();
+        assert!(!sidecar_scopes_host_sets(Some(&less)), "a sidecar that cannot scope {missing} is an older one");
+    }
+}
+
+#[test]
+fn tripwire_a_not_started_run_is_never_charged() {
+    // Whatever the runner reports, core charges nothing for a run that never started.
+    let fx = Fx::standard("notcharged");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    let at = NOW_MS + 18 * 3_600_000;
+    let run = crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.set_paused(&id, false, NOW_MS)?;
+        Ok(b.claim_due_with(at, 0, Some(&[]))?.remove(0).run_id)
+    })
+    .expect("claimed");
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        b.finish_run(&id, &run, 3_000, crate::daemons::RunOutcome::NotStarted, "Not started: Hermes restarted", at + 1)
+    })
+    .expect("finish");
+    let today = crate::daemons::with_book_file(&fx.daemons, false, |b| Ok(b.list(at + 2, 0))).expect("list");
+    assert_eq!(today[0].tokens_today, 0, "a run that never started charges nothing");
+    assert_eq!(today[0].last_outcome.as_deref(), Some("not_started"));
 }
 
 // ---- Codex P2s on #356 at e1831b4 ----------------------------------------------------------
@@ -1293,6 +1489,63 @@ fn tripwire_store_model_state_and_removal_go_through_the_ownership_check() {
     assert!(owns.contains("verified_sha256(") && owns.contains("r.size"), "hash and size are both checked");
 }
 
+/// DGX (non-blocking, fed#331): the daemon id the webview names at open is bound, in core, to
+/// the run core claimed for it. A session opens only for a daemon with that run in flight; any
+/// other pairing is refused.
+#[test]
+fn a_session_open_is_bound_to_the_daemons_claimed_run() {
+    use crate::daemons::open_target;
+    let fx = Fx::standard("open-bound");
+    fx.fx_view(1);
+    let st = fx.fx_stage("daily-brief", 1).expect("stage");
+    let store_id = fx.fx_install(&st.stage_id, 1).expect("install").target;
+    let at = NOW_MS + 18 * 3_600_000;
+    crate::daemons::with_book_file(&fx.daemons, true, |b| {
+        let mine = b.save(
+            crate::daemons::DaemonInput { id: None, name: "Mine".into(), prompt: "Do it.".into(), schedule: "0 8 * * *".into(), budget: None },
+            NOW_MS,
+            0,
+        )?;
+        // Before any claim: no run is in flight for either daemon.
+        assert!(open_target(b, Some(&store_id), Some("r0000000000000000")).is_err(), "no run in flight");
+        b.set_paused(&store_id, false, NOW_MS)?;
+        let claims = b.claim_due_with(at, 0, Some(&[]))?;
+        let store_run = claims.iter().find(|c| c.daemon_id == store_id).expect("store claim").run_id.clone();
+        let mine_run = claims.iter().find(|c| c.daemon_id == mine.id).map(|c| c.run_id.clone());
+        // The claimed pair opens.
+        assert!(open_target(b, Some(&store_id), Some(&store_run)).expect("bound").is_some());
+        // A missing run id, another run id, or another daemon's id with this run: refused.
+        assert!(open_target(b, Some(&store_id), None).is_err(), "no run id");
+        assert!(open_target(b, Some(&store_id), Some("r0000000000000000")).is_err(), "unknown run");
+        let err = open_target(b, Some(&mine.id), Some(&store_run)).expect_err("another daemon's run");
+        assert!(err.contains("Not started"), "{err}");
+        if let Some(mr) = mine_run {
+            assert!(open_target(b, Some(&store_id), Some(&mr)).is_err(), "the member daemon's run");
+            assert_eq!(open_target(b, Some(&mine.id), Some(&mr)).expect("member bound"), None);
+        }
+        // Once the run has finished, its id no longer opens anything.
+        b.finish_run(&store_id, &store_run, 0, crate::daemons::RunOutcome::Answered, "done", at + 1)?;
+        assert!(open_target(b, Some(&store_id), Some(&store_run)).is_err(), "a finished run");
+        Ok(())
+    })
+    .expect("book");
+}
+
+/// Tripwire: the open command passes the run id into the bound check, and the check refuses
+/// before anything else when the pair is not a run in flight.
+#[test]
+fn tripwire_the_unattended_open_checks_the_claimed_run() {
+    let hermes = include_str!("hermes.rs");
+    let cmd = &hermes[hermes.find("pub async fn hermes_session_open_unattended(").expect("cmd")..];
+    let cmd = &cmd[..cmd.find("\n}\n").expect("ends")];
+    assert!(cmd.contains("run_id: Option<String>"), "the command takes the run id");
+    assert!(cmd.contains("run_id.as_deref()"), "and passes it to the check");
+    let daemons = include_str!("daemons.rs");
+    let ot = &daemons[daemons.find("pub(crate) fn open_target(").expect("open_target")..];
+    let ot = &ot[..ot.find("\n}\n").expect("ends")];
+    assert!(ot.find("run_in_flight(").expect("bound") < ot.find("allowed_tools_of(").expect("allowed"));
+}
+
 // ---- Codex P2 on #356 at 2c0cbb3: the model target is reserved against the Models downloader --
 
 #[test]
@@ -1475,6 +1728,13 @@ fn tripwire_the_store_never_touches_a_file_with_a_models_marker() {
     assert!(clean.find("models_download_left(").expect("marker check") < clean.find("remove_file(").expect("delete"));
     let rec = body("fn reconcile_models(");
     assert!(rec.find("models_download_left(").expect("marker check") < rec.find(".verify_held(").expect("verify"));
+    // #463: the marker branch only confirms a match (no quarantine), then leaves the loop.
+    let marked = &rec[rec.find("if models_download_left(").expect("marker branch")..];
+    let marked = &marked[..marked.find("continue;").expect("leaves the loop")];
+    assert!(marked.contains(".confirm_held(&lock)"), "a match is confirmed under the lock");
+    for touch in [".verify_held(", ".verify()", "remove_unverified_model", "remove_file("] {
+        assert!(!marked.contains(touch), "the marker branch never runs {touch}");
+    }
     // The only other file removal is the single-use review stage (not a model).
     let stage = body("fn take_stage(");
     assert_eq!(
@@ -1482,4 +1742,104 @@ fn tripwire_the_store_never_touches_a_file_with_a_models_marker() {
         clean.matches("std::fs::remove_file(").count() + stage.matches("std::fs::remove_file(").count(),
         "every model file removal in the Store goes through remove_unverified_model_locked"
     );
+}
+
+// ---- #489: a Models download refused by the download lock leaves no marker behind ------------
+
+/// The Store's download of the listing: while it holds the file's download lock and streams, the
+/// Models screen asks for another catalog model under the same file name (refused by the lock),
+/// then the Store's stream ends short of the pinned size.
+struct ModelsAskMidStream {
+    models: PathBuf,
+    asked: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+impl crate::model::ModelTransport for ModelsAskMidStream {
+    fn total_size(&self) -> std::result::Result<u64, crate::model::ModelError> {
+        Ok(model_bytes().len() as u64)
+    }
+    fn get_from(&self, _offset: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, crate::model::ModelError> {
+        let mut other = model_bytes();
+        other[12] = 3;
+        let desc = crate::model::ModelDescriptor {
+            id: "hf:org/repo/tiny-model.gguf".to_string(),
+            source: crate::model::ModelSource::Hf,
+            repo: "org/repo".to_string(),
+            file: "tiny-model.gguf".to_string(),
+            revision: None,
+            size_bytes: other.len() as u64,
+            sha256: sha(&other),
+            kind: crate::model::ModelKind::Gguf,
+        };
+        let r = crate::model_catalog::download_tracked(&self.models, &desc.id, &desc, Box::new(MemTransport(other)), |_, _| {});
+        *self.asked.lock().unwrap() = Some(r);
+        Ok(Box::new(std::io::Cursor::new(model_bytes()[..30].to_vec())))
+    }
+}
+
+#[test]
+fn a_models_download_refused_by_the_lock_leaves_no_marker_and_the_store_partial_is_cleaned_up() {
+    let fx = Fx::standard("refused-marker");
+    fx.fx_view(0);
+    let st = fx.fx_stage("tiny-model", 0).expect("stage");
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (models, a) = (fx.models.clone(), asked.clone());
+    let transport = move |_: &str| -> Box<dyn crate::model::ModelTransport> {
+        Box::new(ModelsAskMidStream { models: models.clone(), asked: a.clone() })
+    };
+    let usage = Usage(None);
+    let t = fx.fx_targets(&usage, &transport);
+    let err = install_sync(&fx.root, &fx.key.root(), &t, 0, &st.stage_id, NOW, NOW_MS, 0, &mut |_, _| {}).unwrap_err();
+    assert_eq!(err.code, "hash_failed", "the Store's stream ended short: {err:?}");
+    let asked = asked.lock().unwrap().take().expect("the Models request ran while the Store streamed");
+    assert_eq!(asked, Err(crate::model::ModelError::AlreadyDownloading.to_string()), "refused by the lock");
+    assert!(!fx.models.join("tiny-model.gguf.download.json").exists(), "a refused Models request leaves no marker");
+    assert!(!fx.models.join("tiny-model.gguf.part").exists(), "the Store's partial bytes are cleaned up");
+    assert!(fx.fx_installed().is_empty(), "no record for the failed install");
+    assert!(crate::model_catalog::read_partial_downloads(&fx.models).is_empty(), "nothing is offered as a resume");
+    // The listing installs again from scratch.
+    let st = fx.fx_stage("tiny-model", 0).expect("stage again");
+    assert!(fx.fx_install(&st.stage_id, 0).is_ok());
+}
+
+// ---- #463: a stale Models marker does not keep a matching Store install unconfirmed -----------
+
+/// The Store's interrupted install has the pinned bytes, and a marker a failed Models download
+/// left under the same file name is beside it. Reconcile checks the file against the Store's pin
+/// without deleting anything: the match confirms the Store record.
+#[test]
+fn a_stale_models_marker_does_not_keep_a_matching_store_install_unconfirmed() {
+    let fx = interrupted_model("stale-marker", &model_bytes());
+    crate::model_catalog::write_download_marker(&fx.models, "tiny-model.gguf", "hf:org/repo/tiny-model.gguf", 99)
+        .expect("marker");
+    let listed = fx.fx_installed();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].state, "not_selected", "confirmed by its pinned hash");
+    assert!(!read_store_file(&fx.root).expect("state").installs[0].pending, "the record is confirmed");
+    assert_eq!(
+        crate::model::verified_sha256(&fx.models, "tiny-model.gguf"),
+        Some(sha(&model_bytes())),
+        "verified against the Store's pin"
+    );
+    // Remove takes the Store's own file, and the listing can be staged again.
+    fx.fx_remove("tiny-model", &Usage(None)).expect("remove");
+    assert!(!fx.models.join("tiny-model.gguf").exists());
+    assert!(fx.fx_stage("tiny-model", 0).is_ok(), "staging again is not refused");
+}
+
+/// The other side of #463: with a marker present, a file of another size is not the Store's. It is
+/// never quarantined or removed (the marker's owner decides), and the record waits.
+#[test]
+fn a_models_marker_file_of_another_size_is_kept_and_the_store_record_waits() {
+    let mut b = model_bytes();
+    b.extend_from_slice(&[9u8; 7]);
+    let fx = interrupted_model("marker-size", &b);
+    crate::model_catalog::write_download_marker(&fx.models, "tiny-model.gguf", "some-catalog-model", b.len() as u64)
+        .expect("marker");
+    let listed = fx.fx_installed();
+    assert_eq!(listed[0].state, "missing");
+    assert!(read_store_file(&fx.root).expect("state").installs[0].pending, "still pending");
+    assert_eq!(std::fs::read(fx.models.join("tiny-model.gguf")).ok(), Some(b), "the Models file is intact");
+    assert!(fx.models.join("tiny-model.gguf.download.json").exists(), "and its marker");
+    assert!(!crate::model::is_file_ready(&fx.models, "tiny-model.gguf"), "not verified against the Store's pin");
 }

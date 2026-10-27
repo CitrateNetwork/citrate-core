@@ -27,7 +27,6 @@ const REQUIRED = {
   MembershipStakeVault: addr("02"),
   ValidatorRegistry: addr("03"),
   CitrateWalletFactory: addr("04"),
-  LiquidStakingPool: addr("05"),
   CitratePaymaster: addr("06"),
   IPFSIncentivesV3: addr("07"),
   ModelRegistry: addr("08"),
@@ -133,6 +132,26 @@ describe("optional HUP pins", () => {
     const r = await sync("--check", "--rpc", rpcUrl);
     expect(r.code).toBe(0);
     expect(fs.existsSync(outPath)).toBe(false);
+  });
+});
+
+// Owner decision D-9 (2026-10-26): the LiquidStakingPool is retired at the r1006 reroll and is not
+// in the genesis contract set. The app neither requires nor pins it.
+describe("retired LiquidStakingPool", () => {
+  it("a book without the pool syncs", async () => {
+    writeBook(book());
+    const r = await sync("--rpc", rpcUrl);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+    expect(out.addresses).not.toHaveProperty("LiquidStakingPool");
+  });
+
+  it("a book that still lists the pool syncs without pinning it", async () => {
+    writeBook(book({ ...REQUIRED, ...HUP, LiquidStakingPool: addr("05") }));
+    const r = await sync("--rpc", rpcUrl);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+    expect(out.addresses).not.toHaveProperty("LiquidStakingPool");
   });
 });
 
