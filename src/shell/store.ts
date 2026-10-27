@@ -772,11 +772,11 @@ export class Store {
       // is idempotent + honest (an offline daemon surfaces its error) and seeds the constellation once
       // connected. Deferred so the node/wallet vitals it seeds from are already folded.
       setTimeout(() => void this.startMemoryDaemon(), 2500);
-      // RESUME S3 FROM CHAIN TRUTH. `s3` is not persisted, so every launch re-enters
-      // S3 as `idle` — a screen whose only control is "Check out · $48". A member
-      // whose grant landed while the app was closed would therefore be invited to
-      // pay a second time for a membership they already hold. Ask the chain once on
-      // launch; a granted member lands on Continue instead of a checkout button.
+      // RESUME S3 FROM CHAIN TRUTH. A launch can re-enter S3 as `idle`, which offers the
+      // free node and, behind it, the membership checkout. A member whose grant landed
+      // while the app was closed would therefore be offered a second checkout for a
+      // membership they already hold. Ask the chain once on launch; a granted member
+      // lands on Continue instead of a checkout button.
       if (this.state.stage === "s3") void this.settleS3IfAlreadyGranted();
       // FIX 1b: re-read the entitlement when the member comes back to the window (e.g.
       // from the browser checkout), so a new claim shows without a restart.
@@ -5607,13 +5607,13 @@ export class Store {
     this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
     this.save();
   }
-  /** S3 — choose the FREE tier: enter the app WITHOUT a paid membership (no stake, no SBT). Mirrors
-   *  onExplore (the S0 free path) so a user who reached the membership step can still decline the paid
-   *  seat instead of being funneled into it. The paid membership stays available later (Settings →
-   *  Billing → Renew opens the same checkout). No payment, no fabricated grant (Rule 1). */
+  /** S3 — "Run a node for free" (owner decision 2026-10-27, option a: the free path comes first).
+   *  Continues onboarding on the Free tier WITHOUT a paid membership (no SBT, no grant, no bond):
+   *  S4 wallet → S6 node ignition (S4 skips the grant step when there is no membership), then the
+   *  app via onS6Continue → onEnter. No checkout, no payment, no fabricated grant (Rule 1). The
+   *  paid membership stays available later (Settings → Billing opens the same checkout). */
   onS3Free(): void {
-    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
-    this.toast("You're on the Free tier — wallet, agent, chain reads, and marketplace view. Upgrade to membership anytime in Settings → Billing.");
+    this.setState({ stage: "s4", tier: "free" });
     this.save();
   }
   /** Enterprise · Contact us — submit a qualified sales lead to core-membership. Returns `{ ok }`, or
@@ -5731,7 +5731,7 @@ export class Store {
       // existing grant: `settled` was reachable ONLY through `pollMembership`, which
       // ran ONLY from this handler. So a member who was granted while the app was
       // closed (or after its poll gave up) came back to S3 `idle`, whose only
-      // control is "Check out in your browser · $48" — and paying again is the one
+      // paid control is the checkout button — and paying again is the one
       // thing that cannot help, because the membership is one-per-sub and the second
       // order can never be granted. Observed 2026-08-15: a member reached three
       // stranded `paid` orders this way. Read the chain BEFORE spending money.
@@ -5835,7 +5835,7 @@ export class Store {
    * the real on-chain grant (`isGrantOnChain && hasSbt`). It does NOT re-open Stripe
    * checkout, so re-checking can never charge a member a second time — the exact
    * hazard that made the dead end dangerous, since the only control the member could
-   * see was "Check out in your browser · $48".
+   * see was the checkout button.
    */
   recheckMembership(): void {
     if (this.state.s3 !== "paying") return;
