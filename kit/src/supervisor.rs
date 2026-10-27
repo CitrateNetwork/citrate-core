@@ -306,11 +306,16 @@ pub struct SidecarSpec {
 /// - `ended()` runs on the monitor thread after the child has ended and been reaped, on every path
 ///   (stop, shutdown, crash, health failure, kill after the grace), before the supervisor reports
 ///   the stop as done or starts a new child.
+/// - `prepare()` (optional) runs on the monitor thread right before each spawn attempt, the first
+///   one and every automatic restart. A spawn attempt that fails is an end too: `ended()` runs
+///   after it, so whatever `prepare()` set up for the child is undone on every path, including
+///   when the supervisor gives up.
 #[derive(Clone)]
 pub struct ChildWatch {
     pub interval: Duration,
     pub observe: Arc<dyn Fn(u32) + Send + Sync>,
     pub ended: Arc<dyn Fn() + Send + Sync>,
+    pub prepare: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl std::fmt::Debug for ChildWatch {
@@ -696,6 +701,28 @@ pub struct LifecycleSnapshot {
     pub open_tickets: u32,
 }
 
+/// The most recent change of a service's [`Phase`] (K1a-2, the services registry). `from` is
+/// `None` only for the first phase a supervisor publishes (`Starting`, when it is created). The
+/// time is read from the supervisor's injected [`Clock`] at the moment the phase changed, never at
+/// the moment it was observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseTransition {
+    pub from: Option<Phase>,
+    pub to: Phase,
+    pub at_unix_ms: u64,
+}
+
+/// One bounded read of everything the services registry reports for a service: the lifecycle
+/// cell, its last phase transition and its last crash, all taken under the same lock so they
+/// agree with each other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Observation {
+    pub lifecycle: LifecycleSnapshot,
+    pub last_transition: PhaseTransition,
+    pub last_crash: Option<CrashRecord>,
+}
+
 fn decimal_u64<S: serde::Serializer>(v: &u64, s: S) -> std::result::Result<S::Ok, S::Error> {
     s.serialize_str(&v.to_string())
 }
@@ -749,9 +776,26 @@ struct Cell {
     closed_readers: Vec<Reader>,
     /// This supervisor instance, carried in every token it issues.
     instance: u64,
+    /// The most recent phase change and when it happened (K1a-2). Written only by `set_phase`.
+    last_transition: PhaseTransition,
+    /// The supervisor's injected clock, read when the phase changes.
+    clock: Arc<dyn Clock>,
 }
 
 impl Cell {
+    /// The one writer of `phase`. A change records the transition at the clock's current time; a
+    /// write of the same phase records nothing.
+    fn set_phase(&mut self, next: Phase) {
+        if next != self.phase {
+            self.last_transition = PhaseTransition {
+                from: Some(self.phase),
+                to: next,
+                at_unix_ms: self.clock.now_unix_ms(),
+            };
+            self.phase = next;
+        }
+    }
+
     fn snapshot(&self, epoch: u64) -> LifecycleSnapshot {
         LifecycleSnapshot {
             name: self.status.name.clone(),
@@ -784,7 +828,7 @@ impl Cell {
         }
         if self.closed_readers.is_empty() && self.publications.is_empty() && !self.spawn_ticket {
             self.quarantine = None;
-            self.phase = Phase::Stopped;
+            self.set_phase(Phase::Stopped);
             self.touch();
         }
     }
@@ -800,13 +844,13 @@ impl Cell {
         if stop_pending {
             return;
         }
-        self.phase = match state {
+        self.set_phase(match state {
             SupervisorState::Off => Phase::Stopped,
             SupervisorState::Starting => Phase::Starting,
             SupervisorState::Running => Phase::Alive,
             SupervisorState::Backoff { .. } => Phase::Backoff,
             SupervisorState::Failed => Phase::Failed,
-        };
+        });
     }
 
     fn touch(&mut self) {
@@ -1147,6 +1191,12 @@ impl Supervisor {
                 closed_readers: Vec::new(),
                 deadline_seq: None,
                 instance,
+                last_transition: PhaseTransition {
+                    from: None,
+                    to: Phase::Starting,
+                    at_unix_ms: config.clock.now_unix_ms(),
+                },
+                clock: config.clock.clone(),
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1240,7 +1290,7 @@ impl Supervisor {
             c.deadline_seq = Some(token.intent_sequence);
         }
         if c.phase != Phase::Quarantined {
-            c.phase = Phase::Stopping;
+            c.set_phase(Phase::Stopping);
         }
         drop(c);
         self.shared.notify();
@@ -1304,6 +1354,17 @@ impl Supervisor {
         })
     }
 
+    /// The services registry read (K1a-2): the lifecycle cell, its last phase transition and its
+    /// last crash, under one bounded lock. `None` means the cell was contended and nothing is
+    /// claimed.
+    pub fn observe(&self) -> Option<Observation> {
+        self.shared.lock_bounded().map(|c| Observation {
+            lifecycle: c.snapshot(self.shared.epoch),
+            last_transition: c.last_transition,
+            last_crash: c.status.last_crash.clone(),
+        })
+    }
+
     /// A snapshot of the recent captured stdout/stderr lines (oldest→newest, bounded at
     /// [`LOG_RING_CAPACITY`]). Safe to poll from the Tauri runtime; the `node_logs` command
     /// folds this into the Node LOG panel so a packaged build shows REAL node output.
@@ -1348,7 +1409,7 @@ impl Supervisor {
         }
         let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
         if c.phase != Phase::Quarantined {
-            c.phase = Phase::Stopping;
+            c.set_phase(Phase::Stopping);
         }
         drop(c);
         self.shared.notify();
@@ -1984,12 +2045,12 @@ impl Drop for MonitorExit {
         match c.phase {
             Phase::Starting | Phase::Alive | Phase::Backoff => {
                 c.status.state = SupervisorState::Failed;
-                c.phase = Phase::Failed;
+                c.set_phase(Phase::Failed);
             }
             // A Stop's teardown can no longer be observed to finish: never Stopped.
             Phase::Stopping => {
                 c.status.state = SupervisorState::Off;
-                c.phase = Phase::Quarantined;
+                c.set_phase(Phase::Quarantined);
                 c.quarantine = Some(reason.to_string());
             }
             Phase::Stopped | Phase::Failed | Phase::Quarantined => {}
@@ -2095,7 +2156,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 // was observed when the Stop settled; a fresh explicit Start is now admitted.
                 let mut c = shared.lock();
                 c.quarantine = None;
-                c.phase = Phase::Stopped;
+                c.set_phase(Phase::Stopped);
                 c.touch();
                 continue;
             }
@@ -2144,9 +2205,13 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         if let Some(barrier) = &spawn_barrier {
             barrier();
         }
+        if let Some(prepare) = watch.as_ref().and_then(|w| w.prepare.as_ref()) {
+            prepare();
+        }
         let mut child = match spawn_child(&spec) {
             Ok(c) => OwnedChild(c),
             Err(e) => {
+                ended(&watch);
                 end_spawn_ticket(&shared);
                 // Spawn itself failed (bad path / EACCES). Treat as a crash so the same bounded
                 // backoff applies — a bad binary path cannot fork-bomb either.
@@ -2299,7 +2364,7 @@ fn hold_start_for_cleanup(shared: &Shared, seq: u64, remaining: &[String]) {
     }
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
-    c.phase = Phase::Quarantined;
+    c.set_phase(Phase::Quarantined);
     c.quarantine = Some(format!(
         "the previous incarnation is not cleaned up yet ({}): its output is still open, so \
          another process (for example one it started) may hold the pipe; the next start waits \
@@ -2314,7 +2379,7 @@ fn release_start_hold(shared: &Shared, seq: u64) {
     let mut c = shared.lock();
     if c.intent_sequence == seq && c.desired == Desired::Running && c.quarantine.is_some() {
         c.quarantine = None;
-        c.phase = Phase::Starting;
+        c.set_phase(Phase::Starting);
         c.touch();
     }
 }
@@ -2327,7 +2392,7 @@ fn admit_spawn(shared: &Shared, seq: u64) -> bool {
         return false;
     }
     c.status.state = SupervisorState::Starting;
-    c.phase = Phase::Starting;
+    c.set_phase(Phase::Starting);
     c.spawn_ticket = true;
     c.touch();
     true
@@ -2352,7 +2417,7 @@ fn publish_alive(shared: &Shared, seq: u64, pid: u32) -> bool {
     }
     c.status.state = SupervisorState::Running;
     c.status.pid = Some(pid);
-    c.phase = Phase::Alive;
+    c.set_phase(Phase::Alive);
     c.spawn_ticket = false;
     let incarnation = c.incarnation;
     c.settle(seq, IntentKind::Start, Receipt::Started { incarnation });
@@ -2441,7 +2506,7 @@ fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornD
         }
         scope.push("readers".to_string());
         scope.append(&mut c.resolved_publications);
-        c.phase = Phase::Stopped;
+        c.set_phase(Phase::Stopped);
         c.quarantine = None;
         c.settle(seq, IntentKind::Stop, Receipt::Complete { scope });
     } else {
@@ -2453,7 +2518,7 @@ fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornD
                 .to_string()
         };
         remaining.extend(publications);
-        c.phase = Phase::Quarantined;
+        c.set_phase(Phase::Quarantined);
         c.quarantine = Some(reason.clone());
         c.resolved_publications.clear();
         c.settle(
@@ -2507,10 +2572,10 @@ fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: b
         c.settle(token.intent_sequence, kind, receipt);
     }
     if remaining.is_empty() {
-        c.phase = Phase::Stopped;
+        c.set_phase(Phase::Stopped);
         c.quarantine = None;
     } else {
-        c.phase = Phase::Quarantined;
+        c.set_phase(Phase::Quarantined);
         if c.quarantine.is_none() {
             c.quarantine = Some(format!(
                 "shutdown left owned work running: {}",
@@ -2759,7 +2824,7 @@ fn backoff_wait(shared: &Shared, seq: u64, delay: Duration, clock: &dyn Clock) {
             return;
         }
         c.status.state = SupervisorState::Backoff { next_retry_ms };
-        c.phase = Phase::Backoff;
+        c.set_phase(Phase::Backoff);
         c.touch();
     }
     let deadline = std::time::Instant::now() + delay;
@@ -2800,4 +2865,7 @@ mod tests {
 
     // The lifecycle cell (SC1): platform-neutral, so it runs on every OS lane.
     include!("supervisor_lifecycle_tests.rs");
+
+    // The services registry read (K1a-2): platform-neutral.
+    include!("supervisor_registry_tests.rs");
 }

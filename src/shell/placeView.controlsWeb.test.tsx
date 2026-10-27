@@ -1,8 +1,9 @@
-// Hermes › Controls mounts two writers of the same web settings: the Controls panel's Web search
-// switch (top) and the Settings › Web search & decisions form (below it). Each must change only its
+// Hermes › Controls has two writers of the same web settings: the Web search switch on
+// "1 · Switches" and the Web search & decisions form on "2 · Details". Each must change only its
 // own fields, so neither can silently undo the other (review finding on #343: the browser could be
-// re-enabled after the member turned it off). This drives the real PlaceView composition with both
-// mounted, against one in-memory copy of what core stores, at the Tauri invoke boundary.
+// re-enabled after the member turned it off). Since K2 the two depths are separate routes; this
+// mounts both real PlaceViews at once (as two windows of the app would), against one in-memory
+// copy of what core stores, at the Tauri invoke boundary.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -77,12 +78,18 @@ async function click(id: string) {
 }
 
 async function mountControls() {
-  const s = { ...freshState("p1"), stage: "done" as const, route: "hermes/controls", sSec: "web" };
+  const depth1 = { ...freshState("p1"), stage: "done" as const, route: "hermes/controls", sSec: "web" };
+  const depth2 = { ...depth1, route: "hermes/controls/details" };
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => {
-    root?.render(<PlaceView store={store} s={s} />);
+    root?.render(
+      <>
+        <PlaceView store={store} s={depth1} />
+        <PlaceView store={store} s={depth2} />
+      </>,
+    );
   });
   await flush();
   // Both writers are on the page, and both loaded what core has.
@@ -107,7 +114,7 @@ afterEach(() => {
   root = null;
 });
 
-describe("Hermes › Controls with the Controls panel and the Web search form mounted together", () => {
+describe("Hermes › Controls switches and the Details web search form, mounted together", () => {
   it("the form turns the browser off and saves; then the top Web search switch is toggled; the browser stays off", async () => {
     saved.settings = { ...DEFAULT_WEB_SETTINGS, browserEnabled: true, searchEnabled: false };
     await mountControls();
@@ -198,7 +205,7 @@ describe("Hermes › Controls with the Controls panel and the Web search form mo
     await mountControls();
     const hint = $("reason-web-search")?.textContent ?? "";
     expect(hint).toContain("no SearXNG program is set yet");
-    expect(hint).toContain("Hermes › Controls › Web search");
+    expect(hint).toContain("Hermes › Controls › Details › Web search");
     expect(hint).not.toContain("Settings ›");
   });
 

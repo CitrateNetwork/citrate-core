@@ -26,9 +26,17 @@
 //! or unreadable file no send is reported as "not sent" again (every error is "outcome unknown").
 //! That fails closed by design.
 //!
-//! A missing file is an empty, certain record only for a profile with no wallet yet; next to an
-//! existing custody envelope (an upgrade from a build that never wrote this record) it is
-//! uncertain. Either way it is written at once. A hash whose record can't be made durable is
+//! A missing file is an empty, certain record only for a profile with no wallet yet. Next to an
+//! existing custody envelope (an upgrade from a build that never wrote this record) the earlier
+//! runs' sends are unknown, but only up to a bound (#443): each sender's first send after the
+//! upgrade at a nonce the app read from the node ([`NonceSource::Fetched`]) sets that sender's
+//! *upgrade bound* to that nonce. That send, and every later one at or below the bound or with a
+//! requester-supplied nonce, stays unknown; a later fetched-nonce send above the bound signs bytes
+//! no earlier run can have sent, so it is a first submission again. On disk an upgrade-bounded
+//! record is written as `uncertain: true` plus `upgrade_bound: {sender: nonce}`, so a build that
+//! does not know the bound reads it as fully uncertain (fail closed). The bound never applies to
+//! an uncertainty from a damaged or truncated history. Either way the missing record is written
+//! at once. A hash whose record can't be made durable is
 //! refused ([`SubmittedTxLog::try_record`] returns `Err`) and not kept: the caller must not send.
 //! Hashes are public transaction ids, not key material.
 
@@ -36,6 +44,35 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+/// What a recorded transaction calls: its `to` and the first four bytes of its calldata. Lets
+/// a caller find its own submission again (Join-8: the Activate step finds the member's
+/// `MemberBond.activate` send after a restart).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallMeta {
+    /// Lower-case 0x-hex address.
+    pub to: String,
+    /// Lower-case 0x-hex selector (4 bytes).
+    pub selector: String,
+}
+
+/// A recorded submission found by [`SubmittedTxLog::latest_call`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedCall {
+    pub hash: String,
+    pub nonce: Option<u64>,
+    /// When it was recorded (ms since the Unix epoch), if known.
+    pub at_ms: Option<u64>,
+}
+
+/// Where a recorded transaction's nonce came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonceSource {
+    /// The app read it from the node (`eth_getTransactionCount` at `pending`) for this send.
+    Fetched,
+    /// The requester (a dApp) supplied it.
+    Supplied,
+}
 
 /// How many recent submissions are kept.
 pub const CAPACITY: usize = 256;
@@ -48,6 +85,18 @@ struct Entry {
     sender: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nonce: Option<u64>,
+    /// What the tx calls, when the sender recorded it (Join-8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selector: Option<String>,
+    /// When it was recorded (ms since the Unix epoch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at_ms: Option<u64>,
+    /// Forgotten by the member ([`SubmittedTxLog::forget`]): no longer found by
+    /// [`SubmittedTxLog::latest_call`], but still a recorded submission.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    forgotten: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +106,9 @@ struct Inner {
     evicted: std::collections::BTreeMap<String, u64>,
     /// The history can't prove any absent hash was never sent (see the module docs).
     uncertain: bool,
+    /// An upgraded profile (#443): per sender (lower case), the nonce of its first send after the
+    /// upgrade at an app-read nonce. `None` for a profile that was never upgraded.
+    upgrade: Option<std::collections::BTreeMap<String, u64>>,
 }
 
 impl Inner {
@@ -65,9 +117,20 @@ impl Inner {
     }
 
     /// Whether an absent tx is provably a first submission.
-    fn absent_is_first(&self, origin: Option<(&str, u64)>) -> bool {
+    fn absent_is_first(&self, origin: Option<(&str, u64)>, source: NonceSource) -> bool {
         if self.uncertain {
             return false;
+        }
+        if let Some(bound) = &self.upgrade {
+            let above = match (origin, source) {
+                (Some((sender, nonce)), NonceSource::Fetched) => {
+                    bound.get(sender).is_some_and(|b| nonce > *b)
+                }
+                _ => false,
+            };
+            if !above {
+                return false;
+            }
         }
         match origin {
             Some((sender, nonce)) => self.evicted.get(sender).is_none_or(|hw| nonce > *hw),
@@ -96,7 +159,28 @@ struct OnDisk {
     entries: Vec<Entry>,
     #[serde(default)]
     evicted: std::collections::BTreeMap<String, u64>,
+    /// True for a damaged history AND for an upgrade-bounded one (see `upgrade_bound`), so a build
+    /// that does not know the bound fails closed.
     uncertain: bool,
+    /// Present only when the uncertainty is an upgrade's, bounded per sender (#443).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    upgrade_bound: Option<std::collections::BTreeMap<String, u64>>,
+}
+
+impl OnDisk {
+    fn of(inner: &Inner) -> Self {
+        let bound = if inner.uncertain {
+            None
+        } else {
+            inner.upgrade.clone()
+        };
+        OnDisk {
+            entries: inner.entries.iter().cloned().collect(),
+            evicted: inner.evicted.clone(),
+            uncertain: inner.uncertain || bound.is_some(),
+            upgrade_bound: bound,
+        }
+    }
 }
 
 /// The format before sender/nonce were kept: `{hashes, uncertain}`.
@@ -135,6 +219,7 @@ impl SubmittedTxLog {
                 entries: VecDeque::new(),
                 evicted: Default::default(),
                 uncertain: false,
+                upgrade: None,
             }),
             sync_dir,
             attempts: Default::default(),
@@ -152,14 +237,15 @@ impl SubmittedTxLog {
                 entries: VecDeque::new(),
                 evicted: Default::default(),
                 uncertain: true,
+                upgrade: None,
             }),
             sync_dir,
             attempts: Default::default(),
         }
     }
 
-    /// Load the record at `path`. A missing file is empty and certain; an unreadable or corrupt
-    /// one is empty and uncertain.
+    /// Load the record at `path`. A missing file is empty and certain (upgrade-bounded next to an
+    /// existing wallet); an unreadable or corrupt one is empty and uncertain.
     pub fn open(path: PathBuf) -> Self {
         Self::open_with(path, sync_dir)
     }
@@ -173,37 +259,47 @@ impl SubmittedTxLog {
                     hash,
                     sender: None,
                     nonce: None,
+                    to: None,
+                    selector: None,
+                    at_ms: None,
+                    forgotten: false,
                 })
                 .collect()
         };
         let mut missing = false;
-        let (entries, evicted, uncertain) = match std::fs::read(&path) {
+        let (entries, evicted, uncertain, upgrade) = match std::fs::read(&path) {
             Ok(bytes) => {
                 if let Ok(d) = serde_json::from_slice::<OnDisk>(&bytes) {
-                    (d.entries, d.evicted, d.uncertain)
+                    match d.upgrade_bound {
+                        // Upgrade-bounded: `uncertain` is the fail-closed marker for older readers.
+                        Some(bound) if d.uncertain => (d.entries, d.evicted, false, Some(bound)),
+                        _ => (d.entries, d.evicted, d.uncertain, None),
+                    }
                 } else if let Ok(d) = serde_json::from_slice::<OnDiskV2>(&bytes) {
-                    (bare(d.hashes), Default::default(), d.uncertain)
+                    (bare(d.hashes), Default::default(), d.uncertain, None)
                 } else if let Ok(list) = serde_json::from_slice::<Vec<String>>(&bytes) {
                     // The bare-list format from before the flag: at capacity it may have evicted.
                     let full = list.len() >= CAPACITY;
-                    (bare(list), Default::default(), full)
+                    (bare(list), Default::default(), full, None)
                 } else {
-                    (Vec::new(), Default::default(), true)
+                    (Vec::new(), Default::default(), true, None)
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // #347 Codex P1: builds before this record never wrote it. A profile that
                 // already holds a wallet (the custody envelope in the same app data dir) may
                 // have submitted txs with an unknown outcome, so its missing record is NOT a
-                // certain empty history. Only a profile with no wallet yet starts certain.
+                // certain empty history: it is upgrade-bounded (#443, module docs). Only a
+                // profile with no wallet yet starts certain.
                 missing = true;
                 let wallet_exists = path
                     .parent()
                     .map(|d| d.join(crate::custody::ENVELOPE_FILE))
                     .is_some_and(|p| p.exists());
-                (Vec::new(), Default::default(), wallet_exists)
+                let upgrade = wallet_exists.then(Default::default);
+                (Vec::new(), Default::default(), false, upgrade)
             }
-            Err(_) => (Vec::new(), Default::default(), true),
+            Err(_) => (Vec::new(), Default::default(), true, None),
         };
         let mut inner = Inner {
             entries: entries
@@ -211,7 +307,9 @@ impl SubmittedTxLog {
                 .map(|e| Entry {
                     hash: e.hash.to_ascii_lowercase(),
                     sender: e.sender.map(|s| s.to_ascii_lowercase()),
-                    nonce: e.nonce,
+                    to: e.to.map(|s| s.to_ascii_lowercase()),
+                    selector: e.selector.map(|s| s.to_ascii_lowercase()),
+                    ..e
                 })
                 .collect(),
             evicted: evicted
@@ -219,20 +317,14 @@ impl SubmittedTxLog {
                 .map(|(k, v)| (k.to_ascii_lowercase(), v))
                 .collect(),
             uncertain,
+            upgrade,
         };
         inner.evict_to_capacity();
         // A missing record is written at once (certain for a new profile, uncertain for an
         // upgraded one), so a wallet created later in this run never makes the next launch look
         // like an upgrade. If it can't be written, nothing proves the history: uncertain.
-        if missing {
-            let disk = OnDisk {
-                entries: Vec::new(),
-                evicted: Default::default(),
-                uncertain: inner.uncertain,
-            };
-            if write_atomic(&path, &disk, sync_dir).is_err() {
-                inner.uncertain = true;
-            }
+        if missing && write_atomic(&path, &OnDisk::of(&inner), sync_dir).is_err() {
+            inner.uncertain = true;
         }
         SubmittedTxLog {
             path: Some(path),
@@ -247,44 +339,144 @@ impl SubmittedTxLog {
     /// re-submission or an uncertain history. `Err` when the record could not be written: the
     /// hash is not kept, and the caller must not send.
     pub fn try_record(&self, hash: &str) -> Result<bool, String> {
-        self.record_entry(hash, None)
+        self.record_entry(hash, None, NonceSource::Supplied, None)
     }
 
     /// [`Self::try_record`] for a transaction whose sender and nonce are known, so an eviction
-    /// can be bounded by nonce instead of making the whole history uncertain.
+    /// can be bounded by nonce instead of making the whole history uncertain. The nonce's origin
+    /// is not known here, so it is treated as [`NonceSource::Supplied`].
     pub fn try_record_for(&self, hash: &str, sender: &str, nonce: u64) -> Result<bool, String> {
-        self.record_entry(hash, Some((sender, nonce)))
+        self.record_entry(hash, Some((sender, nonce)), NonceSource::Supplied, None)
     }
 
-    fn record_entry(&self, hash: &str, origin: Option<(&str, u64)>) -> Result<bool, String> {
+    fn record_entry(
+        &self,
+        hash: &str,
+        origin: Option<(&str, u64)>,
+        source: NonceSource,
+        call: Option<&CallMeta>,
+    ) -> Result<bool, String> {
         let hash = hash.to_ascii_lowercase();
         let origin = origin.map(|(s, n)| (s.to_ascii_lowercase(), n));
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.contains(&hash) {
+            // A re-send of recorded bytes. If they were forgotten (Forget, or taken out of recovery
+            // after a refusal), they are in flight again: bring the entry back into recovery as the
+            // latest send, durably, BEFORE the send. Otherwise a restart finds nothing and offers a
+            // second activation while this one is in flight. No durable write, no send.
+            if g.entries.iter().any(|e| e.hash == hash && e.forgotten) {
+                let mut next = g.clone();
+                if let Some(pos) = next.entries.iter().position(|e| e.hash == hash) {
+                    if let Some(mut e) = next.entries.remove(pos) {
+                        e.forgotten = false;
+                        if let Some(c) = call {
+                            e.to = Some(c.to.to_ascii_lowercase());
+                            e.selector = Some(c.selector.to_ascii_lowercase());
+                        }
+                        e.at_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_millis() as u64)
+                            .or(e.at_ms);
+                        next.entries.push_back(e);
+                    }
+                }
+                self.persist(&next)?;
+                *g = next;
+            }
             self.count_attempt(&hash);
             return Ok(false);
         }
-        let first = g.absent_is_first(origin.as_ref().map(|(s, n)| (s.as_str(), *n)));
+        let first = g.absent_is_first(origin.as_ref().map(|(s, n)| (s.as_str(), *n)), source);
         let hash_key = hash.clone();
         let mut next = g.clone();
+        // #443: a sender's first app-read-nonce send after an upgrade sets its bound (durably,
+        // with this entry).
+        if let (Some(bound), Some((sender, nonce)), NonceSource::Fetched) =
+            (next.upgrade.as_mut(), origin.as_ref(), source)
+        {
+            bound.entry(sender.clone()).or_insert(*nonce);
+        }
         next.entries.push_back(Entry {
             hash,
             sender: origin.as_ref().map(|(s, _)| s.clone()),
             nonce: origin.as_ref().map(|(_, n)| *n),
+            to: call.map(|c| c.to.to_ascii_lowercase()),
+            selector: call.map(|c| c.selector.to_ascii_lowercase()),
+            // Kept only for a recorded call (what latest_call returns); other entries are unchanged.
+            at_ms: call.and_then(|_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            }),
+            forgotten: false,
         });
         next.evict_to_capacity();
-        if let Some(path) = &self.path {
-            let disk = OnDisk {
-                entries: next.entries.iter().cloned().collect(),
-                evicted: next.evicted.clone(),
-                uncertain: next.uncertain,
-            };
-            write_atomic(path, &disk, self.sync_dir)
-                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-        }
+        self.persist(&next)?;
         *g = next;
         self.count_attempt(&hash_key);
         Ok(first)
+    }
+
+    /// Write `next` durably (no-op without a path). The caller swaps it in only on success.
+    fn persist(&self, next: &Inner) -> Result<(), String> {
+        if let Some(path) = &self.path {
+            write_atomic(path, &OnDisk::of(next), self.sync_dir)
+                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::try_record_for`] that also keeps what the tx calls ([`CallMeta`]) and when it was
+    /// recorded, so [`Self::latest_call`] can find it after a restart.
+    pub fn try_record_call(
+        &self,
+        hash: &str,
+        sender: &str,
+        nonce: u64,
+        source: NonceSource,
+        call: Option<&CallMeta>,
+    ) -> Result<bool, String> {
+        self.record_entry(hash, Some((sender, nonce)), source, call)
+    }
+
+    /// The most recent recorded submission from `sender` calling `call`, unless it was
+    /// forgotten ([`Self::forget`]).
+    pub fn latest_call(&self, sender: &str, call: &CallMeta) -> Option<RecordedCall> {
+        let (sender, to, selector) = (
+            sender.to_ascii_lowercase(),
+            call.to.to_ascii_lowercase(),
+            call.selector.to_ascii_lowercase(),
+        );
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        // Only the LATEST matching send counts: a forgotten newer send never brings back an older one.
+        let e = g.entries.iter().rev().find(|e| {
+            e.sender.as_deref() == Some(sender.as_str())
+                && e.to.as_deref() == Some(to.as_str())
+                && e.selector.as_deref() == Some(selector.as_str())
+        })?;
+        (!e.forgotten).then(|| RecordedCall {
+            hash: e.hash.clone(),
+            nonce: e.nonce,
+            at_ms: e.at_ms,
+        })
+    }
+
+    /// Mark a recorded submission as forgotten, durably: [`Self::latest_call`] no longer returns
+    /// it. The hash stays recorded, so the same bytes are never a first submission again.
+    /// `Ok(true)` when it was found and marked.
+    pub fn forget(&self, hash: &str) -> Result<bool, String> {
+        let hash = hash.to_ascii_lowercase();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = g.clone();
+        let Some(e) = next.entries.iter_mut().find(|e| e.hash == hash) else {
+            return Ok(false);
+        };
+        e.forgotten = true;
+        self.persist(&next)?;
+        *g = next;
+        Ok(true)
     }
 
     fn count_attempt(&self, hash: &str) {
@@ -321,13 +513,12 @@ impl SubmittedTxLog {
         self.len() == 0
     }
 
-    /// True when the history can't prove an absent hash was never sent: every send is then a
-    /// re-submission.
+    /// True when the history can't prove every absent hash was never sent: every send is then a
+    /// re-submission, except, on an upgrade-bounded record, a fetched-nonce send above its
+    /// sender's bound.
     pub fn is_uncertain(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .uncertain
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.uncertain || g.upgrade.is_some()
     }
 }
 
