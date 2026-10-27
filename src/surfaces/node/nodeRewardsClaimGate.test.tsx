@@ -23,7 +23,7 @@ const stub = { claimRewards: vi.fn(async () => {}), refreshEarnings: async () =>
 const claimButton = /<button[^>]*data-testid="claim"[^>]*>\s*Claim/;
 
 // A validator bonded straight from the member's wallet (no MemberBond), 20 SALT claimable now.
-const walletStaked = (over: Partial<AppState> = {}): AppState => ({
+const ownWalletKey = (over: Partial<AppState> = {}): AppState => ({
   ...freshState("p1"),
   signedIn: true,
   node: "synced",
@@ -40,7 +40,7 @@ const walletStaked = (over: Partial<AppState> = {}): AppState => ({
 
 describe("Node › Rewards: no Claim button for a wallet-staked key", () => {
   it("shows the reason in place of Claim, with the figures still shown", () => {
-    const html = renderRewards(stub, walletStaked());
+    const html = renderRewards(stub, ownWalletKey());
     expect(html).not.toMatch(claimButton);
     expect(html).toContain('data-testid="claim-blocked"');
     expect(html).toContain("ValidatorRegistry.claimRewards(key)");
@@ -48,7 +48,7 @@ describe("Node › Rewards: no Claim button for a wallet-staked key", () => {
   });
 
   it("a key staked by another address is not this rule: Claim stays (control)", () => {
-    const other = walletStaked();
+    const other = ownWalletKey();
     const html = renderRewards(stub, { ...other, validatorActivation: { ...other.validatorActivation!, staker: "0x" + "77".repeat(20) } as AppState["validatorActivation"] });
     expect(html).not.toContain("ValidatorRegistry.claimRewards(key)");
   });
@@ -59,7 +59,7 @@ describe("Node › Rewards: no Claim button for a wallet-staked key", () => {
   });
 
   it("the dust note says 'at or above' at exactly 5 SALT", () => {
-    const html = renderRewards(stub, walletStaked({ walletAddr: "0x" + "11".repeat(20), rewards: { totalWei: (10n * WEI).toString(), claimableWei: (5n * WEI).toString() } }));
+    const html = renderRewards(stub, ownWalletKey({ walletAddr: "0x" + "11".repeat(20), rewards: { totalWei: (10n * WEI).toString(), claimableWei: (5n * WEI).toString() } }));
     expect(html).toContain("at or above the 5 SALT dust threshold");
     expect(html).not.toMatch(/is above the 5 SALT/);
   });
