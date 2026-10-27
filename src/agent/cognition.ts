@@ -21,6 +21,9 @@ import { UNTRUSTED_CLOSE, UNTRUSTED_OPEN } from "./untrusted";
 import { fieldsCard, type ApprovalCard, type CardRow } from "./approvalCards";
 
 export const DELEGATE_TOOL_NAME = "devin_delegate";
+
+/** Core's default Devin spend ceiling per task (owner decision 2026-10-27; `cognition.rs`). */
+export const DEFAULT_ACU_LIMIT = 5;
 export const DELEGATION_STATUS_TOOL_NAME = "devin_delegation_status";
 
 /** How a member decline starts, so callers can tell it from a result that merely mentions one. */
@@ -46,6 +49,10 @@ export const DELEGATE_TOOL = {
         task: { type: "string", description: "the task, self-contained" },
         files: { type: "array", items: { type: "string" }, description: "file paths inside the repository to focus on" },
         context: { type: "string", description: "only the facts Devin needs" },
+        max_acu_limit: {
+          type: "integer",
+          description: "only if the member asked for a different Devin spend ceiling for this task (ACUs); otherwise leave it out and the default (5) applies",
+        },
       },
       required: ["repo", "task"],
     },
@@ -113,7 +120,10 @@ export function fenceDelegationResult(s: DelegationSession): string {
 export function scopeFromArgs(args: Record<string, unknown>): DelegationScope {
   const str = (v: unknown) => (typeof v === "string" ? v : "");
   const files = Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string") : [];
-  return { repo: str(args.repo).trim(), task: str(args.task), files, context: str(args.context) };
+  const scope: DelegationScope = { repo: str(args.repo).trim(), task: str(args.task), files, context: str(args.context) };
+  // A whole-number ceiling only; core bounds it and the card shows the value that will be sent.
+  if (typeof args.max_acu_limit === "number" && Number.isInteger(args.max_acu_limit)) scope.maxAcuLimit = args.max_acu_limit;
+  return scope;
 }
 
 /** The HIC-1 card: exactly what would be sent. */
@@ -124,17 +134,23 @@ export function delegationApproval(v: DelegationView, reason?: string): { title:
     { k: "Files", v: v.files.length ? v.files.join(", ") : "none named" },
     { k: "Sends exactly", v: v.prompt },
     { k: "Not sent", v: "no local files, keys or other chat context; Devin works on the repository through your Devin GitHub connection" },
-    { k: "Cost", v: "Devin usage (ACUs) billed by Cognition to your Devin account" },
+    {
+      k: "Spend ceiling",
+      v:
+        `at most ${v.maxAcuLimit} ACUs of Devin usage for this task ` +
+        (v.maxAcuLimit === DEFAULT_ACU_LIMIT ? "(the default)" : `(above the default of ${DEFAULT_ACU_LIMIT})`),
+    },
+    { k: "Cost", v: "Devin usage (ACUs) billed by Cognition to your Devin account, up to the ceiling above" },
   ];
   if (reason) rows.push({ k: "Why you are asked", v: reason });
   return {
     title: "Approve a Devin delegation",
     rows,
-    cost: "Devin usage billed to your Cognition account",
+    cost: `up to ${v.maxAcuLimit} ACUs of Devin usage, billed to your Cognition account`,
     card: fieldsCard(
       DELEGATE_TOOL_NAME,
       DELEGATE_TOOL.annotations,
-      { repository: v.repo, files: v.files.join(", ") || "none named", prompt: v.prompt },
+      { repository: v.repo, files: v.files.join(", ") || "none named", "spend ceiling": `${v.maxAcuLimit} ACUs`, prompt: v.prompt },
       `send this task to a Devin session on ${v.repo}`,
     ),
   };
@@ -169,6 +185,7 @@ export async function runDelegationTool(deps: DelegationDeps, args: Record<strin
     return "could not open the approval for this delegation: " + message(e) + ". Nothing was sent.";
   }
   if (decision !== "approved") {
+    // (Declined, or the member wants another ceiling: they say so and Hermes proposes again.)
     void deps.decline(view.delegationId).catch(() => undefined);
     return `${DELEGATION_DECLINED_PREFIX} to a Devin session on ${view.repo}; nothing was sent.`;
   }

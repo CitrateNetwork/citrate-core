@@ -684,6 +684,11 @@ impl GuardBook {
         self.entry(provider).listed_models = listed;
     }
 
+    /// A key was moved in from an older store: its creation date is not known.
+    pub fn key_date_unknown(&mut self, provider: &str) {
+        self.entry(provider).key_set_ms = None;
+    }
+
     /// The key was removed.
     pub fn key_removed(&mut self, provider: &str) {
         let e = self.entry(provider);

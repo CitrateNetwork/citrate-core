@@ -120,6 +120,9 @@ export function EscalationSettingsView(p: EscalationViewProps) {
       <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line-1)" }}>
           <span className="eyebrow">Your escalation endpoints · OpenAI-compatible, keys stay on this computer</span>
+          <span style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
+            Removing an https endpoint leaves its key with its provider in Settings › Models (chat and Hermes may use it too); remove the key there.
+          </span>
         </div>
         {p.endpoints === null ? (
           <span className="mono" style={{ padding: "12px 18px", fontSize: 11, color: "var(--tx-3)" }}>loading</span>

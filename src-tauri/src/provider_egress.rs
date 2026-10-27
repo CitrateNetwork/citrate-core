@@ -35,6 +35,11 @@ pub struct VendorSpec {
 /// endpoint.
 pub const CHAT_PATHS: &[&str] = &["/chat/completions", "/models"];
 
+/// An OpenAI-compatible endpoint that also takes the app's remote image posts
+/// (`POST /images/generations`, the OpenAI images shape): the Citrate gateway and a custom
+/// endpoint the member confirmed.
+pub const COMPAT_IMAGE_PATHS: &[&str] = &["/chat/completions", "/models", "/images/generations"];
+
 /// The six governed vendors (ADR P-3). Hosts are the vendors' published API hosts, checked
 /// against each vendor's own API docs on 2026-10-26 (sources in each adapter's module docs).
 /// Meta: the Meta Model API serving the Muse models is `https://api.meta.ai/v1`
@@ -46,7 +51,9 @@ pub const VENDORS: &[VendorSpec] = &[
         base_url: "https://api.openai.com/v1",
         key_page: "https://platform.openai.com/api-keys",
         revoke_page: "https://platform.openai.com/api-keys",
-        paths: &["/responses", "/models"],
+        // `/images/generations`: the app's remote image route
+        // (<https://platform.openai.com/docs/api-reference/images/create>).
+        paths: &["/responses", "/models", "/images/generations"],
     },
     VendorSpec {
         vendor: Vendor::Anthropic,
@@ -104,6 +111,8 @@ pub struct DelegateSpec {
     pub base_url: &'static str,
     pub key_page: &'static str,
     pub revoke_page: &'static str,
+    /// The exact API paths the delegate may call (placeholders as in [`path_allowed`]).
+    pub paths: &'static [&'static str],
 }
 
 /// Cognition's Devin API v3 (the current API; v1/v2 and their `apk_` keys are deprecated).
@@ -116,6 +125,15 @@ pub const DELEGATES: &[DelegateSpec] = &[DelegateSpec {
     base_url: "https://api.devin.ai/v3",
     key_page: "https://app.devin.ai/settings",
     revoke_page: "https://app.devin.ai/settings",
+    // The v3 endpoints the delegate uses (docs.devin.ai/api-reference/v3): who the key is, create
+    // a session, read a session, and page its messages (200 per page, cursor `after`).
+    paths: &[
+        "/self",
+        "/organizations/{org}/sessions",
+        "/organizations/{org}/sessions/{session}",
+        "/organizations/{org}/sessions/{session}/messages?first=200",
+        "/organizations/{org}/sessions/{session}/messages?first=200&after={cursor}",
+    ],
 }];
 
 /// The Citrate gateway: a pinned first-party host for Citrate-issued `cgk_` keys
@@ -129,7 +147,7 @@ pub fn resolve_gateway() -> Result<ResolvedEndpoint, ProviderError> {
         ProviderId::Gateway,
         parse_base_url(GATEWAY_BASE_URL)?,
         true,
-        CHAT_PATHS,
+        COMPAT_IMAGE_PATHS,
     )
 }
 
@@ -143,7 +161,7 @@ pub fn resolve_delegate() -> Result<ResolvedEndpoint, ProviderError> {
         ProviderId::Cognition,
         parse_base_url(spec.base_url)?,
         true,
-        &[],
+        spec.paths,
     )
 }
 
@@ -229,21 +247,67 @@ pub fn resolve_vendor(v: Vendor) -> Result<ResolvedEndpoint, ProviderError> {
     )
 }
 
-/// Whether `path` is one of the endpoint's exact paths (`{model}` matching one model id).
+/// Whether `path` is one of the endpoint's exact paths. A placeholder stands for exactly one
+/// value of its kind, and nothing else:
+/// - `{model}`: a model id, `[A-Za-z0-9._-]`, 1..=128, not starting with `.`;
+/// - `{org}`, `{session}`: an id the API issued, `[A-Za-z0-9_-]`, 1..=128;
+/// - `{cursor}`: a page cursor, `[A-Za-z0-9_=-]`, 1..=512.
+///
+/// None of them can hold `/`, `%`, `?`, `&` or (except a model id) `.`, so a value can neither
+/// add a path segment, climb out of one, nor smuggle an escape the URL parser would decode.
 pub fn path_allowed(paths: &[&str], path: &str) -> bool {
-    paths.iter().any(|p| match p.split_once("{model}") {
-        None => *p == path,
-        Some((pre, post)) => path
-            .strip_prefix(pre)
-            .and_then(|rest| rest.strip_suffix(post))
-            .is_some_and(|m| {
-                !m.is_empty()
-                    && m.len() <= 128
-                    && !m.starts_with('.')
-                    && m.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-            }),
-    })
+    paths.iter().any(|p| pattern_matches(p, path))
+}
+
+fn placeholder_ok(name: &str, v: &str) -> bool {
+    let all = |f: fn(u8) -> bool| v.bytes().all(f);
+    match name {
+        "model" => {
+            !v.is_empty()
+                && v.len() <= 128
+                && !v.starts_with('.')
+                && all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        }
+        "org" | "session" => {
+            !v.is_empty()
+                && v.len() <= 128
+                && all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        }
+        "cursor" => {
+            !v.is_empty()
+                && v.len() <= 512
+                && all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'=' | b'-'))
+        }
+        _ => false,
+    }
+}
+
+/// `pattern` (literal text and `{name}` placeholders) against `path`, exactly.
+fn pattern_matches(pattern: &str, path: &str) -> bool {
+    let Some(open) = pattern.find('{') else {
+        return pattern == path;
+    };
+    let Some(close) = pattern[open..].find('}').map(|i| open + i) else {
+        return false;
+    };
+    let (lit, name, rest) = (
+        &pattern[..open],
+        &pattern[open + 1..close],
+        &pattern[close + 1..],
+    );
+    let Some(after) = path.strip_prefix(lit) else {
+        return false;
+    };
+    // The value runs up to the next literal character of the pattern (or the end).
+    let stop = rest.chars().next();
+    let end = match stop {
+        None => after.len(),
+        Some(c) => match after.find(c) {
+            Some(i) => i,
+            None => return false,
+        },
+    };
+    placeholder_ok(name, &after[..end]) && pattern_matches(rest, &after[end..])
 }
 
 /// Join an adapter's path to the endpoint. The path must be one of the endpoint's exact
@@ -392,7 +456,7 @@ pub fn resolve_custom(c: &CustomEndpoint) -> Result<ResolvedEndpoint, ProviderEr
         .filter(ProviderId::is_custom)
         .ok_or(ProviderError::Egress("not a custom endpoint id"))?;
     check_custom_host(&c.base_url)?;
-    resolved(id, parse_base_url(&c.base_url)?, false, CHAT_PATHS)
+    resolved(id, parse_base_url(&c.base_url)?, false, COMPAT_IMAGE_PATHS)
 }
 
 // ---------------------------------------------------------------------------

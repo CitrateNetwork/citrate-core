@@ -68,6 +68,9 @@ pub const MAX_TASK_CHARS: usize = 4000;
 pub const MAX_CONTEXT_CHARS: usize = 8000;
 pub const MAX_FILES: usize = 50;
 pub const MAX_PATH_CHARS: usize = 300;
+/// Messages per page (the API's maximum) and the pages one status read may take.
+pub const MESSAGE_PAGE: u32 = 200;
+pub const MAX_MESSAGE_PAGES: usize = 20;
 /// Result bounds (what the model and the card are shown).
 pub const MAX_MESSAGES: usize = 20;
 pub const MAX_MESSAGE_CHARS: usize = 4000;
@@ -250,6 +253,12 @@ pub fn validate_scope(s: &DelegationScope) -> Result<DelegationScope, String> {
             files.push(f.to_string());
         }
     }
+    let limit = s.max_acu_limit.unwrap_or(DEFAULT_MAX_ACU_LIMIT);
+    if !(1..=MAX_ACU_LIMIT).contains(&limit) {
+        return Err(format!(
+            "set a Devin spend ceiling of 1 to {MAX_ACU_LIMIT} ACUs for this task"
+        ));
+    }
     let context = clean(&s.context);
     if context.chars().count() > MAX_CONTEXT_CHARS {
         return Err(format!(
@@ -261,7 +270,7 @@ pub fn validate_scope(s: &DelegationScope) -> Result<DelegationScope, String> {
         repo,
         files,
         context,
-        max_acu_limit: s.max_acu_limit,
+        max_acu_limit: Some(limit),
     })
 }
 
@@ -290,25 +299,39 @@ pub fn assemble_prompt(s: &DelegationScope) -> String {
     p
 }
 
-/// A hash over everything the approval covers.
+/// A hash over everything the approval covers: the repository, the exact prompt and the spend
+/// ceiling (so nothing can raise the ceiling after the card).
 pub fn scope_hash(s: &DelegationScope, prompt: &str) -> String {
     let mut h = Sha256::new();
-    h.update(b"citrate-core/cognition-delegation/v1\0");
+    h.update(b"citrate-core/cognition-delegation/v2\0");
     for part in [s.repo.as_str(), prompt] {
         h.update((part.len() as u64).to_be_bytes());
         h.update(part.as_bytes());
     }
+    let limit = s.max_acu_limit.map_or(0, u64::from);
+    h.update(limit.to_be_bytes());
     hex::encode(h.finalize())
 }
 
 /// The `POST /sessions` body: built only from what was approved.
 pub fn session_body(p: &Pending) -> Result<Value, ProxyError> {
     let title: String = p.scope.task.chars().take(80).collect();
+    // Never sent without a ceiling (the approval always carries one; this is the last check).
+    let limit = p
+        .scope
+        .max_acu_limit
+        .filter(|l| (1..=MAX_ACU_LIMIT).contains(l))
+        .ok_or_else(|| {
+            ProxyError::BadRequest(
+                "a delegation needs a Devin spend ceiling; nothing was sent".into(),
+            )
+        })?;
     Ok(json!({
         "prompt": p.prompt,
         "repos": [p.scope.repo],
         "title": format!("Citrate Core: {title}"),
         "tags": [SESSION_TAG],
+        "max_acu_limit": limit,
     }))
 }
 
@@ -387,7 +410,7 @@ impl DelegationBook {
             scope_hash: hash.clone(),
             expires_at_ms: now_ms.saturating_add(APPROVAL_TTL_MS),
             destination: "Cognition (Devin) · api.devin.ai".to_string(),
-            max_acu_limit: DEFAULT_MAX_ACU_LIMIT,
+            max_acu_limit: scope.max_acu_limit.unwrap_or(DEFAULT_MAX_ACU_LIMIT),
         };
         self.pending.push(Pending {
             id,
@@ -567,6 +590,8 @@ fn log_session(id: &str) -> String {
 /// Send one approved delegation: `GET /self` for the organization, then `POST …/sessions` with
 /// the approved payload. Both are logged calls on the proxy.
 pub fn start(proxy: &ModelProxy, p: &Pending, now_ms: u64) -> Result<Started, ProxyError> {
+    // The payload (with its ceiling) is complete before anything is sent.
+    let body = session_body(p)?;
     let session = log_session(&p.id);
     let org = proxy.logged_op(
         &ProviderId::Cognition,
@@ -575,7 +600,6 @@ pub fn start(proxy: &ModelProxy, p: &Pending, now_ms: u64) -> Result<Started, Pr
         false,
         |ctx| org_id_from_self(&get_json(ctx, "/self")?),
     )?;
-    let body = session_body(p)?;
     let path = format!("/organizations/{org}/sessions");
     let created = proxy.logged_op(
         &ProviderId::Cognition,
@@ -613,17 +637,56 @@ pub fn status(proxy: &ModelProxy, s: &Started) -> Result<SessionView, ProxyError
         false,
         |ctx| get_json(ctx, &base),
     )?;
-    let msgs_path = format!("{base}/messages?first=100");
-    let messages = proxy
-        .logged_op(
+    let messages = read_messages(proxy, &session, &base);
+    Ok(session_view(s, &info, messages.as_ref()))
+}
+
+/// Pages through a session's messages (oldest first, [`MESSAGE_PAGE`] per page, at most
+/// [`MAX_MESSAGE_PAGES`] pages) and returns them as one `{items}` answer ending with the latest.
+/// A cursor that is not a plain token stops the paging (it would not fit the pinned path); a read
+/// that fails returns what was read, or `None` when nothing was.
+fn read_messages(proxy: &ModelProxy, session: &str, base: &str) -> Option<Value> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut after: Option<String> = None;
+    let mut any = false;
+    for _ in 0..MAX_MESSAGE_PAGES {
+        let path = match &after {
+            None => format!("{base}/messages?first={MESSAGE_PAGE}"),
+            Some(c) => format!("{base}/messages?first={MESSAGE_PAGE}&after={c}"),
+        };
+        let Ok(page) = proxy.logged_op(
             &ProviderId::Cognition,
             DELEGATE_MODEL,
-            &session,
+            session,
             false,
-            |ctx| get_json(ctx, &msgs_path),
-        )
-        .ok();
-    Ok(session_view(s, &info, messages.as_ref()))
+            |ctx| get_json(ctx, &path),
+        ) else {
+            break;
+        };
+        any = true;
+        items.extend(
+            page.get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        // Keep memory bounded: only the latest messages are ever shown.
+        if items.len() > MAX_MESSAGES * 4 {
+            items.drain(..items.len() - MAX_MESSAGES * 4);
+        }
+        let next = page
+            .get("end_cursor")
+            .and_then(Value::as_str)
+            .filter(|c| {
+                crate::provider_egress::path_allowed(&["?after={cursor}"], &format!("?after={c}"))
+            })
+            .map(str::to_string);
+        match (page.get("has_next_page").and_then(Value::as_bool), next) {
+            (Some(true), Some(c)) => after = Some(c),
+            _ => break,
+        }
+    }
+    any.then(|| json!({ "items": items }))
 }
 
 /// The HIC record of one approved delegation (the decision and whether it was sent).
@@ -640,7 +703,12 @@ pub fn hic_event(
         kind: "agent.tool_approval".into(),
         decision: "approved".into(),
         subject: fit(
-            &format!("devin_delegate: {} (scope {})", p.scope.repo, &p.hash[..16]),
+            &format!(
+                "devin_delegate: {} (scope {}, at most {} ACUs)",
+                p.scope.repo,
+                &p.hash[..16],
+                p.scope.max_acu_limit.unwrap_or(0)
+            ),
             300,
         ),
         reason: "the member approved this exact task for a Cognition (Devin) session (HIC-1)"

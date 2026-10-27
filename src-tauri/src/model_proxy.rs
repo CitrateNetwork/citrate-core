@@ -197,6 +197,18 @@ pub fn vendor_adapter(v: Vendor) -> (Arc<dyn ModelProvider>, AdapterKind) {
 /// (ADR-2026-06-03-infer-key-identity).
 struct GatewayAdapter(OpenAiCompatAdapter);
 
+/// The Citrate gateway's published price for every model it serves: `infer.citrate.ai` runs the
+/// gateway's `local-proxy` mode, where `cgk_` keys are metered by request count and a daily quota
+/// with **no payment** (citrate-inference-gateway `gateway/src/main.rs` module docs: "local-proxy:
+/// `cgk_` bearer keys with request-count metering; no payment"; `gateway/RUNBOOK.md` §1). It has
+/// one tier, so the highest tier is this one. The token caps still bound every call; the spend
+/// view shows $0, which is what the member is charged. (The marketplace gateway's x402 pricing is
+/// on another host this proxy does not pin.)
+pub const GATEWAY_PRICE: Price = Price {
+    input_micros_per_mtok: 0,
+    output_micros_per_mtok: 0,
+};
+
 /// The gateway's key format: `cgk_` and URL-safe characters.
 pub const GATEWAY_KEY_FORMAT: crate::model_provider::KeyFormat = crate::model_provider::KeyFormat {
     prefixes: &["cgk_"],
@@ -950,8 +962,15 @@ impl ModelProxy {
         }
         self.store_key(id, &ep, &key)?;
         let mut inner = self.inner();
-        let listed = inner.guard.get(id.as_str()).listed_models.clone();
-        inner.guard.key_set(id.as_str(), listed, now_ms());
+        if replace {
+            // A key the member typed just now.
+            let listed = inner.guard.get(id.as_str()).listed_models.clone();
+            inner.guard.key_set(id.as_str(), listed, now_ms());
+        } else {
+            // A key moved from an older store: when it was made is unknown, so the rotation
+            // reminder does not start counting from the migration.
+            inner.guard.key_date_unknown(id.as_str());
+        }
         crate::provider_guard::save(&self.dir, &mut inner.guard).map_err(ProxyError::Storage)?;
         Ok(true)
     }
@@ -1378,6 +1397,9 @@ impl ModelProxy {
 
     /// The price used for a call: the member's entry, else the adapter's published one.
     pub(crate) fn adapter_price(adapter: &dyn ModelProvider, model: &str) -> Option<Price> {
+        if adapter.id() == ProviderId::Gateway {
+            return Some(GATEWAY_PRICE);
+        }
         adapter
             .models()
             .into_iter()
