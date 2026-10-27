@@ -719,6 +719,10 @@ pub async fn hermes_anchor_approve(
         let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&app)
             .ok_or("internal: custody state unavailable")?;
         let rpc = crate::rpc::RpcClient::citrate();
+        // C1-V6: the anchor shares the app's persisted record of submitted signed bytes.
+        if let Some(st) = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app) {
+            ceremony().use_submitted_log(st.0.submitted_log());
+        }
         let record = |r: &AnchorReceipt| held.record_sent(r);
         let not_sent = |r: &AnchorReceipt| held.forget_unsent(r);
         let receipt = ceremony()
