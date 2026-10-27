@@ -32,7 +32,7 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
   const chainless = head.chainless;
   const stepLabels = chainless
     ? ["recording your approval", "writing to the local store", "checkpointing"]
-    : ["signing — keystore in OS keyring", "broadcasting UserOp", "awaiting inclusion"];
+    : ["signing — keystore in OS keyring", "broadcasting the transaction", "awaiting inclusion"];
 
   const reviewing = s.cerPhase === "review";
   const key = "cer-" + cerKey(head);
