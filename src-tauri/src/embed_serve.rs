@@ -112,6 +112,11 @@ pub fn file_sha256(path: &Path) -> std::io::Result<String> {
 }
 
 impl EmbedServer {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     pub fn new(
         bin: PathBuf,
         model: PathBuf,

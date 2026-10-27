@@ -157,7 +157,7 @@ const KNOWLEDGE_SKIP_TEXT: Record<string, string> = {
 
 /** HUP-S3.1 — status of the first-run knowledge-corpus import. Shows only what the importer
  *  reported (its own counts, its own skip reason or error). Nothing before the first attempt. */
-function KnowledgeImportStatus({ store, s }: SurfaceProps) {
+export function KnowledgeImportStatus({ store, s }: SurfaceProps) {
   const k = s.knowledgeImport;
   if (!k || k.state === "idle") return null;
   const style = { fontSize: 10.5, color: "var(--tx-3)" } as const;

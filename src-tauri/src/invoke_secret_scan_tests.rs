@@ -445,3 +445,357 @@ pub fn view() -> Result<View, String> { todo() }
 "#;
     assert!(violations(&[("synthetic.rs".into(), skipped.into())]).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Secret-typed fields and arguments: an API key or OAuth token is held in `SecretString` (wiping
+// buffer, redacted Debug, no Serialize) from the moment it is deserialized — a command argument,
+// a provider response, a sealed record read back — never in a plain `String`.
+// ---------------------------------------------------------------------------
+
+/// Field and argument names that hold a key or token and must not be a plain owned string.
+const SECRET_TYPED_NAMES: &[&str] = &[
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "client_secret",
+    "priv_key",
+    "private_key",
+    "secret_key",
+    "mnemonic",
+    "entropy",
+    "seed",
+    "passphrase",
+    "password",
+    "bearer",
+    "token",
+    "sheet",
+    "phrase",
+];
+
+/// `(file, name)` pairs that keep a plain string on purpose, with the reason.
+const PLAIN_STRING_EXEMPT: &[(&str, &str, &str)] = &[
+    // The cluster group seed is link/QR text naming where to dial (group id + addresses): it is
+    // meant to be shared and carries no key material. The name is the cluster-daemon wire format.
+    ("cluster.rs", "seed", "a shareable locator, not a secret"),
+    // The group invite token is the share secret by design: it rides the invite link the owner
+    // sends, is single-use and revocable, and the webview shows it (`InviteMinted`).
+    (
+        "invites.rs",
+        "token",
+        "the invite link's share token, shown to the member by design",
+    ),
+    // The same raw invite token on its way to the relay daemon for self-admit (`RedeemInvite`).
+    (
+        "comms.rs",
+        "token",
+        "the invite share token forwarded to the relay for self-admit",
+    ),
+    // `Endpoints::token` is the OIDC token endpoint URL from discovery, not a credential.
+    (
+        "oidc.rs",
+        "token",
+        "the token endpoint URL, not a credential",
+    ),
+];
+
+/// `(file, fn name)` pairs whose secret-named return stays a plain string on purpose, with the
+/// reason.
+const PLAIN_RETURN_EXEMPT: &[(&str, &str, &str)] = &[
+    // The OAuth `state` / `nonce`: single-use values that travel in the authorize URL.
+    (
+        "oidc.rs",
+        "random_token",
+        "an OAuth state/nonce carried in the URL, not a credential",
+    ),
+    // A salted hash of an MCP server's fingerprint that the webview passes back to enable it.
+    (
+        "mcp_servers.rs",
+        "review_token",
+        "a salted hash the webview echoes back, not a credential",
+    ),
+];
+
+/// Whether a fn name names a secret: it is one of [`SECRET_TYPED_NAMES`] or ends in `_<name>`.
+fn fn_names_a_secret(name: &str) -> bool {
+    SECRET_TYPED_NAMES
+        .iter()
+        .any(|n| name == *n || name.ends_with(&format!("_{n}")))
+}
+
+/// Whether a return type yields a plain owned string: the type itself, or the first type
+/// argument of an outer `Option<…>` / `Result<…>` (at any nesting).
+fn returns_plain(ty: &str) -> bool {
+    let mut t = ty.trim();
+    loop {
+        if is_plain_owned(t) {
+            return true;
+        }
+        let stripped = ["std::result::Result<", "Result<", "Option<"]
+            .iter()
+            .find_map(|p| t.strip_prefix(p));
+        match stripped {
+            Some(rest) => t = rest.trim_start(),
+            None => return false,
+        }
+    }
+}
+
+/// `(file, fn name, signature)` for every non-test fn whose name names a secret and whose
+/// return type is a plain owned string.
+fn plain_secret_returns(file: &str, src: &str) -> Vec<(String, String, String)> {
+    let src = crate::vault_slot_reservation_tests::without_test_items(src);
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = src[from..].find("fn ") {
+        let at = from + i;
+        from = at + 3;
+        if at > 0 && src[..at].chars().next_back().is_some_and(is_ident_char) {
+            continue;
+        }
+        let line_start = src[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        if src[line_start..at].trim_start().starts_with("//") {
+            continue;
+        }
+        let name: String = src[at + 3..]
+            .chars()
+            .take_while(|c| is_ident_char(*c))
+            .collect();
+        if name.is_empty() || !fn_names_a_secret(&name) {
+            continue;
+        }
+        let end = src[at..]
+            .find(['{', ';'])
+            .map(|e| at + e)
+            .unwrap_or(src.len());
+        let sig = &src[at..end];
+        let sig = sig.split(" where").next().unwrap_or(sig);
+        let Some((_, ret)) = sig.rsplit_once("->") else {
+            continue;
+        };
+        if !returns_plain(ret) {
+            continue;
+        }
+        if PLAIN_RETURN_EXEMPT
+            .iter()
+            .any(|(f, n, _)| *f == file && *n == name)
+        {
+            continue;
+        }
+        let flat: String = sig.split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push((file.to_string(), name, flat));
+    }
+    out
+}
+
+/// Types that are a plain owned string or byte buffer.
+fn is_plain_owned(ty: &str) -> bool {
+    let ty = ty.trim_start();
+    ["String", "Option<String>", "Vec<u8>", "Option<Vec<u8>>"]
+        .iter()
+        .any(|p| {
+            ty.strip_prefix(p).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with([',', ')', '>', ' ', '}', '\n', ';'])
+            })
+        })
+}
+
+/// `(file, name, line)` for every struct field or fn parameter named in [`SECRET_TYPED_NAMES`]
+/// whose type is a plain owned string, outside test code. `let` bindings are not scanned.
+fn plain_secret_slots(file: &str, src: &str) -> Vec<(String, String, String)> {
+    let src = crate::vault_slot_reservation_tests::without_test_items(src);
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("//") || t.starts_with("let ") || t.starts_with('#') {
+            continue;
+        }
+        for name in SECRET_TYPED_NAMES {
+            let mut from = 0;
+            while let Some(i) = t[from..].find(name) {
+                let at = from + i;
+                from = at + name.len();
+                let before = t[..at].chars().next_back();
+                if before.is_some_and(is_ident_char) || t[..at].trim_end().ends_with("let") {
+                    continue;
+                }
+                let rest = t[at + name.len()..].trim_start();
+                let Some(ty) = rest.strip_prefix(':') else {
+                    continue;
+                };
+                if ty.starts_with(':') || !is_plain_owned(ty) {
+                    continue;
+                }
+                if PLAIN_STRING_EXEMPT
+                    .iter()
+                    .any(|(f, n, _)| *f == file && n == name)
+                {
+                    continue;
+                }
+                out.push((file.to_string(), name.to_string(), t.to_string()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn no_key_or_token_is_held_in_a_plain_string() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
+    production_sources(&manifest.join("src"), &mut sources);
+    production_sources(&manifest.join("..").join("kit").join("src"), &mut sources);
+    assert!(sources.len() > 20, "the scan must see the sources");
+    // A file pulled into a test file with `include!` is test code too.
+    let test_only = included_by_tests(&manifest.join("src"));
+    assert!(
+        test_only.contains("hello_mint_e2e_sidecar.rs"),
+        "the include scan must see the test-only includes: {test_only:?}"
+    );
+    let hits: Vec<_> = sources
+        .iter()
+        .filter(|(path, _)| {
+            let file = Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("");
+            !test_only.contains(file)
+        })
+        .flat_map(|(path, src)| {
+            let file = Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut v = plain_secret_slots(&file, src);
+            v.extend(plain_secret_returns(&file, src));
+            v
+        })
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "hold these in citrate_core_kit::secret::SecretString (or a Zeroizing type):\n{hits:#?}"
+    );
+}
+
+/// File names `include!`d by a test file (`*_tests.rs`, `tests.rs`) under `dir`.
+fn included_by_tests(dir: &Path) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let fname = p
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !(fname.ends_with("_tests.rs") || fname == "tests.rs") {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        for part in src.split("include!(\"").skip(1) {
+            if let Some(name) = part.split('"').next() {
+                out.insert(name.rsplit('/').next().unwrap_or(name).to_string());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn negative_control_secret_named_fns_returning_a_plain_string_are_flagged() {
+    let src = r#"
+pub fn current_node_token(dir: &Path) -> Option<String> { todo() }
+pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> { todo() }
+fn read_sheet<R: Runtime>(
+    app: &AppHandle<R>,
+) -> std::result::Result<Vec<u8>, String> { todo() }
+fn fine_token() -> SecretString { todo() }
+fn wiped_sheet() -> Zeroizing<String> { todo() }
+fn blake3_token_hash(token: &str) -> String { todo() }
+fn tokens_left() -> Result<(), String> { todo() }
+// fn commented_token() -> String {}
+#[cfg(test)]
+mod tests { fn test_token() -> String { todo() } }
+"#;
+    let hits = plain_secret_returns("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["current_node_token", "hermes_token", "read_sheet"],
+        "{hits:#?}"
+    );
+    // The return exemptions hold only in their own files.
+    let rt = "fn random_token() -> String { todo() }\n";
+    assert!(plain_secret_returns("oidc.rs", rt).is_empty());
+    assert_eq!(plain_secret_returns("other.rs", rt).len(), 1);
+    // `sheet` and `phrase` arguments are flagged too.
+    let args = "fn restore(sheet: String, phrase: Option<String>) {}\n";
+    assert_eq!(plain_secret_slots("x.rs", args).len(), 2);
+}
+
+#[test]
+fn negative_control_passphrase_bearer_and_token_names_are_flagged() {
+    let src = r#"
+pub async fn custody_unlock(app_h: tauri::AppHandle, passphrase: String) -> Result<(), String> { todo() }
+struct Login {
+    password: Option<String>,
+    bearer: String,
+}
+struct Target {
+    pub token: String,
+    pub token_hash: String,
+    pub port: u16,
+}
+fn ok(passphrase: SecretString, bearer: &str) {}
+"#;
+    let hits = plain_secret_slots("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["passphrase", "password", "bearer", "token"],
+        "{hits:#?}"
+    );
+    // The share-token exemptions hold only in their own files.
+    let tok = "struct I {\n    pub token: String,\n}\n";
+    assert!(plain_secret_slots("invites.rs", tok).is_empty());
+    assert!(plain_secret_slots("comms.rs", tok).is_empty());
+    assert_eq!(plain_secret_slots("hermes_mcp.rs", tok).len(), 1);
+}
+
+#[test]
+fn negative_control_plain_string_secrets_are_flagged() {
+    let src = r#"
+struct ProviderConfig {
+    base_url: String,
+    api_key: String,
+}
+pub async fn set(provider_id: String, api_key: String) -> Result<(), String> { todo() }
+pub fn exchange(
+    code: String,
+    refresh_token: Option<String>,
+) {}
+struct Fine {
+    access_token: SecretString,
+    api_key_label: String,
+}
+fn ok() { let api_key: String = String::new(); }
+#[cfg(test)]
+mod tests { struct T { api_key: String } }
+"#;
+    let hits = plain_secret_slots("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["api_key", "api_key", "refresh_token"],
+        "{hits:#?}"
+    );
+    // The exemption applies only to its own file.
+    let seed = "struct S {\n    seed: String,\n}\n";
+    assert!(plain_secret_slots("cluster.rs", seed).is_empty());
+    assert_eq!(plain_secret_slots("other.rs", seed).len(), 1);
+}

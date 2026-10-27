@@ -1,9 +1,9 @@
 // =====================================================================
 // citrate-core — Settings surface (1:1 from design/CitrateCore.dc.html
 // SETTINGS section). Nine sections behind a left sub-nav (sSec):
-// Account & RBAC, Connections, AI providers, MCP servers (HUP-S4.4), Node configuration,
-// API endpoints & keys, Keys & security, Budgets (HUP-S2.3), Memberships & billing,
-// Privacy & recovery (HUP-S10.5), App.
+// Account & RBAC, Connections, Providers & keys, MCP servers (HUP-S4.4), Node configuration,
+// API endpoints & keys, Keys & security, Terminal & folders, Budgets (HUP-S2.3), Personas & voice,
+// Memberships & billing, Privacy & recovery (HUP-S10.5), App.
 //
 // Honesty rule (Rule 1 / I-3 · Q-A.1): EVERY control is ONE of —
 //   (a) a REAL working action (config toggles, AI-provider keyring flow,
@@ -45,6 +45,7 @@ import { EscalationSettings } from "./EscalationSettings";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
 import { FaucetPanel } from "../faucet/FaucetPanel";
 import { McpServersPanel } from "./McpServersPanel";
+import { HermesMcpPanel } from "../components/HermesMcpCard";
 import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
 import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
@@ -157,14 +158,16 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["hermes", "Hermes controls"],
-  ["ai", "AI providers"],
-  ["escalation", "Escalation & spend"],
+  ["ai", "Providers & keys"],
+  ["escalation", "Escalation & spend caps"],
   ["mcp", "MCP servers"],
   ["web", "Web search & decisions"],
+  ["terminal", "Terminal & folders"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
   ["budgets", "Budgets"],
+  ["personas", "Personas & voice"],
   ["billing", "Memberships & billing"],
   ["privacy", "Privacy & recovery"],
   ["app", "App"],
@@ -1138,9 +1141,61 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
         {/* ---------- K2 (0.5.2): Hermes controls, first depth (same settings as the cards here) ---------- */}
         {s.sSec === "hermes" && <ControlsPanel store={store} s={s} />}
         {/* ---------- MCP servers (HUP-S4.4) ---------- */}
-        {s.sSec === "mcp" && <McpServersPanel io={desktopMcpIo} />}
+        {/* K2: Hermes's connected tools (memory graph, CitrateScan, this node) moved here from the Agent page. */}
+        {s.sSec === "mcp" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <HermesMcpPanel />
+            <McpServersPanel io={desktopMcpIo} />
+          </div>
+        )}
         {/* ---------- Privacy & recovery (HUP-S10.5) ---------- */}
         {s.sSec === "privacy" && <PrivacySection io={desktopPrivacyIo} now={() => new Date()} toast={(m) => store.toast(m)} />}
+
+        {/* ---------- Terminal & folders (K2: from App to Hermes › Controls › Details) ---------- */}
+        {s.sSec === "terminal" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* Hermes terminal commands (the sidecar's shell_run). On by default since the owner decision of 2026-10-04. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-terminal-access">
+              <span className="eyebrow">Hermes · terminal commands</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <input
+                  id="hermes-terminal"
+                  type="checkbox"
+                  checked={!!s.hermesTerminal}
+                  onChange={(e) => void store.setHermesTerminal(e.target.checked)}
+                />
+                {TERMINAL_ACCESS_LABEL}
+              </label>
+              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
+            </div>
+            {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
+              <span className="eyebrow">Hermes · folder access</span>
+              <GrantsPanel io={desktopGrantsIo} />
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Personas & voice (K2: from App to Hermes › Controls › Details) ---------- */}
+        {s.sSec === "personas" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* HUP-S3.3 + S3.7 — Hermes persona (voice). Default: Hermes's own voice, nothing changes. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              <span className="eyebrow">Hermes · persona</span>
+              <PersonaPicker
+                api={bridge.agentHarness}
+                chosen={s.hermesPersona}
+                custom={s.customPersonas}
+                onChoose={(p) => store.chooseHermesPersona(p)}
+                onAddCustom={(p) => store.addCustomPersona(p)}
+                onRemoveCustom={(id) => store.removeCustomPersona(id)}
+                readAloud={s.hermesReadAloud}
+                onReadAloud={(on) => store.setHermesReadAloud(on)}
+                speechVoices={browserSpeech().voices()}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
@@ -1164,40 +1219,6 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
                 On by default. Uses your local model, and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop instead.
               </span>
-            </div>
-            {/* Hermes terminal commands (the sidecar's shell_run). On by default since the owner decision of 2026-10-04. */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-terminal-access">
-              <span className="eyebrow">Hermes · terminal commands</span>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-                <input
-                  id="hermes-terminal"
-                  type="checkbox"
-                  checked={!!s.hermesTerminal}
-                  onChange={(e) => void store.setHermesTerminal(e.target.checked)}
-                />
-                {TERMINAL_ACCESS_LABEL}
-              </label>
-              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
-            </div>
-            {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
-              <span className="eyebrow">Hermes · folder access</span>
-              <GrantsPanel io={desktopGrantsIo} />
-            </div>
-            {/* HUP-S3.3 + S3.7 — Hermes persona (voice). Default: Hermes's own voice, nothing changes. */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-              <span className="eyebrow">Hermes · persona</span>
-              <PersonaPicker
-                api={bridge.agentHarness}
-                chosen={s.hermesPersona}
-                custom={s.customPersonas}
-                onChoose={(p) => store.chooseHermesPersona(p)}
-                onAddCustom={(p) => store.addCustomPersona(p)}
-                onRemoveCustom={(id) => store.removeCustomPersona(id)}
-                readAloud={s.hermesReadAloud}
-                onReadAloud={(on) => store.setHermesReadAloud(on)}
-                speechVoices={browserSpeech().voices()}
-              />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>
