@@ -3727,5 +3727,14 @@ fn tripwire_only_a_node_read_nonce_is_labelled_fetched() {
         fetched_label_only_on_a_node_read(&src),
         "ceremony.rs must label exactly one nonce Fetched, in the arm that reads pending_nonce"
     );
-    assert!(src.contains("prepared.nonce_source,"), "send_signed records the nonce's origin");
+    // send_signed records the origin carried with the signed tx, never a fixed label. (#378 names
+    // the parked tx `tx`; the check is on the recorded argument, whatever the binding is called.)
+    let calls: Vec<&str> = src
+        .match_indices(".try_record_call(")
+        .map(|(i, _)| &src[i..src[i..].find(')').map_or(src.len(), |j| i + j)])
+        .collect();
+    assert!(
+        !calls.is_empty() && calls.iter().all(|c| c.contains(".nonce_source,")),
+        "send_signed records the nonce's origin: {calls:?}"
+    );
 }
