@@ -37,7 +37,9 @@ after signing; nothing in this repo can sign an update.
 2. `scripts/ci/linux-native-acceptance.sh --update-e2e DIR` enters the K1-L namespace
    ([LINUX_NATIVE_ACCEPTANCE.md](LINUX_NATIVE_ACCEPTANCE.md): no host processes, files, display or
    network), serves the feed with `python3 -m http.server` on 127.0.0.1 inside it, and runs six
-   cases, each from a fresh copy of N:
+   cases, each from a fresh copy of N. The app, the reference extraction of N+1, the feed server
+   and the feed and signature helpers all start through the harness's `CONFINE` prefix, like
+   every other process after the seal (the self-test's `confine-check.py` enforces this):
 
    | Case | Feed | Expected |
    |---|---|---|

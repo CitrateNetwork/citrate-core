@@ -394,8 +394,9 @@ seal() {
 }
 
 # Every process the harness starts after the seal (the app, the package's install scripts, the
-# AppImage extraction, the private display, bus and keyring, the X and bus clients) is started
-# through this prefix:
+# AppImage extraction, the private display, bus and keyring, the X and bus clients, the
+# update-e2e feed server and helpers) is started through this prefix (the self-test enforces it:
+# linux-native-acceptance/confine-check.py):
 #   - it joins the nested user and mount namespace that `seal` made last. The mounts that
 #     namespace inherited from the seal's are locked there (read-only flags cannot be cleared,
 #     the mounts over hidden directories cannot be removed), and a process in it has no
@@ -965,7 +966,7 @@ stop_session_services() {
 ue_ver() { sed -n "s/^$1=//p" "$W/pkgs/ue-versions"; }
 
 ue_write_feed() { # version sig-file artifact-name
-  python3 -I - "$1" "$(tr -d '\n' <"$2")" "http://127.0.0.1:$UE_PORT/$3" "$(uname -m)" \
+  "${CONFINE[@]}" python3 -I - "$1" "$(tr -d '\n' <"$2")" "http://127.0.0.1:$UE_PORT/$3" "$(uname -m)" \
     >"$W/feed/latest.json.new" <<'PY'
 import json, sys
 version, sig, url, arch = sys.argv[1:5]
@@ -979,7 +980,7 @@ PY
 
 # The .sig text with one bit of the Ed25519 signature flipped: same framing and key id.
 ue_alter_sig() { # in out
-  python3 -I - "$1" "$2" <<'PY'
+  "${CONFINE[@]}" python3 -I - "$1" "$2" <<'PY'
 import base64, sys
 lines = base64.b64decode(open(sys.argv[1]).read().strip()).decode().split("\n")
 raw = bytearray(base64.b64decode(lines[1])); raw[40] ^= 1
@@ -1011,7 +1012,7 @@ ue_case() { # name feed-version sig-file artifact expect (install | no-update | 
     XDG_CACHE_HOME="$HOME_DIR/.cache" XDG_STATE_HOME="$HOME_DIR/.local/state"
     XDG_RUNTIME_DIR="$XRT" DBUS_SESSION_BUS_ADDRESS="unix:path=$XRT/bus" DISPLAY="$K1L_PRIVATE_DISPLAY"
     NO_AT_BRIDGE=1 TMPDIR=/tmp APPIMAGE_EXTRACT_AND_RUN=1 CITRATE_UPDATER_E2E=1)
-  env "${envv[@]}" "$APP_EXE" </dev/null >>"$log" 2>&1 &
+  "${CONFINE[@]}" env "${envv[@]}" "$APP_EXE" </dev/null >>"$log" 2>&1 &
   APP_PID=$!
   if [ "$expect" = install ]; then done_re="^updater-e2e: (running version=$UE_TO |refused|check-error|not run)"
   else done_re="^updater-e2e: (no-update|refused|check-error|not run|installed)"; fi
@@ -1088,7 +1089,7 @@ run_update_e2e() {
   mkdir -p "$HOME_DIR/.cache"
   UE_FROM_SHA="$(ue_sha "$W/pkgs/ue-from.AppImage")"; UE_TO_SHA="$(ue_sha "$W/pkgs/ue-to.AppImage")"
   ( mkdir -p "$W/ref-ue-to" && cp "$W/pkgs/ue-to.AppImage" "$W/ref-ue-to.AppImage" && chmod +x "$W/ref-ue-to.AppImage" &&
-    cd "$W/ref-ue-to" && "$W/ref-ue-to.AppImage" --appimage-extract >>"$W/logs/ref-extract.log" 2>&1 ) &&
+    "${CONFINE[@]}" env -C "$W/ref-ue-to" "$W/ref-ue-to.AppImage" --appimage-extract >>"$W/logs/ref-extract.log" 2>&1 ) &&
     rm -f -- "$W/ref-ue-to.AppImage"
   UE_TO_BIN_SHA="$(ue_sha "$W/ref-ue-to/squashfs-root/usr/bin/citrate-core")"
   [ -n "$UE_TO_BIN_SHA" ] || { fail "update-e2e: could not extract N+1 for reference (logs/ref-extract.log)"; return 1; }
@@ -1096,14 +1097,14 @@ run_update_e2e() {
   # The feed directory: N+1, an altered copy of it, and the three signatures.
   mkdir -p "$W/feed"
   cp "$W/pkgs/ue-to.AppImage" "$W/feed/to.AppImage" && cp "$W/pkgs/ue-to.AppImage" "$W/feed/to-altered.AppImage" &&
-    python3 -I -c 'import sys; f=open(sys.argv[1],"r+b"); f.seek(-1,2); b=f.read(1); f.seek(-1,2); f.write(bytes([b[0]^1]))' \
+    "${CONFINE[@]}" python3 -I -c 'import sys; f=open(sys.argv[1],"r+b"); f.seek(-1,2); b=f.read(1); f.seek(-1,2); f.write(bytes([b[0]^1]))' \
       "$W/feed/to-altered.AppImage" || { fail "update-e2e: could not stage the feed"; return 1; }
   # pkgs/ is read-only inside the namespace; derived inputs live next to the feed.
   mkdir -p "$W/ue-sigs" && ue_alter_sig "$W/pkgs/ue-to.AppImage.sig" "$W/ue-sigs/to.AppImage.altered.sig" ||
     { fail "update-e2e: could not make the altered signature"; return 1; }
   start_session_services update-e2e || { fail "update-e2e session: could not start the private bus/keyring"; return 1; }
   # The loopback feed server is part of the test session, like the bus: not counted as a stray.
-  python3 -I -m http.server "$UE_PORT" --bind 127.0.0.1 --directory "$W/feed" \
+  "${CONFINE[@]}" python3 -I -m http.server "$UE_PORT" --bind 127.0.0.1 --directory "$W/feed" \
     </dev/null >>"$W/logs/feed-http.log" 2>&1 &
   local srv=$! i
   INFRA_PIDS+=("$srv"); SESSION_PIDS+=("$srv")
@@ -1178,7 +1179,7 @@ inner_main() {
   "${CONFINE[@]}" Xvfb "$K1L_PRIVATE_DISPLAY" -screen 0 1280x800x24 -nolisten tcp -extension GLX >"$W/logs/xvfb.log" 2>&1 &
   INFRA_PIDS+=("$!")
   local i; for i in $(seq 1 50); do [ -S /tmp/.X11-unix/X77 ] || ss -Hlx | grep -q X11-unix/X77 && break; sleep 0.1; done
-  if ! DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I -c 'import ctypes,ctypes.util,os,sys; x=ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6"); x.XOpenDisplay.restype=ctypes.c_void_p; sys.exit(0 if x.XOpenDisplay(os.environ["DISPLAY"].encode()) else 1)'; then
+  if ! "${CONFINE[@]}" env DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I -c 'import ctypes,ctypes.util,os,sys; x=ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6"); x.XOpenDisplay.restype=ctypes.c_void_p; sys.exit(0 if x.XOpenDisplay(os.environ["DISPLAY"].encode()) else 1)'; then
     say "private Xvfb display did not come up"; echo "RESULT: FAIL (display)" >>"$SUMMARY"; exit 2
   fi
   say "private display $K1L_PRIVATE_DISPLAY up (Xvfb pid ${INFRA_PIDS[-1]}, namespace-local)"
