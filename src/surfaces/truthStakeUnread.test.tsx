@@ -31,6 +31,7 @@ import { Onboarding } from "../onboarding/Onboarding";
 import { store, type Store } from "../shell/store";
 import { freshState, PERSIST_KEYS, type AppState } from "../shell/state";
 import { bridge } from "../bridge";
+import { STAKE_NOT_READ } from "../shell/chainTruth";
 import type { GrantStatus } from "../bridge/domains";
 
 const WEI = 10n ** 18n;
@@ -44,7 +45,6 @@ const stub = {
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
-  refreshEarnings: () => {},
   activateValidator: async () => true,
   toast: () => {},
   identity: () => ({ sub: "sub-1", wallet: "0x" + "0".repeat(40) }),
@@ -116,6 +116,16 @@ describe("the staked figure is '—' until a stakeOf read returns (unknown is no
   it("Wallet overview: once read, a real 0 is 0 (with the bond word) and a real stake is shown", () => {
     expect(walletTile(member({ bondedStakeRead: true, bondedStake: 0, bondActivated: false }))).toEqual(["0", "Bond locked · not staked"]);
     expect(walletTile(member({ bondedStakeRead: true, bondedStake: 32000, bondActivated: true }))).toEqual(["32,000", "ValidatorRegistry.stakeOf"]);
+  });
+
+  it("after a genesis switch the unread stake says which read it waits for: not read yet on this network (#505)", () => {
+    // A stake persisted from the previous network, with the grant read not yet made on the new one.
+    const switched = member({ bondedStake: 32000, bondActivated: true, netUnread: ["grant"] });
+    expect(walletTile(switched)).toEqual(["—", "not read yet on this network"]);
+    expect(dashTile(switched)).toEqual(["—", "not read yet on this network"]);
+    // The same unread stake on the same network keeps the stakeOf caption.
+    expect(walletTile(member({ bondedStake: 32000, bondActivated: true }))).toEqual(["—", STAKE_NOT_READ]);
+    expect(dashTile(member({ bondedStake: 32000, bondActivated: true }))).toEqual(["—", STAKE_NOT_READ]);
   });
 
   it("Wallet staking tab: the same gate", () => {
