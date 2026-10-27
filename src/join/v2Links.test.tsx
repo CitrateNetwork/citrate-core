@@ -84,13 +84,16 @@ describe("v2 links are off unless the build turns them on", () => {
   });
 });
 
+/** Static markup with the apostrophe React escapes put back. */
+const text = (html: string) => html.replace(/&#x27;/g, "'");
+
 describe("with v2 links off, no surface offers one (D-6: an honest not-available)", () => {
   const toastStore = { toast: () => {} } as unknown as Store;
   beforeEach(() => vi.stubEnv("VITE_V2_INVITE_LINKS", ""));
   afterEach(() => vi.unstubAllEnvs());
 
   it("Groups › invite links shows not-available, with no create control", () => {
-    const html = renderToStaticMarkup(<InviteLinks store={toastStore} groupId="grp_1" groupName="Garden" />);
+    const html = text(renderToStaticMarkup(<InviteLinks store={toastStore} groupId="grp_1" groupName="Garden" />));
     expect(html).toContain(V2_LINKS_NOT_AVAILABLE);
     expect(html).not.toMatch(/<button/);
   });
@@ -107,7 +110,7 @@ describe("with v2 links off, no surface offers one (D-6: an honest not-available
   });
 
   it("Community offers no public link", () => {
-    const html = renderToStaticMarkup(<Community store={toastStore} s={freshState("p1")} />);
+    const html = text(renderToStaticMarkup(<Community store={toastStore} s={freshState("p1")} />));
     expect(html).not.toContain("Create a public link");
     expect(html).toContain(V2_LINKS_NOT_AVAILABLE);
   });

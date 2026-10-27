@@ -6,7 +6,7 @@
 // `VITE_V2_INVITE_LINKS=1`. A production build refuses that switch while no key is pinned
 // (v2LinksBuildGuard.ts, run from vite.config.ts), and Rust refuses to make a v2 link without one.
 export function v2InviteLinksEnabled(): boolean {
-  return true;
+  return import.meta.env.VITE_V2_INVITE_LINKS === "1";
 }
 
 /** What the member sees where a v2 invite link control would be. */

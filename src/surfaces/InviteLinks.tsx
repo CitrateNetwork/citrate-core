@@ -7,6 +7,7 @@ import type { JoinCodeEntry, JoinQr } from "../bridge/domains";
 import { QrCode } from "../fleet/FleetWizard";
 import type { Store } from "../shell/store";
 import { JOIN_GOALS, joinErrorMessage, type JoinGoalId } from "./referral";
+import { v2InviteLinksEnabled, V2_LINKS_NOT_AVAILABLE } from "../join/v2Links";
 import {
   codeActions,
   createDirectInvite,
@@ -184,7 +185,12 @@ const STATUS_LABEL: Record<JoinCodeEntry["status"], string> = {
  *  so leaving a group or Community never loses Finish or Revoke. A finished link's share URL (with
  *  its key) is shown from component state only, never stored. `version` reloads the list when the
  *  parent made or revoked a link. Data source (Rule 7): `GET /api/join/mine` via the Rust client. */
-export function YourInviteLinks({ store, version = 0 }: { store: Pick<Store, "toast">; version?: number }) {
+export function YourInviteLinks(props: { store: Pick<Store, "toast">; version?: number }) {
+  // core#423: with v2 links off there are no codes to list, and the service is never asked.
+  return v2InviteLinksEnabled() ? <YourInviteLinksList {...props} /> : null;
+}
+
+function YourInviteLinksList({ store, version = 0 }: { store: Pick<Store, "toast">; version?: number }) {
   const [rows, setRows] = useState<JoinCodeEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -290,7 +296,21 @@ export function YourInviteLinks({ store, version = 0 }: { store: Pick<Store, "to
   );
 }
 
-export function InviteLinks({ store, groupId, groupName, onChanged }: { store: Store; groupId: string; groupName: string; onChanged?: () => void }) {
+type InviteLinksProps = { store: Store; groupId: string; groupName: string; onChanged?: () => void };
+
+export function InviteLinks(props: InviteLinksProps) {
+  // core#423: hidden in 0.5.2. With v2 links off the panel says so and offers no control (D-6).
+  if (!v2InviteLinksEnabled()) {
+    return (
+      <p className="mono" data-testid="v2-links-not-available" style={{ margin: 0, fontSize: 10.5, lineHeight: 1.6, color: "var(--tx-3)" }}>
+        {V2_LINKS_NOT_AVAILABLE}
+      </p>
+    );
+  }
+  return <InviteLinksPanel {...props} />;
+}
+
+function InviteLinksPanel({ store, groupId, groupName, onChanged }: InviteLinksProps) {
   const [direct, setDirect] = useState<DirectOutcome | null>(null);
   const [pub, setPub] = useState<PublicOutcome | null>(null);
   const [busy, setBusy] = useState<"direct" | "public" | null>(null);

@@ -5,6 +5,7 @@
 import { useState } from "react";
 import type { AppState, PendingJoinUi } from "../shell/state";
 import type { Store } from "../shell/store";
+import { v2InviteLinksEnabled } from "../join/v2Links";
 
 export interface PendingJoinCardHandlers {
   onReview: () => void;
@@ -161,11 +162,11 @@ export function InvitePasteField({ onSubmit, busy = false }: { onSubmit: (text: 
   return (
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 8 }}>
       <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: "1 1 260px", minWidth: 200 }}>
-        <span className="lbl">Paste invite link or code</span>
+        <span className="lbl">{v2InviteLinksEnabled() ? "Paste invite link or code" : "Paste invite link"}</span>
         <input
           className="input mono"
           data-testid="invite-paste-input"
-          placeholder="https://citrate.ai/join/… or a code"
+          placeholder={v2InviteLinksEnabled() ? "https://citrate.ai/join/… or a code" : "citrate://invite?…"}
           value={text}
           autoComplete="off"
           spellCheck={false}

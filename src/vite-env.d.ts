@@ -9,4 +9,7 @@ declare const __APP_VERSION__: string;
 interface ImportMetaEnv {
   /** FL round cards (0.5.2): "1" turns them on at build time; anything else is OFF. */
   readonly VITE_FL_ROUND_CARDS?: string;
+  /** v2 invite links (core#423): "1" turns them on at build time; anything else is OFF. A production
+   *  build refuses "1" while kit/src/join.rs pins no key. */
+  readonly VITE_V2_INVITE_LINKS?: string;
 }

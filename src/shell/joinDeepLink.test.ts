@@ -9,6 +9,9 @@ import { STORAGE_KEY } from "./state";
 import { locate } from "./places";
 import type { JoinResolved, PendingJoinView } from "../bridge/domains";
 
+// core#423: v2 invite links are off unless the build turns them on; these tests cover the "on" path.
+vi.stubEnv("VITE_V2_INVITE_LINKS", "1");
+
 const CODE = "Ab3dE7gh";
 // The link-key fixture: bytes 00..0f as unpadded base64url ("AAEC…Dw"). Built at runtime so the
 // secret scanner doesn't read a test constant as a credential.

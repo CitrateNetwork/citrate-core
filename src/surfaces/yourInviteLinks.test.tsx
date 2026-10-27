@@ -11,6 +11,9 @@ import type { JoinCodeEntry, JoinMinted } from "../bridge/domains";
 import { YourInviteLinks } from "./InviteLinks";
 import { codeActions, finishPendingCode, revokeCode } from "./inviteFlow";
 
+// core#423: v2 invite links are off unless the build turns them on; these tests cover the "on" path.
+vi.stubEnv("VITE_V2_INVITE_LINKS", "1");
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const PENDING: JoinCodeEntry = { code: "Ab3dE7gh", kind: "direct", status: "pending", exp: "2100-01-01T00:00:00.000Z", resolveCount: 0 };

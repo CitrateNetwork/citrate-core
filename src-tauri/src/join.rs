@@ -58,9 +58,17 @@ fn with_states<T>(
 }
 
 /// core#423 — why this build refuses to make a v2 invite link, or `None` when it may.
+///
+/// A v2 link is opened only after its resolve signature checks against a pinned key
+/// ([`citrate_core_kit::join::JOIN_PINNED_KEYS`]). With no key pinned, every link this app made
+/// would fail for the person it was sent to, so none is made (D-6: an honest "not available").
+/// The owner hid v2 links in 0.5.2 (2026-10-27); this keeps them off whatever the UI does.
 pub(crate) fn v2_links_refusal(pins: &[PinnedKey]) -> Option<String> {
-    let _ = pins;
-    None
+    pins.is_empty().then(|| {
+        "Short invite links are not available in this version: this build has no key to check \
+         them with."
+            .to_string()
+    })
 }
 
 /// `join_mint` — reserve a code and, for `direct`, seal `invite_link` (the

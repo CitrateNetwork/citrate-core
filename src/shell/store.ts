@@ -90,6 +90,7 @@ import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
+import { v2InviteLinksEnabled, V2_LINK_NOT_ACCEPTED } from "../join/v2Links";
 
 /** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
@@ -2473,6 +2474,11 @@ export class Store {
     // it to Rust to hold and drop it here. Nothing is resolved until the member acts. During first-run
     // setup it waits on the onboarding card; once set up it waits on the Groups banner.
     if (kind.kind === "v2") {
+      // core#423: with v2 links off (0.5.2), the link is never held: say why and drop it.
+      if (!v2InviteLinksEnabled()) {
+        this.toast(V2_LINK_NOT_ACCEPTED);
+        return;
+      }
       reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
       void this.holdInvite(url).then((ok) => {
         if (ok && this.state.stage === "done") this.go("groups");
@@ -2550,6 +2556,11 @@ export class Store {
    *  when the text isn't a v2 invite, so the caller can try its own (legacy) path. */
   async acceptInviteInput(raw: string): Promise<boolean> {
     if (classifyInviteInput(raw).kind !== "v2") return false;
+    // core#423: a pasted v2 link or code is consumed with the reason, never held, while v2 is off.
+    if (!v2InviteLinksEnabled()) {
+      this.toast(V2_LINK_NOT_ACCEPTED);
+      return true;
+    }
     const ok = await this.holdInvite(raw.trim());
     if (ok && this.canJoinNow()) await this.reviewPendingJoin();
     return ok;

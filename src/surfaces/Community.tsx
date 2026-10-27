@@ -17,6 +17,7 @@ import { bridge } from "../bridge";
 import type { JoinQr } from "../bridge/domains";
 import { QrCode } from "../fleet/FleetWizard";
 import { copyLink, YourInviteLinks } from "./InviteLinks";
+import { v2InviteLinksEnabled, V2_LINKS_NOT_AVAILABLE } from "../join/v2Links";
 import { createPublicLink, expiryLabel, type PublicOutcome } from "./inviteFlow";
 
 /** The display name on a network-wide public link (there is no group behind it). */
@@ -43,6 +44,8 @@ export function Community({ store }: SurfaceProps) {
   const [qr, setQr] = useState<JoinQr | null>(null);
   // Bumped after a mint so "Your invite links" (recovered from the service) reloads.
   const [linksVersion, setLinksVersion] = useState(0);
+  // core#423: v2 invite links are hidden in 0.5.2 (a build-time switch).
+  const v2Links = v2InviteLinksEnabled();
   const mint = async () => {
     if (busy) return;
     setBusy(true);
@@ -114,7 +117,11 @@ export function Community({ store }: SurfaceProps) {
 
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
             <span className="eyebrow">Your public link</span>
-            {pub?.kind === "link" && pub.minted.shareUrl ? (
+            {!v2Links ? (
+              <span className="mono" data-testid="v2-links-not-available" style={{ fontSize: 10.5, lineHeight: 1.6, color: "var(--tx-3)" }}>
+                {V2_LINKS_NOT_AVAILABLE}
+              </span>
+            ) : pub?.kind === "link" && pub.minted.shareUrl ? (
               <>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", background: "var(--srf-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pub.minted.shareUrl}</span>
@@ -131,9 +138,11 @@ export function Community({ store }: SurfaceProps) {
                 {pub?.kind === "error" && <span role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.5 }}>{pub.message}</span>}
               </>
             )}
-            <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
-              a short link that shows your name and points people to Citrate · no group id or wallet address in it · to add someone to a group, send a one-time link from Groups
-            </p>
+            {v2Links && (
+              <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
+                a short link that shows your name and points people to Citrate · no group id or wallet address in it · to add someone to a group, send a one-time link from Groups
+              </p>
+            )}
             <YourInviteLinks store={store} version={linksVersion} />
           </div>
         </div>

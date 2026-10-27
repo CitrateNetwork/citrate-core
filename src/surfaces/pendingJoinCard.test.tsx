@@ -1,10 +1,13 @@
 // GROW-S1 task 12 — the waiting-invite card (onboarding + Groups), one static render per state.
 // Never a silent join: the only Join control is an explicit "Join <cluster>" button on a resolved,
 // actionable invite, and only once setup allows it.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PendingJoinCardView, InvitePasteField } from "./PendingJoinCard";
 import type { PendingJoinUi } from "../shell/state";
+
+// core#423: v2 invite links are off unless the build turns them on; these tests cover the "on" path.
+vi.stubEnv("VITE_V2_INVITE_LINKS", "1");
 
 const noop = () => {};
 const h = { onReview: noop, onJoin: noop, onCancel: noop };
