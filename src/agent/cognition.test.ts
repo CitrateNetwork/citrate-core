@@ -32,6 +32,7 @@ const VIEW: DelegationView = {
   scopeHash: "ab".repeat(32),
   expiresAtMs: 1,
   destination: "Cognition (Devin) · api.devin.ai",
+  maxAcuLimit: 5,
 };
 
 const SESSION: DelegationSession = {
@@ -113,6 +114,10 @@ describe("devin_delegate (D-11, P-8)", () => {
     const d = deps();
     const out = await runDelegationTool(d, { repo: "acme/app", task: "Fix it", files: ["src/auth.ts", 7], context: "c" });
     expect(d.calls[0]).toBe("prepare:" + JSON.stringify({ repo: "acme/app", task: "Fix it", files: ["src/auth.ts"], context: "c" }));
+    // A per-task ceiling the member asked for travels as maxAcuLimit (core bounds it).
+    const d2 = deps();
+    await runDelegationTool(d2, { repo: "acme/app", task: "t", max_acu_limit: 12 });
+    expect(d2.calls[0]).toContain('"maxAcuLimit":12');
     expect(d.confirm).toHaveBeenCalledWith(VIEW);
     expect(d.calls[1]).toBe(`approve:dg-1:${VIEW.scopeHash}`);
     expect(out).toContain("delegation id dg-1");
@@ -148,8 +153,17 @@ describe("devin_delegate (D-11, P-8)", () => {
     expect(a.card.tool).toBe(DELEGATE_TOOL_NAME);
   });
 
-  it("scope arguments keep only strings", () => {
+  it("scope arguments keep only strings (and a whole-number ceiling)", () => {
     expect(scopeFromArgs({ repo: 5, task: { x: 1 }, files: "a" })).toEqual({ repo: "", task: "", files: [], context: "" });
+    expect(scopeFromArgs({ repo: "a/b", task: "t", max_acu_limit: 2.5 }).maxAcuLimit).toBeUndefined();
+    expect(scopeFromArgs({ repo: "a/b", task: "t", max_acu_limit: "9" }).maxAcuLimit).toBeUndefined();
+  });
+
+  it("the card shows the spend ceiling, and says so when it is above the default", () => {
+    const rows = (v: DelegationView) => Object.fromEntries(delegationApproval(v).rows.map((r) => [r.k, r.v]));
+    expect(rows(VIEW)["Spend ceiling"]).toBe("at most 5 ACUs of Devin usage for this task (the default)");
+    expect(rows({ ...VIEW, maxAcuLimit: 40 })["Spend ceiling"]).toBe("at most 40 ACUs of Devin usage for this task (above the default of 5)");
+    expect(delegationApproval({ ...VIEW, maxAcuLimit: 40 }).cost).toContain("40 ACUs");
   });
 });
 

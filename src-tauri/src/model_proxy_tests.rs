@@ -695,3 +695,26 @@ fn a_key_test_keeps_the_date_the_key_was_set() {
         Some(set_at + 31 * 86_400_000)
     );
 }
+
+#[test]
+fn a_migrated_key_does_not_restart_the_rotation_clock() {
+    let rig = Rig::new("proxy-import-date");
+    // No proxy key yet for xAI: an imported key has no known creation date (it is not "now").
+    rig.proxy
+        .import_key(&ProviderId::Vendor(Vendor::Xai), SecretString::new(fake_key("xai-")), false)
+        .unwrap();
+    assert_eq!(rig.proxy.with_state(|g, _| g.get("xai").key_set_ms), None);
+    // An existing key and its date are kept when an older copy is migrated over it.
+    let set_at = rig.proxy.with_state(|g, _| g.get("openai").key_set_ms).unwrap();
+    rig.proxy
+        .import_key(&ProviderId::Vendor(Vendor::OpenAi), SecretString::new(fake_key("sk-")), false)
+        .unwrap();
+    assert_eq!(rig.proxy.with_state(|g, _| g.get("openai").key_set_ms), Some(set_at));
+    // A key the member types now (an unconfirmed custom endpoint) is dated now.
+    let c = rig.proxy.add_custom("Box", "https://llm.example.org/v1", vec!["m".into()], 1).unwrap();
+    let before = now_ms();
+    rig.proxy
+        .import_key(&ProviderId::Custom(c.id.clone()), SecretString::new(fake_key("bx-")), true)
+        .unwrap();
+    assert!(rig.proxy.with_state(|g, _| g.get(&c.id).key_set_ms).is_some_and(|t| t >= before));
+}

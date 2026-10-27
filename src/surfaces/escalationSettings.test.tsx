@@ -49,6 +49,8 @@ describe("Settings › Escalation (HUP-S1.5)", () => {
     expect(html).toContain("Planner · api.example.com");
     expect(html).toContain("$3.00 in / $15.00 out per 1M tokens");
     expect(html).toContain("key kept on this computer");
+    // D-11: removing an https endpoint leaves its key with the provider (shared with chat).
+    expect(html).toContain("Removing an https endpoint leaves its key with its provider in Settings › Models");
     expect(html).not.toMatch(/sk-/);
   });
 

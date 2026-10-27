@@ -2801,6 +2801,8 @@ export interface DelegationScope {
   repo: string;
   files: string[];
   context: string;
+  /** The Devin spend ceiling for this task (ACUs); absent = core's default (5). */
+  maxAcuLimit?: number;
 }
 export interface DelegationView {
   delegationId: string;
@@ -2813,6 +2815,8 @@ export interface DelegationView {
   scopeHash: string;
   expiresAtMs: number;
   destination: string;
+  /** The Devin spend ceiling sent with the session (ACUs), inside the approval hash. */
+  maxAcuLimit: number;
 }
 export interface DelegationStarted {
   delegationId: string;

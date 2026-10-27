@@ -72,6 +72,11 @@ pub const MAX_PATH_CHARS: usize = 300;
 pub const MAX_MESSAGES: usize = 20;
 pub const MAX_MESSAGE_CHARS: usize = 4000;
 pub const MAX_STRUCTURED_BYTES: usize = 16 * 1024;
+/// The Devin spend ceiling per delegated task, in ACUs (owner decision 2026-10-27: 5 by default,
+/// changeable per task, shown on the card and covered by the approval hash).
+pub const DEFAULT_MAX_ACU_LIMIT: u32 = 5;
+/// The highest ceiling one task may ask for. Pending owner sign-off.
+pub const MAX_ACU_LIMIT: u32 = 100;
 /// The tag every delegated session carries.
 pub const SESSION_TAG: &str = "citrate-core";
 
@@ -189,6 +194,10 @@ pub struct DelegationScope {
     pub files: Vec<String>,
     #[serde(default)]
     pub context: String,
+    /// The most Devin usage (ACUs) this one session may consume (`max_acu_limit`); absent = the
+    /// default.
+    #[serde(default)]
+    pub max_acu_limit: Option<u32>,
 }
 
 fn clean(s: &str) -> String {
@@ -252,6 +261,7 @@ pub fn validate_scope(s: &DelegationScope) -> Result<DelegationScope, String> {
         repo,
         files,
         context,
+        max_acu_limit: s.max_acu_limit,
     })
 }
 
@@ -292,14 +302,14 @@ pub fn scope_hash(s: &DelegationScope, prompt: &str) -> String {
 }
 
 /// The `POST /sessions` body: built only from what was approved.
-pub fn session_body(p: &Pending) -> Value {
+pub fn session_body(p: &Pending) -> Result<Value, ProxyError> {
     let title: String = p.scope.task.chars().take(80).collect();
-    json!({
+    Ok(json!({
         "prompt": p.prompt,
         "repos": [p.scope.repo],
         "title": format!("Citrate Core: {title}"),
         "tags": [SESSION_TAG],
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +351,8 @@ pub struct DelegationView {
     pub scope_hash: String,
     pub expires_at_ms: u64,
     pub destination: String,
+    /// The Devin spend ceiling for this task (ACUs).
+    pub max_acu_limit: u32,
 }
 
 #[derive(Default)]
@@ -375,6 +387,7 @@ impl DelegationBook {
             scope_hash: hash.clone(),
             expires_at_ms: now_ms.saturating_add(APPROVAL_TTL_MS),
             destination: "Cognition (Devin) · api.devin.ai".to_string(),
+            max_acu_limit: DEFAULT_MAX_ACU_LIMIT,
         };
         self.pending.push(Pending {
             id,
@@ -562,7 +575,7 @@ pub fn start(proxy: &ModelProxy, p: &Pending, now_ms: u64) -> Result<Started, Pr
         false,
         |ctx| org_id_from_self(&get_json(ctx, "/self")?),
     )?;
-    let body = session_body(p);
+    let body = session_body(p)?;
     let path = format!("/organizations/{org}/sessions");
     let created = proxy.logged_op(
         &ProviderId::Cognition,

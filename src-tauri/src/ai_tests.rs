@@ -1295,3 +1295,22 @@ fn chat_on_the_preferred_id_goes_to_the_members_preferred_model_through_the_prox
         Err(AiError::NotConfirmed.to_string())
     );
 }
+
+// Owner decision 2026-10-27: an upgraded install's gateway chat keeps working under the default
+// currency caps: core ships the gateway's published price (cgk_ keys are not billed per token).
+#[test]
+fn an_upgraded_gateway_preset_chats_under_the_default_caps_without_a_member_price() {
+    let r = Remote::new("ai-gw-default-caps", "gateway answer");
+    let mgr = mgr_no_http();
+    let key = gw_key();
+    // A 0.5.1 preset: the key inside, a model nobody priced, the default caps untouched.
+    mgr.keyring
+        .set(&account_for("gateway"), &legacy_blob(GATEWAY_BASE, "citrate-default", &key))
+        .unwrap();
+    let caps = r.proxy.with_state(|g, _| g.get("gateway").caps);
+    assert!(caps.daily_micros.is_some(), "the default currency cap applies");
+    let out = mgr
+        .chat(&r.proxy, &permit_for("gateway"), "gateway", &convo("q"), "{}")
+        .expect("not refused for an unknown price");
+    assert_eq!(out, "gateway answer");
+}
