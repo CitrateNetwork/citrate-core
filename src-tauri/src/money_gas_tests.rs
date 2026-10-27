@@ -155,21 +155,6 @@ fn a_send_estimated_above_the_cap_is_not_proposed() {
 /// Fixed gas limits that are allowed to stay, each with why. An entry whose code is gone is fine.
 const FIXED_GAS_ALLOWED: &[(&str, &str, &str)] = &[
     (
-        "staking.rs",
-        "DEPOSIT_GAS",
-        "LiquidStakingPool, retired at r1006 (D-9); the LSP removal deletes it",
-    ),
-    (
-        "staking.rs",
-        "REQUEST_WITHDRAWAL_GAS",
-        "LiquidStakingPool (#501), retired at r1006 (D-9); the LSP removal deletes it",
-    ),
-    (
-        "staking.rs",
-        "CLAIM_WITHDRAWAL_GAS",
-        "LiquidStakingPool, retired at r1006 (D-9); the LSP removal deletes it",
-    ),
-    (
         "hermes_learn.rs",
         "REGISTER_SKILL_GAS",
         "a zero-value skill publish, switched off (SKILL_PUBLISH_ENABLED); not a money send",

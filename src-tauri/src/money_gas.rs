@@ -3,9 +3,9 @@
 //! A money send (a SALT transfer, a bond activation, a refund claim, a fee-paying registration)
 //! carries the gas limit the node estimates for that exact call, plus a margin, and never a fixed
 //! number. A fixed limit below what the contract really costs is mined and reverts, and the member
-//! pays the gas for nothing: `LiquidStakingPool.requestWithdrawal` went out with 150,000 while the
-//! pool needs about 160,500 (citrate-core#501). An estimate can only come from the node that will
-//! run the call, so it moves with the contracts.
+//! pays the gas for nothing: a withdrawal request went out with 150,000 while the call needed
+//! about 160,500 (citrate-core#501). An estimate can only come from the node that will run the
+//! call, so it moves with the contracts.
 //!
 //! A failed estimate (the call would revert, or the node cannot be reached) refuses the send
 //! before any ceremony exists: nothing is proposed that the node already says will fail. An
