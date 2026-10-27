@@ -52,10 +52,12 @@ describe("P2.1 slow or flaky RPCs", () => {
       calls++;
       return h.read();
     };
-    for (let i = 0; i < 6; i++) {
+    // Every fold is past the throttle and still inside HEAD_READ_TIMEOUT_MS of the first read.
+    for (let i = 0; i < 3; i++) {
       tr.fold(100_000 + i * 80, read);
-      now += HEAD_READ_MS; // every fold is past the throttle
+      now += HEAD_READ_MS;
     }
+    expect(now - T0).toBeLessThan(HEAD_READ_TIMEOUT_MS);
     expect(calls).toBe(1);
     h.pending[0].resolve(200_000);
     await flush();
