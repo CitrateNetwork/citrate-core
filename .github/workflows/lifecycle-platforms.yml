@@ -1,5 +1,6 @@
 # created: 2026-10-09 | SCL-S1.6 partial core-kit lane
-# status: partial — this workflow covers citrate-core-kit supervisor tests only.
+# status: partial — this workflow covers citrate-core-kit supervisor tests, plus the K6
+# compiled-source check (rustc dep-info) on each shipping target's cfg set.
 # Explicitly excluded: src-tauri/runtime and the remaining SCL-S1.6 platform scope.
 name: lifecycle-platforms
 
@@ -63,3 +64,22 @@ jobs:
             exit "$cargo_status"
           fi
           grep -Fq "test result: ok. ${EXPECTED} passed; 0 failed; 0 ignored" supervisor-tests.log
+
+      # K6 (core#363): rustc dep-info lists only what compiled for this target, so code gated on
+      # macOS or Windows is checked here, on the target where it compiles (ci.yml covers Linux).
+      # The lib build writes the non-test dep-info the check requires.
+      - name: Run the K6 compiled-source check on this target and verify pass count
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --locked -p citrate-core-kit
+          cargo test --locked -p citrate-core-kit --lib -- --exact \
+            wallet::tests::k6_compiled_sources_stay_in_the_scanned_trees \
+            wallet::tests::k6_dep_info_sources_reads_every_listed_file \
+            wallet::tests::k6_dep_info_violations_flags_a_probe_the_target_compiled \
+            2>&1 | tee k6-dep-info.log
+          cargo_status=${PIPESTATUS[0]}
+          if [ "$cargo_status" -ne 0 ]; then
+            exit "$cargo_status"
+          fi
+          grep -Fq "test result: ok. 3 passed; 0 failed; 0 ignored" k6-dep-info.log

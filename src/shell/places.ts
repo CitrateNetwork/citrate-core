@@ -35,10 +35,10 @@ export interface Place {
 }
 
 /** Settings sections that live in Hermes › Controls: the Controls panel (`hermes`) and the Details sections. */
-export const CONTROLS_SETTINGS = ["hermes", "ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"] as const;
+export const CONTROLS_SETTINGS = ["hermes", "models", "ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"] as const;
 /** Hermes › Controls › 2 · Details: the Settings sections for Hermes, in the design's order (slice 1).
  *  Terminal & folders and Personas & voice came out of Settings › App. */
-export const CONTROLS_DETAIL_SETTINGS = ["ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"] as const;
+export const CONTROLS_DETAIL_SETTINGS = ["models", "ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"] as const;
 /** The Settings section that moved to Node › Advanced. */
 export const NODE_SETTINGS = ["node"] as const;
 /** Account-level Settings sections, the only ones Settings keeps. */
@@ -171,6 +171,7 @@ export const LEGACY_ROUTES: Record<string, Redirect> = {
   // Settings sections that moved to Hermes › Controls. `hermes` is the Controls panel itself
   // (1 · Switches); the rest open 2 · Details on their section.
   "settings/hermes": { route: "hermes/controls", patch: { sSec: "hermes" } },
+  "settings/models": { route: "hermes/controls/details", patch: { sSec: "models" } },
   "settings/ai": { route: "hermes/controls/details", patch: { sSec: "ai" } },
   "settings/escalation": { route: "hermes/controls/details", patch: { sSec: "escalation" } },
   "settings/mcp": { route: "hermes/controls/details", patch: { sSec: "mcp" } },
@@ -179,6 +180,7 @@ export const LEGACY_ROUTES: Record<string, Redirect> = {
   "settings/budgets": { route: "hermes/controls/details", patch: { sSec: "budgets" } },
   "settings/personas": { route: "hermes/controls/details", patch: { sSec: "personas" } },
   // The design's depth-two ids (design/SLICE1_NOTES.md) open Details on their section.
+  "hermes/controls/models": { route: "hermes/controls/details", patch: { sSec: "models" } },
   "hermes/controls/providers": { route: "hermes/controls/details", patch: { sSec: "ai" } },
   "hermes/controls/escalation": { route: "hermes/controls/details", patch: { sSec: "escalation" } },
   "hermes/controls/mcp": { route: "hermes/controls/details", patch: { sSec: "mcp" } },

@@ -146,11 +146,37 @@ export function measuredBlockSeconds(latest: BlockStamp, older: BlockStamp): num
   return Number(secs) / Number(blocks);
 }
 
-/** The live reads over the public RPC. */
+/** The error a read gets when the target chain has no RPC url. Nothing is sent. */
+export class NoRpcUrlError extends Error {
+  constructor(read: string) {
+    super(`no RPC url is set for this build, so ${read} was not read`);
+    this.name = "NoRpcUrlError";
+  }
+}
+
+/**
+ * The live reads over the public RPC.
+ *
+ * Building this never touches the transport: the store singleton builds it while its module is
+ * imported, and viem checks the RPC url when a client is built. The client is built on the first
+ * read instead, and when the chain has no RPC url (an incomplete network profile) each read is
+ * refused with NoRpcUrlError and nothing is sent; callers show "—" with that reason.
+ */
 export function createChainReads(): ChainReads {
-  const client = createPublicClient({ chain: citrate, transport: http() });
+  let built: ReturnType<typeof createPublicClient> | null = null;
+  const rpcUrl = (read: string): string => {
+    const url = citrate.rpcUrls.default.http[0];
+    if (!url) throw new NoRpcUrlError(read);
+    return url;
+  };
+  const clientFor = (read: string) => {
+    rpcUrl(read);
+    built ??= createPublicClient({ chain: citrate, transport: http() });
+    return built;
+  };
   return {
     async validatorActivation(pubkey) {
+      const client = clientFor("the validator state");
       const read = <F extends "isActive" | "validatorInfo" | "currentEpoch">(functionName: F, args?: readonly [`0x${string}`]) =>
         client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName, args } as never);
       const [isActive, info, epoch] = await Promise.all([
@@ -161,9 +187,11 @@ export function createChainReads(): ChainReads {
       return { isActive, status: Number(info[8]), actEpoch: Number(info[5]), currentEpoch: Number(epoch) };
     },
     async minStakeWei() {
+      const client = clientFor("the validator minimum stake");
       return client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "minStake" });
     },
     async blockSeconds() {
+      const client = clientFor("the block time");
       const latest = await client.getBlock({ blockTag: "latest" });
       if (latest.number == null || latest.number < BLOCK_TIME_WINDOW) return null;
       const older = await client.getBlock({ blockNumber: latest.number - BLOCK_TIME_WINDOW });
@@ -171,6 +199,8 @@ export function createChainReads(): ChainReads {
       return measuredBlockSeconds({ number: latest.number, timestamp: latest.timestamp }, { number: older.number, timestamp: older.timestamp });
     },
     async producerSample() {
+      const url = rpcUrl("the producer set");
+      const client = clientFor("the producer set");
       const head = await client.getBlockNumber();
       const n = BigInt(PRODUCER_SAMPLE_BLOCKS);
       const from = head >= n - 1n ? head - (n - 1n) : 0n;
@@ -178,7 +208,7 @@ export function createChainReads(): ChainReads {
       for (let b = from, id = 0; b <= head; b++, id++) {
         batch.push({ jsonrpc: "2.0", id, method: "eth_getBlockByNumber", params: ["0x" + b.toString(16), false] });
       }
-      const res = await fetch(citrate.rpcUrls.default.http[0], {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(batch),
