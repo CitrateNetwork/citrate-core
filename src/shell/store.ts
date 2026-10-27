@@ -262,6 +262,13 @@ export function earningsKeyCheck(expected: string | undefined, proposerPubkey: u
  * `pubkey()` (C1-V5) and `isUnlocked()` as read (chain#331). No bond, or a field an older backend
  * does not send, is null (unread).
  */
+/**
+ * #362 B-1 (red stub) — why the bond path's Claim is not offered, or null when it may be.
+ */
+export function bondClaimBlocked(_s: Pick<AppState, "bondActivated" | "bondedStake" | "hasGrant" | "bondKycVerified">): string | null {
+  return null;
+}
+
 export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked"> {
   if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null };
   return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null };
