@@ -49,7 +49,7 @@ export interface HeightPoint {
   v: number;
 }
 
-/** The two series the rate is measured from. */
+/** The two series the rate is measured from, each pruned to WINDOW_MS. */
 export interface SyncSeries {
   local: HeightPoint[];
   head: HeightPoint[];
@@ -57,14 +57,39 @@ export interface SyncSeries {
 
 export const emptySeries = (): SyncSeries => ({ local: [], head: [] });
 
-// RED STUB: keeps the old behaviour (no progress is measured). Replaced by the implementation.
-export function observe(series: SyncSeries, _which: "local" | "head", _t: number, _v: number | null | undefined): SyncSeries {
-  return series;
+/**
+ * Add one reading. A missing or 0 height (not read) adds nothing. A height below the last one
+ * (the chain data was reset, or the profile RPC changed) restarts that series, so a rate is never
+ * measured across the jump. Out-of-order or same-time readings are dropped. Points older than
+ * WINDOW_MS are pruned. Returns a new series; the input is not changed.
+ */
+export function observe(series: SyncSeries, which: "local" | "head", t: number, v: number | null | undefined): SyncSeries {
+  const prune = (pts: HeightPoint[]) => pts.filter((p) => t - p.t <= WINDOW_MS);
+  let pts = series[which];
+  if (v == null || !Number.isFinite(v) || v <= 0 || !Number.isFinite(t)) return { ...series, [which]: prune(pts) };
+  const last = pts[pts.length - 1];
+  if (last && t <= last.t) return series;
+  if (last && v < last.v) pts = [];
+  return { ...series, [which]: [...prune(pts), { t, v }] };
 }
 
-export function slopePerSec(_pts: HeightPoint[]): number | null {
-  return null;
+/** Least-squares slope in blocks per second, or null with fewer than two distinct times. */
+export function slopePerSec(pts: HeightPoint[]): number | null {
+  if (pts.length < 2) return null;
+  const t0 = pts[0].t;
+  const xs = pts.map((p) => (p.t - t0) / 1000);
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const my = pts.reduce((a, p) => a + p.v, 0) / pts.length;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < pts.length; i++) {
+    num += (xs[i] - mx) * (pts[i].v - my);
+    den += (xs[i] - mx) ** 2;
+  }
+  return den > 0 ? num / den : null;
 }
+
+const span = (pts: HeightPoint[]) => (pts.length ? pts[pts.length - 1].t - pts[0].t : 0);
 
 export type SyncProgress =
   | { kind: "unknown"; missing: "local" | "head" }
@@ -74,25 +99,122 @@ export type SyncProgress =
       local: number;
       head: number;
       behind: number;
+      /** "estimating": not enough points yet; "catching-up": net rate positive, ETA given;
+       *  "not-catching-up": measured, but the gap is not closing; "stalled": no new local block in STALL_MS. */
       phase: "estimating" | "catching-up" | "not-catching-up" | "stalled";
+      /** Net catch-up rate in blocks/s; set only once measured. */
       rate: number | null;
+      /** Seconds to catch up; set only in "catching-up". */
       etaSec: number | null;
     };
 
-export function syncProgress(_series: SyncSeries, _now: number): SyncProgress {
-  return { kind: "unknown", missing: "local" };
+/** Whether the local height has not moved for STALL_MS (observed for at least that long). */
+function stalledFor(local: HeightPoint[], now: number): boolean {
+  const last = local[local.length - 1];
+  let since = last.t;
+  for (let i = local.length - 1; i >= 0 && local[i].v === last.v; i--) since = local[i].t;
+  return now - since >= STALL_MS;
 }
 
+/** The sync progress at `now` from the two series. */
+export function syncProgress(series: SyncSeries, now: number): SyncProgress {
+  const local = series.local[series.local.length - 1];
+  if (!local || now - local.t > LOCAL_FRESH_MS) return { kind: "unknown", missing: "local" };
+  const head = series.head[series.head.length - 1];
+  if (!head || now - head.t > HEAD_FRESH_MS) return { kind: "unknown", missing: "head" };
+  const behind = head.v - local.v;
+  if (behind <= SYNCED_WITHIN_BLOCKS) return { kind: "synced", local: local.v, head: head.v };
+  const base = { kind: "syncing" as const, local: local.v, head: head.v, behind };
+  if (stalledFor(series.local, now)) return { ...base, phase: "stalled", rate: null, etaSec: null };
+  const enough =
+    series.local.length >= MIN_LOCAL_POINTS &&
+    series.head.length >= MIN_HEAD_POINTS &&
+    span(series.local) >= MIN_SPAN_MS &&
+    span(series.head) >= MIN_SPAN_MS;
+  const ls = enough ? slopePerSec(series.local) : null;
+  const hs = enough ? slopePerSec(series.head) : null;
+  if (ls == null || hs == null) return { ...base, phase: "estimating", rate: null, etaSec: null };
+  const rate = ls - hs;
+  if (!(rate > MIN_NET_RATE)) return { ...base, phase: "not-catching-up", rate, etaSec: null };
+  const etaSec = behind / rate;
+  if (etaSec > MAX_ETA_SEC) return { ...base, phase: "not-catching-up", rate, etaSec: null };
+  return { ...base, phase: "catching-up", rate, etaSec };
+}
+
+const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
+
+/** "~40 blocks/s", "~2.5 blocks/s", "~0.4 blocks/s". */
 export function formatRate(rate: number): string {
-  return String(rate);
+  const r = rate >= 10 ? fmt(rate) : rate.toFixed(1);
+  return "~" + r + " blocks/s";
 }
 
+/** "under a minute", "about 5 min", "about 3 h", "about 2 days". Always approximate. */
 export function formatEta(sec: number): string {
-  return String(sec);
+  if (sec < 60) return "under a minute";
+  if (sec < 90 * 60) return "about " + Math.round(sec / 60) + " min";
+  if (sec < 48 * 3600) return "about " + Math.round(sec / 3600) + " h";
+  return "about " + Math.round(sec / 86_400) + " days";
 }
 
-export function syncLine(_p: SyncProgress | null): string {
-  return "";
+/** The one line a surface shows for the progress. */
+export function syncLine(p: SyncProgress | null): string {
+  if (!p) return "Sync unknown · not read yet";
+  switch (p.kind) {
+    case "unknown":
+      return p.missing === "local" ? "Sync unknown · this node's height not read yet" : "Sync unknown · network head unavailable";
+    case "synced":
+      return "Synced";
+    case "syncing": {
+      const head = "Syncing · " + fmt(p.behind) + " blocks behind";
+      switch (p.phase) {
+        case "stalled":
+          return head + " · no new blocks in 2 min, checking peers";
+        case "estimating":
+          return head + " · estimating…";
+        case "not-catching-up":
+          return head + " · not catching up yet";
+        case "catching-up":
+          return head + " · catching up " + formatRate(p.rate ?? 0) + " · " + formatEta(p.etaSec ?? 0);
+      }
+    }
+  }
 }
 
-export const SYNC_SOURCE = "";
+/**
+ * The store's side of the window: one call per node poll. Folds this node's height (null when the
+ * node isn't running, which restarts the window), starts a public head read at most every
+ * HEAD_READ_MS (it lands in the window when it answers; a failed or 0x0 read adds nothing, so the
+ * head goes stale and reads unknown), and returns the progress now.
+ */
+export class SyncTracker {
+  private series: SyncSeries = emptySeries();
+  private lastHeadReadAt = Number.NEGATIVE_INFINITY;
+
+  fold(local: number | null, readHead: () => Promise<number | null>, now: number = Date.now()): SyncProgress {
+    if (local == null) {
+      this.series = emptySeries();
+      this.lastHeadReadAt = Number.NEGATIVE_INFINITY;
+      return syncProgress(this.series, now);
+    }
+    this.series = observe(this.series, "local", now, local);
+    if (now - this.lastHeadReadAt >= HEAD_READ_MS) {
+      this.lastHeadReadAt = now;
+      Promise.resolve()
+        .then(readHead)
+        .then(
+          (head) => {
+            this.series = observe(this.series, "head", Date.now(), head);
+          },
+          () => {
+            /* unknown, not zero: no reading is added */
+          },
+        );
+    }
+    return syncProgress(this.series, now);
+  }
+}
+
+/** Where the numbers come from, for a tooltip (Rule 7). */
+export const SYNC_SOURCE =
+  "This node's height (local eth_blockNumber) against the public head (eth_blockNumber on the network profile's RPC). The rate is measured over the last 5 minutes; no percentage is shown.";

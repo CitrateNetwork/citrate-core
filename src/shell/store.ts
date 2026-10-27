@@ -61,6 +61,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
+import { SyncTracker } from "./syncProgress";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
@@ -671,6 +672,8 @@ export class Store {
    *  restart-loop forever against a chain-side wedge that advances only a few blocks per restart. */
   private nodeStallCycles = 0;
   private nodeStalledNotified = false;
+  /** 0.5.2 RC52 — the sync progress window: local heights and public heads (syncProgress.ts). */
+  private syncTracker = new SyncTracker();
   /** The chain-reset notice from `node_status` was shown this session. */
   private nodeChainResetNotified = false;
   // W1.x — true once the producer has been armed this session (the node respawns
@@ -1584,6 +1587,9 @@ export class Store {
       // The mining gate holds or disarms production (node.rs). A producer the backend disarmed
       // is no longer armed here either, so the re-arm path above retries it (still gated).
       patch.miningHold = st.miningHold ?? null;
+      // 0.5.2 RC52 — sync progress and an honest ETA: this node's height (local eth_blockNumber, only
+      // while running) against the public head (eth_blockNumber on the profile RPC, throttled).
+      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead());
       if (this.validatorArmed && !st.miningArmed && st.miningHold) this.validatorArmed = false;
       if (st.blocked && st.state === "stopped") nextNode = "error";
       if (!this.nodeStarting) patch.node = nextNode;

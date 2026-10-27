@@ -71,7 +71,8 @@ describe("refreshNode folds sync progress", () => {
     expect(p.etaSec).not.toBeNull();
     // Throttled: about one head read per HEAD_READ_MS, not one per 2 s tick.
     expect(reads.publicHead.mock.calls.length).toBeLessThanOrEqual(Math.ceil((40 * 2000) / HEAD_READ_MS) + 1);
-    expect(reads.publicHead.mock.calls.length).toBeGreaterThanOrEqual(Math.floor((40 * 2000) / HEAD_READ_MS) - 1);
+    // At least one read per HEAD_READ_MS rounded up to the next 2 s tick.
+    expect(reads.publicHead.mock.calls.length).toBeGreaterThanOrEqual(Math.floor((40 * 2000) / (HEAD_READ_MS + 2000)));
   });
 
   it("a head read that fails leaves the head unknown: no behind, no rate, no ETA, never Synced", async () => {
