@@ -90,6 +90,7 @@ pub fn watch(record_path: PathBuf) -> Option<ChildWatch> {
         ended: Arc::new(move || {
             let _ = apply(&record_path);
         }),
+        prepare: None,
     })
 }
 

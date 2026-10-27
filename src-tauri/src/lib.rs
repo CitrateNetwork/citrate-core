@@ -322,6 +322,9 @@ pub fn run() {
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
             hermes::clean_leftover_browser(handle);
+            // RC52 P-9a: spawn-time MCP files an earlier run left are removed, and member MCP env
+            // values an older version kept in plain text move to the keychain (in the background).
+            mcp_servers::startup(handle);
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());
