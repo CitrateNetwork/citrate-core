@@ -346,7 +346,7 @@ describe("Settings › Models: fail-closed states pause every provider", () => {
     const html = render({ statuses: [vendor({ keyConfigured: true })], usage: summary({ logIntact: false, logProblem: "the usage log failed verification (the file is shorter than its anchor)" }) });
     expect(html).toContain('data-testid="usage-log-broken"');
     expect(html).toContain("the file is shorter than its anchor");
-    expect(html).toContain("This month's spend carries into the new log, so starting one does not reset your caps.".replace("'", "&#x27;"));
+    expect(html).toContain("This month&#x27;s spend carries into the new log, so starting one does not reset your caps.");
   });
 
   it("a clock moved back: every call is refused until the clock is right, with a check-again action", () => {
