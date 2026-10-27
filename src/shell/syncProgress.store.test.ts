@@ -120,6 +120,8 @@ describe("refreshNode folds sync progress", () => {
     wire(async () => 300_000);
     await tick(0, "stopped");
     store.setState({ node: "syncing" });
+    // A fresh stall window (the store singleton carries it across tests).
+    Object.assign(store as unknown as Record<string, number>, { nodeStallLastHeight: -1, nodeStallSince: 0 });
     // The first frozen tick starts the timer; wall time then jumps back an hour.
     await tick(100_000);
     await tick(100_000);
