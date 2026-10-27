@@ -190,6 +190,18 @@ describe("fails closed", () => {
     await refused(["--check"], /share address/);
   });
 
+  it("on a --genesis or an address with a trailing newline (full-string match)", async () => {
+    writeBook(book());
+    const r = await run(["--book", bookPath, "--genesis", GENESIS + "\n", "--out", outPath]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/--genesis must be 0x \+ 64 hex/);
+    expect(fs.existsSync(outPath)).toBe(false);
+    writeBook(book({ ...REQUIRED, ...HUP, InferenceRouter: HUP.InferenceRouter + "\n" }));
+    await refused(["--check"], /not an address .*contracts\.InferenceRouter/);
+    writeBook(book({ ...REQUIRED, ...HUP, SkillRegistry: REQUIRED.SkillRegistry + "\n" }));
+    await refused([], /SkillRegistry is missing/);
+  });
+
   it("on the wrong chain or genesis", async () => {
     writeBook(book());
     chain.id = 1;

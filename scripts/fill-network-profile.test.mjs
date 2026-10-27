@@ -11,7 +11,9 @@
 // 3. The release check refuses a build whose active profile has an unset value (negative
 //    control: the shipped file with `active` flipped to the unfilled r1006), and passes the
 //    shipped file (positive control).
-// 4. The Python rule and the TypeScript rule agree on malformed values.
+// 4. The Python rule and the TypeScript rule agree on malformed values, including a value with a
+//    trailing newline (Python's `$` matches before a final "\n", so every pattern is matched with
+//    re.fullmatch; a tripwire below keeps it that way).
 //
 // Everything runs on copies in a fresh temp dir; nothing touches the repo or the network.
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
@@ -73,6 +75,8 @@ const writeBook = (b, name = "book.json") => {
   return p;
 };
 const read = () => JSON.parse(fs.readFileSync(profiles, "utf8"));
+// Script runs take ~0.5-3 s each; under parallel cargo load the 5 s default is too tight.
+const SLOW = { timeout: 30_000 };
 
 beforeEach(() => {
   dir = fs.mkdtempSync("/tmp/dgx-fillprof-");
@@ -105,7 +109,7 @@ describe("the shipped r1006 profile", () => {
   });
 });
 
-describe("fill-network-profile.sh", () => {
+describe("fill-network-profile.sh", SLOW, () => {
   it("writes only the reroll values; the filled profile is ready by the app's rule", () => {
     const before = fs.readFileSync(profiles, "utf8");
     const r = run(fill, fillArgs());
@@ -157,13 +161,27 @@ describe("fill-network-profile.sh", () => {
     ["an abbreviated chain rev", { rev: "1f1f1f1f" }, /--min-chain-rev must be a full 40-hex commit/],
     ["a non-hex chain rev", { rev: "g".repeat(40) }, /--min-chain-rev must be a full 40-hex commit/],
     ["a zero chain rev", { rev: "0".repeat(40) }, /--min-chain-rev is zero/],
+    // Full-string matching: nothing before or after the value.
+    ["a genesis hash with a trailing newline", { genesis: GENESIS + "\n" }, /--genesis-hash must be 0x \+ 64 hex/],
+    ["a genesis hash with trailing junk", { genesis: GENESIS + "00" }, /--genesis-hash must be 0x \+ 64 hex/],
+    ["a genesis hash with leading whitespace", { genesis: " " + GENESIS }, /--genesis-hash must be 0x \+ 64 hex/],
+    ["a chain rev with a trailing newline", { rev: REV + "\n" }, /--min-chain-rev must be a full 40-hex commit/],
+    ["a chain rev with a trailing CRLF", { rev: REV + "\r\n" }, /--min-chain-rev must be a full 40-hex commit/],
+    ["a chain rev with leading whitespace", { rev: "\t" + REV }, /--min-chain-rev must be a full 40-hex commit/],
+    ["a 41-hex chain rev", { rev: REV + "a" }, /--min-chain-rev must be a full 40-hex commit/],
+    ["a 39-hex chain rev", { rev: REV.slice(1) }, /--min-chain-rev must be a full 40-hex commit/],
+    ["r1005's genesis hash for r1006", { genesis: "SHIPPED_R1005" }, /is already the genesis of profile alpha-r1005/],
     ["an unknown profile", { profile: "r1007" }, /no profile 'r1007'/],
     ["a profile with other values unset (genesis-2026-12)", { profile: "genesis-2026-12" }, /also has .* unset/],
   ];
   for (const [what, over, msg] of refusals) {
     it(`refuses ${what} and writes nothing`, () => {
       const before = fs.readFileSync(profiles);
-      const r = run(fill, fillArgs(over));
+      // Another profile's genesis (in another case) is another network, not this one's.
+      const args = over.genesis === "SHIPPED_R1005"
+        ? { genesis: read().profiles["alpha-r1005"].genesisHash.toUpperCase().replace(/^0X/, "0x") }
+        : over;
+      const r = run(fill, fillArgs(args));
       expect(r.code).toBe(1);
       expect(r.err).toMatch(msg);
       expect(fs.readFileSync(profiles).equals(before)).toBe(true);
@@ -176,6 +194,8 @@ describe("fill-network-profile.sh", () => {
     ["a book that is not the canonical book (no deployer)", (() => { const b = canonicalBook(); delete b.deployer; return b; })(), /lacks \['deployer'\]/],
     ["the app's generated book instead of the canonical one", { chainId: 40204, genesisHash: GENESIS, addresses: {} }, /is not a canonical book/],
     ["a book with an entry that is not an address", canonicalBook({ aaStack: { CitratePaymaster: "0x1234" } }), /not an address in the book: aaStack.CitratePaymaster/],
+    ["a book with an address with a trailing newline", canonicalBook({ aaStack: { CitratePaymaster: addr("06") + "\n" } }), /not an address in the book: aaStack.CitratePaymaster/],
+    ["a book whose deployer has a trailing newline", canonicalBook({ deployer: addr("dd") + "\n" }), /deployer .* is not an address/],
     ["a book missing a pin the app needs", (() => { const b = canonicalBook(); delete b.contracts.ValidatorRegistry; return b; })(), /sync-addresses\.py --check: .*ValidatorRegistry is missing/],
     ["a book with two pins at one address", canonicalBook({ contracts: { ...canonicalBook().contracts, SkillRegistry: addr("08") } }), /share address/],
     ["a book with a different genesis", canonicalBook({ genesisHash: "0x" + "7b".repeat(32) }), /genesisHash .* != --genesis-hash/],
@@ -218,12 +238,18 @@ describe("fill-network-profile.sh", () => {
     expect(read().profiles.r1006.minChainRev).toBe(REV);
   });
 
+  it("keeps the file's mode (a 0644 file stays 0644, not mkstemp's 0600)", () => {
+    fs.chmodSync(profiles, 0o644);
+    expect(run(fill, fillArgs()).code).toBe(0);
+    expect(fs.statSync(profiles).mode & 0o777).toBe(0o644);
+  });
+
   it("usage error without a profile", () => {
     expect(run(fill, ["--genesis-hash", GENESIS]).code).toBe(2);
   });
 });
 
-describe("check-network-profile.sh (release tripwire, G0)", () => {
+describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
   it("positive control: the shipped profiles pass the release check", () => {
     const r = run(check, ["--release"]);
     expect(r.code, r.err).toBe(0);
@@ -316,6 +342,17 @@ describe("check-network-profile.sh (release tripwire, G0)", () => {
     [{ addressBookSha256: "0".repeat(64) }, "addressBookSha256 is not a sha256 digest"],
     [{ minChainRev: "c384fc98" }, "minChainRev is not a commit"],
     [{ minChainRev: "0".repeat(40) }, "minChainRev is not a commit"],
+    // Full-string matching (a trailing newline, a CR, a leading space, the wrong case).
+    [{ genesisHash: GENESIS + "\n" }, "genesisHash is not a block hash"],
+    [{ genesisHash: " " + GENESIS }, "genesisHash is not a block hash"],
+    [{ nodeNetwork: "testnet\n" }, "nodeNetwork is malformed"],
+    [{ rpcUrl: "https://rpc.citrate.ai\n" }, "rpcUrl is not an https URL"],
+    [{ bootnodes: ["noise_" + "ab".repeat(32) + "@host:30303\n"] }, "bootnodes has a malformed entry"],
+    [{ addressBookSha256: "ab".repeat(32) + "\n" }, "addressBookSha256 is not a sha256 digest"],
+    [{ addressBookSha256: "ab".repeat(32) + "\r" }, "addressBookSha256 is not a sha256 digest"],
+    [{ minChainRev: REV + "\n" }, "minChainRev is not a commit"],
+    [{ minChainRev: " " + REV }, "minChainRev is not a commit"],
+    [{ minChainRev: "1F".repeat(20) }, "minChainRev is not a commit"],
   ];
   for (const [patch, why] of malformed) {
     it(`both rules refuse ${JSON.stringify(patch)}`, () => {
@@ -327,6 +364,31 @@ describe("check-network-profile.sh (release tripwire, G0)", () => {
       const r = run(check, ["--profiles", profiles]);
       expect(r.code).toBe(1);
       expect(r.err).toContain(why);
+    });
+  }
+});
+
+// Tripwire: a validating regex in a scripts/*.py helper must match the whole string. Python's `$`
+// also matches before a final "\n" and `re.match` only anchors the start, so `^…$` with
+// `.match`/`.search` lets "value\n" through. Use `re.fullmatch` (or `\A…\Z`).
+const partialMatch = (src) =>
+  src.split("\n").flatMap((line, i) => {
+    const hits = [];
+    if (/\b(re|[A-Z][A-Z0-9_]*)\.match\(/.test(line)) hits.push(`${i + 1}: .match( : ${line.trim()}`);
+    if (/re\.compile\(r?["'][^"']*\$["']/.test(line)) hits.push(`${i + 1}: pattern ends in $ : ${line.trim()}`);
+    return hits;
+  });
+
+describe("tripwire: full-string regex matching in the script helpers", () => {
+  it("negative control: the scan flags `^…$` with .match", () => {
+    expect(partialMatch('X = re.compile(r"^0x[0-9a-f]{40}$")\nif X.match(v):\n    pass')).toHaveLength(2);
+    expect(partialMatch('if re.match(r"^a", v):')).toHaveLength(1);
+    expect(partialMatch('X = re.compile(r"0x[0-9a-f]{40}")\nif X.fullmatch(v):')).toEqual([]);
+  });
+
+  for (const name of ["network-profile.py", "sync-addresses.py"]) {
+    it(`${name} uses fullmatch`, () => {
+      expect(partialMatch(fs.readFileSync(path.join(here, name), "utf8"))).toEqual([]);
     });
   }
 });
