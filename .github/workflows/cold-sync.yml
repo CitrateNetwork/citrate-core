@@ -121,7 +121,9 @@ jobs:
             printf '%s\n' --profile "$OUT/profile.json" > "$OUT/profile-args"
           elif [ -f src-tauri/network/profiles.json ]; then
             printf '%s\n' --profiles src-tauri/network/profiles.json > "$OUT/profile-args"
-            [ -n "$IN_PROFILE_NAME" ] && printf '%s\n' --name "$IN_PROFILE_NAME" >> "$OUT/profile-args"
+            if [ -n "$IN_PROFILE_NAME" ]; then
+              printf '%s\n' --name "$IN_PROFILE_NAME" >> "$OUT/profile-args"
+            fi
           else
             echo "::error::no src-tauri/network/profiles.json on this ref (K6, core #363); pass profile_json"
             exit 1
@@ -134,10 +136,13 @@ jobs:
           NODE_SHA256: ${{ steps.node.outputs.sha256 }}
         run: |
           set -euo pipefail
-          mapfile -t args < "$OUT/profile-args"
+          args=()
+          while IFS= read -r l; do args+=("$l"); done < "$OUT/profile-args"
           args+=(--node-bin "$NODE_BIN" --expect-sha256 "$NODE_SHA256"
                  --timeout "$IN_TIMEOUT" --every "$IN_EVERY" --out "$OUT/positive")
-          [ -n "$IN_BLOCKS" ] && args+=(--blocks "$IN_BLOCKS")
+          if [ -n "$IN_BLOCKS" ]; then
+            args+=(--blocks "$IN_BLOCKS")
+          fi
           set +e
           python3 scripts/e2e/cold-sync.py "${args[@]}"
           code=$?
@@ -160,7 +165,8 @@ jobs:
           set -euo pipefail
           # The same profile and address book with another genesis (last hex digit flipped), so
           # the run gets past the input checks and both gates are exercised.
-          mapfile -t pargs < "$OUT/profile-args"
+          pargs=()
+          while IFS= read -r l; do pargs+=("$l"); done < "$OUT/profile-args"
           python3 - "$OUT" "${pargs[@]}" <<'PY'
           import json, sys
           out, args = sys.argv[1], sys.argv[2:]

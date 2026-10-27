@@ -69,6 +69,7 @@ const noGrant: GrantStatus = {
 };
 
 const stubStore = {
+  walletIsLinked: () => true,
   identity: () => ({ name: "M", initials: "M", email: "—", sub: "—", wallet: MEMBER.walletAddr, tier: "member", role: "member", org: null, real: true }),
   refreshWallet: () => {},
   refreshActivity: () => {},

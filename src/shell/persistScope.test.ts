@@ -18,7 +18,7 @@ const SCOPES: Record<string, "network" | "device"> = {
   stage: "device", s2: "device", s3: "device",
   s5: "network", s5n: "network", hasGrant: "network", hasSbt: "network",
   liquid: "network", bondedStake: "network", claimable: "network", activity: "network",
-  nodeIntent: "device", gwKey: "device", rpc: "device", net: "device", cpuCap: "device", autolock: "device",
+  nodeIntent: "device", rpc: "device", net: "device", cpuCap: "device", autolock: "device",
   channel: "device", telemetry: "device", telemetryConsentVersion: "device", storageMode: "device",
   coachDone: "device", dataDir: "device", coreMembershipUrl: "device",
   s5StakeWei: "network", s5BondStatus: "network",

@@ -26,6 +26,7 @@ import type { Store } from "../shell/store";
 // Wallet calls store.identity() at render + refreshes in effects (never fired by a
 // static render). A tiny stub covers the render-time call.
 const stubStore = {
+  walletIsLinked: () => true,
   identity: () => ({
     name: "Member",
     initials: "M",

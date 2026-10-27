@@ -12,8 +12,8 @@ import { freshState, makeAddr, type AppState } from "../shell/state";
 import type { Store } from "../shell/store";
 
 // S3/S4 render from `s`; `store` is only touched in button onClicks (never fired
-// by a static render).
-const noopStore = {} as unknown as Store;
+// by a static render), except S4's link check (core#425), which reads walletIsLinked().
+const noopStore = { walletIsLinked: () => false } as unknown as Store;
 
 function s3Settled(): AppState {
   const s = freshState("p1");
@@ -42,16 +42,18 @@ describe("Onboarding S4 wallet — item 10 (persona-derived address)", () => {
     // NEGATIVE CONTROL — the fabricated persona address must NOT render.
     expect(html).not.toContain(makeAddr("Dana Okafor"));
     expect(html).not.toContain(s.walletAddr);
-    // POSITIVE — an honest pending state instead of a fabricated address.
-    expect(html.toLowerCase()).toContain("pending");
+    // POSITIVE — an honest unread state instead of a fabricated address. Since core#425 the card
+    // shows the device key (custodyAddr), which is not read yet here.
+    expect(html).toContain("device key not read yet");
   });
 
-  it("renders the REAL wallet address for a signed-in user WITH a real wallet claim (positive control)", () => {
+  it("renders the REAL device key address for a signed-in user (positive control)", () => {
     const s = freshState("p1");
     s.stage = "s4";
     s.signedIn = true;
     s.walletFromClaim = true;
     s.walletAddr = "0x" + "ab".repeat(20);
+    s.custodyAddr = "0x" + "ab".repeat(20);
     const html = renderToStaticMarkup(<S4 store={noopStore} s={s} />);
     expect(html).toContain("0x" + "ab".repeat(20));
   });

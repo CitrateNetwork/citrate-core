@@ -545,8 +545,6 @@ export interface AppState {
   panY: number;
   pollIn: number;
   dl: Record<string, { st: string; pct: number }>;
-  gwKey: string | null;
-  gwKeyFull: string | null;
   rpc: "local" | "public";
   net: "testnet" | "local";
   cpuCap: number;
@@ -913,8 +911,6 @@ export function freshState(pid: string): AppState {
     panY: 0,
     pollIn: 20,
     dl: {},
-    gwKey: null,
-    gwKeyFull: null,
     rpc: "local",
     net: "testnet",
     cpuCap: 50,
@@ -1062,7 +1058,6 @@ export function freshState(pid: string): AppState {
       s.node = "off";
       s.liquid = 58.02;
       s.claimable = 2.14;
-      s.gwKey = "cgk_9f31•••••••••••••7f2a";
       s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
       s.node = "validating";
@@ -1094,7 +1089,7 @@ export const PERSIST_SCOPE = {
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
   liquid: N, bondedStake: N, claimable: N, activity: N,
-  nodeIntent: D, gwKey: D, rpc: D, net: D, cpuCap: D, autolock: D, channel: D,
+  nodeIntent: D, rpc: D, net: D, cpuCap: D, autolock: D, channel: D,
   telemetry: D, telemetryConsentVersion: D, storageMode: D, coachDone: D, dataDir: D, coreMembershipUrl: D,
   s5StakeWei: N, s5BondStatus: N,
   walletAddr: D, commsAddr: D, socketPath: D, activeModelId: D,
@@ -1118,10 +1113,15 @@ export const NETWORK_KEYS = PERSIST_KEYS.filter((k) => PERSIST_SCOPE[k] === N);
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
+/** D-11 (P-9d): an older build persisted a gateway key display. Provider keys live only in the OS
+ *  keychain, so these are retired, and a save that still holds them is rewritten without them. */
+const LEGACY_GATEWAY_KEYS = ["gwKey", "gwKeyFull"] as const;
+
 /** Keys earlier builds persisted that are retired, dropped from a save when it loads:
  *  - D-9 (2026-10-26): the liquid staking pool is retired, so its self-stake figure is not current.
- *  - C1-V V8: the off-chain earnings estimates (earnVal / earnPin / earnComp / earnToday). */
-export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday"];
+ *  - C1-V V8: the off-chain earnings estimates (earnVal / earnPin / earnComp / earnToday).
+ *  - D-11 (P-9d): the gateway key display (`LEGACY_GATEWAY_KEYS`). */
+export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday", ...LEGACY_GATEWAY_KEYS];
 
 export function loadState(netKey: string = currentNetKey()): AppState {
   let saved: Partial<AppState> | null = null;
@@ -1137,7 +1137,16 @@ export function loadState(netKey: string = currentNetKey()): AppState {
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
   // Upgrade review: a 0.5.1 save may still carry retired keys; never fold them into state.
+  // D-11 (P-9d): a save holding a gateway key display is rewritten at once, not at the next save.
+  const hadGatewayKey = !!saved && LEGACY_GATEWAY_KEYS.some((k) => k in (saved as object));
   if (saved) for (const k of RETIRED_KEYS) delete (saved as Record<string, unknown>)[k];
+  if (saved && hadGatewayKey) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    } catch {
+      /* storage unavailable: the next save writes PERSIST_KEYS only, which never include them */
+    }
+  }
   // RC52: values read from another genesis's chain are never restored as current. They are
   // archived under that genesis, reset to "not read yet", and the switch notice is raised.
   if (saved) {
