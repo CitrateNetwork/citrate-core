@@ -84,6 +84,9 @@ pub struct PeriodView {
     pub tokens: u64,
     pub spend_micros: u64,
     pub unpriced_calls: u64,
+    /// The usage log was reset in this period after its record of past use was missing, so spend
+    /// earlier in the period is unknown: the totals above count only calls since that reset.
+    pub earlier_spend_unknown: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,16 +216,18 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
         .collect()
 }
 
-fn period(calls: u64, p: crate::provider_guard::PeriodUse) -> PeriodView {
+fn period(calls: u64, p: crate::provider_guard::PeriodUse, earlier_unknown: bool) -> PeriodView {
     PeriodView {
         calls,
         tokens: p.tokens,
         spend_micros: p.micros,
         unpriced_calls: p.unpriced_calls,
+        earlier_spend_unknown: earlier_unknown,
     }
 }
 
 pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummaryView {
+    let (day_unknown, month_unknown) = log.earlier_spend_unknown(now);
     let providers = all_ids(g)
         .into_iter()
         .map(|id| {
@@ -230,8 +235,8 @@ pub fn usage_summary_of(g: &GuardBook, log: &UsageLog, now: u64) -> UsageSummary
             let (dc, mc) = log.call_counts(id.as_str(), now);
             ProviderUsageView {
                 id: id.to_string(),
-                today: period(dc, d),
-                month: period(mc, m),
+                today: period(dc, d, day_unknown),
+                month: period(mc, m, month_unknown),
                 unsettled_calls: log.unsettled(id.as_str()),
                 caps: g.get(id.as_str()).caps,
             }
@@ -360,10 +365,8 @@ pub fn custom_confirm(
 
 pub fn usage_log_reset(proxy: &ModelProxy) -> Result<UsageSummaryView, String> {
     let now = now_ms();
-    proxy.with_state(|g, log| {
-        log.reset_broken(now).map_err(|e| e.to_string())?;
-        Ok(usage_summary_of(g, log, now))
-    })
+    proxy.reset_usage_log(now).map_err(|e| e.to_string())?;
+    Ok(proxy.with_state(|g, log| usage_summary_of(g, log, now)))
 }
 
 // ---------------------------------------------------------------------------

@@ -251,3 +251,152 @@ fn the_diagnostics_bundle_scrubs_every_vendor_key_shape() {
         assert!(!re.contains(&k), "re-scrub leaked {:?}", &k[..8]);
     }
 }
+
+/// A line without its `//` comment (whole-line or trailing). A `//` inside a string literal (such
+/// as `"https://…"`) is not a comment.
+fn code_part(l: &str) -> &str {
+    let b = l.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if in_str => i += 1,
+            b'"' => in_str = !in_str,
+            b'/' if !in_str && b.get(i + 1) == Some(&b'/') => return &l[..i],
+            _ => {}
+        }
+        i += 1;
+    }
+    l
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// `(file, where)` for every mention of the identifier `name` in code (comments ignored): `def` for
+/// its own `fn name` definition, else the enclosing fn (the last `fn <x>` before it). A call, an
+/// alias (`use … as x`) and a bare function pointer are all mentions.
+fn mentions(srcs: &[(String, String)], name: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (file, text) in srcs {
+        let code: String = text.lines().map(code_part).collect::<Vec<_>>().join("\n");
+        let mut from = 0;
+        while let Some(i) = code[from..].find(name) {
+            let at = from + i;
+            from = at + name.len();
+            let before = &code[..at];
+            let after = code[at + name.len()..].chars().next();
+            if before.chars().next_back().is_some_and(is_ident) || after.is_some_and(is_ident) {
+                continue;
+            }
+            let place = if before.ends_with("fn ") {
+                "def".to_string()
+            } else {
+                before
+                    .rfind("fn ")
+                    .map(|f| {
+                        before[f + 3..]
+                            .chars()
+                            .take_while(|c| is_ident(*c))
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default()
+            };
+            out.push((file.clone(), place));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Files whose code contains `needle` anywhere (comments ignored).
+fn files_naming(srcs: &[(String, String)], needle: &str) -> Vec<String> {
+    srcs.iter()
+        .filter(|(_, t)| t.lines().any(|l| code_part(l).contains(needle)))
+        .map(|(f, _)| f.clone())
+        .collect()
+}
+
+fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut p: Vec<_> = v
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    p.sort();
+    p
+}
+
+const PUL: &str = "provider_usage_log.rs";
+
+#[test]
+fn only_a_fresh_install_and_a_log_reset_create_the_anchor() {
+    let srcs = sources();
+    // A new anchor comes from exactly two places: a fresh install opening the proxy
+    // (`fresh_install_anchor`, which writes only when none exists) and the member's log reset.
+    // `update_anchor` writes only over an anchor that exists. Any other mention (a call, an alias,
+    // a function pointer) is flagged.
+    assert_eq!(
+        mentions(&srcs, "fresh_install_anchor"),
+        pairs(&[(PUL, "def"), ("model_proxy.rs", "new")])
+    );
+    assert_eq!(
+        mentions(&srcs, "create_anchor"),
+        pairs(&[(PUL, "def"), (PUL, "fresh_install_anchor")])
+    );
+    assert_eq!(
+        mentions(&srcs, "write_anchor"),
+        pairs(&[
+            (PUL, "def"),
+            (PUL, "create_anchor"),
+            (PUL, "reset_broken"),
+            (PUL, "update_anchor"),
+        ])
+    );
+    // The keychain account, by constant or by its literal name, only in provider_usage_log.rs.
+    assert_eq!(files_naming(&srcs, "ANCHOR_ACCOUNT"), vec![PUL.to_string()]);
+    assert_eq!(
+        files_naming(&srcs, "provider-anchor-v1"),
+        vec![PUL.to_string()]
+    );
+}
+
+#[test]
+fn negative_control_an_extra_anchor_creator_is_flagged() {
+    let src = "fn create_anchor(k: &K) { write_anchor(k, &A) }\n\
+               fn sneaky() { // write_anchor(k, &a) in a comment\n write_anchor(k, &a); }\n\
+               fn pointer() { let f = write_anchor; }\n\
+               fn url() { let u = \"https://x\"; write_anchor(k, &a); }\n";
+    let got = mentions(&[(PUL.into(), src.into())], "write_anchor");
+    assert_eq!(
+        got,
+        pairs(&[
+            (PUL, "create_anchor"),
+            (PUL, "pointer"),
+            (PUL, "sneaky"),
+            (PUL, "url")
+        ]),
+        "calls, a pointer and a call after a URL string are all seen; the comment is not"
+    );
+    let alias = "use crate::provider_usage_log::create_anchor as x;\nfn save() { x(k); }\n";
+    assert_eq!(
+        mentions(
+            &[("provider_guard.rs".into(), alias.into())],
+            "create_anchor"
+        ),
+        pairs(&[("provider_guard.rs", "")])
+    );
+    let literal = "fn f(k: &K) { k.set(\"provider-anchor-v1\", \"{}\"); }\n";
+    assert_eq!(
+        files_naming(
+            &[("provider_guard.rs".into(), literal.into())],
+            "provider-anchor-v1"
+        ),
+        vec!["provider_guard.rs".to_string()]
+    );
+    assert_eq!(
+        code_part("let u = \"https://x\"; // c"),
+        "let u = \"https://x\"; "
+    );
+}
