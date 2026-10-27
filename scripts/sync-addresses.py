@@ -72,8 +72,9 @@ OPTIONAL = [
     "InferenceRouter",
 ]
 
-ADDR = re.compile(r"^0x[0-9a-fA-F]{40}$")
-HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
+# Always used with .fullmatch (Python's `$` also matches before a final "\n").
+ADDR = re.compile(r"0x[0-9a-fA-F]{40}")
+HASH = re.compile(r"0x[0-9a-fA-F]{64}")
 
 
 def die(msg: str) -> None:
@@ -89,7 +90,7 @@ def flatten(book: dict) -> dict:
     out = {}
     for section in SECTIONS:
         for name, addr in (book.get(section) or {}).items():
-            if isinstance(addr, str) and ADDR.match(addr):
+            if isinstance(addr, str) and ADDR.fullmatch(addr):
                 out.setdefault(name, addr)
     return out
 
@@ -103,7 +104,7 @@ def malformed(book: dict, names) -> list:
     bad = []
     for section in SECTIONS:
         for name, addr in (book.get(section) or {}).items():
-            if name in names and not (isinstance(addr, str) and ADDR.match(addr)):
+            if name in names and not (isinstance(addr, str) and ADDR.fullmatch(addr)):
                 bad.append(f"{section}.{name} = {addr!r}")
     return bad
 
@@ -136,7 +137,7 @@ def main() -> None:
     ap.add_argument("--out", default=str(OUT), help=argparse.SUPPRESS)  # tests write to a temp file
     a = ap.parse_args()
 
-    if not HASH.match(a.genesis):
+    if not HASH.fullmatch(a.genesis):
         die(f"--genesis must be 0x + 64 hex, got {a.genesis!r}")
     genesis = a.genesis.lower()
 
