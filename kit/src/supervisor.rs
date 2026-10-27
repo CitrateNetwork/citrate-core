@@ -1639,26 +1639,27 @@ impl PublicationTicket {
         self,
         activate: impl FnOnce() -> std::result::Result<T, E>,
     ) -> std::result::Result<T, CommitRefused<E>> {
-        // Old behaviour: check and release, then leave activation to after the lock.
-        let current = {
-            let mut c = self.shared.lock();
-            let current =
-                !c.closing && c.desired == Desired::Running && c.intent_sequence == self.seq;
-            if current {
-                resolve_publication(&mut c, self.id);
-            }
-            current
-        };
+        let mut c = self.shared.lock();
+        let current = !c.closing && c.desired == Desired::Running && c.intent_sequence == self.seq;
         if !current {
+            drop(c);
             return Err(CommitRefused::Stale(self.into_stale()));
         }
-        self.shared.notify();
-        let shared = self.shared.clone();
-        let (id, name) = (self.id, self.name.clone());
-        activate().map_err(|error| CommitRefused::Failed {
-            ticket: StaleTicket { shared, id, name },
-            error,
-        })
+        match activate() {
+            Ok(value) => {
+                resolve_publication(&mut c, self.id);
+                drop(c);
+                self.shared.notify();
+                Ok(value)
+            }
+            Err(error) => {
+                drop(c);
+                Err(CommitRefused::Failed {
+                    ticket: self.into_stale(),
+                    error,
+                })
+            }
+        }
     }
 
     /// Nothing the ticket wrote remains (nothing was written, or the caller removed it): release
