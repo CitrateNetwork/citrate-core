@@ -2672,6 +2672,102 @@ export interface ServicesDomain {
   snapshot(): Promise<ServicesSnapshot>;
 }
 
+// ---- D-11 (RC52) — cloud model providers (ADR-2026-10-26). Mirrors Rust `providers_ipc.rs`. ----
+// Keys go in one way (`setKey`) and never come back. Amounts are integer micro-USD; token counts are
+// the vendor's own. Unknown is `null`, never zero.
+
+export type ProviderKind = "vendor" | "custom";
+export interface ProviderCaps {
+  dailyTokens: number | null;
+  monthlyTokens: number | null;
+  dailyMicros: number | null;
+  monthlyMicros: number | null;
+}
+export interface ProviderPrice {
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+}
+export interface ProviderHalt {
+  /** `member`, `burst`, `unknownModel`, `tokenSpike` or `guardUnreadable`. */
+  kind: string;
+  message: string;
+  atMs: number;
+}
+export interface ProviderStatus {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  /** A governed vendor on its pinned host. Always false for a custom endpoint. */
+  verified: boolean;
+  baseUrl: string;
+  host: string;
+  /** `openai-compatible` (or `native` once its adapter lands); null = not available in this build. */
+  adapter: string | null;
+  keyConfigured: boolean;
+  keySetMs: number | null;
+  keyPage: string | null;
+  revokePage: string | null;
+  /** Custom endpoints: whether the member confirmed this exact URL (calls are refused until then). */
+  confirmed: boolean;
+  halt: ProviderHalt | null;
+  caps: ProviderCaps;
+  approvedModels: string[];
+  listedModels: string[];
+  prices: Record<string, ProviderPrice>;
+}
+export interface ProviderPeriodUsage {
+  calls: number;
+  tokens: number;
+  /** Only priced calls; `unpricedCalls` counts the rest (their spend is unknown, not zero). */
+  spendMicros: number;
+  unpricedCalls: number;
+}
+export interface ProviderUsage {
+  id: string;
+  today: ProviderPeriodUsage;
+  month: ProviderPeriodUsage;
+  unsettledCalls: number;
+  caps: ProviderCaps;
+}
+export interface ProviderUsageSummary {
+  /** The signed usage log verified; when false every cloud call is refused. */
+  logIntact: boolean;
+  logProblem: string | null;
+  records: number;
+  asOfMs: number;
+  providers: ProviderUsage[];
+}
+export interface ProviderKeyTest {
+  ok: boolean;
+  listedModels: number;
+}
+export interface ProviderCustomEndpoint {
+  id: string;
+  label: string;
+  baseUrl: string;
+  models: string[];
+  confirmed: boolean;
+  verified: false;
+}
+export interface ProvidersDomain {
+  status(): Promise<ProviderStatus[]>;
+  usageSummary(): Promise<ProviderUsageSummary>;
+  setCaps(providerId: string, caps: ProviderCaps): Promise<ProviderStatus>;
+  setPrice(providerId: string, model: string, price: ProviderPrice | null): Promise<ProviderStatus>;
+  halt(providerId: string): Promise<ProviderStatus>;
+  resume(providerId: string): Promise<ProviderStatus>;
+  /** One way: format-checked and tested live with the vendor before it is stored; never returned. */
+  setKey(providerId: string, apiKey: string): Promise<ProviderKeyTest>;
+  testKey(providerId: string): Promise<ProviderKeyTest>;
+  removeKey(providerId: string): Promise<void>;
+  addCustom(label: string, baseUrl: string, models: string[]): Promise<ProviderCustomEndpoint>;
+  /** The member confirms by echoing the exact URL. */
+  confirmCustom(id: string, baseUrl: string): Promise<ProviderCustomEndpoint>;
+  removeCustom(id: string): Promise<void>;
+  /** Only a broken log is reset (archived aside, a new chain started). */
+  resetUsageLog(): Promise<ProviderUsageSummary>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2692,4 +2788,5 @@ export interface CxBridge {
   components: ComponentsDomain;
   store: StoreDomain;
   services: ServicesDomain;
+  providers: ProvidersDomain;
 }

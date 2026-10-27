@@ -100,10 +100,24 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+// D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
+// internal format, and the pinned egress table.
+pub(crate) mod model_provider;
+pub(crate) mod model_proxy;
+pub(crate) mod model_proxy_http;
 mod node;
 mod node_genesis;
 mod node_holder;
 mod node_withdrawn;
+pub(crate) mod provider_egress;
+#[cfg(test)]
+mod provider_fixtures_tests;
+pub(crate) mod provider_guard;
+pub(crate) mod provider_openai_compat;
+#[cfg(test)]
+mod provider_tripwire_tests;
+pub(crate) mod provider_usage_log;
+mod providers_ipc;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
@@ -394,6 +408,9 @@ pub fn run() {
             app.manage(fl_rounds::build_state(app.handle()));
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
             app.manage(escalation::EscalationState::default());
+            // D-11 — the core model proxy for cloud providers (opened, and its loopback endpoint
+            // started, on first use off the main thread).
+            app.manage(providers_ipc::ModelProxyState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             app.manage(faucet::build_faucet_state(app.handle()));
@@ -663,6 +680,21 @@ pub fn run() {
             contract_reader::contract_write_propose,
             // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
             // spend budget, quote-then-run, and the registry route's (disabled) status.
+            // D-11 — cloud providers: status, usage (signed log), caps, halt/resume, one-way keys,
+            // gated custom endpoints. No command returns a key.
+            providers_ipc::providers_status,
+            providers_ipc::providers_usage_summary,
+            providers_ipc::providers_caps_set,
+            providers_ipc::providers_price_set,
+            providers_ipc::providers_halt,
+            providers_ipc::providers_resume,
+            providers_ipc::providers_key_set,
+            providers_ipc::providers_key_test,
+            providers_ipc::providers_key_remove,
+            providers_ipc::providers_custom_add,
+            providers_ipc::providers_custom_confirm,
+            providers_ipc::providers_custom_remove,
+            providers_ipc::providers_usage_log_reset,
             escalation::escalation_endpoints,
             escalation::escalation_endpoint_add,
             escalation::escalation_endpoint_remove,
