@@ -755,6 +755,47 @@ fn seed_context_skips_personal_when_no_grant() {
     mgr.stop();
 }
 
+#[test]
+fn seed_context_personal_facts_say_the_grant_is_locked_not_staked() {
+    // C1-V V5 (lead audit of S5 on r1006): the grant lands in a locked MemberBond and is staked in
+    // the ValidatorRegistry only after the member activates the bond. The seeded memory is what
+    // Hermes recalls later, so it must not say the grant "staked" anything.
+    let dir = tmp_dir("seed-grant-words");
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(SeedStub { asserts: recorded.clone() }),
+    )
+    .with_model_dir(Some(dir.join("bge")));
+    mgr.start().expect("start");
+    for _ in 0..40 {
+        if mgr.is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(mgr.is_running(), "stub daemon must reach Running");
+    let mut f = seed_facts();
+    f.bond_status = "Bond locked · not staked · until block 500,000".into();
+    mgr.seed_context(&f).expect("seed ok");
+    let rec = recorded.lock().unwrap();
+    let personal: Vec<&String> = rec.iter().filter(|(t, _)| t == "personal").map(|(_, c)| c).collect();
+    for c in &personal {
+        assert!(!c.contains("grant staked"), "a seeded fact says the grant staked: {c}");
+        assert!(!c.contains("staked SALT"), "a seeded fact calls the locked grant staked SALT: {c}");
+    }
+    let grant = personal.iter().find(|c| c.contains("32000")).expect("the grant fact is seeded");
+    assert!(grant.contains("locked in your MemberBond"), "{grant}");
+    assert!(grant.contains("staked in the ValidatorRegistry only once you activate the bond"), "{grant}");
+    assert!(personal.iter().any(|c| c.contains("Bond locked · not staked · until block 500,000")));
+    drop(rec);
+    mgr.stop();
+}
+
 // ---------------------------------------------------------------------------
 // WP1.1-hardening — the docs-corpus seen-set sidecar (monotone re-pack)
 // ---------------------------------------------------------------------------

@@ -272,3 +272,55 @@ describe("#349 round 2 — the unlock block loads on every launch", () => {
     expect(store.state.s5UnlockBlock).toBeNull();
   });
 });
+
+// Lead audit of S5 for 0.5.2 on r1006 (2026-10-27). On r1006 the grant lands in a locked MemberBond
+// and is staked only after Activate (S7); the settled figure is MembershipStakeVault.attributedStake,
+// which is the grant, never "staked" (only ValidatorRegistry.stakeOf is, and only once
+// MemberBond.activated() is true); the bond unlocks at MemberBond.unlockBlock, about a year out; and
+// S5 makes no earnings claim. Each claim main's S5 made is named, so a regression says which one.
+export const S5_CLAIMS = [
+  "staked for you",
+  "arrives already staked",
+  "the vault stakes it",
+  "SALT staked · settled",
+  "Staked position",
+  "vaulted principal",
+  "until mainnet release",
+  "earns are yours",
+  "accrue to you",
+  "Grant + stake",
+  "stake ceremony",
+];
+
+describe("S5 on r1006: the grant lands in a locked bond and is staked only after Activate", () => {
+  for (const st of ["idle", "verifying", "settling", "settled"] as const) {
+    it(`S5 ${st} makes none of main's staking, unlock or earnings claims`, () => {
+      const html = renderToStaticMarkup(<S5 store={stub} s={member({ s5: st, s5c: 3, s5n: 32000, bondedStake: 0, bondActivated: false })} />);
+      for (const c of S5_CLAIMS) expect(html, c).not.toContain(c);
+      expect(html).not.toMatch(/\bearn|\byours\b|mainnet release/i);
+    });
+  }
+
+  it("S5 settled before Activate: the figure is the grant in the bond, and nothing says it is staked", () => {
+    const html = renderToStaticMarkup(<S5 store={stub} s={member({ s5: "settled", bondedStake: 0, bondActivated: false, s5BondStatus: "Bond locked · not staked · until block 16,000,000" })} />);
+    expect(html).toContain("SALT grant · locked in your bond");
+    expect(html).toContain("until block 16,000,000");
+    expect(html).toContain("It is not staked until you activate the bond.");
+    expect(html).not.toMatch(/Staked\b|is staked/);
+  });
+
+  it("S5 settled after Activate: 'staked' follows stakeOf, never the attributed grant", () => {
+    const html = renderToStaticMarkup(<S5 store={stub} s={member({ s5: "settled", bondedStake: 32000, bondActivated: true })} />);
+    expect(html).toContain("staked in the ValidatorRegistry");
+    const unread = renderToStaticMarkup(<S5 store={stub} s={member({ s5: "settled", bondedStake: 0, bondActivated: null })} />);
+    expect(unread).not.toContain("staked in the ValidatorRegistry");
+    expect(unread).toContain("has not been read yet");
+  });
+
+  it("the Hermes context names the locked grant without calling it staked", () => {
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0, bondActivated: false });
+    const m = (store.snapshot() as unknown as { membership: Record<string, unknown> }).membership;
+    expect(Object.keys(m).filter((k) => /grant/i.test(k) && /staked/i.test(k))).toEqual([]);
+    expect(m.grantLockedSalt).toBe(32000);
+  });
+});
