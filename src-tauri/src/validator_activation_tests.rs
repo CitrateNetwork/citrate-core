@@ -370,3 +370,60 @@ fn tripwire_the_command_reads_the_record_from_the_ceremonys_submitted_log() {
     assert!(body.contains("latest_call("), "it looks up the activation call");
     assert!(!body.contains("&|_| None"), "the command never skips the record");
 }
+
+/// Wraps a transport and sleeps before each call (a slow but healthy endpoint).
+struct Slow<'a> {
+    inner: &'a Chain,
+    per_call: std::time::Duration,
+}
+impl RpcTransport for Slow<'_> {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        std::thread::sleep(self.per_call);
+        self.inner.call(body)
+    }
+}
+
+#[test]
+fn a_spent_read_budget_reads_unknown_never_zero_and_sends_nothing() {
+    let public = granted(false, None);
+    let local = Chain::default().method("eth_blockNumber", JsonValue::String("0x1f4".into()));
+    let past = std::time::Instant::now();
+    let p = Budgeted::new(&public, past);
+    let l = Budgeted::new(&local, past);
+    let st = read_activation_status(&p, Some(&l), &targets(), MEMBER, None, Some("0xfeed"), &|_| None).expect("valid member");
+    assert!(public.seen.borrow().is_empty(), "no call after the budget is spent");
+    assert!(local.seen.borrow().is_empty(), "no local call after the budget is spent");
+    assert_eq!(st.bond_address, None);
+    assert_eq!(st.bond_deployed, None);
+    assert_eq!(st.head_block, None);
+    assert_eq!(st.local_block, None);
+    let tx = st.tx.expect("tx view");
+    assert_eq!(tx.included, None, "an unread receipt is unknown, not pending");
+}
+
+#[test]
+fn a_slow_endpoint_is_bounded_by_the_read_budget() {
+    let public = granted(false, None);
+    let slow = Slow { inner: &public, per_call: std::time::Duration::from_millis(30) };
+    let budget = std::time::Duration::from_millis(100);
+    let started = std::time::Instant::now();
+    let p = Budgeted::new(&slow, started + budget);
+    let st = read_activation_status::<_, Chain>(&p, None, &targets(), MEMBER, None, None, &|_| None).expect("valid member");
+    let elapsed = started.elapsed();
+    // At most one call starts at the deadline and runs its full 30 ms; generous slack for CI.
+    assert!(elapsed < budget + std::time::Duration::from_millis(30) + std::time::Duration::from_millis(150), "took {elapsed:?}");
+    assert!(public.seen.borrow().len() < 8, "calls past the budget were refused ({} sent)", public.seen.borrow().len());
+    assert_eq!(st.head_block, None, "a read refused by the budget is unknown");
+}
+
+#[test]
+fn tripwire_the_command_budgets_both_transports() {
+    let src = include_str!("validator_activation.rs");
+    let start = src.find("pub fn validator_activation_status_sync(").expect("command body");
+    let body = &src[start..];
+    let body = &body[..body.find("\n}\n").map(|e| e + 3).unwrap_or(body.len())];
+    assert!(body.contains("READ_BUDGET"), "the read has a deadline");
+    assert!(body.contains("Budgeted::new(&public"), "the public transport is budgeted");
+    assert!(body.contains("Budgeted::new(&local"), "the local transport is budgeted");
+    assert!(!body.contains("read_activation_status(\n        &public,"), "the raw public transport is not passed");
+}

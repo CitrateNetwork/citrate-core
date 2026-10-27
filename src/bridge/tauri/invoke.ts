@@ -119,6 +119,10 @@ const LONG: Record<string, number> = {
   mcp_servers_runtime: 45_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
+  // Join-8: the send half of sign_prepare + sign_send_prepared polls the same 60 s receipt budget.
+  sign_send_prepared: 75_000,
+  // Join-8: the activation read is bounded Rust-side by READ_BUDGET (30 s) plus one RPC (6 s).
+  validator_activation_status: 45_000,
   // K4: three sequential eth_calls (BOND, REWARD, ROUNDS), each bounded by the RPC timeout.
   storage_pin_params: 25_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.
