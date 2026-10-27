@@ -64,7 +64,7 @@ export class UsageError extends Error {}
 // ---------------------------------------------------------------- arguments
 export function parseArgs(argv) {
   const o = {
-    dmg: "", sha256: "", mode: "full", pinnedDir: "", teamId: "", expectVersion: "", unsignedSmoke: false,
+    dmg: "", sha256: "", mode: "inspect", pinnedDir: "", teamId: "", expectVersion: "", unsignedSmoke: false,
     selfTest: false, work: "", logDir: "", out: "",
     quitMethod: "apple-event", required: ["citrate"], restartTarget: "citrate", rpc: true,
   };
@@ -250,14 +250,13 @@ export function parseStapler(text, code) {
 
 /** `hdiutil imageinfo` -> {format, checksumType} ("Format: UDZO", "Checksum Type: CRC32"). */
 export function parseImageInfo(text) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return { format: "", checksumType: "" };
+  const g = (k) => { const m = new RegExp(`^\\s*${k}:\\s*(.*)$`, "m").exec(text); return m ? m[1].trim() : ""; };
+  return { format: g("Format"), checksumType: g("Checksum Type") };
 }
 
 /** `security find-identity -v -p codesigning` -> the Developer ID Application identities in it. */
 export function developerIdIdentities(text) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return [];
+  return [...text.matchAll(/"(Developer ID Application:[^"]*)"/g)].map((m) => m[1]);
 }
 
 /** `security dump-keychain` (attributes only, no -d) -> [{keychain, cls, service, account}] */
@@ -334,37 +333,88 @@ function thinDigest(buf) {
 /** Signature-independent digest of a thin or universal Mach-O file (see above). Throws on anything
  *  else, so a check built on it fails closed. */
 export function machoCodeDigest(buf) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return createHash("sha256").update(buf).digest("hex");
+  if (buf.length >= 8 && (buf.readUInt32BE(0) === FAT_MAGIC || buf.readUInt32BE(0) === FAT_MAGIC_64)) {
+    const is64 = buf.readUInt32BE(0) === FAT_MAGIC_64;
+    const n = buf.readUInt32BE(4), step = is64 ? 32 : 20;
+    if (n === 0 || n > 16 || 8 + n * step > buf.length) throw new Error("bad universal header");
+    const slices = [];
+    for (let i = 0; i < n; i++) {
+      const h = 8 + i * step;
+      const cpu = buf.readUInt32BE(h), sub = buf.readUInt32BE(h + 4);
+      const off = is64 ? Number(buf.readBigUInt64BE(h + 8)) : buf.readUInt32BE(h + 8);
+      const size = is64 ? Number(buf.readBigUInt64BE(h + 16)) : buf.readUInt32BE(h + 12);
+      if (off + size > buf.length) throw new Error("universal slice runs past the end of the file");
+      slices.push(`${cpu}:${sub & 0xffffff}:${thinDigest(buf.subarray(off, off + size))}`);
+    }
+    return createHash("sha256").update(slices.sort().join("\n")).digest("hex");
+  }
+  return thinDigest(buf);
 }
 
 // ---------------------------------------------------------------- bundle spec (pure)
 /** Bundle layout and sidecar pins of a release: the externalBins of the release overlay and, per
  *  component in release/components.json, its pinned sha256 for aarch64-apple-darwin. */
 export function releaseBundleSpec({ manifest, pinsText, overlay }) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return { release: "", bins: [], sidecars: [], errors: [] };
+  const bins = ((overlay.bundle && overlay.bundle.externalBin) || []).map((b) => path.basename(b));
+  const pins = parsePins(pinsText);
+  const sidecars = [];
+  const errors = [];
+  for (const c of manifest.components || []) {
+    const bin = path.basename(c.external_bin || "");
+    try { sidecars.push({ id: c.id, bin, sha256: pinnedDigest(manifest, pins, c.id, TARGET) }); }
+    catch (e) { errors.push(String(e.message || e)); }
+  }
+  return { release: manifest.release || "", bins, sidecars, errors };
 }
 
 /** Contents/MacOS must hold exactly the main executable and the release's sidecars. */
 export function evaluateBundleStructure({ macosEntries, exe, bins, hasCodeResources, hasResources, requireSignature }) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return { ok: true, why: [], missing: [], extra: [] };
+  const want = new Set([exe, ...bins]);
+  const have = new Set(macosEntries);
+  const missing = [...want].filter((x) => !have.has(x)).sort();
+  const extra = [...have].filter((x) => !want.has(x)).sort();
+  const why = [];
+  if (missing.length) why.push(`missing in Contents/MacOS: ${missing.join(", ")}`);
+  if (extra.length) why.push(`not expected in Contents/MacOS: ${extra.join(", ")}`);
+  if (!hasResources) why.push("no Contents/Resources");
+  if (requireSignature && !hasCodeResources) why.push("no Contents/_CodeSignature/CodeResources");
+  return { ok: why.length === 0, why, missing, extra };
 }
 
 /** Each bundled sidecar's code digest equals the code digest of its pinned bytes. `pinned` maps a
  *  pin sha256 to that file's code digest (from --pinned-dir, sha256-verified); `bundled` maps a
  *  sidecar name to its code digest, or to an Error when it could not be read. */
 export function evaluateSidecarDigests(sidecars, pinned, bundled) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return { status: "pass", rows: [] };
+  const rows = [];
+  for (const s of sidecars) {
+    const got = bundled.get(s.bin);
+    const want = pinned.get(s.sha256);
+    let status, why = "";
+    if (got === undefined) { status = "fail"; why = "not in the bundle"; }
+    else if (got instanceof Error) { status = "fail"; why = `bundled copy unreadable: ${got.message}`; }
+    else if (want === undefined) { status = "error"; why = `pinned bytes (sha256 ${s.sha256.slice(0, 16)}...) not in --pinned-dir`; }
+    else if (want instanceof Error) { status = "error"; why = `pinned bytes unreadable: ${want.message}`; }
+    else if (got !== want) { status = "fail"; why = `code digest ${got.slice(0, 16)}... != pinned ${want.slice(0, 16)}...`; }
+    else status = "pass";
+    rows.push({ id: s.id, bin: s.bin, pin: s.sha256, status, why });
+  }
+  const overall = rows.some((r) => r.status === "fail") ? "fail" : rows.some((r) => r.status === "error") ? "error" : "pass";
+  return { status: rows.length ? overall : "error", rows };
 }
 
 // ---------------------------------------------------------------- data locations (pure)
 /** data-locations.txt: `<path relative to HOME> | <why>` per line, `#` comments. */
 export function parseLocations(text) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return [];
+  const out = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/#.*/, "").trim();
+    if (!line) continue;
+    const [p, ...why] = line.split("|");
+    const prefix = p.trim().replace(/\/+$/, "");
+    if (!prefix || prefix.startsWith("/") || prefix.split("/").includes("..")) throw new Error(`bad location line: ${raw}`);
+    out.push({ prefix, reason: why.join("|").trim() });
+  }
+  return out;
 }
 
 /** New files under `root` changed after `sinceMs`, depth-limited, skipping `exclude` subtrees and
@@ -402,8 +452,15 @@ export function isCitratePath(p, exeNames) {
  *  parent directory of a documented location (e.g. Library/Application Support itself) is
  *  unrelated, as it is not Citrate's. */
 export function evaluateLocations(paths, homes, documented, exeNames) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return { ok: true, documented: [], undocumented: [], unrelated: [...paths] };
+  const res = { documented: [], undocumented: [], unrelated: [] };
+  for (const p of paths) {
+    if (!isCitratePath(p, exeNames)) { res.unrelated.push(p); continue; }
+    const home = homes.find((h) => isInside(p, h));
+    const rel = home ? p.slice(home.replace(/\/+$/, "").length + 1) : null;
+    const hit = rel !== null && documented.find((d) => rel === d.prefix || rel.startsWith(d.prefix + "/"));
+    (hit ? res.documented : res.undocumented).push(p);
+  }
+  return { ok: res.undocumented.length === 0, ...res };
 }
 
 // ---------------------------------------------------------------- guards
@@ -418,8 +475,18 @@ export function normalizeHost(h) {
 /** The explicit test-machine marker, checked before any command runs. `hostsFile` is
  *  {uid, mode, text} from stat + read, or null when it does not exist. */
 export function evaluateMarker({ platform, env, hostname, uid, hostsFile }) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return { ok: true, refusals: [] };
+  const r = [];
+  if (platform !== "darwin") r.push(`not macOS (${platform})`);
+  if (env[MARKER_ENV] !== "1") r.push(`${MARKER_ENV}=1 is not set: this harness runs only on a macOS test machine`);
+  if (!hostsFile) r.push("no test-machine hosts file (~/.config/citrate/macos-acceptance-test-hosts)");
+  else {
+    if (hostsFile.uid !== uid) r.push("the test-machine hosts file is not owned by you");
+    if ((hostsFile.mode & 0o022) !== 0) r.push("the test-machine hosts file is group- or world-writable");
+    const listed = hostsFile.text.split("\n").map((l) => normalizeHost(l.replace(/#.*/, ""))).filter(Boolean);
+    const me = normalizeHost(hostname);
+    if (!me || !listed.includes(me)) r.push(`this host (${hostname || "unknown"}) is not listed in the test-machine hosts file`);
+  }
+  return { ok: r.length === 0, refusals: r };
 }
 
 /** Paths whose existence means Citrate Core is installed or has run under this account. */
@@ -548,8 +615,7 @@ export function exitCodeFor(overall) {
 
 /** Only a release-mode full run that passed is evidence for G1 g1-macos. */
 export function isG1Evidence(v) {
-  // RED STUB (WP-H-MACOS red commit): old behaviour, replaced in the green commit
-  return v.overall === "pass";
+  return v.mode === "full" && !v.unsigned_smoke && v.overall === "pass";
 }
 
 // ---------------------------------------------------------------- the run (macOS only)
