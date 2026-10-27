@@ -424,7 +424,7 @@ export interface AgentDomain {
    * a settled-claim hash (Rule 1). The Tauri impl invokes the `user_claim` command;
    * the sim impl is guarded out of packaged builds and never claims for real.
    */
-  claim(): Promise<ClaimResult>;
+  claim(opts?: { validator: boolean }): Promise<ClaimResult>;
 }
 
 // The citrate-memories mcp_serve daemon under the SidecarSupervisor (CORE-C3).
@@ -699,6 +699,12 @@ export interface GrantStatus {
    * NOTE the staker is the member's bond clone, not the member.
    */
   hasValidator: boolean;
+  /**
+   * `MemberBond.activated()`: the bond bonded its principal into the registry. It stays true after
+   * a full exit or a slash (when `hasValidator` reads false), and the bond can still claim that
+   * key's matured rewards. null = no bond, or the read failed. Optional for older backends.
+   */
+  bondActivated?: boolean | null;
   /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
   unlockBlock: number | null;
   /** `MemberBond.isUnlocked()` — either leg elapsed. Eligibility, not a payout. */
@@ -1944,6 +1950,8 @@ export interface SocialDomain {
 // mints a claimable invite + shares its link over the platform DM; the invitee volunteers their
 // address in a claim (consent); the owner verifies the one-time token and adds them the normal way.
 // Citrate never resolves a handle to an address.
+/** The result of approving a claim (`group_invite_verify_consume`). */
+export type ConsumeOutcome = "approved" | "pending" | "invalid";
 export interface PendingInvite {
   group: string;
   token: string;
@@ -1985,9 +1993,11 @@ export interface InvitesDomain {
   redeem(link: string): Promise<void>;
   /** The owner's outstanding invites for a group. */
   list(group: string): Promise<PendingInvite[]>;
-  /** Verify + CONSUME a claim's one-time token against an outstanding invite. The caller then adds
-   *  the volunteered address the normal way. Returns whether the token was valid. (Claim-back path.) */
-  verifyConsume(group: string, token: string): Promise<boolean>;
+  /** Verify + CONSUME a claim's one-time token against an outstanding invite (claim-back path).
+   *  "approved": the caller adds `address` now. "pending": the invite's relay rendezvous isn't
+   *  confirmed closed yet, so the app adds `address` itself once it is. "invalid": no outstanding
+   *  invite for that token. */
+  verifyConsume(group: string, token: string, address: string): Promise<ConsumeOutcome>;
   /** Drop an outstanding invite — also revokes it on the relay so a leaked link can no longer redeem. */
   revoke(group: string, token: string): Promise<void>;
   /** CONNECT-S1 — INVITEE: seal + submit a claim for an invite link to the relay's server-blind

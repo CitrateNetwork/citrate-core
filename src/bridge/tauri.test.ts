@@ -28,6 +28,8 @@ const signMock: { map: Map<string, { id: string; origin: string; kind: string; c
 // C2-F-1: the mocked on-chain claimable `agent_earnings` returns; a test can flip
 // it to "0" to exercise the honest "nothing to claim" branch.
 const earningsMock = { claimableWei: "9410000000000000000" };
+// C1-V review: ValidatorRegistry.rewardsOf(pubkey) as node_validator_earnings returns it.
+const validatorRewardsMock = { totalWei: "0", claimableWei: "0" };
 
 // CORE-AI1: a mocked OS-keyring map of sealed provider configs. The KEY is stored
 // here (simulating the keyring), but NO command RESULT ever returns it — the whole
@@ -188,6 +190,8 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     // CORE-C2 earnings — the REAL claimable from
     // ContributionAccounting.claimable(addr) via eth_call. Returns the single
     // real claimable (wei) + its data source; NO per-source breakdown.
+    case "node_validator_earnings":
+      return { ...validatorRewardsMock, proposerPubkey: "0x" + "11".repeat(32) };
     case "agent_earnings":
       return {
         claimableWei: earningsMock.claimableWei,
@@ -663,6 +667,32 @@ describe("tauri adapter — agent domain is wired to the real node-agent (C1.2)"
     expect(invokeMock).toHaveBeenCalledWith("agent_earnings", undefined);
     expect(invokeMock).not.toHaveBeenCalledWith("user_claim", undefined);
     earningsMock.claimableWei = "9410000000000000000"; // restore for other tests
+  });
+
+  // C1-V review (#348): a validator's Claim pre-checked ContributionAccounting.claimable, so a
+  // validator with rewardsOf.claimableNow > 0 was told there was nothing to claim. The pre-check
+  // must be the same rewardsOf read the "Claimable now" figure shows.
+  it("a validator's claim pre-checks rewardsOf.claimableNow, not ContributionAccounting", async () => {
+    earningsMock.claimableWei = "0";
+    validatorRewardsMock.totalWei = "7000000000000000000";
+    validatorRewardsMock.claimableWei = "5000000000000000000";
+    invokeMock.mockClear();
+    const bridge = createTauriBridge();
+    const res = await bridge.agent.claim({ validator: true });
+    expect(res.kind).toBe("ceremony");
+    expect(invokeMock).toHaveBeenCalledWith("node_validator_earnings", undefined);
+    expect(invokeMock).not.toHaveBeenCalledWith("agent_earnings", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("user_claim", undefined);
+    earningsMock.claimableWei = "9410000000000000000";
+  });
+
+  it("a validator with nothing claimable now gets an honest 'nothing'", async () => {
+    validatorRewardsMock.claimableWei = "0";
+    invokeMock.mockClear();
+    const bridge = createTauriBridge();
+    const res = await bridge.agent.claim({ validator: true });
+    expect(res.kind).toBe("nothing");
+    expect(invokeMock).not.toHaveBeenCalledWith("user_claim", undefined);
   });
 });
 
