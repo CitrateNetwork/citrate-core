@@ -11,17 +11,16 @@
 #      CitrateMemberSBT, MemberBond, MembershipStakeVault behind its proxy). The ValidatorRegistry
 #      is not in the ceremony books: like the pipeline it is deployed from the same ref, governed
 #      by the GOVERNANCE timelock, with minStake = the 32,000 SALT grant;
-#   3. deploys LiquidStakingPool from the same ref (governed by the GOVERNANCE timelock). It is NOT
-#      in the genesis set (C2 genesis spec: retired at genesis); it is here only because core still
-#      ships the C1-W withdrawal read, which reads it;
-#   4. installs a test stand-in for the node's 0x0120 ed25519-verify precompile (anvil has none):
+#   3. installs a test stand-in for the node's 0x0120 ed25519-verify precompile (anvil has none):
 #      it answers 1 only for inputs the Rust test whitelisted after verifying the signature with
 #      ed25519-dalek, so the registry's own digest must equal the one core signed;
-#   5. runs the ignored Rust test `moneypath_e2e_tests::anvil_moneypath_genesis_set`, which drives
+#   4. runs the ignored Rust test `moneypath_e2e_tests::anvil_moneypath_genesis_set`, which drives
 #      citrate-core's real money code (grant-status read, activation read, bond-activation intent,
-#      the SignatureCeremony signing EIP-155 transactions from a test vault, the C1-W paged
-#      withdrawal scan) and compares every step with the goldens in
-#      src-tauri/tests/fixtures/moneypath/.
+#      the SignatureCeremony signing EIP-155 transactions from a test vault) and compares every
+#      step with the goldens in src-tauri/tests/fixtures/moneypath/.
+#
+# D-9 (#519): the liquid staking pool is retired and not in the genesis set, so it is not deployed
+# and core has no pool reads or intents to exercise.
 #
 # Keys: anvil's public test mnemonic only. The member wallet is that mnemonic imported into a
 # throwaway in-memory vault; the deployer and grantor are its accounts 1 and 2. No real key is read.
@@ -94,19 +93,19 @@ git -C "$CHAIN" cat-file -e "$REF^{commit}" 2>/dev/null || git -C "$CHAIN" fetch
 git -C "$CHAIN" worktree add -q --detach "$WT" "$REF"
 git -C "$WT" submodule update -q --init contracts/lib/openzeppelin-contracts contracts/lib/openzeppelin-contracts-upgradeable
 for f in script/DeployGenesisGovernance.s.sol script/DeployDormantLedgers.s.sol script/DeployGenesisMembership.s.sol \
-  src/core_membership/MemberBond.sol src/ValidatorRegistry.sol src/LiquidStakingPool.sol; do
+  src/core_membership/MemberBond.sol src/ValidatorRegistry.sol; do
   [ -f "$WT/contracts/$f" ] || { echo "moneypath-anvil: $f is missing at $REF: not the genesis contract set" >&2; exit 2; }
 done
 
 echo "==> anvil (chain id 40204) on $RPC"
-# --prune-history: the flows mine ~60,000 blocks (epochs, the exit lock, the pool's withdrawal
-# delay); keeping every block's state makes anvil_mine superlinear. Logs and `latest` reads stay.
+# --prune-history: the flows mine thousands of blocks (epochs, the exit lock); keeping every
+# block's state makes anvil_mine superlinear. Logs and `latest` reads stay.
 anvil --chain-id 40204 --port "$PORT" --mnemonic "$MNEMONIC" --balance 1000000 --prune-history --silent >"$WORK/anvil.log" 2>&1 &
 ANVIL_PID=$!
 for _ in $(seq 1 50); do cast chain-id --rpc-url "$RPC" >/dev/null 2>&1 && break; sleep 0.2; done
 [ "$(cast chain-id --rpc-url "$RPC")" = 40204 ] || { echo "moneypath-anvil: anvil not up on 40204" >&2; exit 1; }
-# Past citrate-core's C1-W scan start (staking::LIQUID_STAKING_POOL_DEPLOY_BLOCK = 427, the r1005
-# pool's deploy block), so the pool deployed below is inside the range the scan reads.
+# A fixed 500-block lead-in before the deploys, so the recorded heights and epochs in the goldens
+# stay where they were recorded.
 cast rpc --rpc-url "$RPC" anvil_mine 0x1f4 >/dev/null
 
 KEY="$(cast wallet private-key "$MNEMONIC" 1)"
@@ -157,9 +156,6 @@ REGISTRY="$(create src/ValidatorRegistry.sol:ValidatorRegistry "$GOVERNANCE_TIME
 export VALIDATOR_REGISTRY="$REGISTRY" MEMBERSHIP_GRANTOR="$GRANTOR"
 run_script script/DeployGenesisMembership.s.sol
 
-POOL="$(create src/LiquidStakingPool.sol:LiquidStakingPool "$GOVERNANCE_TIMELOCK")"
-[ -n "$POOL" ] || { echo "moneypath-anvil: LiquidStakingPool deploy failed" >&2; exit 1; }
-
 cast rpc --rpc-url "$RPC" anvil_setCode "$ED25519_PRECOMPILE" "$ED25519_STANDIN" >/dev/null
 
 M="$OUT/membership.json"
@@ -175,8 +171,7 @@ cat >"$BOOK" <<EOF
     "CitrateMemberSBT": "$(field "$M" CitrateMemberSBT)",
     "MemberBond": "$(field "$M" MemberBond)",
     "MembershipStakeVault": "$(field "$M" MembershipStakeVault)",
-    "ValidatorRegistry": "$REGISTRY",
-    "LiquidStakingPool": "$POOL"
+    "ValidatorRegistry": "$REGISTRY"
   }
 }
 EOF

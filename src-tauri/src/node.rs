@@ -361,6 +361,11 @@ pub struct NodeManager {
 const ADMISSION_WAIT: Duration = Duration::from_secs(30);
 
 impl NodeManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over an explicit keyring, binary path, data dir, and RPC
     /// url. Production uses [`NodeManager::from_app`]; tests inject a fake
     /// keyring + a stub binary + a temp data dir + a stub RPC url.
@@ -1471,7 +1476,7 @@ pub async fn node_validator_earnings(
 /// and the app surfaces the honest revert rather than a fabricated success.
 const VALIDATOR_STAKE_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
 /// Build the `{from,to,value,data,gas,chainId}` JSON the ceremony's `Transaction`
-/// intent consumes for `MemberBond.activate` (same shape as `staking::encode_stake_json`).
+/// intent consumes for `MemberBond.activate` (the shape `transfer.rs` builds for a send).
 /// `to` is the member's bond CLONE; `value` is 0 — the clone forwards its OWN principal
 /// (the 32k is already inside it), so the member EOA only pays gas. A calldata tx must
 /// carry explicit gas or the ceremony rejects it as undecodable; `gas` is the node's

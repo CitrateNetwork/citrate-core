@@ -200,6 +200,11 @@ pub struct LlamaServerManager {
 }
 
 impl LlamaServerManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over an explicit binary, model path, crash path, and port.
     /// Production uses [`build_serve_state`]; tests inject a stub binary + a temp
     /// model + a temp crash path.

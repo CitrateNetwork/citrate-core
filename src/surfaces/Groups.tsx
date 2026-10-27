@@ -4,9 +4,10 @@
 // The social spine, built 1:1 from design/CitrateCore.dc.html. A left rail (create / join / list)
 // and a selected group with three tabs: Conversation, Roster, Cluster. RBAC is enforced at the
 // RELAY, not the client (ADR-001) — the surface offers controls and shows the relay's honest error
-// if you are not authorized; it never fakes success (Rule 1). Role changes and offboard stop at the
-// Signature Ceremony. The Cluster tab shares FILES (drag / Browse / pick from your files), never a
-// hand-typed CID — normal people don't have a CID to paste.
+// if you are not authorized; it never fakes success (Rule 1). Offboard stops at the Signature
+// Ceremony. Role changes are not available until role grants are signed (#495, groupRoles.ts).
+// The Cluster tab shares FILES (drag / Browse / pick from your files), never a hand-typed CID —
+// normal people don't have a CID to paste.
 // =====================================================================
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
@@ -17,12 +18,14 @@ import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { visibleConversation } from "./groupControlMessages";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
+import { approvalStep } from "./claimApproval";
 import { InviteLinks, YourInviteLinks } from "./InviteLinks";
 import { PendingJoinCard, InvitePasteField } from "./PendingJoinCard";
 import { reachedStep } from "../privacy/joinFunnel";
 import { RelayStatusChip } from "./RelayStatusChip";
 import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
 import { GroupRoundsCard } from "../fl/GroupRoundsCard";
+import { ROLE_CHANGES_AVAILABLE, ROLE_CHANGES_NOT_AVAILABLE } from "./groupRoles";
 import {
   groupsSlice,
   refreshGroups,
@@ -315,14 +318,9 @@ export function Groups({ store, s }: SurfaceProps) {
   const approveRequest = async (req: { group: string; token: string; address: string }) => {
     if (!selected) return;
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, req.token);
-      if (!ok) {
-        store.toast("That request's invite is invalid or already used.");
-        await refreshInvites();
-        return;
-      }
-      void addMemberToGroup(req.address);
-      store.toast("Request approved — adding them to the group.");
+      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, req.token, req.address));
+      if (step.add) void addMemberToGroup(req.address);
+      store.toast(step.toast);
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
@@ -371,14 +369,10 @@ export function Groups({ store, s }: SurfaceProps) {
       return;
     }
     try {
-      const ok = await bridge.invites.verifyConsume(selected.id, claim.token);
-      if (!ok) {
-        store.toast("That invite token is invalid or already used.");
-        return;
-      }
+      const step = approvalStep(await bridge.invites.verifyConsume(selected.id, claim.token, claim.address));
+      if (step.add) void addMemberToGroup(claim.address);
+      store.toast(step.toast);
       if (claimRef.current) claimRef.current.value = "";
-      void addMemberToGroup(claim.address);
-      store.toast("Invite accepted — adding them to the group.");
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
@@ -445,10 +439,10 @@ export function Groups({ store, s }: SurfaceProps) {
       rows: [
         { k: "Member", v: shortAddr(address) },
         { k: "New role", v: next },
-        { k: "Effect", v: "a signed RoleAssertion, enforced at the relay" },
+        { k: "Effect", v: "the member's role in this group changes" },
       ],
       cost: "—",
-      sponsor: "you approve · one assertion",
+      sponsor: "you approve · one role change",
       sponsorColor: "var(--ok)",
       chainless: true,
       apply: () => void assignRole(address, next),
@@ -780,6 +774,9 @@ export function Groups({ store, s }: SurfaceProps) {
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>Who's here</span>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>{st.roster.length} member{st.roster.length === 1 ? "" : "s"}</span>
                 </div>
+                {canManage && !ROLE_CHANGES_AVAILABLE && st.roster.length > 0 && (
+                  <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "8px 16px", borderBottom: "1px solid var(--line-1)" }}>{ROLE_CHANGES_NOT_AVAILABLE}</p>
+                )}
                 {st.roster.length === 0 ? (
                   <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>Just you so far. Add someone by their address below.</p>
                 ) : (
@@ -805,9 +802,15 @@ export function Groups({ store, s }: SurfaceProps) {
                         <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + tone.bd, color: tone.fg, background: tone.bg }}>{r.role}</span>
                         {canManage && r.role !== "owner" && !you && !isAgent && (
                           <>
-                            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doRole(r.address, r.role)} title="Signed RoleAssertion — stops at the ceremony">
-                              {r.role === "admin" ? "Make member" : "Make admin"}
-                            </button>
+                            {ROLE_CHANGES_AVAILABLE ? (
+                              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doRole(r.address, r.role)}>
+                                {r.role === "admin" ? "Make member" : "Make admin"}
+                              </button>
+                            ) : (
+                              <button className="btn btn-ghost btn-sm" disabled aria-disabled="true" title={ROLE_CHANGES_NOT_AVAILABLE} style={{ opacity: 0.5, cursor: "not-allowed" }}>
+                                {r.role === "admin" ? "Make member" : "Make admin"}
+                              </button>
+                            )}
                             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doOffboard(r.address)} style={{ color: "var(--danger)" }}>Offboard</button>
                           </>
                         )}

@@ -1,0 +1,33 @@
+{
+  "schema": "citrate-core/soak-criteria",
+  "version": 1,
+  "status": "proposal: the owner and the DGX lead set the numbers before the RC52 soak starts",
+  "notes": [
+    "Read by scripts/soak/soak-monitor.py. Every key below is required and every key feeds a rule; an unknown or missing key is refused.",
+    "Defaults are proposals. The rationale for each number is in docs/SOAK_RUNBOOK.md section 'Pass criteria'.",
+    "finality.mode: auto = check finality only when an endpoint reports a finalized height above 0; required = fail when none does; off = skip."
+  ],
+  "run": {
+    "min_duration_hours": 24,
+    "max_sample_gap_minutes": 5
+  },
+  "chain": {
+    "max_consecutive_unreachable": 2,
+    "max_head_spread": 120,
+    "head_window_minutes": 10,
+    "min_blocks_per_window": 100,
+    "min_peers": 3,
+    "max_peers_below_minutes": 10
+  },
+  "finality": {
+    "mode": "auto",
+    "max_stall_minutes": 10
+  },
+  "app": {
+    "warmup_minutes": 60,
+    "min_post_warmup_minutes": 60,
+    "max_rss_growth_pct_per_hour": 1.0,
+    "max_fd_growth_pct_per_hour": 2.0,
+    "max_unexplained_restarts": 0
+  }
+}

@@ -29,7 +29,6 @@ import type {
   DocsIngestReport,
   SeedFacts,
   SeedReport,
-  PendingWithdrawalsRead,
   AiProviderStatus,
   ChatConsent,
   GrantStatus,
@@ -151,15 +150,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
     },
     wallet: {
       // CORE — REAL balances: native liquid SALT via eth_getBalance + the real
-      // claimable (ContributionAccounting) + the real self-stake
-      // (LiquidStakingPool.balanceOf) on 40204. `staked` here is the user's OWN
-      // pool position; the vaulted membership grant (32k) is tracked separately in
-      // AppState (hasGrant), so the UI adds it on top. Every field is a live read
-      // (Rule 1) — no `-1` sentinel now that the pool balance is grounded.
-      async balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }> {
-        const b = await invoke<{ liquidWei: string; claimableWei: string; stakedWei: string; address: string }>("wallet_balances");
+      // claimable (ContributionAccounting) on 40204. Every field is a live read
+      // (Rule 1). No self-stake: staking is through the validator bond (D-9).
+      async balances(): Promise<{ liquid: number; claimable: number; address: string }> {
+        const b = await invoke<{ liquidWei: string; claimableWei: string; address: string }>("wallet_balances");
         const toSalt = (wei: string) => Number(BigInt(wei)) / 1e18;
-        return { liquid: toSalt(b.liquidWei), staked: toSalt(b.stakedWei), claimable: toSalt(b.claimableWei), address: b.address };
+        return { liquid: toSalt(b.liquidWei), claimable: toSalt(b.claimableWei), address: b.address };
       },
       // CORE item 4 — REAL indexed 40204 tx history from the CitrateScan `txlist`
       // endpoint (public, no-auth read via the Rust `wallet_activity` command;
@@ -184,29 +180,6 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // the Rust `amount_wei` arg. Mirrors agent.claim's request→broadcast split.
       async send(to: string, amountWei: string): Promise<CeremonyView> {
         return invoke<CeremonyView>("wallet_send", { to, amountWei });
-      },
-      // CORE (@rule8) — build a LiquidStakingPool deposit() stake as a PENDING
-      // ceremony and return its decoded view. Signs NOTHING; the human approves
-      // via signing.broadcast (B1.4 → real 40204 deposit tx). Mirrors send().
-      async stake(amountWei: string): Promise<CeremonyView> {
-        return invoke<CeremonyView>("wallet_stake", { amountWei });
-      },
-      // CORE WP2 (@rule8) — build a requestWithdrawal(shares) ceremony. The
-      // SALT→shares conversion is done in Rust from live reads; `amountWei` is the
-      // SALT to withdraw. Signs NOTHING; approved via signing.broadcast. Mirrors
-      // stake().
-      async requestWithdrawal(amountWei: string): Promise<CeremonyView> {
-        return invoke<CeremonyView>("wallet_request_withdrawal", { amountWei });
-      },
-      // CORE WP2 (@rule8) — build a claimWithdrawal(id) ceremony for a matured
-      // request. The 50,400-block delay is enforced on-chain. Signs NOTHING.
-      async claimWithdrawal(id: string): Promise<CeremonyView> {
-        return invoke<CeremonyView>("wallet_claim_withdrawal", { requestId: id });
-      },
-      // CORE WP2 — the wallet's real pending withdrawals from live chain state
-      // (getLogs + withdrawals(id) + block_number). A fresh wallet returns [].
-      async pendingWithdrawals(): Promise<PendingWithdrawalsRead> {
-        return invoke<PendingWithdrawalsRead>("wallet_pending_withdrawals");
       },
       // Seamless device provisioning + first-run wallet mint (@rule8). Returns
       // ONLY the public address (never key/seed). Idempotent — the Rust command
@@ -335,12 +308,18 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // `user_claim`, which bridges the real claimRewards() intent into a PENDING
       // ceremony (returned here). The human then approves it via signing.broadcast
       // (B1.4 → a real 40204 tx). No local balance mutation, no faked hash (Rule 1).
-      async claim(): Promise<ClaimResult> {
-        const snap = await invoke<{ claimableWei: string; walletAddress: string; contract: string }>(
-          "agent_earnings",
-        );
-        if (BigInt(snap.claimableWei) === 0n) {
-          return { kind: "nothing", claimableWei: snap.claimableWei };
+      //
+      // C1-V review (#348): the pre-check reads the SAME source `user_claim` will claim from. For a
+      // validator (the member's bond is a registry staker) that is ValidatorRegistry.rewardsOf(pubkey)
+      // .claimableNow via node_validator_earnings; only a non-validator is checked against
+      // ContributionAccounting. Checking ContributionAccounting for a validator told a member with
+      // claimable validator rewards that there was nothing to claim.
+      async claim(opts?: { validator: boolean }): Promise<ClaimResult> {
+        const claimableWei = opts?.validator
+          ? (await invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>("node_validator_earnings")).claimableWei
+          : (await invoke<{ claimableWei: string; walletAddress: string; contract: string }>("agent_earnings")).claimableWei;
+        if (BigInt(claimableWei) === 0n) {
+          return { kind: "nothing", claimableWei };
         }
         const view = await invoke<CeremonyView>("user_claim");
         return { kind: "ceremony", view };
@@ -416,6 +395,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // K2 — core mints the one-time consent for one held message (the remote send needs it).
       async consentPrepare(providerId: string, message: string): Promise<ChatConsent> {
         return invoke<ChatConsent>("chat_consent_prepare", { providerId, message });
+      },
+      // K2 — drop the consent of a held message the member did not send (core's in-memory book).
+      async consentDrop(consentId: string): Promise<void> {
+        await invoke("chat_consent_drop", { consentId });
       },
       // W3.3 — one agentic turn (tools attached; returns the assistant message
       // JSON with any tool_calls). The webview runs the loop; Rust holds the key.

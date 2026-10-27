@@ -44,8 +44,6 @@ struct Addresses {
     validator_registry: String,
     #[serde(rename = "CitrateWalletFactory")]
     citrate_wallet_factory: String,
-    #[serde(rename = "LiquidStakingPool")]
-    liquid_staking_pool: String,
     /// Reroll fan-out (2026-10-05): the contribution claim target, previously a literal in
     /// `earnings.rs` that drifted from the book.
     #[serde(rename = "ContributionAccounting")]
@@ -97,7 +95,6 @@ fn normalized(mut b: Book) -> Book {
     b.addresses.membership_stake_vault = b.addresses.membership_stake_vault.to_ascii_lowercase();
     b.addresses.validator_registry = b.addresses.validator_registry.to_ascii_lowercase();
     b.addresses.citrate_wallet_factory = b.addresses.citrate_wallet_factory.to_ascii_lowercase();
-    b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
     b.addresses.contribution_accounting = b.addresses.contribution_accounting.to_ascii_lowercase();
     b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
     b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
@@ -141,12 +138,6 @@ pub fn validator_registry() -> &'static str {
 #[allow(dead_code)]
 pub fn citrate_wallet_factory() -> &'static str {
     &book().addresses.citrate_wallet_factory
-}
-
-/// `LiquidStakingPool` — self-stake / withdrawal queue.
-#[allow(dead_code)]
-pub fn liquid_staking_pool() -> &'static str {
-    &book().addresses.liquid_staking_pool
 }
 
 /// `ContributionAccounting`: the `claimable` read and the contribution `claimRewards` target.
@@ -263,7 +254,6 @@ mod tests {
             ("MembershipStakeVault", membership_stake_vault()),
             ("ValidatorRegistry", validator_registry()),
             ("CitrateWalletFactory", citrate_wallet_factory()),
-            ("LiquidStakingPool", liquid_staking_pool()),
         ] {
             assert!(
                 is_address(addr),
@@ -287,7 +277,6 @@ mod tests {
             membership_stake_vault(),
             validator_registry(),
             citrate_wallet_factory(),
-            liquid_staking_pool(),
         ] {
             assert_eq!(
                 addr,
@@ -309,7 +298,6 @@ mod tests {
                 membership_stake_vault(),
                 validator_registry(),
                 citrate_wallet_factory(),
-                liquid_staking_pool(),
             ] {
                 assert_ne!(
                     a, req,
@@ -412,14 +400,14 @@ mod tests {
             "addresses": {
                 "CitrateMemberSBT": a(0x11), "MembershipStakeVault": a(0xAA),
                 "ValidatorRegistry": a(0x22), "CitrateWalletFactory": a(0x33),
-                "LiquidStakingPool": a(0x44), "ContributionAccounting": a(0x55),
+                "ContributionAccounting": a(0x55),
                 "IPFSIncentivesV3": a(0x66),
             }
         })
         .to_string();
         set_thread_test_book(&json).expect("test book parses");
         assert_eq!(membership_stake_vault(), a(0xAA).to_ascii_lowercase());
-        assert_eq!(liquid_staking_pool(), a(0x44).to_ascii_lowercase());
+        assert_eq!(validator_registry(), a(0x22).to_ascii_lowercase());
         let other = std::thread::spawn(|| membership_stake_vault().to_string())
             .join()
             .expect("thread");
@@ -457,7 +445,6 @@ mod tests {
             membership_stake_vault(),
             validator_registry(),
             citrate_wallet_factory(),
-            liquid_staking_pool(),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {

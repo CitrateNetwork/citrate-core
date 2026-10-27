@@ -318,7 +318,7 @@ pub(crate) fn tools_for_permissions(permissions: &[String]) -> Vec<String> {
     out.extend(
         crate::daemons::HOST_TOOL_SETS
             .iter()
-            .filter(|set| permissions.iter().any(|p| p == set.permission))
+            .filter(|set| set.grantable && permissions.iter().any(|p| p == set.permission))
             .map(|set| crate::daemons::host_set_marker(set.id)),
     );
     out.sort();
@@ -999,7 +999,8 @@ fn remove_unverified_model_locked(models_dir: &Path, file: &str) -> Result<(), R
 /// A model install the app left between the download's rename and its verify (a pending record,
 /// the file on disk, no verified flag, no install running) is checked again by its pinned hash:
 /// it is confirmed when it matches, and when it does not (or cannot be checked) the file and its
-/// record are removed together, so the listing can be installed again.
+/// record are removed together, so the listing can be installed again. A file with the Models
+/// screen's marker beside it is only confirmed on a match, never removed (#463).
 /// Each check runs under the file's download lock (shared with the Models screen); a record
 /// whose file a download is writing right now is left for a later read.
 fn reconcile_models(root: &Path, t: &Targets<'_>, installing: Option<&str>) -> Result<(), Refusal> {
@@ -1027,24 +1028,32 @@ fn reconcile_models(root: &Path, t: &Targets<'_>, installing: Option<&str>) -> R
             continue;
         };
         let interrupted = t.models_dir.join(&file).is_file()
-            && !crate::model::is_file_ready(&t.models_dir, &file)
-            && !models_download_left(&t.models_dir, &file);
+            && !crate::model::is_file_ready(&t.models_dir, &file);
         if !interrupted {
             keep.push(r);
             continue;
         }
+        let mgr = crate::model::ModelManager::new(
+            t.models_dir.clone(),
+            (t.model_transport)(&r.url),
+            r.sha256.clone(),
+            r.size,
+        )
+        .with_file(file.clone());
+        let pinned = !r.sha256.is_empty() && r.size > 0;
+        if models_download_left(&t.models_dir, &file) {
+            // The Models screen's marker is beside it: the file is checked against the Store's pin
+            // and never deleted. A match is the Store's own install (confirmed); any other file
+            // is left to the marker's owner, and the record waits.
+            if pinned && mgr.confirm_held(&lock).unwrap_or(false) {
+                r.pending = false;
+                changed = true;
+            }
+            keep.push(r);
+            continue;
+        }
         changed = true;
-        let verified = !r.sha256.is_empty()
-            && r.size > 0
-            && crate::model::ModelManager::new(
-                t.models_dir.clone(),
-                (t.model_transport)(&r.url),
-                r.sha256.clone(),
-                r.size,
-            )
-            .with_file(file.clone())
-            .verify_held(&lock)
-            .is_ok();
+        let verified = pinned && mgr.verify_held(&lock).is_ok();
         if verified {
             r.pending = false;
             keep.push(r);
@@ -1286,7 +1295,7 @@ fn install_model(
     .with_file(file.clone());
     // One operation on this file name, under the download lock the Models screen shares: a
     // file already at the target is refused, never verified against this listing (or removed).
-    mgr.download_and_verify(crate::model::ExistingFile::Refuse, on_progress)
+    mgr.download_and_verify(crate::model::ExistingFile::Refuse, || Ok(()), on_progress)
         .map_err(|e| match e {
             crate::model::ModelError::ChecksumMismatch
             | crate::model::ModelError::SizeMismatch { .. } => refuse(

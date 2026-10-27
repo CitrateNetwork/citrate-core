@@ -59,7 +59,9 @@ inputs (a 48-hour, 3-of-5 council and a 1-hour, 2-of-3 guardian, both placeholde
 | FederatedRoundLedger, PatronageLedger (dormant) | `DeployDormantLedgers` | yes (#320) |
 | CitrateMemberSBT, MemberBond, MembershipStakeVault (proxy) | `DeployGenesisMembership`, grantor = anvil account 2 | yes (#331, Track M) |
 | ValidatorRegistry | `forge create` from the same ref, governed by the timelock, minStake 32,000 SALT (the pipeline's values) | deployed at genesis, not in the ceremony books |
-| LiquidStakingPool | `forge create` from the same ref, governed by the timelock | **no**: the C2 genesis spec retires it. It is deployed only because core still ships the C1-W withdrawal read |
+
+LiquidStakingPool is not deployed: the C2 genesis spec retires it, and core no longer has pool reads
+or intents (D-9, #519).
 
 The genesis ceremony refuses to run on chain 40204 unless its floors hold. So a run that passes has
 also run the ceremony scripts against a node that reports 40204.
@@ -75,7 +77,7 @@ also run the ceremony scripts against a node that reports 40204.
 - **The treasury's side.** Core has no code here, so the test does it as the grantor (anvil
   account 2): `mintMember`, `grant` (32,000 SALT), `setKycVerified` and `recordRelease`.
 - **Time.** Blocks are mined with `anvil_mine`, and the 364-day lock elapses through
-  `evm_increaseTime`. Anvil runs with `--prune-history`, because mining about 60,000 blocks is
+  `evm_increaseTime`. Anvil runs with `--prune-history`, because mining thousands of blocks is
   superlinear without it.
 - **Keys.** Anvil's public test mnemonic only. The member wallet is account 0, imported into a
   throwaway in-memory vault. The node's proposer key is a fixed test seed in a temp data dir.
@@ -86,14 +88,13 @@ Each step records three things:
 
 - the events its transactions emitted;
 - the chain state, read with direct `eth_call`s (vault grant, bond flags, registry `isActive`,
-  `stakeOf`, `validatorInfo`, pool shares, balances);
+  `stakeOf`, `validatorInfo`, balances);
 - core's read model.
 
 | Flow | Steps | Core code driven |
 |---|---|---|
 | `membership-activation` | before-grant (core refuses activation) → grant (treasury) → activate (gas = the node's estimate + `money_gas` margin, recorded as `gasLimit`) → activate-again (core refuses) → epoch-reached | `grant_status::read_grant_status`, `validator_activation::read_activation_status`, `node::bond_activation_intent` (the body of `node_register_validator`) with `validator::sign_registration_from_data_dir`, the SignatureCeremony (`request` + `approve_and_broadcast`, EIP-155 from the vault) |
-| `bond-exit` | kyc-attested → release-inside-lock (reverts) → lock-elapsed → release (registry unbond, vault records it; "Exiting") → withdraw-too-early (reverts) → exit-matured (32,000 SALT back to the member; "Bond returned") | the same reads; the ceremony for the member's sends; `staking::read_pending_withdrawals_with` (C1-W) after the release |
-| `lsp-withdrawal-c1w` | stake → request (core's gas: reverts, #501) → request-estimated-gas → claim-too-early (reverts) → delay-elapsed → claim (40 SALT back) | `staking::stake_intent`, `request_withdrawal_intent`, `claim_withdrawal_intent`, `read_self_stake`, the C1-W paged scan (plain `eth_getLogs` windows of 1,000 blocks on anvil; anvil has no `citrate_getLogs`, so `confirmed` is false) |
+| `bond-exit` | kyc-attested → release-inside-lock (reverts) → lock-elapsed → release (registry unbond, vault records it; "Exiting") → withdraw-too-early (reverts) → exit-matured (32,000 SALT back to the member; "Bond returned") | the same reads; the ceremony for the member's sends |
 
 Pin bonds are not covered. `IPFSIncentivesV3` is not deployed by #320/#324/#331, and core has no
 pin-bond transaction yet: pins are local only (storage S2.2).
@@ -127,22 +128,16 @@ To change a golden on purpose, run with `--update` and review the diff in the PR
 
 ## Gaps the run shows
 
-- **#501 (defect).** `requestWithdrawal` goes out with a fixed 150,000 gas, and the pool needs about
-  160,500, so the core-built request reverts. The golden records the revert. The next step resends
-  core's same intent with the estimated gas, so the C1-W read is still exercised. The pool is
-  retired at r1006 (D-9), and the LSP removal deletes this send, the C1-W read and this flow. Every
-  other money send core builds now carries the node's estimate plus a margin (`money_gas`), and the
-  `tripwire_no_transaction_core_builds_has_a_fixed_gas_limit` test keeps it that way.
+- **Fixed gas limits (fixed).** Every money send core builds carries the node's estimate plus a
+  margin (`money_gas`), and the `tripwire_no_transaction_core_builds_has_a_fixed_gas_limit` test
+  keeps it that way.
 - **Track M exit has no core builder.** Core has no `MemberBond.requestRelease` or `withdrawToMember`
   intent. The ceremony decodes both as "Unrecognized" and needs the raw-mode ack, and the test
   supplies their calldata. The lock is 364 days, so this is not on the 0.5.2 path, but it is the only
   exit at genesis.
-- **C1-W does not see the Track M exit.** The pending-withdrawals scan reads only
-  `LiquidStakingPool.WithdrawalRequested`, so after a bond release it shows nothing. The genesis
-  spec retires the pool.
 - **"Exiting" after the exit has paid out (fixed).** `validatorInfo.status` stays Exiting after
   `withdrawToMember` returns the principal. The activation read now carries `validatorInfo`'s bonded
   stake and escrow, and with both at zero the step says "Bond returned" (phase `exited`).
-- **C1-W scan start.** `staking::LIQUID_STAKING_POOL_DEPLOY_BLOCK` is the r1005 pool's block (427).
-  The script mines past it before deploying, so the scan covers the pool here. On a new genesis
-  this pin has to move with the book, or go with the pool.
+- **No pending-withdrawals read for the Track M exit.** With the pool retired (D-9), core has no
+  pending-withdrawals read at all, so the member sees the exit only through the bond and registry
+  reads above.
