@@ -27,9 +27,9 @@ check [--release] [--require-active <profile>] [--canonical-book <file>]
 
     Every profile parses and its values are well formed where set, `pending` names exactly
     the unset values, and a set genesis is the block 0 the profile's genesisProfile builds
-    (nodeGenesisProfiles: the genesis profiles the bundled node builds). With --release (the RC build gate G0): the active profile has NO unset
-    value, the embedded address book has its chain id and genesis, and build-sidecar.sh pins its
-    minChainRev. --require-active fails unless the active profile is the one named.
+    (nodeGenesisProfiles: the genesis profiles the bundled node builds). With --release (the RC
+    build gate G0): the active profile has NO unset value, the embedded address book has its chain
+    id and genesis, and build-sidecar.sh pins its minChainRev. --require-active fails unless the active profile is the one named.
     --canonical-book checks the active profile's addressBookSha256 against that file.
 
 Paths default to this repo; --profiles, --app-book-dir and --sidecar exist for tests.
