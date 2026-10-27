@@ -1000,7 +1000,7 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("chain_read", { query: "staking.position" })],
       compose: (c) =>
-        `Your membership grant is **${fmtStake(c.staked)}**, held in your validator bond. Staking is through that bond: there is no separate stake to add or withdraw. Your node ${c.nodeState === "validating" ? "is validating" : "can validate once the bond is activated and the node is running"}. The granted principal stays locked until the bond unlocks; rewards for blocks your node produces are yours.`,
+        `${grantSentence(c.grantSalt ?? null)} ${stakeSentence(c.staked)} Staking is through that bond: there is no separate stake to add or withdraw. Your node ${c.nodeState === "validating" ? "is validating" : "can validate once the bond is activated and the node is running"}. The granted principal stays locked until the bond unlocks; rewards for blocks your node produces are yours.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {
@@ -1096,6 +1096,18 @@ function tokenize(text: string): string[] {
 }
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-US");
+}
+/** The grant, from the grant read (MemberBond.principal / vault attribution), never the stake. */
+function grantSentence(grant: number | null): string {
+  return grant == null
+    ? "Your membership grant is not read yet."
+    : `Your membership grant is **${fmt(grant)} SALT**, locked in your validator bond.`;
+}
+/** The stake, only from a ValidatorRegistry.stakeOf read (contract §5.4: "staked" only once it is). */
+function stakeSentence(staked: number | null): string {
+  if (staked == null) return "Your stake in the ValidatorRegistry is not read yet.";
+  if (staked > 0) return `**${fmt(staked)} SALT** staked in the ValidatorRegistry (stakeOf).`;
+  return "Nothing is staked in the ValidatorRegistry (stakeOf reads 0): the grant is not staked until the bond is activated.";
 }
 /** A stake in SALT, or "— (not read yet)" when it has not been read (unknown is not zero). */
 function fmtStake(n: number | null): string {

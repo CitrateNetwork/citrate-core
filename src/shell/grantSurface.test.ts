@@ -56,6 +56,8 @@ describe("grant stake surfacing — locked 32k is not '0 staked' (Rule 1)", () =
     expect(snap.membership.validatorBondedSalt).toBe(0); // honest: not validating yet
     expect(snap.membership.locked).toBe(true);
     expect(snap.membership.bondStatus).toMatch(/unlocks at block/);
-    expect(snap.membership.note.toLowerCase()).toContain("locked stake is not spendable");
+    expect(snap.membership.note.toLowerCase()).toContain("not spendable");
+    // Contract §5.4: "staked" only after the bond is activated.
+    expect(snap.membership.note).toMatch(/staked in the ValidatorRegistry only after/);
   });
 });

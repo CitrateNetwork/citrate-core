@@ -245,6 +245,14 @@ export function describeBond(g: {
   return g.hasValidator ? "Unlocked · validating · can withdraw" : "Unlocked · can withdraw";
 }
 
+/** A wei amount (decimal string) as SALT; null when it is not a decimal wei string (never 0). */
+export function saltFromStakeWei(wei: string | null | undefined): number | null {
+  if (typeof wei !== "string" || !/^\d+$/.test(wei)) return null;
+  const w = BigInt(wei);
+  const unit = 10n ** 18n;
+  return Number(w / unit) + Number(w % unit) / 1e18;
+}
+
 /**
  * The onboarding patch implied by a REAL on-chain grant, or `null` when the grant
  * is not (yet) genuinely on chain.
@@ -258,12 +266,6 @@ export function describeBond(g: {
  * Returning `null` (rather than an empty patch) keeps "no grant" a distinct,
  * non-mutating outcome — a member mid-flow is never nudged forward (Rule 1).
  */
-/** `grantStatus.bondedStakeWei` (stakeOf, wei) as SALT; null when it is not a decimal wei string. */
-export function saltFromStakeWei(wei: string | null | undefined): number | null {
-  if (typeof wei !== "string" || !/^\d+$/.test(wei)) return null;
-  return Number(BigInt(wei)) / 1e18;
-}
-
 export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
   if (!isGrantOnChain(g) || !g.hasSbt) return null;
   return {
@@ -2320,13 +2322,20 @@ export class Store {
     // so expose both figures + the human-readable bond status (which carries the unlock block), rather
     // than the old single `staked` that only reflected the validator bond and read 0 for a fresh member.
     const grantStakedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
+    // The grant's principal: MemberBond.principal() from the activation read, else the vault's
+    // attribution (MembershipStakeVault.attributedStake). null when neither is read: never 0.
+    const principalSalt = saltFromStakeWei(s.activation?.principalWei);
+    const grantSalt = principalSalt ?? (s.hasGrant ? saltFromStakeWei(s.s5StakeWei) : null);
+    // The stake only from a stakeOf read this session (unknown is not zero).
+    const stakeSalt = readStakeSalt(s);
     return {
       height: s.height,
       peers: s.peers,
       nodeState: nodeLabelLocal(s.node),
       // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf (UI truth contract §2). The
       // locked grant is reported separately under `membership`; self-stake is not validator stake.
-      staked: readStakeSalt(s),
+      staked: stakeSalt,
+      grantSalt,
       liquid: s.liquid,
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
@@ -2336,9 +2345,11 @@ export class Store {
       membership: {
         grantStakedSalt, // the recoverable grant, locked (e.g. 32000)
         bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Staked · unlocks at block N"
-        validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
-        locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
-        note: "The membership grant stakes SALT into a time-locked (about a year), recoverable validator bond. Locked stake is not spendable and is separate from the liquid balance; the bond only starts validating after the member approves the activation ceremony.",
+        // ValidatorRegistry.stakeOf, or null with "not read yet" before the read (never a default 0).
+        validatorBondedSalt: stakeSalt,
+        validatorBonded: stakeSalt == null ? "not read yet (ValidatorRegistry.stakeOf)" : "ValidatorRegistry.stakeOf",
+        locked: stakeSalt == null || grantSalt == null ? null : grantSalt > 0 && stakeSalt < grantSalt,
+        note: "The membership grant is locked in a time-locked (about a year), recoverable validator bond. It is not spendable and is separate from the liquid balance. It is staked in the ValidatorRegistry only after the member activates the bond in the activation ceremony.",
       },
     };
   }
