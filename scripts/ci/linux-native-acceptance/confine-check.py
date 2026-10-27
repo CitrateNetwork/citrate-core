@@ -278,8 +278,64 @@ def scan(text):
     return launches, bypasses
 
 
+# Synthetic controls: (name, snippet appended after the harness, must it be flagged?). A snippet
+# is a whole function (or two) so it is scanned in that function's context.
+def _fn(name, *body):
+    return f"{name}() {{\n" + "\n".join("  " + b for b in body) + "\n}"
+
+
+SYNTHETIC = [
+    # Unconfined launches in an ordinary (non-probe) function: each must be flagged.
+    ("background sleep", _fn("k1l_ctl", "sleep 300 </dev/null >/dev/null 2>&1 &"), True),
+    ("command", _fn("k1l_ctl", "command python3 -I -c pass"), True),
+    ("builtin", _fn("k1l_ctl", "builtin command python3 -I -c pass"), True),
+    ("eval", _fn("k1l_ctl", 'eval "$K1L_CTL"'), True),
+    ("backticks in an assignment", _fn("k1l_ctl", "K1L_CTL=`id`"), True),
+    ("backticks in a string", _fn("k1l_ctl", 'echo "x `id` y"'), True),
+    ("xargs", _fn("k1l_ctl", "printf '%s\\0' \"$W/x\" | xargs -0 sh"), True),
+    ("coproc", _fn("k1l_ctl", "coproc python3 -I -c pass"), True),
+    ("source", _fn("k1l_ctl", 'source "$W/ctl.sh"'), True),
+    ("dot", _fn("k1l_ctl", '. "$W/ctl.sh"'), True),
+    ("trap", _fn("k1l_ctl", "trap 'python3 -I -c pass' EXIT"), True),
+    ("find -exec", _fn("k1l_ctl", 'find "$W" -name ctl -exec sh {} \\;'), True),
+    ("find -execdir", _fn("k1l_ctl", 'find "$W" -name ctl -execdir sh {} +'), True),
+    ("time", _fn("k1l_ctl", "time python3 -I -c pass"), True),
+    ("stdbuf", _fn("k1l_ctl", "stdbuf -oL ls"), True),
+    ("perl", _fn("k1l_ctl", "perl -e 1"), True),
+    ("busybox", _fn("k1l_ctl", "busybox sh -c true"), True),
+    ("`function name {` after a probe",
+     _fn("p_k1l_ctl", ":") + "\nfunction k1l_ctl {\n  python3 -I -c pass\n}", True),
+    ("`function name() {` after a probe",
+     _fn("p_k1l_ctl", ":") + "\nfunction k1l_ctl() {\n  python3 -I -c pass\n}", True),
+    ("top-level code after a probe", _fn("p_k1l_ctl", ":") + "\npython3 -I -c pass", True),
+    # CONFINE changed after its definition, anywhere (probes included).
+    ("CONFINE reassigned", _fn("k1l_ctl", "CONFINE=(env)"), True),
+    ("CONFINE appended to", _fn("k1l_ctl", "CONFINE+=(env)"), True),
+    ("CONFINE element set", _fn("k1l_ctl", "CONFINE[0]=env"), True),
+    ("CONFINE unset", _fn("k1l_ctl", "unset CONFINE"), True),
+    ("CONFINE shadowed by a local", _fn("k1l_ctl", "local -a CONFINE=()"), True),
+    ("CONFINE read into", _fn("k1l_ctl", 'read -ra CONFINE <<<"env"'), True),
+    ("CONFINE reassigned in a probe", _fn("p_k1l_ctl", "CONFINE=(env)"), True),
+    # Package code started from a probe (probes are otherwise exempt): each must be flagged.
+    ("probe runs $APP_EXE", _fn("p_k1l_ctl", 'env HOME=/x "$APP_EXE"'), True),
+    ("probe runs a staged AppImage", _fn("p_k1l_ctl", '"$W/pkgs/to.AppImage"'), True),
+    ("probe extracts an AppImage", _fn("p_k1l_ctl", 'cp "$W/pkgs/to.AppImage" "$W/x"; "$W/x" --appimage-extract'), True),
+    ("probe installs a .deb", _fn("p_k1l_ctl", 'dpkg --root=/x -i "$W/pkgs/to.deb"'), True),
+    ("probe runs the installed binary", _fn("p_k1l_ctl", '"$W/root-deb/usr/bin/citrate-core"'), True),
+    ("probe runs the placed AppImage", _fn("p_k1l_ctl", '"$W/apps/Citrate-Core.AppImage" </dev/null &'), True),
+    ("probe runs a staged file with python", _fn("p_k1l_ctl", 'python3 -I "$W/pkgs/x.py"'), True),
+    # Must NOT be flagged: confined launches, quoted text, and probes that only read package files.
+    ("confined app launch", _fn("k1l_ctl", '"${CONFINE[@]}" env HOME=/x "$APP_EXE" </dev/null >/dev/null 2>&1 &'), False),
+    ("launcher words in single quotes", _fn("k1l_ctl", "echo 'time eval command `id` python3 &'"), False),
+    ("probe reads package paths", _fn("p_k1l_ctl", 'printf \'%s\\n\' "$W/pkgs" | writable_of',
+                                      '[ -e "$W/apps/Citrate-Core.AppImage" ] && sha256sum <"$W/pkgs/to.deb"'), False),
+    ("probe runs its own helper", _fn("p_k1l_ctl", "python3 -I -c 'pass'"), False),
+]
+
+
 def controls(text, launches):
-    """Remove each CONFINE prefix in turn; each such copy must be flagged at that line."""
+    """(1) Remove each CONFINE prefix in turn; each such copy must be flagged at that line.
+    (2) Each synthetic snippet must be flagged (or, for the must-pass ones, must not be)."""
     lines = text.split("\n")
     missed = []
     sites = sorted({n for n, _, _ in launches})
@@ -291,11 +347,13 @@ def controls(text, launches):
         mutated = lines[:k] + [lines[k].replace(CONFINE + " ", "", 1)] + lines[k + 1:]
         _, byp = scan("\n".join(mutated))
         if not any(b[0] == n for b in byp):
-            missed.append(n)
-    synthetic = text + "\nk1l_control_fn() {\n  sleep 300 </dev/null >/dev/null 2>&1 &\n}\n"
-    _, byp = scan(synthetic)
-    if not any("sleep 300" in b[2] for b in byp):
-        missed.append("synthetic background sleep")
+            missed.append(f"line {n} without CONFINE")
+    first = len(lines) + 1  # the snippet's first line number in text + "\n" + snippet
+    for name, snippet, must_flag in SYNTHETIC:
+        _, byp = scan(text + "\n" + snippet + "\n")
+        flagged = any(b[0] >= first for b in byp)
+        if flagged != must_flag:
+            missed.append(f"{name} ({'not flagged' if must_flag else 'flagged'})")
     return sites, missed
 
 
@@ -317,10 +375,13 @@ def main(argv):
     sites, missed = controls(text, launches)
     if missed:
         ok = False
-        print(f"confine-check: FAIL: controls not flagged: {missed}")
+        print(f"confine-check: FAIL: {len(missed)} control(s) misjudged:")
+        for m in missed:
+            print(f"  {m}")
     if ok:
         print(f"confine-check: PASS: {len(launches)} post-seal launch(es) at {len(sites)} site(s), "
-              f"all through CONFINE; {len(sites) + 1}/{len(sites) + 1} unconfined controls flagged")
+              f"all through CONFINE; {len(sites)}/{len(sites)} unconfined copies flagged; "
+              f"{len(SYNTHETIC)}/{len(SYNTHETIC)} synthetic controls judged right")
     return 0 if ok else 1
 
 
