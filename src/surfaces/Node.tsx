@@ -6,7 +6,7 @@ import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
-import { bondClaimBlocked, ownWalletClaimBlocked } from "../shell/store";
+import { bondClaimBlocked } from "../shell/store";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -159,14 +159,13 @@ export function Node({ store, s }: SurfaceProps) {
   const claimDisabled = rClaim == null || rClaim < 5;
   // #362 B-1: on the bond path Claim is offered only once MemberBond.isKycVerified() reads true (the
   // bond's claimRewards() reverts otherwise); until then the reason shows instead of the button.
-  // fxEARN: a key staked from the wallet itself has no claim this app builds; the reason shows too.
-  const claimBlocked = bondClaimBlocked(s) ?? ownWalletClaimBlocked(s);
+  const claimBlocked = bondClaimBlocked(s);
   const claimNote =
     rClaim == null
       ? "Validator rewards are paid to the block producer only."
       : rClaim < 5
         ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - rClaim) + " SALT to go."
-        : "Claimable now is at or above the 5 SALT dust threshold.";
+        : "Claimable now is above the 5 SALT dust threshold.";
   // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL claim path
   // (`store.claimRewards` → `bridge.agent.claim` → the real `claimRewards()`
   // ceremony → B1.4 broadcast in the desktop build; an honest "nothing to claim"
