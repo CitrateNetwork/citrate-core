@@ -1469,3 +1469,18 @@ fn an_archive_that_is_only_uncertain_bounds_the_new_network() {
     assert!(log.is_uncertain());
     assert_eq!(log.try_record_call(&h(2), A, 0, NonceSource::Supplied, None), Ok(false));
 }
+
+/// Review of d644c4c (6b): on r1005, with a wallet, a missing record beside a set-aside damaged one
+/// is a lost history, never a 0.5.1 upgrade: every send stays unknown, not only up to a bound.
+#[test]
+fn a_missing_record_beside_an_unreadable_set_aside_next_to_a_wallet_stays_uncertain_on_r1005() {
+    let t = upgraded("missing-beside-unreadable-wallet");
+    std::fs::write(t.0.join(format!("{RECORD_FILE}.unreadable")), b"{not json").expect("aside");
+    let log = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert!(log.is_uncertain());
+    assert_eq!(log.try_record_call(&h(1), A, 0, NonceSource::Fetched, None), Ok(false));
+    assert_eq!(log.try_record_call(&h(2), A, 1, NonceSource::Fetched, None), Ok(false), "a lost history is never bounded");
+    drop(log);
+    let again = SubmittedTxLog::open(t.record(), LEGACY_GENESIS);
+    assert_eq!(again.try_record_call(&h(3), A, 2, NonceSource::Fetched, None), Ok(false), "and stays so across a restart");
+}
