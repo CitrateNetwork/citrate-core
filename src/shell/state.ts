@@ -20,6 +20,18 @@ import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
 import { BRIDGE_MODE } from "../bridge/mode";
+import {
+  appendNetArchive,
+  currentNetKey,
+  NET_READS,
+  NET_STAMP_FIELD,
+  readNetArchive,
+  savedNetKey,
+  type ArchivedNetwork,
+  type NetRead,
+  type NetworkNotice,
+  type PersistScope,
+} from "./netScope";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
@@ -249,7 +261,8 @@ export interface WalletReview {
    * the tx reaches the node; with no durable record nothing is sent.
    */
   onSigned?: (txHash: string) => void;
-  /** Join-8 — with `onSigned`: the backend refused the send before submission; nothing was sent. */
+  /** Join-8 — with `onSigned`: nothing was sent (the signed tx expired in the ceremony, or the
+   *  backend refused the send before submission, e.g. no durable record). */
   onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
@@ -435,6 +448,15 @@ export interface AppState {
    * Rule 1: a funded bond is not the same as an activated one).
    */
   bondedStake: number;
+  /** RC52: the chain reads network-scoped values still wait for after a genesis switch. */
+  netUnread: NetRead[];
+  /** RC52: the genesis-switch notice, shown on Node until dismissed. */
+  networkNotice: NetworkNotice | null;
+  /** RC52: previous networks' archived values (read from the archive at load, not persisted). */
+  netArchived: ArchivedNetwork[];
+  /** RC52: the network this state's chain reads belong to (netScope.currentNetKey); every save is
+   *  stamped with it. Not persisted as a field. */
+  netKey: string;
   hasGrant: boolean;
   hasSbt: boolean;
   /**
@@ -843,6 +865,10 @@ export function freshState(pid: string): AppState {
     crashes: [],
     liquid: 0,
     bondedStake: 0,
+    netUnread: [],
+    networkNotice: null,
+    netArchived: [],
+    netKey: currentNetKey(),
     hasGrant: false,
     hasSbt: false,
     rewards: null,
@@ -1048,22 +1074,42 @@ export function freshState(pid: string): AppState {
   return s;
 }
 
-// keys persisted (verbatim from design save())
-export const PERSIST_KEYS: (keyof AppState)[] = [
-  "persona", "tier", "org", "citrateRole", "entitlement", "stage", "s2", "s3", "s5", "s5n", "hasGrant", "hasSbt",
+// Every persisted key with its scope (RC52). `network`: read from one chain, so it belongs to that
+// chain's genesis; a save of another genesis has these archived and reset on load (netScope.ts).
+// `device`: this install's own (wallet identity, settings, journal, Hermes), kept across a switch.
+// A new persisted key must be given a scope here; persistScope.test.ts pins the whole table.
+const D = "device" as const;
+const N = "network" as const;
+export const PERSIST_SCOPE = {
+  persona: D, tier: D, org: D, citrateRole: D, entitlement: D, stage: D, s2: D, s3: D,
+  // The grant and the SBT are chain reads (reconciledGrantPatch), so they are the network's.
+  s5: N, s5n: N, hasGrant: N, hasSbt: N,
   // NOTE: the real-identity fields (signedIn/authSub/authEmail/authName/
   // authInitials/authExpiresAt) are DELIBERATELY NOT persisted — HIPAA sign-out-by-default.
   // Every launch starts signed-out; identity is re-derived only from a live
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
-  "liquid", "bondedStake", "claimable", "activity",
-  "nodeIntent", "rpc", "net", "cpuCap", "autolock", "channel",
-  "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
-  "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
+  liquid: N, bondedStake: N, claimable: N, activity: N,
+  nodeIntent: D, rpc: D, net: D, cpuCap: D, autolock: D, channel: D,
+  telemetry: D, telemetryConsentVersion: D, storageMode: D, coachDone: D, dataDir: D, coreMembershipUrl: D,
+  s5StakeWei: N, s5BondStatus: N,
+  walletAddr: D, commsAddr: D, socketPath: D, activeModelId: D,
+  kycOutcome: D, chatBackend: D, crashes: D, wTab: D, nTab: D, cTab: D, sSec: D, route: D, deviceId: D,
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
-];
+  pins: D, userSkills: D, jPages: D, jSel: D, connections: D, aiDefault: D, hermesSidecarLoop: D,
+  hermesSidecarLoopDefaultApplied: D, hermesTerminal: D, hermesTerminalDefaultApplied: D, hermesBrief: D,
+  hermesPersona: D, customPersonas: D, hermesReadAloud: D, journalAutoSummary: D, journalAutoSummaryDay: D,
+  sponsorUnits: N, blocksProposed: N,
+  // The reads still owed on this network after a switch, and the switch notice (kept until dismissed).
+  netUnread: N, networkNotice: D,
+} satisfies Partial<Record<keyof AppState, PersistScope>>;
+
+// keys persisted (verbatim from design save(), plus the RC52 network fields)
+export const PERSIST_KEYS = Object.keys(PERSIST_SCOPE) as (keyof typeof PERSIST_SCOPE)[];
+
+/** The persisted keys that belong to one genesis. */
+export const NETWORK_KEYS = PERSIST_KEYS.filter((k) => PERSIST_SCOPE[k] === N);
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
@@ -1078,14 +1124,16 @@ const LEGACY_GATEWAY_KEYS = ["gwKey", "gwKeyFull"] as const;
  *  - D-11 (P-9d): the gateway key display (`LEGACY_GATEWAY_KEYS`). */
 export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday", ...LEGACY_GATEWAY_KEYS];
 
-export function loadState(): AppState {
+export function loadState(netKey: string = currentNetKey()): AppState {
   let saved: Partial<AppState> | null = null;
   try {
     saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
   } catch {
     saved = null;
   }
+  if (saved !== null && (typeof saved !== "object" || Array.isArray(saved))) saved = null;
   const base = freshState((saved && saved.persona) || "p1");
+  base.netKey = netKey;
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
@@ -1098,6 +1146,25 @@ export function loadState(): AppState {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
     } catch {
       /* storage unavailable: the next save writes PERSIST_KEYS only, which never include them */
+    }
+  }
+  // RC52: values read from another genesis's chain are never restored as current. They are
+  // archived under that genesis, reset to "not read yet", and the switch notice is raised.
+  if (saved) {
+    const raw = saved as Record<string, unknown>;
+    const from = savedNetKey(raw);
+    delete raw[NET_STAMP_FIELD];
+    for (const k of ["netKey", "netArchived"]) delete raw[k];
+    if (from !== netKey) {
+      const values: Record<string, unknown> = {};
+      for (const k of NETWORK_KEYS) {
+        if (k in raw) values[k] = raw[k];
+        delete raw[k];
+      }
+      const at = Date.now();
+      const archived = appendNetArchive({ genesis: from, archivedAt: at, values });
+      saved.netUnread = [...NET_READS];
+      saved.networkNotice = { at, from, to: netKey, node: null, archived };
     }
   }
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
@@ -1118,5 +1185,6 @@ export function loadState(): AppState {
   // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
   // installs. A stored value is kept as it is (on or off); only an install with no stored value
   // takes the default from freshState. The old switch-on-once migration is retired.
+  base.netArchived = readNetArchive();
   return base;
 }

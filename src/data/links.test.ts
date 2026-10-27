@@ -2,7 +2,8 @@
 // absolute) into the exact https URL the shell opens. Getting these wrong sends
 // a user to the wrong place, so the mapping is pinned here.
 import { describe, it, expect } from "vitest";
-import { federationUrl, scanTxUrl, scanAddrUrl, ATLAS_BASE, SCAN_BASE } from "./links";
+import { federationUrl, scanTxUrl, scanAddrUrl, ATLAS_BASE } from "./links";
+import { ACTIVE_PROFILE } from "../network/profile";
 
 describe("federationUrl", () => {
   it("prefixes a bare host with https", () => {
@@ -25,7 +26,8 @@ describe("federationUrl", () => {
 });
 
 describe("scanTxUrl / scanAddrUrl", () => {
-  it("builds CitrateScan tx + address links", () => {
+  it("builds CitrateScan tx + address links on the active profile's explorer", () => {
+    const SCAN_BASE = ACTIVE_PROFILE?.explorerUrl;
     expect(scanTxUrl("0xdeadbeef")).toBe(`${SCAN_BASE}/tx/0xdeadbeef`);
     expect(scanAddrUrl("0xbb3a5102b647606Da86A85BD6B6BA24d01fD138b")).toBe(
       `${SCAN_BASE}/address/0xbb3a5102b647606Da86A85BD6B6BA24d01fD138b`,
