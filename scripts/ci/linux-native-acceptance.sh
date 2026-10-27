@@ -18,7 +18,8 @@
 # (core#318). This script never does that. It re-runs itself as PID 1 of fresh user, PID, mount,
 # network, IPC and UTS namespaces (`unshare ... setsid`), makes every mount it inherited from the
 # host read-only, hides /home, /tmp, /var/tmp, /run, /dev/shm, /sys/fs/cgroup and the GPU device
-# nodes behind private mounts, gives the app its own
+# nodes behind private mounts, starts everything after that in a nested user and mount namespace
+# with no capability and no_new_privs (so the seal cannot be undone), gives the app its own
 # loopback-only network, its own session bus, keyring and Xvfb display, and checks all of that
 # (with negative controls) BEFORE the first launch. If any check fails it exits 2 and never
 # launches the app. Every signal it sends goes to a pid inside the namespace.
@@ -76,7 +77,7 @@ outer_main() {
   done
   [ "$(uname -s)" = Linux ] || die "Linux only"
   local t
-  for t in unshare setsid dpkg dpkg-deb python3 ss ip sha256sum Xvfb; do
+  for t in unshare nsenter setpriv setsid dpkg dpkg-deb python3 ss ip sha256sum Xvfb; do
     command -v "$t" >/dev/null || die "missing tool: $t"
   done
   WORK="${WORK:-$ROOT/target/linux-native-acceptance}"
@@ -350,6 +351,10 @@ seal() {
   mount --move /mnt/dev /dev || return 1
   mkdir -p /run/lock /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
   ip link set lo up || return 1
+  # Last: the nested user and mount namespace every later process runs in (see CONFINE). It is a
+  # copy of the finished seal, kept by bind mounts of its namespace files, not by a process.
+  mkdir "$CONFINE_NS" && : >"$CONFINE_NS/user" && : >"$CONFINE_NS/mnt" &&
+    unshare --user="$CONFINE_NS/user" --mount="$CONFINE_NS/mnt" --map-root-user true || return 1
   # The caller's working directory was just mounted over, but a cwd keeps pointing at the old
   # directory, so relative paths would still reach the caller's files. Move into the run dir
   # before anything else runs; the app and every probe inherit it.
@@ -357,8 +362,20 @@ seal() {
 }
 
 # Every process the harness starts after the seal (the app, the package's install scripts, the
-# private display, bus and keyring) is started through this prefix.
-CONFINE=()
+# AppImage extraction, the private display, bus and keyring, the X and bus clients) is started
+# through this prefix:
+#   - it joins the nested user and mount namespace that `seal` made last. The mounts that
+#     namespace inherited from the seal's are locked there (read-only flags cannot be cleared,
+#     the mounts over hidden directories cannot be removed), and a process in it has no
+#     capability in the seal's namespace, so it cannot enter that one either. All of them share
+#     the one nested namespace, so the app can still see and stop sidecars of an earlier run;
+#   - setpriv then drops every capability (effective, permitted, inheritable, ambient, bounding)
+#     and sets no_new_privs before exec, so nothing it runs can gain one back.
+# The working directory is the run dir (use `env -C` for another one). nsenter and setpriv exec,
+# so the started program keeps the pid the harness sees as $!.
+CONFINE_NS=/mnt/confine
+CONFINE=(nsenter --preserve-credentials --user="$CONFINE_NS/user" --mount="$CONFINE_NS/mnt" --wd="$W" --
+  setpriv --no-new-privs --inh-caps=-all --ambient-caps=-all --bounding-set=-all --)
 
 # Isolation checks. Each one has a positive or negative control so a check that cannot see what
 # it looks for does not pass silently.
@@ -630,7 +647,7 @@ launch_app() { # kind label
   # shellcheck disable=SC2206 # K1L_EXTRA_ENV is a space-separated list of NAME=value
   [ -n "$K1L_EXTRA_ENV" ] && envv+=($K1L_EXTRA_ENV)
   if [ "$kind" = appimage ]; then envv+=(APPIMAGE_EXTRACT_AND_RUN=1); fi
-  env "${envv[@]}" "$APP_EXE" </dev/null >>"$log" 2>&1 &
+  "${CONFINE[@]}" env "${envv[@]}" "$APP_EXE" </dev/null >>"$log" 2>&1 &
   APP_PID=$!
   local i
   for i in $(seq 1 "$K1L_LAUNCH_TIMEOUT"); do
@@ -654,7 +671,7 @@ launch_app() { # kind label
   if [ "$K1L_QUIT" = x11 ]; then
     local p
     for p in "$APP_PID" $(descendants "$APP_PID" | awk '{print $1}'); do
-      wins="$wins$(DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I "$HERE/x11_windows.py" list "$p" 2>/dev/null)"
+      wins="$wins$("${CONFINE[@]}" env DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I "$HERE/x11_windows.py" list "$p" 2>/dev/null)"
     done
   fi
   pass "$kind launch [$label] in ${i}s: sidecars $(sidecars_of "$APP_PID" | awk '{print $1}' | sort | uniq -c | awk '{print $2 (($1>1)?"x"$1:"")}' | tr '\n' ' ')${wins:+ window: ${wins%%$'\n'*}}"
@@ -667,7 +684,7 @@ quit_app() { # kind label → app and everything it started gone, no listener le
   local -a before; mapfile -t before < <(descendants "$APP_PID" | awk '{print $1}')
   if [ "$K1L_QUIT" = x11 ]; then
     for p in "$APP_PID" "${before[@]}"; do
-      DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I "$HERE/x11_windows.py" close "$p" >>"$W/logs/quit.log" 2>&1 && asked=1
+      "${CONFINE[@]}" env DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I "$HERE/x11_windows.py" close "$p" >>"$W/logs/quit.log" 2>&1 && asked=1
     done
     [ "$asked" -eq 1 ] || { fail "$kind quit [$label]: no window of the app accepts WM_DELETE_WINDOW"; force_stop "${before[@]}"; return 1; }
   else
@@ -787,7 +804,7 @@ install_pkg() { # kind role
     if [ ! -d "$R/var/lib/dpkg" ]; then
       mkdir -p "$R/var/lib/dpkg/updates" "$R/var/lib/dpkg/info" "$R/var/lib/dpkg/triggers" && : >"$R/var/lib/dpkg/status"
     fi
-    dpkg --force-not-root --force-depends --force-script-chrootless --root="$R" \
+    "${CONFINE[@]}" dpkg --force-not-root --force-depends --force-script-chrootless --root="$R" \
       --log="$W/logs/dpkg.log" -i "$W/pkgs/$role.deb" >>"$W/logs/dpkg.out" 2>&1 ||
       { fail "$kind install $role: dpkg -i failed (logs/dpkg.out)"; return 1; }
     APP_EXE="$R/usr/bin/citrate-core"
@@ -823,7 +840,7 @@ run_kind() { # kind
     # Reference copy of the new AppImage's files, to identify the binaries it runs.
     # (The staged package is a hard link and may not be executable; run a private copy.)
     ( mkdir -p "$W/ref-appimage-to" && cp "$W/pkgs/to.AppImage" "$W/ref-to.AppImage" && chmod +x "$W/ref-to.AppImage" &&
-      cd "$W/ref-appimage-to" && "$W/ref-to.AppImage" --appimage-extract >>"$W/logs/ref-extract.log" 2>&1 &&
+      "${CONFINE[@]}" env -C "$W/ref-appimage-to" "$W/ref-to.AppImage" --appimage-extract >>"$W/logs/ref-extract.log" 2>&1 &&
       true ) && rm -f -- "$W/ref-to.AppImage"
     [ -x "$W/ref-appimage-to/squashfs-root/usr/bin/citrate-core" ] ||
       say "     $kind: could not extract the new AppImage for reference (logs/ref-extract.log)"
@@ -864,7 +881,7 @@ start_session_services() { # kind: private session bus + keyring for this HOME
   local -a senv=(HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" XDG_DATA_HOME="$HOME_DIR/.local/share"
     XDG_CACHE_HOME="$HOME_DIR/.cache" XDG_STATE_HOME="$HOME_DIR/.local/state" XDG_RUNTIME_DIR="$XRT"
     DBUS_SESSION_BUS_ADDRESS="unix:path=$XRT/bus" DISPLAY="${K1L_PRIVATE_DISPLAY:-}" NO_AT_BRIDGE=1)
-  env "${senv[@]}" python3 -I -c 'import ctypes, os, sys
+  "${CONFINE[@]}" env "${senv[@]}" python3 -I -c 'import ctypes, os, sys
 if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0: sys.exit("prctl(PR_SET_CHILD_SUBREAPER) failed")
 os.execvp(sys.argv[1], sys.argv[1:])' dbus-daemon --session --nofork --nopidfile --address="unix:path=$XRT/bus" \
     </dev/null >>"$W/logs/session.log" 2>&1 &
@@ -875,13 +892,13 @@ os.execvp(sys.argv[1], sys.argv[1:])' dbus-daemon --session --nofork --nopidfile
   if command -v gnome-keyring-daemon >/dev/null; then
     # A throwaway login keyring in the run's HOME, created and unlocked up front, so the app's
     # keyring calls never wait on an unlock prompt (there is no one to answer it).
-    printf 'k1l-throwaway-keyring' | env "${senv[@]}" gnome-keyring-daemon --foreground --unlock --components=secrets \
+    printf 'k1l-throwaway-keyring' | "${CONFINE[@]}" env "${senv[@]}" gnome-keyring-daemon --foreground --unlock --components=secrets \
       >>"$W/logs/session.log" 2>&1 &
     local kr=$!
     SESSION_PIDS+=("$kr"); INFRA_PIDS+=("$kr")
     local locked=""
     for i in $(seq 1 50); do
-      locked="$(env "${senv[@]}" dbus-send --session --print-reply --dest=org.freedesktop.secrets \
+      locked="$("${CONFINE[@]}" env "${senv[@]}" dbus-send --session --print-reply --dest=org.freedesktop.secrets \
         /org/freedesktop/secrets/aliases/default org.freedesktop.DBus.Properties.Get \
         string:org.freedesktop.Secret.Collection string:Locked 2>/dev/null | awk '/boolean/ {print $3}')"
       [ "$locked" = false ] && break
@@ -954,7 +971,7 @@ inner_main() {
   fi
 
   export K1L_PRIVATE_DISPLAY=":77"
-  Xvfb "$K1L_PRIVATE_DISPLAY" -screen 0 1280x800x24 -nolisten tcp -extension GLX >"$W/logs/xvfb.log" 2>&1 &
+  "${CONFINE[@]}" Xvfb "$K1L_PRIVATE_DISPLAY" -screen 0 1280x800x24 -nolisten tcp -extension GLX >"$W/logs/xvfb.log" 2>&1 &
   INFRA_PIDS+=("$!")
   local i; for i in $(seq 1 50); do [ -S /tmp/.X11-unix/X77 ] || ss -Hlx | grep -q X11-unix/X77 && break; sleep 0.1; done
   if ! DISPLAY="$K1L_PRIVATE_DISPLAY" python3 -I -c 'import ctypes,ctypes.util,os,sys; x=ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6"); x.XOpenDisplay.restype=ctypes.c_void_p; sys.exit(0 if x.XOpenDisplay(os.environ["DISPLAY"].encode()) else 1)'; then

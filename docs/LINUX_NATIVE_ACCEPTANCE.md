@@ -34,6 +34,7 @@ the same entry as K1-F plus `--net --ipc --uts`), and then, inside them:
 | cgroup kills | `/sys/fs/cgroup` is a private tmpfs |
 | The desktop's X server and GPU | `/tmp` is private, the abstract X socket is unreachable, `/dev` is a minimal tmpfs (null, zero, full, random, urandom, tty, own devpts; no `/dev/dri`, no `/dev/nvidia*`); the app draws on a private `Xvfb :77` |
 | Your files | Every mount inherited from the host is read-only inside (one recursive `mount_setattr`, other mount flags unchanged; only the namespace's own `/proc` stays writable), so files you own anywhere, such as data directories under `/opt` or `/var/lib`, cannot be changed; `/home`, `/root`, `/tmp`, `/var/tmp`, `/dev/shm` are private tmpfs; the run directory is the only writable host directory, and its staged packages (possibly hard links to your downloads) and the harness copy are read-only binds; HOME and every XDG dir point into the run directory; the harness moves into the run directory before anything runs, so no working directory still points at a mounted-over directory |
+| Undoing any of the above | Everything started after the seal (the app, the package's install scripts, the AppImage extraction, Xvfb, the bus, the keyring and the harness's X and bus clients) runs in one nested user and mount namespace made from the finished seal, where every inherited mount is locked (its read-only flag cannot be cleared and the mounts over hidden directories cannot be removed), and `setpriv` drops every capability and sets `no_new_privs` before exec. Such a process has no capability in the seal's namespace, so it can neither change those mounts nor enter that namespace |
 | The network (and production RPC) | Loopback only |
 
 Before the first launch the harness checks each of these and records it in `summary.txt`
@@ -53,7 +54,13 @@ directories, found per real filesystem to depth 3 before entry, plus the checkou
 directory, HOME and package sources) may be writable inside, checked with `access(W_OK)` and, for
 files, an open for appending that writes nothing; and the staged packages and the harness copy
 must be read-only. Their negative control is a directory and a file in the run directory, which
-the scan must flag as writable. **If any probe fails, the app is not started** and the run exits 2.
+the scan must flag as writable. One more probe starts a fixture
+(`scripts/ci/linux-native-acceptance/unseal-attempt.sh`) through the same launcher as the app and
+has it try to undo the seal with mount operations only: remount `/` and the harness copy
+read-write (plain and bind), clear the read-only flag with `mount_setattr`, unmount `/home` (plain
+and lazy) and the harness bind, and enter PID 1's mount namespace. Every attempt must be refused,
+and the fixture must report no effective capability, `no_new_privs` set, and a user and mount
+namespace other than PID 1's; the seal probes are then run again. **If any probe fails, the app is not started** and the run exits 2.
 
 Mounts are made in the run's private mount namespace and never propagate to the host. When the
 run's PID 1 exits, the kernel ends every process left in the namespace, so nothing outlives a run
@@ -85,7 +92,7 @@ before the kill does not count as the restart).
 A run takes about 10 minutes per package kind. `K1L_KEEP=1` keeps the run directory (the app's
 HOME, logs, the installed tree) for inspection; otherwise only `logs/` is kept.
 
-Requirements: util-linux `unshare`, `dpkg`, `Xvfb`, `dbus-daemon`, `python3`, `iproute2`
+Requirements: util-linux `unshare`, `nsenter`, `setpriv`, `dpkg`, `Xvfb`, `dbus-daemon`, `python3`, `iproute2`
 (`ss`, `ip`), and the package's runtime libraries (`libwebkit2gtk-4.1-0`, `libgtk-3-0`).
 `gnome-keyring-daemon` is used when present.
 
@@ -119,7 +126,8 @@ desktop they belong to the login session, not to Citrate.
   signed-in member is covered: the node, IPFS and the memory daemon. Hermes, llama-server
   (needs a downloaded model) and the comms/cluster daemons are not started.
 - **Offline.** Loopback only, so the node never peers or syncs.
-- **Root inside the namespace.** The app runs as the namespace's root (your uid outside).
+- **Root inside the namespace, without capabilities.** The app runs as root of the nested namespace
+  (your uid outside) with no capability and `no_new_privs` set.
 
 ## CI
 

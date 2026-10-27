@@ -88,3 +88,22 @@ CI run of that revision passed the self-test and the aarch64 leg; on the x86_64 
 after the crash waited on a keyring unlock prompt (the private keyring had no login collection),
 which is a harness environment gap, fixed in b0c6356a by creating and unlocking a throwaway login
 keyring up front. The CI result for b0c6356a is recorded on the PR.
+
+## 2026-10-27: post-seal processes run without the ability to change mounts
+
+Red at 6573e273: a fixture started like the app (`unseal-attempt.sh`) tried to undo the seal with
+mount operations; 6 of 9 attempts succeeded (bind remount of `/` and of the harness copy
+read-write, `mount_setattr` clearing read-only on the harness copy, `umount /home`, lazy unmount of
+the harness bind, `nsenter -t 1 -m`), with full capabilities and in PID 1's namespaces. Self-test:
+all 5 modes misjudged (rc=2).
+
+Fix: every process started after the seal joins one nested user and mount namespace made from the
+finished seal (inherited mounts locked there) through `nsenter`, and `setpriv` drops every
+capability and sets `no_new_privs` before exec (`CONFINE`). One shared nested namespace, not one
+per launch: across sibling user namespaces a process cannot read another's `/proc/<pid>/exe`,
+which broke the app's orphan sweep (`reap`) in the first attempt.
+
+Result on the DGX (aarch64, kernel 6.14): self-test PASS, 20/20 probes, all 9 attempts refused,
+`CapEff 0`, `no_new_privs 1`. Mutations, each red (5 modes misjudged): nested namespace without
+`setpriv` (capabilities kept), `setpriv` without the nested namespace (same user namespace as
+PID 1), launcher reverted (6 attempts succeed again). The packaged legs (real app) run in CI.
