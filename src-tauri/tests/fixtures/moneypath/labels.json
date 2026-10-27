@@ -1,0 +1,15 @@
+{
+  "_about": "G7: the UI truth labels the recorded read model must produce (src/onboarding/activateValidator.ts). Checked by src/onboarding/moneypathGoldens.test.ts against each golden step's core.activationStatus, with the wallet linked and no pending tx. Hand-written: a golden rewrite never changes these.",
+  "membership-activation": {
+    "before-grant": { "validatorWord": "Not a validator", "phase": "blocked" },
+    "grant": { "validatorWord": "Bond locked · not staked", "phase": "blocked" },
+    "activate": { "validatorWord": "Registered · active from epoch 1", "phase": "registered" },
+    "epoch-reached": { "validatorWord": "Validator active", "phase": "active" }
+  },
+  "bond-exit": {
+    "release-inside-lock": { "validatorWord": "Validator active", "phase": "active" },
+    "lock-elapsed": { "validatorWord": "Validator active", "phase": "active" },
+    "release": { "validatorWord": "Exiting", "phase": "exiting" },
+    "exit-matured": { "validatorWord": "Exiting", "phase": "exiting" }
+  }
+}

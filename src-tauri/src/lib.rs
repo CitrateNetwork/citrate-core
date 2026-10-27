@@ -100,6 +100,8 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+// K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
+mod network_profile;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
 // internal format, and the pinned egress table.
 pub(crate) mod model_provider;
@@ -208,6 +210,9 @@ mod privacy_contract_tests;
 // HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
 #[cfg(test)]
 mod hello_mint_e2e_tests;
+// G7: core's money paths on citrate-chain's genesis contract set (scripts/e2e/moneypath-anvil.sh).
+#[cfg(test)]
+mod moneypath_e2e_tests;
 // SCL-S0.5: shutdown coverage (embedding server stops with Hermes; workers exit on stdin close).
 #[cfg(test)]
 mod shutdown_coverage_tests;
@@ -219,6 +224,9 @@ mod windows_installer_hook_tests;
 mod upgrade_updater_feed_tests;
 #[cfg(test)]
 mod upgrade_v051_tests;
+// RC52 G2: a 0.5.1 install on r1005 started by this build on a new genesis (K6).
+#[cfg(test)]
+mod upgrade_xgenesis_tests;
 // D-9: the liquid staking pool is retired; no pool reference in the crate, its book or the kit.
 #[cfg(test)]
 mod lsp_retired_tests;
@@ -324,6 +332,11 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
+            // K6 — install the network gate before anything can sign. Every wallet signature is
+            // checked locally against the active network profile (refused when no network is set,
+            // or when it commits to another chain id). Transaction sends additionally check the
+            // RPC's chain id and block-0 hash against the profile before broadcasting.
+            network_profile::install_network_gate();
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
             // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,

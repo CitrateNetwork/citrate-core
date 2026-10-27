@@ -205,6 +205,43 @@ fn the_log_file_is_owner_only() {
 }
 
 #[test]
+fn recent_calls_are_newest_first_settle_on_end_and_survive_reopen() {
+    let dir = TmpDir::new("ulog-recent");
+    let kr = installed_kr();
+    let mut log = three_calls(&dir, &kr);
+    let mut refused = record(Kind::Refused, "c3", "anthropic", "m2", "sess-1", T0 + 20);
+    refused.outcome = Some("cap_exceeded".into());
+    log.append(refused).unwrap();
+    let check = |log: &UsageLog| {
+        let r = log.recent();
+        assert_eq!(r.len(), 3);
+        assert_eq!((r[0].provider.as_str(), r[0].refused, r[0].outcome.as_deref()), ("anthropic", true, Some("cap_exceeded")));
+        assert_eq!((r[1].at_ms, r[1].outcome.as_deref(), r[1].tokens_in), (T0 + 10, None, None), "c2 has no end: unsettled");
+        assert_eq!(r[2].outcome.as_deref(), Some("ok"));
+        assert_eq!((r[2].tokens_in, r[2].tokens_out, r[2].cost_micros), (Some(40), Some(20), Some(4)));
+        assert!(r[2].verified && !r[2].refused);
+    };
+    check(&log);
+    check(&UsageLog::open(&dir.0, kr.clone()));
+}
+
+#[test]
+fn recent_calls_are_bounded_and_carry_no_ids() {
+    let dir = TmpDir::new("ulog-recent-cap");
+    let kr = installed_kr();
+    let mut log = UsageLog::open(&dir.0, kr.clone());
+    for i in 0..(RECENT_MAX as u64 + 5) {
+        log.append(begin(&format!("pc-{i:04}"), "openai", T0 + i, 1, 1, None)).unwrap();
+    }
+    let r = log.recent();
+    assert_eq!(r.len(), RECENT_MAX);
+    assert_eq!(r[0].at_ms, T0 + RECENT_MAX as u64 + 4, "the newest is first");
+    let json = serde_json::to_string(&r).unwrap();
+    assert!(!json.contains("pc-0"), "call ids stay in the log, not the view");
+    assert!(!json.contains("sess-1"), "session ids stay in the log, not the view");
+}
+
+#[test]
 fn dropping_the_last_lines_or_the_whole_file_is_detected() {
     // Trailing lines removed while the app is closed.
     for n in [1usize, 2, 3] {
@@ -303,6 +340,6 @@ fn a_log_with_records_but_no_anchor_fails_closed() {
 /// A keychain as a fresh install leaves it: the empty anchor `ModelProxy::new` writes first.
 fn installed_kr() -> Arc<MemKeyring> {
     let kr = Arc::new(MemKeyring::default());
-    crate::provider_usage_log::create_anchor(kr.as_ref()).unwrap();
+    crate::provider_usage_log::fresh_install_anchor(kr.as_ref()).unwrap();
     kr
 }
