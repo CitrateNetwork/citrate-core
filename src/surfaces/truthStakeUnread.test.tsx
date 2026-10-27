@@ -22,6 +22,10 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Wallet } from "./Wallet";
+import { Node } from "./Node";
+import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
+import { resolveQuery } from "../widgets/catalog";
+import { SALT_BALANCE_CAPTION } from "../widgets/gallery";
 import { Dashboard } from "./Dashboard";
 import { Onboarding } from "../onboarding/Onboarding";
 import { store, type Store } from "../shell/store";
@@ -40,6 +44,8 @@ const stub = {
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
+  refreshEarnings: () => {},
+  activateValidator: async () => true,
   toast: () => {},
   identity: () => ({ sub: "sub-1", wallet: "0x" + "0".repeat(40) }),
 } as unknown as Store;
@@ -213,21 +219,149 @@ describe("TRIPWIRE: no staked figure is rendered from a default 0 before a read"
   // number formatting of the raw `bondedStake` (persisted, defaulted) outside the one gate.
   const zeroFallback = /\bstak\w*\s*>\s*0\s*\?[^:]+:\s*["'`]0["'`]/i;
   const rawFormat = /fmt\w*\(\s*[\w.]*\bbondedStake\b/;
-  it("no source formats bondedStake directly or falls back to '0' for a stake", () => {
+  // A stake value defaulted to 0 (`staked ?? 0`, `stakeRead ?? 0`, `c.staked || 0`).
+  const nullishZero = /\bstak\w*\s*(\?\?|\|\|)\s*0\b/i;
+  // The raw `bondedStake` handed on as a field value (`validatorBondedSalt: s.bondedStake`) or
+  // rendered bare in JSX (`{s.bondedStake}`): either carries an unread default as a reading.
+  const rawField = /(:\s*|\{\s*)(s|this\.state|state)\.bondedStake\s*[,}\n]/;
+  it("no source formats bondedStake directly, passes it on raw, or defaults a stake to 0", () => {
     const hits: string[] = [];
     for (const f of files) {
       if (f.endsWith(join("shell", "chainTruth.ts"))) continue;
       readFileSync(f, "utf8")
         .split("\n")
         .forEach((line, i) => {
-          if (zeroFallback.test(line) || rawFormat.test(line)) hits.push(`${f.slice(root.length + 1)}:${i + 1}: ${line.trim()}`);
+          if (zeroFallback.test(line) || rawFormat.test(line) || nullishZero.test(line) || rawField.test(line)) hits.push(`${f.slice(root.length + 1)}:${i + 1}: ${line.trim()}`);
         });
     }
     expect(hits).toEqual([]);
   });
-  it("the Wallet and Dashboard staked figures go through readStakeSalt", () => {
-    for (const f of ["surfaces/Wallet.tsx", "surfaces/Dashboard.tsx"]) {
+  it("the patterns catch each known shape", () => {
+    for (const bad of [
+      "const x = fmtI(stakeRead ?? 0);",
+      "stakedSalt: c.staked ?? 0,",
+      "x = c.staked || 0;",
+      "validatorBondedSalt: s.bondedStake,",
+      "<span>{s.bondedStake}</span>",
+      "staked: this.state.bondedStake }",
+      "const s2 = staked > 0 ? fmtI(staked) : \"0\";",
+      "fmtI(s.bondedStake)",
+    ]) {
+      expect([zeroFallback, rawFormat, nullishZero, rawField].some((r) => r.test(bad)), bad).toBe(true);
+    }
+  });
+  it("the Wallet, Dashboard and Node staked figures go through readStakeSalt", () => {
+    for (const f of ["surfaces/Wallet.tsx", "surfaces/Dashboard.tsx", "surfaces/Node.tsx"]) {
       expect(readFileSync(join(root, f), "utf8"), f).toMatch(/readStakeSalt\(s\)/);
+    }
+  });
+});
+
+describe("review round 2 (#555): every other place the stake reaches", () => {
+  const ctxBase: AgentContext = { height: 546_000, peers: 3, nodeState: "synced", staked: null, liquid: 12.5, claimable: null, rewardsTotal: null, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "pilot" };
+  async function ask(ctx: AgentContext, q: string): Promise<string> {
+    vi.useFakeTimers();
+    let text = "";
+    const done = createDemoProvider(() => ctx).send({
+      messages: [{ role: "user", content: q }],
+      callbacks: { onStatus: () => {}, onToken: (t: string) => (text += t), onToolCall: async (_c: ToolCall) => "ok" },
+    });
+    await vi.runAllTimersAsync();
+    await done;
+    vi.useRealTimers();
+    return text;
+  }
+
+  function nodeStake(s: AppState): string {
+    const html = renderToStaticMarkup(<Node store={stub} s={{ ...s, nTab: "ops" }} />);
+    const m = /Your stake<\/span><span[^>]*>([^<]*)<\/span>/.exec(html);
+    expect(m, "Your stake row").not.toBeNull();
+    return m![1];
+  }
+
+  it("Node 'Your stake': not read yet, a read 0, and a read stake", () => {
+    expect(nodeStake(member({ node: "synced", bondedStake: 32000, bondActivated: true }))).toBe("— · not read yet");
+    expect(nodeStake(member({ node: "synced", bondedStakeRead: true, bondedStake: 0 }))).toBe("—");
+    expect(nodeStake(member({ node: "synced", bondedStakeRead: true, bondedStake: 32000, bondActivated: true }))).toBe("32,000 SALT");
+  });
+
+  it("the agent snapshot's membership block carries no unread stake (validatorBondedSalt, locked)", () => {
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), bondedStake: 32000, bondedStakeRead: false });
+    const m = (store.snapshot() as unknown as { membership: Record<string, unknown> }).membership;
+    expect(m.validatorBondedSalt).toBeNull();
+    expect(m.locked).toBeNull();
+    expect(String(m.validatorBonded)).toContain("not read yet");
+    store.setState({ bondedStake: 0, bondedStakeRead: false });
+    const m0 = (store.snapshot() as unknown as { membership: Record<string, unknown> }).membership;
+    expect(m0.validatorBondedSalt).toBeNull();
+    expect(m0.locked).toBeNull();
+    store.setState({ bondedStake: 0, bondedStakeRead: true });
+    const read = (store.snapshot() as unknown as { membership: Record<string, unknown> }).membership;
+    expect(read.validatorBondedSalt).toBe(0);
+    expect(read.locked).toBe(true);
+    store.setState({ hasGrant: false, s5StakeWei: null });
+  });
+
+  it("the agent snapshot carries the grant from MemberBond.principal(), else the vault's attribution, else null", () => {
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), activation: null });
+    expect(store.snapshot().grantSalt).toBe(32000);
+    store.setState({ activation: { principalWei: wei(31000) } as never });
+    expect(store.snapshot().grantSalt).toBe(31000);
+    store.setState({ hasGrant: false, s5StakeWei: null, activation: null });
+    expect(store.snapshot().grantSalt).toBeNull();
+  });
+
+  it("Hermes 'staking position': the grant from the grant read, the stake only from a stakeOf read", async () => {
+    // Locked, not activated: grant 32,000, a real stakeOf read of 0. Never "grant is 0 SALT".
+    const locked = await ask({ ...ctxBase, grantSalt: 32000, staked: 0 }, "what's my staking position?");
+    expect(locked).toContain("**32,000 SALT**");
+    expect(locked).not.toMatch(/grant is \*\*0/);
+    expect(locked).toMatch(/not staked until/);
+    // Stake unread: the grant is still stated; the stake says not read yet.
+    const unread = await ask({ ...ctxBase, grantSalt: 32000, staked: null }, "what's my staking position?");
+    expect(unread).toContain("**32,000 SALT**");
+    expect(unread).toContain("not read yet");
+    expect(unread).not.toMatch(/grant is \*\*— /);
+    // Activated: the stake is the stakeOf figure.
+    const active = await ask({ ...ctxBase, grantSalt: 32000, staked: 32000 }, "what's my staking position?");
+    expect(active).toMatch(/\*\*32,000 SALT\*\* staked in the ValidatorRegistry/);
+    // Grant not read: says so, never 0.
+    const none = await ask({ ...ctxBase, grantSalt: null, staked: null }, "what's my staking position?");
+    expect(none).toMatch(/grant is not read yet/i);
+    expect(none).not.toContain("0 SALT");
+  });
+
+  it("Hermes 'balance': an unread stake is '— (not read yet)', never 0 SALT", async () => {
+    const bal = await ask({ ...ctxBase, staked: null }, "what's my wallet balance?");
+    expect(bal).toContain("Staked in the ValidatorRegistry: **— (not read yet)**");
+    expect(bal).not.toMatch(/Staked in the ValidatorRegistry: \*\*0/);
+    const read = await ask({ ...ctxBase, staked: 0 }, "what's my wallet balance?");
+    expect(read).toContain("Staked in the ValidatorRegistry: **0 SALT**");
+  });
+
+  it("the wallet.summary widget query passes an unread stake as null, and the SALT widget shows —", () => {
+    const sources = (staked: number | null) => ({
+      context: () => ({ height: 1, peers: 1, nodeState: "synced", staked, liquid: 1, claimable: null }),
+      model: () => ({ label: "m", id: null }),
+      daemons: () => ({ allPaused: false, total: 0, running: 0, paused: 0, budgetUsedUp: 0 }),
+    });
+    const unread = resolveQuery("wallet.summary", sources(null)) as Record<string, unknown>;
+    expect(unread.stakedSalt).toBeNull();
+    const caption = new Function("d", `return ${SALT_BALANCE_CAPTION};`) as (d: unknown) => string;
+    expect(caption(unread)).toMatch(/^staked — · /);
+    expect(caption(resolveQuery("wallet.summary", sources(0)))).toMatch(/^staked 0 · /);
+  });
+
+  it("a malformed stake in the poll's read is not a reading either", async () => {
+    for (const bondedStakeWei of ["", "0x10", "-1", "1e21"]) {
+      (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+      store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 7, bondedStakeRead: false, bondActivated: false });
+      vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
+      vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+      vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue({ ...grant(0), bondedStakeWei });
+      await store.refreshNode();
+      expect(store.state.bondedStakeRead, bondedStakeWei).toBe(false);
+      expect(store.state.bondedStake, bondedStakeWei).toBe(7);
     }
   });
 });

@@ -36,6 +36,11 @@ export interface AgentContext {
   nodeState: string;
   /** `ValidatorRegistry.stakeOf` in SALT; null until it has been read this session (rule 2). */
   staked: number | null;
+  /**
+   * The membership grant's principal in SALT: `MemberBond.principal()` (the activation read), else
+   * `MembershipStakeVault.attributedStake`. null when neither has been read. Not the stake.
+   */
+  grantSalt?: number | null;
   liquid: number;
   /** `ValidatorRegistry.rewardsOf(pubkey).claimableNow` in SALT; null = not a validator / not read. */
   claimable: number | null;
