@@ -1256,6 +1256,15 @@ pub fn task_view(r: &McpRequest) -> Value {
                 with_complete(tool_err(&format!("It failed after approval: {error}"))),
             )),
         ),
+        // Red stub: shown like a failure until C1-V3 lands.
+        RequestState::OutcomeUnknown { message, .. } => (
+            "completed",
+            "Approved by the member, but it failed.".to_string(),
+            Some((
+                "result",
+                with_complete(tool_err(&format!("It failed after approval: {message}"))),
+            )),
+        ),
         RequestState::Rejected { reason } if reason == CANCELLED_BY_CLIENT => {
             ("cancelled", "Withdrawn by the client.".to_string(), None)
         }

@@ -2064,6 +2064,60 @@ fn tasks_get_follows_the_members_decision() {
         .contains("kubo is not running"));
 }
 
+// C1-V3: a payment the member approved that was submitted with an unknown outcome is reported to
+// the MCP client as "submitted, outcome unknown, tx <hash>, check before retrying": not a failure
+// and never a rejection, so a client does not treat it as safe to resend.
+#[test]
+fn a_submitted_payment_with_an_unknown_outcome_is_not_reported_as_failed() {
+    let core = core_with(Arc::new(Fixture::default()));
+    let c = ctx("t");
+    let hash = format!("0x{}", "ab".repeat(32));
+    let r = call_meta(&core, &c, "pin_add", json!({"cid": "bafyabc"}), tasks_meta());
+    let id = r["result"]["taskId"].as_str().unwrap_or_default().to_string();
+    core.inbox().begin_decision(&id, true, 2).expect("approve");
+    let done = core
+        .inbox()
+        .finish(
+            &id,
+            Err(format!(
+                "ceremony: submitted, outcome unknown (tx {hash}): rpc transport error: down"
+            )),
+            3,
+        )
+        .expect("finish");
+    let message = format!("submitted, outcome unknown, tx {hash}, check before retrying");
+    assert_eq!(
+        done.state,
+        RequestState::OutcomeUnknown {
+            tx_hash: Some(hash.clone()),
+            message: message.clone(),
+        }
+    );
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": id}));
+    assert_eq!(g["result"]["status"], json!("completed"));
+    assert_eq!(g["result"]["statusMessage"], json!(message));
+    let res = &g["result"]["result"];
+    assert_eq!(res["isError"], json!(false));
+    assert_eq!(res["content"][0]["text"], json!(message));
+    assert_eq!(res["structuredContent"]["outcome"], json!("submitted_outcome_unknown"));
+    assert_eq!(res["structuredContent"]["txHash"], json!(hash));
+    let text = g.to_string().to_lowercase();
+    assert!(!text.contains("rejected") && !text.contains("failed"), "{text}");
+    // The request view the client polls says the same.
+    let v = crate::node_mcp_protocol::request_view(&done);
+    assert_eq!(v["state"], json!("outcome_unknown"));
+    assert_eq!(v["tx_hash"], json!(hash));
+    // A failure established before submission is still a failure.
+    let r2 = call_meta(&core, &c, "pin_add", json!({"cid": "bafyabd"}), tasks_meta());
+    let id2 = r2["result"]["taskId"].as_str().unwrap_or_default().to_string();
+    core.inbox().begin_decision(&id2, true, 4).expect("approve");
+    let failed = core
+        .inbox()
+        .finish(&id2, Err("not submitted: the vault is locked".into()), 5)
+        .expect("finish");
+    assert!(matches!(failed.state, RequestState::Failed { .. }));
+}
+
 static TASK_CLOCK: AtomicU64 = AtomicU64::new(0);
 fn task_clock() -> u64 {
     TASK_CLOCK.load(Ordering::SeqCst)

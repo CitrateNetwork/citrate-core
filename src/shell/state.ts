@@ -221,6 +221,14 @@ export interface CerSpec {
  * `spendSummary` is an optional plain-language line the caller can pass (the
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
+/** C1-V3 — a signed transaction that was (or may have been) submitted, with no known outcome. */
+export interface CeremonyOutcomeUnknown {
+  kind: "outcome-unknown";
+  /** The tx hash when the ceremony knows it; null when the failure carried none. */
+  txHash: string | null;
+  reason: string;
+}
+
 export interface WalletReview {
   kind: "send" | "stake" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
@@ -239,7 +247,12 @@ export interface WalletReview {
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
-  onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
+  onResolved?: (approved: boolean, txHash?: string, outcome?: CeremonyOutcomeUnknown) => void | Promise<void>;
+  /**
+   * #366 F2 — a caution the member must see before approving, rendered as an alert on the review
+   * (e.g. an identical payment submitted earlier with an unknown outcome, and its tx hash).
+   */
+  warning?: string;
   /**
    * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
    * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,

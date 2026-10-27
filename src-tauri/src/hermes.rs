@@ -1489,6 +1489,11 @@ impl HermesManager {
     /// fresh. Because the head is blocked until here, at most one effect is ever bridged at a time, so
     /// clearing the whole map is exactly "forget the resolved effect" (H-1: an approved effect is NOT
     /// re-bridgeable until its head is resolved here).
+    /// C1-V3 (red stub): release the reviewed chain effect as submitted with an unknown outcome.
+    pub fn resolve_head_outcome_unknown(&self, id: &str, _tx_hash: Option<&str>) -> Result<()> {
+        self.resolve_head(false, id)
+    }
+
     pub fn resolve_head(&self, approve: bool, id: &str) -> Result<()> {
         // PBA-L7b-003: an empty id would select the sidecar's legacy "resolve whatever is at the
         // head" path (AR-B-023) — refuse it; every resolve is bound to the reviewed call id.

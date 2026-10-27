@@ -59,10 +59,13 @@ export interface NodeMcpRequest {
   ceremony_id?: string;
   ceremony?: { id: string; origin: string; decoded: CeremonyDecoded; requiresRawAck: boolean };
   action?: { action: string; [k: string]: unknown };
-  state: "pending" | "running" | "approved" | "rejected" | "failed" | "expired";
+  state: "pending" | "running" | "approved" | "rejected" | "failed" | "outcome_unknown" | "expired";
   result?: unknown;
   reason?: string;
   error?: string;
+  /** C1-V3 — `outcome_unknown`: the submitted tx (null when unknown) and the client's message. */
+  tx_hash?: string | null;
+  message?: string;
   createdMs: number;
   decidedMs: number | null;
 }
@@ -120,6 +123,8 @@ export function stateLabel(r: NodeMcpRequest): string {
       return r.reason ? `rejected (${r.reason})` : "rejected";
     case "failed":
       return r.error ? `failed: ${r.error}` : "failed";
+    case "outcome_unknown": // red stub
+      return "failed";
     case "expired":
       return "expired before a decision";
   }

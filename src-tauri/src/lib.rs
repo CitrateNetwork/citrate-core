@@ -109,6 +109,8 @@ mod node;
 mod node_genesis;
 mod node_holder;
 mod node_withdrawn;
+// C1-V3 — "submitted, outcome unknown, tx <hash>, check before retrying" for agents and MCP clients.
+mod broadcast_outcome;
 pub(crate) mod provider_anthropic;
 pub(crate) mod provider_chat_vendors;
 pub(crate) mod provider_egress;

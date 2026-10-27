@@ -71,6 +71,7 @@ const LONG: Record<string, number> = {
   hermes_pending_approvals: 45_000,
   hermes_bridge_pending: 45_000,
   hermes_resolve: 45_000,
+  hermes_resolve_outcome_unknown: 45_000,
   hermes_stop: 45_000,
   // The terminal-commands switch restarts a running Hermes: a stop (~10 s grace) plus a start.
   hermes_terminal_set: 60_000,

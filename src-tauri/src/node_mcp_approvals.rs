@@ -122,6 +122,13 @@ pub enum RequestState {
     Failed {
         error: String,
     },
+    /// C1-V3: the member approved a payment and it was submitted, but its outcome is unknown (the
+    /// ceremony's `SubmittedOutcomeUnknown`). Not a failure and not a rejection: the client is told
+    /// to check `tx_hash` before retrying.
+    OutcomeUnknown {
+        tx_hash: Option<String>,
+        message: String,
+    },
     Expired,
 }
 
