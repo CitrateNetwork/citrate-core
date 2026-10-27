@@ -27,7 +27,7 @@ import type { AppState } from "../shell/state";
 import { LocalModelAsk } from "./LocalModelAsk";
 import { shouldFollow, useFitToViewport } from "./chatLayout";
 
-const SUGGESTIONS = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
+const SUGGESTIONS = ["What is my staking position?", "Show my validator rewards", "Journal: node held through the night", "Network status"];
 
 // The header dot colour reflects the LIVE provider kind (store.reflectProvider): green when a real
 // backend answers (local llama-server or the gateway), amber for the built-in demo. The label text

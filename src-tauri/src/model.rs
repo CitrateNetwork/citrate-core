@@ -750,13 +750,19 @@ impl ModelManager {
     /// download and the verify. A file already here that is verified against ANOTHER hash is
     /// never re-verified against this one (that would quarantine a different model): it is
     /// refused with [`ModelError::Occupied`].
+    ///
+    /// `on_claimed` runs once the lock is held, before anything else: a caller's record of this
+    /// download (the Models screen's resume marker) is made only by the download that owns the
+    /// file, never by one the lock refused.
     pub fn download_and_verify(
         &self,
         existing: ExistingFile,
+        on_claimed: impl FnOnce() -> Result<()>,
         mut on_progress: impl FnMut(u64, u64),
     ) -> Result<()> {
         std::fs::create_dir_all(&self.dir).map_err(|e| ModelError::Io(e.to_string()))?;
         let _guard = DownloadGuard::acquire(&self.part_path())?;
+        on_claimed()?;
         if self.final_path().exists() {
             if existing == ExistingFile::Refuse {
                 return Err(ModelError::Occupied);
@@ -780,6 +786,35 @@ impl ModelManager {
         }
         self.download_locked(&mut on_progress)?;
         self.verify()
+    }
+
+    /// [`Self::verify`] while the caller holds this file's [`DownloadGuard`] (the one the Store and
+    /// the Models screen share), so no download can rename other bytes in under the verify. A
+    /// guard for another file is refused.
+    pub fn verify_held(&self, guard: &DownloadGuard) -> Result<()> {
+        if guard.path != self.part_path() {
+            return Err(ModelError::Io(
+                "the download lock held is not this file's".into(),
+            ));
+        }
+        self.verify()
+    }
+
+    /// Confirm a file that may not be this manager's, while the caller holds this file's
+    /// [`DownloadGuard`]: when it has the pinned size and SHA-256 the verified flag is recorded
+    /// (`Ok(true)`); any other file is left exactly as it is (`Ok(false)`), never quarantined.
+    /// A guard for another file is refused.
+    pub fn confirm_held(&self, guard: &DownloadGuard) -> Result<bool> {
+        if guard.path != self.part_path() {
+            return Err(ModelError::Io(
+                "the download lock held is not this file's".into(),
+            ));
+        }
+        if !self.matches_pinned()? {
+            return Ok(false);
+        }
+        self.write_verified(true)?;
+        Ok(true)
     }
 
     /// Whether the final file has the pinned size and SHA-256 (no side effects).

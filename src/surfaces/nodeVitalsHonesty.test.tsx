@@ -44,7 +44,6 @@ function runningState(over: Partial<AppState> = {}): AppState {
   s.cpu = 23;
   s.ram = 780;
   s.hasGrant = true;
-  s.selfStake = 500;
   return { ...s, ...over };
 }
 
@@ -120,7 +119,8 @@ describe("Node — validator registration reflects the real bond", () => {
     const s = runningState({ node: "validating", bondedStake: 32000 });
     const html = renderToStaticMarkup(<Node store={noopStore} s={s} />);
     expect(html).not.toContain("not a registered validator");
-    expect(html).toContain("32,000 SALT bonded");
+    // C1-V V7: the row is "Your stake" = ValidatorRegistry.stakeOf (the old "bonded" wording went).
+    expect(html).toContain("32,000 SALT");
   });
 
   it("an UNBONDED member is still honestly told so", () => {

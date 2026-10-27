@@ -39,7 +39,6 @@ REQUIRED = [
     "MembershipStakeVault",
     "ValidatorRegistry",
     "CitrateWalletFactory",
-    "LiquidStakingPool",
     "ContributionAccounting",
     "CitratePaymaster",
     "IPFSIncentivesV3",

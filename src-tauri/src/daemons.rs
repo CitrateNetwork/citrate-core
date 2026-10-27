@@ -64,11 +64,15 @@ pub(crate) struct HostToolSet {
     pub permission: &'static str,
     /// How the member turns it off, or `None` when the app has no switch for it yet.
     pub turn_off: Option<&'static str>,
+    /// Whether a declared permission may grant it to a Store daemon. `false` = never granted
+    /// and never named in `toolSets`: the daemon does not start while it is on.
+    pub grantable: bool,
 }
 
-/// Every sidecar-hosted tool set that can reach a daemon session. The file, sheet, project,
-/// shell and undo tools need a grant document, which daemon sessions are never given, so they
-/// are not listed (docs/STORE_CATALOG.md).
+/// Every sidecar-hosted tool set that can reach a daemon session. The sheet, project, shell and
+/// undo tools need a grant document, which daemon sessions are never given (see
+/// [`GRANT_DOC_ONLY_SETS`]); the file tools have a row because a launch-environment flag can
+/// offer them without one (docs/STORE_CATALOG.md).
 pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
     HostToolSet {
         id: "search",
@@ -77,6 +81,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "1",
         permission: "web_search",
         turn_off: Some("turn off \"Let Hermes search the web and read pages\" in Settings > Web search & decisions"),
+        grantable: true,
     },
     HostToolSet {
         id: "browser",
@@ -85,6 +90,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "1",
         permission: "web_browse",
         turn_off: Some("turn off \"Let Hermes open and use web pages in its own browser\" in Settings > Web search & decisions"),
+        grantable: true,
     },
     HostToolSet {
         id: "mcp",
@@ -93,6 +99,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "mcp",
         turn_off: Some("turn off every server in Settings > MCP servers"),
+        grantable: true,
     },
     HostToolSet {
         id: "toolchain",
@@ -101,6 +108,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "1",
         permission: "toolchain",
         turn_off: Some("turn off the contract toolchain in Agent > Contracts"),
+        grantable: true,
     },
     HostToolSet {
         id: "skills",
@@ -109,6 +117,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "skills_read",
         turn_off: None,
+        grantable: true,
     },
     HostToolSet {
         id: "learn",
@@ -117,6 +126,7 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "learn_propose",
         turn_off: None,
+        grantable: true,
     },
     HostToolSet {
         id: "capsules",
@@ -125,8 +135,40 @@ pub(crate) const HOST_TOOL_SETS: &[HostToolSet] = &[
         on_value: "",
         permission: "capsules_run",
         turn_off: None,
+        grantable: true,
+    },
+    // DGX R1: with CITRATE_HERMES_FILES=1 and a grants file, the sidecar offers the fs_* tools to
+    // sessions opened WITHOUT a grant document. Core never sets it; the launch environment can.
+    HostToolSet {
+        id: "files",
+        label: "file tools enabled by the launch environment (fs_*)",
+        env_key: "CITRATE_HERMES_FILES",
+        on_value: "1",
+        permission: "files",
+        turn_off: Some("start Citrate Core without CITRATE_HERMES_FILES in its environment"),
+        grantable: false,
     },
 ];
+
+/// Every host tool-set name the sidecar can scope per session (citrate-agent-runtime#87
+/// `capabilities.sessionToolSets`). Each must have a [`HOST_TOOL_SETS`] row or be listed in
+/// [`GRANT_DOC_ONLY_SETS`] (the tripwire test checks it).
+pub(crate) const RUNTIME_HOST_SET_NAMES: &[&str] = &[
+    "web_search",
+    "web_browse",
+    "mcp",
+    "toolchain",
+    "skills_read",
+    "learn_propose",
+    "capsules_run",
+    "files",
+    "shell_run",
+];
+
+/// Host tool sets the sidecar offers only to a session opened with a grant document, which a
+/// daemon session never is: excluded by construction, so they need no env-hold row.
+#[cfg(test)]
+pub(crate) const GRANT_DOC_ONLY_SETS: &[&str] = &["shell_run"];
 
 /// The marker a Store daemon's tool list carries for a host tool set its permissions cover.
 pub(crate) fn host_set_marker(id: &str) -> String {
@@ -135,11 +177,29 @@ pub(crate) fn host_set_marker(id: &str) -> String {
 
 /// The host tool sets on in the sidecar's environment `env`.
 pub(crate) fn enabled_host_sets(env: &[(String, String)]) -> Vec<&'static HostToolSet> {
+    enabled_host_sets_for(env, cfg!(windows))
+}
+
+/// Whether two environment variable names are the same name: exact on Unix, ASCII
+/// case-insensitive where the platform's names are (Windows, DGX R2).
+pub(crate) fn env_name_eq(a: &str, b: &str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// [`enabled_host_sets`] with the platform's env-name rule made explicit (tests drive both).
+pub(crate) fn enabled_host_sets_for(
+    env: &[(String, String)],
+    case_insensitive: bool,
+) -> Vec<&'static HostToolSet> {
     HOST_TOOL_SETS
         .iter()
         .filter(|set| {
             env.iter().any(|(k, v)| {
-                k == set.env_key
+                env_name_eq(k, set.env_key, case_insensitive)
                     && if set.on_value.is_empty() {
                         !v.trim().is_empty()
                     } else {
@@ -158,6 +218,51 @@ pub(crate) fn enabled_host_set_ids(env: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
+/// What core knows about the running sidecar when it decides whether a Store daemon may start.
+pub(crate) struct SidecarFacts<'a> {
+    /// The effective environment the sidecar was started with (which host tool sets every
+    /// session gets unless scoped).
+    pub env: &'a [(String, String)],
+    /// citrate-agent-runtime#87: `GET /status` → `capabilities.sessionToolSets`, the host tool sets
+    /// a session can be scoped to with `toolSets` (reported only together with
+    /// `sessionPromptSnapshot`). `None` = an older sidecar without the capability.
+    pub session_tool_sets: Option<&'a [String]>,
+}
+
+/// Whether the sidecar can scope EVERY host tool set per session, so a Store daemon's session is
+/// opened with exactly its approved sets whatever is on for other sessions. A sidecar that
+/// reports only some of them is treated as an older one.
+pub(crate) fn sidecar_scopes_host_sets(session_tool_sets: Option<&[String]>) -> bool {
+    // Every runtime set name, the grant-document-only ones included: a sidecar that cannot
+    // scope one of them is treated as an older one.
+    session_tool_sets.is_some_and(|names| {
+        RUNTIME_HOST_SET_NAMES
+            .iter()
+            .all(|want| names.iter().any(|n| n == want))
+    })
+}
+
+/// [`host_block_reason`] relaxed only for a sidecar that scopes every set per session.
+pub(crate) fn host_block_reason_for(
+    allowed: &[String],
+    facts: &SidecarFacts<'_>,
+) -> Option<String> {
+    if sidecar_scopes_host_sets(facts.session_tool_sets) {
+        return None;
+    }
+    host_block_reason(allowed, facts.env)
+}
+
+/// The `toolSets` a Store daemon's session asks for: the host tool-set permissions its approved
+/// permissions cover, in [`HOST_TOOL_SETS`] order (empty = none).
+pub(crate) fn store_tool_sets(allowed: &[String]) -> Vec<String> {
+    HOST_TOOL_SETS
+        .iter()
+        .filter(|set| set.grantable && allowed.contains(&host_set_marker(set.id)))
+        .map(|set| set.permission.to_string())
+        .collect()
+}
+
 /// Said when core cannot see the sidecar's environment (not running, or restarting).
 pub(crate) const HOST_ENV_UNKNOWN: &str = "Not started: Hermes is not running or is restarting, so the tools it offers could not be checked. It runs at its next scheduled time.";
 
@@ -169,6 +274,7 @@ pub(crate) fn store_open_check(
     allowed: &[String],
     claimed: Option<&[String]>,
     current: Option<&[(String, String)]>,
+    session_tool_sets: Option<&[String]>,
 ) -> Result<(), String> {
     let env = current.ok_or_else(|| HOST_ENV_UNKNOWN.to_string())?;
     let now = enabled_host_set_ids(env);
@@ -181,7 +287,11 @@ pub(crate) fn store_open_check(
             )
         }
     }
-    match host_block_reason(allowed, env) {
+    let facts = SidecarFacts {
+        env,
+        session_tool_sets,
+    };
+    match host_block_reason_for(allowed, &facts) {
         Some(why) => Err(why),
         None => Ok(()),
     }
@@ -192,7 +302,7 @@ pub(crate) fn store_open_check(
 pub(crate) fn host_block_reason(allowed: &[String], env: &[(String, String)]) -> Option<String> {
     let uncovered: Vec<&HostToolSet> = enabled_host_sets(env)
         .into_iter()
-        .filter(|set| !allowed.contains(&host_set_marker(set.id)))
+        .filter(|set| !set.grantable || !allowed.contains(&host_set_marker(set.id)))
         .collect();
     if uncovered.is_empty() {
         return None;
@@ -581,6 +691,8 @@ pub(crate) enum RunOutcome {
     Stopped,
     TimedOut,
     OverBudget,
+    /// Core refused to open the run's session (an open-time check, DGX R5).
+    NotStarted,
 }
 
 impl RunOutcome {
@@ -591,6 +703,7 @@ impl RunOutcome {
             RunOutcome::Stopped => "stopped",
             RunOutcome::TimedOut => "timed_out",
             RunOutcome::OverBudget => "over_budget",
+            RunOutcome::NotStarted => "not_started",
         }
     }
 }
@@ -951,6 +1064,20 @@ impl DaemonBook {
             .and_then(|r| r.allowed_tools.clone())
     }
 
+    /// Whether the book holds daemon `id`.
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.records.iter().any(|r| r.id == id)
+    }
+
+    /// Whether daemon `id` has run `run_id` in flight (claimed, not yet finished or released).
+    pub(crate) fn run_in_flight(&self, id: &str, run_id: &str) -> bool {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.running.as_ref())
+            .is_some_and(|run| run.run_id == run_id)
+    }
+
     /// The host tool sets the daemon's run in flight was claimed against.
     pub(crate) fn claimed_host_sets(&self, id: &str) -> Option<Vec<String>> {
         self.records
@@ -973,15 +1100,30 @@ impl DaemonBook {
     /// Resume (start) a daemon. A Store daemon is refused while the running sidecar offers a host
     /// tool set its approved permissions do not cover, with the reason and how to run it
     /// sandboxed. `host_env` `None` = Hermes is not running (the check runs again at claim time).
+    #[cfg(test)]
     pub(crate) fn resume_checked(
         &mut self,
         id: &str,
         now_ms: u64,
         host_env: Option<&[(String, String)]>,
     ) -> Result<(), String> {
+        let facts = host_env.map(|env| SidecarFacts {
+            env,
+            session_tool_sets: None,
+        });
+        self.resume_with(id, now_ms, facts.as_ref())
+    }
+
+    /// [`Self::resume_checked`] with everything core knows about the running sidecar.
+    pub(crate) fn resume_with(
+        &mut self,
+        id: &str,
+        now_ms: u64,
+        host: Option<&SidecarFacts<'_>>,
+    ) -> Result<(), String> {
         let r = self.find_mut(id)?;
-        if let (Some(allowed), Some(env)) = (&r.allowed_tools, host_env) {
-            if let Some(why) = host_block_reason(allowed, env) {
+        if let (Some(allowed), Some(facts)) = (&r.allowed_tools, host) {
+            if let Some(why) = host_block_reason_for(allowed, facts) {
                 return Err(why);
             }
         }
@@ -1015,11 +1157,28 @@ impl DaemonBook {
     /// started while a host tool set its permissions do not cover is on (it is recorded as
     /// `not_started`, with the reason). `None` = no sidecar environment known (nothing runs then
     /// anyway: daemons run only in Hermes).
+    #[cfg(test)]
     pub(crate) fn claim_due_with(
         &mut self,
         now_ms: u64,
         offset_min: i32,
         host_env: Option<&[(String, String)]>,
+    ) -> Result<Vec<Claim>, String> {
+        let facts = host_env.map(|env| SidecarFacts {
+            env,
+            session_tool_sets: None,
+        });
+        self.claim_due_facts(now_ms, offset_min, facts.as_ref())
+    }
+
+    /// [`Self::claim_due_with`] with everything core knows about the running sidecar: one that
+    /// scopes every host tool set per session (citrate-agent-runtime#87) lets a Store daemon be
+    /// claimed with sets on, because its session is opened with exactly its approved sets.
+    pub(crate) fn claim_due_facts(
+        &mut self,
+        now_ms: u64,
+        offset_min: i32,
+        host: Option<&SidecarFacts<'_>>,
     ) -> Result<Vec<Claim>, String> {
         check_offset(offset_min)?;
         let today = LocalTime::from_utc_ms(now_ms, offset_min).day_key();
@@ -1061,9 +1220,9 @@ impl DaemonBook {
             // not running, in crash backoff, or restarting) blocks it like an uncovered set does.
             let mut host_sets = None;
             if let Some(allowed) = &r.allowed_tools {
-                let why = match host_env {
+                let why = match host {
                     None => Some(HOST_ENV_UNKNOWN.to_string()),
-                    Some(env) => host_block_reason(allowed, env),
+                    Some(facts) => host_block_reason_for(allowed, facts),
                 };
                 if let Some(why) = why {
                     r.skipped_today = r.skipped_today.saturating_add(1);
@@ -1071,7 +1230,7 @@ impl DaemonBook {
                     r.last_note = Some(one_line(&why, NOTE_MAX));
                     continue;
                 }
-                host_sets = host_env.map(enabled_host_set_ids);
+                host_sets = host.map(|f| enabled_host_set_ids(f.env));
             }
             let remaining = u64::from(r.budget.max_tokens_per_day).saturating_sub(r.tokens_today);
             let tokens_allowed = u64::from(r.budget.max_tokens_per_run).min(remaining) as u32;
@@ -1140,6 +1299,13 @@ impl DaemonBook {
             _ => return Err("that run is not in flight (it finished, or was released)".into()),
         };
         r.running = None;
+        // A run that never started ran no inference: it is never charged (the runner sends 0;
+        // core does not rely on that).
+        let tokens_used = if outcome == RunOutcome::NotStarted {
+            0
+        } else {
+            tokens_used
+        };
         r.tokens_today = r.tokens_today.saturating_add(u64::from(tokens_used));
         r.last_outcome = Some(outcome.label().into());
         r.last_token_source = Some(source.label().into());
@@ -1382,26 +1548,87 @@ pub(crate) fn with_book_file<T>(
     Ok(out)
 }
 
+/// The running sidecar's effective start environment and its per-session tool-set capability
+/// (`None`s while Hermes is not running, or for a sidecar without the capability).
+type SidecarFactsOwned = (Option<Vec<(String, String)>>, Option<Vec<String>>);
+
+fn sidecar_facts(app: &tauri::AppHandle) -> SidecarFactsOwned {
+    match crate::hermes::manager(app) {
+        Ok(m) => (m.started_env(), m.session_tool_sets()),
+        Err(_) => (None, None),
+    }
+}
+
+/// What the daemon session open is for: `Ok(None)` a member daemon, `Ok(Some(allowed))` a Store
+/// daemon bound to `allowed`.
+/// FAIL-CLOSED (DGX R3): no daemon id, or an id the book does not hold, is refused instead of
+/// being opened unchecked.
+pub(crate) fn open_target(
+    book: &DaemonBook,
+    daemon_id: Option<&str>,
+    run_id: Option<&str>,
+) -> Result<Option<Vec<String>>, String> {
+    let id = daemon_id.ok_or_else(|| {
+        "Not started: the daemon run did not say which daemon it is for.".to_string()
+    })?;
+    if !book.contains(id) {
+        return Err("Not started: that daemon is no longer in the daemon list.".into());
+    }
+    // Bound in core: the session is for the run core claimed for this daemon, still in flight.
+    // The webview names both; any other pairing (no run, another daemon's run, a finished or
+    // released run) opens nothing.
+    let run_id = run_id
+        .ok_or_else(|| "Not started: the daemon run did not say which run it is.".to_string())?;
+    if !book.run_in_flight(id, run_id) {
+        return Err("Not started: that run is not in flight for this daemon.".into());
+    }
+    Ok(book.allowed_tools_of(id))
+}
+
+/// How a Store daemon's session may be opened, after [`check_store_daemon_open`].
+pub(crate) struct StoreOpen {
+    /// The daemon's approved tools (core tools plus `host:<set>` markers), from the book.
+    pub allowed: Vec<String>,
+    /// The sidecar scopes every host tool set per session (citrate-agent-runtime#87): the session
+    /// must then echo `toolSets` and `promptSnapshot: false` back, or it is closed and refused.
+    /// `false` = the env-hold fallback: no uncovered host set is on in the sidecar at all.
+    pub scoped: bool,
+    /// The sidecar generation the check read (`HermesManager::generation`), before its facts.
+    pub generation: u64,
+}
+
 /// K5a: for a Store daemon, the open-time check (`store_open_check`) against the sidecar's
-/// current environment. A member daemon (or an unknown id) passes unchanged.
-/// Returns the sidecar generation a Store daemon was checked against (`None` for a member
-/// daemon); the session must be opened in that generation (`HermesManager::session_open_in`).
+/// current environment and capability. `Ok(Some(..))` for a Store daemon that may open;
+/// `Ok(None)` for a member daemon. The Store daemon is checked against one sidecar generation
+/// (`StoreOpen::generation`), and its session must be opened in that same generation.
 pub(crate) fn check_store_daemon_open(
     app: &tauri::AppHandle,
-    id: &str,
-) -> Result<Option<u64>, String> {
+    id: Option<&str>,
+    run_id: Option<&str>,
+) -> Result<Option<StoreOpen>, String> {
     let (allowed, claimed) = with_book(app, false, |b| {
-        Ok((b.allowed_tools_of(id), b.claimed_host_sets(id)))
+        let allowed = open_target(b, id, run_id)?;
+        Ok((allowed, id.and_then(|id| b.claimed_host_sets(id))))
     })?;
     let Some(allowed) = allowed else {
         return Ok(None);
     };
-    let m = crate::hermes::manager(app).map_err(|e| e.to_string())?;
-    // The generation first, then the environment: a restart between them makes the open refuse.
-    let generation = m.generation();
-    let current = m.started_env();
-    store_open_check(&allowed, claimed.as_deref(), current.as_deref())?;
-    Ok(Some(generation))
+    // The generation first, then the environment and capability: a restart between them makes
+    // the open refuse.
+    let generation = crate::hermes::manager(app).ok().map(|m| m.generation());
+    let (current, sets) = sidecar_facts(app);
+    store_open_check(
+        &allowed,
+        claimed.as_deref(),
+        current.as_deref(),
+        sets.as_deref(),
+    )?;
+    let generation = generation.ok_or_else(|| "Not started: Hermes is not running.".to_string())?;
+    Ok(Some(StoreOpen {
+        allowed,
+        scoped: sidecar_scopes_host_sets(sets.as_deref()),
+        generation,
+    }))
 }
 
 fn views(book: &DaemonBook, now_ms: u64, offset_min: i32) -> DaemonsView {
@@ -1453,12 +1680,12 @@ pub async fn daemon_set_paused(
         if paused {
             return with_book(&app, true, |b| b.set_paused(&id, true, now_ms));
         }
-        let env = crate::hermes::manager(&app)
-            .ok()
-            .and_then(|m| m.started_env());
-        with_book(&app, true, |b| {
-            b.resume_checked(&id, now_ms, env.as_deref())
-        })
+        let (env, sets) = sidecar_facts(&app);
+        let facts = env.as_deref().map(|env| SidecarFacts {
+            env,
+            session_tool_sets: sets.as_deref(),
+        });
+        with_book(&app, true, |b| b.resume_with(&id, now_ms, facts.as_ref()))
     })
     .await
 }
@@ -1494,11 +1721,13 @@ pub async fn daemons_claim_due(
 ) -> Result<Vec<Claim>, String> {
     crate::blocking::off_main(move || {
         // K5a: the sidecar's environment decides whether a Store daemon may start now.
-        let env = crate::hermes::manager(&app)
-            .ok()
-            .and_then(|m| m.started_env());
+        let (env, sets) = sidecar_facts(&app);
+        let facts = env.as_deref().map(|env| SidecarFacts {
+            env,
+            session_tool_sets: sets.as_deref(),
+        });
         with_book(&app, true, |b| {
-            b.claim_due_with(now_ms, offset_min, env.as_deref())
+            b.claim_due_facts(now_ms, offset_min, facts.as_ref())
         })
     })
     .await

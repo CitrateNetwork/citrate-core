@@ -478,12 +478,19 @@ fn new_nonce() -> String {
     format!("{:032x}", rand::random::<u128>())
 }
 
+/// The one temp path [`write_durable`] stages `name` in. Its writers (the genesis marker and the
+/// migration intent) run under the node supervisor lock in `NodeManager::start`, and the crash
+/// recovery (`clear_intent`) removes a leftover by this same name.
+fn durable_tmp(data_dir: &Path, name: &str) -> PathBuf {
+    data_dir.join(format!("{name}.tmp"))
+}
+
 /// Write `contents` to `data_dir/name` atomically and durably: temp file, fsync, rename,
 /// directory fsync.
 fn write_durable(data_dir: &Path, name: &str, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::create_dir_all(data_dir)?;
-    let tmp = data_dir.join(format!("{name}.tmp"));
+    let tmp = durable_tmp(data_dir, name);
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(contents.as_bytes())?;
@@ -597,7 +604,7 @@ fn clear_intent(data_dir: &Path) -> Result<(), GenesisGateError> {
     let io = |e: std::io::Error| GenesisGateError::Io(format!("remove the migration intent: {e}"));
     for p in [
         intent_path(data_dir),
-        data_dir.join(format!("{MIGRATION_INTENT_FILE}.tmp")),
+        durable_tmp(data_dir, MIGRATION_INTENT_FILE),
     ] {
         match std::fs::remove_file(&p) {
             Ok(()) => {}

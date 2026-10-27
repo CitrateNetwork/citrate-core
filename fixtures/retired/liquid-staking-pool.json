@@ -1,0 +1,78 @@
+{
+  "_comment": "Owner decision D-9 (2026-10-26): the LiquidStakingPool is retired at the r1006 reroll and is not in the genesis contract set. Citrate Core makes no pool calls and offers no pool self-stake. The tripwires (src/wallet/lspRetired.tripwire.test.ts and src-tauri/src/lsp_retired_tests.rs) fail on any of these strings in the scanned trees. One list for both, so they cannot drift.",
+  "scan": [
+    "src",
+    "src-tauri/src",
+    "src-tauri/addresses",
+    "src-tauri/permissions",
+    "src-tauri/capabilities",
+    "src-tauri/scripts",
+    "kit/src"
+  ],
+  "addresses": [
+    "0x73270e9818530d9c141596411ef58730c1eb9f0d",
+    "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e"
+  ],
+  "selectors": [
+    "9ee679e8",
+    "f8444436",
+    "5cc07076",
+    "ce7c2ac2",
+    "5b1dac60"
+  ],
+  "strings": [
+    "LiquidStakingPool",
+    "liquid_staking_pool",
+    "LIQUID_STAKING_POOL",
+    "stSALT",
+    "requestWithdrawal(uint256)",
+    "claimWithdrawal(uint256)",
+    "withdrawals(uint256)",
+    "shares(address)",
+    "getSharePrice()",
+    "WithdrawalRequested",
+    "0xe6d14ce42ad5a4efe0f111f81c1a1123db4ee41f561c3161e0960d54a9221ebe",
+    "wallet_stake",
+    "wallet_request_withdrawal",
+    "wallet_claim_withdrawal",
+    "wallet_pending_withdrawals",
+    "withdrawal-scans.json",
+    "read_self_stake",
+    "read_self_shares",
+    "stakedWei",
+    "selfStake",
+    "walletStake",
+    "walletRequestWithdrawal",
+    "walletClaimWithdrawal",
+    "pendingWithdrawals",
+    "PendingWithdrawal",
+    "requestWithdrawal",
+    "claimWithdrawal"
+  ],
+  "allow": {
+    "src/shell/state.ts": [
+      "selfStake"
+    ],
+    "src/agent/eval/qa-v1.json": [
+      "stSALT"
+    ]
+  },
+  "allowReasons": {
+    "src/shell/state.ts": "RETIRED_KEYS names the key a 0.5.1 save may still carry, so loadState drops it.",
+    "src/agent/eval/qa-v1.json": "A hashed eval dataset of questions over the public docs (TreasuryGovernor voting power); not a pool call."
+  },
+  "uiCopy": [
+    "LiquidStakingPool",
+    "stSALT",
+    "Self-added stake",
+    "self-added stake",
+    "Add stake",
+    "Pending withdrawals",
+    "pending withdrawals",
+    "7-day lockup"
+  ],
+  "persistedKeys": [
+    "selfStake"
+  ],
+  "_persistedKeysComment": "Keys a 0.5.1 save (or a 0.5.2 pre-release save) may still carry for the pool. loadState drops them; they never reach AppState."
+}

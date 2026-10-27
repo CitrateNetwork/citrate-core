@@ -7,17 +7,20 @@
 import type { ReactNode } from "react";
 import type { Store } from "./store";
 import type { AppState } from "./state";
-import { ACCOUNT_SETTINGS, MOVED_CONTROLS_SETTINGS, NODE_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
+import { ACCOUNT_SETTINGS, NODE_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "../surfaces";
-import { ControlsPanel } from "../surfaces/hermes/ControlsPanel";
+import { HermesWork } from "../surfaces/hermes/HermesWork";
+import { HermesLearn } from "../surfaces/hermes/HermesLearn";
+import { HermesControls } from "../surfaces/hermes/HermesControls";
+import { agentSlice } from "./slices/agent";
 import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
 import { GroupRoundsCard } from "../fl/GroupRoundsCard";
 import { FlRoundsPanel } from "../fl/FlRoundsPanel";
 import { bridge } from "../bridge";
-import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "../surfaces";
-import { StoragePins, StorageBackup } from "../surfaces";
+import { Models, StorageFiles, Groups, Cluster, Train, Connections, Community, People } from "../surfaces";
+import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 
-function TabStrip({ id, items, active, store, sub }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean }) {
+function TabStrip({ id, items, active, store, sub, badges }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean; badges?: Record<string, number> }) {
   return (
     <div
       role="tablist"
@@ -46,6 +49,11 @@ function TabStrip({ id, items, active, store, sub }: { id: string; items: { labe
             }}
           >
             {t.label}
+            {(badges?.[t.route] ?? 0) > 0 && (
+              <span aria-label={badges?.[t.route] + " awaiting your review"} className="mono tabular" style={{ marginLeft: 6, fontSize: 9.5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+                {badges?.[t.route]}
+              </span>
+            )}
           </button>
         );
       })}
@@ -73,20 +81,6 @@ export function NotAvailableYet({ route, title, body, action }: { route: string;
   );
 }
 
-/** Hermes › Controls: the Controls panel first, then the five Settings sections that moved here,
- *  unchanged (they write the same config they wrote under Settings). The panel is not repeated in
- *  the section list below it, so `settings/hermes` opens this tab on the first moved section. */
-function HermesControlsSlot({ store, s }: { store: Store; s: AppState }) {
-  return (
-    <>
-      <div style={{ padding: "20px 26px 0", maxWidth: 1000 }}>
-        <ControlsPanel store={store} s={s} />
-      </div>
-      <Settings store={store} s={{ ...s, sSec: sectionFor(MOVED_CONTROLS_SETTINGS, s.sSec) }} sections={MOVED_CONTROLS_SETTINGS} heading="Controls" />
-    </>
-  );
-}
-
 /** Open a sub-view of the Node surface (its own Operations / Earning / Pinning switch). */
 const openNodeTab = (store: Store, nTab: string) => () => {
   store.setState({ nTab });
@@ -100,18 +94,13 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "hermes/journal":
       return <Journal store={store} s={s} />;
     case "hermes/work":
-      return <Agent store={store} s={s} />;
+      return <HermesWork store={store} s={s} />;
     case "hermes/learn":
-      return (
-        <NotAvailableYet
-          route={route}
-          title="Learn"
-          body="One place for learned skills, Teach Hermes, knowledge import and the training opt-in is not available in this build. The skills Hermes proposes to keep are reviewed on the Work tab today."
-          action={{ label: "Open Hermes › Work", go: () => store.go("hermes/work") }}
-        />
-      );
+      return <HermesLearn store={store} s={s} />;
     case "hermes/controls":
-      return <HermesControlsSlot store={store} s={s} />;
+    case "hermes/controls/details":
+    case "hermes/controls/records":
+      return <HermesControls route={route} store={store} s={s} />;
     case "groups/chat":
       return <Groups store={store} s={s} />;
     case "groups/chat/alerts":
@@ -142,14 +131,8 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "node/status":
       return <Node store={store} s={s} />;
     case "node/services":
-      return (
-        <NotAvailableYet
-          route={route}
-          title="Services"
-          body="A list of the processes this app supervises, each with its state, a restart control and a bounded log, is not available in this build. The node's own state is on the Status tab."
-          action={{ label: "Open Node › Status", go: () => store.go("node/status") }}
-        />
-      );
+      // K1a-2: the services registry snapshot (Rust `services_snapshot`).
+      return <NodeServices store={store} s={s} />;
     case "node/storage/files":
       return <StorageFiles store={store} s={s} />;
     case "node/storage/memory":
@@ -190,9 +173,11 @@ export function PlaceView({ store, s }: { store: Store; s: AppState }) {
   const place = PLACES.find((p) => p.id === loc.place);
   const tabs = place ? visibleTabs(place, s.alfMember) : [];
   const tab = tabs.find((t) => t.route === loc.tab);
+  // Approvals awaiting the member badge Hermes › Work (design slice 1), as they badge Hermes in the sidebar.
+  const pending = agentSlice.use().approvals.length;
   return (
     <>
-      {tabs.length > 1 && <TabStrip id="place-tabs" items={tabs} active={loc.tab} store={store} />}
+      {tabs.length > 1 && <TabStrip id="place-tabs" items={tabs} active={loc.tab} store={store} badges={loc.place === "hermes" ? { "hermes/work": pending } : undefined} />}
       {tab?.sub && <TabStrip id="place-subtabs" items={tab.sub} active={loc.sub} store={store} sub />}
       <div data-surface={loc.route} style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {surfaceFor(loc.route, store, s)}

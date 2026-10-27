@@ -13,6 +13,7 @@
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
 import type { Group, GroupMember, GroupMessage, GroupRole } from "../../bridge/domains";
+import { ROLE_CHANGES_AVAILABLE, ROLE_CHANGES_NOT_AVAILABLE } from "../../surfaces/groupRoles";
 
 export interface GroupsState {
   /** The groups you are in. */
@@ -201,10 +202,15 @@ export async function reloadMessages(groupId: string): Promise<void> {
   }
 }
 
-/** Grant/change a member's role (owner-signed RoleAssertion, enforced at the relay). */
+/** Change a member's role. Not available until role grants are signed (#495): refuses with the
+ *  reason and sends nothing. */
 export async function assignRole(address: string, role: GroupRole): Promise<void> {
   const groupId = groupsSlice.get().selectedId;
   if (!groupId) return;
+  if (!ROLE_CHANGES_AVAILABLE) {
+    groupsSlice.set({ error: ROLE_CHANGES_NOT_AVAILABLE });
+    return;
+  }
   groupsSlice.set({ busyMember: address, error: null });
   try {
     await bridge.groups.assignRole(groupId, address, role);

@@ -1,0 +1,27 @@
+{
+  "models": [
+    {
+      "name": "models/gemini-3.8-flash",
+      "displayName": "Gemini 3.8 Flash",
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens"
+      ]
+    },
+    {
+      "name": "models/gemini-embedding-2",
+      "displayName": "Gemini Embedding 2",
+      "supportedGenerationMethods": [
+        "embedContent"
+      ]
+    },
+    {
+      "name": "models/gemini-4-argon",
+      "displayName": "Gemini 4 Argon",
+      "supportedGenerationMethods": [
+        "generateContent"
+      ]
+    }
+  ],
+  "nextPageToken": ""
+}

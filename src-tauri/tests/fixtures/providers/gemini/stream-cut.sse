@@ -1,0 +1,4 @@
+: source: built from the GenerateContentResponse schema: the stream ends before any finishReason
+
+data: {"candidates":[{"content":{"parts":[{"text":"Let me "}],"role":"model"},"index":0}]}
+

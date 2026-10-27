@@ -904,10 +904,6 @@ pub async fn media_generate_image(
 ) -> Result<GalleryItem, String> {
     let route_dir = crate::chat_route::route_dir(&app)?;
     crate::blocking::off_main(move || {
-        // K2: under Local model only no prompt leaves the device; only the local route runs.
-        if route != "local" {
-            media_remote_allowed(&route_dir)?;
-        }
         let s = load_settings(&app);
         let tier = effective_tier(&app);
         let remote = remote_provider(&app, &s);
@@ -926,6 +922,8 @@ pub async fn media_generate_image(
             size: &size,
             grant_id: &grant_id,
         };
+        // K2: under Local model only no prompt leaves the device: the remote post's permit
+        // (`chat_consent::authorize_once`) checks the route before the consent.
         generate_image(&ctx, &req, now_secs, |id, body| {
             let ai = tauri::Manager::try_state::<crate::ai::AiState>(&app)
                 .ok_or("internal: managed state unavailable")?;
@@ -934,7 +932,8 @@ pub async fn media_generate_image(
             remote_image_post(
                 &ai.0,
                 &consents,
-                crate::chat_consent::now_ms(),
+                &route_dir,
+                crate::ceremony::system_clock(),
                 consent_id.as_deref(),
                 id,
                 &prompt,
@@ -964,21 +963,27 @@ pub(crate) fn with_remote_blocked(mut routes: Vec<Route>, blocked: Option<String
 }
 
 /// Post one remote image request, only with the member's consent core minted for this prompt
-/// (`media_consent_prepare`). The consent is spent by this call.
+/// (`media_consent_prepare`) and never under Local model only (`route_dir`). The consent is spent
+/// by this call.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn remote_image_post(
     ai: &crate::ai::AiManager,
     consents: &crate::chat_consent::ChatConsentState,
-    now_ms: u64,
+    route_dir: &Path,
+    now: crate::ceremony::ClockReading,
     consent_id: Option<&str>,
     provider_id: &str,
     prompt: &str,
     body: &Value,
 ) -> Result<String, String> {
-    let permit = consents
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .authorize_once(consent_id.unwrap_or(""), provider_id, prompt, now_ms)?;
+    let permit = crate::chat_consent::authorize_once(
+        consents,
+        route_dir,
+        consent_id.unwrap_or(""),
+        provider_id,
+        prompt,
+        now,
+    )?;
     ai.post_to_provider(&permit, provider_id, "/images/generations", body)
         .map_err(|e| e.to_string())
 }
