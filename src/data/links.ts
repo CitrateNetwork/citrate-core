@@ -6,10 +6,10 @@
 // destination RP runs its own OIDC login today; a real signed-in handoff
 // (shared-authority SSO) is work-order WO-6.
 
+import { ACTIVE_PROFILE, type NetworkProfile } from "../network/profile";
+
 /** Atlas docs base — the canonical federation docs host. */
 export const ATLAS_BASE = "https://docs.citrate.ai";
-/** CitrateScan explorer base (canonical host). */
-export const SCAN_BASE = "https://explorer.citrate.ai";
 
 /**
  * Normalize a catalog `url`/`path`/`docs` value to a full https URL:
@@ -24,7 +24,23 @@ export function federationUrl(pathOrHost: string): string {
   return `https://${v.replace(/^\/+/, "")}`;
 }
 
-/** A CitrateScan transaction link for a tx hash. */
-export const scanTxUrl = (hash: string): string => `${SCAN_BASE}/tx/${hash}`;
-/** A CitrateScan address link for a wallet address. */
-export const scanAddrUrl = (addr: string): string => `${SCAN_BASE}/address/${addr}`;
+/**
+ * The explorer of a network profile (default: the active one), or null when it has none. RC52: links
+ * follow the network the values were read on; a value from another network gets no link, since this
+ * build does not know that network's explorer.
+ */
+function explorerOf(p: NetworkProfile | null): string | null {
+  const u = p?.explorerUrl;
+  return typeof u === "string" && /^https:\/\/\S+$/.test(u) ? u.replace(/\/+$/, "") : null;
+}
+
+/** A CitrateScan transaction link for a tx hash on a profile's network, or null without an explorer. */
+export const scanTxUrl = (hash: string, p: NetworkProfile | null = ACTIVE_PROFILE): string | null => {
+  const base = explorerOf(p);
+  return base === null ? null : `${base}/tx/${hash}`;
+};
+/** A CitrateScan address link on a profile's network, or null without an explorer. */
+export const scanAddrUrl = (addr: string, p: NetworkProfile | null = ACTIVE_PROFILE): string | null => {
+  const base = explorerOf(p);
+  return base === null ? null : `${base}/address/${addr}`;
+};

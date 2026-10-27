@@ -103,6 +103,13 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # ── K6 (RC52 G0): a release targets a network whose every value is set. The active profile
+      #    in src-tauri/network/profiles.json must have no unset value, the embedded address book
+      #    must carry its chain id and genesis, and build-sidecar.sh must pin its minChainRev;
+      #    otherwise the build would ship an app that refuses to sign. Fails closed.
+      - name: Network profile release gate (K6)
+        run: scripts/check-network-profile.sh --release
+
       # ── HUP-S3.2: the reviewed third-party skills (src-tauri/skills-bundle/). Built from the
       #    source checkouts with `node scripts/stage-skills-bundle.mjs build`, packed as
       #    skills-bundle.tar.gz in the `runtime-deps` prerelease and pinned in
