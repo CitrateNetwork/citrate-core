@@ -157,6 +157,12 @@ export function parseLsof(text) {
   return out;
 }
 
+/** Did lsof answer? Exit 1 only means one of the selections (-iTCP, -iUDP) matched nothing. */
+export function lsofAnswered(r) {
+  // RED STUB
+  return r.code === 0 || (r.code === 1 && !r.stdout.trim());
+}
+
 /** Split "host:port" ("[::1]:8545", "*:30303", "127.0.0.1:5001") into {host, port}. */
 export function splitHostPort(local) {
   const m = /^(.*):(\d+|\*)$/.exec(local);
@@ -538,7 +544,7 @@ export function gatherGuardFacts(deps) {
   const ps = deps.read("ps", ["-axww", "-o", "pid=,ppid=,comm="]);
   f.procs = ps.code === 0 ? parsePs(ps.stdout) : null;
   const ls = deps.read("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP", "-F", "pcPn"]);
-  f.listeners = ls.code === 0 || (ls.code === 1 && !ls.stdout.trim()) ? parseLsof(ls.stdout) : null;
+  f.listeners = lsofAnswered(ls) ? parseLsof(ls.stdout) : null;
   f.keychain = {};
   for (const s of KEYCHAIN_SERVICES) {
     const k = deps.read("security", ["find-generic-password", "-s", s]);
@@ -630,7 +636,7 @@ function snapshotProcs(rn) {
 }
 function snapshotListeners(rn) {
   const r = rn.read("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP", "-F", "pcPn"]);
-  if (r.code !== 0 && r.stdout.trim()) throw new Error(`lsof failed: ${r.stderr}`);
+  if (!lsofAnswered(r)) throw new Error(`lsof failed: ${r.stderr}`);
   return parseLsof(r.stdout);
 }
 

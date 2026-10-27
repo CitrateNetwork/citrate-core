@@ -526,6 +526,18 @@ describe("probes", () => {
       expect(f.signingIdentities).toEqual([]);
     }
   });
+  it("read lsof's exit 1 (one selection matched nothing) as a valid answer, with or without output; other codes fail closed", () => {
+    expect(H.lsofAnswered({ code: 1, stdout: "p88\ncsshd\nPTCP\nn*:22\n", stderr: "" })).toBe(true);
+    expect(H.lsofAnswered({ code: 1, stdout: "", stderr: "" })).toBe(true);
+    expect(H.lsofAnswered({ code: 0, stdout: "", stderr: "" })).toBe(true);
+    expect(H.lsofAnswered({ code: 2, stdout: "", stderr: "lsof: bad option" })).toBe(false);
+    expect(H.lsofAnswered({ code: -1, stdout: "", stderr: "ENOENT" })).toBe(false);
+    const { deps } = fakeDeps({ lsof: "p88\nccitrate\nf3\nPTCP\nn127.0.0.1:8545\n", lsofCode: 1 });
+    const rn = H.createRunner(deps.exec);
+    const f = H.gatherGuardFacts({ ...deps, read: rn.read });
+    expect(f.listeners).toHaveLength(1);
+    expect(H.evaluateGuards(f).refusals.join()).toMatch(/port 8545 is in use/);
+  });
   it("see a Developer ID signing identity", () => {
     const { deps } = fakeDeps({ identities: '  1) 89AB "Developer ID Application: Example Inc. (ABCDE12345)"\n' });
     const rn = H.createRunner(deps.exec);
