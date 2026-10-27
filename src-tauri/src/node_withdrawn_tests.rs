@@ -37,7 +37,15 @@ fn the_compiled_in_check_is_the_2026_10_15_rollback_on_the_book_genesis() {
         CHECK.canonical,
         "0x51482ff9724a2f0cbf4fe678f3ce556f6222334d5b2a3f5eba8a2b52af0cf3d2"
     );
-    assert_eq!(checks_for(crate::addresses::genesis_hash()), vec![CHECK]);
+    // The rollback happened on r1005; the r1006 book genesis (active since the RC52 fill) has
+    // none, so a node on r1006 is never moved aside by it.
+    let r1005 = crate::network_profile::profile("alpha-r1005")
+        .expect("alpha-r1005")
+        .genesis_hash
+        .clone()
+        .expect("r1005 genesis");
+    assert_eq!(checks_for(&r1005), vec![CHECK]);
+    assert!(checks_for(crate::addresses::genesis_hash()).is_empty());
 }
 
 #[test]

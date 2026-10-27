@@ -8,7 +8,7 @@
 //   V2  heartbeat "last ack 4s ago" stuck at its seed value, sold as slashing protection
 //   V3  pin projections (bonded x 0.0075 "per month") and "challenges passed" (pins x 9 + 4)
 //   V10 seeded height 131,204 and persisted node state shown before the first poll
-//   V11 Train reads PatronageLedger, which is not in the 40204 address book
+//   V11 Train reads PatronageLedger; FederatedRoundLedger is not in the 40204 (r1006) address book
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
@@ -158,8 +158,9 @@ describe("V10 — no seeded height or persisted node state before the first poll
 });
 
 describe("V11 — group rounds are not live on 40204", () => {
-  it("the shipped address book has no PatronageLedger, so rounds read as not live", () => {
-    expect((book.addresses as Record<string, string>).PatronageLedger).toBeUndefined();
+  it("the shipped address book has no FederatedRoundLedger, so rounds read as not live", () => {
+    // r1006 pins PatronageLedger (block 0) but not FederatedRoundLedger: still not live.
+    expect((book.addresses as Record<string, string>).FederatedRoundLedger).toBeUndefined();
     expect(groupRoundsLive(book.addresses)).toBe(false);
     expect(groupRoundsLive({ PatronageLedger: "0x" + "0".repeat(40) })).toBe(false);
     expect(groupRoundsLive({ PatronageLedger: "0x00000000000000000000000000000000000000AB", FederatedRoundLedger: "0x00000000000000000000000000000000000000CD" })).toBe(true);

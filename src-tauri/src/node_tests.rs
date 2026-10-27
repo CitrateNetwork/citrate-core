@@ -283,7 +283,9 @@ fn spawn_env_never_sets_an_agent_precompile_height() {
 /// path, forks the state root, and wedges the node at block 2,580. This locks them in.
 #[test]
 fn spawn_env_carries_the_fleet_consensus_vars() {
+    // The r1005 fleet env (r1006 compiles these: see the RC52 tests below).
     let (mgr, _fake, _data) = stub_manager("consensus-env");
+    let mgr = mgr.with_network(Ok(alpha_r1005_network()));
     let spec = mgr.build_spec();
     let get = |k: &str| {
         spec.env
@@ -318,10 +320,18 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     // and `0x` at the previous pin.
     // Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (13,026 bytes).
     // Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (13,026 bytes); `0x` at the previous pin.
+    // Re-earned 2026-10-27 (RC52 fill): the embedded book now follows the active r1006 profile, so
+    // the registry an r1005 spawn would carry is the book's; the book's own pin is checked against
+    // the canonical r1006 book (and the registry r1006 compiles, DGX G4: 0xf511327e…31cd) below.
     assert_eq!(
         get(NODE_VALIDATOR_REGISTRY_ENV),
-        Some("0xde4f679632be7810d915f637cc6a72bf076a3bd9"),
-        "ValidatorRegistry must be the live 40204 address the fleet runs",
+        Some(crate::addresses::validator_registry()),
+        "the registry comes from the embedded book",
+    );
+    assert_eq!(
+        crate::addresses::validator_registry().to_ascii_lowercase(),
+        "0xf511327ef586908bc34990621e3624d5de4131cd",
+        "ValidatorRegistry must be the canonical r1006 address (compiled into the r1006 genesis)",
     );
     // INVERTED 2026-07-30. This previously asserted the retain window MUST be
     // wired, on the reasoning that an unpruned desktop follower OOMs near 150k
@@ -1448,18 +1458,20 @@ impl RpcTransport for ForkNode {
 const FORK_DB: &[&str] = &["CURRENT", "MANIFEST-000005", "000013.sst", "000181.log", "LOCK"];
 const FORK_KEPT: &[&str] = &["proposer.key", "noise.key", "node.toml", "chain-genesis"];
 
-/// What each fixture file holds: the genesis marker holds the book genesis (as the app writes
-/// it), every other file its own name.
+/// What each fixture file holds: the genesis marker holds the r1005 genesis the rollback check
+/// belongs to (as the app writes it), every other file its own name.
 fn fork_body(name: &str) -> Vec<u8> {
     if name == crate::node_genesis::GENESIS_MARKER_FILE {
-        format!("{}\n", crate::addresses::genesis_hash()).into_bytes()
+        format!("{}\n", alpha_r1005_network().genesis_hash).into_bytes()
     } else {
         name.as_bytes().to_vec()
     }
 }
 
 fn populated_fork_dir(tag: &str) -> (NodeManager, PathBuf) {
+    // The 2026-10-15 rollback check belongs to the r1005 genesis.
     let (mgr, _fake, data_dir) = stub_manager(tag);
+    let mgr = mgr.with_network(Ok(alpha_r1005_network()));
     std::fs::create_dir_all(&data_dir).expect("mkdir");
     for f in FORK_DB.iter().chain(FORK_KEPT.iter()) {
         std::fs::write(data_dir.join(f), fork_body(f)).expect("write");
@@ -1758,6 +1770,14 @@ fn k6_an_unrecorded_database_interrupted_after_the_wipe_never_keeps_the_old_conf
 // ---------------------------------------------------------------------------
 // RC52: the bundled node runs r1006 (genesis profile + activation overrides)
 // ---------------------------------------------------------------------------
+
+/// The alpha-r1005 network, ready (tests of the r1005 fleet env and its rollback check).
+fn alpha_r1005_network() -> crate::network_profile::ReadyNetwork {
+    crate::network_profile::profile("alpha-r1005")
+        .expect("alpha-r1005")
+        .ready()
+        .expect("ready")
+}
 
 /// Block 0 of r1006 (citrate-chain 9a32147e `R1006_GENESIS`).
 const R1006_GENESIS_HASH: &str =

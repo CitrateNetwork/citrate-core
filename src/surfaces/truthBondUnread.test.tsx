@@ -28,6 +28,7 @@ import { store, type Store } from "../shell/store";
 import { freshState, loadState, STORAGE_KEY, type AppState } from "../shell/state";
 import { validatorWord } from "../shell/chainTruth";
 import { bridge } from "../bridge";
+import { NET_STAMP_FIELD, currentNetKey } from "../shell/netScope";
 
 const stub = {
   walletIsLinked: () => true,
@@ -113,7 +114,8 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
 
 describe("upgrade review — retired earn* keys are dropped when a save loads", () => {
   it("a 0.5.1 save's earnVal / earnPin / earnComp / earnToday never reach state", () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ persona: "p1", earnVal: 12.5, earnPin: 3, earnComp: 4, earnToday: 1.2, liquid: 7 }));
+    // Stamped for the network this build targets, so `liquid` (network-scoped) is carried over.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ persona: "p1", earnVal: 12.5, earnPin: 3, earnComp: 4, earnToday: 1.2, liquid: 7, [NET_STAMP_FIELD]: currentNetKey() }));
     const s = loadState() as unknown as Record<string, unknown>;
     for (const k of ["earnVal", "earnPin", "earnComp", "earnToday"]) expect(s[k], k).toBeUndefined();
     expect(s.liquid).toBe(7);

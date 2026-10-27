@@ -441,6 +441,18 @@ fn r1006_filled() -> NetworkProfile {
     p
 }
 
+/// r1006 as shipped before the reroll fill: the three reroll values unset, each with a reason.
+fn r1006_unfilled() -> NetworkProfile {
+    let mut p = r1006().clone();
+    p.genesis_hash = None;
+    p.address_book_sha256 = None;
+    p.min_chain_rev = None;
+    for k in ["genesisHash", "addressBookSha256", "minChainRev"] {
+        p.pending.insert(k.into(), "set at the reroll".into());
+    }
+    p
+}
+
 fn signs(gate: &crate::rpc::ExpectedNetwork, scope: crate::rpc::SignatureScope) -> bool {
     crate::rpc::with_added_network_gate(gate.clone(), || {
         crate::rpc::check_wallet_signing(scope)
@@ -450,11 +462,11 @@ fn signs(gate: &crate::rpc::ExpectedNetwork, scope: crate::rpc::SignatureScope) 
 
 /// Every value known before the reroll is set: chain id 40204 (the reroll keeps it), the
 /// existing fleet's RPC, explorer and faucet, and its bootnodes (citrate-chain
-/// node/config/testnet-beta.toml; the Noise keys stay stable across a reroll). Only the values
-/// the reroll produces are unset, each with a reason.
+/// node/config/testnet-beta.toml; the Noise keys stay stable across a reroll; owner decision:
+/// boot1-3 + rpc.citrate.ai). Since the RC52 fill the reroll values are set too (next test).
 #[test]
 fn r1006_has_the_values_known_today_and_only_the_reroll_values_unset() {
-    let p = r1006();
+    let p = r1006_unfilled();
     assert_eq!(p.chain_id, Some(40204));
     assert_eq!(p.node_network.as_deref(), Some("testnet"));
     assert_eq!(p.rpc_url.as_deref(), Some("https://rpc.citrate.ai"));
@@ -468,11 +480,35 @@ fn r1006_has_the_values_known_today_and_only_the_reroll_values_unset() {
     assert_eq!(missing, ["genesisHash", "addressBookSha256", "minChainRev"]);
 }
 
+/// RC52 fill (scripts/fill-network-profile.sh): r1006 carries the reroll values and is the network
+/// this build targets. Genesis: DGX fleet_agree + G4 cold-sync (fed#331), = citrate-chain
+/// `R1006_GENESIS`; book: citrate-chain contracts/addresses/r1006/40204.json at a857443e; rev: the
+/// node the fleet runs.
+#[test]
+fn r1006_is_filled_with_the_reroll_values_and_active() {
+    let p = r1006();
+    assert_eq!(p.genesis_hash.as_deref(), Some(R1006_GENESIS));
+    assert_eq!(
+        p.address_book_sha256.as_deref(),
+        Some("724e3843f677588a6aac680554dd1f2db768d5c3ca2bea18bdc0c173c100b90b")
+    );
+    assert_eq!(
+        p.min_chain_rev.as_deref(),
+        Some("9a32147e2aac60d388356ecc67488d717aa84c41")
+    );
+    assert!(p.pending.is_empty(), "{:?}", p.pending);
+    assert_eq!(active_id().unwrap(), R1006);
+    let r = active_ready().expect("the active r1006 is ready");
+    assert_eq!(r.genesis_hash, R1006_GENESIS);
+    assert_eq!(r.node_genesis.name, "r1006");
+    assert_eq!(crate::addresses::genesis_hash(), R1006_GENESIS);
+}
+
 /// Red first (K6, RC52): until the reroll values are filled, r1006 refuses every wallet
 /// signature (unbound and on its own chain) and every RPC read.
 #[test]
 fn r1006_unfilled_refuses_every_signature() {
-    let p = r1006();
+    let p = r1006_unfilled();
     match p.ready() {
         Err(ProfileError::NotSet { profile, missing }) => {
             assert_eq!(profile, R1006);
@@ -585,8 +621,12 @@ fn the_node_config_names_the_genesis_profile_of_its_network() {
         Some("r1006"),
         "an r1006 node must be told to build the r1006 genesis"
     );
+    let alpha = profile("alpha-r1005")
+        .unwrap()
+        .ready()
+        .expect("alpha-r1005 is ready");
     assert_eq!(
-        rendered_genesis_profile(&ready_alpha()).as_deref(),
+        rendered_genesis_profile(&alpha).as_deref(),
         Some("testnet_beta"),
         "the r1005 network names the genesis profile its block 0 comes from"
     );
