@@ -218,7 +218,10 @@ export function createChainReads(): ChainReads {
         read("validatorInfo", [pubkey]) as Promise<readonly unknown[]>,
         read("currentEpoch") as Promise<bigint>,
       ]);
-      return { isActive, status: Number(info[8]), actEpoch: Number(info[5]), currentEpoch: Number(epoch) };
+      // fxEARN: the staker and the bonded stake, so a key staked from the member's wallet is known.
+      const staker = typeof info[0] === "string" ? info[0].toLowerCase() : null;
+      const bondedWei = typeof info[1] === "bigint" ? info[1].toString() : null;
+      return { isActive, status: Number(info[8]), actEpoch: Number(info[5]), currentEpoch: Number(epoch), staker, bondedWei };
     },
     async validatorCounts() {
       const client = clientFor("the validator counts");

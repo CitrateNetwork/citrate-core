@@ -6,7 +6,7 @@ import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
-import { bondClaimBlocked } from "../shell/store";
+import { bondClaimBlocked, ownWalletClaimBlocked } from "../shell/store";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -159,7 +159,8 @@ export function Node({ store, s }: SurfaceProps) {
   const claimDisabled = rClaim == null || rClaim < 5;
   // #362 B-1: on the bond path Claim is offered only once MemberBond.isKycVerified() reads true (the
   // bond's claimRewards() reverts otherwise); until then the reason shows instead of the button.
-  const claimBlocked = bondClaimBlocked(s);
+  // fxEARN: a key staked from the wallet itself has no claim this app builds; the reason shows too.
+  const claimBlocked = bondClaimBlocked(s) ?? ownWalletClaimBlocked(s);
   const claimNote =
     rClaim == null
       ? "Validator rewards are paid to the block producer only."

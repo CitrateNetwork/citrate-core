@@ -235,11 +235,18 @@ pub fn read_registration_nonce<T: crate::rpc::RpcTransport>(
 /// `rewardsOf(bytes32)` selector (`keccak256("rewardsOf(bytes32)")[..4]`).
 const REWARDS_OF_SELECTOR: [u8; 4] = [0x18, 0x7e, 0x9c, 0x41];
 
-/// Low 16 bytes of a 32-byte ABI word as a `u128` (SALT wei exceeds u64).
-fn u128_from_word(word: &[u8]) -> u128 {
+/// A 32-byte ABI word as a `u128` (SALT wei exceeds u64). A word with any of its high 16 bytes
+/// set is not a SALT amount, so it is refused rather than read as its low half (fxEARN).
+fn u128_from_word(word: &[u8]) -> Result<u128, String> {
+    if word[..16].iter().any(|b| *b != 0) {
+        return Err(format!(
+            "rewardsOf returned a word wider than u128 (0x{})",
+            hex::encode(word)
+        ));
+    }
     let mut b = [0u8; 16];
     b.copy_from_slice(&word[16..32]);
-    u128::from_be_bytes(b)
+    Ok(u128::from_be_bytes(b))
 }
 
 /// Read the node's REAL validator earnings from `ValidatorRegistry.rewardsOf(pubkey)`
@@ -267,7 +274,7 @@ pub fn read_validator_rewards<T: crate::rpc::RpcTransport>(
             ret.len()
         ));
     }
-    Ok((u128_from_word(&ret[0..32]), u128_from_word(&ret[32..64])))
+    Ok((u128_from_word(&ret[0..32])?, u128_from_word(&ret[32..64])?))
 }
 
 /// Read the node's `proposer.key`, sign the registration digest with it, and return
