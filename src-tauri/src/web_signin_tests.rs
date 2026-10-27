@@ -681,3 +681,86 @@ fn sidecar_taint_maps_to_the_kit_taint() {
         TaskTaint::Sources(vec!["ext:x".into()])
     );
 }
+
+// ---- K6: the network gate on the sign-in path ----
+
+fn k6_gate(chain_id: Option<u64>) -> citrate_core_kit::rpc::ExpectedNetwork {
+    citrate_core_kit::rpc::ExpectedNetwork {
+        name: "k6-test".into(),
+        chain_id,
+        genesis_hash: chain_id.map(|_| {
+            "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1".to_string()
+        }),
+    }
+}
+
+/// Inside a budget, with no network set: no signature reaches the page, no budget is used, and
+/// the card that follows is refused on approval too.
+#[test]
+fn k6_no_sign_in_is_signed_while_no_network_is_set() {
+    let w = world("k6-unset");
+    grant(&w.gate);
+    let msg = siwe("abcdef0123456789K7");
+    let link = FakeLink::new(snapshot(
+        request("personal_sign", ORIGIN, true, Some(&msg)),
+        clean(),
+    ));
+    citrate_core_kit::rpc::with_added_network_gate(k6_gate(None), || {
+        let out = run(&w, &link, &tab_on("https://app.example.org/login")).expect("handled");
+        let id = match out {
+            SignInOutcome::Pending { ceremony, reason } => {
+                assert!(reason.contains("no network set"), "{reason}");
+                ceremony.id
+            }
+            other => panic!("expected a card, not a signature: {other:?}"),
+        };
+        assert!(
+            answers(&link).iter().all(|a| a.get("signature").is_none()),
+            "no signature reached the page"
+        );
+        assert_eq!(w.gate.snapshot(NOW, None).budgets[0].used_count, 0);
+        let err = approve(&link, &w.ceremony, &w.vault, &w.state, &id, false)
+            .expect_err("the card cannot be signed either");
+        assert!(err.contains("no network set"), "{err}");
+    });
+}
+
+/// With the network set, the same budgeted sign-in signs (its `Chain ID` is the target chain);
+/// against a profile for another chain it is refused.
+#[test]
+fn k6_a_sign_in_is_checked_against_the_set_network() {
+    let w = world("k6-set");
+    grant(&w.gate);
+    let msg = siwe("abcdef0123456789K8");
+    let link = FakeLink::new(snapshot(
+        request("personal_sign", ORIGIN, true, Some(&msg)),
+        clean(),
+    ));
+    citrate_core_kit::rpc::with_added_network_gate(k6_gate(Some(40204)), || {
+        let out = run(&w, &link, &tab_on("https://app.example.org/login")).expect("handled");
+        assert!(
+            matches!(out, SignInOutcome::AutoSigned { .. }),
+            "signed on the target chain: {out:?}"
+        );
+    });
+    let w2 = world("k6-other");
+    grant(&w2.gate);
+    let link2 = FakeLink::new(snapshot(
+        request(
+            "personal_sign",
+            ORIGIN,
+            true,
+            Some(&siwe("abcdef0123456789K9")),
+        ),
+        clean(),
+    ));
+    citrate_core_kit::rpc::with_added_network_gate(k6_gate(Some(7)), || {
+        let out = run(&w2, &link2, &tab_on("https://app.example.org/login")).expect("handled");
+        match out {
+            SignInOutcome::Pending { reason, .. } => {
+                assert!(reason.contains("chain 40204"), "{reason}")
+            }
+            other => panic!("expected a refusal card: {other:?}"),
+        }
+    });
+}
