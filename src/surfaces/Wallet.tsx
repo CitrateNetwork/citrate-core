@@ -22,6 +22,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
 import { readStakeSalt, readsValidatorRewards, saltFromWei, STAKE_NOT_READ, validatorDash } from "../shell/chainTruth";
 import { memberKeyRuleKey } from "../shell/store";
+import { rpcHost, CHAIN_ID_TEXT } from "../network/profile";
 import { grantExplanation } from "../data/grantCopy";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -60,7 +61,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked);
   // C1-V V9: every Wallet read (balance, validator stake and rewards) goes to the public RPC
   // through the Rust RpcClient, whether or not the local node runs.
-  const src = "rpc.citrate.ai";
+  const src = rpcHost() ?? "public RPC not set";
   const minStake = saltFromWei(s.minStakeWei);
   const rewardsTotal = s.rewards ? saltFromWei(s.rewards.totalWei) : null;
   // BC-5.3 — which SBT-art source is rendered, for an honest caption. The
@@ -312,7 +313,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span style={{ fontSize: 14, fontWeight: 500 }}>Receive</span>
-              <span className="lbl">Wallet key on this device · chain 40204</span>
+              <span className="lbl">Wallet key on this device · chain {CHAIN_ID_TEXT}</span>
               <span className="mono" style={{ fontSize: 12.5, wordBreak: "break-all", background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "10px 12px" }}>
                 {deviceKey || "— · device key not read yet"}
               </span>
@@ -557,7 +558,7 @@ export function Wallet({ store, s }: SurfaceProps) {
           <div style={{ border: "1px dashed var(--line-2)", borderRadius: "var(--r-2)", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 6 }}>
             <span className="eyebrow">Verifiable identity proofs</span>
             <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              ZK identity checkpoints are in development — the verify precompile is live on 40204; the identity-checkpoint circuit is not. Nothing to click yet; this page will say so until it&apos;s real.
+              ZK identity checkpoints are in development — the verify precompile is live on {CHAIN_ID_TEXT}; the identity-checkpoint circuit is not. Nothing to click yet; this page will say so until it&apos;s real.
             </p>
           </div>
         </div>

@@ -106,6 +106,7 @@ import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
+import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 
 /** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
@@ -800,6 +801,10 @@ export class Store {
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
+  /** core#584 — the current S3 checkout attempt; a check whose token is stale opens nothing. */
+  private s3Attempt = 0;
+  /** core#584 — the current Settings › Billing "Become a member" attempt (see becomeMember). */
+  private billingAttempt = 0;
   // FIX 1a: the single post-checkout entitlement poll (timer + deadline).
   private entitlementPollTimer: ReturnType<typeof setTimeout> | null = null;
   private entitlementPollDeadline = 0;
@@ -1082,8 +1087,11 @@ export class Store {
    */
   async seedMemoryGraph(): Promise<void> {
     const s = this.state;
-    const facts = {
-      chainId: 40204,
+    // K6: the chain id is the network profile's. A build with no network set has no network facts
+    // to seed (the docs below are still ingested).
+    const chainId = isProfileReady() ? (ACTIVE_PROFILE?.chainId ?? null) : null;
+    const facts = chainId === null ? null : {
+      chainId,
       nodeState: s.node,
       height: s.height,
       peers: s.peers,
@@ -1095,8 +1103,8 @@ export class Store {
     };
     let changed = false;
     try {
-      const r = await bridge.memory.seedContext(facts);
-      if (r.authored > 0) changed = true;
+      const r = facts === null ? null : await bridge.memory.seedContext(facts);
+      if (r && r.authored > 0) changed = true;
     } catch {
       /* honest no-op: daemon race / unavailable (web preview) — never a fabricated node */
     }
@@ -2341,6 +2349,9 @@ export class Store {
   /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
   async authLogout(): Promise<void> {
     this.stopEntitlementPoll();
+    // core#584: a Billing checkout attempt still checking for a held grant opens nothing after sign-out.
+    this.billingAttempt++;
+    if (this.state.billingChecking) this.setState({ billingChecking: false });
     await bridge.auth.logout();
     this.setState({
       tier: "free",
@@ -2481,7 +2492,15 @@ export class Store {
       return;
     }
     if (this.linkBeforeCheckout("Link your wallet first — approve the link, then choose Become a member again.")) return;
+    // ONE ATTEMPT AT A TIME (core#584), as in onS3Pay: a second click while the held-grant read
+    // runs is ignored (the button is disabled too), and an attempt superseded meanwhile (sign-out
+    // ends it) opens nothing.
+    if (this.state.billingChecking) return;
+    const attempt = ++this.billingAttempt;
+    this.setState({ billingChecking: true });
     const held = await this.readHeldGrant();
+    if (attempt !== this.billingAttempt) return;
+    this.setState({ billingChecking: false });
     if (held) {
       this.setState({ hasGrant: true, hasSbt: held.hasSbt });
       this.save();
@@ -5869,6 +5888,7 @@ export class Store {
    *  app via onS6Continue → onEnter. No checkout, no payment, no fabricated grant (Rule 1). The
    *  paid membership stays available later (Settings → Billing opens the same checkout). */
   onS3Free(): void {
+    this.endS3Check();
     this.setState({ stage: "s4", tier: "free" });
     this.save();
   }
@@ -5987,8 +6007,28 @@ export class Store {
       // thing that cannot help, because the membership is one-per-sub and the second
       // order can never be granted. Observed 2026-08-15: a member reached three
       // stranded `paid` orders this way. Read the chain BEFORE spending money.
+      //
+      // ONE ATTEMPT AT A TIME (core#584). The read above takes time, and until it ends a second
+      // Pay, Back, or choosing membership again could each still open a checkout. So: a second
+      // call while a check runs is ignored; each attempt carries a token, and an attempt whose
+      // token was superseded (Back ends it via endS3Check) or whose stage changed opens nothing.
+      if (this.state.s3Checking) return;
+      const attempt = ++this.s3Attempt;
+      const stage = this.state.stage;
+      this.setState({ s3Checking: true });
       void (async () => {
-        if (await this.settleS3IfAlreadyGranted()) return;
+        let settled: boolean;
+        try {
+          settled = await this.settleS3IfAlreadyGranted();
+        } catch {
+          // Not a read failure (that returns false inside): something unexpected. Open nothing,
+          // and give the controls back so the member can try again.
+          if (attempt === this.s3Attempt) this.setState({ s3Checking: false });
+          return;
+        }
+        if (attempt !== this.s3Attempt) return; // ended by Back / Continue free; ignore the result
+        this.setState({ s3Checking: false });
+        if (settled || this.state.stage !== stage) return;
         this.setState({ s3: "paying" });
         // login_hint = the signed-in email → the browser checkout binds to THIS account.
         void bridge.membership.checkout(this.state.authEmail ?? undefined).catch(() => {
@@ -6009,6 +6049,15 @@ export class Store {
       this.setState({ s3: "settled", tier: "pilot" });
       this.save();
     }, 2500);
+  }
+
+  /**
+   * core#584 — end any running pre-checkout grant check: its result is ignored, so it opens no
+   * checkout. Back on the member checkout and "Continue free" call this. Idempotent.
+   */
+  endS3Check(): void {
+    this.s3Attempt++;
+    if (this.state.s3Checking) this.setState({ s3Checking: false });
   }
 
   /**

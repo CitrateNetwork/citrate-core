@@ -593,7 +593,7 @@ pub fn topup_event(e: &LedgerEntry) -> crate::hic_records::HicEvent {
         .map(|h| {
             vec![crate::hic_records::HicEvidence {
                 kind: "tx".to_string(),
-                uri: format!("eip155:40204/tx/{h}"),
+                uri: format!("eip155:{}/tx/{h}", crate::rpc::CITRATE_CHAIN_ID),
                 digest: Some(h.clone()),
             }]
         })

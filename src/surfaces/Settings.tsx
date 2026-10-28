@@ -31,6 +31,8 @@ import { AppState, fmtSaltFromWei } from "../shell/state";
 import { GRANT_DISCLAIMER } from "../data/grantCopy";
 import { PricingLink } from "../components/PricingLink";
 import { citrate, readTransport } from "../chain";
+import { ACTIVE_PROFILE, rpcHost as profileRpcHost } from "../network/profile";
+import { NetworkProfilePanel, useNetworkState } from "../network/NetworkPanel";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import { PersonaPicker } from "../components/PersonaPicker";
@@ -391,6 +393,10 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
     },
   }));
 
+  // ---------- Network (K6-3) ----------
+  // Block 0 is read only while Node configuration is open.
+  const networkState = useNetworkState(ACTIVE_PROFILE, s.sSec === "node");
+
   // ---------- API endpoints & keys ----------
   // Q-A.1 (Rule 1) — the RPC health pill traces to a REAL probe, never an
   // unconditional "healthy". We call eth_blockNumber against the SELECTED RPC
@@ -398,14 +404,21 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
   // frontend already ships (src/chain.ts). Until the probe resolves the honest
   // baseline is "checking…" (never a fabricated health assertion). The result is
   // reachable (block N) / unreachable — a truthful color + text from real data.
-  type RpcProbe = { phase: "checking" | "up" | "down"; block: number | null; host: string };
-  const rpcHost = s.rpc === "local" ? "127.0.0.1:8545" : "rpc.citrate.ai";
+  // K6-3: the public RPC is the network profile's (src/network/profile.ts); with no profile RPC
+  // set there is nothing to probe, and the row says so.
+  type RpcProbe = { phase: "checking" | "up" | "down" | "notset"; block: number | null; host: string };
+  const publicRpcHost = profileRpcHost(ACTIVE_PROFILE);
+  const rpcHost = s.rpc === "local" ? "127.0.0.1:8545" : (publicRpcHost ?? "public RPC");
   const [rpcProbe, setRpcProbe] = useState<RpcProbe>({ phase: "checking", block: null, host: rpcHost });
   useEffect(() => {
     if (s.sSec !== "api") return;
     let live = true;
+    const url = s.rpc === "local" ? "http://127.0.0.1:8545" : ACTIVE_PROFILE?.rpcUrl;
+    if (!url) {
+      setRpcProbe({ phase: "notset", block: null, host: rpcHost });
+      return;
+    }
     setRpcProbe({ phase: "checking", block: null, host: rpcHost });
-    const url = s.rpc === "local" ? "http://127.0.0.1:8545" : "https://rpc.citrate.ai";
     // K6 (P3): readTransport refuses without sending while the network profile is not ready.
     const client = createPublicClient({ chain: citrate, transport: readTransport(url) });
     client
@@ -422,7 +435,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
   }, [s.sSec, s.rpc, rpcHost]);
   const rpcHealthColor = rpcProbe.phase === "up" ? "var(--ok)" : rpcProbe.phase === "down" ? "var(--danger)" : "var(--tx-3)";
   const rpcHealthText =
-    rpcProbe.phase === "checking"
+    s.rpc !== "local" && publicRpcHost === null
+      ? "public RPC not set · this build has no network set"
+      : rpcProbe.phase === "checking"
       ? rpcHost + " · checking…"
       : rpcProbe.phase === "up"
         ? rpcHost + " · reachable · block " + rpcProbe.block
@@ -807,7 +822,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                     store.save();
                   }}
                 >
-                  testnet · 40204
+                  {ACTIVE_PROFILE?.nodeNetwork ?? "not set"} · {ACTIVE_PROFILE?.chainId ?? "not set"}
                 </button>
                 <button
                   className={btnCls(s.net === "local")}
@@ -833,15 +848,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 <DisabledControl label="Move…" note="not available in this build" />
               </span>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span className="lbl">Bootnodes · default set</span>
-              <span
-                className="mono"
-                style={{ fontSize: 11, background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", lineHeight: 1.6 }}
-              >
-                boot1.citrate.ai:30303 · boot2.citrate.ai:30303 · boot-eu1.citrate.ai:30303
-              </span>
-            </div>
+            {/* K6-3: the network this build targets, every value from the network profile. */}
+            <NetworkProfilePanel profile={ACTIVE_PROFILE} status={networkState.status} live={networkState.live} />
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span className="lbl">Resource cap · CPU</span>
               <span style={{ display: "flex", gap: 8 }}>
@@ -880,7 +888,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                     store.save();
                   }}
                 >
-                  rpc.citrate.ai
+                  {publicRpcHost ?? "public RPC · not set"}
                 </button>
               </span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -1103,7 +1111,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
               <div style={{ display: "flex", gap: 10 }}>
                 {freeUser ? (
                   // The guarded checkout (link first, never for an account already granted), as in onboarding S3.
-                  <button className="btn btn-secondary btn-sm" onClick={() => void store.becomeMember()}>
+                  // Disabled while the held-grant check runs: one attempt at a time (core#584).
+                  <button className="btn btn-secondary btn-sm" disabled={s.billingChecking} onClick={() => void store.becomeMember()}>
                     Become a member ↗
                   </button>
                 ) : (
