@@ -35,7 +35,13 @@ export interface AgentContext {
   height: number;
   peers: number;
   nodeState: string;
-  staked: number;
+  /** `ValidatorRegistry.stakeOf` in SALT; null until it has been read this session (rule 2). */
+  staked: number | null;
+  /**
+   * The membership grant's principal in SALT: `MemberBond.principal()` (the activation read), else
+   * `MembershipStakeVault.attributedStake`. null when neither has been read. Not the stake.
+   */
+  grantSalt?: number | null;
   liquid: number;
   /** `ValidatorRegistry.rewardsOf(pubkey).claimableNow` in SALT; null = not a validator / not read. */
   claimable: number | null;
@@ -44,7 +50,8 @@ export interface AgentContext {
   /**
    * The member's membership grant as read from chain (C1-V V5): the amount in SALT, the bond's
    * `MemberBond.unlockBlock` (null = not read), and whether the bond is activated (staked). null =
-   * no grant (free tier, or not granted yet). Optional so older callers default to "no grant".
+   * no grant (free tier, or not granted yet). Optional: when omitted, the staking reply falls back to
+   * `grantSalt` (a figure, or "not read yet").
    */
   grant?: { amountSalt: number; unlockBlock: number | null; staked: boolean; activated?: boolean | null } | null;
   walletAddr: string;
@@ -1003,9 +1010,13 @@ function routeIntent(t: string): Plan {
       compose: (c) =>
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4); staked = stakeOf.
         // C1-V review (#349): branch on the real grant state, with the real amount and unlock block.
+        // #555: the stake only from a stakeOf read (null = not read yet, never 0); a caller that
+        // passes only `grantSalt` (no grant facts) gets the grant figure or "not read yet".
         c.grant
-          ? `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. ${grantExplanation({ amountSalt: c.grant.amountSalt.toLocaleString("en-US"), unlockBlock: c.grant.unlockBlock, staked: c.grant.staked, granted: true, activated: c.grant.activated })} Your node is **${c.nodeState}**.`
-          : `Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. You have no membership grant on this wallet${c.tier === "free" ? " (public tier)" : " yet"}. Your node is **${c.nodeState}**.`,
+          ? `Staked in the ValidatorRegistry: **${fmtStake(c.staked)}**. ${grantExplanation({ amountSalt: c.grant.amountSalt.toLocaleString("en-US"), unlockBlock: c.grant.unlockBlock, staked: c.grant.staked, granted: true, activated: c.grant.activated })} Your node is **${c.nodeState}**.`
+          : c.grant === null
+            ? `Staked in the ValidatorRegistry: **${fmtStake(c.staked)}**. You have no membership grant on this wallet${c.tier === "free" ? " (public tier)" : " yet"}. Your node is **${c.nodeState}**.`
+            : `${grantSentence(c.grantSalt ?? null)} ${stakeSentence(c.staked)} Your node is **${c.nodeState}**.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {
@@ -1024,7 +1035,7 @@ function routeIntent(t: string): Plan {
       toolCalls: [tc("chain_read", { query: "wallet.balances" })],
       compose: (c) =>
         // C1-V V8/V9: the balance is eth_getBalance on the public RPC, not "earned rewards"; staked is stakeOf.
-        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (eth_getBalance, latest). Staked in the ValidatorRegistry: **${fmt(c.staked)} SALT**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from rpc.citrate.ai.`,
+        `Liquid balance: **${c.liquid.toFixed(2)} SALT** (eth_getBalance, latest). Staked in the ValidatorRegistry: **${fmtStake(c.staked)}**. Address ${c.walletAddr.slice(0, 6)}…${c.walletAddr.slice(-4)}, read from rpc.citrate.ai.`,
     };
   }
   if (has("network", "height", "peers", "block", "finality", "status")) {
@@ -1101,6 +1112,22 @@ function tokenize(text: string): string[] {
 }
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-US");
+}
+/** The grant, from the grant read (MemberBond.principal / vault attribution), never the stake. */
+function grantSentence(grant: number | null): string {
+  return grant == null
+    ? "Your membership grant is not read yet."
+    : `Your membership grant is **${fmt(grant)} SALT**, locked in your validator bond.`;
+}
+/** The stake, only from a ValidatorRegistry.stakeOf read (contract §5.4: "staked" only once it is). */
+function stakeSentence(staked: number | null): string {
+  if (staked == null) return "Your stake in the ValidatorRegistry is not read yet.";
+  if (staked > 0) return `**${fmt(staked)} SALT** staked in the ValidatorRegistry (stakeOf).`;
+  return "Nothing is staked in the ValidatorRegistry (stakeOf reads 0): the grant is not staked until the bond is activated.";
+}
+/** A stake in SALT, or "— (not read yet)" when it has not been read (unknown is not zero). */
+function fmtStake(n: number | null): string {
+  return n == null ? "— (not read yet)" : `${fmt(n)} SALT`;
 }
 function wait(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
