@@ -740,6 +740,8 @@ export class Store {
   private _s1t: ReturnType<typeof setTimeout> | null = null;
   /** core#584 — the current S3 checkout attempt; a check whose token is stale opens nothing. */
   private s3Attempt = 0;
+  /** core#584 — the current Settings › Billing "Become a member" attempt (see becomeMember). */
+  private billingAttempt = 0;
   // FIX 1a: the single post-checkout entitlement poll (timer + deadline).
   private entitlementPollTimer: ReturnType<typeof setTimeout> | null = null;
   private entitlementPollDeadline = 0;
@@ -2242,6 +2244,9 @@ export class Store {
   /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
   async authLogout(): Promise<void> {
     this.stopEntitlementPoll();
+    // core#584: a Billing checkout attempt still checking for a held grant opens nothing after sign-out.
+    this.billingAttempt++;
+    if (this.state.billingChecking) this.setState({ billingChecking: false });
     await bridge.auth.logout();
     this.setState({
       tier: "free",
@@ -2382,7 +2387,15 @@ export class Store {
       return;
     }
     if (this.linkBeforeCheckout("Link your wallet first — approve the link, then choose Become a member again.")) return;
+    // ONE ATTEMPT AT A TIME (core#584), as in onS3Pay: a second click while the held-grant read
+    // runs is ignored (the button is disabled too), and an attempt superseded meanwhile (sign-out
+    // ends it) opens nothing.
+    if (this.state.billingChecking) return;
+    const attempt = ++this.billingAttempt;
+    this.setState({ billingChecking: true });
     const held = await this.readHeldGrant();
+    if (attempt !== this.billingAttempt) return;
+    this.setState({ billingChecking: false });
     if (held) {
       this.setState({ hasGrant: true, hasSbt: held.hasSbt });
       this.save();

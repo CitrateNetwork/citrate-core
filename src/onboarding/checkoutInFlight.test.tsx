@@ -248,8 +248,10 @@ describe("S3 checkout: one attempt at a time while the grant check runs (core#58
 // Tripwire for the bug class: a checkout opened after an awaited check without asking whether the
 // attempt is still current. (1) onS3Pay keeps its guard order: refuse a second call while a check
 // runs, then, after the awaited grant read, drop a superseded attempt BEFORE opening checkout.
-// (2) The app opens checkout from exactly two call sites (S3 and Settings › Billing). A new one
-// fails here, so whoever adds it checks it for one attempt at a time and updates this count.
+// becomeMember (Settings › Billing) keeps the same order before openMembershipCheckout.
+// (2) The app opens checkout from exactly two call sites (onS3Pay and openMembershipCheckout, which
+// serves Billing's Become a member and Renew). A new one fails here, so whoever adds it checks it
+// for one attempt at a time and updates this count.
 describe("tripwire: checkout opens only from a current attempt (core#584)", () => {
   const SRC = join(__dirname, "..");
   const store = readFileSync(join(SRC, "shell", "store.ts"), "utf8");
@@ -262,6 +264,20 @@ describe("tripwire: checkout opens only from a current attempt (core#584)", () =
     const read = body.indexOf("await this.settleS3IfAlreadyGranted()");
     const stale = body.indexOf("if (attempt !== this.s3Attempt) return;");
     const open = body.indexOf("bridge.membership.checkout(");
+    expect(busy).toBeGreaterThan(-1);
+    expect(read).toBeGreaterThan(busy);
+    expect(stale).toBeGreaterThan(read);
+    expect(open).toBeGreaterThan(stale);
+  });
+
+  it("Settings › Billing becomeMember keeps the same order: busy, held-grant read, stale check, checkout", () => {
+    const start = store.indexOf("  async becomeMember(): Promise<void> {");
+    expect(start).toBeGreaterThan(-1);
+    const body = store.slice(start, store.indexOf("\n  }\n", start));
+    const busy = body.indexOf("if (this.state.billingChecking) return;");
+    const read = body.indexOf("await this.readHeldGrant()");
+    const stale = body.indexOf("if (attempt !== this.billingAttempt) return;");
+    const open = body.indexOf("this.openMembershipCheckout()");
     expect(busy).toBeGreaterThan(-1);
     expect(read).toBeGreaterThan(busy);
     expect(stale).toBeGreaterThan(read);
