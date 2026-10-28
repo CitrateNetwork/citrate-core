@@ -2,8 +2,9 @@
 # status: active (RC52 gate G4, app side). Builds the node sidecar from the rev pinned for
 # `citrate-node` in release/components.json with the release build script, then runs
 # scripts/e2e/cold-sync.py against a K6 network profile on Linux x86_64: a cold start in a temp dir,
-# block 0 equal to the profile genesis, the head to the target, every K-th block equal to the
-# network RPC's. Then the negative case: the same profile with another genesis must be refused
+# block 0 equal to the profile genesis, the head to the target, and the node on the network RPC's
+# chain (selected-parent ancestry from both heads; eth_getBlockByNumber is not canonical on r1006).
+# Then the negative case: the same profile with another genesis must be refused
 # (the network RPC's block 0 and the node's block 0 both differ from it). Manual only: it builds
 # the node (~25 min) and reads a live network.
 name: cold-sync
@@ -28,7 +29,7 @@ on:
         required: false
         default: "60m"
       every:
-        description: "Compare every K-th block hash with the network RPC"
+        description: "List every K-th height of the agreeing selected-parent walk in the verdict"
         required: false
         default: "1000"
       negative:
@@ -121,7 +122,9 @@ jobs:
             printf '%s\n' --profile "$OUT/profile.json" > "$OUT/profile-args"
           elif [ -f src-tauri/network/profiles.json ]; then
             printf '%s\n' --profiles src-tauri/network/profiles.json > "$OUT/profile-args"
-            [ -n "$IN_PROFILE_NAME" ] && printf '%s\n' --name "$IN_PROFILE_NAME" >> "$OUT/profile-args"
+            if [ -n "$IN_PROFILE_NAME" ]; then
+              printf '%s\n' --name "$IN_PROFILE_NAME" >> "$OUT/profile-args"
+            fi
           else
             echo "::error::no src-tauri/network/profiles.json on this ref (K6, core #363); pass profile_json"
             exit 1
@@ -134,10 +137,13 @@ jobs:
           NODE_SHA256: ${{ steps.node.outputs.sha256 }}
         run: |
           set -euo pipefail
-          mapfile -t args < "$OUT/profile-args"
+          args=()
+          while IFS= read -r l; do args+=("$l"); done < "$OUT/profile-args"
           args+=(--node-bin "$NODE_BIN" --expect-sha256 "$NODE_SHA256"
                  --timeout "$IN_TIMEOUT" --every "$IN_EVERY" --out "$OUT/positive")
-          [ -n "$IN_BLOCKS" ] && args+=(--blocks "$IN_BLOCKS")
+          if [ -n "$IN_BLOCKS" ]; then
+            args+=(--blocks "$IN_BLOCKS")
+          fi
           set +e
           python3 scripts/e2e/cold-sync.py "${args[@]}"
           code=$?
@@ -160,7 +166,8 @@ jobs:
           set -euo pipefail
           # The same profile and address book with another genesis (last hex digit flipped), so
           # the run gets past the input checks and both gates are exercised.
-          mapfile -t pargs < "$OUT/profile-args"
+          pargs=()
+          while IFS= read -r l; do pargs+=("$l"); done < "$OUT/profile-args"
           python3 - "$OUT" "${pargs[@]}" <<'PY'
           import json, sys
           out, args = sys.argv[1], sys.argv[2:]

@@ -287,7 +287,7 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef { name: "cluster_share", title: "Share a file with a cluster", kind: ToolKind::Action, input_schema: share_schema,
         description: "Ask to announce a pinned file (CID) to a group's cluster. Runs only after the member approves it in Citrate Core." },
     ToolDef { name: "invite_create", title: "Create an invite", kind: ToolKind::Action, input_schema: invite_create_schema,
-        description: "Ask to create a one-time invite link for a group. Runs only after the member approves it in Citrate Core; the approved result carries the link." },
+        description: "Ask to create a one-time invite link for a group. Whoever opens it asks to join, and the member approves or declines that request in Citrate Core; nobody joins from the link alone. Runs only after the member approves creating it; the approved result carries the link." },
     ToolDef { name: "invite_revoke", title: "Revoke an invite", kind: ToolKind::Action, input_schema: invite_revoke_schema,
         description: "Ask to revoke an outstanding invite. Runs only after the member approves it in Citrate Core." },
     ToolDef { name: "faucet_request", title: "Faucet top-up for deploy gas", kind: ToolKind::Budgeted, input_schema: faucet_schema,

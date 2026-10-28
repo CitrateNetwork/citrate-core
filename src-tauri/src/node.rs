@@ -193,6 +193,72 @@ fn node_validator_registry_value() -> &'static str {
 ///     would need a 99,000 window.
 const NODE_DAG_PRUNE_RETAIN_ENV: &str = "CITRATE_DAG_PRUNE_RETAIN";
 
+/// CONSENSUS-CRITICAL: the consensus env the node is spawned with on `network`.
+///
+/// `CITRATE_BLOCK_V2` always (v2 execute-on-receive, as the fleet runs). The validator overrides
+/// (`CITRATE_VALIDATOR_ACTIVATION_HEIGHT` + `CITRATE_VALIDATOR_REGISTRY`) only where the genesis
+/// does not compile them: on r1005 the env is the only source, and the node forks the state root
+/// without the fleet's values (see the const docs + DGX_NODE_SYNC_WEDGE_RESPONSE_2026-07-22). On a
+/// genesis with compiled activations (r1006: `compiledActivations` in `network/profiles.json`,
+/// citrate-chain `genesis::resolve_validator_registry`) the compiled table decides, an env value
+/// may only repeat it and any other value refuses to start (r1006 compiles 1000; r1005's 2000
+/// would stop the node), so none is passed. This is the only place the overrides are set
+/// (tripwire in node_tests.rs).
+fn node_consensus_env(
+    network: Option<&crate::network_profile::ReadyNetwork>,
+) -> Vec<(String, String)> {
+    let mut env = vec![(
+        NODE_BLOCK_V2_ENV.to_string(),
+        NODE_BLOCK_V2_VALUE.to_string(),
+    )];
+    if !network.is_some_and(|n| n.node_genesis.compiled_activations) {
+        env.push((
+            NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.to_string(),
+            NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE.to_string(),
+        ));
+        env.push((
+            NODE_VALIDATOR_REGISTRY_ENV.to_string(),
+            node_validator_registry_value().to_string(),
+        ));
+    }
+    env
+}
+
+/// Fail closed (RC52): a `node.toml` already in the data dir is kept across restarts (operator
+/// edits survive), so the genesis profile it names is checked against the network's before every
+/// start. It must name the network's genesis profile, or none where the node builds that genesis
+/// by default (`nodeDefault`: every r1005 config written before 0.5.2). Anything else would make
+/// the node build another block 0, so the start is refused with what to do.
+fn check_node_config_genesis(
+    cfg: &str,
+    network: &crate::network_profile::ReadyNetwork,
+) -> std::result::Result<(), String> {
+    let want = &network.node_genesis;
+    let table: toml::Table = cfg
+        .parse()
+        .map_err(|e| format!("node.toml is not valid TOML: {e}"))?;
+    let named = table
+        .get("chain")
+        .and_then(|c| c.get("genesis_profile"))
+        .map(|v| v.as_str().map(str::to_string).ok_or_else(|| v.to_string()));
+    match named {
+        Some(Ok(n)) if n == want.name => Ok(()),
+        None if want.node_default => Ok(()),
+        other => {
+            let got = match other {
+                Some(Ok(n)) => format!("genesis_profile = {n:?}"),
+                Some(Err(v)) => format!("genesis_profile = {v}"),
+                None => "no genesis_profile".to_string(),
+            };
+            Err(format!(
+                "node.toml names {got}, but network {:?} needs [chain] genesis_profile = {:?} \
+                 (block 0 {}); move node.toml aside and start again to write a new one",
+                network.id, want.name, want.genesis_hash
+            ))
+        }
+    }
+}
+
 /// Node-side errors surfaced to the bridge as strings.
 #[derive(Debug)]
 pub enum NodeError {
@@ -220,6 +286,9 @@ pub enum NodeError {
     /// K6: the network this build targets is not set (or its profile is invalid), so there is
     /// nothing to sync. Fail closed: nothing in the data dir is touched and no node starts.
     Network(crate::network_profile::ProfileError),
+    /// RC52: the existing `node.toml` names another genesis profile than the network's, so the
+    /// node would build another block 0. Fail closed: no node starts.
+    NodeConfig(String),
 }
 
 impl std::fmt::Display for NodeError {
@@ -242,6 +311,7 @@ impl std::fmt::Display for NodeError {
                  chain database: {m}"
             ),
             NodeError::Network(e) => write!(f, "the node was not started: {e}"),
+            NodeError::NodeConfig(m) => write!(f, "the node was not started: {m}"),
         }
     }
 }
@@ -466,7 +536,7 @@ impl NodeManager {
     /// Fails closed on a bad book genesis or when a node still answers on the
     /// local RPC while a reset is needed.
     fn prepare_data_dir_for_genesis(&self) -> Result<()> {
-        use crate::node_genesis::{reconcile_genesis, GenesisOutcome, CHAIN_RESET_NOTICE};
+        use crate::node_genesis::{reconcile_genesis, GenesisOutcome};
         let outcome = reconcile_genesis(&self.data_dir, &self.book_genesis, || {
             self.head_height().is_some()
         })
@@ -496,20 +566,26 @@ impl NodeManager {
                     &crate::node_genesis::kept_entries(&self.data_dir),
                 )
             );
-            *self
-                .chain_reset_notice
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(CHAIN_RESET_NOTICE.to_string());
             // K6: reconcile_genesis set the old node.toml (the old network's bootnodes and
             // chain id) aside BEFORE committing the new marker; the spawn writes a fresh one
-            // from the active profile.
-            if let Some(kept) = retired_config {
+            // from the active profile. A launch finishing an interrupted switch finds it already
+            // set aside. Either way the member is told where it is (RC52 G2: nothing dropped
+            // silently).
+            let kept = retired_config.or_else(|| {
+                crate::node_genesis::set_aside_node_config(&self.data_dir, previous.as_deref())
+            });
+            if let Some(kept) = &kept {
                 eprintln!(
                     "[node] the previous network's node.toml was kept as {}; a new one is written \
                      from the network profile",
                     kept.display()
                 );
             }
+            *self
+                .chain_reset_notice
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) =
+                Some(crate::node_genesis::reset_notice(kept.as_deref()));
         }
         Ok(())
     }
@@ -836,22 +912,9 @@ impl NodeManager {
             // the real fix.
             ("NO_COLOR".to_string(), "1".to_string()),
             ("CLICOLOR".to_string(), "0".to_string()),
-            // CONSENSUS-CRITICAL: reproduce the fleet producer's validator/§R' state
-            // path or the node forks the state root and wedges (see the const docs +
-            // DGX_NODE_SYNC_WEDGE_RESPONSE_2026-07-22).
-            (
-                NODE_BLOCK_V2_ENV.to_string(),
-                NODE_BLOCK_V2_VALUE.to_string(),
-            ),
-            (
-                NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.to_string(),
-                NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE.to_string(),
-            ),
-            (
-                NODE_VALIDATOR_REGISTRY_ENV.to_string(),
-                node_validator_registry_value().to_string(),
-            ),
         ];
+        spec.env
+            .extend(node_consensus_env(self.network.as_ref().ok()));
         // DAG pruning is deliberately NOT set — see `NODE_DAG_PRUNE_RETAIN_ENV`.
         debug_assert!(
             !spec.env.iter().any(|(k, _)| k == NODE_DAG_PRUNE_RETAIN_ENV),
@@ -899,6 +962,16 @@ impl NodeManager {
         }
         // Consensus safety (40204 reroll): never open another genesis's chain DB.
         self.prepare_data_dir_for_genesis()?;
+        // RC52: a kept node.toml must make the node build this network's block 0.
+        if let Ok(net) = &self.network {
+            let path = crate::node_holder::node_config_path(&self.data_dir);
+            if let Ok(cfg) = std::fs::read_to_string(&path) {
+                check_node_config_genesis(&cfg, net).map_err(|e| {
+                    eprintln!("[node] {e}");
+                    NodeError::NodeConfig(e)
+                })?;
+            }
+        }
         let key_hex = self.storage_key_hex()?;
         if self.key_runtime_dir.is_some() {
             eprintln!("[node] storage key file: per-user runtime directory");
@@ -1573,25 +1646,33 @@ pub fn validator_earnings_for<T: crate::rpc::RpcTransport>(
 /// (32,000 SALT). If minStake ever rises above this the register reverts (BadStake)
 /// and the app surfaces the honest revert rather than a fabricated success.
 const VALIDATOR_STAKE_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
-/// Explicit gas for `registerValidator` (ed25519-verify precompile + storage
-/// writes + possible eviction). A calldata tx MUST carry explicit gas or the
-/// ceremony rejects it as undecodable.
-const REGISTER_GAS: u64 = 600_000;
-
 /// Build the `{from,to,value,data,gas,chainId}` JSON the ceremony's `Transaction`
 /// intent consumes for `MemberBond.activate` (the shape `transfer.rs` builds for a send).
 /// `to` is the member's bond CLONE; `value` is 0 — the clone forwards its OWN principal
-/// (the 32k is already inside it), so the member EOA only pays gas.
-fn encode_activate_json(from: &str, bond: &str, calldata: &[u8]) -> String {
+/// (the 32k is already inside it), so the member EOA only pays gas. A calldata tx must
+/// carry explicit gas or the ceremony rejects it as undecodable; `gas` is the node's
+/// estimate plus the margin (`money_gas`), never a fixed limit.
+fn encode_activate_json(from: &str, bond: &str, calldata: &[u8], gas: u64) -> String {
     serde_json::json!({
         "from": from,
         "to": bond,
         "value": "0x0",
         "data": format!("0x{}", hex::encode(calldata)),
-        "gas": format!("0x{REGISTER_GAS:x}"),
+        "gas": format!("0x{gas:x}"),
         "chainId": format!("0x{:x}", 40204u64),
     })
     .to_string()
+}
+
+/// The `MemberBond.activate` tx JSON with the gas the node estimates for it (`money_gas`).
+pub(crate) fn activate_tx_json<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    from: &str,
+    bond: &str,
+    calldata: &[u8],
+) -> std::result::Result<String, String> {
+    let gas = crate::money_gas::estimate(rpc, from, bond, 0, calldata)?;
+    Ok(encode_activate_json(from, bond, calldata, gas))
 }
 
 /// W1.3 (bond-clone model, owner decision 2026-08-05 — reverses ADR-2026-07-27) —
@@ -1684,7 +1765,7 @@ pub(crate) fn bond_activation_intent<T: crate::rpc::RpcTransport>(
     let (pubkey, sig) = sign(40204, &registry, &staker, nonce)?;
     let calldata = crate::validator::member_bond_activate_calldata(&pubkey, &sig);
     // Sent FROM the member EOA (the clone's `onlyMember`) TO the clone, value 0.
-    let raw = encode_activate_json(member, &grant.bond_address, &calldata);
+    let raw = activate_tx_json(rpc, member, &grant.bond_address, &calldata)?;
     Ok(crate::ceremony::SignatureIntent {
         origin: "local-user".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,

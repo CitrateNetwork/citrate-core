@@ -109,7 +109,7 @@ describe("Node vitals — Q-A.4b tauri display honesty", () => {
 
 describe("Node — validator registration reflects the real bond", () => {
   it("a BONDED validator is not told it is unregistered", () => {
-    const s = runningState({ node: "validating", bondedStake: 32000 });
+    const s = runningState({ node: "validating", bondedStake: 32000, bondedStakeRead: true });
     const html = renderStatus(noopStore, s);
     expect(html).not.toContain("not a registered validator");
     // C1-V V7: the row is "Your stake" = ValidatorRegistry.stakeOf (the old "bonded" wording went).

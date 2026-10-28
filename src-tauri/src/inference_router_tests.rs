@@ -737,7 +737,7 @@ fn the_claim_refund_tx_is_a_known_zero_value_call() {
     let raw = claim_refund_tx_json(
         "0x2222222222222222222222222222222222222222",
         "0x1111111111111111111111111111111111111111",
-        CLAIM_REFUND_GAS,
+        41_000,
     );
     let (tx, d) = crate::txdecode::decode_transaction(&raw).unwrap_or_else(|| panic!("decodes"));
     assert_eq!(tx.value, 0);

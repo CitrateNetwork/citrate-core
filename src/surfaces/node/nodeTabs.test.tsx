@@ -55,8 +55,8 @@ function stubStore(over: Partial<Record<string, unknown>> = {}): Store & { calls
     refreshActivation: async () => true,
     refreshEarnings: async () => {},
     linkWallet: async () => void calls.push("linkWallet"),
-    activateValidator: async () => {
-      calls.push("activateValidator");
+    requestValidatorActivation: async () => {
+      calls.push("requestValidatorActivation");
       return true;
     },
     ...over,
@@ -119,9 +119,9 @@ describe("Node › Status", () => {
   });
 
   it("your stake is the one stakeOf figure, '—' with no registered stake (#348)", async () => {
-    const staked = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4, bondedStake: 32_000, s5StakeWei: "1" })} {...live} />);
+    const staked = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4, bondedStake: 32_000, bondedStakeRead: true, s5StakeWei: "1" })} {...live} />);
     expect(staked.querySelector('[data-testid="your-stake"]')?.textContent).toBe("32,000 SALT");
-    const none = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4, hasGrant: true, s5StakeWei: (32_000n * 10n ** 18n).toString() })} {...live} />);
+    const none = await mount(<NodeStatusView store={stubStore()} s={at({ node: "synced", height: 510_030, peers: 4, hasGrant: true, bondedStakeRead: true, s5StakeWei: (32_000n * 10n ** 18n).toString() })} {...live} />);
     // The grant in a locked bond is not validator stake.
     expect(none.querySelector('[data-testid="your-stake"]')?.textContent).toBe("—");
   });
@@ -176,7 +176,7 @@ describe("Node › Status", () => {
     expect(b, "Activate validator button").toBeTruthy();
     expect(b?.textContent ?? "").not.toMatch(/32,000|\d SALT/);
     await click(b);
-    expect(store.calls).toContain("activateValidator");
+    expect(store.calls).toContain("requestValidatorActivation");
   });
 
   it("no Activate while the registry status or the bond state is unread: '—' and the reason", async () => {

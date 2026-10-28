@@ -11,7 +11,7 @@
 // main yet. `activationGrantCopy` uses the contract §5.4 wording directly, with the same
 // disclaimer and betanet lines, and should fold into grantCopy.ts once that lands.
 // =====================================================================
-import type { ActivationStatusView } from "../bridge/domains";
+import type { ActivationStatusView, ExitOutcomeView } from "../bridge/domains";
 import { UNACTIVATED_WITHDRAW_NOTE } from "../shell/chainTruth";
 
 /** Contract §1 "Synced": local `eth_blockNumber` within this many blocks of the public head. */
@@ -36,6 +36,9 @@ export type ValidatorWord =
   | `Registered · active from epoch ${number}`
   | "Validator active"
   | "Exiting"
+  | "Bond returned"
+  | "Exit settled · slashed"
+  | "Exit settled · outcome not read"
   | "Slashed";
 
 export type GateKey = "wallet" | "membership" | "bond" | "lock" | "synced" | "notValidator" | "key";
@@ -48,7 +51,18 @@ export interface GateCheck {
   detail: string;
 }
 
-export type ActivationPhase = "reading" | "blocked" | "ready" | "pending" | "failed" | "registered" | "active" | "exiting" | "slashed";
+export type ActivationPhase =
+  | "reading"
+  | "blocked"
+  | "ready"
+  | "pending"
+  | "failed"
+  | "registered"
+  | "active"
+  | "exiting"
+  | "exited"
+  | "exitSettled"
+  | "slashed";
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h.length > 12 ? h.slice(0, 6) + "…" + h.slice(-4) : h);
@@ -210,7 +224,30 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
 export function validatorState(st: ActivationStatusView | null): { word: ValidatorWord | null; detail: string } {
   const unknown = { word: null, detail: "— not read yet" };
   if (!st) return unknown;
-  if (st.registryStatus === 2) return { word: "Exiting", detail: "ValidatorRegistry status: Exiting." };
+  if (st.registryStatus === 2) {
+    // The key stays Exiting after the payout AND after a non-Byzantine slash drains it, so the
+    // registry's zeros say only that the exit settled; the exit logs say how.
+    if (bondReturned(st)) {
+      const o = st.exitOutcome as ExitOutcomeView;
+      return {
+        word: "Bond returned",
+        detail:
+          `The exit escrow of ${fmtSaltWei(o.escrowedWei)} SALT was paid out (ValidatorRegistry Withdrawn, block ${fmtInt(o.paidOutBlock ?? 0)}), ` +
+          "and no slash was logged under this key from the exit to the payout. Its registry status stays Exiting.",
+      };
+    }
+    if (exitSettled(st)) {
+      const o = st.exitOutcome;
+      if (o?.outcome === "slashed") return { word: "Exit settled · slashed", detail: slashedDetail(st, o) };
+      return {
+        word: "Exit settled · outcome not read",
+        detail:
+          "The ValidatorRegistry holds no bonded stake and no escrow under this key, so the exit has settled. " +
+          `How it settled, a payout or a slash, is not read${o?.reason ? `: ${o.reason}` : " yet (ValidatorRegistry exit logs)"}. Its registry status stays Exiting.`,
+      };
+    }
+    return { word: "Exiting", detail: "ValidatorRegistry status: Exiting." };
+  }
   if (st.registryStatus === 3) return { word: "Slashed", detail: "ValidatorRegistry status: Slashed." };
   if (st.bondDeployed == null) return unknown;
   if (st.bondDeployed === false) return { word: "Not a validator", detail: "No stake in the registry for this membership." };
@@ -238,6 +275,54 @@ export function validatorState(st: ActivationStatusView | null): { word: Validat
     return { word: null, detail: "Registered, but ValidatorRegistry.isActive is false: not in the active set." };
   }
   return unknown;
+}
+
+/**
+ * The exit settled: the key is Exiting and the registry holds neither bonded stake nor escrow
+ * under it. That is a payout OR a slash (a non-Byzantine slash keeps the key Exiting while it
+ * draws bonded, then escrow). An unread leg is not zero, so it stays Exiting.
+ */
+function exitSettled(st: ActivationStatusView): boolean {
+  return st.registryStatus === 2 && st.registryBondedWei === "0" && st.registryEscrowWei === "0";
+}
+
+function toWei(v: string | null | undefined): bigint | null {
+  if (v == null || !/^\d+$/.test(v)) return null;
+  return BigInt(v);
+}
+
+/**
+ * The bond came back, proven by the registry's exit logs (exitOutcome): the exit escrowed at least
+ * the bond's principal, a Withdrawn after it paid at least that, and no Slashed was logged under
+ * the key before the payout. The amounts are re-checked here, so an inconsistent read is never
+ * "returned".
+ */
+function bondReturned(st: ActivationStatusView): boolean {
+  if (!exitSettled(st)) return false;
+  const o = st.exitOutcome;
+  if (!o || o.outcome !== "returned" || o.slashedWei != null || o.paidOutBlock == null) return false;
+  const principal = toWei(st.principalWei);
+  const escrowed = toWei(o.escrowedWei);
+  const paid = toWei(o.paidOutWei);
+  return principal != null && escrowed != null && paid != null && escrowed >= principal && paid >= escrowed;
+}
+
+/** A slashed exit in the logs' own amounts: never a claim that the bond came back. */
+function slashedDetail(st: ActivationStatusView, o: ExitOutcomeView): string {
+  const parts: string[] = [];
+  if (o.slashedWei != null) {
+    parts.push(`The ValidatorRegistry logged a slash under this key: penalties of ${fmtSaltWei(o.slashedWei)} SALT (Slashed events), drawn from stake, then escrow, then unmatured rewards.`);
+  }
+  const principal = toWei(st.principalWei);
+  const escrowed = toWei(o.escrowedWei);
+  if (principal != null && escrowed != null && escrowed < principal) {
+    parts.push(`The exit escrowed ${fmtSaltWei(o.escrowedWei)} of the bond's ${fmtSaltWei(st.principalWei)} SALT principal, so stake was slashed before the exit.`);
+  }
+  if (o.paidOutWei != null && o.paidOutBlock != null) {
+    parts.push(`A withdrawal of ${fmtSaltWei(o.paidOutWei)} SALT was logged at block ${fmtInt(o.paidOutBlock)} (Withdrawn); it can include rewards.`);
+  }
+  parts.push("Its registry status stays Exiting.");
+  return parts.join(" ");
 }
 
 /** When the registered stake joins the active set: the real activation epoch, in blocks and measured time. */
@@ -271,6 +356,12 @@ export function principalSalt(st: ActivationStatusView | null): string {
   return fmtSaltWei(st?.principalWei ?? null);
 }
 
+/** The Activate button and review title: the principal as read, no amount before it is read. */
+export function activateValidatorLabel(st: ActivationStatusView | null): string {
+  const principal = principalSalt(st);
+  return principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
+}
+
 /** Contract §5.4 + §5.6 + §5.7: the one grant explanation, from the bond's own reads. */
 export function activationGrantCopy(st: ActivationStatusView | null): string {
   const amount = fmtSaltWei(st?.principalWei ?? null);
@@ -278,9 +369,13 @@ export function activationGrantCopy(st: ActivationStatusView | null): string {
   const block = st?.unlockBlock != null ? fmtInt(st.unlockBlock) : "—";
   const custody = `Your membership comes with a ${amount} SALT grant, locked in your bond until ${date} (block ${block}); the lock opens when either is reached.`;
   const staked =
-    st?.bondActivated === true
-      ? "Your bond is activated, so the grant is staked in the ValidatorRegistry."
-      : "It is not staked until you activate the bond.";
+    st && bondReturned(st)
+      ? "Your validator exit has paid out and the bond is returned, so the grant is no longer staked."
+      : st && exitSettled(st)
+        ? "Your validator exit has settled in the ValidatorRegistry, so the grant is no longer staked there."
+        : st?.bondActivated === true
+        ? "Your bond is activated, so the grant is staked in the ValidatorRegistry."
+        : "It is not staked until you activate the bond.";
   return [custody, staked, GRANT_DISCLAIMER, BETANET_CARRYOVER].join(" ");
 }
 
@@ -291,7 +386,7 @@ export function activationGrantCopy(st: ActivationStatusView | null): string {
  */
 export function activationPhase(st: ActivationStatusView | null, walletLinked: boolean, pendingTxHash: string | null = null): ActivationPhase {
   if (!st) return pendingTxHash ? "pending" : "reading";
-  if (st.registryStatus === 2) return "exiting";
+  if (st.registryStatus === 2) return bondReturned(st) ? "exited" : exitSettled(st) ? "exitSettled" : "exiting";
   if (st.registryStatus === 3) return "slashed";
   if (st.bondActivated === true) {
     const v = validatorState(st);

@@ -181,8 +181,8 @@ export function bondFlags(s: Pick<AppState, "bondActivated" | "bondUnlocked" | "
  * the store), and nothing page-local. On top of it the page must read "Synced" against a fresh
  * public head (block production stays unarmed under Sync unknown) and the supervisor must report
  * synced, because arming re-checks the tip in Rust. The reason is the gate's own: the validator
- * word, or "— · <reason>" while a read is missing. store.activateValidator re-runs the full gate on
- * a fresh read before anything is signed (#405).
+ * word, or "— · <reason>" while a read is missing. store.requestValidatorActivation, the only
+ * activation entry, re-runs the full gate on a fresh read before anything is signed (#405, #554).
  */
 export function activationOffer(pageWord: string, s: ValidatorReads): { offer: boolean; why: string } {
   const b = bondFlags(s);

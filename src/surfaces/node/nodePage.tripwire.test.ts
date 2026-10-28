@@ -23,17 +23,20 @@ const PAGE_FILES = [
 
 describe("tripwire — the Node page has one activation gate", () => {
   it("every Node page file that calls activateValidator decides first with activationOffer", () => {
+    // #554: the activation entry is store.requestValidatorActivation (activateValidator is private).
+    const CALL = "requestValidatorActivation(";
     let callers = 0;
     for (const f of PAGE_FILES) {
       const body = read(f);
-      if (!body.includes("activateValidator(")) continue;
+      expect(body, f).not.toMatch(/\.activateValidator\(/);
+      if (!body.includes(CALL)) continue;
       callers++;
       expect(body, f).toContain("activationOffer(");
-      expect(body.indexOf("activationOffer("), f).toBeLessThan(body.indexOf("activateValidator("));
+      expect(body.indexOf("activationOffer("), f).toBeLessThan(body.indexOf(CALL));
       // One call site, behind the offer's refusal branch.
-      expect(body.split("activateValidator(").length - 1, f).toBe(1);
+      expect(body.split(CALL).length - 1, f).toBe(1);
       expect(body.indexOf("!offer.offer"), f).toBeGreaterThan(-1);
-      expect(body.indexOf("activateValidator("), f).toBeGreaterThan(body.indexOf("!offer.offer"));
+      expect(body.indexOf(CALL), f).toBeGreaterThan(body.indexOf("!offer.offer"));
     }
     expect(callers).toBe(1);
   });

@@ -32,8 +32,10 @@ import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
 import { fmtSaltFromWei } from "../shell/state";
 import { useNetworkCompat, type NetworkCompat } from "../shell/networkCompat";
-import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, producerShortfall, producerWindowLabel, producingWord, validatorDash, validatorWord } from "../shell/chainTruth";
+import { shortNet } from "../shell/netScope";
+import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, producerShortfall, producerWindowLabel, producingWord, readStakeSalt, validatorDash, validatorWord } from "../shell/chainTruth";
 import { grantExplanation } from "../data/grantCopy";
+import { activateValidatorLabel } from "../onboarding/activateValidator";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 import { SurfaceProps } from "./shared";
 import { FRESH_MS, TONE_COLOR, activationOffer, bondFlags, directPeers, headFresh, heightLine, nodeWord, statusSentence } from "./node/nodeWords";
@@ -214,10 +216,42 @@ export function NodeStatusView({ store, s, publicHead, publicHeadAgeMs, publicHe
   const producing = producingLine(s);
   const canStart = s.node === "off" || s.node === "error" || s.node === "paused";
   const notice = noticeFor(w.word, store);
+  // The stake figure itself only once stakeOf has read this session (unknown is not zero, #555).
+  const stakeRead = readStakeSalt(s);
+  // RC52: the genesis-switch notice stays here until the member dismisses it (a toast is easy to
+  // miss). `switched` is the webview's own finding: its saved chain values were another network's.
+  const netNotice = s.networkNotice;
+  const switched = netNotice !== null && netNotice.from !== netNotice.to;
 
   return (
     <div data-node-tab="status" style={{ ...PAGE, display: "grid", gridTemplateColumns: "minmax(0,1fr) 300px", alignItems: "start" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+        {netNotice && (
+          <div
+            role="status"
+            data-network-notice="switch"
+            className="surface"
+            style={{ padding: "12px 16px", borderLeft: "3px solid var(--warn)", display: "flex", flexDirection: "column", gap: 6 }}
+          >
+            <span style={{ fontSize: 13.5, fontWeight: 500 }}>This app is now on a new network</span>
+            {switched && (
+              <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
+                Values read on the previous network (genesis {shortNet(netNotice.from)}): the grant, bond, balances, claimable
+                and transaction history, are not shown as current. Each is read again from this network, and shows
+                &quot;not read yet&quot; until then.{" "}
+                {netNotice.archived
+                  ? "The previous network's values are kept on this device (Wallet, Activity, under Previous network)."
+                  : "The previous network's values could not be kept on this device (storage unavailable)."}
+              </span>
+            )}
+            {netNotice.node && <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>{netNotice.node}</span>}
+            <span>
+              <button className="btn btn-secondary btn-sm" onClick={() => store.dismissNetworkNotice()}>
+                Dismiss
+              </button>
+            </span>
+          </div>
+        )}
         <div className="surface" style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: 12 }}>
           <span className="eyebrow">Status</span>
           <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -305,8 +339,8 @@ export function NodeStatusView({ store, s, publicHead, publicHeadAgeMs, publicHe
           <Row
             k="Your stake"
             testid="your-stake"
-            v={s.bondedStake > 0 ? fmtI(s.bondedStake) + " SALT" : "—"}
-            vColor={s.bondedStake > 0 ? undefined : "var(--tx-3)"}
+            v={stakeRead != null && stakeRead > 0 ? fmtI(stakeRead) + " SALT" : stakeRead == null ? "— · not read yet" : "—"}
+            vColor={stakeRead != null && stakeRead > 0 ? undefined : "var(--tx-3)"}
             src="ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond is not validator stake"
           />
           <Row
@@ -478,11 +512,11 @@ function ValidatorCard({ store, s, pageWord }: { store: Store; s: AppState; page
     body = (
       <>
         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: 0, lineHeight: 1.5 }}>
-          Your node is synced and this wallet is linked to your identity. Activating stakes your membership bond in the ValidatorRegistry; you approve it in the signature ceremony, and the
-          registry sets the epoch your validator becomes active, shown here once registered.
+          Your node is synced and this wallet is linked to your identity. Activating stakes your bond&rsquo;s principal in the ValidatorRegistry; the registry sets the epoch your
+          validator becomes active, shown here once registered. You approve it in the Signature Ceremony.
         </p>
-        <button className="btn btn-primary btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => void store.activateValidator()}>
-          Activate validator · stake your bond
+        <button className="btn btn-primary btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => void store.requestValidatorActivation()}>
+          {activateValidatorLabel(s.activation)}
         </button>
       </>
     );

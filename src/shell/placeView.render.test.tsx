@@ -125,7 +125,8 @@ describe("Hermes", () => {
 
   it("Details opens on its first section when the stored one is not a Details section", () => {
     const h = html("hermes/controls/details", { sSec: "account" });
-    expect(h).toContain("Provider keys");
+    // D-11: Models (the governed vendor connections) is the first Details section.
+    expect(h).toContain('data-testid="models-settings"');
   });
 
   it("Records hosts the third depth", () => {
@@ -258,8 +259,8 @@ describe("Sidebar", () => {
   });
 });
 
-describe("Groups › Chat holds the invite banners (#355 on five-place routes)", () => {
-  // handleDeepLink's go("groups") lands on the canonical leaf; both invite banners must render there.
+describe("Groups › Chat holds the invite screen (#355 on five-place routes)", () => {
+  // handleDeepLink's go("groups") lands on the canonical leaf; the Join screen must render there.
   const leaf = locate("groups").route;
 
   it("the groups route resolves to the Groups › Chat leaf", () => {
@@ -267,15 +268,10 @@ describe("Groups › Chat holds the invite banners (#355 on five-place routes)",
     expect(html(leaf)).toContain('data-surface="groups/chat"');
   });
 
-  it("a v2 invite held in Rust shows the waiting-invite card", () => {
-    const h = html(leaf, { pendingJoin: { phase: "waiting", hasKey: true, persisted: true } });
-    expect(h).toContain('data-testid="pending-join-cancel"');
-    expect(html(leaf)).not.toContain('data-testid="pending-join-cancel"');
-  });
-
-  it("a legacy citrate://invite link shows the Join banner", () => {
-    const h = html(leaf, { pendingInvite: { url: "citrate://invite?g=grp_1&t=tok123&k=02ab" } });
-    expect(h).toContain("invited you to");
-    expect(html(leaf)).not.toContain("invited you to");
+  it("an invite link (deep link or paste) shows the Join screen", () => {
+    const h = html(leaf, { inviteLink: "citrate://invite?g=grp_1&t=tok&k=02ab&e=1" });
+    expect(h).toContain('data-testid="invite-join"');
+    expect(html(leaf)).not.toContain('data-testid="invite-join"');
+    expect(html(leaf)).toContain('data-testid="invite-paste-open"');
   });
 });
