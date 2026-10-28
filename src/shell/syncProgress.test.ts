@@ -140,14 +140,15 @@ describe("ETA only when it means something", () => {
   });
 });
 
-describe("stall: no new local block for 2 min", () => {
+describe("stall: no new local block for STALL_MS (contract §1 Sync stalled, 60 s)", () => {
   it("is stalled after STALL_MS with the height frozen, and says so without alarm", () => {
     const { series, now } = feed({ seconds: STALL_MS / 1000, local0: 5_000, head0: 9_000, localRate: 0, headRate: 0.5 });
     const p = syncProgress(series, now);
     if (p.kind !== "syncing") throw new Error("expected syncing, got " + p.kind);
     expect(p.phase).toBe("stalled");
     expect(p.etaSec).toBeNull();
-    expect(syncLine(p)).toMatch(/· no new blocks in 2 min, checking peers$/);
+    expect(STALL_MS).toBe(60_000);
+    expect(syncLine(p)).toBe("Sync stalled · " + p.behind.toLocaleString("en-US") + " blocks behind");
     expect(syncLine(p)).not.toMatch(/error|fail|stuck|broken/i);
   });
 
@@ -247,12 +248,13 @@ describe("adversarial series", () => {
     expect(series.head).toEqual([{ t: T0 + 121_000, v: 50_000 }]);
   });
 
-  it("out-of-order and same-time readings are dropped", () => {
+  it("a same-time reading is dropped; an earlier time (the clock went back) restarts the series", () => {
     let s = emptySeries();
     s = observe(s, "local", T0 + 10, 100);
     s = observe(s, "local", T0 + 10, 200);
-    s = observe(s, "local", T0 + 5, 300);
     expect(s.local).toEqual([{ t: T0 + 10, v: 100 }]);
+    s = observe(s, "local", T0 + 5, 300);
+    expect(s.local).toEqual([{ t: T0 + 5, v: 300 }]);
   });
 
   it("observe never mutates its input", () => {
