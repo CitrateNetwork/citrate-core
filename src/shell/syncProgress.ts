@@ -27,6 +27,8 @@ export const SYNCED_WITHIN_BLOCKS = 5;
 export const HEAD_FRESH_MS = 60_000;
 /** How often the store reads the public head while the node runs (one eth_blockNumber). */
 export const HEAD_READ_MS = 5_000;
+/** A head read still unanswered after this is a failed read (unknown), and a new read may start. */
+export const HEAD_READ_TIMEOUT_MS = 20_000;
 /** A local height older than this is stale (the poll ticks every 2 s). */
 export const LOCAL_FRESH_MS = 15_000;
 /** The sliding window the catch-up rate is measured over. */
@@ -36,14 +38,22 @@ export const MIN_LOCAL_POINTS = 5;
 export const MIN_HEAD_POINTS = 3;
 /** Shortest span per series before a rate is given. */
 export const MIN_SPAN_MS = 30_000;
-/** No new local block for this long while behind reads as "no new blocks in 2 min". */
-export const STALL_MS = 2 * 60_000;
+/**
+ * Contract §1 "Sync stalled": no new local block for this long while behind. One constant for every
+ * surface: the store's node-state overlay uses it, and Node › Status (K3) should import it.
+ */
+export const STALL_MS = 60_000;
+/** A public head drop of at most this many blocks (or SMALL_DROP_FRACTION of it) is noise, not a reset. */
+/** Contract §1 "No peers": net_peerCount = 0 for at least this long. */
+export const NO_PEERS_MS = 60_000;
+export const SMALL_DROP_BLOCKS = 8;
+export const SMALL_DROP_FRACTION = 0.01;
 /** A net rate at or below this (blocks/s) is not catching up. */
 export const MIN_NET_RATE = 0.01;
 /** Past this the ETA is not worth a number. */
 export const MAX_ETA_SEC = 30 * 86_400;
 
-/** One height reading at the time it was read (epoch ms). */
+/** One height reading at the time it was read (ms on the caller's clock; the store's is monotonic). */
 export interface HeightPoint {
   t: number;
   v: number;
@@ -53,24 +63,63 @@ export interface HeightPoint {
 export interface SyncSeries {
   local: HeightPoint[];
   head: HeightPoint[];
+  /** The latest public head read failed (error, timeout or 0x0): unknown until one succeeds. */
+  headFailed?: boolean;
+  /**
+   * The highest public head actually read, at the time it was read. A small drop is held at this
+   * value only while it is fresh (HEAD_FRESH_MS); held points never refresh its time.
+   */
+  headMax?: HeightPoint;
 }
 
 export const emptySeries = (): SyncSeries => ({ local: [], head: [] });
 
+/** Whether `v` is only a small drop from `last` (a short reorg, or a load-balanced backend behind). */
+export function isSmallDrop(last: number, v: number): boolean {
+  const d = last - v;
+  return d > 0 && d <= Math.max(SMALL_DROP_BLOCKS, last * SMALL_DROP_FRACTION);
+}
+
 /**
- * Add one reading. A missing or 0 height (not read) adds nothing. A height below the last one
- * (the chain data was reset, or the profile RPC changed) restarts that series, so a rate is never
- * measured across the jump. Out-of-order or same-time readings are dropped. Points older than
- * WINDOW_MS are pruned. Returns a new series; the input is not changed.
+ * Add one reading. Returns a new series; the input is not changed.
+ * - A missing or 0 height (0x0) is not a reading. For the head it is a failed read, so the head is
+ *   unknown until the next good read (as on Node › Status).
+ * - A small drop of the PUBLIC HEAD (isSmallDrop: a load-balanced backend a few blocks behind) is
+ *   noise: it is kept at the head's max, which can only overstate "behind". The max keeps the time
+ *   it was really read (headMax) and holds only while that read is within HEAD_FRESH_MS, the same
+ *   age at which a head is stale. Once it is older, a sustained lower head (a rollback, or a chain
+ *   reset smaller than 1% of the height) is the real head: the series restarts from it.
+ * - Any drop of this node's height (a rollback or reset), and a larger head drop (a different RPC),
+ *   restarts that series, so a rate is never measured across the jump and the real height is shown.
+ * - A same-time reading is dropped; an earlier time (the clock went back) restarts the series.
+ * - Points older than WINDOW_MS are pruned.
  */
 export function observe(series: SyncSeries, which: "local" | "head", t: number, v: number | null | undefined): SyncSeries {
+  if (!Number.isFinite(t)) return series;
   const prune = (pts: HeightPoint[]) => pts.filter((p) => t - p.t <= WINDOW_MS);
   let pts = series[which];
-  if (v == null || !Number.isFinite(v) || v <= 0 || !Number.isFinite(t)) return { ...series, [which]: prune(pts) };
+  if (v == null || !Number.isFinite(v) || v <= 0) {
+    return which === "head" ? { ...series, head: prune(pts), headFailed: true } : { ...series, local: prune(pts) };
+  }
   const last = pts[pts.length - 1];
-  if (last && t <= last.t) return series;
-  if (last && v < last.v) pts = [];
-  return { ...series, [which]: [...prune(pts), { t, v }] };
+  if (last && t === last.t) return series;
+  const max = which === "head" ? series.headMax : undefined;
+  let real = true;
+  if (last && t < last.t) pts = [];
+  // Only the public head gets the noise rule: holding its max overstates "behind" (the safe way),
+  // and only while the max was really read within HEAD_FRESH_MS.
+  // This node's own height is always its real reading, so "behind", Synced and stall stay true.
+  else if (last && max && isSmallDrop(last.v, v) && t - max.t <= HEAD_FRESH_MS) {
+    v = last.v;
+    real = false;
+  } else if (last && v < last.v) pts = [];
+  const next: SyncSeries = { ...series, [which]: [...prune(pts), { t, v }] };
+  if (which === "head") {
+    next.headFailed = false;
+    // A restart (or the first reading) starts a new max; otherwise a real reading at or above it moves it.
+    if (real && (pts.length === 0 || !max || v >= max.v)) next.headMax = { t, v };
+  }
+  return next;
 }
 
 /** Least-squares slope in blocks per second, or null with fewer than two distinct times. */
@@ -100,8 +149,9 @@ export type SyncProgress =
       head: number;
       behind: number;
       /** "estimating": not enough points yet; "catching-up": net rate positive, ETA given;
-       *  "not-catching-up": measured, but the gap is not closing; "stalled": no new local block in STALL_MS. */
-      phase: "estimating" | "catching-up" | "not-catching-up" | "stalled";
+       *  "not-catching-up": measured, but the gap is not closing; "stalled": no new local block in STALL_MS
+       *  (contract §1 "Sync stalled"); "no-peers": net_peerCount 0 for NO_PEERS_MS (contract §1 "No peers"). */
+      phase: "estimating" | "catching-up" | "not-catching-up" | "stalled" | "no-peers";
       /** Net catch-up rate in blocks/s; set only once measured. */
       rate: number | null;
       /** Seconds to catch up; set only in "catching-up". */
@@ -117,14 +167,17 @@ function stalledFor(local: HeightPoint[], now: number): boolean {
 }
 
 /** The sync progress at `now` from the two series. */
-export function syncProgress(series: SyncSeries, now: number): SyncProgress {
+export function syncProgress(series: SyncSeries, now: number, opts: { noPeersForMs?: number | null } = {}): SyncProgress {
+  // A reading "from the future" (the clock went back) is not fresh either.
+  const fresh = (p: HeightPoint | undefined, ms: number): p is HeightPoint => !!p && now >= p.t && now - p.t <= ms;
   const local = series.local[series.local.length - 1];
-  if (!local || now - local.t > LOCAL_FRESH_MS) return { kind: "unknown", missing: "local" };
+  if (!fresh(local, LOCAL_FRESH_MS)) return { kind: "unknown", missing: "local" };
   const head = series.head[series.head.length - 1];
-  if (!head || now - head.t > HEAD_FRESH_MS) return { kind: "unknown", missing: "head" };
+  if (series.headFailed || !fresh(head, HEAD_FRESH_MS)) return { kind: "unknown", missing: "head" };
   const behind = head.v - local.v;
   if (behind <= SYNCED_WITHIN_BLOCKS) return { kind: "synced", local: local.v, head: head.v };
   const base = { kind: "syncing" as const, local: local.v, head: head.v, behind };
+  if (opts.noPeersForMs != null && opts.noPeersForMs >= NO_PEERS_MS) return { ...base, phase: "no-peers", rate: null, etaSec: null };
   if (stalledFor(series.local, now)) return { ...base, phase: "stalled", rate: null, etaSec: null };
   const enough =
     series.local.length >= MIN_LOCAL_POINTS &&
@@ -168,8 +221,10 @@ export function syncLine(p: SyncProgress | null): string {
     case "syncing": {
       const head = "Syncing · " + fmt(p.behind) + " blocks behind";
       switch (p.phase) {
+        case "no-peers":
+          return "No peers · " + fmt(p.behind) + " blocks behind";
         case "stalled":
-          return head + " · no new blocks in 2 min, checking peers";
+          return "Sync stalled · " + fmt(p.behind) + " blocks behind";
         case "estimating":
           return head + " · estimating…";
         case "not-catching-up":
@@ -182,36 +237,58 @@ export function syncLine(p: SyncProgress | null): string {
 }
 
 /**
- * The store's side of the window: one call per node poll. Folds this node's height (null when the
- * node isn't running, which restarts the window), starts a public head read at most every
- * HEAD_READ_MS (it lands in the window when it answers; a failed or 0x0 read adds nothing, so the
- * head goes stale and reads unknown), and returns the progress now.
+ * The store's side of the window: one call per node poll, on a monotonic clock (wall time can step
+ * back). Folds this node's height (null when the node isn't running, which restarts the window)
+ * and starts a public head read at most every HEAD_READ_MS, never while one is in flight. A read
+ * still unanswered after HEAD_READ_TIMEOUT_MS counts as failed and its late answer is ignored, as
+ * is any answer from before a restart. A failed or 0x0 read makes the head unknown at once.
  */
 export class SyncTracker {
   private series: SyncSeries = emptySeries();
   private lastHeadReadAt = Number.NEGATIVE_INFINITY;
+  /** The read in flight: its generation (answers from older generations are ignored) and start. */
+  private inFlight: { gen: number; at: number } | null = null;
+  private gen = 0;
+  private noPeersSince: number | null = null;
 
-  fold(local: number | null, readHead: () => Promise<number | null>, now: number = Date.now()): SyncProgress {
+  constructor(private readonly clock: () => number = () => performance.now()) {}
+
+  fold(local: number | null, readHead: () => Promise<number | null>, peers?: number): SyncProgress {
+    const now = this.clock();
+    // net_peerCount: when it went to 0 (null while peers > 0 or not read).
+    if (local == null || peers == null || peers > 0) this.noPeersSince = null;
+    else if (this.noPeersSince == null) this.noPeersSince = now;
     if (local == null) {
       this.series = emptySeries();
       this.lastHeadReadAt = Number.NEGATIVE_INFINITY;
+      this.inFlight = null;
+      this.gen++;
       return syncProgress(this.series, now);
     }
     this.series = observe(this.series, "local", now, local);
-    if (now - this.lastHeadReadAt >= HEAD_READ_MS) {
-      this.lastHeadReadAt = now;
-      Promise.resolve()
-        .then(readHead)
-        .then(
-          (head) => {
-            this.series = observe(this.series, "head", Date.now(), head);
-          },
-          () => {
-            /* unknown, not zero: no reading is added */
-          },
-        );
+    if (this.inFlight && now - this.inFlight.at >= HEAD_READ_TIMEOUT_MS) {
+      this.inFlight = null;
+      this.gen++;
+      this.series = observe(this.series, "head", now, null);
     }
-    return syncProgress(this.series, now);
+    if (!this.inFlight && now - this.lastHeadReadAt >= HEAD_READ_MS) {
+      this.lastHeadReadAt = now;
+      const gen = ++this.gen;
+      this.inFlight = { gen, at: now };
+      const land = (head: number | null) => {
+        if (this.inFlight?.gen !== gen) return; // timed out or restarted: a stale answer
+        this.inFlight = null;
+        this.series = observe(this.series, "head", this.clock(), head);
+      };
+      let answer: Promise<number | null>;
+      try {
+        answer = readHead();
+      } catch {
+        answer = Promise.resolve(null); // a reader that throws at once is a failed read
+      }
+      Promise.resolve(answer).then(land, () => land(null));
+    }
+    return syncProgress(this.series, now, { noPeersForMs: this.noPeersSince == null ? null : now - this.noPeersSince });
   }
 }
 
