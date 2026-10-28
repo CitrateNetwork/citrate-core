@@ -241,6 +241,25 @@ export interface NodeStatusView {
   miningHold?: string;
 }
 
+/** A settled exit's outcome as read from the ValidatorRegistry's logs (wei as decimal strings). */
+export interface ExitOutcomeView {
+  /**
+   * "returned": the exit escrowed at least the principal, a Withdrawn paid at least that, and no
+   * Slashed was logged under the key before it. "slashed": a Slashed was logged before the payout
+   * (or there is none), or the exit escrowed less than the principal. "notRead": neither shown.
+   */
+  outcome: "returned" | "slashed" | "notRead";
+  exitBlock: number | null;
+  escrowedWei: string | null;
+  paidOutWei: string | null;
+  paidOutBlock: number | null;
+  /** Sum of the Slashed penalties logged up to the payout; null when none was seen. */
+  slashedWei: string | null;
+  scannedFrom: number;
+  scannedTo: number | null;
+  reason: string | null;
+}
+
 /**
  * Join-8 — everything the "Activate validator" onboarding step reads, in one call. Each field
  * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
@@ -273,6 +292,21 @@ export interface ActivationStatusView {
   bondPubkey: string | null;
   /** `ValidatorRegistry.validatorInfo(pubkey).status`: 0 None, 1 Active, 2 Exiting, 3 Slashed. */
   registryStatus: 0 | 1 | 2 | 3 | null;
+  /** `validatorInfo(pubkey).bonded`: stake still bonded under the key (wei). */
+  registryBondedWei: string | null;
+  /**
+   * `validatorInfo(pubkey).escrow`: unbonded stake the registry holds until the exit lock ends
+   * (wei). The key stays Exiting after the payout, so bonded and escrow both "0" is what says
+   * the exit paid out.
+   */
+  registryEscrowWei: string | null;
+  /**
+   * How a settled exit ended (Exiting, bonded and escrow both "0"), from the registry's logs under
+   * the key: `UnbondInitiated`/`Evicted` (the exit), `Slashed`, `Withdrawn` (the payout). A
+   * non-Byzantine slash keeps the key Exiting, so bonded and escrow at 0 alone do not say the
+   * bond came back. Null when not a settled exit, or not read.
+   */
+  exitOutcome: ExitOutcomeView | null;
   /** `validatorInfo(pubkey).actEpoch`. */
   activationEpoch: number | null;
   /** `ValidatorRegistry.isActive(pubkey)`. */
@@ -666,7 +700,7 @@ export interface RouteAskOptions {
 }
 
 /**
- * BC-1.3 — the REAL on-chain membership grant status the S5 (grant + stake)
+ * BC-1.3 — the REAL on-chain membership grant status the S5 (membership grant)
  * ceremony settles from. Every field is a live 40204 read (Rule 1): the vault's
  * `attributedStake`/`attributedShares(member)` (wei as decimal strings, since a
  * 32,000-SALT grant exceeds JS number range) and `CitrateMemberSBT.balanceOf`
