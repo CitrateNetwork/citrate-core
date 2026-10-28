@@ -42,8 +42,8 @@
         }
       },
       "pending": {
-        "x86_64-unknown-linux-gnu": "DGX lane (citrate-core-linux-build (O-17)): scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at 9a32147e (rustc 1.96.0, --locked), then a pin PR with the sha256",
-        "aarch64-unknown-linux-gnu": "DGX lane (spark-2e01): scripts/build-sidecar.sh --target aarch64-unknown-linux-gnu --print-digest at 9a32147e (rustc 1.96.0, --locked), then a pin PR with the sha256"
+        "x86_64-unknown-linux-gnu": "DGX lane (citrate-core-linux-build (O-17)): the node at the rev pinned above (= build-sidecar.sh MIN_CHAIN_REV), built once with scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest (rustc 1.96.0, --locked) and uploaded as a fixed asset (the rebuild does not reproduce, chain#427); the sha256 is posted on fed#331, then pinned here inline",
+        "aarch64-unknown-linux-gnu": "DGX lane (spark-2e01): the node at the rev pinned above (= build-sidecar.sh MIN_CHAIN_REV), built once with scripts/build-sidecar.sh --target aarch64-unknown-linux-gnu --print-digest (rustc 1.96.0, --locked) and uploaded as a fixed asset (the rebuild does not reproduce, chain#427); the sha256 is posted on fed#331, then pinned here inline"
       }
     },
     {
@@ -74,12 +74,12 @@
           "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "c92d52ebd955d973273a15ed8475b136732d6579568f02eff888e21b1120943a",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "sha256": "a5d125811a2e6bf5bb258d54cfdb02100457d871d35ee76f5efc40f4d2a3dfa4",
+          "evidence": "build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27; same bytes from a second clean build. Replaces the 0.5.1 pin c92d52eb, which a hand build made (cargo build without -p/--target), not this script"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "3fbd39c8b8936713c12038b4fd5f2c244bc8849c137af5335ed89e29da20268c",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "sha256": "d62e5233773d2353f1e80da44d5702381fa2717de1639507f05c0f5faa637161",
+          "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root. Replaces the 0.5.1 pin 3fbd39c8, which a hand build made (cargo build without -p/--target), not this script"
         }
       }
     },
@@ -119,11 +119,15 @@
         "aarch64-apple-darwin": {
           "runtime_deps_asset": "mem-mcp-aarch64-apple-darwin-5aeda3172369",
           "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components, where the 0e9d4882 build reproduces its pin c298e369); reproduced byte-for-byte from a clean target dir in the same build root and uploaded to runtime-deps 2026-10-27 (owner-approved), download-back sha256 matches the pin"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "7259aa04fb04c7c325da59f8e534e83194cb3514d1a42b0e38bab935779cadb6",
+          "evidence": "build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "a3fcf5480cd1636a5039d708b6672df0d7d0f541e3505ea31f6d434d67598a77",
+          "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root"
         }
-      },
-      "pending": {
-        "x86_64-unknown-linux-gnu": "DGX lane (citrate-core-linux-build (O-17)): scripts/build-component.sh mem-mcp --target x86_64-unknown-linux-gnu --print-digest at 5aeda317 (rustc 1.96.0, --locked), then a pin PR with the sha256",
-        "aarch64-unknown-linux-gnu": "DGX lane (spark-2e01): scripts/build-component.sh mem-mcp --target aarch64-unknown-linux-gnu --print-digest at 5aeda317 (rustc 1.96.0, --locked), then a pin PR with the sha256"
       }
     },
     {
@@ -155,11 +159,11 @@
         },
         "x86_64-unknown-linux-gnu": {
           "sha256": "96a63e587d4946cac017bfa207a4f4da9f3b281deafbef144b065d7cec96e435",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27"
         },
         "aarch64-unknown-linux-gnu": {
           "sha256": "db8415872b35685a9e5946bed91fbee3c226c72ff23db0779c2c7354392fb36b",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
         }
       }
     },
@@ -192,11 +196,11 @@
         },
         "x86_64-unknown-linux-gnu": {
           "sha256": "67b6b65e696050544c49ea64bec3843675e4ea62617ffadea6f0b5ad43230a71",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27"
         },
         "aarch64-unknown-linux-gnu": {
           "sha256": "b6d0683bfd1e911e9352e5355973a195a1b4b8b24bd7ef07339a217730f4f956",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
         }
       }
     },
@@ -226,11 +230,15 @@
         "aarch64-apple-darwin": {
           "runtime_deps_asset": "hermes-aarch64-apple-darwin-05243c72bd52",
           "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte-for-byte from a clean target dir in the same build root; uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "4268f3d12f9f7027a2f74ad844c9142ee16831ae5b3521968b2dea72fa471af5",
+          "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), x86_64 on citrate-core-linux-build (O-17), 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "23e36abb2d965d9dbc6e4c6c2de8f20a867ba2ccf4d22240fa8109dfce82773f",
+          "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), aarch64 on the DGX spark-2e01, 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
         }
-      },
-      "pending": {
-        "x86_64-unknown-linux-gnu": "DGX lane (citrate-core-linux-build (O-17)): scripts/build-hermes.sh --target x86_64-unknown-linux-gnu --print-digest at 05243c72 (rustc 1.96.0, --locked), then a pin PR with the sha256",
-        "aarch64-unknown-linux-gnu": "DGX lane (spark-2e01): scripts/build-hermes.sh --target aarch64-unknown-linux-gnu --print-digest at 05243c72 (rustc 1.96.0, --locked), then a pin PR with the sha256"
       }
     },
     {

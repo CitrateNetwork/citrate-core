@@ -23,7 +23,8 @@ impl RpcTransport for FakeNode {
             }
             Some("eth_getBlockByNumber") => {
                 let h = self.hash.ok_or_else(fail)?;
-                Ok(json!({ "jsonrpc": "2.0", "id": 1, "result": { "hash": h } }))
+                let n = body["params"][0].clone();
+                Ok(json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": n, "hash": h } }))
             }
             _ => Err(fail()),
         }
@@ -84,6 +85,94 @@ fn a_failed_read_never_moves_anything() {
         assess(&FakeNode { head: Some(400_000), hash: None }, &CHECK),
         Verdict::Unknown
     );
+}
+
+/// A node RPC whose `eth_getBlockByNumber` answers with a raw JSON-RPC response body.
+struct RawNode {
+    head: u64,
+    block_response: Value,
+}
+
+impl RpcTransport for RawNode {
+    fn call(&self, body: Value) -> Result<Value, RpcError> {
+        match body.get("method").and_then(Value::as_str) {
+            Some("eth_blockNumber") => {
+                Ok(json!({ "jsonrpc": "2.0", "id": 1, "result": format!("0x{:x}", self.head) }))
+            }
+            Some("eth_getBlockByNumber") => Ok(self.block_response.clone()),
+            _ => Err(RpcError::Transport("down".into())),
+        }
+    }
+}
+
+// UI truth contract v1.1 §6: compare only once the node has applied the checkpoint height AND
+// returns that block. A null, an error, or anything that is not that block is "not yet", never a
+// mismatch.
+#[test]
+fn a_null_block_at_or_above_the_height_is_not_yet() {
+    let node = RawNode { head: 400_000, block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": null }) };
+    assert_eq!(assess(&node, &CHECK), Verdict::Unknown);
+}
+
+#[test]
+fn an_error_response_for_the_block_is_not_yet() {
+    let node = RawNode {
+        head: 400_000,
+        block_response: json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": "header not found" } }),
+    };
+    assert_eq!(assess(&node, &CHECK), Verdict::Unknown);
+}
+
+#[test]
+fn a_block_for_another_height_is_not_that_block() {
+    let node = RawNode {
+        head: 400_000,
+        block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": "0x61a80", "hash": WITHDRAWN_HASH } }),
+    };
+    assert_eq!(assess(&node, &CHECK), Verdict::Unknown);
+}
+
+// C1-V2(b): the hash is compared only when the returned block states its number and that number
+// is the check height. A block with no number, or a number that is not a hex quantity, is not
+// known to be the check block, so it is "not yet", never a mismatch.
+#[test]
+fn a_block_without_a_number_is_not_yet_even_with_another_hash() {
+    let node = RawNode {
+        head: 400_000,
+        block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "hash": WITHDRAWN_HASH } }),
+    };
+    assert_eq!(assess(&node, &CHECK), Verdict::Unknown);
+}
+
+#[test]
+fn a_block_with_an_unreadable_number_is_not_yet() {
+    for number in [json!(null), json!(""), json!("0x"), json!("zz"), json!(CHECK.height)] {
+        let node = RawNode {
+            head: 400_000,
+            block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": number, "hash": WITHDRAWN_HASH } }),
+        };
+        assert_eq!(assess(&node, &CHECK), Verdict::Unknown, "number {number:?}");
+    }
+}
+
+#[test]
+fn a_block_without_a_well_formed_hash_is_not_yet() {
+    for hash in ["", "0x", "0x1234", "not-a-hash"] {
+        let node = RawNode {
+            head: 400_000,
+            block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": format!("0x{:x}", CHECK.height), "hash": hash } }),
+        };
+        assert_eq!(assess(&node, &CHECK), Verdict::Unknown, "hash {hash:?}");
+    }
+}
+
+#[test]
+fn the_returned_check_block_with_another_hash_is_withdrawn() {
+    let node = RawNode {
+        head: 400_000,
+        block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": format!("0x{:x}", CHECK.height), "hash": WITHDRAWN_HASH } }),
+    };
+    assert_eq!(assess(&node, &CHECK), Verdict::Withdrawn { local: WITHDRAWN_HASH.into() });
 }
 
 /// A fresh scratch folder (removed at the end of each test).
@@ -197,4 +286,19 @@ fn civil_dates() {
     assert_eq!(civil_date(0), "1970-01-01");
     assert_eq!(civil_date(20_741), "2026-10-15");
     assert_eq!(civil_date(11_016), "2000-02-29");
+}
+
+// #358 DGX review: the block number must be a strict 0x hex quantity. u64::from_str_radix accepts a
+// leading '+', so "0x+<height>" parsed as the check height and its hash was compared. A number
+// with a sign, whitespace or any non-hex digit is "not yet", never a mismatch.
+#[test]
+fn a_block_number_that_is_not_strict_hex_is_not_yet() {
+    let h = format!("{:x}", CHECK.height);
+    for number in [format!("0x+{h}"), format!("0x {h}"), format!("0x{h} "), format!("0X{h}"), format!("0x-{h}")] {
+        let node = RawNode {
+            head: 400_000,
+            block_response: json!({ "jsonrpc": "2.0", "id": 1, "result": { "number": number, "hash": WITHDRAWN_HASH } }),
+        };
+        assert_eq!(assess(&node, &CHECK), Verdict::Unknown, "number {number:?}");
+    }
 }

@@ -12,6 +12,7 @@
 // =====================================================================
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
+import { syncLine } from "../shell/syncProgress";
 
 const ALF_PORTAL = "https://alf.citrate.ai/dashboard";
 
@@ -48,7 +49,7 @@ export function ALF({ s }: SurfaceProps) {
   }
 
   const nodeUp = s.node !== "off";
-  const nodeText = s.node === "off" ? "node off" : s.node === "syncing" ? `syncing ${s.syncPct | 0}%` : `${nodeLabel(s.node)} · ${s.height > 0 ? Math.round(s.height).toLocaleString("en-US") : "—"}`; // 0 = not read (C1-V V10)
+  const nodeText = s.node === "off" ? "node off" : s.node === "syncing" ? syncLine(s.syncProgress) : `${nodeLabel(s.node)} · ${s.height > 0 ? Math.round(s.height).toLocaleString("en-US") : "—"}`; // 0 = not read (C1-V V10)
 
   return (
     <div data-testid="alf-surface" style={{ padding: "40px 40px 64px", maxWidth: 900 }}>

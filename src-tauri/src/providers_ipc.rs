@@ -70,7 +70,7 @@ pub struct ModelPriceView {
 pub struct ProviderView {
     pub id: String,
     pub name: String,
-    /// `vendor` or `custom`.
+    /// `vendor`, `delegate` (Cognition), `gateway` or `custom`.
     pub kind: &'static str,
     /// A governed vendor on its pinned host (false for a custom endpoint).
     pub verified: bool,
@@ -233,22 +233,38 @@ pub fn model_prices(
         .collect()
 }
 
-/// Every provider id the status lists: the six vendors, then the custom endpoints.
+/// Every provider id the status lists: the six vendors, the Citrate gateway (its key is set in the
+/// chat presets; its calls go through the proxy, so its caps and prices are set here), the
+/// Cognition delegate (its key is connected here too), then the custom endpoints.
 fn all_ids(g: &GuardBook) -> Vec<ProviderId> {
     let mut ids: Vec<ProviderId> = Vendor::ALL.into_iter().map(ProviderId::Vendor).collect();
+    ids.push(ProviderId::Gateway);
+    ids.push(ProviderId::Cognition);
     ids.extend(g.customs.iter().map(|c| ProviderId::Custom(c.id.clone())));
     ids
 }
 
 /// One provider's model list with prices. A custom endpoint is served by the OpenAI-compatible
 /// adapter, whose output bound is the request's own `max_tokens` (the `None` case in
-/// `min_reserve`); its models are the ones the member listed.
+/// `min_reserve`); its models are the ones the member listed. The gateway and the Cognition
+/// delegate use the adapters their calls go through (the gateway's price is
+/// `model_proxy::GATEWAY_PRICE`; the delegate publishes no token price).
 fn models_for(g: &GuardBook, id: &ProviderId) -> Vec<ModelPriceView> {
     match id {
         ProviderId::Vendor(v) => {
             let a = crate::model_proxy::vendor_adapter(*v).0;
             model_prices(g, id.as_str(), Some(a.as_ref()), &[])
         }
+        ProviderId::Gateway => {
+            let a = crate::model_proxy::gateway_adapter();
+            model_prices(g, id.as_str(), Some(a.as_ref()), &[])
+        }
+        ProviderId::Cognition => model_prices(
+            g,
+            id.as_str(),
+            Some(&crate::cognition::CognitionAdapter),
+            &[],
+        ),
         ProviderId::Custom(cid) => {
             let extra = g
                 .customs
@@ -284,6 +300,27 @@ pub fn status(proxy: &ModelProxy) -> Vec<ProviderView> {
                         s.base_url.to_string(),
                         Some(s.key_page),
                         Some(s.revoke_page),
+                        true,
+                    )
+                }
+                ProviderId::Gateway => (
+                    "Citrate gateway".to_string(),
+                    "gateway",
+                    true,
+                    crate::provider_egress::GATEWAY_BASE_URL.to_string(),
+                    None,
+                    None,
+                    true,
+                ),
+                ProviderId::Cognition => {
+                    let d = &crate::provider_egress::DELEGATES[0];
+                    (
+                        d.name.to_string(),
+                        "delegate",
+                        true,
+                        d.base_url.to_string(),
+                        Some(d.key_page),
+                        Some(d.revoke_page),
                         true,
                     )
                 }
@@ -518,6 +555,18 @@ impl ModelProxyState {
         *slot = Some(proxy.clone());
         Ok(proxy)
     }
+
+    /// The proxy if it is open (never opens it): for revoking routes when a session or the
+    /// sidecar ends.
+    pub fn peek(&self) -> Option<Arc<ModelProxy>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// The open proxy of the app, if any (never opens it).
+pub(crate) fn open_proxy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<Arc<ModelProxy>> {
+    use tauri::Manager;
+    app.try_state::<ModelProxyState>().and_then(|s| s.peek())
 }
 
 fn with_proxy<R: tauri::Runtime, T: Send + 'static>(
@@ -646,6 +695,28 @@ pub async fn providers_custom_confirm(
 pub async fn providers_custom_remove(app: tauri::AppHandle, id: String) -> Result<(), String> {
     with_proxy(app, move |p| {
         p.remove_custom(&id).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// D-11 (P-5) — the member's preferred cloud model for Hermes. Source:
+/// `<app data>/providers/preferred.json` (`provider_preferred`). `preferred: null` = the local model.
+#[tauri::command]
+pub async fn providers_preferred_get(
+    app: tauri::AppHandle,
+) -> Result<crate::provider_preferred::PreferredView, String> {
+    with_proxy(app, |p| Ok(crate::provider_preferred::load(p.dir()))).await
+}
+
+/// Source: `<app data>/providers/preferred.json` (written). The provider must be connected and able
+/// to take calls; the model is approved for the anomaly halt. `choice: null` clears it.
+#[tauri::command]
+pub async fn providers_preferred_set(
+    app: tauri::AppHandle,
+    choice: Option<crate::provider_preferred::PreferredModel>,
+) -> Result<crate::provider_preferred::PreferredView, String> {
+    with_proxy(app, move |p| {
+        crate::provider_preferred::set(p.dir(), p, choice)
     })
     .await
 }

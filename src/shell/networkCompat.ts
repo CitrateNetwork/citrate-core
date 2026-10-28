@@ -57,3 +57,18 @@ export function useNetworkCompat(profile: NetworkProfile | null = ACTIVE_PROFILE
   const live = expected === null ? null : (data?.hash ?? null);
   return { status: networkCompat(expected, live), live, expected };
 }
+
+/**
+ * The network's display name for a compat status (UI truth contract §2 "Network", §6): the chain
+ * id alone is not enough, so "Citrate betanet" only once block 0 matches this build's genesis.
+ */
+export function networkLabel(status: NetworkCompat): "Citrate betanet" | "Network not checked yet" | "Update required" {
+  if (status === "compatible") return "Citrate betanet";
+  if (status === "retired") return "Update required";
+  return "Network not checked yet";
+}
+
+/** The live network label (genesis-checked; "Network not checked yet" until block 0 reads). */
+export function useNetworkLabel(): string {
+  return networkLabel(useNetworkCompat().status);
+}

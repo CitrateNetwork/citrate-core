@@ -52,11 +52,10 @@ pub const MAX_OUTPUT_TOKENS: u32 = 65_536;
 /// Tokens added per message for the chat template, on top of its UTF-8 bytes.
 pub const PER_MESSAGE_OVERHEAD: u64 = 16;
 /// Route tokens: lifetime and how many may be live at once.
-// Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const ROUTE_TTL_MS: u64 = 12 * 60 * 60 * 1000;
-#[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_ROUTES: usize = 64;
+/// The model id the usage log and the guard use for a Cognition delegation (it has no chat model).
+pub const DELEGATE_MODEL: &str = "devin";
 /// Custom endpoints a member may add.
 pub const MAX_CUSTOM_ENDPOINTS: usize = 8;
 
@@ -166,6 +165,8 @@ pub enum AdapterKind {
     Native,
     /// A member-confirmed custom endpoint, spoken to as OpenAI chat-completions.
     OpenAiCompatible,
+    /// A remote-agent delegate (Cognition): keys and the usage log only, never a chat call.
+    Delegate,
 }
 
 impl AdapterKind {
@@ -173,6 +174,7 @@ impl AdapterKind {
         match self {
             AdapterKind::Native => "native",
             AdapterKind::OpenAiCompatible => "openai-compatible",
+            AdapterKind::Delegate => "delegate",
         }
     }
 }
@@ -191,6 +193,65 @@ pub fn vendor_adapter(v: Vendor) -> (Arc<dyn ModelProvider>, AdapterKind) {
     (a, AdapterKind::Native)
 }
 
+/// The Citrate gateway: OpenAI-compatible at its pinned base, with Citrate-issued `cgk_` keys
+/// (ADR-2026-06-03-infer-key-identity).
+struct GatewayAdapter(OpenAiCompatAdapter);
+
+/// The gateway's adapter: the one `resolve` routes calls through and the Settings price view
+/// reads, so the view cannot drift from the charge.
+pub(crate) fn gateway_adapter() -> Arc<dyn ModelProvider> {
+    Arc::new(GatewayAdapter(OpenAiCompatAdapter::new(
+        ProviderId::Gateway,
+        vec![],
+    )))
+}
+
+/// The Citrate gateway's published price for every model it serves: `infer.citrate.ai` runs the
+/// gateway's `local-proxy` mode, where `cgk_` keys are metered by request count and a daily quota
+/// with **no payment** (citrate-inference-gateway `gateway/src/main.rs` module docs: "local-proxy:
+/// `cgk_` bearer keys with request-count metering; no payment"; `gateway/RUNBOOK.md` §1). It has
+/// one tier, so the highest tier is this one. The token caps still bound every call; the spend
+/// view shows $0, which is what the member is charged. (The marketplace gateway's x402 pricing is
+/// on another host this proxy does not pin.)
+pub const GATEWAY_PRICE: Price = Price {
+    input_micros_per_mtok: 0,
+    output_micros_per_mtok: 0,
+};
+
+/// The gateway's key format: `cgk_` and URL-safe characters.
+pub const GATEWAY_KEY_FORMAT: crate::model_provider::KeyFormat = crate::model_provider::KeyFormat {
+    prefixes: &["cgk_"],
+    min_len: 20,
+    max_len: 512,
+    charset: crate::model_provider::KeyCharset::UrlSafe,
+};
+
+impl ModelProvider for GatewayAdapter {
+    fn id(&self) -> ProviderId {
+        self.0.id()
+    }
+    fn models(&self) -> Vec<crate::model_provider::ModelInfo> {
+        self.0.models()
+    }
+    fn key_format(&self) -> crate::model_provider::KeyFormat {
+        GATEWAY_KEY_FORMAT
+    }
+    fn output_bound(&self, req: &ChatRequest) -> u64 {
+        self.0.output_bound(req)
+    }
+    fn test_key(&self, ctx: &ProviderCtx<'_>) -> Result<KeyTest, ProviderError> {
+        self.0.test_key(ctx)
+    }
+    fn complete(
+        &self,
+        ctx: &ProviderCtx<'_>,
+        req: &ChatRequest,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ChatResponse, ProviderError> {
+        self.0.complete(ctx, req, on_text)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Routes (what the sidecar holds instead of a key)
 // ---------------------------------------------------------------------------
@@ -204,8 +265,6 @@ pub struct ProxyRoute {
 }
 
 /// What the sidecar gets: the loopback base URL and a bearer for this route only.
-// Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct ProxyGrant {
     pub base_url: String,
     pub bearer: SecretString,
@@ -213,7 +272,25 @@ pub struct ProxyGrant {
 
 struct RouteEntry {
     route: ProxyRoute,
+    /// The chat-route settings folder (`chat_route::route_dir`): every call on this route is
+    /// refused while "Local model only" is on there.
+    gate: PathBuf,
     expires_ms: u64,
+    /// The cancel flags of this route's calls in flight: revoking the route (its session closed,
+    /// the sidecar stopped, the key was removed) cuts them off at their next read.
+    in_flight: Vec<std::sync::Weak<std::sync::atomic::AtomicBool>>,
+}
+
+impl RouteEntry {
+    fn cancel_in_flight(&self) {
+        for f in self.in_flight.iter().filter_map(std::sync::Weak::upgrade) {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+fn same_base(a: &str, b: &str) -> bool {
+    a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/')
 }
 
 fn bearer_hash(b: &str) -> [u8; 32] {
@@ -358,6 +435,20 @@ impl ModelProxy {
                     .map_err(|e| ProxyError::Egress(e.to_string()))?;
                 Ok((a, k, ep))
             }
+            ProviderId::Gateway => {
+                let ep = crate::provider_egress::resolve_gateway()
+                    .map_err(|e| ProxyError::Egress(e.to_string()))?;
+                Ok((gateway_adapter(), AdapterKind::OpenAiCompatible, ep))
+            }
+            ProviderId::Cognition => {
+                let ep = crate::provider_egress::resolve_delegate()
+                    .map_err(|e| ProxyError::Egress(e.to_string()))?;
+                Ok((
+                    Arc::new(crate::cognition::CognitionAdapter),
+                    AdapterKind::Delegate,
+                    ep,
+                ))
+            }
             ProviderId::Custom(cid) => {
                 let c = self
                     .inner()
@@ -400,7 +491,9 @@ impl ModelProxy {
     /// URL, so a key is never sent to a URL other than the one it was set for.
     fn key_account(id: &ProviderId, ep: &ResolvedEndpoint) -> String {
         match id {
-            ProviderId::Vendor(v) => format!("{KEY_ACCOUNT_PREFIX}{}", v.id()),
+            ProviderId::Vendor(_) | ProviderId::Gateway | ProviderId::Cognition => {
+                format!("{KEY_ACCOUNT_PREFIX}{}", id.as_str())
+            }
             ProviderId::Custom(c) => {
                 use sha2::Digest;
                 let h = sha2::Sha256::digest(ep.base_url.as_str().as_bytes());
@@ -410,12 +503,47 @@ impl ModelProxy {
     }
 
     fn read_key(&self, id: &ProviderId, ep: &ResolvedEndpoint) -> Result<ApiKey, ProxyError> {
+        self.read_account(&Self::key_account(id, ep))
+    }
+
+    fn read_account(&self, account: &str) -> Result<ApiKey, ProxyError> {
         let v = self
             .keyring
-            .get(&Self::key_account(id, ep))
+            .get(account)
             .map_err(|_| ProxyError::Storage("the keychain could not be read".into()))?
             .ok_or(ProxyError::NotConfigured)?;
         Ok(ApiKey::from_secret(SecretString::new(v)))
+    }
+
+    /// The provider whose resolved base URL is exactly `base_url`: a governed vendor's pinned
+    /// base, the Citrate gateway's, or a custom endpoint the member confirmed in Settings › Models.
+    /// Anything else is refused: no cloud call goes to a host the proxy does not pin or the member
+    /// did not confirm (ADR P-4).
+    pub fn provider_for_base(&self, base_url: &str) -> Result<ProviderId, ProxyError> {
+        for spec in crate::provider_egress::VENDORS {
+            if same_base(spec.base_url, base_url) {
+                return Ok(ProviderId::Vendor(spec.vendor));
+            }
+        }
+        if same_base(crate::provider_egress::GATEWAY_BASE_URL, base_url) {
+            return Ok(ProviderId::Gateway);
+        }
+        let custom = self
+            .inner()
+            .guard
+            .customs
+            .iter()
+            .find(|c| same_base(&c.base_url, base_url))
+            .cloned();
+        match custom {
+            Some(c) if c.confirmed => Ok(ProviderId::Custom(c.id)),
+            Some(_) => Err(ProxyError::Egress(
+                "that endpoint has not been confirmed in Settings › Models".into(),
+            )),
+            None => Err(ProxyError::Egress(
+                "that endpoint is not a provider connected in Settings › Models (add it there as a custom endpoint and confirm it)".into(),
+            )),
+        }
     }
 
     // ---- the call ------------------------------------------------------------------------------
@@ -446,6 +574,46 @@ impl ModelProxy {
         self.execute(prepared, &req, Some(cancel), on_text)
     }
 
+    /// The live route a bearer names, refused while "Local model only" is on for it. `cancel`
+    /// (when given) is registered with the route, so revoking it cuts the call off.
+    fn routed(
+        &self,
+        bearer: &str,
+        cancel: Option<&crate::model_provider::CancelFlag>,
+    ) -> Result<ProxyRoute, ProxyError> {
+        let entry = {
+            let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+            routes
+                .get_mut(&bearer_hash(bearer))
+                .filter(|r| r.expires_ms > now_ms())
+                .map(|r| {
+                    if let Some(c) = cancel {
+                        r.in_flight.retain(|w| w.strong_count() > 0);
+                        r.in_flight.push(Arc::downgrade(c));
+                    }
+                    (r.route.clone(), r.gate.clone())
+                })
+        };
+        let (route, gate) = entry.ok_or(ProxyError::Unauthorized)?;
+        crate::chat_route::remote_chat_allowed(&gate).map_err(ProxyError::Egress)?;
+        Ok(route)
+    }
+
+    /// A call that arrived on a sidecar route token (the loopback endpoint). It is cut off when
+    /// `cancel` is set (the client's socket broke) or when the route is revoked (its session
+    /// closed, the sidecar stopped, the key was removed).
+    pub(crate) fn call_routed_until(
+        &self,
+        bearer: &str,
+        req: ChatRequest,
+        conversation: Option<String>,
+        cancel: crate::model_provider::CancelFlag,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ChatResponse, ProxyError> {
+        let route = self.routed(bearer, Some(&cancel))?;
+        self.call_until(&route, req, conversation, cancel, on_text)
+    }
+
     /// Steps 1-5: everything that can refuse before anything is sent. The loopback endpoint calls
     /// this before it commits to a streamed answer, so a refusal is a plain error status.
     fn prepare(
@@ -454,6 +622,12 @@ impl ModelProxy {
         mut req: ChatRequest,
         conversation: Option<String>,
     ) -> Result<(Prepared, ChatRequest), ProxyError> {
+        // 0. A delegate is never a chat model.
+        if route.provider.is_delegate() {
+            return Err(ProxyError::BadRequest(
+                "Cognition runs delegated tasks; it is not a chat model".into(),
+            ));
+        }
         // 1. The route decides the provider and model; the body may only repeat the model.
         if req.model.is_empty() {
             req.model = route.model.clone();
@@ -522,7 +696,8 @@ impl ModelProxy {
                     &endpoint,
                     &plan,
                     &conversation,
-                    &Err(e.clone()),
+                    None,
+                    Some(&e),
                 )?;
                 return Err(e);
             }
@@ -572,13 +747,90 @@ impl ModelProxy {
             &p.endpoint,
             &p.plan,
             &p.conversation,
-            &result,
+            result.as_ref().ok().and_then(|r| r.usage),
+            result.as_ref().err(),
+        )?;
+        result
+    }
+
+    /// One logged vendor operation core composes itself (a fixed-path media request, a Cognition
+    /// delegation step): the same steps as [`Self::call`] (egress, the guard's unmetered check,
+    /// begin record written before anything is sent, the key read last, end record written before
+    /// the result is returned), with no token reservation (`GuardBook::admit_unmetered`). `model_is_members` marks a model the member chose in a
+    /// setting (it does not trip the unknown-model halt).
+    pub(crate) fn logged_op<T>(
+        &self,
+        provider: &ProviderId,
+        model: &str,
+        session_id: &str,
+        model_is_members: bool,
+        op: impl FnOnce(&ProviderCtx<'_>) -> Result<T, ProviderError>,
+    ) -> Result<T, ProxyError> {
+        if model.is_empty() || model.len() > 200 || !valid_label(session_id, 128) {
+            return Err(ProxyError::BadRequest("bad route".into()));
+        }
+        let (adapter, _kind, endpoint) = self.resolve(provider)?;
+        let route = ProxyRoute {
+            provider: provider.clone(),
+            model: model.to_string(),
+            session_id: session_id.to_string(),
+        };
+        let mut known: Vec<String> = adapter.models().into_iter().map(|m| m.id).collect();
+        if model_is_members {
+            known.push(model.to_string());
+        }
+        let call_id = format!("po-{:016x}", rand::random::<u64>());
+        let now = now_ms();
+        let plan = {
+            let mut inner = self.inner();
+            let Inner { guard, log } = &mut *inner;
+            log.ready().map_err(ProxyError::LogUnavailable)?;
+            let plan = CallPlan {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                reserve_in: 0,
+                reserve_out: 0,
+                price: None,
+            };
+            if let Err(refusal) = guard.admit_unmetered(&plan, &known, now) {
+                let err = ProxyError::Refused(refusal);
+                let mut r = Self::record_for(Kind::Refused, &call_id, &route, &endpoint, now);
+                r.outcome = Some(err.outcome().into());
+                let _ = log.append(r);
+                let _ = crate::provider_guard::save(&self.dir, guard);
+                return Err(err);
+            }
+            let mut r = Self::record_for(Kind::Begin, &call_id, &route, &endpoint, now);
+            r.reserve_in = Some(0);
+            r.reserve_out = Some(0);
+            log.append(r).map_err(ProxyError::LogUnavailable)?;
+            plan
+        };
+        let key = match self.read_key(provider, &endpoint) {
+            Ok(k) => k,
+            Err(e) => {
+                self.finish(&call_id, &route, &endpoint, &plan, &None, None, Some(&e))?;
+                return Err(e);
+            }
+        };
+        let result = op(&ProviderCtx::new(&endpoint, &key, self.http.as_ref()))
+            .map_err(ProxyError::Provider);
+        drop(key);
+        self.finish(
+            &call_id,
+            &route,
+            &endpoint,
+            &plan,
+            &None,
+            None,
+            result.as_ref().err(),
         )?;
         result
     }
 
     /// Write a call's end record (and run the spike check). `Err` = it could not be written, so
     /// the caller must not return the reply.
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
         call_id: &str,
@@ -586,14 +838,14 @@ impl ModelProxy {
         endpoint: &ResolvedEndpoint,
         plan: &CallPlan,
         conversation: &Option<String>,
-        result: &Result<ChatResponse, ProxyError>,
+        usage: Option<crate::model_provider::Usage>,
+        error: Option<&ProxyError>,
     ) -> Result<(), ProxyError> {
         let now = now_ms();
         let mut inner = self.inner();
         let Inner { guard, log } = &mut *inner;
         let mut r = Self::record_for(Kind::End, call_id, route, endpoint, now);
         r.conversation = conversation.clone();
-        let usage = result.as_ref().ok().and_then(|resp| resp.usage);
         if let Some(u) = usage {
             r.tokens_in = Some(u.input_tokens);
             r.tokens_out = Some(u.output_tokens);
@@ -601,9 +853,9 @@ impl ModelProxy {
                 .price
                 .map(|pr| pr.cost(u.input_tokens, u.output_tokens));
         }
-        r.outcome = Some(match result {
-            Ok(_) => "ok".into(),
-            Err(e) => e.outcome().into(),
+        r.outcome = Some(match error {
+            None => "ok".into(),
+            Some(e) => e.outcome().into(),
         });
         log.append(r).map_err(ProxyError::LogUnavailable)?;
         if let Some(u) = usage {
@@ -698,13 +950,182 @@ impl ModelProxy {
             .check(&key)
             .map_err(ProxyError::Provider)?;
         let test = self.key_test_logged(&pid, &ep, adapter.as_ref(), &key, false)?;
-        self.keyring
-            .set(&Self::key_account(&pid, &ep), key.expose_for_keychain())
-            .map_err(|_| ProxyError::Storage("the keychain could not be written".into()))?;
+        self.store_key(&pid, &ep, &key)?;
         let mut inner = self.inner();
         inner.guard.key_set(pid.as_str(), test.models.clone(), now);
         let _ = crate::provider_guard::save(&self.dir, &mut inner.guard);
         Ok(test)
+    }
+
+    /// The one keychain write of a key into the proxy's store.
+    fn store_key(
+        &self,
+        pid: &ProviderId,
+        ep: &ResolvedEndpoint,
+        key: &ApiKey,
+    ) -> Result<(), ProxyError> {
+        self.keyring
+            .set(&Self::key_account(pid, ep), key.expose_for_keychain())
+            .map_err(|_| ProxyError::Storage("the keychain could not be written".into()))
+    }
+
+    /// Move a key the member already set elsewhere in core (a legacy Settings › Providers preset,
+    /// an escalation endpoint) into the proxy's store, without a live test: it was in use before.
+    /// The vendor format check still applies. An existing proxy key is kept unless `replace`:
+    /// the result says whether this key was stored (`true`) or an existing one stays (`false`).
+    pub(crate) fn import_key(
+        &self,
+        id: &ProviderId,
+        key: SecretString,
+        replace: bool,
+    ) -> Result<bool, ProxyError> {
+        if id.is_delegate() {
+            return Err(ProxyError::BadRequest(
+                "a delegate key is set in Settings › Models".into(),
+            ));
+        }
+        let (adapter, _, ep) = match id {
+            ProviderId::Custom(_) => self.resolve_any_custom_adapter(id)?,
+            _ => self.resolve(id)?,
+        };
+        let key = ApiKey::from_secret(key);
+        adapter
+            .key_format()
+            .check(&key)
+            .map_err(ProxyError::Provider)?;
+        if !replace && self.key_configured(id) {
+            return Ok(false);
+        }
+        self.store_key(id, &ep, &key)?;
+        let mut inner = self.inner();
+        if replace {
+            // A key the member typed just now.
+            let listed = inner.guard.get(id.as_str()).listed_models.clone();
+            inner.guard.key_set(id.as_str(), listed, now_ms());
+        } else {
+            // A key moved from an older store: when it was made is unknown, so the rotation
+            // reminder does not start counting from the migration.
+            inner.guard.key_date_unknown(id.as_str());
+        }
+        crate::provider_guard::save(&self.dir, &mut inner.guard).map_err(ProxyError::Storage)?;
+        Ok(true)
+    }
+
+    /// Whether calls to `id` can be resolved now (an adapter exists; a custom endpoint is
+    /// confirmed).
+    pub(crate) fn resolves(&self, id: &ProviderId) -> bool {
+        self.resolve(id).is_ok()
+    }
+
+    /// The custom endpoint set up for exactly `base_url`, confirmed or not.
+    pub(crate) fn custom_for_base(&self, base_url: &str) -> Result<ProviderId, ProxyError> {
+        self.inner()
+            .guard
+            .customs
+            .iter()
+            .find(|c| same_base(&c.base_url, base_url))
+            .map(|c| ProviderId::Custom(c.id.clone()))
+            .ok_or_else(|| ProxyError::Egress("that custom endpoint is not set up".into()))
+    }
+
+    /// One fixed-path JSON POST core composes itself (a remote image, `/images/generations`),
+    /// through [`Self::logged_op`]. Returns the answer body.
+    pub(crate) fn post_fixed(
+        &self,
+        id: &ProviderId,
+        model: &str,
+        session_id: &str,
+        path: &'static str,
+        body: &serde_json::Value,
+    ) -> Result<String, ProxyError> {
+        self.logged_op(id, model, session_id, true, |ctx| {
+            let resp = ctx.send(crate::model_provider::OutboundRequest {
+                method: crate::model_provider::Method::Post,
+                path: path.to_string(),
+                headers: vec![("accept", "application/json".to_string())],
+                auth: crate::model_provider::AuthPlacement::Bearer,
+                body: Some(body.clone()),
+            })?;
+            if !(200..300).contains(&resp.status) {
+                return Err(crate::model_provider::status_error(resp.status));
+            }
+            resp.text()
+        })
+    }
+
+    /// A price the member entered with an endpoint (an escalation price card) becomes the proxy's
+    /// price for that model when neither the member nor the adapter has one yet, so a currency
+    /// cap can meter it. An existing price is kept.
+    pub(crate) fn price_if_absent(
+        &self,
+        id: &ProviderId,
+        model: &str,
+        price: Price,
+    ) -> Result<(), ProxyError> {
+        let adapter_price = self
+            .resolve(id)
+            .ok()
+            .and_then(|(a, _, _)| Self::adapter_price(a.as_ref(), model));
+        let mut inner = self.inner();
+        if inner
+            .guard
+            .price_for(id.as_str(), model, adapter_price)
+            .is_some()
+        {
+            return Ok(());
+        }
+        inner
+            .guard
+            .set_price(id.as_str(), model, Some(price))
+            .map_err(ProxyError::BadRequest)?;
+        crate::provider_guard::save(&self.dir, &mut inner.guard).map_err(ProxyError::Storage)
+    }
+
+    /// The member named `model` for `id` in a setting: approve it for the anomaly halt.
+    pub(crate) fn approve_model(&self, id: &ProviderId, model: &str) -> Result<(), ProxyError> {
+        let mut inner = self.inner();
+        inner
+            .guard
+            .approve_model(id.as_str(), model)
+            .map_err(ProxyError::BadRequest)?;
+        crate::provider_guard::save(&self.dir, &mut inner.guard).map_err(ProxyError::Storage)
+    }
+
+    /// The provider a member-entered base URL maps to (a pinned vendor or the gateway), else the
+    /// custom endpoint for that URL (added unconfirmed, labelled `label`, when there is none).
+    pub(crate) fn provider_or_custom(
+        &self,
+        label: &str,
+        base_url: &str,
+        model: &str,
+    ) -> Result<ProviderId, ProxyError> {
+        match self.provider_for_base(base_url) {
+            Ok(pid) => Ok(pid),
+            Err(_) => self.ensure_custom(label, base_url, model),
+        }
+    }
+
+    /// Add a custom endpoint for `base_url` unless one exists (a migrated legacy endpoint). It
+    /// starts unconfirmed, like any custom endpoint: calls to it are refused until the member
+    /// confirms the URL in Settings › Models.
+    pub(crate) fn ensure_custom(
+        &self,
+        label: &str,
+        base_url: &str,
+        model: &str,
+    ) -> Result<ProviderId, ProxyError> {
+        let existing = self
+            .inner()
+            .guard
+            .customs
+            .iter()
+            .find(|c| same_base(&c.base_url, base_url))
+            .map(|c| c.id.clone());
+        if let Some(id) = existing {
+            return Ok(ProviderId::Custom(id));
+        }
+        let c = self.add_custom(label, base_url, vec![model.to_string()], now_ms())?;
+        Ok(ProviderId::Custom(c.id))
     }
 
     /// Test the stored key live.
@@ -723,7 +1144,9 @@ impl ModelProxy {
     pub fn remove_key(&self, id: &str) -> Result<(), ProxyError> {
         let pid = ProviderId::parse(id).ok_or(ProxyError::BadRequest("unknown provider".into()))?;
         let account = match &pid {
-            ProviderId::Vendor(v) => format!("{KEY_ACCOUNT_PREFIX}{}", v.id()),
+            ProviderId::Vendor(_) | ProviderId::Gateway | ProviderId::Cognition => {
+                format!("{KEY_ACCOUNT_PREFIX}{}", pid.as_str())
+            }
             ProviderId::Custom(_) => {
                 let (_, _, ep) = self.resolve_any_custom(&pid)?;
                 Self::key_account(&pid, &ep)
@@ -744,6 +1167,8 @@ impl ModelProxy {
     pub fn key_configured(&self, id: &ProviderId) -> bool {
         let ep = match id {
             ProviderId::Vendor(v) => crate::provider_egress::resolve_vendor(*v).ok(),
+            ProviderId::Gateway => crate::provider_egress::resolve_gateway().ok(),
+            ProviderId::Cognition => crate::provider_egress::resolve_delegate().ok(),
             ProviderId::Custom(_) => self.resolve_any_custom(id).ok().map(|(_, _, e)| e),
         };
         ep.is_some_and(|ep| {
@@ -755,6 +1180,31 @@ impl ModelProxy {
                 .map(zeroize::Zeroizing::new)
                 .is_some()
         })
+    }
+
+    /// A custom endpoint's adapter and endpoint, confirmed or not (a key import may precede the
+    /// member's confirmation; every call still needs it).
+    fn resolve_any_custom_adapter(
+        &self,
+        id: &ProviderId,
+    ) -> Result<(Arc<dyn ModelProvider>, AdapterKind, ResolvedEndpoint), ProxyError> {
+        let (c, kind, ep) = self.resolve_any_custom(id)?;
+        let models = c
+            .models
+            .iter()
+            .map(|m| crate::model_provider::ModelInfo {
+                id: m.clone(),
+                display_name: m.clone(),
+                supports_tools: true,
+                input_micros_per_mtok: None,
+                output_micros_per_mtok: None,
+            })
+            .collect();
+        Ok((
+            Arc::new(OpenAiCompatAdapter::new(id.clone(), models)),
+            kind,
+            ep,
+        ))
     }
 
     /// A custom endpoint's resolution, confirmed or not (for key removal and status).
@@ -869,21 +1319,34 @@ impl ModelProxy {
 
     // ---- routes ----------------------------------------------------------------------------
 
+    /// The proxy's settings folder (`<app data>/providers`).
+    pub(crate) fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     pub fn set_port(&self, port: u16) {
         self.port.store(port, std::sync::atomic::Ordering::SeqCst);
     }
 
-    // Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn port(&self) -> u16 {
         self.port.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    // Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
-    #[cfg_attr(not(test), allow(dead_code))]
     /// Mint a bearer bound to one provider, model and session. In-process only: no command
-    /// returns one. The sidecar gets it in its session's `LlmEndpoint`.
-    pub fn mint_route(&self, route: ProxyRoute) -> Result<ProxyGrant, ProxyError> {
+    /// returns one. The sidecar gets it in its session's `LlmEndpoint`. Every call on the route is
+    /// refused while "Local model only" is on (`gate` is the chat-route settings folder,
+    /// `chat_route::route_dir`; checked per call, so a switch made during a running agent turn
+    /// stops its next model request).
+    pub fn mint_route(&self, route: ProxyRoute, gate: PathBuf) -> Result<ProxyGrant, ProxyError> {
+        self.mint(route, gate)
+    }
+
+    fn mint(&self, route: ProxyRoute, gate: PathBuf) -> Result<ProxyGrant, ProxyError> {
+        if route.provider.is_delegate() {
+            return Err(ProxyError::BadRequest(
+                "Cognition runs delegated tasks; it is not a chat model".into(),
+            ));
+        }
         let port = self.port();
         if port == 0 {
             return Err(ProxyError::Storage("the model proxy is not running".into()));
@@ -909,7 +1372,9 @@ impl ModelProxy {
             bearer_hash(&bearer),
             RouteEntry {
                 route,
+                gate,
                 expires_ms: now.saturating_add(ROUTE_TTL_MS),
+                in_flight: Vec::new(),
             },
         );
         Ok(ProxyGrant {
@@ -927,16 +1392,31 @@ impl ModelProxy {
             .map(|r| r.route.clone())
     }
 
-    // Consumed by WP-S1-PROV-AGENT (the sidecar session opener mints routes); used by tests here.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn revoke_session(&self, session_id: &str) {
+        self.revoke_where(|r| r.session_id == session_id);
+    }
+
+    /// Remove the routes `gone` names and cut off their calls in flight.
+    fn revoke_where(&self, gone: impl Fn(&ProxyRoute) -> bool) {
         let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
-        routes.retain(|_, r| r.route.session_id != session_id);
+        routes.retain(|_, r| {
+            if gone(&r.route) {
+                r.cancel_in_flight();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Revoke every route whose session id starts with `prefix` (all cloud agent sessions when
+    /// the sidecar stops).
+    pub fn revoke_sessions_with_prefix(&self, prefix: &str) {
+        self.revoke_where(|r| r.session_id.starts_with(prefix));
     }
 
     fn revoke_provider(&self, id: &ProviderId) {
-        let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
-        routes.retain(|_, r| &r.route.provider != id);
+        self.revoke_where(|r| &r.provider == id);
     }
 
     // ---- guard / log access for the commands ---------------------------------------------------
@@ -973,6 +1453,9 @@ impl ModelProxy {
 
     /// The price used for a call: the member's entry, else the adapter's published one.
     pub(crate) fn adapter_price(adapter: &dyn ModelProvider, model: &str) -> Option<Price> {
+        if adapter.id() == ProviderId::Gateway {
+            return Some(GATEWAY_PRICE);
+        }
         adapter
             .models()
             .into_iter()
@@ -988,7 +1471,8 @@ impl ModelProxy {
     pub(crate) fn kind_for(&self, id: &ProviderId) -> Option<AdapterKind> {
         match id {
             ProviderId::Vendor(v) => Some(vendor_adapter(*v).1),
-            ProviderId::Custom(_) => Some(AdapterKind::OpenAiCompatible),
+            ProviderId::Gateway | ProviderId::Custom(_) => Some(AdapterKind::OpenAiCompatible),
+            ProviderId::Cognition => Some(AdapterKind::Delegate),
         }
     }
 }

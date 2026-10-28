@@ -76,10 +76,22 @@ Every one is pinned in `release/components.json` (source rev, toolchain, build c
 per target). The scripts build that rev, never the checkout's HEAD, and install only bytes whose
 sha256 matches the pin. They default to the sibling source dir, so with the layout above you only
 pass `--target`. Run each on the Linux host so it produces the Linux triple natively. The Linux pins
-are the 0.5.1 builds: if a rebuild on this host does not reproduce them, the script stops; record
-the new digests with `--print-digest` and pin them in a reviewed PR before building with them.
-mem-mcp has no Linux pin yet: it moved to citrate-memories 5aeda317 (the store key file), so
-record its Linux digests with `--print-digest` first.
+were recorded with `--print-digest` by these same scripts: x86_64 on `citrate-core-linux-build`,
+aarch64 on the DGX. If a rebuild on this host does not reproduce them, the script stops; record the
+new digests with `--print-digest` and pin them in a reviewed PR before building with them.
+Build in the default build root (`~/.cache/citrate-components`; do not set
+`CITRATE_COMPONENT_BUILD_ROOT`): the node and hermes embed build-root paths (vendored OpenSSL,
+cranelift's generated sources), so they reproduce only in the root that recorded the pin.
+
+**Exception (0.5.2): the citrate node ships as a fixed uploaded asset.** Its rebuild does not
+reproduce byte for byte, even in the same build root (citrate-chain#427: a second clean build gives
+different code, same strings). So the "a rebuild must reproduce the pin" rule does not apply to it.
+The DGX lane builds the node once per Linux triple at the rev in `release/components.json`
+(= `MIN_CHAIN_REV` in `scripts/build-sidecar.sh`), uploads those bytes, and posts their sha256 on
+fed#331. That sha256 is the pin, and the release stages the uploaded asset after checking it, as
+release.yml does for the macOS node. Do not rebuild the node on the release host and expect its
+pin to match. Until the digests are posted, the node's Linux targets stay under `pending` in
+`release/components.json`.
 
 ```bash
 cd citrate-core
