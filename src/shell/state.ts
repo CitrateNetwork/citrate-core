@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { ValidatorActivation } from "./chainTruth";
+import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
@@ -439,6 +439,12 @@ export interface AppState {
    * Rule 1: a funded bond is not the same as an activated one).
    */
   bondedStake: number;
+  /**
+   * True once a `ValidatorRegistry.stakeOf` read (the grant-status read) has returned THIS
+   * session. Until then `bondedStake` is a default or a persisted value, not a reading, so the
+   * staked figure is shown as "—" (UI truth contract rule 2: unknown is not zero). Not persisted.
+   */
+  bondedStakeRead: boolean;
   /** RC52: the chain reads network-scoped values still wait for after a genesis switch. */
   netUnread: NetRead[];
   /** RC52: the genesis-switch notice, shown on Node until dismissed. */
@@ -464,6 +470,8 @@ export interface AppState {
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;
+  /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
+  validatorCounts: ValidatorCounts | null;
   /**
    * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
    * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
@@ -851,6 +859,7 @@ export function freshState(pid: string): AppState {
     crashes: [],
     liquid: 0,
     bondedStake: 0,
+    bondedStakeRead: false,
     netUnread: [],
     networkNotice: null,
     netArchived: [],
@@ -859,6 +868,7 @@ export function freshState(pid: string): AppState {
     hasSbt: false,
     rewards: null,
     validatorActivation: null,
+    validatorCounts: null,
     bondActivated: null,
     blockSecs: null,
     minStakeWei: null,

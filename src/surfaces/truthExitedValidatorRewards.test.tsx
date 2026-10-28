@@ -103,6 +103,7 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
   it("the poll folds MemberBond.activated() from the grant read", async () => {
     const reads = {
       validatorActivation: vi.fn(async () => ({ isActive: false, status: 0, actEpoch: 0, currentEpoch: 546 })),
+      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
       minStakeWei: async () => 32_000n * WEI,
       blockSeconds: async () => 2,
       producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
@@ -258,7 +259,8 @@ describe("#348 round 2 — MemberBond.activated() loads after a restart, and Rew
 
   it("once activated() has read, a stopped node with a settled grant does not re-read it every poll", async () => {
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, bondActivated: false });
+    // Both reads landed (activated() and, since the stake gate, stakeOf): nothing left to read.
+    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, bondedStakeRead: true, bondActivated: false });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);

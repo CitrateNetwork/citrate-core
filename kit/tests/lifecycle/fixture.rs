@@ -192,6 +192,20 @@ impl OwnedFixture {
         )
     }
 
+    /// A supervised child that records its pid, stays up for `secs` (a decimal like "0.15"),
+    /// then exits with code 1. Its timer writes nothing to the output pipes, so a teardown in
+    /// the middle leaves no reader held.
+    pub fn crash_after_spec(&self, name: &str, secs: &str) -> SidecarSpec {
+        SidecarSpec::new(
+            name,
+            sh_bin(),
+            self.sh_args(&format!(
+                "echo $$ >>\"$1\"; {} {secs} </dev/null >/dev/null 2>&1; exit 1",
+                sleep_bin().display()
+            )),
+        )
+    }
+
     /// A supervised child that starts one long-lived descendant (which inherits its output
     /// pipes), records both pids, then exits with code 3: a crash that leaves its output open.
     pub fn crash_with_descendant_spec(&self, name: &str) -> SidecarSpec {

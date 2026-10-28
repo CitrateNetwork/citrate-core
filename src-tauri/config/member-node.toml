@@ -15,7 +15,7 @@
 # machines because ~/.citrate/node.toml exists there as a chain-dev artefact.
 #
 # The network values are NOT in this file (K6 network switch): the quoted
-# chain id and bootnode placeholders (quoted so the template is still valid
+# chain id, genesis profile and bootnode placeholders (quoted so the template is still valid
 # TOML) are filled from the active profile in
 # network/profiles.json (`network_profile::render_node_network`), which is
 # derived from citrate-chain node/config/testnet-beta.toml for the alpha
@@ -25,6 +25,9 @@
 
 [chain]
 chain_id = "{{CHAIN_ID}}"
+# The genesis profile from the active network profile (`genesisProfile`): which block 0 the node
+# builds. Without it the node builds its chain-id default (on the alpha chain id, the r1005 genesis).
+genesis_profile = "{{GENESIS_PROFILE}}"
 genesis_hash = ""
 block_time = 2
 ghostdag_k = 18

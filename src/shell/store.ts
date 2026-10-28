@@ -71,11 +71,11 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
-import { SyncTracker } from "./syncProgress";
+import { STALL_MS, SyncTracker } from "./syncProgress";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
@@ -273,6 +273,14 @@ export function describeBond(g: {
   // unverified member is NOT told their funds are available.
   if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
   return "Unlocked";
+}
+
+/** A wei amount (decimal string) as SALT; null when it is not a decimal wei string (never 0). */
+export function saltFromStakeWei(wei: string | null | undefined): number | null {
+  if (typeof wei !== "string" || !/^\d+$/.test(wei)) return null;
+  const w = BigInt(wei);
+  const unit = 10n ** 18n;
+  return Number(w / unit) + Number(w % unit) / 1e18;
 }
 
 /**
@@ -627,6 +635,7 @@ export function tickPatch(
         // isActive in refreshNode. Self-stake never counts (C1-V V4).
         const simBond = s.hasGrant ? 32000 : 0;
         u.bondedStake = simBond;
+        u.bondedStakeRead = true;
         u.node = simBond > 0 ? "validating" : "synced";
         if (s.stage === "s6") u.s6ready = true;
       }
@@ -1452,6 +1461,10 @@ export class Store {
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
     this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    // The same read carries ValidatorRegistry.stakeOf for the bond's key: fold it, so the staked
+    // figure is a reading from launch, even with the node stopped (unknown is not zero).
+    const stakeSalt = saltFromStakeWei(grant.bondedStakeWei);
+    if (stakeSalt != null) this.setState({ bondedStake: stakeSalt, bondedStakeRead: true });
     // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
     // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
     // that is on chain; otherwise the last value stands.
@@ -1510,6 +1523,12 @@ export class Store {
       this.setState({ producers, producersError: null });
     } catch (err) {
       this.setState({ producers: null, producersError: String((err as Error).message ?? err) });
+    }
+    // Contract v1.1 §2: registered / eligible counts on the same cadence. A failed read is null ("—").
+    try {
+      this.setState({ validatorCounts: await this.chainReads.validatorCounts() });
+    } catch {
+      this.setState({ validatorCounts: null });
     }
   }
 
@@ -1579,18 +1598,27 @@ export class Store {
       let grantPatch: Partial<AppState> | null = null;
       let grantRead = false;
       let bondActivated = this.state.bondActivated;
+      let stakeRead = this.state.bondedStakeRead;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
       // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
       // own read (whatever the node is doing) until it lands.
       const needActivation = this.state.hasGrant && bondActivated === null;
-      if ((needBond || needGrant || needActivation) && dueForBondRead) {
+      // Unknown is not zero: the staked figure shows "—" until stakeOf has read this session, so an
+      // unread stake gets its own read whatever the node is doing (it is a public-RPC read).
+      const needStake = !stakeRead;
+      if ((needBond || needGrant || needActivation || needStake) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
           grantRead = true;
-          bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
+          // A malformed stake is not a reading: it stays unread, never a fabricated 0.
+          const salt = saltFromStakeWei(g.bondedStakeWei);
+          if (salt != null) {
+            bonded = salt;
+            stakeRead = true;
+          }
           // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
           bondActivated = g.bondActivated ?? null;
           // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
@@ -1632,6 +1660,7 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
+        bondedStakeRead: stakeRead,
         bondActivated,
         validatorActivation,
       };
@@ -1655,9 +1684,9 @@ export class Store {
           this.nodeStallLastHeight = st.height; // advanced — reset the freeze window
           this.nodeStallSince = 0;
         } else if (st.peers > 0) {
-          const NODE_STALL_MS = 60_000; // height frozen this long while behind + peered = stalled
-          if (this.nodeStallSince === 0) this.nodeStallSince = Date.now();
-          else if (Date.now() - this.nodeStallSince >= NODE_STALL_MS) nextNode = "stalled";
+          // Monotonic clock: a wall-clock step back must not hold off (or fake) a stall.
+          if (this.nodeStallSince === 0) this.nodeStallSince = performance.now() || 1;
+          else if (performance.now() - this.nodeStallSince >= STALL_MS) nextNode = "stalled"; // contract §1, shared with the sync line
         }
       } else if (nextNode === "synced" || nextNode === "validating") {
         // Fully caught up — clear the entire stall budget (a fresh session on any later dip).
@@ -1674,7 +1703,7 @@ export class Store {
       patch.miningHold = st.miningHold ?? null;
       // 0.5.2 RC52 — sync progress and an honest ETA: this node's height (local eth_blockNumber, only
       // while running) against the public head (eth_blockNumber on the profile RPC, throttled).
-      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead());
+      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead(), st.peers);
       if (this.validatorArmed && !st.miningArmed && st.miningHold) this.validatorArmed = false;
       if (st.blocked && st.state === "stopped") nextNode = "error";
       if (!this.nodeStarting) patch.node = nextNode;
@@ -2325,6 +2354,11 @@ export class Store {
       this.toast("Renewal opens the checkout in the desktop app.");
       return;
     }
+    await this.openMembershipCheckout();
+  }
+
+  /** Open the core-membership checkout in the browser and watch for the new entitlement. */
+  private async openMembershipCheckout(): Promise<void> {
     try {
       // Pass the signed-in email as login_hint so the browser checkout targets THIS account.
       await bridge.membership.checkout(this.state.authEmail ?? undefined);
@@ -2333,6 +2367,30 @@ export class Store {
     } catch (err) {
       this.toast("Could not open checkout — " + String((err as Error).message ?? err));
     }
+  }
+  /**
+   * Settings › Billing "Become a member ↗" for a free user: the same guards as onboarding S3
+   * (onS3Pay) before any money moves. (1) Link first: the grant goes to the identity's wallet
+   * claim, which this device can spend from only once linked. (2) Never open checkout for an
+   * account that already holds the grant on chain (one per sub; a second order can never be
+   * granted). An unreadable chain is not evidence of a grant, as in S3. Renewal for a lapsed
+   * member stays on renewMembership: a lapsed member holds the grant and still renews.
+   */
+  async becomeMember(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Membership checkout opens in the desktop app.");
+      return;
+    }
+    if (this.linkBeforeCheckout("Link your wallet first — approve the link, then choose Become a member again.")) return;
+    const held = await this.readHeldGrant();
+    if (held) {
+      this.setState({ hasGrant: true, hasSbt: held.hasSbt });
+      this.save();
+      this.toast("This account already holds the membership grant, so there is nothing to check out. Your membership shows here once your identity claim refreshes.");
+      this.startEntitlementPoll();
+      return;
+    }
+    await this.openMembershipCheckout();
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
@@ -2445,13 +2503,20 @@ export class Store {
     // registry stake) plus the bond status (which carries the unlock block), so it can explain a
     // member with 0 spendable, 0 staked and a locked grant.
     const grantLockedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
+    // The grant's principal: MemberBond.principal() from the activation read, else the vault's
+    // attribution (MembershipStakeVault.attributedStake). null when neither is read: never 0.
+    const principalSalt = saltFromStakeWei(s.activation?.principalWei);
+    const grantSalt = principalSalt ?? (s.hasGrant ? saltFromStakeWei(s.s5StakeWei) : null);
+    // The stake only from a stakeOf read this session (unknown is not zero).
+    const stakeSalt = readStakeSalt(s);
     return {
       height: s.height,
       peers: s.peers,
       nodeState: nodeLabelLocal(s.node),
       // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf (UI truth contract §2). The
       // locked grant is reported separately under `membership`; self-stake is not validator stake.
-      staked: s.bondedStake,
+      staked: stakeSalt,
+      grantSalt,
       liquid: s.liquid,
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
@@ -2463,8 +2528,10 @@ export class Store {
       membership: {
         grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
         bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
-        validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
-        locked: grantLockedSalt > 0 && s.bondedStake < grantLockedSalt,
+        // ValidatorRegistry.stakeOf, or null with "not read yet" before the read (never a default 0).
+        validatorBondedSalt: stakeSalt,
+        validatorBonded: stakeSalt == null ? "not read yet (ValidatorRegistry.stakeOf)" : "ValidatorRegistry.stakeOf",
+        locked: stakeSalt == null || grantSalt == null ? null : grantSalt > 0 && stakeSalt < grantSalt,
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
         note:
           grantExplanation({ amountSalt: grantLockedSalt > 0 ? grantLockedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
@@ -5712,11 +5779,7 @@ export class Store {
       // check out. The link ceremony re-reads the claim on approval
       // (authUserinfo/refreshWallet), so walletIsLinked() flips true and the next
       // Pay proceeds. This mirrors how activation is gated on the link.
-      if (!this.walletIsLinked()) {
-        this.toast("Link your wallet first — approve the link, then tap Pay again.");
-        void this.linkWallet();
-        return;
-      }
+      if (this.linkBeforeCheckout("Link your wallet first — approve the link, then tap Pay again.")) return;
       // ★ MONEY GUARD ★ — never open checkout for a member who ALREADY holds the
       // grant. Settlement is chain truth, and the client had no way to observe an
       // existing grant: `settled` was reachable ONLY through `pollMembership`, which
@@ -5880,22 +5943,38 @@ export class Store {
   async settleS3IfAlreadyGranted(): Promise<boolean> {
     if (BRIDGE_MODE !== "tauri") return false;
     if (this.state.s3 === "settled") return true;
+    const grant = await this.readHeldGrant();
+    if (!grant) return false;
+    this.setState({
+      s3: "settled",
+      s3PollExhausted: false,
+      hasGrant: true,
+      hasSbt: grant.hasSbt,
+    });
+    this.save();
+    return true;
+  }
+
+  /**
+   * The membership grant this account already holds on chain (`isGrantOnChain && hasSbt`, read
+   * permissionlessly from 40204), or null. Null on any read failure: an unreadable chain is not
+   * evidence of a grant (Rule 1). Shared by every checkout's money guard.
+   */
+  private async readHeldGrant(): Promise<GrantStatus | null> {
     try {
       const grant = await bridge.membership.grantStatus(this.identity().wallet);
-      if (isGrantOnChain(grant) && grant.hasSbt) {
-        this.setState({
-          s3: "settled",
-          s3PollExhausted: false,
-          hasGrant: true,
-          hasSbt: grant.hasSbt,
-        });
-        this.save();
-        return true;
-      }
+      return isGrantOnChain(grant) && grant.hasSbt ? grant : null;
     } catch {
-      // Honest no-op: an unreadable chain is not evidence of a grant.
+      return null;
     }
-    return false;
+  }
+
+  /** Checkout ordering guard: true (and the link ceremony opened) when the wallet is not linked yet. */
+  private linkBeforeCheckout(message: string): boolean {
+    if (this.walletIsLinked()) return false;
+    this.toast(message);
+    void this.linkWallet();
+    return true;
   }
   onS5Begin(): void {
     this.setState({ s5: "verifying", s5c: 0 });
