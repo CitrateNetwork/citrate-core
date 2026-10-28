@@ -239,6 +239,12 @@ export function memberKeyRule(s: Pick<AppState, "hasGrant" | "bondActivated" | "
   return { kind: "node" };
 }
 
+/** fxEARN — `memberKeyRule` as one dependency value: the bond key, "node", or "unread". */
+export function memberKeyRuleKey(s: Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey">): string {
+  const r = memberKeyRule(s);
+  return r.kind === "bond" ? r.key : r.kind;
+}
+
 /**
  * #391 — whether a node_validator_earnings answer belongs to the member's validator key; null = it
  * does, otherwise why not. `expected` is the key that was asked for (`MemberBond.pubkey()`), or
@@ -276,42 +282,6 @@ export function bondClaimBlocked(s: Pick<AppState, "bondActivated" | "bondedStak
     return "Claiming needs identity verification on chain: MemberBond.isKycVerified() reads false, and the bond's claimRewards() requires it.";
   }
   return "Claim waits for MemberBond.isKycVerified(), which is not read yet; the bond's claimRewards() requires it.";
-}
-
-type OwnWalletInputs = Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey" | "validatorActivation" | "walletAddr">;
-
-/**
- * fxEARN — a validator bonded straight from the member's wallet, with no MemberBond (live r1005
- * has such a key). With no bond, the member's validator key is this node's own
- * key (memberKeyRule "node"), and the registry read for it (`validatorInfo(key)`) names its staker.
- * When that staker is the member's wallet and the key is registered (status ≠ None), the key and its
- * registry stake are the member's. The bond-path reads never see it: `pubkeyOfStaker(bond)` is for
- * the bond's address. Unread, absent or malformed values are not a match (fail closed).
- */
-export function ownWalletValidator(s: OwnWalletInputs): boolean {
-  if (memberKeyRule(s).kind !== "node") return false;
-  const a = s.validatorActivation;
-  if (!a || a.status === 0 || typeof a.staker !== "string" || typeof s.walletAddr !== "string") return false;
-  const addr = /^0x[0-9a-fA-F]{40}$/;
-  return addr.test(a.staker) && addr.test(s.walletAddr) && a.staker.toLowerCase() === s.walletAddr.toLowerCase();
-}
-
-/** fxEARN — the registry stake (SALT) of a wallet-staked key, `validatorInfo(key).bonded`; null = not one, or not read. */
-export function ownWalletValidatorSalt(s: OwnWalletInputs): number | null {
-  if (!ownWalletValidator(s)) return null;
-  const w = s.validatorActivation?.bondedWei;
-  return typeof w === "string" && /^[0-9]+$/.test(w) ? Number(BigInt(w)) / 1e18 : null;
-}
-
-/**
- * fxEARN — why Claim isn't offered for a wallet-staked key, or null. The app's claim builds
- * `MemberBond.claimRewards()` (bond path) or `ContributionAccounting.claim()` (no bond); this key's
- * rewards are paid only by `ValidatorRegistry.claimRewards(key)` sent from the staker wallet, which
- * the app doesn't build. Offering Claim would pay a different figure than "Claimable now" shows.
- */
-export function ownWalletClaimBlocked(s: OwnWalletInputs): string | null {
-  if (!ownWalletValidator(s)) return null;
-  return "Claim isn't offered here: this validator key was bonded straight from your wallet, not through a MemberBond, and its rewards are paid only by ValidatorRegistry.claimRewards(key) sent from that wallet, which this app doesn't build yet.";
 }
 
 export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> {
@@ -746,8 +716,6 @@ export class Store {
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
   /** Epoch ms of the last `grantStatus` bond read — see the throttle in refreshNode. */
   private lastBondReadAt = 0;
-  /** fxEARN: bondedStake currently holds a wallet-staked key's registry stake (see ownWalletValidatorSalt). */
-  private ownWalletFolded = false;
   /** C1-V V4 — when `ValidatorRegistry.isActive` was last read (the set changes at epoch snapshots). */
   private lastActiveReadAt = 0;
   /** C1-V V4 — this node's validator key (`proposer.key`), cached once read. */
@@ -1672,19 +1640,6 @@ export class Store {
       // The key the registry is read for depends on the bond reads just folded (C1-V5).
       if (bondReads) this.setState(bondReads);
       const validatorActivation = await this.readValidatorActivation(st.state === "running");
-      // fxEARN: a key staked straight from the member's wallet (no MemberBond) is a validator too. Its
-      // registry stake is the member's stake, so the rewards read, the words and the re-arm below
-      // follow it. A failed registry read (null) keeps the last value, as the bond read does; a read
-      // that no longer shows the wallet as staker drops it and re-reads the bond path.
-      const ownWalletSalt = ownWalletValidatorSalt({ ...this.state, validatorActivation });
-      if (ownWalletSalt != null) {
-        bonded = ownWalletSalt;
-        this.ownWalletFolded = true;
-      } else if (this.ownWalletFolded && validatorActivation) {
-        bonded = 0;
-        this.ownWalletFolded = false;
-        this.lastBondReadAt = 0;
-      }
       void this.refreshProducers();
       // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
       // respawns the node with `--mine --coinbase`. So an ALREADY-BONDED validator
@@ -2479,6 +2434,8 @@ export class Store {
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
+      // fxEARN: the reason Node › Rewards shows instead of Claim, so the agent never promises a claim the app refuses.
+      claimBlocked: bondClaimBlocked(s),
       // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
       grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
@@ -4904,12 +4861,6 @@ export class Store {
       this.setState(bondReadsFromGrant(g));
     } catch (err) {
       this.toast("Claim unavailable — could not read your validator status: " + String((err as Error).message ?? err));
-      return;
-    }
-    // fxEARN: no claim this app builds pays a wallet-staked key's rewards; say so and build none.
-    const walletBlocked = validator ? null : ownWalletClaimBlocked(this.state);
-    if (walletBlocked) {
-      this.toast(walletBlocked);
       return;
     }
     // Payout gate (KYC is required to take SALT out; participation is not gated). Contract v1.2 §1

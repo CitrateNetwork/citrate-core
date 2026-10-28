@@ -16,7 +16,7 @@
 // =====================================================================
 import { useEffect, type ReactNode } from "react";
 import { BRIDGE_MODE } from "../../bridge/mode";
-import { bondClaimBlocked, ownWalletClaimBlocked, type Store } from "../../shell/store";
+import { bondClaimBlocked, memberKeyRuleKey, type Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
 import { readsValidatorRewards, validatorDash, validatorWord } from "../../shell/chainTruth";
 import { bondFlags } from "./nodeWords";
@@ -43,10 +43,13 @@ const NOT_VALIDATOR_WORDS = ["Not a validator", "Bond locked · not staked", "Un
 
 export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s: AppState; mode?: "tauri" | "sim" }) {
   const reads = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  // fxEARN (Codex P2): the key the rewards are read for (memberKeyRule); a key that resolves after
+  // mount re-reads them.
+  const rewardsKey = memberKeyRuleKey(s);
   // Read on open, and again when the reward eligibility changes while the tab is open (#348).
   useEffect(() => {
     if (mode === "tauri") void store.refreshEarnings();
-  }, [store, mode, reads]);
+  }, [store, mode, reads, rewardsKey]);
 
   const shell = (body: ReactNode) => (
     <div data-node-tab="rewards" style={{ ...PAGE, maxWidth: 980 }}>
@@ -124,9 +127,8 @@ export function NodeRewards({ store, s, mode = BRIDGE_MODE }: { store: Store; s:
     const maturing = total > claimable ? total - claimable : 0n;
     const dust = claimable < CLAIM_DUST_WEI;
     // Contract v1.2 §1: on the bond path claimRewards() requires MemberBond.isKycVerified() on chain;
-    // the identity provider's kyc_status claim is never this gate. fxEARN: a key staked from the
-    // member's own wallet has no claim this app builds (the store refuses it), so no button either.
-    const kycBlock = bondClaimBlocked(s) ?? ownWalletClaimBlocked(s);
+    // the identity provider's kyc_status claim is never this gate.
+    const kycBlock = bondClaimBlocked(s);
     rows = (
       <>
         <Row k="Validator rewards" v={<span data-reward="total">{saltFromWei2(data.totalWei) ?? "—"}</span>} src="ValidatorRegistry.rewardsOf(pubkey).total" />

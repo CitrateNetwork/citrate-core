@@ -42,6 +42,11 @@ export interface AgentContext {
   /** `ValidatorRegistry.rewardsOf(pubkey).total` in SALT; null = not a validator / not read. */
   rewardsTotal: number | null;
   /**
+   * Why Claim is not offered now (the Node page's own reason: e.g. MemberBond.isKycVerified() reads
+   * false, or the bond key isn't read), or null when it is. Optional: absent means not stated.
+   */
+  claimBlocked?: string | null;
+  /**
    * The member's membership grant as read from chain (C1-V V5): the amount in SALT, the bond's
    * `MemberBond.unlockBlock` (null = not read), and whether the bond is activated (staked). null =
    * no grant (free tier, or not granted yet). Optional so older callers default to "no grant".
@@ -1016,7 +1021,13 @@ function routeIntent(t: string): Plan {
       compose: (c) =>
         c.rewardsTotal == null || c.claimable == null
           ? "I have no validator rewards reading for you: your node is not a registered validator, or the read failed. Validator rewards are paid only for producing blocks, and come from ValidatorRegistry.rewardsOf."
-          : `Validator rewards (ValidatorRegistry.rewardsOf): **${c.rewardsTotal.toFixed(2)} SALT** in total, **${c.claimable.toFixed(2)} SALT** claimable now, and the rest is maturing. Rewards are paid for producing blocks. Claiming signs a claimRewards() transaction through the ceremony. Want me to take you to Node > Rewards?`,
+          : `Validator rewards (ValidatorRegistry.rewardsOf): **${c.rewardsTotal.toFixed(2)} SALT** in total, **${c.claimable.toFixed(2)} SALT** claimable now, and the rest is maturing. Rewards are paid for producing blocks. ` +
+            // fxEARN (review P2-1): the claim is described only where Node › Rewards offers it.
+            (c.claimBlocked
+              ? `Claim isn't offered yet: ${c.claimBlocked}`
+              : c.claimable < 5
+                ? "Claims batch until at least 5 SALT is claimable, to avoid spending gas on dust."
+                : "Claiming signs a claimRewards() transaction through the ceremony. Want me to take you to Node > Rewards?"),
     };
   }
   if (has("balance", "wallet", "how much salt")) {

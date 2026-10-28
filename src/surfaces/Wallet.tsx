@@ -20,6 +20,7 @@ import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
 import { readsValidatorRewards, saltFromWei, validatorDash } from "../shell/chainTruth";
+import { memberKeyRuleKey } from "../shell/store";
 import { grantExplanation } from "../data/grantCopy";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -79,9 +80,12 @@ export function Wallet({ store, s }: SurfaceProps) {
   // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
   // once the node poll has reconciled the stake / bond after mount.
   const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  // fxEARN (Codex P2): the key the rewards are read for (memberKeyRule); a key that resolves after
+  // mount re-reads them.
+  const rewardsKey = memberKeyRuleKey(s);
   useEffect(() => {
     void store.refreshEarnings();
-  }, [store, readsRewards]);
+  }, [store, readsRewards, rewardsKey]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);
