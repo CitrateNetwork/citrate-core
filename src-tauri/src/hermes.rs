@@ -31,8 +31,9 @@ use crate::supervisor::{
 /// The origin stamped on every intent bridged from Hermes; the ceremony DISPLAYS it verbatim so a
 /// human approving a chain effect sees it came from the agent, not the local user.
 const HERMES_ORIGIN: &str = "agent:hermes";
-/// The Citrate chain id (40204). A Hermes chain effect carries no chain id; the bridge stamps this.
-const CITRATE_CHAIN_ID: u64 = 40204;
+// A Hermes chain effect carries no chain id; the bridge stamps the one this build targets (the
+// kit constant pinned to the active network profile).
+use crate::rpc::CITRATE_CHAIN_ID;
 
 // CX-S6.4 — the code-task HIC routing surface. Declared as a submodule of this (s6-owned) file so the
 // new module needs no `mod` line in the (s0-owned) lib.rs; the file is still `agent_tools.rs`.

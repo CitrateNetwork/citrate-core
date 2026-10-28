@@ -16,6 +16,7 @@ import { useEffect, type CSSProperties } from "react";
 import type { Store } from "../shell/store";
 import { agentSbtSlice, defaultAgentSbtIo, identityCard, loadAgentSbt, requestAgentSbtMint, type IdentityCard } from "../identity/agentSbt";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 const eyebrow: CSSProperties = {
   fontFamily: "var(--font-mono)",
@@ -71,7 +72,7 @@ export function AgentIdentityView({ card, busy, onMint }: { card: IdentityCard; 
         </div>
       )}
       <div className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-        Data source: AgentSBT on chain 40204 (balanceOf, mint logs, getAgent, memberOrgId, mintAgentAsMember preflight) · CitrateMemberSBT balanceOf · addresses from the app's address book
+        Data source: AgentSBT on chain {CHAIN_ID_TEXT} (balanceOf, mint logs, getAgent, memberOrgId, mintAgentAsMember preflight) · CitrateMemberSBT balanceOf · addresses from the app's address book
       </div>
     </div>
   );

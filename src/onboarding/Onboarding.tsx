@@ -17,6 +17,7 @@ import { PricingLink } from "../components/PricingLink";
 import { HaveAnInvite } from "../surfaces/HaveAnInvite";
 import { SYNC_SOURCE, syncLine } from "../shell/syncProgress";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 /** The registry stake as "N SALT", or "— (not read yet)" before a stakeOf read (rule 2). */
@@ -731,7 +732,7 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
               </button>
               {s.s3Checking && (
                 <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: "8px 0 0" }}>
-                  Checking chain 40204 for a membership this account already holds…
+                  Checking chain {CHAIN_ID_TEXT} for a membership this account already holds…
                 </p>
               )}
             </>
@@ -772,7 +773,7 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
               Check again
             </button>
             <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              reads chain 40204 · never re-opens checkout
+              reads chain {CHAIN_ID_TEXT} · never re-opens checkout
             </span>
           </div>
           <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
@@ -1037,7 +1038,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         )}
         {s.node === "syncing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain 40204</div>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain {CHAIN_ID_TEXT}</div>
             <div className="mono tabular" title={SYNC_SOURCE} style={{ fontSize: 13, color: "var(--accent-text)" }}>
               {syncLine(s.syncProgress)}
             </div>

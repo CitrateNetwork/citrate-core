@@ -5,6 +5,7 @@
 import { useState } from "react";
 import { bridge } from "../bridge";
 import { buildTeachWorkflow, runTeach, teachSummary, TEACH_LIMITS, type TeachProgress } from "../agent/learnLauncher";
+import { ACTIVE_PROFILE } from "../network/profile";
 
 const label = { fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase" as const, color: "var(--tx-3)" };
 
@@ -53,7 +54,7 @@ export function TeachHermesView({ unavailable, task, checks, running, progress, 
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             <span style={{ fontSize: 11.5, color: "var(--tx-2)" }}>Checks (one per line: a phrase the answer must contain)</span>
-            <textarea data-testid="teach-checks" value={checks} rows={2} disabled={running} onChange={(e) => onChecks(e.target.value)} placeholder="40204" style={{ fontSize: 12.5, resize: "vertical" }} />
+            <textarea data-testid="teach-checks" value={checks} rows={2} disabled={running} onChange={(e) => onChecks(e.target.value)} placeholder={ACTIVE_PROFILE?.chainId != null ? String(ACTIVE_PROFILE.chainId) : ""} style={{ fontSize: 12.5, resize: "vertical" }} />
           </label>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button data-testid="teach-run" className="btn btn-sm" disabled={running || invalid !== null} onClick={onRun}>

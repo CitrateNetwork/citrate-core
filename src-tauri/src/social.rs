@@ -20,7 +20,7 @@ use crate::connections::{capture_public_pkce, random_state, ConnError, OAUTH_RED
 use crate::oidc::HttpClient;
 use crate::secret::SecretString;
 
-const CHAIN_ID: u64 = 40204;
+use crate::rpc::CITRATE_CHAIN_ID as CHAIN_ID;
 
 /// A network's OAuth endpoints + PUBLIC client id (safe to embed — no secret).
 struct NetCfg {
