@@ -14,14 +14,21 @@ const store = readFileSync(join(__dirname, "store.ts"), "utf8");
 describe("tripwire — bondedStake has one live source, the bond's registry stake", () => {
   it("the poll's `bonded` is assigned only from the state and from g.bondedStakeWei", () => {
     const writes = [...store.matchAll(/\bbonded\s*=(?!=)\s*([^;\n]+)/g)].map((m) => m[1].trim());
-    expect(writes).toEqual(["this.state.bondedStake", "g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0"]);
+    expect(writes).toEqual(["this.state.bondedStake", "salt"]);
+    // #555 (unknown is not zero): the poll's `salt` is the grant read's stake, parsed strictly.
+    const salts = [...store.matchAll(/\bconst salt\s*=\s*([^;\n]+)/g)].map((m) => m[1].trim());
+    expect(salts).toEqual(["saltFromStakeWei(g.bondedStakeWei)"]);
   });
 
   it("bondedStake is written only by the poll patch and the sim-only preview", () => {
     const direct = [...store.matchAll(/\bbondedStake\s*=(?!=)\s*([^;\n]+)/g)].map((m) => m[1].trim());
     expect(direct).toEqual(["simBond"]);
     const keyed = [...store.matchAll(/\bbondedStake:\s*([^,\n}]+)/g)].map((m) => m[1].trim());
-    expect(keyed).toEqual(["bonded"]);
+    expect(keyed).toEqual(["stakeSalt", "bonded"]);
+    // #555: the launch fold writes the same grant read's stake (`stakeSalt`); the agent context's
+    // `stakeSalt` only reads state.
+    const stakeSalts = [...store.matchAll(/\bconst stakeSalt\s*=\s*([^;\n]+)/g)].map((m) => m[1].trim());
+    expect(stakeSalts).toEqual(["saltFromStakeWei(grant.bondedStakeWei)", "readStakeSalt(s)"]);
   });
 
   it("the registry read for the validator words carries no stake or staker", () => {
