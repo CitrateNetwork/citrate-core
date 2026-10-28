@@ -4,6 +4,7 @@ import { AppState, nodeLabel } from "./state";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { agentSlice } from "./slices/agent";
 import { PLACES, ROUTABLE, locate } from "./places";
+import { SYNC_SOURCE, syncLine } from "./syncProgress";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
@@ -40,7 +41,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
   const tierColor = s.entitlement === "active" ? "rgba(205,231,214,.6)" : s.entitlement === "lapsed" ? "#dd7259" : "#ffbd10";
   const sideDotColor = s.node === "off" ? "rgba(205,231,214,.35)" : nodeColors[s.node];
   const sideDotAnim = s.node === "validating" || s.node === "syncing" ? "ccPulse 2.4s var(--ease-standard) infinite" : "none";
-  const sideNodeText = s.node === "off" ? "node off" : s.node === "syncing" ? "syncing " + (s.syncPct | 0) + "%" : nodeLabel(s.node) + " · " + (s.height > 0 ? fmtI(s.height) : "—"); // 0 = not read (C1-V V10)
+  const sideNodeText = s.node === "off" ? "node off" : s.node === "syncing" ? syncLine(s.syncProgress) : nodeLabel(s.node) + " · " + (s.height > 0 ? fmtI(s.height) : "—"); // 0 = not read (C1-V V10)
 
   return (
     <aside style={{ background: "var(--deep-evergreen)", color: "#cde7d6", display: "flex", flexDirection: "column", padding: "18px 12px 12px", minHeight: 0 }}>
@@ -105,7 +106,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
       <div style={{ borderTop: "1px solid rgba(205,231,214,.12)", padding: "12px 8px 4px", display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ width: 7, height: 7, borderRadius: 999, background: sideDotColor, animation: sideDotAnim, flexShrink: 0 }}></span>
-          <span className="mono tabular" style={{ fontSize: 10.5, letterSpacing: ".06em", color: "rgba(205,231,214,.75)" }}>
+          <span className="mono tabular" title={s.node === "syncing" ? SYNC_SOURCE : undefined} style={{ fontSize: 10.5, letterSpacing: ".06em", color: "rgba(205,231,214,.75)" }}>
             {sideNodeText}
           </span>
         </div>

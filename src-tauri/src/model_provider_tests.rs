@@ -64,7 +64,13 @@ fn provider_ids_round_trip_and_custom_ids_are_slugs() {
         ProviderId::parse("custom-my-box"),
         Some(ProviderId::Custom("custom-my-box".into()))
     );
-    for bad in ["", "custom-", "custom-UP", "custom-a/b", "custom-a.b", "gateway", "cognition", "OpenAI"] {
+    // D-11: the Citrate gateway and the Cognition delegate are provider ids too.
+    assert_eq!(ProviderId::parse("gateway"), Some(ProviderId::Gateway));
+    assert_eq!(ProviderId::parse("cognition"), Some(ProviderId::Cognition));
+    assert_eq!(ProviderId::Gateway.as_str(), "gateway");
+    assert_eq!(ProviderId::Cognition.as_str(), "cognition");
+    assert!(ProviderId::Cognition.is_delegate() && !ProviderId::Gateway.is_delegate());
+    for bad in ["", "custom-", "custom-UP", "custom-a/b", "custom-a.b", "Gateway", "devin", "OpenAI"] {
         assert!(ProviderId::parse(bad).is_none(), "{bad:?} must not parse");
     }
     assert!(ProviderId::parse(&format!("custom-{}", "a".repeat(41))).is_none());
