@@ -773,9 +773,25 @@ impl R1005Replay {
         (v["member"].as_str().unwrap_or_default().to_string(), Self(calls))
     }
 }
+/// The recording was made on r1005. Since the RC52 fill the embedded book is r1006's, so the
+/// contracts the app reads (book addresses) are mapped to the r1005 addresses the recording holds;
+/// selectors, arguments and the bond clone address are compared as recorded.
+fn as_recorded_on_r1005(to: &str) -> String {
+    let book = [
+        (membership_stake_vault(), "0xa93f7f688a8f212e0cad59edbd1f7d3592151751"),
+        (citrate_member_sbt(), "0xf8ad11f6d3aefa605e2ebf7c81ed08a2b38b3a3c"),
+        (crate::addresses::validator_registry(), "0xde4f679632be7810d915f637cc6a72bf076a3bd9"),
+    ];
+    book.iter()
+        .find(|(now, _)| now.eq_ignore_ascii_case(to))
+        .map(|(_, r1005)| r1005.to_string())
+        .unwrap_or_else(|| to.to_string())
+}
 impl RpcTransport for R1005Replay {
     fn call(&self, body: JsonValue) -> Result<JsonValue, RpcError> {
-        let to = body["params"][0]["to"].as_str().unwrap_or_default().to_ascii_lowercase();
+        let to = as_recorded_on_r1005(
+            &body["params"][0]["to"].as_str().unwrap_or_default().to_ascii_lowercase(),
+        );
         let data = body["params"][0]["data"].as_str().unwrap_or_default().to_ascii_lowercase();
         let hit = self.0.iter().find(|(t, d, _)| *t == to && *d == data);
         match hit {
