@@ -56,7 +56,7 @@ export function Wallet({ store, s }: SurfaceProps) {
   const staked = s.bondedStake;
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
-  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked);
   // C1-V V9: every Wallet read (balance, validator stake and rewards) goes to the public RPC
   // through the Rust RpcClient, whether or not the local node runs.
   const src = "rpc.citrate.ai";

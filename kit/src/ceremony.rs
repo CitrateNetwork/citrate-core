@@ -1838,7 +1838,7 @@ fn err_str(e: CeremonyError) -> String {
 ///
 /// K6: a network-gate refusal is raised before `eth_sendRawTransaction` is called, so it is
 /// definitive as well.
-fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
+pub(crate) fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
     const EXACT: &[&str] = &[
         "Rate limit exceeded. Try again later.",
         "Missing transaction data",

@@ -114,7 +114,7 @@ describe("the staked figure is '—' until a stakeOf read returns (unknown is no
   });
 
   it("Wallet overview: once read, a real 0 is 0 (with the bond word) and a real stake is shown", () => {
-    expect(walletTile(member({ bondedStakeRead: true, bondedStake: 0, bondActivated: false }))).toEqual(["0", "Bond locked · not staked"]);
+    expect(walletTile(member({ bondedStakeRead: true, bondedStake: 0, bondActivated: false, bondUnlocked: false }))).toEqual(["0", "Bond locked · not staked"]);
     expect(walletTile(member({ bondedStakeRead: true, bondedStake: 32000, bondActivated: true }))).toEqual(["32,000", "ValidatorRegistry.stakeOf"]);
   });
 
