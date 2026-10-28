@@ -364,12 +364,14 @@ export interface AppState {
   s5StakeWei: string | null;
   /**
    * M-2.2/M-2.3 — a plain-language description of the member's bond escrow
-   * (`describeBond`), e.g. "Staked · unlocks at block 300,000". Derived ONLY
+   * (`describeBond`), e.g. "Bond locked · not staked · until block 300,000". Derived ONLY
    * from the real grant-status read; `null` until the grant lands. Replaces the
    * hardcoded "mainnet release policy" line, which described a release flag that
    * no longer exists — the member's own lock + KYC gates govern release now.
    */
   s5BondStatus: string | null;
+  /** C1-V V5 — `MemberBond.unlockBlock()` from the grant read; null until the grant lands. */
+  s5UnlockBlock: number | null;
   kycOutcome: "verified" | "failed" | "review";
   route: string;
   wTab: string;
@@ -601,6 +603,10 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
+  /** D-11 (ADR P-5): the member's preferred cloud model, a mirror of core's setting
+   *  (`providers_preferred_get`, `<app data>/providers/preferred.json`); null = the local model.
+   *  Never persisted here: core is the source. */
+  hermesCloudModel: { providerId: string; model: string } | null;
   /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). Off by default for new
    * installs (owner decision 2026-10-19, superseding 2026-10-04); an install that stored a value
    * keeps it. Every command still needs the member's approval, runs in the OS sandbox, and only in
@@ -810,6 +816,7 @@ export function freshState(pid: string): AppState {
     s5n: 0,
     s5StakeWei: null,
     s5BondStatus: null,
+    s5UnlockBlock: null,
     kycOutcome: "verified",
     route: "dashboard",
     wTab: "overview",
@@ -919,6 +926,7 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: true,
     hermesSidecarLoopDefaultApplied: true,
+    hermesCloudModel: null,
     hermesTerminal: false,
     hermesTerminalDefaultApplied: true,
     hermesBrief: null,
@@ -1025,18 +1033,18 @@ export function freshState(pid: string): AppState {
       s.liquid = 142.63;
       s.claimable = 9.41;
       s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
-      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
       s.liquid = 58.02;
       s.claimable = 2.14;
-      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
       s.node = "validating";
       s.peers = 26;
       s.liquid = 301.44;
       s.claimable = 18.92;
-      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Membership grant ceremony|32,000 SALT"]);
     }
     // Packaged app (tauri): never seed the sim persona's name into the greeting.
     // Real identity folds in on sign-in; until then greet neutrally (Rule 1).
@@ -1153,6 +1161,8 @@ export function loadState(netKey: string = currentNetKey()): AppState {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
   }
+  // D-11: the preferred cloud model is core's setting; a value an older build stored is ignored.
+  base.hermesCloudModel = null;
   // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
   // installs. A stored value is kept as it is (on or off); only an install with no stored value
   // takes the default from freshState. The old switch-on-once migration is retired.

@@ -21,6 +21,7 @@ import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
 import { readStakeSalt, readsValidatorRewards, saltFromWei, STAKE_NOT_READ, validatorDash } from "../shell/chainTruth";
+import { grantExplanation } from "../data/grantCopy";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -343,7 +344,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Membership grant · vaulted</span>
+                <span style={{ fontSize: 13, color: "var(--tx-2)" }}>Membership grant · locked in your bond</span>
                 <span className="mono tabular" style={{ fontSize: 13 }}>
                   {grantStr}
                 </span>
@@ -362,7 +363,10 @@ export function Wallet({ store, s }: SurfaceProps) {
               </div>
             </div>
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              The membership grant funds this wallet directly; a staked + time-locked model is in progress. This card shows the REAL on-chain attributed stake, never a fabricated figure. Validator reward eligibility ends below 32,000 SALT staked.
+              {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
+              {s.hasGrant
+                ? grantExplanation({ amountSalt: grantSaltStr, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: true, activated: s.bondActivated })
+                : "No membership grant on this wallet."}
             </p>
           </div>
           {/* D-9: the liquid staking pool is retired. There is no self-stake to add or withdraw;

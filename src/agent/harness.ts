@@ -15,6 +15,7 @@
 // a later wave. This module is the seam, not a mock of chain data.
 // =====================================================================
 
+import { grantExplanation } from "../data/grantCopy.ts";
 import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -46,6 +47,13 @@ export interface AgentContext {
   claimable: number | null;
   /** `ValidatorRegistry.rewardsOf(pubkey).total` in SALT; null = not a validator / not read. */
   rewardsTotal: number | null;
+  /**
+   * The member's membership grant as read from chain (C1-V V5): the amount in SALT, the bond's
+   * `MemberBond.unlockBlock` (null = not read), and whether the bond is activated (staked). null =
+   * no grant (free tier, or not granted yet). Optional: when omitted, the staking reply falls back to
+   * `grantSalt` (a figure, or "not read yet").
+   */
+  grant?: { amountSalt: number; unlockBlock: number | null; staked: boolean; activated?: boolean | null } | null;
   walletAddr: string;
   tier: string;
 }
@@ -1000,7 +1008,15 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("chain_read", { query: "staking.position" })],
       compose: (c) =>
-        `${grantSentence(c.grantSalt ?? null)} ${stakeSentence(c.staked)} Staking is through that bond: there is no separate stake to add or withdraw. Your node ${c.nodeState === "validating" ? "is validating" : "can validate once the bond is activated and the node is running"}. The granted principal stays locked until the bond unlocks; rewards for blocks your node produces are yours.`,
+        // C1-V V5: the one grant-custody explanation (UI truth contract §5.4); staked = stakeOf.
+        // C1-V review (#349): branch on the real grant state, with the real amount and unlock block.
+        // #555: the stake only from a stakeOf read (null = not read yet, never 0); a caller that
+        // passes only `grantSalt` (no grant facts) gets the grant figure or "not read yet".
+        c.grant
+          ? `Staked in the ValidatorRegistry: **${fmtStake(c.staked)}**. ${grantExplanation({ amountSalt: c.grant.amountSalt.toLocaleString("en-US"), unlockBlock: c.grant.unlockBlock, staked: c.grant.staked, granted: true, activated: c.grant.activated })} Your node is **${c.nodeState}**.`
+          : c.grant === null
+            ? `Staked in the ValidatorRegistry: **${fmtStake(c.staked)}**. You have no membership grant on this wallet${c.tier === "free" ? " (public tier)" : " yet"}. Your node is **${c.nodeState}**.`
+            : `${grantSentence(c.grantSalt ?? null)} ${stakeSentence(c.staked)} Your node is **${c.nodeState}**.`,
     };
   }
   if (has("earn", "reward", "claim", "income", "made today")) {

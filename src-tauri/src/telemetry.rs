@@ -99,8 +99,42 @@ const KEY_PREFIXES: &[&str] = &[
     "sk-", "sk_live_", "sk_test_", "cgk_", "xai-", "AIza", "apk_", "cog_", "cmp_", "LLM|", "LLM_",
 ];
 
+/// The shapes of keys that must never cross into the Hermes sidecar (every prefix above except
+/// the proxy's own route token, which is what the sidecar holds instead of a key).
+const VENDOR_KEY_PREFIXES: &[&str] = &[
+    "sk-", "sk_live_", "sk_test_", "cgk_", "xai-", "AIza", "apk_", "cog_", "LLM|", "LLM_",
+];
+
 fn is_key_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '|' | '.')
+}
+
+/// The first key-shaped run in `s` with one of `prefixes`: (start, length).
+/// (A prefix counts only at a word boundary, followed by at least 12 more key characters.)
+fn find_key_shape(s: &str, prefixes: &[&str]) -> Option<(usize, usize)> {
+    let mut prev: Option<char> = None;
+    let mut i = 0;
+    while i < s.len() {
+        let rest = &s[i..];
+        if !prev.is_some_and(is_key_char) {
+            if let Some(p) = prefixes.iter().find(|p| rest.starts_with(**p)) {
+                let run = rest.find(|c: char| !is_key_char(c)).unwrap_or(rest.len());
+                if run >= p.len() + 12 {
+                    return Some((i, run));
+                }
+            }
+        }
+        let c = rest.chars().next()?;
+        prev = Some(c);
+        i += c.len_utf8();
+    }
+    None
+}
+
+/// D-11 tripwire: whether `s` (a sidecar request body, an environment value, an argument)
+/// carries something shaped like a vendor key.
+pub(crate) fn has_vendor_key_shape(s: &str) -> bool {
+    find_key_shape(s, VENDOR_KEY_PREFIXES).is_some()
 }
 
 /// Redact a key-shaped run wherever it sits in a line (`key=…`, `"x-api-key":"…"`, `Bearer …`):

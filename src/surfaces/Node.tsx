@@ -3,6 +3,8 @@ import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 import { shortNet } from "../shell/netScope";
 import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readStakeSalt, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { grantExplanation } from "../data/grantCopy";
+import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { activateValidatorLabel } from "../onboarding/activateValidator";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
@@ -362,6 +364,12 @@ export function Node({ store, s }: SurfaceProps) {
 
               <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
                 <span className="eyebrow">Validator</span>
+                {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
+                {s.hasGrant && (
+                  <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0, lineHeight: 1.5 }}>
+                    {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated })}
+                  </p>
+                )}
                 {/* W1.3 — once the node is synced (proposer.key minted), the member
                     can bond the 32k and become a block producer. staker = the EOA;
                     the tx is approved through the ceremony. Shown only in the
