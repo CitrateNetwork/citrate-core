@@ -89,6 +89,20 @@ only; "does not stop an earlier run's orphans" fails `reap` only; "runs two inst
 restart target and restarts neither" fails `restart` only (an instance that was already running
 before the kill does not count as the restart).
 
+Before the five modes, the self-test runs a structural check,
+`scripts/ci/linux-native-acceptance/confine-check.py`: every process the harness starts after
+the seal (the app, an AppImage or its extraction, install scripts, the display, bus, keyring,
+the update-e2e feed server, and every X, bus or Python helper) must be started through the
+`CONFINE` prefix. It flags any program run by path or variable; any interpreter, session
+program or command that runs other code (`command`, `builtin`, `eval`, `xargs`, `coproc`,
+`source`/`.`, `trap`, `time`, `stdbuf`, `perl`, `busybox`, `find -exec`); backticks; `dpkg` with
+an install action; `--appimage-extract`; and anything started in the background with `&`,
+unless the command starts with `"${CONFINE[@]}"`. The seal itself and the isolation probes are
+exempt (they check the seal from PID 1's view, before anything launches), but package code
+started from a probe is still flagged, and so is any change to `CONFINE` after its definition.
+Its controls remove each `CONFINE` prefix in turn and require that copy to be flagged, and run
+a set of synthetic snippets, each of which must be flagged (or, for a few, must not be).
+
 A run takes about 10 minutes per package kind. `K1L_KEEP=1` keeps the run directory (the app's
 HOME, logs, the installed tree) for inspection; otherwise only `logs/` is kept.
 
@@ -117,6 +131,12 @@ the app's request (portal, gvfs, at-spi, dconf). The bus runs as a child subreap
 its descendants; they are listed in the summary as "session services … (not counted)". On a
 desktop they belong to the login session, not to Citrate.
 
+7. `update-e2e` (only with `--update-e2e DIR`, RC52 G8): the app's own updater on a test
+   AppImage that pins a throwaway key: it installs a signed newer build from a loopback feed and
+   restarts into it, and refuses an altered signature, another key, an altered artifact and a feed
+   that is not newer. How the inputs are built, the cases and the checklist mapping:
+   [UPDATER_E2E.md](UPDATER_E2E.md).
+
 ## Limits
 
 - **AppImage runs extracted.** Inside an unprivileged user namespace the setuid `fusermount`
@@ -133,6 +153,7 @@ desktop they belong to the login session, not to Citrate.
 
 `.github/workflows/linux-native-acceptance.yml` runs the self-test on `ubuntu-24.04`, then the
 packaged scenarios on `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), fetching the
-packages pinned in `scripts/ci/linux-native-acceptance/pins.txt`. As with K1-F, the job lifts
+packages pinned in `scripts/ci/linux-native-acceptance/pins.txt`. The `update-e2e` job builds its own two
+test AppImages first ([UPDATER_E2E.md](UPDATER_E2E.md)). As with K1-F, the job lifts
 `kernel.apparmor_restrict_unprivileged_userns` only on the throwaway runner and only if the
 `unshare` probe fails. Never change that sysctl on a desktop.

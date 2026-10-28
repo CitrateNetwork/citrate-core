@@ -39,7 +39,6 @@ pub mod config;
 pub mod custody;
 pub mod eip712;
 pub mod fsutil;
-pub mod join;
 pub mod oidc;
 pub mod rpc;
 pub mod secret;

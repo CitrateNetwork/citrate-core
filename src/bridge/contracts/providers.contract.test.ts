@@ -23,6 +23,8 @@ const OPS = [
   "confirmCustom",
   "removeCustom",
   "resetUsageLog",
+  "preferredGet",
+  "preferredSet",
 ] as const;
 
 const caps = { dailyTokens: 1000, monthlyTokens: 10000, dailyMicros: null, monthlyMicros: null };
@@ -44,6 +46,8 @@ async function invokedCommands(): Promise<Array<[string, Record<string, unknown>
   await tauriProviders.confirmCustom("custom-1", "https://llm.example.org/v1");
   await tauriProviders.removeCustom("custom-1");
   await tauriProviders.resetUsageLog();
+  await tauriProviders.preferredGet();
+  await tauriProviders.preferredSet({ providerId: "openai", model: "gpt-4o" });
   return invokeMock.mock.calls.map((c) => [c[0] as string, c[1] as Record<string, unknown> | undefined]);
 }
 
@@ -79,6 +83,8 @@ describe("tauri providers invokes the registered commands", () => {
       ["providers_custom_confirm", { id: "custom-1", baseUrl: "https://llm.example.org/v1" }],
       ["providers_custom_remove", { id: "custom-1" }],
       ["providers_usage_log_reset", undefined],
+      ["providers_preferred_get", undefined],
+      ["providers_preferred_set", { choice: { providerId: "openai", model: "gpt-4o" } }],
     ]);
   });
 

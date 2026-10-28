@@ -50,9 +50,6 @@ pub const MAX_REGISTRY_INPUT_BYTES: usize = 4096;
 /// The highest price ceiling a member may offer per registry request: 10 SALT in wei.
 /// Conservative placeholder, pending owner sign-off.
 pub const MAX_REGISTRY_PRICE_WEI: u128 = 10_000_000_000_000_000_000;
-/// Gas headroom over `eth_estimateGas` (the provider choice can differ between estimate and
-/// inclusion): +25 %.
-pub const GAS_HEADROOM_PCT: u64 = 25;
 /// Providers read for one model (a longer route is cut, and the view says so).
 pub const MAX_PROVIDERS: usize = 32;
 /// Request ids read for one member.
@@ -418,8 +415,9 @@ pub fn request_tx_json(
     .to_string()
 }
 
-/// `eth_estimateGas` plus [`GAS_HEADROOM_PCT`]. A failed estimate (for example the call would
-/// revert because no provider can serve it) is an error, never a guessed gas value.
+/// `eth_estimateGas` plus the money-send margin and cap (`money_gas`; the provider choice can
+/// differ between estimate and inclusion). A failed estimate (for example the call would revert
+/// because no provider can serve it) is an error, never a guessed gas value.
 pub fn estimate_request_gas<T: RpcTransport>(
     rpc: &RpcClient<T>,
     from: &str,
@@ -435,8 +433,7 @@ pub fn estimate_request_gas<T: RpcTransport>(
             "data": format!("0x{}", hex::encode(calldata)),
         }))
         .map_err(|e| format!("the router would not accept this request: {e}"))?;
-    est.checked_add(est / 100 * GAS_HEADROOM_PCT)
-        .ok_or_else(|| "gas estimate overflow".to_string())
+    crate::money_gas::with_margin(est)
 }
 
 /// The output as text for the webview, cut at [`MAX_OUTPUT_BYTES`]; the provider's answer is
@@ -567,9 +564,6 @@ pub fn claim_refund_tx_json(from: &str, router: &str, gas: u64) -> String {
     .to_string()
 }
 
-/// Gas for `claimRefund()`: a balance write and one value transfer, with headroom.
-pub const CLAIM_REFUND_GAS: u64 = 80_000;
-
 /// **escalation_registry_claim_refund** — raise the HIC-1 approval to withdraw the refund credited
 /// to the member (unused ceilings, expired requests). Refuses when nothing is owed.
 #[tauri::command]
@@ -585,15 +579,27 @@ pub async fn escalation_registry_claim_refund(app_h: tauri::AppHandle) -> Result
         if RouterReader::new(&rpc, router)?.refund_owed(&wallet.address)? == "0" {
             return Err("there is no refund to claim".into());
         }
-        ceremony.0.request(crate::ceremony::SignatureIntent {
-            origin: "agent:hermes".to_string(),
-            kind: crate::ceremony::IntentKind::Transaction,
-            chain_id: 40204,
-            raw: claim_refund_tx_json(&wallet.address, router, CLAIM_REFUND_GAS),
-        });
+        ceremony
+            .0
+            .request(claim_refund_intent(&rpc, &wallet.address, router)?);
         Ok(())
     })
     .await
+}
+
+/// The `claimRefund()` ceremony intent from `from`, with the gas the node estimates (`money_gas`).
+pub fn claim_refund_intent<T: RpcTransport>(
+    rpc: &RpcClient<T>,
+    from: &str,
+    router: &str,
+) -> Result<crate::ceremony::SignatureIntent, String> {
+    let gas = crate::money_gas::estimate(rpc, from, router, 0, &selector(CLAIM_REFUND_SIG))?;
+    Ok(crate::ceremony::SignatureIntent {
+        origin: "agent:hermes".to_string(),
+        kind: crate::ceremony::IntentKind::Transaction,
+        chain_id: 40204,
+        raw: claim_refund_tx_json(from, router, gas),
+    })
 }
 
 /// `expireRequest(requestId)` calldata.
