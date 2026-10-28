@@ -70,6 +70,21 @@ describe("component-pins check", () => {
     expect(check(fixture())).toEqual([]);
   });
 
+  // The Linux packages bundle every cargo sidecar, and build-component.sh installs one only if
+  // its bytes match a pin for that exact triple; a component with no Linux pin stops the Linux
+  // release at the build step. Each pin is an inline sha256 recorded by the Linux builder.
+  it("pins every cargo sidecar for both Linux triples", () => {
+    const m = JSON.parse(read(repo, "release/components.json"));
+    const missing = [];
+    for (const c of m.components.filter((x) => x.build && x.build.kind === "cargo")) {
+      for (const t of ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]) {
+        const a = (c.artifacts || {})[t];
+        if (!a || !/^[0-9a-f]{64}$/.test(a.sha256 || "")) missing.push(`${c.id} ${t}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("refuses a bundle externalBin with no component", () => {
     const r = fixture();
     const m = manifest(r);

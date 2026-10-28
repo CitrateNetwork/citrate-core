@@ -11,8 +11,9 @@
 //!
 //! `network/profiles.json` is now the one source. It is embedded at compile time and read by
 //! this module and by the webview (`src/network/profile.ts`). The active profile drives:
-//! - the node: its bootnodes and chain id in the rendered `node.toml`, its `--network`, and the
-//!   genesis its data dir must belong to ([`crate::node_genesis`]);
+//! - the node: its bootnodes, chain id and genesis profile in the rendered `node.toml`, its
+//!   `--network`, the validator overrides it is (or is not) given, and the genesis its data dir
+//!   must belong to ([`crate::node_genesis`]);
 //! - the network gate on every signature and send ([`install_network_gate`], checked by
 //!   `citrate-core-kit::rpc::RpcClient::verify_network`): the RPC's chain id AND block-0 hash
 //!   must match before anything is signed or sent.
@@ -33,9 +34,36 @@ use std::sync::OnceLock;
 const PROFILES_JSON: &str = include_str!("../network/profiles.json");
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProfilesFile {
     active: String,
+    node_genesis_profiles: BTreeMap<String, RawNodeGenesis>,
     profiles: BTreeMap<String, RawProfile>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawNodeGenesis {
+    genesis_hash: String,
+    node_default: bool,
+    compiled_activations: bool,
+}
+
+/// A genesis profile the bundled node builds (`nodeGenesisProfiles` in `profiles.json`): the node
+/// is told it with `[chain] genesis_profile` and builds this block 0 (citrate-chain
+/// `node/src/genesis.rs` `initialize_genesis_state_with_profile`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeGenesis {
+    /// The `[chain] genesis_profile` name.
+    pub name: String,
+    /// The block 0 the node builds for it on chain 40204 (`0x` + 64 lowercase hex).
+    pub genesis_hash: String,
+    /// The node also builds it when the config names no genesis profile (its chain-id default).
+    pub node_default: bool,
+    /// The genesis compiles its ValidatorRegistry and activation height (citrate-chain
+    /// `genesis::resolve_validator_registry`): the app passes no `CITRATE_VALIDATOR_*` override,
+    /// because the node refuses one that differs from the compiled values.
+    pub compiled_activations: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -44,6 +72,7 @@ struct RawProfile {
     label: String,
     chain_id: Option<u64>,
     genesis_hash: Option<String>,
+    genesis_profile: Option<String>,
     node_network: Option<String>,
     rpc_url: Option<String>,
     explorer_url: Option<String>,
@@ -65,6 +94,9 @@ pub struct NetworkProfile {
     pub label: String,
     pub chain_id: Option<u64>,
     pub genesis_hash: Option<String>,
+    /// The `[chain] genesis_profile` the node config names: which block 0 the node builds. Must
+    /// be one the bundled node builds ([`node_genesis`]).
+    pub genesis_profile: Option<String>,
     /// The node's `--network` argument.
     pub node_network: Option<String>,
     pub rpc_url: Option<String>,
@@ -91,6 +123,8 @@ pub struct ReadyNetwork {
     pub chain_id: u64,
     /// `0x` + 64 lowercase hex, not zero.
     pub genesis_hash: String,
+    /// The genesis profile the node is told to build, one the bundled node builds.
+    pub node_genesis: NodeGenesis,
     pub node_network: String,
     pub rpc_url: String,
     pub explorer_url: String,
@@ -168,6 +202,62 @@ fn parsed() -> &'static Result<(String, Vec<NetworkProfile>), ProfileError> {
     PARSED.get_or_init(|| parse(PROFILES_JSON))
 }
 
+fn parsed_node_genesis() -> &'static Result<Vec<NodeGenesis>, ProfileError> {
+    static PARSED: OnceLock<Result<Vec<NodeGenesis>, ProfileError>> = OnceLock::new();
+    PARSED.get_or_init(|| parse_node_genesis(PROFILES_JSON))
+}
+
+/// A genesis profile name the node config can carry: lowercase letters, digits and `_` (the
+/// names citrate-chain compiles), so it is written into the TOML string as is.
+pub fn is_genesis_profile_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn parse_node_genesis(json: &str) -> Result<Vec<NodeGenesis>, ProfileError> {
+    let file: ProfilesFile =
+        serde_json::from_str(json).map_err(|e| ProfileError::Malformed(e.to_string()))?;
+    file.node_genesis_profiles
+        .into_iter()
+        .map(|(name, g)| {
+            if !is_genesis_profile_name(&name) {
+                return Err(ProfileError::Malformed(format!(
+                    "nodeGenesisProfiles: {name:?} is not a genesis profile name"
+                )));
+            }
+            let genesis_hash = check_hash(&g.genesis_hash).ok_or_else(|| {
+                ProfileError::Malformed(format!(
+                    "nodeGenesisProfiles.{name}: {:?} is not a block hash",
+                    g.genesis_hash
+                ))
+            })?;
+            Ok(NodeGenesis {
+                name,
+                genesis_hash,
+                node_default: g.node_default,
+                compiled_activations: g.compiled_activations,
+            })
+        })
+        .collect()
+}
+
+/// The genesis profiles the bundled node builds (`nodeGenesisProfiles`).
+pub fn node_genesis_profiles() -> Result<&'static [NodeGenesis], ProfileError> {
+    parsed_node_genesis()
+        .as_ref()
+        .map(Vec::as_slice)
+        .map_err(Clone::clone)
+}
+
+/// The genesis profile `name`, when the bundled node builds it.
+pub fn node_genesis(name: &str) -> Option<&'static NodeGenesis> {
+    node_genesis_profiles()
+        .ok()?
+        .iter()
+        .find(|g| g.name == name)
+}
+
 fn parse(json: &str) -> Result<(String, Vec<NetworkProfile>), ProfileError> {
     let file: ProfilesFile =
         serde_json::from_str(json).map_err(|e| ProfileError::Malformed(e.to_string()))?;
@@ -179,6 +269,7 @@ fn parse(json: &str) -> Result<(String, Vec<NetworkProfile>), ProfileError> {
             label: p.label,
             chain_id: p.chain_id,
             genesis_hash: p.genesis_hash,
+            genesis_profile: p.genesis_profile,
             node_network: p.node_network,
             rpc_url: p.rpc_url,
             explorer_url: p.explorer_url,
@@ -282,6 +373,7 @@ impl NetworkProfile {
         };
         miss("chainId", self.chain_id.is_none());
         miss("genesisHash", self.genesis_hash.is_none());
+        miss("genesisProfile", self.genesis_profile.is_none());
         miss("nodeNetwork", self.node_network.is_none());
         miss("rpcUrl", self.rpc_url.is_none());
         miss("explorerUrl", self.explorer_url.is_none());
@@ -318,6 +410,22 @@ impl NetworkProfile {
             invalid(
                 "genesisHash",
                 format!("{raw_genesis:?} is not a block hash"),
+            )
+        })?;
+        // Fail closed: a genesis profile the bundled node does not build is refused here, so no
+        // node starts (the node would refuse it too, or an older one fall back to the chain-id
+        // default genesis) and nothing is signed.
+        let raw_gp = self.genesis_profile.clone().unwrap_or_default();
+        let node_genesis = node_genesis(&raw_gp).cloned().ok_or_else(|| {
+            let known: Vec<String> = node_genesis_profiles()
+                .map(|g| g.iter().map(|g| g.name.clone()).collect())
+                .unwrap_or_default();
+            invalid(
+                "genesisProfile",
+                format!(
+                    "{raw_gp:?} is not a genesis profile the bundled node builds (it builds: {})",
+                    known.join(", ")
+                ),
             )
         })?;
         let node_network = self.node_network.clone().unwrap_or_default();
@@ -368,6 +476,7 @@ impl NetworkProfile {
             label: self.label.clone(),
             chain_id,
             genesis_hash,
+            node_genesis,
             node_network,
             rpc_url,
             explorer_url,
@@ -440,6 +549,9 @@ pub fn install_network_gate() {
 pub const CHAIN_ID_PLACEHOLDER: &str = "\"{{CHAIN_ID}}\"";
 /// The bootnode list placeholder: one whole array-entry line in the template.
 pub const BOOTNODES_PLACEHOLDER: &str = "    \"{{BOOTSTRAP_NODES}}\",";
+/// The genesis profile placeholder (inside a quoted TOML string; names are checked by
+/// [`is_genesis_profile_name`], so they need no escaping).
+pub const GENESIS_PROFILE_PLACEHOLDER: &str = "{{GENESIS_PROFILE}}";
 
 /// Fill the network values of the member node config template from `net`. The bootnode list is
 /// written one quoted entry per line (values are checked by [`NetworkProfile::ready`], so no
@@ -452,6 +564,7 @@ pub fn render_node_network(template: &str, net: &ReadyNetwork) -> String {
         .collect();
     template
         .replace(CHAIN_ID_PLACEHOLDER, &net.chain_id.to_string())
+        .replace(GENESIS_PROFILE_PLACEHOLDER, &net.node_genesis.name)
         .replace(BOOTNODES_PLACEHOLDER, &nodes.join("\n"))
 }
 

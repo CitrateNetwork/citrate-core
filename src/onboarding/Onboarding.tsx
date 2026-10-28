@@ -10,7 +10,7 @@ import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
 import { useNetworkLabel } from "../shell/networkCompat";
-import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, validatorWord, canOfferActivation, validatorDash, readStakeSalt } from "../shell/chainTruth";
 import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
 import { MEMBERSHIP_BUYS } from "../data/membership";
 import { PricingLink } from "../components/PricingLink";
@@ -19,6 +19,8 @@ import { SYNC_SOURCE, syncLine } from "../shell/syncProgress";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
+/** The registry stake as "N SALT", or "— (not read yet)" before a stakeOf read (rule 2). */
+const fmtStake = (salt: number | null) => (salt == null ? "— (not read yet)" : `${fmtI(salt)} SALT`);
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
 
 const eyebrow: CSSProperties = {
@@ -1051,7 +1053,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Validator active</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · activation epoch reached · stake {fmtI(s.bondedStake)} SALT · {CONSENSUS_LAG_NOTE}
+                synced · activation epoch reached · stake {fmtStake(readStakeSalt(s))} · {CONSENSUS_LAG_NOTE}
               </div>
             </div>
           </div>
@@ -1067,7 +1069,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant) ?? "— · registry not read yet"}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                stake {fmtI(s.bondedStake)} SALT in the ValidatorRegistry
+                stake {fmtStake(readStakeSalt(s))} in the ValidatorRegistry
               </div>
             </div>
           </div>

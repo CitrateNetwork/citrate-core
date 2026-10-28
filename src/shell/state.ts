@@ -447,6 +447,12 @@ export interface AppState {
    * Rule 1: a funded bond is not the same as an activated one).
    */
   bondedStake: number;
+  /**
+   * True once a `ValidatorRegistry.stakeOf` read (the grant-status read) has returned THIS
+   * session. Until then `bondedStake` is a default or a persisted value, not a reading, so the
+   * staked figure is shown as "—" (UI truth contract rule 2: unknown is not zero). Not persisted.
+   */
+  bondedStakeRead: boolean;
   /** RC52: the chain reads network-scoped values still wait for after a genesis switch. */
   netUnread: NetRead[];
   /** RC52: the genesis-switch notice, shown on Node until dismissed. */
@@ -874,6 +880,7 @@ export function freshState(pid: string): AppState {
     crashes: [],
     liquid: 0,
     bondedStake: 0,
+    bondedStakeRead: false,
     netUnread: [],
     networkNotice: null,
     netArchived: [],

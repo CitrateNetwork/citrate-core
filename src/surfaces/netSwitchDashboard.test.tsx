@@ -34,7 +34,8 @@ describe("Dashboard Staked tile after a genesis switch", () => {
   });
 
   it("shows the validator state once the grant read found no stake", () => {
-    const s = { ...freshState("p1"), netUnread: [] };
+    // The grant read returned this session (#555: bondedStakeRead), with no stake in it.
+    const s = { ...freshState("p1"), netUnread: [], bondedStakeRead: true };
     const html = renderToStaticMarkup(<Dashboard store={stub} s={s} />);
     expect(html).toContain(validatorDash(0, s.validatorActivation, s.hasGrant, s.bondActivated));
     expect(html).not.toContain("not read yet on this network");
