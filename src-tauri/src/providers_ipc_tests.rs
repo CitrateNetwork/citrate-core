@@ -35,7 +35,12 @@ fn status_is_honest_about_keys_adapters_and_custom_endpoints() {
     let rig = Rig::new("ipc-status");
     let s = status(&rig.proxy);
     let ids: Vec<&str> = s.iter().map(|v| v.id.as_str()).collect();
-    assert_eq!(ids, vec!["openai", "anthropic", "gemini", "xai", "deepseek", "meta"]);
+    assert_eq!(ids, vec!["openai", "anthropic", "gemini", "xai", "deepseek", "meta", "gateway", "cognition"]);
+    let gw = s.iter().find(|v| v.id == "gateway").unwrap();
+    assert_eq!((gw.kind, gw.host.as_str(), gw.verified), ("gateway", "infer.citrate.ai", true));
+    let cog = s.iter().find(|v| v.id == "cognition").unwrap();
+    assert_eq!((cog.kind, cog.adapter, cog.host.as_str()), ("delegate", Some("delegate"), "api.devin.ai"));
+    assert!(!cog.key_configured);
     let openai = &s[0];
     assert!(openai.key_configured && openai.verified);
     assert_eq!(openai.host, "api.openai.com");
@@ -45,7 +50,10 @@ fn status_is_honest_about_keys_adapters_and_custom_endpoints() {
     let anthropic = &s[1];
     assert!(!anthropic.key_configured);
     assert_eq!(anthropic.adapter, Some("native"));
-    assert!(s.iter().all(|v| v.adapter == Some("native")), "every vendor has its native adapter");
+    assert!(
+        s.iter().filter(|v| v.kind == "vendor").all(|v| v.adapter == Some("native")),
+        "every vendor has its native adapter"
+    );
     // A custom endpoint is listed, unverified and unconfirmed.
     let c = custom_add(&rig.proxy, "Box", "https://llm.example.org/v1", vec!["m".into()]).unwrap();
     assert!(!c.confirmed && !c.verified);
@@ -228,6 +236,24 @@ fn status_lists_each_model_with_its_price_source() {
     let s = status(&rig.proxy);
     let m = s[0].models.iter().find(|m| m.id == "gpt-known").unwrap();
     assert_eq!((m.source, m.price), (None, None), "an unknown price is shown as unknown");
+}
+
+#[test]
+fn gateway_and_delegate_models_show_the_price_their_calls_are_charged() {
+    let mut g = GuardBook::default();
+    g.key_set(ProviderId::Gateway.as_str(), vec!["gw-m".into()], 1);
+    let gw = models_for(&g, &ProviderId::Gateway);
+    let m = gw.iter().find(|m| m.id == "gw-m").expect("a listed gateway model is shown");
+    // The gateway's published rate (quota-metered, no payment), from the adapter its calls use.
+    assert_eq!((m.source, m.price), (Some("published"), Some(crate::model_proxy::GATEWAY_PRICE)));
+    assert_eq!(m.min_reserve_micros, Some(0), "a $0 rate reserves nothing");
+    let charged = ModelProxy::adapter_price(crate::model_proxy::gateway_adapter().as_ref(), "gw-m");
+    assert_eq!(m.price, g.price_for(ProviderId::Gateway.as_str(), "gw-m", charged));
+    // The delegate is not token-priced: its one model is listed with no price and no reservation.
+    let d = models_for(&GuardBook::default(), &ProviderId::Cognition);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].id, crate::model_proxy::DELEGATE_MODEL);
+    assert_eq!((d[0].source, d[0].price, d[0].min_reserve_micros), (None, None, None));
 }
 
 #[test]
