@@ -39,11 +39,15 @@
         "aarch64-apple-darwin": {
           "runtime_deps_asset": "citrate-aarch64-apple-darwin-f6b6f3e451a1",
           "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-28 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-28 (owner-directed, RC52 r1006 restart), download-back sha256 matches the pin. `citrate --config <r1006 node.toml> consensus --json`: fingerprint 0x024ad6062348f2a2962966f83b637c0c, every input except git_sha identical to the d939d4ec and 9a32147e builds. As with 9a32147e, a clean rebuild is not expected to reproduce these bytes: stage the uploaded asset, as release.yml does."
+        },
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "7e5abafc012a734f90b35da1fa3c4706f042903f9f692da714cedd4e0f1c458e",
+          "evidence": "DGX lane fixed asset (the node rebuild does not reproduce, chain#427), built on citrate-core-linux-build 2026-10-28 19:51Z: `cargo build --release --locked -p citrate-node --bin citrate` with CARGO_PROFILE_RELEASE_DEBUG=0, from citrate-chain origin/main at f6b6f3e4 (git_dirty=false), rustc 1.96.0; posted on fed#331 c.6479105183; consensus --json fingerprint with no config 0x512d2bfb7520c96941884b4d92263dbd (identical on both Linux arches and on the macOS build); under the r1006 producer config (prod-3) 0x024ad6062348f2a2962966f83b637c0c, equal to the macOS build's under the app's r1006 config"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "sha256": "800a35393f42f2ea910d8b1f9bd0786a6aa54a4f4f5cd96ae82418c443cf3354",
+          "evidence": "DGX lane fixed asset (the node rebuild does not reproduce, chain#427), built on the DGX 2026-10-28: `cargo build --release --locked -p citrate-node --bin citrate` with CARGO_PROFILE_RELEASE_DEBUG=0, from citrate-chain origin/main at f6b6f3e4 (git_dirty=false), rustc 1.96.0; posted on fed#331 c.6479105183; consensus --json fingerprint with no config 0x512d2bfb7520c96941884b4d92263dbd (identical on both Linux arches and on the macOS build); under the r1006 producer config (prod-3) 0x024ad6062348f2a2962966f83b637c0c, equal to the macOS build's under the app's r1006 config"
         }
-      },
-      "pending": {
-        "x86_64-unknown-linux-gnu": "DGX lane (citrate-core-linux-build (O-17)): the node at the rev pinned above (= build-sidecar.sh MIN_CHAIN_REV), built once with scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest (rustc 1.96.0, --locked) and uploaded as a fixed asset (the rebuild does not reproduce, chain#427); the sha256 is posted on fed#331, then pinned here inline",
-        "aarch64-unknown-linux-gnu": "DGX lane (spark-2e01): the node at the rev pinned above (= build-sidecar.sh MIN_CHAIN_REV), built once with scripts/build-sidecar.sh --target aarch64-unknown-linux-gnu --print-digest (rustc 1.96.0, --locked) and uploaded as a fixed asset (the rebuild does not reproduce, chain#427); the sha256 is posted on fed#331, then pinned here inline"
       }
     },
     {

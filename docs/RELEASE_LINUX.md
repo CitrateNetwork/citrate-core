@@ -88,7 +88,11 @@ reproduce byte for byte, even in the same build root (citrate-chain#427: a secon
 different code, same strings). So the "a rebuild must reproduce the pin" rule does not apply to it.
 The DGX lane builds the node once per Linux triple at the rev in `release/components.json`
 (= `MIN_CHAIN_REV` in `scripts/build-sidecar.sh`), uploads those bytes, and posts their sha256 on
-fed#331. That sha256 is the pin, and the release stages the uploaded asset after checking it, as
+fed#331. The fixed-asset recipe (0.5.2, f6b6f3e4): in a clean citrate-chain checkout of origin/main
+at that rev (`git_dirty=false` in `citrate consensus --json`), rustc 1.96.0,
+`CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate`
+(x86_64 on `citrate-core-linux-build`, aarch64 on the DGX). Record the binary's
+`consensus --json` fingerprint with the digest; it must equal the macOS build's for the same rev. That sha256 is the pin, and the release stages the uploaded asset after checking it, as
 release.yml does for the macOS node. Do not rebuild the node on the release host and expect its
 pin to match. Until the digests are posted, the node's Linux targets stay under `pending` in
 `release/components.json`.
