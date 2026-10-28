@@ -10,6 +10,7 @@ import {
   isReady,
   missingValues,
   profileProblems,
+  type NetworkProfile,
 } from "./profile";
 
 describe("network profile (K6)", () => {
@@ -68,6 +69,19 @@ describe("network profile (K6)", () => {
     }
     expect(gateGenesis(base)).toBe(expectedGenesis(base));
     expect(isReady(null)).toBe(false);
+  });
+
+  it("names a genesis profile the bundled node builds (RC52: the node builds the profile's block 0)", () => {
+    const base = { ...ACTIVE_PROFILE! } as NetworkProfile & { genesisProfile: unknown };
+    const as = (gp: unknown) => ({ ...base, genesisProfile: gp }) as unknown as NetworkProfile;
+    expect(profileProblems(as("testnet_beta"))).toEqual([]);
+    expect(profileProblems(as(null))).toEqual([expect.stringMatching(/^genesisProfile not set/)]);
+    for (const bad of ["r9999", "", "r1006\n", "R1006", "testnet beta"]) {
+      expect(profileProblems(as(bad)), JSON.stringify(bad)).toContain(
+        "genesisProfile is not a genesis profile the bundled node builds",
+      );
+      expect(gateGenesis(as(bad)), JSON.stringify(bad)).toBeNull();
+    }
   });
 
   it("the chain, the address book and the profile agree", () => {
